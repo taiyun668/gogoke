@@ -88,10 +88,12 @@ pub(crate) fn grok_root_acl(profile:&AppContainerProfile,home:&Path,
 pub(crate) struct GrokAuthMetadata {
     file: File,
     pub(crate) identity: RootIdentity,
+    relative_name: PathBuf,
 }
 
 impl GrokAuthMetadata {
     fn handle(&self) -> Handle { self.file.as_raw_handle().cast() }
+    pub(crate) fn relative_name(&self)->&Path {&self.relative_name}
     pub(crate) fn acl(&self,profile:&AppContainerProfile)->Result<GrokAclSnapshot,IsolationError>{
         self.verify_retired_physical()?;
         snapshot(self.handle(),profile)
@@ -118,19 +120,50 @@ pub(crate) fn observe_grok_auth(home: &Path, home_identity: &RootIdentity)
     -> Result<GrokAuthMetadata, IsolationError> {
     require_bound_path(home, home_identity, true)?;
     let path = home.join("auth.json");
+    open_grok_metadata(home,home_identity,&path,PathBuf::from("auth.json"))
+}
+
+fn open_grok_metadata(home:&Path,home_identity:&RootIdentity,path:&Path,
+    relative_name:PathBuf)->Result<GrokAuthMetadata,IsolationError>{
+    if relative_name.is_absolute() || relative_name.components().next().is_none() ||
+        relative_name.components().any(|part|!matches!(part,std::path::Component::Normal(_))) ||
+        home.join(&relative_name).as_path()!=path {
+        return Err(IsolationError::AclWitnessMismatch);
+    }
     let metadata = std::fs::symlink_metadata(&path).map_err(|error| IsolationError::AclObject {
-        object: path.clone(), operation: "observe Grok auth metadata", error })?;
+        object: path.to_path_buf(), operation: "observe Grok auth metadata", error })?;
     if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(IsolationError::DirectoryNotPhysical);
     }
     let file = OpenOptions::new().access_mode(READ_CONTROL | WRITE_DAC)
         .share_mode(FILE_SHARE_ALL).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(&path).map_err(|error| IsolationError::AclObject {
-            object: path.clone(), operation: "hold Grok auth metadata", error })?;
-    let result = GrokAuthMetadata { identity: file_identity(file.as_raw_handle().cast())?, file };
+            object: path.to_path_buf(), operation: "hold Grok auth metadata", error })?;
+    let result = GrokAuthMetadata { identity: file_identity(file.as_raw_handle().cast())?,
+        file,relative_name };
     result.verify_physical()?;
     require_bound_path(home, home_identity, true)?;
     Ok(result)
+}
+
+/// Cold recovery may reacquire only a previously journaled auth FileID that
+/// remains a physical single-link object inside the same registered HOME.
+/// None does not prove deletion; the caller must retain an unresolved intent.
+pub(crate) fn observe_grok_recorded_auth(home:&Path,home_identity:&RootIdentity,
+    original:&RootIdentity)->Result<Option<GrokAuthMetadata>,IsolationError>{
+    require_bound_path(home,home_identity,true)?;
+    let mut found=None;
+    for (path,identity,directory) in collect_tree(home)? {
+        if &identity!=original {continue;}
+        if found.is_some() ||directory {return Err(IsolationError::AclWitnessMismatch);}
+        let relative=path.strip_prefix(home).map_err(|error|IsolationError::Acl(
+            io::Error::new(io::ErrorKind::InvalidData,error.to_string())))?.to_path_buf();
+        let held=open_grok_metadata(home,home_identity,&path,relative)?;
+        if held.identity!=*original {return Err(IsolationError::AclWitnessMismatch);}
+        found=Some(held);
+    }
+    require_bound_path(home,home_identity,true)?;
+    Ok(found)
 }
 
 pub(crate) fn grant_grok_home_root(profile: &AppContainerProfile, home: &Path,
@@ -325,13 +358,8 @@ mod tests {
     use super::*;
     use std::time::{SystemTime,UNIX_EPOCH};
 
-    fn fixture() -> (PathBuf,RootIdentity) {
-        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        let home=std::env::temp_dir().join(format!("grok-home-acl-{}-{nonce}",std::process::id()));
-        std::fs::create_dir(&home).unwrap();
-        std::fs::write(home.join("auth.json"),b"fixture-only").unwrap();
-        let root=crate::root::inspect_root(&home).unwrap().identity;
-        let held=open_physical_object(&home.join("auth.json"),false,READ_CONTROL|WRITE_DAC).unwrap();
+    fn protect_file(path:&Path){
+        let held=open_physical_object(path,false,READ_CONTROL|WRITE_DAC).unwrap();
         let mut acl=ptr::null_mut();
         let mut descriptor=ptr::null_mut();
         assert_eq!(unsafe{GetSecurityInfo(held.0,FILE_OBJECT,DACL_SECURITY_INFORMATION,
@@ -340,6 +368,15 @@ mod tests {
         assert_eq!(unsafe{SetSecurityInfo(held.0,FILE_OBJECT,
             DACL_SECURITY_INFORMATION|PROTECTED_DACL_SECURITY_INFORMATION,
             ptr::null_mut(),ptr::null_mut(),acl,ptr::null_mut())},0);
+    }
+
+    fn fixture() -> (PathBuf,RootIdentity) {
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let home=std::env::temp_dir().join(format!("grok-home-acl-{}-{nonce}",std::process::id()));
+        std::fs::create_dir(&home).unwrap();
+        std::fs::write(home.join("auth.json"),b"fixture-only").unwrap();
+        let root=crate::root::inspect_root(&home).unwrap().identity;
+        protect_file(&home.join("auth.json"));
         (home,root)
     }
 
@@ -349,23 +386,34 @@ mod tests {
         let profile=AppContainerProfile::derived_for_test("Gogoke37.GrokOriginalAcl").unwrap();
         let peer=AppContainerProfile::derived_for_test("Gogoke37.GrokPeerAcl").unwrap();
         let old=observe_grok_auth(&home,&root).unwrap();
+        let replacement=home.with_extension("auth-next");
+        std::fs::write(&replacement,b"fixture-only").unwrap();
+        protect_file(&replacement);
         assert!(old.acl(&profile).unwrap().target_aces.is_empty());
         grant_grok_home_root(&profile,&home,&root).unwrap();
         grant_grok_auth(&profile,&old).unwrap();
         grant_grok_auth(&peer,&old).unwrap();
+        let acl_before_verify=old.acl(&profile).unwrap();
         verify_grok_home_tree(&profile,&home,&root,&old,&[old.identity.clone()]).unwrap();
+        assert_eq!(old.acl(&profile).unwrap(),acl_before_verify);
         std::fs::write(home.join("auth.json"),b"in-place-fixture").unwrap();
         assert_eq!(observe_grok_auth(&home,&root).unwrap().identity,old.identity);
-        std::fs::write(home.join("auth-next"),b"fixture-only").unwrap();
         std::fs::remove_file(home.join("auth.json")).unwrap();
-        std::fs::rename(home.join("auth-next"),home.join("auth.json")).unwrap();
-        // The metadata handle shared DELETE; the unprotected successor has
-        // no implicit exception or grant.
-        assert!(observe_grok_auth(&home,&root).is_err());
+        std::fs::rename(&replacement,home.join("auth.json")).unwrap();
+        // The metadata handle shared DELETE. A protected new FileID is not
+        // granted by the old witness; the host must explicitly grant it.
+        let successor=observe_grok_auth(&home,&root).unwrap();
+        assert_ne!(successor.identity,old.identity);
+        assert!(successor.acl(&profile).unwrap().target_aces.is_empty());
+        grant_grok_auth(&profile,&successor).unwrap();
+        verify_grok_home_tree(&profile,&home,&root,&successor,
+            &[old.identity.clone(),successor.identity.clone()]).unwrap();
         revoke_grok_home_root(&profile,&home,&root).unwrap();
         revoke_grok_auth(&profile,&old).unwrap();
+        revoke_grok_auth(&profile,&successor).unwrap();
         assert!(old.acl(&profile).unwrap().target_aces.is_empty());
         assert!(!old.acl(&peer).unwrap().target_aces.is_empty());
+        drop(successor);
         drop(old);
         std::fs::remove_file(home.join("auth.json")).unwrap();
         std::fs::remove_dir(home).unwrap();
@@ -378,6 +426,51 @@ mod tests {
         assert!(matches!(observe_grok_auth(&home,&root),Err(IsolationError::AclWitnessMismatch)));
         std::fs::remove_file(home.join("second-name")).unwrap();
         std::fs::remove_file(home.join("auth.json")).unwrap();
+        std::fs::remove_dir(home).unwrap();
+    }
+
+    #[test]
+    fn cold_old_file_id_reacquires_only_inside_original_home(){
+        let (home,root)=fixture();
+        let profile=AppContainerProfile::derived_for_test("Gogoke37.GrokColdOldAcl").unwrap();
+        let original=observe_grok_auth(&home,&root).unwrap();
+        grant_grok_home_root(&profile,&home,&root).unwrap();
+        grant_grok_auth(&profile,&original).unwrap();
+        let id=original.identity.clone();
+        drop(original); // Simulates loss of the old host's metadata handle.
+        std::fs::rename(home.join("auth.json"),home.join("auth-backup")).unwrap();
+        let found=observe_grok_recorded_auth(&home,&root,&id).unwrap().unwrap();
+        assert_eq!(found.identity,id);
+        assert_eq!(found.relative_name(),Path::new("auth-backup"));
+        revoke_grok_home_root(&profile,&home,&root).unwrap();
+        revoke_grok_auth(&profile,&found).unwrap();
+        assert!(found.acl(&profile).unwrap().target_aces.is_empty());
+        drop(found);
+        std::fs::remove_file(home.join("auth-backup")).unwrap();
+        std::fs::remove_dir(home).unwrap();
+    }
+
+    #[test]
+    fn wrong_home_and_reparse_refuse_without_target_sid_write(){
+        let (home,root)=fixture();
+        let profile=AppContainerProfile::derived_for_test("Gogoke37.GrokWrongHomeAcl").unwrap();
+        let sibling=home.with_extension("sibling");
+        std::fs::create_dir(&sibling).unwrap();
+        let wrong=crate::root::inspect_root(&sibling).unwrap().identity;
+        let before=grok_root_acl(&profile,&home,&root).unwrap();
+        assert!(observe_grok_auth(&home,&wrong).is_err());
+        assert!(grant_grok_home_root(&profile,&home,&wrong).is_err());
+        assert_eq!(grok_root_acl(&profile,&home,&root).unwrap(),before);
+        let outside=sibling.join("target");
+        std::fs::write(&outside,b"fixture-only").unwrap();
+        std::fs::remove_file(home.join("auth.json")).unwrap();
+        std::os::windows::fs::symlink_file(&outside,home.join("auth.json"))
+            .expect("Windows cloud runner must create the reparse fixture");
+        assert!(matches!(observe_grok_auth(&home,&root),Err(IsolationError::DirectoryNotPhysical)));
+        assert_eq!(grok_root_acl(&profile,&home,&root).unwrap(),before);
+        std::fs::remove_file(home.join("auth.json")).unwrap();
+        std::fs::remove_file(outside).unwrap();
+        std::fs::remove_dir(sibling).unwrap();
         std::fs::remove_dir(home).unwrap();
     }
 }

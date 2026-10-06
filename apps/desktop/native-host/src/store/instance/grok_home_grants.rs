@@ -113,7 +113,7 @@ pub(crate) fn initialize_grok_home_grant_schema(db:&mut VerifiedDatabaseConnecti
 }
 
 pub(crate) fn current_domain(db:&VerifiedDatabaseConnection<'_>, instance_id:&str)->Result<GrokDomain,String> {
-    let row=stmt(db,"SELECT home_identity,program_digest,version,revision FROM main.gogoke_v37_instances WHERE instance_id=?1 AND driver_id='grok' AND version='1.0.41'")?;
+    let row=stmt(db,"SELECT home_identity,program_digest,version,revision FROM main.gogoke_v37_instances WHERE instance_id=?1 AND driver_id='grok' AND version='1.0.41' AND install_state='INSTALLED' AND login_state='LOGGED_IN'")?;
     bind(&row,&[instance_id])?;
     if !next(&row)? {return Err("grok F journal: fixed Grok instance absent".into());}
     let home_identity=parse_identity(text(&row,0)?)?;
@@ -125,23 +125,36 @@ pub(crate) fn current_domain(db:&VerifiedDatabaseConnection<'_>, instance_id:&st
         home_identity,program_digest,version,registration_revision})
 }
 
-fn existing_domain(db:&VerifiedDatabaseConnection<'_>,instance:&str)->Result<Option<GrokDomain>,String>{
-    let row=stmt(db,"SELECT root_identity,home_identity,program_digest,version,registration_revision FROM main.gogoke_v37_grok_home_domains WHERE instance_id=?1")?;
+fn existing_domain(db:&VerifiedDatabaseConnection<'_>,instance:&str)->Result<Option<(GrokDomain,i64)>,String>{
+    let row=stmt(db,"SELECT root_identity,home_identity,program_digest,version,registration_revision,revision FROM main.gogoke_v37_grok_home_domains WHERE instance_id=?1")?;
     bind(&row,&[instance])?;
     if !next(&row)?{return Ok(None);}
     let result=GrokDomain{instance_id:instance.into(),root_identity:parse_identity(text(&row,0)?)?,
         home_identity:parse_identity(text(&row,1)?)?,program_digest:text(&row,2)?,version:text(&row,3)?,
         registration_revision:text(&row,4)?.parse().map_err(db_error)?};
+    let revision=text(&row,5)?.parse().map_err(db_error)?;
     if next(&row)?{return Err("grok F journal: duplicate domain".into());}
-    Ok(Some(result))
+    Ok(Some((result,revision)))
 }
 
 pub(crate) fn begin_grok_grant(db:&mut VerifiedDatabaseConnection<'_>,
     domain:&GrokDomain,grant:&GrokGrant)->Result<GrokGrant,String>{
     tx(db,|db|{
         if current_domain(db,&domain.instance_id)?!=*domain {return Err("grok F journal: current F pin/revision changed".into());}
-        if let Some(old)=existing_domain(db,&domain.instance_id)? {
-            if old!=*domain {return Err("grok F journal: established domain changed".into());}
+        if let Some((old,revision))=existing_domain(db,&domain.instance_id)? {
+            if old.instance_id!=domain.instance_id ||old.root_identity!=domain.root_identity ||
+                old.home_identity!=domain.home_identity ||old.program_digest!=domain.program_digest ||
+                old.version!=domain.version ||old.registration_revision>domain.registration_revision {
+                return Err("grok F journal: established physical domain or pin changed".into());
+            }
+            if old.registration_revision<domain.registration_revision {
+                let update=stmt(db,"UPDATE main.gogoke_v37_grok_home_domains SET registration_revision=?1,revision=revision+1 WHERE instance_id=?2 AND root_identity=?3 AND home_identity=?4 AND program_digest=?5 AND version=?6 AND registration_revision=?7 AND revision=?8")?;
+                bind(&update,&[&domain.registration_revision.to_string(),&domain.instance_id,
+                    &domain.root_identity.opaque(),&domain.home_identity.opaque(),
+                    &domain.program_digest,&domain.version,&old.registration_revision.to_string(),
+                    &revision.to_string()])?;
+                next(&update)?;changed(db)?;
+            }
         } else {
             let row=stmt(db,"INSERT INTO main.gogoke_v37_grok_home_domains VALUES(?1,?2,?3,?4,?5,?6,1)")?;
             bind(&row,&[&domain.instance_id,&domain.root_identity.opaque(),&domain.home_identity.opaque(),
@@ -279,6 +292,23 @@ pub(crate) fn set_grok_grant_phase(db:&mut VerifiedDatabaseConnection<'_>,grant:
         return Err("grok F journal: invalid phase".into());
     }
     tx(db,|db|{
+        let effects=read_grok_effects(db,&grant.binding_id)?;
+        if matches!(next_phase,"GRANTED_UNCREATED"|"RETIRED_CLEANUP_PENDING"|"REVOKED") {
+            let (root_action,auth_action)=if next_phase=="GRANTED_UNCREATED" {
+                ("GRANT_ROOT","GRANT_AUTH")
+            } else {("REVOKE_ROOT","REVOKE_AUTH")};
+            let root_done=effects.iter().any(|e|e.action==root_action &&e.phase=="APPLIED" &&
+                e.object_identity==grant.home_identity);
+            let auth_ids=if next_phase=="GRANTED_UNCREATED" {vec![grant.auth_identity.clone()]}
+                else {effects.iter().filter(|e|e.action=="GRANT_AUTH" &&e.phase=="APPLIED")
+                    .map(|e|e.object_identity.clone()).collect::<Vec<_>>()};
+            if !root_done || !auth_ids.contains(&grant.auth_identity) ||
+                auth_ids.iter().any(|id|!effects.iter().any(|e|e.action==auth_action &&
+                    e.phase=="APPLIED" && &e.object_identity==id)) ||
+                effects.iter().any(|e|e.phase!="APPLIED") {
+                return Err("grok F journal: required physical effects unresolved".into());
+            }
+        }
         let row=stmt(db,"UPDATE main.gogoke_v37_grok_home_grants SET phase=?1,stop_fact_id=COALESCE(NULLIF(?2,''),stop_fact_id),revision=revision+1 WHERE binding_id=?3 AND instance_id=?4 AND phase=?5 AND revision=?6")?;
         bind(&row,&[next_phase,stop.unwrap_or(""),&grant.binding_id,&grant.instance_id,
             &grant.phase,&grant.revision.to_string()])?;
@@ -299,4 +329,70 @@ pub(crate) fn bind_grok_original_process(db:&mut VerifiedDatabaseConnection<'_>,
             &grant.binding_id,&grant.instance_id,&grant.revision.to_string()])?;
         next(&row)?;changed(db)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::root::RootLock;
+    use crate::store::same_open::{create_new,route_b_test_guard};
+    use std::time::{SystemTime,UNIX_EPOCH};
+
+    fn identity(byte:u8)->RootIdentity{RootIdentity{volume_serial:1,file_id:[byte;16]}}
+    fn grant(binding:&str,request:&str,sid:&str)->GrokGrant{
+        GrokGrant{binding_id:binding.into(),instance_id:"grokA".into(),domain_id:"domainA".into(),
+            session_id:format!("session{binding}"),seat_id:"seatA".into(),
+            seat_incarnation:format!("seat-{binding}"),generation:"1".into(),
+            request_id:request.into(),profile_name:format!("Gogoke37.{binding}"),
+            profile_sid:sid.into(),program_digest:"sha256:fixture".into(),
+            home_identity:identity(1),auth_identity:identity(2),phase:"GRANT_PENDING".into(),
+            process_operation_id:None,ticket:None,custodian_nonce:None,pid:None,
+            creation_time_100ns:None,image_path:None,stop_fact_id:None,revision:1}
+    }
+    fn acl_effect(binding:&str,action:&str,object:RootIdentity)->GrokEffect{
+        GrokEffect{effect_id:format!("effect-{binding}-{action}"),binding_id:binding.into(),
+            action:action.into(),object_identity:object,relative_name:if action.ends_with("ROOT"){
+                ".".into()}else{"auth.json".into()},rights:1245631,
+            flags:if action.ends_with("ROOT"){3}else{0},before_aces:String::new(),
+            after_aces:format!("1:1245631:{}",if action.ends_with("ROOT"){3}else{0}),
+            before_control:0,after_control:0,other_aces_sha256:"fixture-only".into(),
+            phase:"INTENT".into(),revision:1}
+    }
+
+    #[test]
+    fn original_acl_intent_replays_exactly_and_login_revision_advances_same_domain(){
+        let _guard=route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("grok-f-acl-{}-{nonce}",std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let mut db=create_new(&root,&path.join("state.sqlite")).unwrap();
+        db.execute("PRAGMA foreign_keys=ON").unwrap();
+        super::super::initialize_schema(&mut db).unwrap();
+        let insert=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_instances VALUES('grokA','grok','homeA',?1,'sha256:fixture','1.0.41','INSTALLED','LOGGED_IN',1)").unwrap();
+        insert.bind_text(1,&identity(1).opaque()).unwrap();insert.step_done().unwrap();drop(insert);
+        initialize_grok_home_grant_schema(&mut db).unwrap();
+        let domain=current_domain(&db,"grokA").unwrap();
+        let first=begin_grok_grant(&mut db,&domain,&grant("bindingA","openA","sid-A")).unwrap();
+        let root_effect=acl_effect("bindingA","GRANT_ROOT",identity(1));
+        let pending=begin_grok_effect(&mut db,&root_effect).unwrap();
+        assert_eq!(begin_grok_effect(&mut db,&root_effect).unwrap().phase,"INTENT");
+        finish_grok_effect(&mut db,&pending).unwrap();
+        assert_eq!(begin_grok_effect(&mut db,&root_effect).unwrap().phase,"APPLIED");
+        let auth_effect=acl_effect("bindingA","GRANT_AUTH",identity(2));
+        let pending=begin_grok_effect(&mut db,&auth_effect).unwrap();
+        finish_grok_effect(&mut db,&pending).unwrap();
+        set_grok_grant_phase(&mut db,&first,"GRANTED_UNCREATED",None).unwrap();
+        db.execute("UPDATE main.gogoke_v37_instances SET revision=2 WHERE instance_id='grokA'").unwrap();
+        let domain2=current_domain(&db,"grokA").unwrap();
+        begin_grok_grant(&mut db,&domain2,&grant("bindingB","openB","sid-B")).unwrap();
+        let row=Statement::prepare(db.as_ptr(),"SELECT registration_revision,revision FROM main.gogoke_v37_grok_home_domains WHERE instance_id='grokA'").unwrap();
+        assert!(row.step_row().unwrap());
+        assert_eq!(row.column_text(0).unwrap(),"2");
+        assert_eq!(row.column_text(1).unwrap(),"2");drop(row);
+        db.execute("UPDATE main.gogoke_v37_instances SET program_digest='sha256:changed',revision=3 WHERE instance_id='grokA'").unwrap();
+        let changed=current_domain(&db,"grokA").unwrap();
+        assert!(begin_grok_grant(&mut db,&changed,&grant("bindingC","openC","sid-C")).is_err());
+        db.close_checked().unwrap();drop(root);std::fs::remove_dir_all(path).unwrap();
+    }
 }
