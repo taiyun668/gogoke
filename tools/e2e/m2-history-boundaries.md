@@ -168,8 +168,8 @@ The worker-to-OwnerLead history product scope case is **NOT_RUN**. Current
 history-read attempt. There is currently no qualified production field that
 locates an exact non-secret OwnerLead test history object across vendors.
 The reader exports `originalCodexThreadPath` only if the original, physically
-bound `thread/start` reply contains `result.thread.path`. With `peerRead: true`,
-the existing `before-refusal` normal-close readback opens only that original
+bound `thread/start` reply contains `result.thread.path`. Independently of the
+optional peer control, the normal-close readback opens only that original
 test JSONL, after checking the production registry's `home_ref`, physical home
 identity, containment inside the candidate registered instance home, and absence
 of reparse points. No filename is inferred from HOME. The first original

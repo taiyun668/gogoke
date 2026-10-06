@@ -2,7 +2,7 @@
 
 signed Python m2-history-boundaries-readback.py STATE_ROOT NEW_OUTPUT JOURNAL before-refusal|final|peer-final
 Only candidate state.sqlite and explicitly named private evidence artifacts are read.
-With peerRead requested, opens only exact original test thread/start JSONL paths
+Independently of peerRead, opens only exact original test thread/start JSONL paths
 after registered-home and H/A/F checks. No credentials or active WAL. No DB writes.
 """
 import hashlib
