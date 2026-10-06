@@ -29,15 +29,19 @@ export async function runProviderBoundaryCases(product, config, journal) {
       !product.tester || product.tester.page.url() !== product.endpoint.url ||
       journal.connectionBackend?.agentActs !== 0 ||
       journal.connectionBackend?.telemetryDisabled !== true ||
-      !Array.isArray(plan.cases) || plan.cases.length !== 3 ||
-      new Set(plan.cases.map(row => row.driverId)).size !== 3 ||
+      !Array.isArray(plan.cases) || plan.cases.length < 1 || plan.cases.length > 3 ||
+      new Set(plan.cases.map(row => row.driverId)).size !== plan.cases.length ||
+      new Set(plan.cases.map(row => row.instanceId)).size !== plan.cases.length ||
+      new Set(plan.cases.map(row => row.seatId)).size !== plan.cases.length ||
+      new Set(plan.cases.map(row => row.worktreeId)).size !== plan.cases.length ||
       plan.cases.some(row => !drivers.includes(row.driverId) ||
         ![row.instanceId, row.seatId, row.worktreeId].every(atom) ||
         typeof row.version !== 'string' || !/^[a-f0-9]{64}$/.test(row.sha256)) ||
       !path.isAbsolute(config.testbedSource) || !path.isAbsolute(config.stateRoot) ||
       journal.providerBoundaryCases.length !== 0) {
-    throw Error('Fresh same-domain real provider boundary preflight requires exact installed product and three fixed CLI cases');
+    throw Error('Fresh same-domain real provider boundary preflight requires exact installed product and one to three unique fixed CLI cases');
   }
+  const selectedDrivers = new Set(plan.cases.map(row => row.driverId));
   journal.providerBoundaryConfig = plan.cases.map(row => ({driverId:row.driverId,
     crossProject:row.crossProject ? {repositoryId:row.crossProject.repositoryId,
       seatId:row.crossProject.seatId,worktreeId:row.crossProject.worktreeId} : null,
@@ -74,7 +78,7 @@ export async function runProviderBoundaryCases(product, config, journal) {
   checked(instances.instances.some(value => value.instanceId === config.instanceId &&
     value.driverId === 'codex' && value.state === 'LOGGED_IN'),
   'Configured M2 lead must be the actual logged-in Codex instance');
-  for (const driverId of drivers) {
+  for (const driverId of drivers.filter(value => selectedDrivers.has(value))) {
     const row = plan.cases.find(value => value.driverId === driverId);
     const observed = instances.instances.find(value => value.instanceId === row.instanceId);
     const record = { caseId: id('m2Provider'), driverId, instanceId: row.instanceId,
@@ -275,15 +279,23 @@ export async function runProviderBoundaryCases(product, config, journal) {
     if (driverId !== 'claude') record.state = 'REAL_FIXED_CAPABILITY_PREFLIGHT_ONLY';
     product.save();
   }
+  for (const driverId of drivers.filter(value => !selectedDrivers.has(value))) {
+    journal.providerBoundaryCases.push({ caseId: id('m2Provider'), driverId,
+      state: 'NOT_RUN_NOT_SELECTED_FOR_THIS_ORIGINAL_CASE', acceptance: false,
+      checks: { V03b: 'NOT_RUN', V04b: 'NOT_RUN', V10: 'NOT_RUN' },
+      reasons: ['This fixed provider was not selected for this original case; no instance, seat, worktree, process or model operation was started.'] });
+  }
   journal.providerBoundaryCases.push({ caseId: id('m2Provider'), driverId: 'antigravity',
     state: 'NOT_RUN_OWNER_DECISION_PENDING', acceptance: false,
     checks: { V03b: 'NOT_RUN', V04b: 'NOT_RUN', V10: 'NOT_RUN' },
     reasons: ['Fixed 1.2.11 still has shared Windows credential and no proven memory-off/instance login contract; no CLI, auth or model operation started.'] });
   const claude = journal.providerBoundaryCases.find(caseRow => caseRow.driverId === 'claude');
-  journal.providerBoundarySummary = { V03b: claude?.state === 'CLAUDE_QUESTION_FLOW_DIRECT_READBACK_REQUIRED'
-    ? 'CLAUDE_DIRECT_CASE_PENDING_NORMAL_CLOSE_READBACK' : 'NOT_RUN_CLAUDE_NOT_LOGGED_IN',
+  journal.providerBoundarySummary = { V03b: !selectedDrivers.has('claude')
+    ? 'NOT_RUN_CLAUDE_NOT_SELECTED' : claude?.state === 'CLAUDE_QUESTION_FLOW_DIRECT_READBACK_REQUIRED'
+      ? 'CLAUDE_DIRECT_CASE_PENDING_NORMAL_CLOSE_READBACK' : claude?.state === 'NOT_RUN_NOT_LOGGED_IN'
+        ? 'NOT_RUN_CLAUDE_NOT_LOGGED_IN' : 'NOT_RUN_CLAUDE_DIRECT_CASE_NOT_COMPLETED',
     V04b: 'NOT_RUN_NO_EFFECTIVE_MEMORY_AND_CROSS_PROJECT_INPUT_PROOF',
     V10: 'NOT_RUN_NO_SAME_SEAT_PROVIDER_SIDE_SOURCE', acceptance: false,
-    directReadbackRequired: true };
+    directReadbackRequired: claude?.state === 'CLAUDE_QUESTION_FLOW_DIRECT_READBACK_REQUIRED' };
   product.save(); return journal.providerBoundarySummary;
 }
