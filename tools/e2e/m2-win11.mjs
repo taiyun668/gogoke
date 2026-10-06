@@ -370,8 +370,13 @@ async function answerPrescribedCard(session, card) {
     q.questions.length === 1 && q.questions[0].id === config.takeoverQuestionId &&
     q.questions[0].question === config.takeoverPrompt && !q.questions[0].isSecret,
   'Only preauthorized non-secret takeover question');
-  const choice = q.questions[0].options.find(value => value.label === config.takeoverOption);
-  check(Boolean(choice), 'Exact prescribed takeover option present');
+  // The fixed CLI can append its presentation-only recommendation suffix.
+  // Accept only these two exact spellings of the already authorized answer,
+  // reject ambiguous matches, and send back the original native label.
+  const choices = q.questions[0].options.filter(value =>
+    value.label === config.takeoverOption || value.label === `${config.takeoverOption} (Recommended)`);
+  check(choices.length === 1, 'Unique prescribed takeover option present');
+  const choice = choices[0];
   const answered = await product.operation('K-QCARD', 'answer', card.cardId,
     { generation: session.generation, answers: { [q.questions[0].id]: [choice.label] } }, recovered.revision);
   check(answered.result.state === 'ANSWERED' && answered.result.deliveryBasis === 'NATIVE_EXACT_WRITE_RECEIPT',

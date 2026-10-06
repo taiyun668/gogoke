@@ -248,13 +248,15 @@ export async function runSideChatCase(product, config, journal) {
     record.sideSession = sessionFor(c.sideSeatId, c.sideInstanceId, c.sideWorktreeId,
       (BigInt(sideSeat.result.generation) + 1n).toString());
     journal.sessions ??= []; journal.sessions.push(record.sourceSession, record.sideSession); product.save();
-    for (const session of [record.sourceSession, record.sideSession]) {
-      await sessionOp(session, 'admission-reserve', { seatId: session.seatId });
-      await sessionOp(session, 'admission-commit', { seatId: session.seatId });
-    }
+    // Establish the source before admitting its side conversation. Cold
+    // credential recovery must not encounter a second uncreated claimant.
+    await sessionOp(record.sourceSession, 'admission-reserve', { seatId: c.sourceSeatId });
+    await sessionOp(record.sourceSession, 'admission-commit', { seatId: c.sourceSeatId });
     const opened = await sessionOp(record.sourceSession, 'open', { seatId: c.sourceSeatId,
       repositoryId: config.repositoryId, worktreeId: c.sourceWorktreeId });
     record.sourceSession.threadId = opened.result.threadId;
+    await sessionOp(record.sideSession, 'admission-reserve', { seatId: c.sideSeatId });
+    await sessionOp(record.sideSession, 'admission-commit', { seatId: c.sideSeatId });
     const open = request('K-SESSION', 'open', record.sideSession.id, {
       generation: record.sideSession.generation, seatId: c.sideSeatId,
       repositoryId: config.repositoryId, worktreeId: c.sideWorktreeId,

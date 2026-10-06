@@ -116,11 +116,20 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             raise RuntimeError("Original User request ID absent")
         family, action, request_id = request["family"], request["operation"], request["requestId"]
         if family == "K-SESSION" and action in (
-                "admission-reserve", "admission-commit", "open", "stop", "admission-release", "resume"):
+                "admission-reserve", "admission-commit", "open", "stop", "admission-release"):
             stored = one(db, "SELECT raw_hex FROM gogoke_v37_h_operation WHERE domain_id=? AND request_id=?",
                          (request["domainId"], request_id))[0]
             if stored.lower() != raw.encode().hex():
                 raise RuntimeError("Original User H admission/control bytes differ")
+        elif family == "K-SESSION" and action == "resume":
+            # The production resume producer stores its exact input in the
+            # new process episode, not the initial admission operation table.
+            stored = one(db, "SELECT raw_hex FROM gogoke_v37_h_process_episode "
+                         "WHERE domain_id=? AND request_id=? AND session_id=? AND old_generation=?",
+                         (request["domainId"], request_id, request["targetId"],
+                          request["payload"]["generation"]))[0]
+            if stored.lower() != raw.encode().hex():
+                raise RuntimeError("Original User H resume episode bytes differ")
         elif family == "K-SESSION" and action in ("send", "append-without-turn"):
             stored = one(db, "SELECT request_hex FROM gogoke_v37_h_stdin_journal WHERE domain_id=? AND request_id=?",
                          (request["domainId"], request_id))[0]
@@ -568,9 +577,28 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             raise RuntimeError("Original merge intent and APPLIED request receipt differ")
         source = Path(local_spelling(tree[11])).resolve(strict=True)
         source_marker = source / marker_file
-        if source_marker.is_symlink() or not source_marker.is_file() \
-                or fingerprint(source_marker.read_bytes()) != marker_hash:
-            raise RuntimeError("Merged source marker bytes differ")
+        if not ordinary(source_marker):
+            raise RuntimeError("Merged source marker is not an ordinary file")
+        source_bytes = source_marker.read_bytes()
+        source_blob = git_bytes(git_program, source, "cat-file", "blob", tree[9] + ":" + marker_file)
+        if fingerprint(source_blob) != marker_hash:
+            raise RuntimeError("Merged source commit marker bytes differ")
+        if fingerprint(source_bytes) != marker_hash:
+            # The original fixture deliberately has local autocrlf=true.
+            # Verify Git's exact checkout conversion rather than rewriting
+            # the file or accepting arbitrary normalized text.
+            autocrlf = git(git_program, source, "config", "--local", "--get", "core.autocrlf")
+            attributes = git(git_program, source, "check-attr", "text", "eol", "filter", "--", marker_file)
+            eol = git(git_program, source, "ls-files", "--eol", "--", marker_file)
+            if autocrlf != "true" or attributes.splitlines() != [
+                    f"{marker_file}: text: unspecified", f"{marker_file}: eol: unspecified",
+                    f"{marker_file}: filter: unspecified"] or eol.split()[:3] != ["i/lf", "w/crlf", "attr/"] \
+                    or b"\r" in source_blob or b"\0" in source_blob \
+                    or source_bytes != source_blob.replace(b"\n", b"\r\n"):
+                raise RuntimeError("Merged source marker differs from its evidenced Git checkout")
+            result["worktree"]["sourceCheckoutConversion"] = "LOCAL_AUTOCRLF_TRUE_EXACT_LF_TO_CRLF"
+        result["worktree"]["sourceMarkerSha256"] = fingerprint(source_bytes)
+        result["worktree"]["sourceMarkerBlobSha256"] = fingerprint(source_blob)
         source_head = git(git_program, source, "rev-parse", "--verify", "HEAD^{commit}")
         parents = git(git_program, source, "show", "-s", "--format=%P", "HEAD").split()
         message = git(git_program, source, "show", "-s", "--format=%B", "HEAD")
