@@ -15,6 +15,7 @@ use crate::store::same_open::VerifiedDatabaseConnection;
 use std::sync::Mutex;
 
 const RIGHTS: u32 = 0x0013_01bf;
+const RESUME_CANDIDATE_GUARD_SQL:&str="SELECT 1 FROM main.gogoke_v37_h_claim h JOIN main.gogoke_coordination_process_custody oldc ON oldc.operation_id=h.process_operation_id AND oldc.profile_id=h.instance_id AND oldc.domain_id=h.domain_id AND oldc.generation=h.generation JOIN main.gogoke_v37_h_seat_binding b ON b.domain_id=h.domain_id AND b.session_id=h.session_id AND b.generation=h.generation JOIN main.gogoke_v37_seats s ON s.domain_id=b.domain_id AND s.seat_id=b.seat_id JOIN main.gogoke_v37_h_process_episode e ON e.domain_id=h.domain_id AND e.session_id=h.session_id AND e.old_generation=h.generation WHERE h.domain_id=?1 AND h.session_id=?2 AND h.instance_id=?3 AND h.binding_id=?4 AND h.generation=?5 AND h.process_operation_id=?6 AND h.state='STOPPED' AND h.stop_fact_id IS NOT NULL AND h.stop_fact_id<>'' AND oldc.state='STOPPED' AND oldc.stop_proof_hash=h.stop_fact_id AND b.seat_id=?7 AND b.seat_incarnation=?8 AND s.incarnation=b.seat_incarnation AND s.instance_id=h.instance_id AND s.state='BUSY' AND e.request_id=?9 AND e.generation=?10 AND e.instance_id=?3 AND e.binding_id=?11 AND e.seat_id=?7 AND e.seat_incarnation=?8 AND COALESCE(e.process_operation_id,'')=?12 AND e.phase IN ('INTENT','PREPARED','ACTIVE')";
 
 fn evidence<T,E:std::fmt::Debug>(stage:&str,value:Result<T,E>)->Result<T,String>{
     value.map_err(|error|format!("Grok private HOME [{stage}]: {error:?}"))
@@ -83,11 +84,54 @@ fn one(db:&VerifiedDatabaseConnection<'_>,instance_id:&str,binding_id:&str)->Res
         .ok_or_else(||"Grok private HOME: original F grant absent".into())
 }
 
+fn exact_exists(db:&VerifiedDatabaseConnection<'_>,stage:&str,sql:&str,
+    values:&[&str])->Result<bool,String>{
+    let row=Statement::prepare(db.as_ptr(),sql).map_err(|e|format!("Grok private HOME {stage}: {e:?}"))?;
+    for (i,value) in values.iter().enumerate(){row.bind_text(i as i32+1,value)
+        .map_err(|e|format!("Grok private HOME {stage} bind: {e:?}"))?;}
+    let found=row.step_row().map_err(|e|format!("Grok private HOME {stage} read: {e:?}"))?;
+    if found && row.step_row().map_err(|e|format!("Grok private HOME {stage} duplicate: {e:?}"))? {
+        return Err(format!("Grok private HOME {stage}: duplicate original witness"));
+    }
+    Ok(found)
+}
+
 struct OriginalH {
     operation:String,ticket:String,nonce:String,pid:u32,creation:u64,image:String,
     digest:String,custody_state:String,custody_stop:Option<String>,
     claim_state:String,claim_stop:Option<String>,episode_state:String,
     episode_stop:Option<String>,
+    candidate_before_promote:bool,
+}
+
+fn parse_original_row(row:&Statement,candidate_before_promote:bool)->Result<OriginalH,String>{
+    let col=|i|row.column_text(i).map_err(|e|format!("Grok private HOME original H column: {e:?}"));
+    let optional=|i|->Result<Option<String>,String>{let value=col(i)?;
+        Ok(if value.is_empty(){None}else{Some(value)})};
+    Ok(OriginalH{operation:col(0)?,ticket:col(1)?,nonce:col(2)?,
+        pid:col(3)?.parse().map_err(|e|format!("Grok private HOME original pid: {e:?}"))?,
+        creation:col(4)?.parse().map_err(|e|format!("Grok private HOME original creation: {e:?}"))?,
+        image:col(5)?,digest:col(6)?,custody_state:col(7)?,custody_stop:optional(8)?,
+        claim_state:col(9)?,claim_stop:optional(10)?,episode_state:col(11)?,
+        episode_stop:optional(12)?,candidate_before_promote})
+}
+
+fn original_resume_candidate_h(db:&VerifiedDatabaseConnection<'_>,
+    grant:&GrokGrant)->Result<Option<OriginalH>,String>{
+    let row=Statement::prepare(db.as_ptr(),"SELECT c.operation_id,c.ticket,c.custodian_nonce,c.pid,c.creation_time_100ns,c.image_path,c.binary_digest_sha256,c.state,COALESCE(c.stop_proof_hash,''),oldh.state,COALESCE(oldh.stop_fact_id,''),e.phase,COALESCE(e.stop_fact_id,'') FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id AND c.profile_id=e.instance_id AND c.domain_id=e.domain_id AND c.generation=e.generation JOIN main.gogoke_v37_h_claim oldh ON oldh.domain_id=e.domain_id AND oldh.session_id=e.session_id AND oldh.generation=e.old_generation AND oldh.instance_id=e.instance_id JOIN main.gogoke_coordination_process_custody oldc ON oldc.operation_id=oldh.process_operation_id AND oldc.profile_id=oldh.instance_id AND oldc.domain_id=oldh.domain_id AND oldc.generation=oldh.generation JOIN main.gogoke_v37_h_seat_binding s ON s.domain_id=oldh.domain_id AND s.session_id=oldh.session_id AND s.generation=oldh.generation WHERE e.binding_id=?1 AND e.instance_id=?2 AND e.domain_id=?3 AND e.session_id=?4 AND e.generation=?5 AND e.request_id=?6 AND e.seat_id=?7 AND e.seat_incarnation=?8 AND e.old_generation IS NOT NULL AND oldh.state='STOPPED' AND oldh.stop_fact_id IS NOT NULL AND oldh.stop_fact_id<>'' AND oldc.state='STOPPED' AND oldc.stop_proof_hash=oldh.stop_fact_id AND s.seat_id=e.seat_id AND s.seat_incarnation=e.seat_incarnation")
+        .map_err(|e|format!("Grok private HOME original resume candidate: {e:?}"))?;
+    let values:[&str;8]=[&grant.binding_id,&grant.instance_id,&grant.domain_id,
+        &grant.session_id,&grant.generation,&grant.request_id,&grant.seat_id,&grant.seat_incarnation];
+    for (i,value) in values.iter().enumerate(){row.bind_text(i as i32+1,value)
+        .map_err(|e|format!("Grok private HOME original candidate bind: {e:?}"))?;}
+    if !row.step_row().map_err(|e|format!("Grok private HOME original candidate read: {e:?}"))? {
+        return Ok(None);
+    }
+    let result=parse_original_row(&row,true)?;
+    if row.step_row().map_err(|e|format!("Grok private HOME original candidate duplicate: {e:?}"))? {
+        return Err("Grok private HOME: duplicate original resume candidate".into());
+    }
+    Ok(Some(result))
 }
 
 fn original_h(db:&VerifiedDatabaseConnection<'_>,grant:&GrokGrant)->Result<Option<OriginalH>,String>{
@@ -98,17 +142,9 @@ fn original_h(db:&VerifiedDatabaseConnection<'_>,grant:&GrokGrant)->Result<Optio
     for (i,value) in values.iter().enumerate(){row.bind_text(i as i32+1,value)
         .map_err(|e|format!("Grok private HOME original H bind: {e:?}"))?;}
     if !row.step_row().map_err(|e|format!("Grok private HOME original H read: {e:?}"))? {
-        return Ok(None);
+        return original_resume_candidate_h(db,grant);
     }
-    let col=|i|row.column_text(i).map_err(|e|format!("Grok private HOME original H column: {e:?}"));
-    let optional=|i|->Result<Option<String>,String>{let value=col(i)?;
-        Ok(if value.is_empty(){None}else{Some(value)})};
-    let result=OriginalH{operation:col(0)?,ticket:col(1)?,nonce:col(2)?,
-        pid:col(3)?.parse().map_err(|e|format!("Grok private HOME original pid: {e:?}"))?,
-        creation:col(4)?.parse().map_err(|e|format!("Grok private HOME original creation: {e:?}"))?,
-        image:col(5)?,digest:col(6)?,custody_state:col(7)?,custody_stop:optional(8)?,
-        claim_state:col(9)?,claim_stop:optional(10)?,episode_state:col(11)?,
-        episode_stop:optional(12)?};
+    let result=parse_original_row(&row,false)?;
     if row.step_row().map_err(|e|format!("Grok private HOME original H duplicate: {e:?}"))? {
         return Err("Grok private HOME: duplicate original H tuple".into());
     }
@@ -120,6 +156,38 @@ fn matches_bound_original(grant:&GrokGrant,h:&OriginalH)->bool{
     grant.ticket.as_deref()==Some(h.ticket.as_str()) &&grant.custodian_nonce.as_deref()==Some(h.nonce.as_str()) &&
     grant.pid==Some(h.pid) &&grant.creation_time_100ns==Some(h.creation) &&
     grant.image_path.as_deref()==Some(h.image.as_str()) && grant.program_digest==h.digest
+}
+
+fn holder_gone_original_eligible(h:&OriginalH)->bool{
+    h.custody_stop.is_none() &&h.episode_stop.is_none() &&
+    matches!(h.custody_state.as_str(),"PREPARED"|"ACTIVE"|"UNKNOWN") &&
+    matches!(h.episode_state.as_str(),"PREPARED"|"ACTIVE"|"UNKNOWN") &&
+    (if h.candidate_before_promote {
+        h.claim_state=="STOPPED" &&h.claim_stop.as_deref().is_some_and(|v|!v.is_empty())
+    } else {
+        matches!(h.claim_state.as_str(),"COMMITTED"|"UNKNOWN") &&h.claim_stop.is_none()
+    })
+}
+
+fn original_no_attempt_has_process(db:&VerifiedDatabaseConnection<'_>,
+    grant:&GrokGrant)->Result<bool,String>{
+    let episode=Statement::prepare(db.as_ptr(),"SELECT 1 FROM main.gogoke_v37_h_process_episode WHERE binding_id=?1 AND instance_id=?2 AND domain_id=?3 AND session_id=?4 AND generation=?5 AND request_id=?6 AND seat_id=?7 AND seat_incarnation=?8 LIMIT 1")
+        .map_err(|e|format!("Grok private HOME NoAttempt H episode: {e:?}"))?;
+    let values:[&str;8]=[&grant.binding_id,&grant.instance_id,&grant.domain_id,
+        &grant.session_id,&grant.generation,&grant.request_id,&grant.seat_id,
+        &grant.seat_incarnation];
+    for (i,value) in values.iter().enumerate(){episode.bind_text(i as i32+1,value)
+        .map_err(|e|format!("Grok private HOME NoAttempt H bind: {e:?}"))?;}
+    if episode.step_row().map_err(|e|format!("Grok private HOME NoAttempt H read: {e:?}"))? {
+        return Ok(true);
+    }
+    let custody=Statement::prepare(db.as_ptr(),"SELECT 1 FROM main.gogoke_coordination_process_custody c JOIN main.gogoke_v37_h_claim h ON h.process_operation_id=c.operation_id AND h.instance_id=c.profile_id AND h.domain_id=c.domain_id AND h.generation=c.generation JOIN main.gogoke_v37_h_seat_binding s ON s.domain_id=h.domain_id AND s.session_id=h.session_id AND s.generation=h.generation WHERE h.binding_id=?1 AND h.instance_id=?2 AND h.domain_id=?3 AND h.session_id=?4 AND h.generation=?5 AND s.seat_id=?6 AND s.seat_incarnation=?7 LIMIT 1")
+        .map_err(|e|format!("Grok private HOME NoAttempt original custody: {e:?}"))?;
+    for (i,value) in [&grant.binding_id,&grant.instance_id,&grant.domain_id,
+        &grant.session_id,&grant.generation,&grant.seat_id,&grant.seat_incarnation].iter().enumerate(){
+        custody.bind_text(i as i32+1,value).map_err(|e|format!("Grok private HOME NoAttempt custody bind: {e:?}"))?;
+    }
+    custody.step_row().map_err(|e|format!("Grok private HOME NoAttempt custody read: {e:?}"))
 }
 
 fn recorded_auth(db:&VerifiedDatabaseConnection<'_>,grant:&GrokGrant)->Result<Vec<RootIdentity>,String>{
@@ -225,7 +293,8 @@ impl GrokHomeLaunch {
     /// Explicit H safe boundary only, never called from verify/verify_live.
     /// An atomic CLI replacement can rotate FileID inside the same F HOME.
     pub(crate) fn refresh_readiness(&self,db:&mut VerifiedDatabaseConnection<'_>,
-        profile:&AppContainerProfile,custody:Option<&PreparedCustody>)->Result<(),String>{
+        profile:&AppContainerProfile,custody:Option<&PreparedCustody>,
+        resume:Option<(&ClaimObservation,&str)>)->Result<(),String>{
         let grant=self.grant(db)?;
         if !matches!(grant.phase.as_str(),"GRANTED_UNCREATED"|"ACTIVE") {
             return Err("Grok private HOME: no live original grant".into());
@@ -248,17 +317,39 @@ impl GrokHomeLaunch {
             current.program_digest!=grant.program_digest ||current.version!="1.0.41" {
             return Err("Grok private HOME: current F registration changed".into());
         }
-        let h=Statement::prepare(db.as_ptr(),"SELECT 1 FROM main.gogoke_v37_h_claim h JOIN main.gogoke_v37_h_seat_binding b ON b.domain_id=h.domain_id AND b.session_id=h.session_id AND b.generation=h.generation JOIN main.gogoke_v37_seats s ON s.domain_id=b.domain_id AND s.seat_id=b.seat_id WHERE h.domain_id=?1 AND h.session_id=?2 AND h.binding_id=?3 AND h.instance_id=?4 AND h.generation=?5 AND h.state='COMMITTED' AND COALESCE(h.process_operation_id,'')=?6 AND b.seat_id=?7 AND b.seat_incarnation=?8 AND s.incarnation=b.seat_incarnation AND s.instance_id=h.instance_id AND s.state='BUSY' LIMIT 1")
-            .map_err(|e|format!("Grok private HOME refresh H guard: {e:?}"))?;
-        let values:[&str;8]=[&grant.domain_id,&grant.session_id,&grant.binding_id,
-            &grant.instance_id,&grant.generation,grant.process_operation_id.as_deref().unwrap_or(""),
-            &grant.seat_id,&grant.seat_incarnation];
-        for (i,value) in values.iter().enumerate(){h.bind_text(i as i32+1,value)
-            .map_err(|e|format!("Grok private HOME refresh H bind: {e:?}"))?;}
-        if !h.step_row().map_err(|e|format!("Grok private HOME refresh H read: {e:?}"))? {
-            return Err("Grok private HOME: original H/E authority changed".into());
+        let operation=grant.process_operation_id.as_deref().unwrap_or("");
+        let h_current=if let Some((old,resume_request))=resume {
+            if old.domain_id!=grant.domain_id ||old.session_id!=grant.session_id ||
+                old.instance_id!=grant.instance_id ||old.generation==grant.generation ||
+                old.process_operation_id.is_none() ||old.phase!=super::runtime::SessionPhase::Stopped ||
+                resume_request!=grant.request_id {
+                return Err("Grok private HOME: original stopped resume admission changed".into());
+            }
+            exact_exists(db,"resume candidate guard",
+                RESUME_CANDIDATE_GUARD_SQL,
+                &[&grant.domain_id,&grant.session_id,&grant.instance_id,&old.binding_id,
+                    &old.generation,old.process_operation_id.as_deref().unwrap_or(""),
+                    &grant.seat_id,&grant.seat_incarnation,resume_request,&grant.generation,
+                    &grant.binding_id,operation])?
+        } else {
+            exact_exists(db,"current H guard",
+                "SELECT 1 FROM main.gogoke_v37_h_claim h JOIN main.gogoke_v37_h_seat_binding b ON b.domain_id=h.domain_id AND b.session_id=h.session_id AND b.generation=h.generation JOIN main.gogoke_v37_seats s ON s.domain_id=b.domain_id AND s.seat_id=b.seat_id WHERE h.domain_id=?1 AND h.session_id=?2 AND h.binding_id=?3 AND h.instance_id=?4 AND h.generation=?5 AND h.state='COMMITTED' AND COALESCE(h.process_operation_id,'')=?6 AND b.seat_id=?7 AND b.seat_incarnation=?8 AND s.incarnation=b.seat_incarnation AND s.instance_id=h.instance_id AND s.state='BUSY'",
+                &[&grant.domain_id,&grant.session_id,&grant.binding_id,&grant.instance_id,
+                    &grant.generation,operation,&grant.seat_id,&grant.seat_incarnation])?
+        };
+        if !h_current {return Err("Grok private HOME: original H/E authority changed".into());}
+        if grant.phase=="ACTIVE" {
+            let c=custody.ok_or("Grok private HOME: current original custody absent")?;
+            let pid=c.identity.pid.to_string();
+            let creation=c.identity.creation_time_100ns.to_string();
+            let image=c.identity.image_path.to_string_lossy().into_owned();
+            if !exact_exists(db,"active custody guard",
+                "SELECT 1 FROM main.gogoke_coordination_process_custody WHERE operation_id=?1 AND ticket=?2 AND custodian_nonce=?3 AND profile_id=?4 AND domain_id=?5 AND generation=?6 AND pid=?7 AND creation_time_100ns=?8 AND image_path=?9 AND binary_digest_sha256=?10 AND state IN ('PREPARED','ACTIVE') AND stop_proof_hash IS NULL",
+                &[operation,c.ticket.opaque(),&c.custodian_nonce,&grant.instance_id,&grant.domain_id,
+                    &grant.generation,&pid,&creation,&image,&grant.program_digest])? {
+                return Err("Grok private HOME: original active custody changed".into());
+            }
         }
-        drop(h);
         let auth=evidence("observe-successor",observe_grok_auth(&self.home.path,&self.home.identity))?;
         let ids=recorded_auth(db,&grant)?;
         if !ids.contains(&auth.identity) {
@@ -431,11 +522,7 @@ pub(crate) fn prepared_holder_for_recovery(db:&VerifiedDatabaseConnection<'_>,
         return Err("Grok private HOME: uncreated recovery row changed".into());
     }
     let Some(h)=original_h(db,&grant)? else{return Ok(None);};
-    if h.digest!=grant.program_digest ||h.custody_stop.is_some() ||h.claim_stop.is_some() ||
-        h.episode_stop.is_some() ||
-        !matches!(h.custody_state.as_str(),"PREPARED"|"ACTIVE"|"UNKNOWN") ||
-        !matches!(h.episode_state.as_str(),"PREPARED"|"ACTIVE"|"UNKNOWN") ||
-        !matches!(h.claim_state.as_str(),"COMMITTED"|"UNKNOWN") {
+    if h.digest!=grant.program_digest ||!holder_gone_original_eligible(&h) {
         return Err("Grok private HOME: original prepared H tuple ineligible".into());
     }
     Ok(Some((h.operation,h.pid,h.creation)))
@@ -452,11 +539,7 @@ pub(crate) fn adopt_original_holder_gone(db:&mut VerifiedDatabaseConnection<'_>,
         return Err("Grok private HOME: uncreated original F row changed".into());
     }
     let h=original_h(db,&grant)?.ok_or("Grok private HOME: original H process absent; no NoAttempt inference")?;
-    if h.digest!=grant.program_digest ||h.custody_stop.is_some() ||h.claim_stop.is_some() ||
-        h.episode_stop.is_some() ||
-        !matches!(h.custody_state.as_str(),"PREPARED"|"ACTIVE"|"UNKNOWN") ||
-        !matches!(h.episode_state.as_str(),"PREPARED"|"ACTIVE"|"UNKNOWN") ||
-        !matches!(h.claim_state.as_str(),"COMMITTED"|"UNKNOWN") {
+    if h.digest!=grant.program_digest ||!holder_gone_original_eligible(&h) {
         return Err("Grok private HOME: original H process cannot be adopted".into());
     }
     evidence("holder-gone",proof.validate(&[(h.pid,h.creation)]))?;
@@ -509,9 +592,7 @@ pub(crate) fn verify_completed_holder_gone(db:&VerifiedDatabaseConnection<'_>,ro
         return Err("Grok private HOME: completed holder-gone F row changed".into());
     }
     let h=original_h(db,&grant)?.ok_or("Grok private HOME: original H tuple absent")?;
-    if !matches_bound_original(&grant,&h) ||h.custody_stop.is_some() ||h.claim_stop.is_some() ||
-        h.episode_stop.is_some() || !matches!(h.claim_state.as_str(),"COMMITTED"|"UNKNOWN") ||
-        !matches!(h.custody_state.as_str(),"PREPARED"|"ACTIVE"|"UNKNOWN") {
+    if !matches_bound_original(&grant,&h) ||!holder_gone_original_eligible(&h) {
         return Err("Grok private HOME: original H release window changed".into());
     }
     evidence("holder-gone",proof.validate(&[(h.pid,h.creation)]))?;
@@ -549,25 +630,9 @@ pub(crate) fn verify_completed_no_attempt(db:&VerifiedDatabaseConnection<'_>,roo
         grant.stop_fact_id.is_some() {
         return Err("Grok private HOME: completed NoAttempt F row changed".into());
     }
-    let episode=Statement::prepare(db.as_ptr(),"SELECT 1 FROM main.gogoke_v37_h_process_episode WHERE binding_id=?1 AND instance_id=?2 AND domain_id=?3 AND session_id=?4 AND generation=?5 AND request_id=?6 LIMIT 1")
-        .map_err(|e|format!("Grok private HOME NoAttempt H episode: {e:?}"))?;
-    for (i,value) in [&grant.binding_id,&grant.instance_id,&grant.domain_id,&grant.session_id,
-        &grant.generation,&grant.request_id].iter().enumerate(){
-        episode.bind_text(i as i32+1,value).map_err(|e|format!("Grok private HOME NoAttempt H bind: {e:?}"))?;
+    if original_no_attempt_has_process(db,&grant)? {
+        return Err("Grok private HOME: original binding has H episode or custody".into());
     }
-    if episode.step_row().map_err(|e|format!("Grok private HOME NoAttempt H read: {e:?}"))? {
-        return Err("Grok private HOME: original H episode exists".into());
-    }
-    drop(episode);
-    let custody=Statement::prepare(db.as_ptr(),"SELECT 1 FROM main.gogoke_coordination_process_custody WHERE profile_id=?1 AND domain_id=?2 AND generation=?3 LIMIT 1")
-        .map_err(|e|format!("Grok private HOME NoAttempt custody: {e:?}"))?;
-    for (i,value) in [&grant.instance_id,&grant.domain_id,&grant.generation].iter().enumerate(){
-        custody.bind_text(i as i32+1,value).map_err(|e|format!("Grok private HOME NoAttempt custody bind: {e:?}"))?;
-    }
-    if custody.step_row().map_err(|e|format!("Grok private HOME NoAttempt custody read: {e:?}"))? {
-        return Err("Grok private HOME: original generation has process custody".into());
-    }
-    drop(custody);
     let home=evidence("resolve-F-HOME",instance::resolve_grok_original_home(db,root,&grant.instance_id))?;
     if home.identity!=grant.home_identity {return Err("Grok private HOME: NoAttempt F HOME changed".into());}
     let profile=evidence("derive-original-SID",AppContainerProfile::derive_for_revocation(&grant.profile_name))?;
@@ -605,31 +670,10 @@ pub(crate) fn retire_holder_gone(db:&mut VerifiedDatabaseConnection<'_>,root:&Ro
     let (pid,creation)=grant.pid.zip(grant.creation_time_100ns)
         .ok_or("Grok private HOME: original holder identity absent")?;
     evidence("holder-gone",proof.validate(&[(pid,creation)]))?;
-    let row=Statement::prepare(db.as_ptr(),"SELECT c.state,e.phase FROM main.gogoke_coordination_process_custody c JOIN main.gogoke_v37_h_process_episode e ON e.process_operation_id=c.operation_id AND e.instance_id=c.profile_id AND e.domain_id=c.domain_id AND e.generation=c.generation JOIN main.gogoke_v37_h_claim h ON h.process_operation_id=c.operation_id AND h.instance_id=c.profile_id AND h.domain_id=c.domain_id AND h.generation=c.generation JOIN main.gogoke_v37_h_seat_binding s ON s.domain_id=h.domain_id AND s.session_id=h.session_id AND s.generation=h.generation WHERE c.operation_id=?1 AND c.ticket=?2 AND c.custodian_nonce=?3 AND c.profile_id=?4 AND c.domain_id=?5 AND c.generation=?6 AND c.pid=?7 AND c.creation_time_100ns=?8 AND c.image_path=?9 AND c.binary_digest_sha256=?10 AND c.stop_proof_hash IS NULL AND h.stop_fact_id IS NULL AND h.state IN ('COMMITTED','UNKNOWN') AND e.stop_fact_id IS NULL AND h.binding_id=?11 AND h.session_id=?12 AND s.seat_id=?13 AND s.seat_incarnation=?14 AND e.binding_id=h.binding_id AND e.session_id=h.session_id AND e.seat_id=s.seat_id AND e.seat_incarnation=s.seat_incarnation AND e.request_id=?15")
-        .map_err(|e|format!("Grok private HOME gone original: {e:?}"))?;
-    let pid_text=pid.to_string();
-    let creation_text=creation.to_string();
-    let values:[&str;15]=[grant.process_operation_id.as_deref().ok_or("Grok private HOME: operation absent")?,
-        grant.ticket.as_deref().ok_or("Grok private HOME: ticket absent")?,
-        grant.custodian_nonce.as_deref().ok_or("Grok private HOME: nonce absent")?,
-        &grant.instance_id,&grant.domain_id,&grant.generation,&pid_text,
-        &creation_text,grant.image_path.as_deref().ok_or("Grok private HOME: image absent")?,
-        &grant.program_digest,&grant.binding_id,&grant.session_id,&grant.seat_id,
-        &grant.seat_incarnation,&grant.request_id];
-    for (i,value) in values.iter().enumerate(){
-        row.bind_text(i as i32+1,value).map_err(|e|format!("Grok private HOME gone bind: {e:?}"))?;
-    }
-    if !row.step_row().map_err(|e|format!("Grok private HOME gone read: {e:?}"))? {
-        return Err("Grok private HOME: original H/custody association absent".into());
-    }
-    let custody=row.column_text(0).map_err(|e|format!("Grok private HOME gone custody: {e:?}"))?;
-    let episode=row.column_text(1).map_err(|e|format!("Grok private HOME gone episode: {e:?}"))?;
-    if row.step_row().map_err(|e|format!("Grok private HOME gone duplicate: {e:?}"))? ||
-        !matches!(custody.as_str(),"ACTIVE"|"PREPARED"|"UNKNOWN") ||
-        !matches!(episode.as_str(),"ACTIVE"|"PREPARED"|"UNKNOWN") {
+    let h=original_h(db,&grant)?.ok_or("Grok private HOME: original H/custody association absent")?;
+    if !matches_bound_original(&grant,&h) ||!holder_gone_original_eligible(&h) {
         return Err("Grok private HOME: original holder state not eligible".into());
     }
-    drop(row);
     let home=evidence("resolve-F-HOME",instance::resolve_grok_original_home(db,root,&grant.instance_id))?;
     if home.identity!=grant.home_identity {return Err("Grok private HOME: F HOME identity changed".into());}
     let profile=evidence("derive-original-SID",AppContainerProfile::derive_for_revocation(&grant.profile_name))?;
@@ -693,6 +737,8 @@ pub(crate) fn finalize_quiescent(db:&mut VerifiedDatabaseConnection<'_>,root:&Ro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::root::RootLock;
+    use crate::store::same_open::{create_new,route_b_test_guard};
     use std::time::{SystemTime,UNIX_EPOCH};
 
     #[test]
@@ -724,5 +770,56 @@ mod tests {
         assert!(applied_readback(&historical,&later).is_ok());
         assert!(before.target_aces.is_empty());
         std::fs::remove_dir(home).unwrap();
+    }
+
+    #[test]
+    fn before_promote_resume_uses_old_stopped_claim_and_exact_new_episode(){
+        let _guard=route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("grok-resume-guard-{}-{nonce}",std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let mut db=create_new(&root,&path.join("state.sqlite")).unwrap();
+        db.execute("PRAGMA foreign_keys=ON").unwrap();
+        crate::store::authority::initialize_profile(&mut db,&root).unwrap();
+        crate::store::authority::initialize_process_custody_schema(&mut db).unwrap();
+        crate::store::instance::initialize_schema(&mut db).unwrap();
+        crate::store::seat::initialize_schema(&mut db).unwrap();
+        super::super::admission::initialize_admission_schema(&mut db).unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('grokA','grok','homeA','volume:0000000000000001/file:01010101010101010101010101010101','sha256:fixture','1.0.41','INSTALLED','LOGGED_IN',1)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('domainA','seatA','incA','USER','LONG','grokA','BUSY',1,1)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_owner_binding VALUES('oldBinding','grokA','domainA','SESSION','sessionA','1','ACTIVE')").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id,stop_fact_id) VALUES('domainA','sessionA','grokA','oldHome','oldBinding','1','STOPPED',3,'oldOp','realStop')").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_seat_binding VALUES('domainA','sessionA','seatA','incA','1')").unwrap();
+        db.execute("INSERT INTO main.gogoke_coordination_process_custody VALUES('oldOp','oldTicket','oldNonce','100','1000','oldImage','sha256:fixture','grokA','domainA','1','STOPPED','realStop')").unwrap();
+        db.execute("INSERT INTO main.gogoke_coordination_process_custody VALUES('newOp','newTicket','newNonce','101','1001','newImage','sha256:fixture','grokA','domainA','2','PREPARED',NULL)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,old_generation,raw_hex,previous_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase) VALUES('domainA','resumeA','sessionA','2','1','00',3,'newOp','grokA','newHome','newBinding','seatA','incA','PREPARED')").unwrap();
+        let values:[&str;12]=["domainA","sessionA","grokA","oldBinding","1","oldOp",
+            "seatA","incA","resumeA","2","newBinding","newOp"];
+        assert!(exact_exists(&db,"test-resume",RESUME_CANDIDATE_GUARD_SQL,&values).unwrap());
+        db.execute("UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash='wrong' WHERE operation_id='oldOp'").unwrap();
+        assert!(!exact_exists(&db,"test-resume",RESUME_CANDIDATE_GUARD_SQL,&values).unwrap());
+        db.execute("UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash='realStop' WHERE operation_id='oldOp'").unwrap();
+        let no_attempt=GrokGrant{binding_id:"noAttempt".into(),instance_id:"grokA".into(),
+            domain_id:"domainA".into(),session_id:"otherSession".into(),seat_id:"otherSeat".into(),
+            seat_incarnation:"otherInc".into(),generation:"2".into(),request_id:"otherOpen".into(),
+            profile_name:"Gogoke37.NoAttempt".into(),profile_sid:"sid-no-attempt".into(),
+            program_digest:"sha256:fixture".into(),home_identity:root.canonical_root().identity.clone(),
+            auth_identity:root.canonical_root().identity.clone(),phase:"REVOKED".into(),
+            process_operation_id:None,ticket:None,custodian_nonce:None,pid:None,
+            creation_time_100ns:None,image_path:None,stop_fact_id:None,revision:2};
+        let candidate=GrokGrant{binding_id:"newBinding".into(),session_id:"sessionA".into(),
+            seat_id:"seatA".into(),seat_incarnation:"incA".into(),
+            request_id:"resumeA".into(),..no_attempt.clone()};
+        let original=original_h(&db,&candidate).unwrap().unwrap();
+        assert!(original.candidate_before_promote);
+        assert_eq!(original.operation,"newOp");
+        assert_eq!(original.claim_state,"STOPPED");
+        assert_eq!(original.claim_stop.as_deref(),Some("realStop"));
+        // Same-instance, same-generation peer custody is not this original binding.
+        assert!(!original_no_attempt_has_process(&db,&no_attempt).unwrap());
+        db.execute("INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase) VALUES('domainA','otherOpen','otherSession','2','00',1,'grokA','otherHome','noAttempt','otherSeat','otherInc','INTENT')").unwrap();
+        assert!(original_no_attempt_has_process(&db,&no_attempt).unwrap());
+        db.close_checked().unwrap();drop(root);std::fs::remove_dir_all(path).unwrap();
     }
 }
