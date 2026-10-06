@@ -25,7 +25,7 @@
       "correctedMeasurement": "Registered F trees have REGISTERED lifecycle rows; successful cleanup has its own APPLIED row. Corrected phase-specific assertions, hashed the executing reader and compared persistent F identities across phases. Original implementation and focused corrections remain in Git history.",
       "limits": "Seat model-denial and unconfigured LEAD cases remain NOT_RUN. Cleanup residual-child and host-restart axes remain NOT_RUN. DENIED stage attribution is a paired-operation/H-chain inference, not an internal stage code.",
       "cloudSyntaxAndHygiene": {"source": "d14943ab223ef8ad079af4b6a2bb076177a0d4f9", "run": 37478173659, "state": "PASS_BEFORE_NEW_CASE_INTEGRATION"},
-      "integratedScriptsCloudCheck": "PENDING_NEXT_PUSH",
+      "integratedScriptsCloudCheck": {"source": "51b1cb4da980a67e095eea450ccc4d8ee41424a0", "run": 37481874285, "state": "PASS_SYNTAX_AND_PUBLIC_HYGIENE_PRODUCT_FLOWS_NOT_RUN"},
       "candidateProductAndSignerCodeDiffFromFrozenSource": "ZERO"
     },
     "originalSixHomesAndFormalFiveGroups": "PRESERVED_AT_ORIGINAL_STOP",
