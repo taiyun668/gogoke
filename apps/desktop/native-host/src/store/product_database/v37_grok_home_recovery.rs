@@ -26,6 +26,12 @@ impl<'root> ProductDatabase<'root> {
                 &self.connection,self.root,grant))?;
             return Ok(true);
         }
+        if evidence(grok_home_launch::original_candidate_for_recovery(
+            &self.connection,grant))?.is_some(){
+            // A completed candidate F withdrawal has no new current H claim
+            // or H release journal. Recheck its original holder and ACL below.
+            return Ok(false);
+        }
         let q=Statement::prepare(self.connection.as_ptr(),
             "SELECT state,generation,binding_id,COALESCE(stop_fact_id,'') FROM main.gogoke_v37_h_claim
              WHERE instance_id=?1 AND domain_id=?2 AND session_id=?3")?;
@@ -239,6 +245,27 @@ impl<'root> ProductDatabase<'root> {
                 grant=evidence(instance::read_grok_grants(&self.connection,instance_id))?
                     .into_iter().find(|g|g.binding_id==grant.binding_id)
                     .ok_or_else(||denied("Grok original adopted row absent"))?;
+            }
+            if let Some((operation,pid,creation))=evidence(
+                grok_home_launch::original_candidate_for_recovery(&self.connection,&grant))? {
+                if grant.process_operation_id.as_deref()!=Some(operation.as_str()) {
+                    return Err(denied("Grok candidate original operation changed"));
+                }
+                let proof=evidence(NativeProcessHoldersGone::observe(&[(pid,creation)]))?;
+                self.gone_scope(instance_id,&allowed,incoming,false)?;
+                if matches!(grant.phase.as_str(),"ACTIVE"|"REVOKE_PENDING") {
+                    evidence(grok_home_launch::retire_holder_gone(
+                        &mut self.connection,self.root,&grant,&proof))?;
+                }else if !matches!(grant.phase.as_str(),"REVOKED"|"RETIRED_CLEANUP_PENDING") {
+                    return Err(denied("Grok candidate original F effect unresolved"));
+                }
+                let retired=evidence(instance::read_grok_grants(&self.connection,instance_id))?
+                    .into_iter().find(|g|g.binding_id==grant.binding_id)
+                    .ok_or_else(||denied("Grok original candidate retired row absent"))?;
+                evidence(grok_home_launch::verify_completed_holder_gone(
+                    &self.connection,self.root,&retired,&proof))?;
+                // Candidate UNKNOWN/NULL StopFact is not an H release or stop.
+                continue;
             }
             let original=self.grok_original_claim(&grant)?;
             if !original.stop_fact.is_empty(){
