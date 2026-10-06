@@ -94,7 +94,11 @@ pub(super) fn remove_generated_cache_junction(root: &RootLock, home: &ResolvedDi
     for part in relative.components().chain(Path::new(CACHE).components()) {
         path.push(part.as_os_str());
         let leaf = path == home.path.join(CACHE);
-        let Some(handle) = open(&path)? else {
+        let relative_entry = path.strip_prefix(&bound_root.canonical_path)
+            .map_err(|_| OrchestrationError::AccessDenied)?;
+        let Some(handle) = open(&path).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!(
+                "login Windows cache original entry {}: {error:?}", relative_entry.display())))? else {
             // Only cache descendants may be absent; the registered home may not.
             return if path.starts_with(&home.path) && path != home.path { Ok(()) }
                 else { Err(OrchestrationError::AccessDenied) };
