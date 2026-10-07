@@ -886,14 +886,65 @@ jobs:
         if: ${{ matrix.group == 'core' && !cancelled() && steps.fixed-claude.outcome == 'success' && inputs.catalog_program_fixture_only }}
         shell: pwsh
         run: |
-          # Diagnostic branch only. This observes the existing ACL producer;
-          # it is not a complete library/process/milestone result.
+          # Diagnostic branch only. This observes the existing ACL producer and
+          # its bounded compiled mutation; it is not a complete library/process/
+          # milestone result.
+          $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
-          $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib bound_sid -- --nocapture 2>&1
-          $code = $LASTEXITCODE
-          $output | Out-Host
-          $summaries = [regex]::Matches(($output -join "`n"), 'test result: ok\. 2 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out')
-          if ($code -ne 0 -or $summaries.Count -ne 1) { throw "Held-directory ACL observation fixture failed or did not run exactly once: $code" }
+          $path = 'apps/desktop/native-host/src/process/session/isolation.rs'
+          $original = [IO.File]::ReadAllBytes($path)
+          $originalToken = [Convert]::ToBase64String($original)
+          $source = [Text.Encoding]::UTF8.GetString($original)
+          $sourceHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+          $evidence = Join-Path $env:RUNNER_TEMP 'bound-sid-security'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+
+          function Invoke-BoundSidTest([string]$label, [int]$expectedPassed, [int]$expectedFailed) {
+            $log = Join-Path $evidence "$label.log"
+            $output = @(& cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib bound_sid -- --nocapture 2>&1)
+            $code = $LASTEXITCODE
+            $output | Tee-Object -FilePath $log | Out-Host
+            $text = $output -join "`n"
+            $summaries = [regex]::Matches($text, 'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out')
+            $valid = $summaries.Count -eq 1 -and
+              [int]$summaries[0].Groups[2].Value -eq $expectedPassed -and
+              [int]$summaries[0].Groups[3].Value -eq $expectedFailed -and
+              [int]$summaries[0].Groups[4].Value -eq 0 -and
+              [int]$summaries[0].Groups[5].Value -eq 0 -and
+              (($expectedFailed -eq 0 -and $code -eq 0) -or ($expectedFailed -gt 0 -and $code -ne 0))
+            if (-not $valid) {
+              throw "Bound SID $label did not execute the expected compiled behavior: exit=$code"
+            }
+            if ($label -eq 'mutation' -and
+                ($text -notmatch 'unchanged strict inherited witness' -or $text -notmatch '\.git')) {
+              throw 'Bound SID mutation did not fail at the held descendant ACL witness'
+            }
+          }
+
+          Invoke-BoundSidTest 'original' 2 0
+          $needle = '        complete_bound_child_inheritance(root.0, path, expected, self.sid, rights, &after)?;'
+          if ([regex]::Matches($source, [regex]::Escape($needle)).Count -ne 1) {
+            throw 'Bound SID production mutation locator must match exactly once'
+          }
+          try {
+            # Keep the production source compiling while disabling only the
+            # child inheritance writer used by the held-descendant fixture.
+            $replacement = '        let _ = (&after, root.0, path, expected, self.sid, rights);'
+            $mutated = $source.Replace($needle, $replacement)
+            [IO.File]::WriteAllText($path, $mutated, [Text.UTF8Encoding]::new($false))
+            Invoke-BoundSidTest 'mutation' 1 1
+          } finally {
+            [IO.File]::WriteAllBytes($path, $original)
+            $restored = [IO.File]::ReadAllBytes($path)
+            if ([Convert]::ToBase64String($restored) -cne $originalToken -or
+                (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -cne $sourceHash) {
+              throw 'Exact unchanged production restoration failed'
+            }
+          }
+          Invoke-BoundSidTest 'restored' 2 0
+          if (@(& git status --porcelain --untracked-files=no).Count) {
+            throw 'Bound SID diagnostic left tracked source changes after restoration'
+          }
       - name: Verify catalog program and unchanged data boundaries with compiled mutations
         if: ${{ matrix.group == 'core' && !cancelled() && steps.fixed-claude.outcome == 'success' }}
         shell: pwsh
