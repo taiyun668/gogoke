@@ -32,7 +32,7 @@ fn archive(driver: &str, version: &str, expected: &str) -> PathBuf {
     fs::create_dir_all(&cache).unwrap();
     let path = cache.join(format!("{driver}-{version}.download"));
     let status = Command::new("curl.exe").args(["--fail", "--location", "--silent", "--show-error",
-        "--retry", "3", "--output"]).arg(&path).arg(official_url(driver, version))
+        "--output"]).arg(&path).arg(official_url(driver, version))
         .status().expect("curl.exe fixed official archive");
     assert!(status.success(), "fixed official archive download failed: {status}");
     assert_eq!(crate::store::digest::sha256_hex(&fs::read(&path).unwrap()), expected,
