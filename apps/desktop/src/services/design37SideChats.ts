@@ -1,6 +1,7 @@
 /** USER pipe source for the native D/A/H side-chat facts. The UI may render
  * only fields that are present; ledger cursors are not lead round counts. */
 const OPERATIONS = "gogoke.37.operations.v1";
+const OWNER_CONFIG = "gogoke.37.owner-configuration.v1";
 const LIST = "gogoke.37.owner-side-list.v1";
 const THREAD = "gogoke.37.owner-side-thread.v1";
 const QUESTION = "gogoke.37.owner-side-question.v1";
@@ -36,6 +37,15 @@ export type Design37SideChatPage = {
   domainId: string; ledgerEpoch:string; ledgerCursor:string;
   lead?:LeadSourceView; chats: SideChatView[];
 };
+export type SideCreateChoice = {
+  seatId:string; seatIncarnation:string; name:string;
+  instanceId:string; instanceName?:string; vendor?:string;
+  model?:string; effort?:string; permission?:string;
+  /** Existing H permits only an idle seat's bound instance. F/admission still
+   * needs its own original result, so a read never claims create is ready. */
+  reason:"LEAD_UNAVAILABLE"|"SEAT_NOT_IDLE"|"INSTANCE_UNAVAILABLE"|
+    "NOT_READ_ONLY"|"MODEL_UNAVAILABLE"|"EFFORT_UNAVAILABLE"|"WORKTREE_AND_CAP_UNVERIFIED";
+};
 
 function record(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("SIDE_INVALID_RECORD");
@@ -53,6 +63,9 @@ function flag(row: Record<string, unknown>, field: string): boolean {
 function rows(row: Record<string, unknown>, field: string): unknown[] {
   if (!Array.isArray(row[field])) throw new Error(`SIDE_INVALID_${field}`);
   return row[field] as unknown[];
+}
+function optionalText(value:unknown):string|undefined {
+  return typeof value==="string" && value.length>0 ? value : undefined;
 }
 function optionalHost(value: unknown): SideHostView | undefined {
   if (value === null) return undefined;
@@ -147,6 +160,35 @@ export function createDesign37SideChatSource(domainId:string, execute:UserSideOp
     }
   };
   return {
+    readChoices:async():Promise<SideCreateChoice[]>=>{
+      const [sidePage,rawSeats]=await Promise.all([
+        readList(),execute({schema:OWNER_CONFIG,
+          command:"seats-page-read",domainId}),
+      ]);
+      if (rawSeats===null) return [];
+      const seatPage=record(rawSeats);
+      const instances=new Map(rows(seatPage,"instances").map(value=>{
+        const row=record(value);return [string(row,"id"),row] as const;
+      }));
+      return rows(seatPage,"seats").flatMap(value=>{
+        const row=record(value);
+        if (row.layer!=="direct" || row.state==="REMOVED") return [];
+        const instance=record(row.instance),instanceId=string(instance,"id");
+        const verified=instances.get(instanceId);
+        const model=optionalText(row.model),effort=optionalText(row.effort);
+        const permission=optionalText(row.permission);
+        const models=verified && Array.isArray(verified.models) ? verified.models : [];
+        const reason:SideCreateChoice["reason"]=!sidePage.lead ? "LEAD_UNAVAILABLE" :
+          row.state!=="IDLE" ? "SEAT_NOT_IDLE" : !verified ? "INSTANCE_UNAVAILABLE" :
+          permission!=="READ_ONLY" ? "NOT_READ_ONLY" :
+          !model || !models.includes(model) ? "MODEL_UNAVAILABLE" :
+          !effort ? "EFFORT_UNAVAILABLE" : "WORKTREE_AND_CAP_UNVERIFIED";
+        return [{seatId:string(row,"id"),seatIncarnation:string(row,"_incarnation"),
+          name:string(row,"name"),instanceId,
+          instanceName:optionalText(verified?.name),vendor:optionalText(verified?.vendor),
+          model,effort,permission,reason}];
+      });
+    },
     read:async():Promise<Design37SideChatPage>=>{
       const page=await readList();
       for (const chat of page.chats) {

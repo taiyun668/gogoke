@@ -46,3 +46,33 @@ test("side source uses only A text and D receipt states, replaying an unknown qu
   await source.actions.ask("sideA","question");
   assert.deepEqual(asks,[asks[0],asks[0]]);
 });
+
+test("create choices read the existing USER seat and bound instance without inventing another identity", async () => {
+  const source=createDesign37SideChatSource("projectA",async frame=>{
+    const request=frame as Record<string,unknown>;
+    if (request.schema==="gogoke.37.owner-side-list.v1") return {
+      schema:"gogoke.37.side-list.v1",domainId:"projectA",ledgerEpoch:"epochA",ledgerCursor:"1",
+      lead:{seatId:"leadA",seatIncarnation:"leadInc",sessionId:"leadSession",generation:"2",
+        claimRevision:"3",repositoryId:"repoA",worktreeId:"leadTree",sourceEpoch:"epochA",sourceCursor:"1"},
+      chats:[],
+    };
+    if (request.schema==="gogoke.37.owner-configuration.v1" && request.command==="seats-page-read") return {
+      seats:[
+        {id:"busy",_incarnation:"busyInc",name:"秘书长",layer:"direct",state:"WORKING",
+          instance:{id:"instanceA"},model:"m",effort:"high",permission:"READ_ONLY"},
+        {id:"idle",_incarnation:"idleInc",name:"审计",layer:"direct",state:"IDLE",
+          instance:{id:"instanceA"},model:"m",effort:"high",permission:"READ_ONLY"},
+        {id:"child",_incarnation:"childInc",name:"施工",layer:"sub",state:"IDLE",
+          instance:{id:"instanceA"},model:"m",effort:"high",permission:"READ_ONLY"},
+      ],instances:[{id:"instanceA",name:"实际实例",vendor:"codex",models:["m"]}],
+    };
+    throw new Error("unexpected USER operation");
+  });
+  const choices=await source.readChoices();
+  assert.equal(choices.length,2,"LEAD layer is never a USER side choice");
+  assert.equal(choices[0].reason,"SEAT_NOT_IDLE");
+  assert.equal(choices[1].reason,"WORKTREE_AND_CAP_UNVERIFIED");
+  assert.equal(choices[1].seatId,"idle");
+  assert.equal(choices[1].instanceId,"instanceA");
+  assert.equal("create" in source.actions,false);
+});
