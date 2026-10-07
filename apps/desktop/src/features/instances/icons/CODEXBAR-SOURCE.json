@@ -1,0 +1,28 @@
+{
+  "source": "https://github.com/steipete/CodexBar",
+  "commit": "0863fe838a772cc16eef72be2946a13a3eba3eba",
+  "license": "MIT (CODEXBAR-LICENSE.txt)",
+  "via": "gogousage gogousage/web/icons",
+  "icons": [
+    {
+      "name": "ProviderIcon-antigravity.svg",
+      "sha256": "eafc2d1d432b369c34c98e1bb0cd36f0bc58872a64ef4ef814860f3dccef5f71"
+    },
+    {
+      "name": "ProviderIcon-claude.svg",
+      "sha256": "497a88a780831512317b6dd061285e2ec2608abf09a94a5f24ee9019a4d3ef8b"
+    },
+    {
+      "name": "ProviderIcon-codex.svg",
+      "sha256": "5c999792f6d26c9d14a197aa6e6c20f5af3def433473f7b66bd0d8c8a41cd8cf"
+    },
+    {
+      "name": "ProviderIcon-grok.svg",
+      "sha256": "41edb24e0b3a31268c6374bad1984e830ead62856e7859b83aa47059a221562f"
+    },
+    {
+      "name": "ProviderIcon-opencode.svg",
+      "sha256": "6c1688e66e63a0415f43f150b6f329074095f76e875cd708878447220606532a"
+    }
+  ]
+}
