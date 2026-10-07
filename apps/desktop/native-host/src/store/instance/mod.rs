@@ -34,7 +34,8 @@ pub(crate) use managed_cli::{managed_cli_root, inspect_staged_official_cli, read
     record_managed_cli_progress, record_official_cli_notice, read_fixed_official_cli,
     locate_ready_managed_program, locate_ready_managed_program_from_db,
     uninstall_managed_cli, ManagedCliCopy, ManagedCliError, VerifiedOfficialCli};
-pub(crate) use program_source::{bind_managed_instance_program, locate_bound_instance_program,
+pub(crate) use program_source::{bind_managed_instance_program, migrate_quiescent_legacy_instances,
+    locate_bound_instance_program,
     ProgramSourceError};
 pub(crate) use registry::{preflight_register_request, reconcile_register_replay,
     register_instance, record_observation, repin_program, reconcile_program_repin,
@@ -102,7 +103,7 @@ const SCHEMA: [(&str, &str); 10] = [
     ("gogoke_v37_instance_history_generations", private_history::GENERATIONS_SCHEMA),
     ("gogoke_v37_instance_profiles", "CREATE TABLE gogoke_v37_instance_profiles(instance_id TEXT PRIMARY KEY REFERENCES gogoke_v37_instances(instance_id),display_name TEXT NOT NULL,enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),connected_model_source TEXT,tombstoned INTEGER NOT NULL DEFAULT 0 CHECK(tombstoned IN (0,1)),revision INTEGER NOT NULL CHECK(revision>=1)) STRICT"),
     ("gogoke_v37_instance_evidence", "CREATE TABLE gogoke_v37_instance_evidence(instance_id TEXT PRIMARY KEY REFERENCES gogoke_v37_instances(instance_id),account_masked TEXT,subscription TEXT,account_confirmed_at TEXT,account_source TEXT,available_models_json TEXT,models_source TEXT,models_observed_at TEXT,models_program_digest TEXT,detect_error TEXT,detect_error_at TEXT) STRICT"),
-    ("gogoke_v37_instance_cli_copies", "CREATE TABLE gogoke_v37_instance_cli_copies(driver_id TEXT PRIMARY KEY,state TEXT NOT NULL CHECK(state IN ('NOT_INSTALLED','DOWNLOADING','INSTALLING','UPGRADING','STAGED','READY','INSTALL_FAILED','BLOCKED','PROBE_UNKNOWN','UPGRADE_FAILED','UNINSTALLING')),version TEXT,archive_sha256 TEXT,image_sha256 TEXT,stage_name TEXT,previous_version TEXT,previous_image_sha256 TEXT,previous_stage_name TEXT,progress_bytes INTEGER NOT NULL DEFAULT 0,raw_error TEXT,checked_at TEXT,official_notice TEXT,revision INTEGER NOT NULL CHECK(revision>=1)) STRICT"),
+    ("gogoke_v37_instance_cli_copies", "CREATE TABLE gogoke_v37_instance_cli_copies(driver_id TEXT PRIMARY KEY,state TEXT NOT NULL CHECK(state IN ('NOT_INSTALLED','DOWNLOADING','INSTALLING','UPGRADING','STAGED','PROBED','READY','INSTALL_FAILED','BLOCKED','PROBE_UNKNOWN','UPGRADE_FAILED','UNINSTALLING')),version TEXT,archive_sha256 TEXT,image_sha256 TEXT,stage_name TEXT,previous_version TEXT,previous_image_sha256 TEXT,previous_stage_name TEXT,progress_bytes INTEGER NOT NULL DEFAULT 0,raw_error TEXT,checked_at TEXT,official_notice TEXT,revision INTEGER NOT NULL CHECK(revision>=1)) STRICT"),
     ("gogoke_v37_instance_program_sources", "CREATE TABLE gogoke_v37_instance_program_sources(instance_id TEXT PRIMARY KEY REFERENCES gogoke_v37_instances(instance_id),source TEXT NOT NULL CHECK(source='MANAGED'),stage_name TEXT NOT NULL,program_digest TEXT NOT NULL,version TEXT NOT NULL,home_identity TEXT NOT NULL,registration_request_id TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>=1)) STRICT"),
 ];
 
