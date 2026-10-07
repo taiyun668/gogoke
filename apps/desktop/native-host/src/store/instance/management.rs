@@ -7,6 +7,9 @@ use crate::store::atomic::Statement;
 use crate::store::authority::{check_owner_in_current_transaction, OwnerIssuer};
 use crate::store::orchestration::OrchestrationError;
 use crate::store::same_open::VerifiedDatabaseConnection;
+use crate::store::atomic::{Json,JsonString};
+use crate::store::session_transport::codex_rpc;
+use std::collections::BTreeSet;
 
 #[derive(Debug)]
 pub(crate) enum InstanceManagementError {
@@ -259,7 +262,7 @@ pub(crate) fn record_qualified_account(db: &mut VerifiedDatabaseConnection<'_>,
 pub(crate) fn read_instance_evidence(db: &VerifiedDatabaseConnection<'_>, instance_id: &str)
     -> Result<Option<InstanceEvidence>, InstanceManagementError> {
     if !valid_id(instance_id) { return Err(InstanceManagementError::Invalid("instance id")); }
-    let row = Statement::prepare(db.as_ptr(), "SELECT COALESCE(e.account_masked,''),COALESCE(e.subscription,''),COALESCE(e.account_confirmed_at,''),COALESCE(e.account_source,''),CASE WHEN e.models_program_digest=i.program_digest THEN COALESCE(e.available_models_json,'') ELSE '' END,CASE WHEN e.models_program_digest=i.program_digest THEN COALESCE(e.models_source,'') ELSE '' END,CASE WHEN e.models_program_digest=i.program_digest THEN COALESCE(e.models_observed_at,'') ELSE '' END,COALESCE(e.detect_error,''),COALESCE(e.detect_error_at,'') FROM main.gogoke_v37_instance_evidence e JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id WHERE e.instance_id=?1")?;
+    let row = Statement::prepare(db.as_ptr(), "SELECT COALESCE(e.account_masked,''),COALESCE(e.subscription,''),COALESCE(e.account_confirmed_at,''),COALESCE(e.account_source,''),CASE WHEN e.models_program_digest=i.program_digest AND i.login_state='LOGGED_IN' THEN COALESCE(e.available_models_json,'') ELSE '' END,CASE WHEN e.models_program_digest=i.program_digest AND i.login_state='LOGGED_IN' THEN COALESCE(e.models_source,'') ELSE '' END,CASE WHEN e.models_program_digest=i.program_digest AND i.login_state='LOGGED_IN' THEN COALESCE(e.models_observed_at,'') ELSE '' END,COALESCE(e.detect_error,''),COALESCE(e.detect_error_at,'') FROM main.gogoke_v37_instance_evidence e JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id WHERE e.instance_id=?1")?;
     row.bind_text(1, instance_id)?;
     if !row.step_row()? { return Ok(None); }
     let result = InstanceEvidence { instance_id: instance_id.to_owned(),
@@ -270,4 +273,103 @@ pub(crate) fn read_instance_evidence(db: &VerifiedDatabaseConnection<'_>, instan
         detect_error_at: optional_text(&row, 8)? };
     if row.step_row()? { return Err(InstanceManagementError::Conflict); }
     Ok(Some(result))
+}
+
+fn original_hex_bytes(hex:&str)->Result<Vec<u8>,InstanceManagementError> {
+    if hex.len()%2!=0 || hex.len()>2*1024*1024 {return Err(InstanceManagementError::Conflict);}
+    hex.as_bytes().chunks_exact(2).map(|pair| {
+        let text=std::str::from_utf8(pair).map_err(|_|InstanceManagementError::Conflict)?;
+        u8::from_str_radix(text,16).map_err(|_|InstanceManagementError::Conflict)
+    }).collect()
+}
+
+fn valid_wire_id(value:&str)->bool {
+    let bytes=value.as_bytes();
+    !bytes.is_empty() && bytes.len()<=128 && bytes[0].is_ascii_alphabetic()
+        && bytes[1..].iter().all(|byte|byte.is_ascii_alphanumeric() || matches!(*byte,b'_'|b'-'))
+}
+
+/// Only H's OBSERVED original model/list RPC pages can update this cache.
+/// The supplied step IDs select records; they never supply model names or a
+/// response. Every page must be in the same exact process/claim/pin and the
+/// opaque cursor chain must terminate before any cache write.
+pub(crate) fn record_verified_models_from_original_rpc_source(
+    db:&mut VerifiedDatabaseConnection<'_>,instance_id:&str,domain_id:&str,
+    session_id:&str,step_ids:&[String],observed_at:&str)
+    ->Result<(),InstanceManagementError> {
+    if !valid_id(instance_id) || !valid_wire_id(domain_id) || !valid_wire_id(session_id)
+        || step_ids.is_empty() || step_ids.len()>64 || observed_at.parse::<u64>().is_err()
+        || !step_ids.iter().all(|step|valid_wire_id(step)) {
+        return Err(InstanceManagementError::Invalid("model source identity"));
+    }
+    transaction(db,|db| {
+        let mut distinct_steps=BTreeSet::new();
+        let mut distinct_models=BTreeSet::new();
+        let mut models=Vec::new();
+        let mut expected_cursor=None;
+        let mut first_source=None;
+        let mut prior_process=None;
+        let mut pin_digest=None;
+        for (index,step_id) in step_ids.iter().enumerate() {
+            if !distinct_steps.insert(step_id) {return Err(InstanceManagementError::Conflict);}
+            let row=Statement::prepare(db.as_ptr(),
+                "SELECT s.command_hex,hex(r.raw_bytes),s.source_epoch,s.source_cursor,s.process_operation_id,i.program_digest
+                   FROM main.gogoke_v37_rpc_steps s
+                   JOIN main.gogoke_v37_h_claim h ON h.domain_id=s.domain_id AND h.session_id=s.session_id
+                     AND h.instance_id=?1 AND h.process_operation_id=s.process_operation_id
+                     AND h.generation=s.generation AND h.state='COMMITTED'
+                   JOIN main.gogoke_v37_instances i ON i.instance_id=h.instance_id
+                     AND i.driver_id='codex' AND i.login_state='LOGGED_IN'
+                     AND i.program_digest=s.binary_digest
+                   JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
+                     AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
+                     AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
+                     AND r.domain_id=s.domain_id AND r.session_id=s.session_id AND r.generation=s.generation
+                     AND r.state='NO_EVENT' AND r.no_event_reason='CODEX_RPC_RESPONSE'
+                  WHERE s.domain_id=?2 AND s.session_id=?3 AND s.step_id=?4 AND s.phase='OBSERVED'
+                    AND s.requires_response=1")?;
+            row.bind_text(1,instance_id)?;row.bind_text(2,domain_id)?;
+            row.bind_text(3,session_id)?;row.bind_text(4,step_id)?;
+            if !row.step_row()? {return Err(InstanceManagementError::Conflict);}
+            let command=original_hex_bytes(&row.column_text(0)?)?;
+            let response=original_hex_bytes(&row.column_text(1)?)?;
+            let epoch=row.column_text(2)?;
+            let cursor=row.column_text(3)?;
+            let process=row.column_text(4)?;
+            let digest=row.column_text(5)?;
+            if row.step_row()? {return Err(InstanceManagementError::Conflict);}
+            drop(row);
+            if prior_process.as_deref().is_some_and(|previous|previous!=process)
+                || pin_digest.as_deref().is_some_and(|previous|previous!=digest) {
+                return Err(InstanceManagementError::Conflict);
+            }
+            prior_process=Some(process);pin_digest=Some(digest);
+            if index==0 {first_source=Some((epoch.clone(),cursor.clone()));}
+            let (request_cursor,page,next)=codex_rpc::decode_stored_model_list(&command,&response)
+                .map_err(|_|InstanceManagementError::Conflict)?;
+            if request_cursor!=expected_cursor || (index+1<step_ids.len())!=next.is_some() {
+                return Err(InstanceManagementError::Conflict);
+            }
+            for model in page {
+                if model.len()>160 || model.chars().any(char::is_control) || models.len()>=1024 {
+                    return Err(InstanceManagementError::Conflict);
+                }
+                if distinct_models.insert(model.clone()) {models.push(model);}
+            }
+            expected_cursor=next;
+        }
+        let (epoch,cursor)=first_source.ok_or(InstanceManagementError::Conflict)?;
+        let source=format!("codex-model/list:OBSERVED:{domain_id}:{session_id}:{epoch}:{cursor}");
+        let json=Json::Array(models.iter().map(|value|Json::String(JsonString::from_str(value))).collect()).canonical();
+        if json.len()>65_536 {return Err(InstanceManagementError::Conflict);}
+        let write=Statement::prepare(db.as_ptr(),
+            "INSERT INTO main.gogoke_v37_instance_evidence(instance_id,available_models_json,models_source,models_observed_at,models_program_digest)
+             VALUES(?1,?2,?3,?4,?5) ON CONFLICT(instance_id) DO UPDATE SET available_models_json=excluded.available_models_json,
+             models_source=excluded.models_source,models_observed_at=excluded.models_observed_at,models_program_digest=excluded.models_program_digest")?;
+        write.bind_text(1,instance_id)?;write.bind_text(2,&json)?;write.bind_text(3,&source)?;
+        write.bind_text(4,observed_at)?;
+        write.bind_text(5,&pin_digest.ok_or(InstanceManagementError::Conflict)?)?;
+        write.step_done()?;
+        Ok(())
+    })
 }
