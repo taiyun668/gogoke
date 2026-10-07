@@ -832,6 +832,53 @@ impl<'root> ProductDatabase<'root> {
             return Err(OrchestrationError::Invalid("configuration schema"));
         }
         let command = string_field(&fields, "command")?;
+        if command == "secretary-configuration-read" && fields.len() == 2 {
+            self.connection.execute("BEGIN").map_err(OrchestrationError::CommitUnknownWithCause)?;
+            let observed=seat::read_secretary_configuration_in_transaction(&self.connection,&self.owner);
+            let observed=match observed {
+                Ok(observed)=>{
+                    self.connection.execute("COMMIT").map_err(OrchestrationError::CommitUnknownWithCause)?;
+                    observed
+                },
+                Err(error)=>{
+                    self.connection.execute("ROLLBACK").map_err(OrchestrationError::CommitUnknownWithCause)?;
+                    return Err(error.into());
+                },
+            };
+            let text=|value:&str| Json::String(JsonString::from_str(value));
+            let optional=|value:Option<String>| value.map(|value|text(&value)).unwrap_or(Json::Null);
+            let mut result=BTreeMap::from([
+                (key("schema"),text("gogoke.37.secretary-configuration.v1")),
+            ]);
+            match observed {
+                seat::SecretaryConfiguration::Unset=>{result.insert(key("state"),text("UNSET"));},
+                seat::SecretaryConfiguration::Revoked=>{result.insert(key("state"),text("REVOKED"));},
+                seat::SecretaryConfiguration::Designated {seat_id,incarnation,generation,revision,
+                    instance_id,model,effort,permission,state}=>{
+                    result.insert(key("state"),text("DESIGNATED"));
+                    result.insert(key("seatId"),text(&seat_id));
+                    result.insert(key("incarnation"),text(&incarnation));
+                    result.insert(key("generation"),text(&generation.to_string()));
+                    result.insert(key("revision"),text(&revision.to_string()));
+                    result.insert(key("instanceId"),optional(instance_id));
+                    result.insert(key("model"),optional(model));
+                    result.insert(key("effort"),optional(effort));
+                    let permission=permission.map(|tier|match tier {
+                        seat::PermissionTier::ReadOnly=>"READ_ONLY",
+                        seat::PermissionTier::NoNetwork=>"NO_NETWORK",
+                        seat::PermissionTier::IsolatedWrite=>"ISOLATED_WRITE",
+                        seat::PermissionTier::NetworkedWrite=>"NETWORKED_WRITE",
+                    }.to_owned());
+                    result.insert(key("permissionTier"),optional(permission));
+                    result.insert(key("seatState"),text(match state {
+                        State::Idle=>"IDLE",State::Busy=>"BUSY",State::Reclaimed=>"RECLAIMED",
+                    }));
+                },
+            }
+            // Configuration facts do not claim that H/A can run this seat,
+            // subscribe globally, dispatch work, or schedule model calls.
+            return Ok(Json::Object(result).canonical().into_bytes());
+        }
         if command == "seats-page-read" && fields.len() == 3 {
             let domain = string_field(&fields, "domainId")?;
             self.connection.execute("BEGIN").map_err(OrchestrationError::CommitUnknownWithCause)?;
@@ -1009,6 +1056,30 @@ impl<'root> ProductDatabase<'root> {
             ])).canonical().into_bytes());
         }
         match command.as_str() {
+            "secretary-designate" if fields.len() == 5 => {
+                let designated=seat::designate_secretary(&mut self.connection,&self.owner,
+                    &string_field(&fields,"seatId")?,&string_field(&fields,"incarnation")?,
+                    &string_field(&fields,"requestId")?,frame)?;
+                return Ok(Json::Object(BTreeMap::from([
+                    (key("schema"),Json::String(JsonString::from_str("gogoke.37.secretary-configuration.v1"))),
+                    (key("status"),Json::String(JsonString::from_str(if designated.replayed {"REPLAYED"} else {"APPLIED"}))),
+                    (key("seatId"),Json::String(JsonString::from_str(&designated.seat_id))),
+                    (key("incarnation"),Json::String(JsonString::from_str(&designated.incarnation))),
+                ])).canonical().into_bytes());
+            },
+            "secretary-configure" if fields.len() == 9 => {
+                let permission=fields.get(&key("permissionTier"))
+                    .ok_or(OrchestrationError::Invalid("permissionTier"))?.canonical();
+                let configured=seat::configure_secretary(&mut self.connection,&self.owner,
+                    revision("expectedGeneration")?,revision("expectedRevision")?,
+                    &string_field(&fields,"requestId")?,frame,&string_field(&fields,"instanceId")?,
+                    &string_field(&fields,"model")?,&string_field(&fields,"effort")?,&permission)?;
+                let mut result=seat_result(&configured.seat)?;
+                result.insert(key("schema"),Json::String(JsonString::from_str("gogoke.37.secretary-configuration.v1")));
+                result.insert(key("status"),Json::String(JsonString::from_str(if configured.replayed {"REPLAYED"} else {"APPLIED"})));
+                result.insert(key("revision"),Json::String(JsonString::from_str(&configured.seat.revision.to_string())));
+                return Ok(Json::Object(result).canonical().into_bytes());
+            },
             "seat-rename" | "seat-designate-lead" => {
                 let expected = if command == "seat-rename" { 6 } else { 5 };
                 if fields.len() != expected { return Err(OrchestrationError::Invalid("seat metadata fields")); }
@@ -1120,6 +1191,61 @@ mod tests {
         if let Err(error) = std::fs::remove_dir(&path) {
             eprintln!("owned fixture retained: {error}");
         }
+    }
+
+    #[test]
+    fn secretary_configuration_ingress_preserves_unset_and_exact_owner_bytes() {
+        fixture(|product| {
+            let read=br#"{"schema":"gogoke.37.owner-configuration.v1","command":"secretary-configuration-read"}"#;
+            assert!(String::from_utf8(product.configure_user_v37(read).unwrap()).unwrap()
+                .contains("\"state\":\"UNSET\""));
+            seat::store_template(&mut product.connection,NativeOrigin::user(&product.owner),
+                seat::StoreTemplate {domain_id:"global",template_id:"secretaryBase",settings_json:br#"{}"#}).unwrap();
+            let created=seat::create(&mut product.connection,NativeOrigin::user(&product.owner),
+                CreateSeat {domain_id:"global",seat_id:"globalSeatA",template_id:"secretaryBase",instance_id:None,
+                    kind:Kind::Long,request_id:"createGlobalA",request_bytes:b"original global configuration seat"}).unwrap().seat;
+            let designate=format!(r#"{{"schema":"gogoke.37.owner-configuration.v1","command":"secretary-designate","requestId":"designateGlobalA","seatId":"globalSeatA","incarnation":"{}"}}"#,created.incarnation);
+            assert!(String::from_utf8(product.configure_user_v37(designate.as_bytes()).unwrap()).unwrap()
+                .contains("\"status\":\"APPLIED\""));
+            assert!(String::from_utf8(product.configure_user_v37(designate.as_bytes()).unwrap()).unwrap()
+                .contains("\"status\":\"REPLAYED\""));
+            assert!(product.configure_user_v37(format!("{designate} ").as_bytes()).is_err(),
+                "same logical request with different original bytes is not replay");
+            let snapshot=String::from_utf8(product.configure_user_v37(read).unwrap()).unwrap();
+            for field in ["instanceId","model","effort","permissionTier"] {
+                assert!(snapshot.contains(&format!("\"{field}\":null")),"no guessed setting: {snapshot}");
+            }
+            let configure=format!(r#"{{"schema":"gogoke.37.owner-configuration.v1","command":"secretary-configure","requestId":"configureGlobalA","expectedGeneration":"{}","expectedRevision":"{}","instanceId":"absentInstance","model":"unverifiedModel","effort":"high","permissionTier":"READ_ONLY"}}"#,
+                created.generation,created.revision);
+            assert!(product.configure_user_v37(configure.as_bytes()).is_err(),"unverified F target refused");
+            assert_eq!(String::from_utf8(product.configure_user_v37(read).unwrap()).unwrap(),snapshot,
+                "failed configuration leaves original unset fields and revisions unchanged");
+            // Synthetic F metadata exercises this Owner configuration boundary;
+            // it is not a real CLI/model-list or secretary launch observation.
+            product.connection.execute("INSERT INTO main.gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('configuredInstance','codex','fixtureHome','fixtureIdentity','sha256:fixture','fixture','INSTALLED','LOGGED_IN',1)").unwrap();
+            product.connection.execute("INSERT INTO main.gogoke_v37_instance_profiles(instance_id,display_name,enabled,tombstoned,revision) VALUES('configuredInstance','fixture',1,0,1)").unwrap();
+            product.connection.execute("INSERT INTO main.gogoke_v37_instance_evidence(instance_id,available_models_json,models_source,models_observed_at,models_program_digest) VALUES('configuredInstance','[\"verifiedModel\"]','codex-model/list:OBSERVED:fixture','100','sha256:fixture')").unwrap();
+            let configure=configure.replace("configureGlobalA","configureGlobalB")
+                .replace("absentInstance","configuredInstance").replace("unverifiedModel","verifiedModel");
+            assert!(String::from_utf8(product.configure_user_v37(configure.as_bytes()).unwrap()).unwrap()
+                .contains("\"status\":\"APPLIED\""));
+            assert!(String::from_utf8(product.configure_user_v37(configure.as_bytes()).unwrap()).unwrap()
+                .contains("\"status\":\"REPLAYED\""));
+            assert!(product.configure_user_v37(format!("{configure} ").as_bytes()).is_err(),
+                "configuration replay requires original bytes at the Root ingress");
+            let configured=String::from_utf8(product.configure_user_v37(read).unwrap()).unwrap();
+            for value in ["\"instanceId\":\"configuredInstance\"","\"model\":\"verifiedModel\"",
+                "\"effort\":\"high\"","\"permissionTier\":\"READ_ONLY\""] {
+                assert!(configured.contains(value),"Root readback matches original E selection: {configured}");
+            }
+            let current=seat::get(&product.connection,"global",&created.seat_id).unwrap().unwrap();
+            seat::reclaim(&mut product.connection,NativeOrigin::user(&product.owner),SeatChange {
+                domain_id:"global",seat_id:&created.seat_id,expected_generation:current.generation,
+                expected_revision:current.revision,request_id:"revokeGlobalA",request_bytes:b"original revoke"}).unwrap();
+            assert!(String::from_utf8(product.configure_user_v37(read).unwrap()).unwrap()
+                .contains("\"state\":\"REVOKED\""));
+            assert!(product.configure_user_v37(designate.as_bytes()).is_err(),"old designation cannot undo revocation");
+        });
     }
 
     #[test]
