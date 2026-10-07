@@ -41,8 +41,15 @@ impl DeliveryIntent {
     /// own sender. The visible D body remains the original message.
     pub(crate) fn send_body(&self)->String {
         let body=self.body.replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;");
-        format!("<gogoke-side-message from-seat=\"{}\" side-id=\"{}\">\n{}\n</gogoke-side-message>",
-            self.source_seat_id,self.side_id,body)
+        if self.source_seat_id==self.target_seat_id {
+            // Same E seat is two distinct native sessions. Preserve the old
+            // marker byte for byte for legacy distinct-seat deliveries.
+            format!("<gogoke-side-message from-seat=\"{}\" side-id=\"{}\" direction=\"{}\">\n{}\n</gogoke-side-message>",
+                self.source_seat_id,self.side_id,self.direction,body)
+        } else {
+            format!("<gogoke-side-message from-seat=\"{}\" side-id=\"{}\">\n{}\n</gogoke-side-message>",
+                self.source_seat_id,self.side_id,body)
+        }
     }
 }
 
@@ -118,21 +125,18 @@ pub(crate) fn prepare(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,
         body.len()>crate::ipc::MAX_FRAME_BYTES/2 {return Err(SideError::Invalid("delivery input"));}
     transact(db,|db| {
         authority::check_owner_in_current_transaction(db,owner)?;
-        if let Some(prior)=load_intent(db,domain,request_id)? {
-            if prior.side_id!=side_id||prior.direction!=direction.name()||prior.source_session_id!=caller_session||prior.body!=body {
-                return Err(SideError::Conflict);
-            }
-            return Ok(prior); // A replay, including PREPARED/UNKNOWN, never resends.
-        }
         let s=side(db,domain,side_id)?;check_history(db,&s)?;
         if s.state!="ACTIVE" {return Err(SideError::Conflict);}
-        let lead=current_session(db,&s,true)?;
-        let side=current_session(db,&s,false)?;
+        let same_seat=s.seat_id==s.source_seat_id;
+        let lead=current_session(db,&s,true,same_seat.then_some(s.source_session_id.as_str()))?;
+        let side=current_session(db,&s,false,same_seat.then_some(s.session_id.as_str()))?;
         let (source_seat,source_inc,source_session,target_seat,target_inc,target)=match direction {
             Direction::SideToLead=>(&s.seat_id,&s.seat_incarnation,&side.0,&s.source_seat_id,&s.source_seat_incarnation,&lead),
             Direction::LeadToSide=>(&s.source_seat_id,&s.source_seat_incarnation,&lead.0,&s.seat_id,&s.seat_incarnation,&side),
         };
-        if source_session.as_str()!=caller_session||source_seat==target_seat||target.3.is_empty() {
+        // A same-seat relay is between two exact H sessions. A session may
+        // never send to itself, even if the caller chooses the other direction.
+        if source_session.as_str()!=caller_session||source_session.as_str()==target.0.as_str()||target.3.is_empty() {
             return Err(SideError::Denied);
         }
         for session in [source_session.as_str(),target.0.as_str()] {
@@ -141,6 +145,18 @@ pub(crate) fn prepare(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,
             if !claim.step_row()? || claim.step_row()? {return Err(SideError::Denied);}
         }
         if !authorized(db,source_seat,target_seat)? {return Err(SideError::Denied);}
+        if let Some(prior)=load_intent(db,domain,request_id)? {
+            if prior.side_id!=side_id||prior.direction!=direction.name()||
+                prior.source_seat_id!=source_seat.as_str()||prior.source_seat_incarnation!=source_inc.as_str()||
+                prior.source_session_id!=source_session.as_str()||prior.target_seat_id!=target_seat.as_str()||
+                prior.target_seat_incarnation!=target_inc.as_str()||prior.target_session_id!=target.0||
+                prior.target_generation!=target.1||prior.body!=body {
+                return Err(SideError::Conflict);
+            }
+            // Never resubmit. Current exact H/E and MESSAGE authority were
+            // just rechecked; Owner history reads use a separate path.
+            return Ok(prior);
+        }
         // C's IDs are fixed before any enqueue/H action. Recovery only reads
         // these exact identities; it cannot derive a fresh request to resend.
         let digest=crate::store::digest::sha256_hex(format!("{domain}\n{request_id}").as_bytes());
