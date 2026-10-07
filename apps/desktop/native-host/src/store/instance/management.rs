@@ -321,6 +321,12 @@ pub(crate) fn record_verified_models_from_original_rpc_source(
                    JOIN main.gogoke_v37_instances i ON i.instance_id=h.instance_id
                      AND i.driver_id='codex' AND i.login_state='LOGGED_IN'
                      AND i.program_digest=s.binary_digest
+                   JOIN main.gogoke_coordination_process_custody c ON c.operation_id=s.process_operation_id
+                     AND c.ticket=s.ticket AND c.custodian_nonce=s.custodian_nonce
+                     AND c.pid=s.pid AND c.creation_time_100ns=s.creation_time
+                     AND c.image_path=s.image_path AND c.binary_digest_sha256=s.binary_digest
+                     AND c.profile_id=h.instance_id AND c.domain_id=s.domain_id
+                     AND c.generation=s.generation
                    JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
                      AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
                      AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
