@@ -712,6 +712,8 @@ impl<'root> ProductDatabase<'root> {
                     row.insert(key("plan"), optional(evidence.subscription));
                     row.insert(key("lastConfirmed"), optional(evidence.account_confirmed_at));
                     row.insert(key("checkFailed"), optional(evidence.detect_error));
+                    row.insert(key("modelsSource"), optional(evidence.models_source));
+                    row.insert(key("modelsObservedAt"), optional(evidence.models_observed_at));
                     if let Some(models) = evidence.available_models_json {
                         let Json::Array(models) = Parser::parse(&models)? else {
                             return Err(OrchestrationError::Invalid("verified instance models"));
