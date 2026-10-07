@@ -40,7 +40,9 @@ impl DeliveryIntent {
     /// The actual H input is labelled without letting model text choose its
     /// own sender. The visible D body remains the original message.
     pub(crate) fn send_body(&self)->String {
-        format!("[gogoke side {} from seat {}]\n{}",self.side_id,self.source_seat_id,self.body)
+        let body=self.body.replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;");
+        format!("<gogoke-side-message from-seat=\"{}\" side-id=\"{}\">\n{}\n</gogoke-side-message>",
+            self.source_seat_id,self.side_id,body)
     }
 }
 
