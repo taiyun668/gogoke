@@ -7,8 +7,44 @@ use crate::store::inbox::{self, InboxEdit, InboxEnvelope, InboxError, Message,
 use crate::store::seat::NativeOrigin;
 use crate::store::session_transport::{codex_rpc::{self,Command,Reply,RpcId,RpcError}, runtime};
 use crate::store::digest::sha256_hex;
+use crate::store::sidechat::delivery::{self as side_delivery,DeliveryIntent};
+use crate::store::seat::{self,NativeSeatCall,CallAction};
 
 fn text(value:&str)->Json {Json::String(JsonString::from_str(value))}
+
+fn side_inbox_request(intent:&DeliveryIntent,operation:&str,id:&str,revision:u64,
+    payload:BTreeMap<JsonString,Json>)->Result<V37Request> {
+    let bytes=Json::Object(BTreeMap::from([
+        (JsonString::from_str("schema"),text("gogoke.37.operations.v1")),
+        (JsonString::from_str("family"),text("K-INBOX")),
+        (JsonString::from_str("operation"),text(operation)),
+        (JsonString::from_str("requestId"),text(id)),
+        (JsonString::from_str("targetId"),text(&intent.message_id)),
+        (JsonString::from_str("domainId"),text(&intent.domain_id)),
+        (JsonString::from_str("expectedRevision"),text(&revision.to_string())),
+        (JsonString::from_str("payload"),Json::Object(payload)),
+    ])).canonical();
+    crate::store::session_transport::decode_request(bytes.as_bytes())
+        .map_err(|error|inbox_error("side C request",error))
+}
+
+fn side_session_request(intent:&DeliveryIntent,revision:u64)->Result<V37Request> {
+    let bytes=Json::Object(BTreeMap::from([
+        (JsonString::from_str("schema"),text("gogoke.37.operations.v1")),
+        (JsonString::from_str("family"),text("K-SESSION")),
+        (JsonString::from_str("operation"),text("send")),
+        (JsonString::from_str("requestId"),text(&intent.send_request_id())),
+        (JsonString::from_str("targetId"),text(&intent.target_session_id)),
+        (JsonString::from_str("domainId"),text(&intent.domain_id)),
+        (JsonString::from_str("expectedRevision"),text(&revision.to_string())),
+        (JsonString::from_str("payload"),Json::Object(BTreeMap::from([
+            (JsonString::from_str("generation"),text(&intent.target_generation)),
+            (JsonString::from_str("body"),text(&intent.send_body())),
+        ]))),
+    ])).canonical();
+    crate::store::session_transport::decode_request(bytes.as_bytes())
+        .map_err(|error|inbox_error("side H request",error))
+}
 
 fn inbox_error(scope:&str,error:impl std::fmt::Debug)->OrchestrationError {
     OrchestrationError::V37StoreFailure(format!("native inbox {scope}: {error:?}"))
@@ -193,6 +229,177 @@ fn target_present(db:&VerifiedDatabaseConnection<'_>,target:&Target)
 }
 
 impl<'root> ProductDatabase<'root> {
+    pub(super) fn check_side_send(&mut self,request:&V37Request,intent:&DeliveryIntent,
+        caller:&NativeSeatCall)->Result<()> {
+        if request.family!="K-SESSION"||request.operation!="send"||
+            request.domain_id!=intent.domain_id||request.target_id!=intent.target_session_id||
+            request.request_id!=intent.send_request_id()||request.payload.len()!=2||
+            payload(request,"generation")?!=intent.target_generation||
+            payload(request,"body")?!=intent.send_body()||
+            !Self::side_message_grant(&self.connection,intent,caller)
+                .map_err(|error|inbox_error("side grant",error))? {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let message=inbox::read_message(&self.connection,&intent.domain_id,&intent.message_id)
+            .map_err(|error|inbox_error("side original message",error))?
+            .ok_or(OrchestrationError::AccessDenied)?;
+        let operation=inbox::read_operation(&self.connection,&intent.domain_id,&intent.delivery_request_id)
+            .map_err(|error|inbox_error("side original reservation",error))?
+            .ok_or(OrchestrationError::AccessDenied)?;
+        if message.state!="UNKNOWN"||message.sender_seat_id!=intent.source_seat_id||
+            message.seat_id!=intent.target_seat_id||message.turn_id!="SIDE_NEW_TURN"||
+            message.generation!=intent.target_generation||message.body!=intent.send_body()||
+            operation.phase!="UNKNOWN"||operation.message_id!=intent.message_id {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let original=side_inbox_request(intent,"deliver",&intent.delivery_request_id,1,
+            BTreeMap::from([(JsonString::from_str("generation"),text(&intent.target_generation))]))?;
+        if operation.request_hex!=hex_bytes(&original.raw_bytes) {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        Ok(())
+    }
+    fn side_message_grant(db:&crate::store::same_open::VerifiedDatabaseConnection<'_>,
+        intent:&DeliveryIntent,caller:&NativeSeatCall)->std::result::Result<bool,InboxError> {
+        match side_delivery::verify_intent(db,intent) {
+            Ok(())=>{},
+            Err(crate::store::sidechat::SideError::Denied|
+                crate::store::sidechat::SideError::Conflict)=>return Ok(false),
+            Err(error)=>return Err(InboxError::InvalidEvidence(format!("D original intent: {error:?}"))),
+        }
+        if caller.domain_id()!=intent.domain_id ||
+            caller.session_id()!=Some(intent.source_session_id.as_str()) ||
+            caller.seat_id()!=intent.source_seat_id ||caller.incarnation()!=intent.source_seat_incarnation {
+            return Ok(false);
+        }
+        let lead=Statement::prepare(db.as_ptr(),"SELECT 1 FROM main.gogoke_v37_seat_project_lead l JOIN main.gogoke_v37_side_registry s ON s.domain_id=l.domain_id AND s.source_seat_id=l.seat_id AND s.source_seat_incarnation=l.incarnation WHERE l.domain_id=?1 AND s.side_id=?2 AND s.state='ACTIVE'")?;
+        lead.bind_text(1,&intent.domain_id)?;lead.bind_text(2,&intent.side_id)?;
+        if !lead.step_row()? || lead.step_row()? {return Ok(false);}
+        match seat::authorize_current_call(db,caller,&intent.domain_id,&intent.target_seat_id,
+            CallAction::Message) {
+            Ok(_)=>Ok(true),
+            Err(seat::SeatError::Denied|seat::SeatError::Conflict)=>Ok(false),
+            Err(error)=>Err(InboxError::InvalidEvidence(format!("E MESSAGE authority: {error:?}"))),
+        }
+    }
+
+    /// C owns both queue states. Busy uses its existing native steer path;
+    /// idle uses the original C reservation and H ordinary send below.
+    pub(super) fn dispatch_side_delivery(&mut self,intent:&DeliveryIntent,
+        caller:&NativeSeatCall)->Result<()> {
+        if !intent.may_dispatch {return Err(OrchestrationError::AccessDenied);}
+        let key=(intent.domain_id.clone(),intent.target_session_id.clone());
+        self.drain_native_output(&key)?;
+        let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
+        if run.evidence.seat_id()!=intent.target_seat_id ||
+            run.custody.binding.generation!=intent.target_generation ||
+            run.evidence.driver_id()!="codex" || !run.allows_input() {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let turn=run.turn_id.clone();
+        let target=if let Some(turn)=&turn {turn.as_str()} else {"SIDE_NEW_TURN"};
+        let request=side_inbox_request(intent,"enqueue",&intent.enqueue_request_id,0,
+            BTreeMap::from([(JsonString::from_str("seatId"),text(&intent.target_seat_id)),
+                (JsonString::from_str("turnId"),text(target)),
+                (JsonString::from_str("generation"),text(&intent.target_generation)),
+                (JsonString::from_str("body"),text(&intent.send_body()))]))?;
+        let envelope=InboxEnvelope {domain_id:&intent.domain_id,request_id:&request.request_id,
+            request_bytes:&request.raw_bytes,message_id:&intent.message_id,expected_revision:0};
+        let enqueued=inbox::edit_message(&mut self.connection,&envelope,
+            InboxEdit::Enqueue {sender_seat_id:&intent.source_seat_id,seat_id:&intent.target_seat_id,
+                turn_id:target,generation:&intent.target_generation,body:&intent.send_body()},
+            |db|Self::side_message_grant(db,intent,caller)).map_err(|error|inbox_error("side enqueue",error))?;
+        if enqueued.phase!="APPLIED" {return Err(OrchestrationError::OperationConflict);}
+        if let Some(turn)=turn {
+            let steer=side_inbox_request(intent,"steer",&intent.delivery_request_id,1,
+                BTreeMap::from([(JsonString::from_str("turnId"),text(&turn)),
+                    (JsonString::from_str("generation"),text(&intent.target_generation))]))?;
+            authority::read_product_identity(&mut self.connection,&self.owner)?;
+            let side_envelope=InboxEnvelope {domain_id:&intent.domain_id,
+                request_id:&steer.request_id,request_bytes:&steer.raw_bytes,
+                message_id:&intent.message_id,expected_revision:1};
+            let bytes=self.deliver_native_inbox(&steer,&side_envelope,Some((intent,caller)))?;
+            let receipt=crate::store::session_transport::decode_receipt(&bytes).map_err(|error|
+                inbox_error("side steer receipt",error))?;
+            if receipt.status==V37Status::Conflict {
+                match side_delivery::record_ended_turn(&mut self.connection,&self.owner,intent,&bytes) {
+                    Ok(())=>return Ok(()),
+                    Err(crate::store::sidechat::SideError::Denied)=>{},
+                    Err(error)=>return Err(inbox_error("side ended turn record",error)),
+                }
+            }
+            if !matches!(receipt.status,V37Status::Applied|V37Status::Replayed|V37Status::Unknown) {
+                return Err(OrchestrationError::V37StoreFailure(format!("side steer: {}",
+                    String::from_utf8_lossy(&bytes))));
+            }
+            return Ok(());
+        }
+        if !self.side_recipient_idle(&key,crate::store::ledger::SessionPurpose::SideChat)? &&
+            !self.side_recipient_idle(&key,crate::store::ledger::SessionPurpose::Work)? {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let deliver=side_inbox_request(intent,"deliver",&intent.delivery_request_id,1,
+            BTreeMap::from([(JsonString::from_str("generation"),text(&intent.target_generation))]))?;
+        let envelope=InboxEnvelope {domain_id:&intent.domain_id,request_id:&deliver.request_id,
+            request_bytes:&deliver.raw_bytes,message_id:&intent.message_id,expected_revision:1};
+        let (reserved,permit)=inbox::reserve_delivery(&mut self.connection,&envelope,
+            &intent.target_generation,None,|db|Self::side_message_grant(db,intent,caller))
+            .map_err(|error|inbox_error("side reserve",error))?;
+        if permit.is_none() {return Ok(());}
+        if reserved.phase!="PREPARED" {return Err(OrchestrationError::OperationConflict);}
+        let unknown=inbox::mark_commit_unknown(&mut self.connection,&envelope,
+            |db|Self::side_message_grant(db,intent,caller))
+            .map_err(|error|inbox_error("side commit",error))?;
+        if unknown.phase!="UNKNOWN" {return Err(OrchestrationError::OperationConflict);}
+        let claim=runtime::observe_claim(&self.connection,&seat::NativeOrigin::user(&self.owner),
+            &intent.domain_id,&intent.target_seat_id,&intent.target_session_id)
+            .map_err(|error|inbox_error("side H claim",error))?.ok_or(OrchestrationError::AccessDenied)?;
+        let send=side_session_request(intent,claim.revision.try_into().map_err(|_|
+            OrchestrationError::OperationConflict)?)?;
+        match self.dispatch_side_send(&send,intent,caller) {
+            Err(original)=>{
+                inbox::record_delivery_unknown_error(&mut self.connection,&self.owner,&envelope,
+                    &format!("{original:?}")).map_err(|error|inbox_error("side original error",error))?;
+                return Err(original);
+            },
+            Ok(bytes)=>{
+                let receipt=crate::store::session_transport::decode_receipt(&bytes)
+                    .map_err(|error|inbox_error("side H response",error))?;
+                if !matches!(receipt.status,V37Status::Applied|V37Status::Replayed|V37Status::Unknown) {
+                    inbox::record_delivery_unknown_error(&mut self.connection,&self.owner,&envelope,
+                        &format!("original H receipt: {}",String::from_utf8_lossy(&bytes)))
+                        .map_err(|error|inbox_error("side original H rejection",error))?;
+                }
+            },
+        }
+        self.settle_side_new_turn(intent)
+    }
+
+    pub(super) fn settle_side_new_turn(&mut self,intent:&DeliveryIntent)->Result<()> {
+        let key=(intent.domain_id.clone(),intent.target_session_id.clone());
+        let Some(run)=self.native_sessions.get(&key) else {return Ok(());};
+        let ticket=run.custody.ticket.opaque().to_owned();
+        let target=inbox::host_rule::HostDeliveryTarget {session_id:&intent.target_session_id,
+            ticket:&ticket,generation:&intent.target_generation};
+        match inbox::host_rule::settle_side_turn_start_observed(&mut self.connection,&self.owner,
+            intent,&target) {
+            Ok(_)=>Ok(()),
+            Err(error @ (InboxError::Unknown|InboxError::Denied))=>{
+                self.record_side_unknown(intent,&format!("original H/A settlement: {error:?}"))
+            },
+            Err(error)=>Err(inbox_error("side original H settlement",error)),
+        }
+    }
+
+    pub(super) fn record_side_unknown(&mut self,intent:&DeliveryIntent,reason:&str)->Result<()> {
+        let request=side_inbox_request(intent,"deliver",&intent.delivery_request_id,1,
+            BTreeMap::from([(JsonString::from_str("generation"),text(&intent.target_generation))]))?;
+        let envelope=InboxEnvelope {domain_id:&intent.domain_id,request_id:&intent.delivery_request_id,
+            request_bytes:&request.raw_bytes,message_id:&intent.message_id,expected_revision:1};
+        inbox::record_delivery_unknown_error(&mut self.connection,&self.owner,&envelope,reason)
+            .map_err(|error|inbox_error("side original unknown",error))?;
+        Ok(())
+    }
     fn inbox_receipt_error(&mut self,request:&V37Request,error:InboxError)->Result<Vec<u8>> {
         let mapped=status(&error);
         if matches!(mapped,V37Status::Unknown) {
@@ -211,6 +418,11 @@ impl<'root> ProductDatabase<'root> {
 
     pub(super) fn dispatch_native_inbox(&mut self,request:&V37Request)->Result<Vec<u8>> {
         authority::read_product_identity(&mut self.connection,&self.owner)?;
+        if request.target_id.starts_with("sidemsg-") &&
+            matches!(request.operation.as_str(),"enqueue"|"edit"|"cancel"|"requeue") {
+            return Ok(encode_receipt(request,V37Status::Denied,request.expected_revision,
+                request.expected_revision,Default::default()));
+        }
         // C mutations and A read receipts share one request identity per
         // family/domain. A changed target or any changed original bytes collide.
         let prior=Statement::prepare(self.connection.as_ptr(),
@@ -233,7 +445,7 @@ impl<'root> ProductDatabase<'root> {
         match request.operation.as_str() {
             "enqueue" | "edit" | "cancel" | "requeue"=>self.mutate_native_inbox(request,&envelope),
             "check-unknown"=>self.check_native_inbox(request),
-            "deliver" | "steer"=>self.deliver_native_inbox(request,&envelope),
+            "deliver" | "steer"=>self.deliver_native_inbox(request,&envelope,None),
             _=>Ok(encode_receipt(request,V37Status::Unsupported,request.expected_revision,
                 request.expected_revision,Default::default())),
         }
@@ -453,7 +665,8 @@ impl<'root> ProductDatabase<'root> {
         }
     }
 
-    fn deliver_native_inbox(&mut self,request:&V37Request,envelope:&InboxEnvelope<'_>)->Result<Vec<u8>> {
+    fn deliver_native_inbox(&mut self,request:&V37Request,envelope:&InboxEnvelope<'_>,
+        side_source:Option<(&DeliveryIntent,&NativeSeatCall)>)->Result<Vec<u8>> {
         let kind=if request.operation=="steer" {NativeDeliveryKind::Steer} else {NativeDeliveryKind::Deliver};
         let fields=if kind==NativeDeliveryKind::Steer {&["turnId","generation"][..]}
             else {&["generation"][..]};
@@ -496,6 +709,18 @@ impl<'root> ProductDatabase<'root> {
         let Some(message)=read_inbox_message(&self.connection,&request.domain_id,&request.target_id)? else {
             return Ok(encode_receipt(request,V37Status::Conflict,0,0,Default::default()));
         };
+        if message.message_id.starts_with("sidemsg-") {
+            let Some((intent,caller))=side_source else {
+                return Ok(encode_receipt(request,V37Status::Denied,message.revision,message.revision,
+                    Default::default()));
+            };
+            if request.operation!="steer"||intent.message_id!=message.message_id||
+                !Self::side_message_grant(&self.connection,intent,caller)
+                    .map_err(|error|inbox_error("side original grant",error))? {
+                return Ok(encode_receipt(request,V37Status::Denied,message.revision,message.revision,
+                    Default::default()));
+            }
+        }
         if message.revision!=request.expected_revision {
             return Ok(encode_receipt(request,V37Status::Stale,message.revision,message.revision,Default::default()));
         }
@@ -530,6 +755,9 @@ impl<'root> ProductDatabase<'root> {
         let reservation=inbox::reserve_delivery(&mut self.connection,envelope,&generation,
             if kind==NativeDeliveryKind::Steer {Some(&message.turn_id)} else {None},|db| {
                 authority::check_owner_in_current_transaction(db,owner).map_err(InboxError::Authority)?;
+                if let Some((intent,caller))=side_source {
+                    if !Self::side_message_grant(db,intent,caller)? {return Ok(false);}
+                }
                 target_present(db,&target)
             });
         let (operation,new)=match reservation {Ok(value)=>value,
@@ -548,6 +776,9 @@ impl<'root> ProductDatabase<'root> {
         // H's one physical RPC. A crash here leaves UNKNOWN for reconciliation.
         let started=inbox::mark_commit_unknown(&mut self.connection,envelope,|db| {
             authority::check_owner_in_current_transaction(db,owner).map_err(InboxError::Authority)?;
+            if let Some((intent,caller))=side_source {
+                if !Self::side_message_grant(db,intent,caller)? {return Ok(false);}
+            }
             target_present(db,&target)
         });
         let unknown=match started {

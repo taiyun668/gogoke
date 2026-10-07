@@ -2241,7 +2241,7 @@ impl<'root> ProductDatabase<'root> {
     }
 
     pub(super) fn dispatch_native_send(&mut self, request: &V37Request) -> Result<Vec<u8>> {
-        if request.request_id.starts_with("hostsend-") {
+        if request.request_id.starts_with("hostsend-") || request.request_id.starts_with("sidesend-") {
             return Ok(encode_receipt(request,V37Status::Denied,request.expected_revision,
                 request.expected_revision,Default::default()));
         }
@@ -2255,6 +2255,20 @@ impl<'root> ProductDatabase<'root> {
         if !self.host_rule_recipient_idle(&key)? {return Err(OrchestrationError::AccessDenied);}
         self.check_host_rule_send(request,proof)?;
         if !self.host_rule_recipient_idle(&key)? {return Err(OrchestrationError::AccessDenied);}
+        self.dispatch_native_send_inner(request)
+    }
+
+    pub(super) fn dispatch_side_send(&mut self,request:&V37Request,
+        intent:&crate::store::sidechat::delivery::DeliveryIntent,
+        caller:&crate::store::seat::NativeSeatCall)->Result<Vec<u8>> {
+        let key=(intent.domain_id.clone(),intent.target_session_id.clone());
+        self.drain_native_output(&key)?;
+        self.check_side_send(request,intent,caller)?;
+        if !self.side_recipient_idle(&key,crate::store::ledger::SessionPurpose::SideChat)? &&
+            !self.side_recipient_idle(&key,crate::store::ledger::SessionPurpose::Work)? {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        self.check_side_send(request,intent,caller)?;
         self.dispatch_native_send_inner(request)
     }
 

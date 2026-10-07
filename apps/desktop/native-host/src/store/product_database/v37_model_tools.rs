@@ -353,6 +353,9 @@ impl<'root> ProductDatabase<'root> {
         let wait=outstanding.step_row()?;drop(outstanding);
         if wait {return Ok(false)};
         let outcome=(||->Result<Vec<u8>> {
+            if caller.tool()==Some("gogoke_side_message") {
+                return self.dispatch_model_side_message(&caller);
+            }
             let request=native_request(&caller)?;
             match caller.tool() {
                 Some("gogoke_seat") if request.operation=="dispatch"=>self.dispatch_model_child(&request,&caller),
