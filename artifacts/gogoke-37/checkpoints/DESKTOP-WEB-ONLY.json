@@ -1,0 +1,16 @@
+{
+  "change": "Owner requested web_only workflow_dispatch for Browser iteration; default false, push and PR keep the complete build chain.",
+  "result": {
+    "fresh_review": "Sol static review passed after correcting the pre-checkout summary working directory.",
+    "web_only_run": 37667663763,
+    "web_only": "Browser SUCCESS; notices, both Windows lanes and byte comparison NOT_RUN.",
+    "complete_run": 37668483924,
+    "complete": "Browser, notices, frozen, repro, byte comparison and source hygiene SUCCESS.",
+    "pull_request": 76,
+    "merged_main": "b8c5a902e00f900d98fddbe31c1764cfeb21dde7",
+    "readback": "Main contains boolean input default false and three non-web job gates; plan and authorization receipt are unchanged. Existing signer still requires all five successful build jobs."
+  },
+  "decision": "Controller merged this implementation detail after independent review and complete cloud checks: Owner explicitly requested it; no authorization scope, security boundary, formal gate, credentials or publication changed.",
+  "next": "G branches that contain this workflow may dispatch web_only=true for features TS iteration. Integration and candidate builds use the complete default false mode.",
+  "reference": "Existing native-host directed-check inputs and candidate signer's required completed+success job inventory. Skipped jobs are never promoted to complete-gate evidence."
+}

@@ -20,8 +20,8 @@ The case notes below distinguish source-proven work from unknown elapsed attribu
 | `store::product_database::v37_login::login_cache::tests::generated_cache_junction_unlinks_only_entry_and_preserves_target` | Real Windows junction creation/removal (`cmd.exe`/Win32 handles) and filesystem assertions; no timed wait. |
 | `store::product_database::v37_login::tests::cancelled_pinned_cli_preserves_stderr_before_confirmed_release` | Pinned CLI child, original stderr, process wait (bounded at 15s), and confirmed stop/release. |
 | `store::product_database::v37_login::tests::owner_first_cli_factory_failures_keep_original_results_and_custody` | CLI factory/custody failure branches and original-result checks; some branches fail before child launch, so elapsed cannot be assigned wholly to process wait. |
-| `store::product_database::v37_login::tests::owner_instance_list_reads_only_registered_native_state_and_rejects_other_frames` | Registered native state and frame validation; no child-process wait. |
-| `store::product_database::v37_login::tests::owner_login_preflight_errors_settle_original_request_without_process_custody` | Dispatch/SQL preflight failures and settled receipts; explicitly no process custody. |
+| `store::product_database::v37_login::tests::owner_instance_list_reads_only_registered_native_state_and_rejects_other_frames` | Real managed-CLI ready/probe fixture, then registered native state/frame validation; no additional login/account process wait in those assertions. |
+| `store::product_database::v37_login::tests::owner_login_preflight_errors_settle_original_request_without_process_custody` | Real managed-CLI fixture, then dispatch/SQL preflight failures and settled receipts; no login process custody is created by the refused requests. |
 | `store::product_database::v37_login::tests::owner_login_retains_second_cli_custody_until_its_own_stop_is_confirmed` | Two pinned CLI/process-custody stages and stop confirmation for the corresponding child. |
 | `store::product_database::v37_login::tests::pinned_cli_ordinary_oauth_callback_reaches_exact_owned_child` | Actual CLI loopback callback/listener ownership checks; 30s polling deadline with 50ms polls. No credentials or real authorization are supplied. |
 | `store::product_database::v37_login::tests::pinned_codex_empty_home_reports_native_logout_and_durable_stop` | Pinned CLI account observation, real process exit (bounded at 15s), and durable stop. |
@@ -48,7 +48,20 @@ The case notes below distinguish source-proven work from unknown elapsed attribu
 | `store::worktree::f2::tests::host_seal_uses_actual_stopped_rebound_instance_not_creation_or_merger` | Real child Git operation tied to actual stopped/rebound process identity. |
 | `store::worktree::f2::tests::merge_preintent_denial_retains_guard_and_writes_no_intent` | Real worktree fixture and pre-intent denial; no merge commit is expected. |
 
-The 8 health test functions call `health_control_product` 16 times in total. That helper holds the shared guard through private database/root creation, fixed-CLI staging/probe/migration, credential setup, Git fixture creation, real Codex session open, synthetic health assertions, durable stop, checked database close, and fixture cleanup. This is repeated real setup/teardown cost, not clock-based “stalled” waiting. Successful output does not identify the time spent in each phase.
+The 8 health test functions call `health_control_product` 16 times in total. That helper holds the shared guard through private database/root creation, fixed-CLI staging/probe/migration, credential setup, Git fixture creation, real Codex session open, synthetic health assertions, durable stop, checked database close, and fixture cleanup. This is repeated real setup/teardown cost, not clock-based “stalled” waiting. Historical output does not identify the time spent in each phase; the timing-only rerun below measures it directly.
+
+## Session-shard direct timing
+
+The test-only timing run `37668010053`, source `81189de`, completed session job `112952143012`: 4 passed, 0 failed, 745 filtered; libtest finished in 127.58s. The guard instrumentation recorded queue and guard-held body times directly:
+
+| Session case | Guard queue | Guard-held body |
+|---|---:|---:|
+| `product_admission_enforces_persisted_caps_and_rolls_back_busy_on_denial` | 19µs | 123.891681s |
+| `product_merge_history_rechecks_current_grant_without_git_and_preserves_unknown_cause` | 123.891742s | 0.418706s |
+| `product_reopens_exact_previous_worktree_schema_preserving_unpinned_sources` | 124.310485s | 0.432939s |
+| `product_worktree_source_reopens_and_original_requests_never_reissue_unknown` | 124.743434s | 2.835189s |
+
+This directly explains the four session-shard over-60s notices: the admission case spent about 123.9s inside the guarded body; the other three spent about 124s waiting for the mutex and under 2.9s in the guarded body. These measurements apply only to this session shard and run; they do not estimate runtime-shard queue or body time.
 
 ## Runtime shard follow-up evidence
 
@@ -69,7 +82,28 @@ Clock injection is suitable only for tests of deadline arithmetic/expiry semanti
 
 Run `37668010053`, source `81189de`, is the timing-only measurement run. Its source diff changes only `same_open.rs` and `v37_runtime_tests.rs` under test configuration: `route_b_test_guard` records `queue_us` and guard-held `body_us`; `health_control_product` records root-open, CLI-ready, credential, seat, Git fixture, session-open, health body, stop, and cleanup phase durations. No production optimization was included.
 
-At the time of this checkpoint, the runtime job `112952142589` was still `IN_PROGRESS`; its logs and timing results were unavailable. Record no before timing numbers from that run until it completes. An after-optimization run is `NOT_RUN`.
+Runtime job `112952142589` completed: 11 passed, 0 failed, 738 filtered; 3823.76s. This is a measurement baseline, not an optimization result. Login passed 32 cases in 1485.41s; session passed 4 in 127.58s. Remainder passed 701 and failed 1 in 2659.22s, so the complete run is not green. Its real Job stop fixture used a 20ms close deadline and recorded `CLOSE_BINDING_DEADLINE_EXCEEDED`; the fixture now uses the existing production stop protocol, preserving all kernel/identity/forced-stop assertions. That correction is awaiting cloud validation.
+
+| Runtime health helper phase | Calls | Total seconds | Mean seconds |
+|---|---:|---:|---:|
+| Actual session open | 16 | 1040.933 | 65.058 |
+| Actual CLI credential setup | 16 | 697.510 | 43.594 |
+| Managed CLI ready/stage/probe | 16 | 600.810 | 37.551 |
+| Health assertion body | 16 | 177.844 | 11.115 |
+| Checked close/cleanup | 16 | 36.959 | 2.310 |
+| Git fixture | 16 | 32.136 | 2.009 |
+| Root open | 16 | 7.355 | 0.460 |
+| Actual stop | 16 | 1.594 | 0.100 |
+| Seat setup | 16 | 0.236 | 0.015 |
+
+These repeated helper stages consume about 2595s while holding the guard. The other two real runtime cases held it for 423.450s and 804.846s. A guard wait can explain individual over-60s notices, but does not eliminate this actual serialized work. Stop is not the measured bottleneck. No evidence yet attributes the startup costs to expiry of a 30s response deadline. The existing test package already uses opt-level=3; adding that setting is not a new optimization.
+
+| Same 11-case runtime shard | Test time | Interpretation |
+|---|---:|---|
+| Historical source 8cc7c5d6 | 4007.97s | Successful historical run, without phase timing |
+| Historical source 129e94e7 | 3974.94s | Successful run; relevant source blobs equal |
+| Timing-only source 81189de | 3823.76s | Baseline with direct queue/body/stage timing; no optimization |
+| After optimization | NOT_RUN | Finer direct-producer timing is next; no improvement is claimed |
 
 ## Reference points
 
