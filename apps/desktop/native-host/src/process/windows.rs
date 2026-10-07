@@ -4070,15 +4070,10 @@ mod tests {
             "Start-Sleep -Seconds 30".to_owned(),
         ];
         let process = prepare_and_activate(&launch, |_| Ok(())).expect("controlled sleeper");
-        let proof = process.stop(
-            StopBudgets {
-                grace_ms: 20,
-                terminate_ms: 1_000,
-                observe_ms: 1_000,
-                host_deadline_ms: 3_000,
-            },
-            || Ok(()),
-        );
+        // This checks real Job termination and repeated-stop custody, not a
+        // 20ms close-thread scheduling deadline. Use the actual production
+        // budgets; the separate deadline cases retain their exact assertions.
+        let proof = process.stop(StopBudgets::production(), || Ok(()));
         assert_eq!(proof.disposition, StopDisposition::Stopped,
             "original controlled Job stop proof: {proof:?}");
         assert!(proof.kill_attempted && proof.kill_succeeded);
