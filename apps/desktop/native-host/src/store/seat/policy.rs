@@ -195,7 +195,8 @@ pub(crate) fn ensure_side_message_pair(db:&mut VerifiedDatabaseConnection<'_>,is
     side_seat:&str,side_incarnation:&str,open_id:&str,open_bytes:&[u8],
     create_id:&str,create_bytes:&[u8])->Result<i64,SeatError> {
     if [domain,side_id,source_seat,source_incarnation,side_seat,side_incarnation,open_id,create_id]
-        .iter().any(|value|!valid_id(value))||source_seat==side_seat||
+        .iter().any(|value|!valid_id(value))||
+        (source_seat==side_seat&&source_incarnation!=side_incarnation)||
         open_bytes.is_empty()||create_bytes.is_empty() {
         return Err(SeatError::Invalid("side MESSAGE pair"));
     }
@@ -221,11 +222,12 @@ pub(crate) fn ensure_side_message_pair(db:&mut VerifiedDatabaseConnection<'_>,is
         designated.bind_text(3,source_incarnation)?;
         if !designated.step_row()?||designated.step_row()? {return Err(SeatError::Denied);}drop(designated);
         let registry=Statement::prepare(db.as_ptr(),
-            "SELECT source_seat_id,source_seat_incarnation,seat_id,seat_incarnation,state FROM main.gogoke_v37_side_registry WHERE domain_id=?1 AND side_id=?2")?;
+            "SELECT source_seat_id,source_seat_incarnation,seat_id,seat_incarnation,state,source_session_id,session_id FROM main.gogoke_v37_side_registry WHERE domain_id=?1 AND side_id=?2")?;
         registry.bind_text(1,domain)?;registry.bind_text(2,side_id)?;
         if !registry.step_row()?||registry.column_text(0)?!=source_seat||
             registry.column_text(1)?!=source_incarnation||registry.column_text(2)?!=side_seat||
             registry.column_text(3)?!=side_incarnation||registry.column_text(4)?=="DELETED"||
+            registry.column_text(5)?==registry.column_text(6)?||
             registry.step_row()? {return Err(SeatError::Denied);}drop(registry);
         let previous=prior_event(db,domain,&event_id,"side-message-pair",&fingerprint)?;
         if let Some(ref event)=previous {
@@ -234,7 +236,11 @@ pub(crate) fn ensure_side_message_pair(db:&mut VerifiedDatabaseConnection<'_>,is
             }
         }
         let mut missing=Vec::new();
-        for (from,to) in [(source_seat,side_seat),(side_seat,source_seat)] {
+        // A side window can use the same logical seat as its WORK source.
+        // D still binds two distinct exact sessions; E stores one self edge.
+        let edges=if source_seat==side_seat {vec![(source_seat,side_seat)]}
+            else {vec![(source_seat,side_seat),(side_seat,source_seat)]};
+        for (from,to) in edges {
             let grant=Statement::prepare(db.as_ptr(),
                 "SELECT expires_at_ms FROM main.gogoke_v37_seat_policy_grants WHERE domain_id=?1 AND caller_seat_id=?2 AND target_id=?3 AND action='MESSAGE'")?;
             grant.bind_text(1,domain)?;grant.bind_text(2,from)?;grant.bind_text(3,to)?;

@@ -85,9 +85,9 @@ impl<'root> ProductDatabase<'root> {
         let session=caller.session_id().ok_or(OrchestrationError::AccessDenied)?;
         let side=d::list(&mut self.connection,&self.owner,domain).map_err(side_error)?
             .into_iter().find(|row|row.side_id==side_id).ok_or(OrchestrationError::AccessDenied)?;
-        let direction=if caller.seat_id()==side.seat_id && caller.incarnation()==side.seat_incarnation {
+        let direction=if session==side.session_id && caller.seat_id()==side.seat_id && caller.incarnation()==side.seat_incarnation {
             d::delivery::Direction::SideToLead
-        } else if caller.seat_id()==side.source_seat_id && caller.incarnation()==side.source_seat_incarnation {
+        } else if session==side.source_session_id && caller.seat_id()==side.source_seat_id && caller.incarnation()==side.source_seat_incarnation {
             d::delivery::Direction::LeadToSide
         } else {return Err(OrchestrationError::AccessDenied)};
         let lead_id=side.source_seat_id.clone();let lead_inc=side.source_seat_incarnation.clone();
