@@ -233,7 +233,10 @@ fn configure_instance_commits_binding_and_full_settings_and_replays_exact_snapsh
         assert!(settings.contains("\"model\":\"modelB\""));
         assert!(settings.contains("\"instruction\":\"default\""));
         assert!(settings.contains("\"takeoverQuestions\""));
-        assert!(!settings.contains("reasoningEffort"));
+        let Json::Object(settings_object) = Parser::parse(settings).unwrap() else {
+            panic!("configured settings must be an object");
+        };
+        assert!(!settings_object.contains_key(&JsonString::from_str("reasoningEffort")));
         assert_eq!(get(db,"projectA","lead").unwrap().unwrap(),receipt.seat);
         let answers=Statement::prepare(db.as_ptr(),
             "SELECT 1 FROM main.gogoke_v37_seat_takeover_answers WHERE domain_id='projectA' AND seat_id='lead'").unwrap();

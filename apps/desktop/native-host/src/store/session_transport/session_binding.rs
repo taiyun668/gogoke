@@ -498,7 +498,7 @@ mod tests {
         with_product_db(|db| {
             legacy(db,"oldA","STOPPED","1",true);
             db.execute("UPDATE main.gogoke_v37_seats SET state='IDLE',generation=99 WHERE seat_id='seatA'").unwrap();
-            db.execute("INSERT INTO main.gogoke_v37_seat_settings(domain_id,seat_id,incarnation,template_id,settings_json) VALUES('projectA','seatA','incA','fixture','{}')").unwrap();
+            db.execute("INSERT INTO main.gogoke_v37_seat_settings(domain_id,seat_id,template_id,settings_json) VALUES('projectA','seatA','fixture','{}')").unwrap();
             let facts=crate::store::seat::list_page_facts(db,"projectA").unwrap();
             assert!(!facts.seats[0].allowed.tune);
             assert_eq!(facts.seats[0].allowed.locked_reason,Some("H_PENDING_OR_UNRESOLVED"));
