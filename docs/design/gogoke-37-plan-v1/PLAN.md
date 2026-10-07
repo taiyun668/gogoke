@@ -276,3 +276,19 @@ F 先持久保存不可扩充的独立 holder-disappearance capture 和 revision
 Owner 逐字段接入补充：新建输入为厂商、显示名及 OpenCode 所连模型来源；模型来源与凭据后端/认证来源分别记录。实例读回上次成功确认登录/账号的时间；异常退出仅在宿主持有真实自动收尾结果及依据时显示“已自动收尾”，未结算保持 UNKNOWN，并提供最近记录。CLI 的安装失败与已安装但启动被拦分为不同状态，分别保留原话；安装/升级进度与各自失败也分别读回。V13 对这些输入、时间、收尾结果和状态分别验证，不从泛化异常记录推断成功。
 
 席位的“直属/下属”是 USER/LEAD 两层的显示归属，新建直属席位按用户层原授权执行；并非让主控越界新建 USER 席位。内部席位/实例标识只可作宿主动作目标，不渲染给用户。计划 PR 的 Browser job 在原 main 夹具读取终态回执后复用目录，原卸载子进程仍持有生命周期锁而返回 Windows 32；同 PR 携入施工分支已有的确切锁释放观测及非空持有负例，只改云端夹具，不改产品删除规则，明确列为集成席位共享文件。
+
+## Owner 2026-10-07：正在进行的最小挂接范围（待本 PR 合入生效）
+
+G 新增 `apps/desktop/src/features/now/`，沿用 Owner 已认可的样稿与 Claude `bce2990b`。现有 MainApp worktree 说明没有 Messages 历史锚点、ThreadRow 状态字或 ComposerInput 停止控件插槽；外层包装无法保证旧批次留在原轮次，且原组件仍自行渲染状态与停止键。只新增以下三个 INTEGRATOR 共享文件：
+
+- `apps/desktop/src/features/messages/components/Messages.tsx`：按真实主控输出锚点挂 NowBlock，永远是该输出的最后一块，已 closed 批次保留历史原位。
+- `apps/desktop/src/features/app/components/ThreadRow.tsx`：从 G context 读确切项目/对话的 batchWord，沿用 thread-state-chip 的 unread / processing / ready。
+- `apps/desktop/src/features/composer/components/ComposerInput.tsx`：有宿主真实操作时换为 StopMenu，区分停这一轮与停这件事，以及停止请求与停止确认。
+
+G 在自己的新目录提供 context，已授权 MainApp 包裹其现有页面节点并在 composerNode 上方挂 NowPin；因此不新增 Composer、Sidebar、ConversationItem 类型、消息分组 hooks 或 layout builder 的写范围。宿主没有的数据不猜，操作做不到就不传；断线重连完整读回，派活无回执为 unknown，审计之后被审文件变更才是 stale，删除席位为 gone。批次事实来自原主控轮次/派发记录，closed 与改动合入来自宿主原回执；拒绝、超时、出错、投递失败保留各自原因。
+
+参照：现有 Messages 末尾与历史分组、ThreadRow 状态字、ComposerInput 原停止键，MainApp/shared_files 的既有节点与插槽；采用小型 G context 传递，避免为穿透 Sidebar/Composer 扩大文件清单。Owner 样稿：<https://claude.ai/artifact/KT15K79wwMhLeWQ2PzMBMk>。本次未能通过工具读出样稿内容，不据此宣称画面一致；以 Owner 认可和分支实际代码为审阅依据。
+
+这是范围摘要变更，同一个 PR 更新 v2 回执及签名链三处固定回执 blob，Owner 合并一次后精确读回才可改这三个产品文件。不改变既有需求、权限、契约持久写方、里程碑或 Owner 触点，不构建候选、不签名、不装机、不自行验收。
+
+G context 必须覆盖左栏所有可见 pinned/recent/对话行的确切项目/对话查找，不只 active 行；legacy workspace/thread 标识不能直接当作 native 身份。每批另由宿主提供 native 主控轮次与具体输出 item 的确切关联，现有 NowBatch.id 与 ConversationItem.id 都不自行充当 turn 锚点。身份或锚点缺失明确未接上，不按顺序或最后一条消息猜位置；该关联类型仍在 G 新目录，Messages 消费现有 item id，故不增加 types.ts 范围。
