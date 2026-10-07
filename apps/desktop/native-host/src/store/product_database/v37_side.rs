@@ -152,6 +152,31 @@ impl<'root> ProductDatabase<'root> {
         Ok(seat)
     }
 
+    /// Complete an Owner-created side only after its original H/D identities
+    /// have produced the two current MESSAGE edges. The policy event is keyed
+    /// by the original nested request bytes, so a replay cannot grant a new
+    /// seat incarnation or revive an Owner-revoked edge.
+    fn finish_side_open_message_pair(&mut self,open:&V37Request,create:&V37Request,
+        source_session:&str,receipt:Vec<u8>)->Result<Vec<u8>> {
+        let status=super::super::session_transport::decode_receipt(&receipt).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("side create receipt: {error:?}")))?;
+        if !matches!(status.status,V37Status::Applied|V37Status::Replayed) {
+            return Err(OrchestrationError::V37StoreFailure(format!("side create unresolved: {}",
+                String::from_utf8_lossy(&receipt))));
+        }
+        let side=d::list(&mut self.connection,&self.owner,&create.domain_id).map_err(side_error)?
+            .into_iter().find(|side|side.side_id==create.target_id)
+            .ok_or(OrchestrationError::OperationConflict)?;
+        if side.source_session_id!=source_session || side.session_id!=open.target_id ||
+            side.state=="DELETED" {return Err(OrchestrationError::OperationConflict);}
+        seat::ensure_side_message_pair(&mut self.connection,&self.owner,&create.domain_id,
+            &side.side_id,&side.source_seat_id,&side.source_seat_incarnation,
+            &side.seat_id,&side.seat_incarnation,&open.request_id,&open.raw_bytes,
+            &create.request_id,&create.raw_bytes).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("side MESSAGE pair: {error:?}")))?;
+        Ok(receipt)
+    }
+
     pub(super) fn dispatch_owner_side_frame(&mut self, frame:&[u8])->Result<Vec<u8>> {
         authority::read_product_identity(&mut self.connection,&self.owner)?;
         if !is_owner_side_frame(frame) {return Err(OrchestrationError::Invalid("owner side frame"));}
@@ -245,7 +270,8 @@ impl<'root> ProductDatabase<'root> {
                         || original.column_text(1)?!=raw_hex || original.column_text(2)?!="APPLIED"
                         || original.step_row()? {return Err(OrchestrationError::OperationConflict);}
                     drop(original);
-                    return self.dispatch_user_side(&create);
+                    let receipt=self.dispatch_user_side(&create)?;
+                    return self.finish_side_open_message_pair(&open,&create,&source,receipt);
                 }
                 drop(known);
                 if create.expected_revision!=0 || create.payload.len()!=1 {
@@ -274,7 +300,9 @@ impl<'root> ProductDatabase<'root> {
                 }
                 let binding=d::CreateBinding {source_seat_id:source_seat,source_session_id:source,
                     seat_id:side_seat,session_id:open.target_id};
-                d::execute(&mut self.connection,&self.owner,&create,Some(&binding)).map_err(side_error)
+                let receipt=d::execute(&mut self.connection,&self.owner,&create,Some(&binding))
+                    .map_err(side_error)?;
+                self.finish_side_open_message_pair(&open,&create,&binding.source_session_id,receipt)
             },
             COLLECT => {
                 let domain=string(&mut fields,"domainId")?;
