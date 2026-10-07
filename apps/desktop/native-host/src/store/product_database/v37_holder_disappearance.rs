@@ -104,7 +104,7 @@ impl<'root> ProductDatabase<'root> {
                  WHERE a.instance_id=?1 AND a.domain_id=?2 AND a.session_id=?3
                    AND a.process_operation_id=?4 AND a.state='RELEASED'
                    AND a.stop_fact_id IS NULL AND c.stop_proof_hash IS NULL AND e.stop_fact_id IS NULL",
-                &[instance_id,domain,session,operation],1)? != vec![vec!["1".into()]] { return Ok(false); }
+                &[instance_id,domain,session,operation],1)? != vec![vec![String::from("1")]] { return Ok(false); }
             let capture = decode(&record)?;
             let current = self.gone_original(&profile)?;
             if get(&capture,"domain")? != domain || get(&capture,"session")? != session
