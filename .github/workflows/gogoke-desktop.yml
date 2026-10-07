@@ -2,6 +2,12 @@ name: gogoke desktop CI
 
 on:
   workflow_dispatch:
+    inputs:
+      web_only:
+        description: "Browser iteration only; native builds, notices and byte comparison are NOT_RUN"
+        type: boolean
+        required: false
+        default: false
   push:
     branches:
       - main
@@ -45,6 +51,24 @@ jobs:
       run:
         working-directory: apps/desktop
     steps:
+      - name: Record selected check scope
+        if: github.event_name == 'workflow_dispatch' && inputs.web_only
+        working-directory: .
+        shell: pwsh
+        run: |
+          @'
+          ## Browser iteration only
+
+          | Check | Evidence status |
+          | --- | --- |
+          | Browser build and tests | See this job's actual result |
+          | Generate locked dependency notices | NOT_RUN |
+          | Clean Windows build (frozen) | NOT_RUN |
+          | Clean Windows build (repro) | NOT_RUN |
+          | Compare independent Windows executable bytes | NOT_RUN |
+
+          This run cannot satisfy the complete integration or candidate build gate. Run again with web_only=false at the integration point or before producing a candidate.
+          '@ >> $env:GITHUB_STEP_SUMMARY
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -111,6 +135,7 @@ jobs:
 
   licenses:
     name: Generate locked dependency notices
+    if: github.event_name != 'workflow_dispatch' || !inputs.web_only
     timeout-minutes: 45
     runs-on: windows-latest
     defaults:
@@ -187,6 +212,7 @@ jobs:
 
   windows-build:
     name: Clean Windows build (${{ matrix.lane }})
+    if: github.event_name != 'workflow_dispatch' || !inputs.web_only
     timeout-minutes: 75
     needs: [web, licenses]
     runs-on: windows-latest
@@ -550,6 +576,7 @@ jobs:
 
   windows-reproducibility:
     name: Compare independent Windows executable bytes
+    if: github.event_name != 'workflow_dispatch' || !inputs.web_only
     timeout-minutes: 15
     needs: [windows-build]
     runs-on: windows-latest
