@@ -386,7 +386,10 @@ pub(crate) fn execute(db: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssu
         } else {
             let mut s=match existing { Some(s) if s.state!="DELETED"=>s,_=>return Ok(reply(V37Status::Conflict,current,current,BTreeMap::new())) };
             if !read {
-                if request.operation=="delete" && unresolved(db,&s.domain_id,&s.side_id)? { return Ok(reply(V37Status::Unknown,current,current,BTreeMap::new())); }
+                if request.operation=="delete" && (unresolved(db,&s.domain_id,&s.side_id)? ||
+                    delivery::unresolved(db,&s.domain_id,&s.side_id)?) {
+                    return Ok(reply(V37Status::Unknown,current,current,BTreeMap::new()));
+                }
                 s.state=match (request.operation.as_str(),s.state.as_str()) {
                     ("resume","ACTIVE")=>"ACTIVE",("archive","ACTIVE")=>"ARCHIVED",("restore","ARCHIVED")=>"ACTIVE",
                     ("delete",_)=>{
@@ -394,7 +397,8 @@ pub(crate) fn execute(db: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssu
                         if !delete_stopped(db,&s)? {return Ok(reply(V37Status::Denied,current,current,BTreeMap::new()));}
                         ledger::delete_side_events(db,&s.domain_id,&s.side_id)?;
                         let rows=Statement::prepare(db.as_ptr(),"DELETE FROM main.gogoke_v37_side_pending WHERE domain_id=?1 AND side_id=?2")?;
-                        rows.bind_text(1,&s.domain_id)?;rows.bind_text(2,&s.side_id)?;rows.step_done()?;"DELETED"
+                        rows.bind_text(1,&s.domain_id)?;rows.bind_text(2,&s.side_id)?;rows.step_done()?;drop(rows);
+                        delivery::remove_side(db,&s.domain_id,&s.side_id)?;"DELETED"
                     },
                     ("resume"|"archive"|"restore",_)=>return Ok(reply(V37Status::Conflict,current,current,BTreeMap::new())),
                     _=>return Ok(reply(V37Status::Unsupported,current,current,BTreeMap::new())),

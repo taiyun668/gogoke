@@ -185,6 +185,24 @@ fn observed(db:&VerifiedDatabaseConnection<'_>,intent:DeliveryIntent)->Result<De
     Ok(record)
 }
 
+/// K-SIDE deletion cannot erase a side while its C/H delivery remains
+/// uncertain. This reads the same original C rows as the visible projection.
+pub(super) fn unresolved(db:&VerifiedDatabaseConnection<'_>,domain:&str,side_id:&str)->Result<bool> {
+    let query=Statement::prepare(db.as_ptr(),"SELECT request_id FROM main.gogoke_v37_side_delivery WHERE domain_id=?1 AND side_id=?2")?;
+    query.bind_text(1,domain)?;query.bind_text(2,side_id)?;
+    let mut ids=Vec::new();while query.step_row()? {ids.push(query.column_text(0)?);}drop(query);
+    for id in ids {
+        let intent=load_intent(db,domain,&id)?.ok_or(SideError::Conflict)?;
+        if observed(db,intent)?.state==DeliveryState::Unknown {return Ok(true);}
+    }
+    Ok(false)
+}
+
+pub(super) fn remove_side(db:&VerifiedDatabaseConnection<'_>,domain:&str,side_id:&str)->Result<()> {
+    let row=Statement::prepare(db.as_ptr(),"DELETE FROM main.gogoke_v37_side_delivery WHERE domain_id=?1 AND side_id=?2")?;
+    row.bind_text(1,domain)?;row.bind_text(2,side_id)?;row.step_done()?;Ok(())
+}
+
 /// Read C's original operation and H-backed native receipt. This never writes
 /// or retries a request and therefore remains safe after timeout/restart.
 pub(crate) fn observe(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,domain:&str,
