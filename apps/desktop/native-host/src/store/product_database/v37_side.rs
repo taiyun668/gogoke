@@ -299,7 +299,7 @@ impl<'root> ProductDatabase<'root> {
                         String::from_utf8_lossy(&opened))));
                 }
                 let binding=d::CreateBinding {source_seat_id:source_seat,source_session_id:source,
-                    seat_id:side_seat,session_id:open.target_id};
+                    seat_id:side_seat,session_id:open.target_id.clone()};
                 let receipt=d::execute(&mut self.connection,&self.owner,&create,Some(&binding))
                     .map_err(side_error)?;
                 self.finish_side_open_message_pair(&open,&create,&binding.source_session_id,receipt)
