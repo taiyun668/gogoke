@@ -123,12 +123,15 @@ export function SecretaryPanel({ source, initialTab }: { source: SecretarySource
   const [tab, setTab] = useState<Tab>(initialTab ?? "routines");
   const busyRef = useRef(false);
   const readSeq = useRef(0);
+  // The read still on its way, if any; polling waits for it instead of discarding it.
+  const inFlight = useRef(0);
   const epoch = useRef(0);
   const sourceRef = useRef(source);
 
   const refresh = async () => {
     const mine = ++readSeq.current;
     const era = epoch.current;
+    inFlight.current = mine;
     try {
       const next = await sourceRef.current.read();
       if (mine !== readSeq.current || era !== epoch.current) return;
@@ -136,6 +139,8 @@ export function SecretaryPanel({ source, initialTab }: { source: SecretarySource
       setLoadError(null);
     } catch (cause) {
       if (mine === readSeq.current && era === epoch.current) setLoadError(errorText(cause));
+    } finally {
+      if (inFlight.current === mine) inFlight.current = 0;
     }
   };
 
@@ -143,13 +148,14 @@ export function SecretaryPanel({ source, initialTab }: { source: SecretarySource
     epoch.current += 1;
     sourceRef.current = source;
     busyRef.current = false;
+    inFlight.current = 0;
     setBusy(null);
     setPage(undefined);
     setLoadError(null);
     setActionError(null);
     void refresh();
     const timer = window.setInterval(() => {
-      if (!busyRef.current) void refresh();
+      if (!busyRef.current && !inFlight.current) void refresh();
     }, 2000);
     return () => {
       window.clearInterval(timer);
@@ -218,7 +224,7 @@ export function SecretaryPanel({ source, initialTab }: { source: SecretarySource
       {page
         ? tab === "routines"
           ? <Routines page={page} actions={source.actions} locked={locked} run={run} />
-          : <Settings key={page.settings.instanceId ?? "unset"} settings={page.settings} actions={source.actions} locked={locked} run={run} />
+          : <Settings settings={page.settings} actions={source.actions} locked={locked} run={run} />
         : null}
     </div>
   );
@@ -230,7 +236,7 @@ function Routines({ page, actions, locked, run }: { page: SecretaryPage; actions
     <>
       {page.pausedWhileAway ? (
         <div className="sec-banner">
-          你有 {page.pausedWhileAway.awayFor} 没打开 gogoke，定时任务我都先停了，省额度。
+          你有 {page.pausedWhileAway.awayFor} 没来了，定时任务我都先停了，省额度。
           {actions.resumeAll ? (
             <button type="button" className="ghost" disabled={locked} onClick={() => void run("resume-all", actions.resumeAll!)}>
               都恢复
@@ -320,6 +326,29 @@ function RoutineCard({
   );
 }
 
+type Values = { instanceId: string; model?: string; effort?: string; permission?: string };
+type Draft = Values & { base: Values; saved?: boolean };
+
+/** The form values the host's settings stand for. */
+function fromSettings(settings: SecretarySettings): Values {
+  const instanceId = settings.instanceId ?? "";
+  const models = modelsFor(settings, instanceId);
+  return {
+    instanceId,
+    model: settings.model && models.includes(settings.model) ? settings.model : models[0],
+    effort: settings.effort ?? settings.efforts[0],
+    permission: settings.permission ?? settings.permissions[0],
+  };
+}
+
+const sameValues = (a: Values, b: Values) =>
+  a.instanceId === b.instanceId && a.model === b.model && a.effort === b.effort && a.permission === b.permission;
+
+function settingsLine(values: Values, settings: SecretarySettings): string {
+  const name = settings.instances.find((item) => item.id === values.instanceId)?.name;
+  return [name ?? "没选实例", values.model, values.effort, values.permission].filter(Boolean).join(" · ");
+}
+
 function Settings({
   settings,
   actions,
@@ -331,24 +360,30 @@ function Settings({
   locked: boolean;
   run: RunFn;
 }) {
-  const [instanceId, setInstanceId] = useState(settings.instanceId ?? "");
-  const models = modelsFor(settings, instanceId);
-  const [model, setModel] = useState(settings.model && models.includes(settings.model) ? settings.model : models[0]);
-  const [effort, setEffort] = useState(settings.effort ?? settings.efforts[0]);
-  const [permission, setPermission] = useState(settings.permission ?? settings.permissions[0]);
+  // Untouched, the form shows what the host last said. Once edited it keeps the draft, and says so
+  // if the host's settings change underneath it, instead of saving over them unseen.
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const current = fromSettings(settings);
+  const form = draft ?? current;
+  const conflict = draft !== null && !draft.saved && !sameValues(draft.base, current) && !sameValues(draft, current);
+  // After a save, the next read is the host's word on what was kept.
+  useEffect(() => setDraft((value) => (value?.saved ? null : value)), [settings]);
+  const models = modelsFor(settings, form.instanceId);
   const editable = Boolean(actions.saveSettings);
 
+  const edit = (patch: Partial<Values>) => setDraft({ ...form, ...patch, base: draft && !draft.saved ? draft.base : current, saved: false });
+
   const save = () => {
-    if (!instanceId || !actions.saveSettings) return;
-    const chosen = model && models.includes(model) ? model : undefined;
+    if (!form.instanceId || !actions.saveSettings) return;
+    const chosen = form.model && models.includes(form.model) ? form.model : undefined;
     void run("settings", () =>
       actions.saveSettings!({
-        instanceId,
+        instanceId: form.instanceId,
         ...(chosen ? { model: chosen } : {}),
-        ...(effort ? { effort } : {}),
-        ...(permission ? { permission } : {}),
+        ...(form.effort ? { effort: form.effort } : {}),
+        ...(form.permission ? { permission: form.permission } : {}),
       }),
-    );
+    ).then((ok) => ok && setDraft((value) => value && { ...value, saved: true }));
   };
 
   return (
@@ -358,14 +393,11 @@ function Settings({
         <select
           id="sec-instance"
           className="settings-select"
-          value={instanceId}
+          value={form.instanceId}
           disabled={!editable || locked}
-          onChange={(event) => {
-            setInstanceId(event.target.value);
-            setModel(modelsFor(settings, event.target.value)[0]);
-          }}
+          onChange={(event) => edit({ instanceId: event.target.value, model: modelsFor(settings, event.target.value)[0] })}
         >
-          {!settings.instanceId ? <option value="">选一个实例</option> : null}
+          {!form.instanceId ? <option value="">选一个实例</option> : null}
           {settings.instances.map((item) => (
             <option key={item.id} value={item.id}>
               {item.name}
@@ -375,7 +407,7 @@ function Settings({
         {models.length ? (
           <>
             <label htmlFor="sec-model">模型</label>
-            <select id="sec-model" className="settings-select" value={model} disabled={!editable || locked} onChange={(event) => setModel(event.target.value)}>
+            <select id="sec-model" className="settings-select" value={form.model} disabled={!editable || locked} onChange={(event) => edit({ model: event.target.value })}>
               {models.map((item) => (
                 <option key={item}>{item}</option>
               ))}
@@ -385,7 +417,7 @@ function Settings({
         {settings.efforts.length ? (
           <>
             <label htmlFor="sec-effort">推理强度</label>
-            <select id="sec-effort" className="settings-select" value={effort} disabled={!editable || locked} onChange={(event) => setEffort(event.target.value)}>
+            <select id="sec-effort" className="settings-select" value={form.effort} disabled={!editable || locked} onChange={(event) => edit({ effort: event.target.value })}>
               {settings.efforts.map((item) => (
                 <option key={item}>{item}</option>
               ))}
@@ -398,9 +430,9 @@ function Settings({
             <select
               id="sec-permission"
               className="settings-select"
-              value={permission}
+              value={form.permission}
               disabled={!editable || locked}
-              onChange={(event) => setPermission(event.target.value)}
+              onChange={(event) => edit({ permission: event.target.value })}
             >
               {settings.permissions.map((item) => (
                 <option key={item}>{item}</option>
@@ -409,11 +441,21 @@ function Settings({
           </>
         ) : null}
       </div>
+      {conflict ? (
+        <div className="sec-help sec-error" role="alert">
+          你改的还没保存，这期间设置已在别处改成：{settingsLine(current, settings)}。
+        </div>
+      ) : null}
       {editable ? (
-        <div>
-          <button type="button" className="ghost" disabled={locked || !instanceId} onClick={save}>
-            保存
+        <div className="sec-routine-actions">
+          <button type="button" className="ghost" disabled={locked || !form.instanceId} onClick={save}>
+            {conflict ? "用我改的覆盖" : "保存"}
           </button>
+          {draft ? (
+            <button type="button" className="ghost" disabled={locked} onClick={() => setDraft(null)}>
+              {conflict ? "用新的" : "不改了"}
+            </button>
+          ) : null}
         </div>
       ) : null}
       {settings.can?.length || settings.cannot?.length ? (

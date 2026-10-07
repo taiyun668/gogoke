@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SecretaryActionLine, SecretaryEntry, SecretaryPanel, type SecretarySource } from "./Secretary";
 import type { SecretaryPage } from "./secretaryModel";
@@ -113,5 +113,61 @@ describe("SecretaryPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
     await waitFor(() => expect(saveSettings).toHaveBeenCalledWith({ instanceId: "c1", effort: "中", permission: "只读，能派活和转达" }));
     expect(screen.getByText("不直接改项目里的文件")).toBeTruthy();
+  });
+
+  it("waits for a slow read instead of discarding it on every poll", async () => {
+    vi.useFakeTimers();
+    try {
+      const read = vi.fn(() => new Promise<SecretaryPage>((resolve) => setTimeout(() => resolve(page()), 4500)));
+      render(<SecretaryPanel source={{ read, actions: {} }} />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4000);
+      });
+      expect(read).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(600);
+      });
+      expect(screen.queryByText("正在读取…")).toBeNull();
+      expect(screen.getByText("每天早上汇总")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("follows the host's settings while untouched, and keeps an edit in progress without saving over a change", async () => {
+    vi.useFakeTimers();
+    try {
+      const base = page();
+      let data: SecretaryPage = { ...base, settings: { ...base.settings, efforts: ["低", "中", "高"] } };
+      const saveSettings = vi.fn(async () => {});
+      render(<SecretaryPanel source={{ read: async () => data, actions: { saveSettings } }} initialTab="settings" />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      const effort = () => (screen.getByLabelText("推理强度") as HTMLSelectElement).value;
+      expect(effort()).toBe("中");
+
+      data = { ...data, settings: { ...data.settings, effort: "高" } };
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      expect(effort()).toBe("高");
+
+      fireEvent.change(screen.getByLabelText("推理强度"), { target: { value: "中" } });
+      data = { ...data, settings: { ...data.settings, effort: "低" } };
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      expect(effort()).toBe("中");
+      expect(screen.getByRole("alert").textContent).toContain("这期间设置已在别处改成");
+      expect(screen.getByRole("button", { name: "用我改的覆盖" })).toBeTruthy();
+      expect(saveSettings).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "用新的" }));
+      expect(effort()).toBe("低");
+      expect(screen.queryByRole("alert")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
