@@ -22,10 +22,13 @@ fn append(db:&mut VerifiedDatabaseConnection<'_>,session:&str,seat:&str,tier:led
 }
 fn bind_current_fixture(db:&mut VerifiedDatabaseConnection<'_>,session:&str,seat_id:&str,purpose:ledger::SessionPurpose) {
     let seat=seat::get(db,"projectA",seat_id).unwrap().unwrap();let generation=seat.generation.to_string();
+    let home=format!("syntheticHome{session}");
+    let home_row=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_instance_homes(home_id,instance_id,domain_id,kind,owner_id,generation,state,revision) VALUES(?1,'instanceA','projectA','SESSION',?2,?3,'ACTIVE',1)").unwrap();
+    home_row.bind_text(1,&home).unwrap();home_row.bind_text(2,session).unwrap();home_row.bind_text(3,&generation).unwrap();home_row.step_done().unwrap();drop(home_row);
     let row=Statement::prepare(db.as_ptr(),"INSERT INTO gogoke_v37_h_owner_binding VALUES(?1,'instanceA','projectA','SESSION',?1,?2,'ACTIVE')").unwrap();
     row.bind_text(1,session).unwrap();row.bind_text(2,&generation).unwrap();row.step_done().unwrap();drop(row);
-    let row=Statement::prepare(db.as_ptr(),"INSERT INTO gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id) VALUES('projectA',?1,'instanceA','syntheticHome',?1,?2,'COMMITTED',2,?3)").unwrap();
-    row.bind_text(1,session).unwrap();row.bind_text(2,&generation).unwrap();row.bind_text(3,&format!("process{session}")).unwrap();row.step_done().unwrap();drop(row);
+    let row=Statement::prepare(db.as_ptr(),"INSERT INTO gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id) VALUES('projectA',?1,'instanceA',?4,?1,?2,'COMMITTED',2,?3)").unwrap();
+    row.bind_text(1,session).unwrap();row.bind_text(2,&generation).unwrap();row.bind_text(3,&format!("process{session}")).unwrap();row.bind_text(4,&home).unwrap();row.step_done().unwrap();drop(row);
     let row=Statement::prepare(db.as_ptr(),"INSERT INTO gogoke_v37_h_seat_binding VALUES('projectA',?1,?2,?3,?4)").unwrap();
     row.bind_text(1,session).unwrap();row.bind_text(2,seat_id).unwrap();row.bind_text(3,&seat.incarnation).unwrap();row.bind_text(4,&generation).unwrap();row.step_done().unwrap();drop(row);
     ledger::register_session(db,&ledger::SessionRegistration {domain_id:"projectA".into(),seat_id:seat_id.into(),session_id:session.into(),purpose,
@@ -42,7 +45,7 @@ fn old_ack_fixture(db:&mut VerifiedDatabaseConnection<'_>,s:&Side,send:&V37Reque
     let generation=field(send,"generation").unwrap();let operation=format!("process{}",send.target_id);let ticket="syntheticTicket";
     let row=Statement::prepare(db.as_ptr(),"INSERT INTO gogoke_coordination_process_custody VALUES(?1,?2,'syntheticNonce','101','202','syntheticImage','syntheticDigest','syntheticProfile','projectA',?3,'STOPPED','syntheticStop')").unwrap();
     row.bind_text(1,&operation).unwrap();row.bind_text(2,ticket).unwrap();row.bind_text(3,&generation).unwrap();row.step_done().unwrap();drop(row);
-    let row=Statement::prepare(db.as_ptr(),"INSERT INTO gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase,stop_fact_id) VALUES('projectA','syntheticOpen',?1,?2,'00',1,?3,'instanceA','syntheticHome',?1,'sideSeat',?4,'STOPPED','syntheticStop')").unwrap();
+    let row=Statement::prepare(db.as_ptr(),"INSERT INTO gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase,stop_fact_id) VALUES('projectA','syntheticOpen',?1,?2,'00',1,?3,'instanceA','syntheticHomesideSession',?1,'sideSeat',?4,'STOPPED','syntheticStop')").unwrap();
     row.bind_text(1,&send.target_id).unwrap();row.bind_text(2,&generation).unwrap();row.bind_text(3,&operation).unwrap();row.bind_text(4,&s.seat_incarnation).unwrap();row.step_done().unwrap();drop(row);
     let row=Statement::prepare(db.as_ptr(),"INSERT INTO gogoke_v37_h_generation VALUES('projectA',?1,?2,'syntheticOpen',?3)").unwrap();
     row.bind_text(1,&send.target_id).unwrap();row.bind_text(2,&generation).unwrap();row.bind_text(3,&operation).unwrap();row.step_done().unwrap();drop(row);
@@ -67,12 +70,17 @@ fn registry_ranges_and_unknown_sync_survive_actual_same_open_reopen() {
     seat::store_template(&mut db,NativeOrigin::user(&owner),StoreTemplate {domain_id:"projectA",template_id:"templateA",settings_json:br#"{"model":"gpt-6-sol"}"#}).unwrap();
     for (seat_id,session_id,purpose) in [("leadA","mainA",ledger::SessionPurpose::Work),("sideSeat","sideSession",ledger::SessionPurpose::SideChat),("otherSeat","otherSession",ledger::SessionPurpose::Work)] {
         seat::create(&mut db,NativeOrigin::user(&owner),CreateSeat {domain_id:"projectA",seat_id,template_id:"templateA",instance_id:Some("instanceA"),kind:Kind::Long,request_id:seat_id,request_bytes:seat_id.as_bytes()}).unwrap();
+        let busy=Statement::prepare(db.as_ptr(),"UPDATE main.gogoke_v37_seats SET state='BUSY' WHERE domain_id='projectA' AND seat_id=?1").unwrap();
+        busy.bind_text(1,seat_id).unwrap();busy.step_done().unwrap();drop(busy);
         let seat=seat::get(&db,"projectA",seat_id).unwrap().unwrap();
         let generation=seat.generation.to_string();
+        let home=format!("syntheticHome{session_id}");
+        let home_row=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_instance_homes(home_id,instance_id,domain_id,kind,owner_id,generation,state,revision) VALUES(?1,'instanceA','projectA','SESSION',?2,?3,'ACTIVE',1)").unwrap();
+        home_row.bind_text(1,&home).unwrap();home_row.bind_text(2,session_id).unwrap();home_row.bind_text(3,&generation).unwrap();home_row.step_done().unwrap();drop(home_row);
         let owner_row=Statement::prepare(db.as_ptr(),"INSERT INTO gogoke_v37_h_owner_binding VALUES(?1,'instanceA','projectA','SESSION',?2,?3,'ACTIVE')").unwrap();
         owner_row.bind_text(1,session_id).unwrap();owner_row.bind_text(2,session_id).unwrap();owner_row.bind_text(3,&generation).unwrap();owner_row.step_done().unwrap();drop(owner_row);
-        let claim=Statement::prepare(db.as_ptr(),"INSERT INTO gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id) VALUES('projectA',?1,'instanceA','syntheticHome',?1,?2,'COMMITTED',2,?3)").unwrap();
-        claim.bind_text(1,session_id).unwrap();claim.bind_text(2,&generation).unwrap();claim.bind_text(3,&format!("process{session_id}")).unwrap();claim.step_done().unwrap();drop(claim);
+        let claim=Statement::prepare(db.as_ptr(),"INSERT INTO gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id) VALUES('projectA',?1,'instanceA',?4,?1,?2,'COMMITTED',2,?3)").unwrap();
+        claim.bind_text(1,session_id).unwrap();claim.bind_text(2,&generation).unwrap();claim.bind_text(3,&format!("process{session_id}")).unwrap();claim.bind_text(4,&home).unwrap();claim.step_done().unwrap();drop(claim);
         let binding=Statement::prepare(db.as_ptr(),"INSERT INTO gogoke_v37_h_seat_binding VALUES('projectA',?1,?2,?3,?4)").unwrap();
         binding.bind_text(1,session_id).unwrap();binding.bind_text(2,seat_id).unwrap();binding.bind_text(3,&seat.incarnation).unwrap();binding.bind_text(4,&generation).unwrap();binding.step_done().unwrap();drop(binding);
         ledger::register_session(&mut db,&ledger::SessionRegistration {domain_id:"projectA".into(),seat_id:seat_id.into(),session_id:session_id.into(),purpose,

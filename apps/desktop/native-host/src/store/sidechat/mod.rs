@@ -5,7 +5,7 @@ use super::atomic::{AtomicError, Json, JsonString, Statement};
 use super::authority::{self, OwnerIssuer};
 use super::ledger::{self, LedgerEvent, LedgerPosition, Reader};
 use super::same_open::{SameOpenError, VerifiedDatabaseConnection};
-use super::session_transport::{decode_receipt, encode_receipt, V37Request, V37Status};
+use super::session_transport::{decode_receipt, encode_receipt, session_binding, V37Request, V37Status};
 use std::collections::BTreeMap;
 
 #[derive(Debug)]
@@ -153,21 +153,41 @@ fn side(db: &VerifiedDatabaseConnection<'_>, domain: &str, id: &str) -> Result<S
 }
 /// Creation checks the initial actual H owner/admission and E incarnation.
 fn binding(db: &VerifiedDatabaseConnection<'_>, domain: &str, seat: &str, session: &str, purpose: &str, side_id: &str) -> Result<String> {
-    let row = Statement::prepare(db.as_ptr(), "SELECT h.generation FROM main.gogoke_v37_h_claim h
-        JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=h.binding_id AND b.domain_id=h.domain_id
-          AND b.instance_id=h.instance_id AND b.kind='SESSION' AND b.owner_id=h.session_id AND b.generation=h.generation
-        JOIN main.gogoke_v37_h_seat_binding sb ON sb.domain_id=h.domain_id AND sb.session_id=h.session_id AND sb.generation=h.generation
-        JOIN main.gogoke_v37_seats e ON e.domain_id=sb.domain_id AND e.seat_id=sb.seat_id
-          AND e.incarnation=sb.seat_incarnation AND CAST(e.generation AS TEXT)=sb.generation AND e.instance_id=h.instance_id
-          AND e.state IN ('BUSY','IDLE')
-        JOIN main.v37_ledger_session l ON l.session_id=h.session_id AND l.domain_id=h.domain_id AND l.seat_id=sb.seat_id
-        WHERE h.domain_id=?1 AND sb.seat_id=?2 AND h.session_id=?3 AND h.state IN ('COMMITTED','STOPPED')
-          AND b.state='ACTIVE' AND l.purpose=?4 AND COALESCE(l.side_id,'')=?5")?;
-    for (i,v) in [domain,seat,session,purpose,side_id].iter().enumerate() { row.bind_text((i+1) as i32,v)?; }
-    if !row.step_row()? { return Err(SideError::Denied); }
-    let generation = row.column_text(0)?;
-    if row.step_row()? { return Err(SideError::Conflict); }
-    Ok(generation)
+    let registration=Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM main.v37_ledger_session WHERE domain_id=?1 AND seat_id=?2 AND session_id=?3 AND purpose=?4 AND COALESCE(side_id,'')=?5")?;
+    for (i,v) in [domain,seat,session,purpose,side_id].iter().enumerate() {
+        registration.bind_text((i+1) as i32,v)?;
+    }
+    if !registration.step_row()? || registration.step_row()? {return Err(SideError::Denied);}
+    drop(registration);
+    let fact=current_h_fact(db,domain,session)?.ok_or(SideError::Denied)?;
+    if fact.seat_id!=seat {return Err(SideError::Denied);}
+    Ok(fact.generation)
+}
+struct CurrentHFact {
+    seat_id:String, seat_incarnation:String, generation:String,
+    instance_id:String, process_operation_id:String,
+}
+/// H's V2 relationship is metadata; A purpose and the original current H
+/// claim remain separate checks. Legacy equality stays inside H's helper.
+fn current_h_fact(db:&VerifiedDatabaseConnection<'_>,domain:&str,session:&str)
+    ->Result<Option<CurrentHFact>> {
+    let relationship=session_binding::current_relationship(db,domain,session)
+        .map_err(|error|SideError::Corrupt(format!("H session relationship: {error:?}")))?;
+    let Some(relationship)=relationship else {return Ok(None)};
+    let claim=Statement::prepare(db.as_ptr(),
+        "SELECT COALESCE(process_operation_id,'') FROM main.gogoke_v37_h_claim
+         WHERE domain_id=?1 AND session_id=?2 AND generation=?3 AND instance_id=?4
+           AND state IN ('COMMITTED','STOPPED')")?;
+    for (i,value) in [domain,session,&relationship.session_generation,
+        &relationship.instance_id].iter().enumerate() {claim.bind_text((i+1) as i32,value)?;}
+    if !claim.step_row()? {return Ok(None);}
+    let process_operation_id=claim.column_text(0)?;
+    if claim.step_row()? {return Err(SideError::Conflict);}
+    Ok(Some(CurrentHFact {seat_id:relationship.seat_id,
+        seat_incarnation:relationship.seat_incarnation,
+        generation:relationship.session_generation,instance_id:relationship.instance_id,
+        process_operation_id}))
 }
 fn incarnation(db:&VerifiedDatabaseConnection<'_>,domain:&str,seat:&str)->Result<String> {
     let row=Statement::prepare(db.as_ptr(),"SELECT incarnation FROM main.gogoke_v37_seats WHERE domain_id=?1 AND seat_id=?2")?;
@@ -208,23 +228,22 @@ pub(crate) enum CacheContinuity { Preserved(NativeCacheFact), Replaced(NativeCac
 
 fn current_session(db:&VerifiedDatabaseConnection<'_>,s:&Side,source:bool,exact_session:Option<&str>)->Result<(String,String,String,String)> {
     let (seat,inc,purpose,side_id)=if source {(&s.source_seat_id,&s.source_seat_incarnation,"WORK","")} else {(&s.seat_id,&s.seat_incarnation,"SIDE_CHAT",s.side_id.as_str())};
-    let row=Statement::prepare(db.as_ptr(),"SELECT h.session_id,h.generation,h.instance_id,COALESCE(h.process_operation_id,'')
-        FROM main.gogoke_v37_h_claim h
-        JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=h.binding_id AND b.domain_id=h.domain_id
-          AND b.instance_id=h.instance_id AND b.kind='SESSION' AND b.owner_id=h.session_id AND b.generation=h.generation
-        JOIN main.gogoke_v37_h_seat_binding sb ON sb.domain_id=h.domain_id AND sb.session_id=h.session_id AND sb.generation=h.generation
-        JOIN main.gogoke_v37_seats e ON e.domain_id=sb.domain_id AND e.seat_id=sb.seat_id AND e.incarnation=sb.seat_incarnation
-          AND CAST(e.generation AS TEXT)=sb.generation AND e.instance_id=h.instance_id AND e.state IN ('BUSY','IDLE')
-        JOIN main.v37_ledger_session l ON l.session_id=h.session_id AND l.domain_id=h.domain_id AND l.seat_id=sb.seat_id
-        WHERE h.domain_id=?1 AND sb.seat_id=?2 AND sb.seat_incarnation=?3 AND b.state='ACTIVE'
-          AND l.purpose=?4 AND COALESCE(l.side_id,'')=?5 AND h.state IN ('COMMITTED','STOPPED')
-          AND (?6='' OR h.session_id=?6)")?;
-    for (i,v) in [s.domain_id.as_str(),seat,inc,purpose,side_id].iter().enumerate() {row.bind_text((i+1) as i32,v)?;}
-    row.bind_text(6,exact_session.unwrap_or(""))?;
-    if !row.step_row()? {return Err(SideError::Denied);}
-    let result=(row.column_text(0)?,row.column_text(1)?,row.column_text(2)?,row.column_text(3)?);
-    if row.step_row()? {return Err(SideError::Conflict);}
-    Ok(result)
+    let registration=Statement::prepare(db.as_ptr(),
+        "SELECT session_id FROM main.v37_ledger_session WHERE domain_id=?1 AND seat_id=?2
+         AND purpose=?3 AND COALESCE(side_id,'')=?4 AND (?5='' OR session_id=?5)")?;
+    for (i,v) in [s.domain_id.as_str(),seat,purpose,side_id,exact_session.unwrap_or("")]
+        .iter().enumerate() {registration.bind_text((i+1) as i32,v)?;}
+    let mut sessions=Vec::new();
+    while registration.step_row()? {sessions.push(registration.column_text(0)?);}
+    drop(registration);
+    let mut found=None;
+    for session in sessions {
+        let Some(fact)=current_h_fact(db,&s.domain_id,&session)? else {continue};
+        if fact.seat_id!=seat.as_str() || fact.seat_incarnation!=inc.as_str() {return Err(SideError::Denied);}
+        if found.is_some() {return Err(SideError::Conflict);}
+        found=Some((session,fact.generation,fact.instance_id,fact.process_operation_id));
+    }
+    found.ok_or(SideError::Denied)
 }
 fn current_binding(db:&VerifiedDatabaseConnection<'_>,s:&Side)->Result<CurrentBinding> {
     let source=current_session(db,s,true,None)?;let side=current_session(db,s,false,None)?;
