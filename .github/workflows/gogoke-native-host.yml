@@ -175,18 +175,6 @@ jobs:
             log = 'release-build.log'
           } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'release-build-result.json') -Encoding utf8NoBOM
           if ($state -ne 'PASS') { throw "Native-host release build failed or lacked a release-profile completion marker: $state (exit $exitCode)" }
-      - name: Observe second SID inheritance with held directory custody
-        if: ${{ !cancelled() && steps.release-build.outcome == 'success' && inputs.catalog_program_fixture_only }}
-        shell: pwsh
-        run: |
-          # Diagnostic branch only. This observes the existing ACL producer;
-          # it is not a complete library/process/milestone result.
-          $PSNativeCommandUseErrorActionPreference = $false
-          $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib second_bound_sid_grant_observes_held_directory_roots_acl_propagation -- --nocapture 2>&1
-          $code = $LASTEXITCODE
-          $output | Out-Host
-          $summaries = [regex]::Matches(($output -join "`n"), 'test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out')
-          if ($code -ne 0 -or $summaries.Count -ne 1) { throw "Held-directory ACL observation fixture failed or did not run exactly once: $code" }
       - name: Build and run required native-host process axes
         id: native-axes
         if: ${{ !cancelled() && steps.release-build.outcome == 'success' && !inputs.full_library_only && !inputs.catalog_program_fixture_only }}
@@ -894,6 +882,18 @@ jobs:
           path: ${{ runner.temp }}/holder-gone-security
           if-no-files-found: ignore
           retention-days: 30
+      - name: Observe second SID inheritance with held directory custody
+        if: ${{ matrix.group == 'core' && !cancelled() && steps.fixed-claude.outcome == 'success' && inputs.catalog_program_fixture_only }}
+        shell: pwsh
+        run: |
+          # Diagnostic branch only. This observes the existing ACL producer;
+          # it is not a complete library/process/milestone result.
+          $PSNativeCommandUseErrorActionPreference = $false
+          $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib second_bound_sid_grant_observes_held_directory_roots_acl_propagation -- --nocapture 2>&1
+          $code = $LASTEXITCODE
+          $output | Out-Host
+          $summaries = [regex]::Matches(($output -join "`n"), 'test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out')
+          if ($code -ne 0 -or $summaries.Count -ne 1) { throw "Held-directory ACL observation fixture failed or did not run exactly once: $code" }
       - name: Verify catalog program and unchanged data boundaries with compiled mutations
         if: ${{ matrix.group == 'core' && !cancelled() && steps.fixed-claude.outcome == 'success' }}
         shell: pwsh
