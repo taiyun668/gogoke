@@ -100,6 +100,23 @@ describe("SeatsPanel", () => {
     expect(screen.queryByRole("button", { name: "删除席位" })).toBeNull();
   });
 
+  it("offers deleting a seat the host lets go even when it cannot be tuned", async () => {
+    const data = page();
+    data.seats[1] = { ...data.seats[1], allowed: { tune: false, changeInstance: false, remove: true } };
+    render(<SeatsPanel source={source({}, async () => data)} />);
+    fireEvent.click(await screen.findByRole("button", { name: /^审计/ }));
+    expect(screen.queryByRole("button", { name: "调整" })).toBeNull();
+    expect(screen.getByRole("button", { name: "删除席位" })).toBeTruthy();
+  });
+
+  it("drops the old source's seats when the source changes", async () => {
+    const { rerender } = render(<SeatsPanel source={source()} />);
+    expect(await screen.findByText("直属席位")).toBeTruthy();
+    rerender(<SeatsPanel source={source({}, () => new Promise<SeatsPage>(() => {}))} />);
+    expect(await screen.findByText("正在读取席位…")).toBeTruthy();
+    expect(screen.queryByText("直属席位")).toBeNull();
+  });
+
   it("lists the models of the chosen instance and hides the choice when the host reports none", async () => {
     const tune = vi.fn(async () => {});
     const data = page();

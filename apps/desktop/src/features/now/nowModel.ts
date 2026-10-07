@@ -76,6 +76,12 @@ export type NowBatch = {
   closed: boolean;
   /** Where the handed-back changes are; absent when there are none. */
   landing?: Landing;
+  /**
+   * The host's own fact that the changes are ready: material complete, checks
+   * passed, no question pending (GOGO-整合设计 §四). Never inferred from
+   * closed or a commit count.
+   */
+  ready?: boolean;
 };
 
 export const RUNNING: ReadonlySet<SeatLineState> = new Set(["starting", "running", "held", "stopping"]);
@@ -132,7 +138,7 @@ export function batchWord(batch: NowBatch | null, pendingInput: boolean): BatchW
   if (batch && !batch.closed && batch.seats.some((seat) => seat.state !== "gone" && !SETTLED.has(seat.state))) {
     return "在运行";
   }
-  if (batch?.closed && batch.landing && batch.landing.commits > 0) return "改动就绪";
+  if (batch?.closed && batch.ready === true && batch.landing && batch.landing.commits > 0) return "改动就绪";
   return null;
 }
 
@@ -157,9 +163,25 @@ export function lineText(seat: SeatLine): { verb?: string; target?: string; say?
     case "waiting":
       return { say: seat.say ?? "这一轮做完了，在等主控下一步" };
     default:
-      return { say: seat.say ?? seat.ask };
+      // The dispatched instruction is never a stand-in for a result or a reason.
+      return { say: seat.say ?? MISSING_SAY[seat.state] };
   }
 }
+
+const MISSING_SAY: Record<SeatLineState, string> = {
+  starting: "已派出去，等它第一个动作",
+  running: "在做，还没报告动作",
+  held: "在问主控，问题原文没拿到",
+  waiting: "这一轮做完了，在等主控下一步",
+  returned: "已交回，没拿到它交回的第一句",
+  failed: "失败了，宿主没给出原因",
+  stale: "结论要重新核，宿主没给出原因",
+  stuck: "卡住了，宿主没给出原因",
+  unknown: "派活发出去了，没收到它的回执",
+  stopping: "已请求停止，等它确认",
+  stopped: "已停止",
+  gone: "找不到这个席位了：它已被删除，记录保留",
+};
 
 export const STATE_WORD: Record<SeatLineState, string> = {
   starting: "刚派出去",
@@ -196,6 +218,13 @@ const ORDER: Record<SeatLineState, number> = {
 export function visibleSeats(batch: NowBatch, showAll: boolean): SeatLine[] {
   if (showAll || batch.seats.length <= VISIBLE_LINES) return batch.seats;
   return [...batch.seats].sort((a, b) => ORDER[a.state] - ORDER[b.state]).slice(0, VISIBLE_LINES - 1);
+}
+
+/** The line under the visible rows; says "已交回" only when every hidden seat returned. */
+export function hiddenLabel(hidden: SeatLine[]): string {
+  return hidden.every((seat) => seat.state === "returned")
+    ? `另外 ${hidden.length} 个已交回，点开看`
+    : `另外 ${hidden.length} 个席位，点开看`;
 }
 
 export function stepTally(seat: SeatLine): Array<{ verb: string; count: number }> {

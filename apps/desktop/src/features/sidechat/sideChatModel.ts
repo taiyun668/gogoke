@@ -7,12 +7,14 @@ import type { VendorId } from "@/features/instances/instancePageModel";
  * context as reference only, and windows pass messages to each other in natural
  * language (the seat sends to the lead when the Owner asks; the lead can send
  * back). There are no relay buttons: each window shows one line recording the
- * send ("已发给主控" / "来自旁聊 · X") and whether it arrived.
+ * send ("已发给主控" / "来自旁聊 · X") and what the host confirmed about it.
  *
  * Differences from Codex (Owner 2026-09-26): side chats are kept by default
  * (archive, then delete), and the lead's later progress keeps syncing in as
- * reference, delivered with the Owner's next question unless the vendor can
- * append without starting a turn.
+ * reference.
+ *
+ * Every count, round, model and time is the host's; absent facts are hidden,
+ * never filled from ledger cursors or differences.
  */
 
 export type SideSeat = {
@@ -23,7 +25,11 @@ export type SideSeat = {
   permission: string;
 };
 
+/** `models` are the host's verified models for this instance; empty when there are none. */
 export type SideInstance = { id: string; name: string; vendor: VendorId; models: string[] };
+
+/** What the host confirmed about one message between windows. */
+export type Delivery = "steered" | "new-turn" | "failed" | "unknown";
 
 export type SideItem =
   | { kind: "user"; id: string; text: string }
@@ -32,7 +38,7 @@ export type SideItem =
       id: string;
       text: string;
       /** When the answer started; the context it is based on. */
-      basis: string;
+      basis?: string;
       /** The lead moved on after this answer started. */
       leadUpdatedAfter?: boolean;
     }
@@ -41,39 +47,46 @@ export type SideItem =
       id: string;
       text: string;
       at: string;
-      result: "steered" | "new-turn" | "failed";
+      result: Delivery;
       error?: string;
     }
-  | { kind: "from-lead"; id: string; text: string; at: string };
+  | { kind: "from-lead"; id: string; text: string; at: string; delivery: Delivery; error?: string };
 
 export type SideChatProblem =
   | { kind: "answer-failed"; summary: string; raw?: string }
   | { kind: "instance-full"; instanceName: string; used: number; cap: number }
-  | { kind: "seat-removed"; seatName: string };
+  | { kind: "seat-removed"; seatName?: string }
+  /** The chat's session is not reachable now; it can be read but not asked. */
+  | { kind: "unavailable" };
 
 export type SideChat = {
   id: string;
   title: string;
   seatId: string;
   instanceId: string;
-  model: string;
-  effort: string;
-  /** Lead round the chat currently references. */
-  referenceRound: number;
-  /** Lead segments not yet delivered to this chat. */
-  pendingLeadSegments: number;
+  model?: string;
+  effort?: string;
+  /** Lead round the chat currently references, when the host reports one. */
+  referenceRound?: number;
+  /** Lead segments not yet delivered to this chat, when the host reports them. */
+  pendingLeadSegments?: number;
   /** The vendor can append without starting a turn. */
-  appendsImmediately: boolean;
-  updatedAt: string;
+  appendsImmediately?: boolean;
+  updatedAt?: string;
   archived: boolean;
+  /** From the host's actual turn state. */
   answering: boolean;
+  /** The host can take a question now; false hides nothing but disables asking. */
+  askable?: boolean;
+  /** The previous question's delivery is not confirmed yet. */
+  questionUnconfirmed?: boolean;
   items: SideItem[];
   problem?: SideChatProblem;
 };
 
 export type SideChatPage = {
-  /** Lead round a new side chat would reference. */
-  leadRound: number;
+  /** Lead round a new side chat would reference, when the host reports one. */
+  leadRound?: number;
   seats: SideSeat[];
   instances: SideInstance[];
   efforts: string[];
@@ -84,7 +97,7 @@ export const seatById = (page: SideChatPage, id: string) => page.seats.find((sea
 export const instanceById = (page: SideChatPage, id: string) => page.instances.find((item) => item.id === id);
 
 export function syncLine(chat: SideChat): string | null {
-  if (chat.archived || chat.pendingLeadSegments === 0) return null;
+  if (chat.archived || !chat.pendingLeadSegments) return null;
   return chat.appendsImmediately
     ? `主控的 ${chat.pendingLeadSegments} 段新进展已同步过来`
     : `主控有 ${chat.pendingLeadSegments} 段新进展，下次提问时一起带上`;
@@ -98,6 +111,19 @@ export function sentLine(item: Extract<SideItem, { kind: "sent-to-lead" }>): str
       return "已发给主控 · 主控开始了新的一轮";
     case "failed":
       return "发给主控，没送到";
+    case "unknown":
+      return "发给主控，未能确认送达";
+  }
+}
+
+export function fromLeadLabel(item: Extract<SideItem, { kind: "from-lead" }>): string {
+  switch (item.delivery) {
+    case "failed":
+      return `主控发来的，没送到这里 · ${item.at}`;
+    case "unknown":
+      return `主控发来的，未能确认送达 · ${item.at}`;
+    default:
+      return `来自主控 · ${item.at}`;
   }
 }
 
@@ -105,5 +131,14 @@ export function sentLine(item: Extract<SideItem, { kind: "sent-to-lead" }>): str
 export const chatStarted = (chat: SideChat | null) => chat !== null && chat.items.length > 0;
 
 export function canAsk(chat: SideChat): boolean {
-  return !chat.archived && chat.problem?.kind !== "seat-removed" && chat.problem?.kind !== "instance-full";
+  return (
+    !chat.archived &&
+    chat.askable !== false &&
+    chat.problem?.kind !== "seat-removed" &&
+    chat.problem?.kind !== "instance-full" &&
+    chat.problem?.kind !== "unavailable"
+  );
 }
+
+/** The current instance's first verified model, or none: never the previous instance's. */
+export const defaultModel = (instance: SideInstance | undefined): string | undefined => instance?.models[0];

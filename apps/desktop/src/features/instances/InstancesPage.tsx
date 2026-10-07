@@ -35,6 +35,8 @@ export type InstanceActions = {
   disable?: (id: string) => Promise<void>;
   remove?: (id: string) => Promise<void>;
   rename?: (id: string, name: string) => Promise<void>;
+  /** First-time name and enabled state (and provider for OpenCode) for an instance the host has no profile for. */
+  configureProfile?: (id: string, input: { name: string; enabled: boolean; provider?: string }) => Promise<void>;
   setCap?: (id: string, cap: number) => Promise<void>;
   openFolder?: (id: string) => Promise<void>;
   create?: (vendor: VendorId, input: { name: string; provider?: string }) => Promise<void>;
@@ -59,7 +61,6 @@ export type InstancePageSource = {
 
 const CAP_MIN = 1;
 const CAP_MAX = 8;
-const DEFAULT_CAP = 4;
 
 function errorText(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
@@ -119,35 +120,49 @@ export function InstancesPage({ source }: { source: InstancePageSource }) {
   const [now, setNow] = useState(() => Date.now());
   const busyRef = useRef(false);
   const readSeq = useRef(0);
+  // Bumped when the source changes or the page unmounts; results from an older epoch are dropped.
+  const epoch = useRef(0);
+  const sourceRef = useRef(source);
 
-  // Only the latest read is applied, so an older poll never overwrites the read after a write.
+  // Only the latest read of the current source is applied: an older poll, or a read
+  // started by an operation on a previous source, never overwrites it.
   const refresh = async () => {
     const mine = ++readSeq.current;
+    const era = epoch.current;
     try {
-      const next = await source.read();
-      if (mine === readSeq.current) {
+      const next = await sourceRef.current.read();
+      if (mine === readSeq.current && era === epoch.current) {
         setPage(next);
         setLoadError(null);
       }
     } catch (cause) {
-      if (mine === readSeq.current) setLoadError(errorText(cause));
+      if (mine === readSeq.current && era === epoch.current) setLoadError(errorText(cause));
     }
   };
 
   // The host owns login and install progress; the page only reads it back.
   useEffect(() => {
+    epoch.current += 1;
+    sourceRef.current = source;
+    setPage(null);
+    setLoadError(null);
+    setActionError(null);
     void refresh();
     const timer = window.setInterval(() => {
       setNow(Date.now());
       if (!busyRef.current) void refresh();
     }, 1000);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(timer);
+      epoch.current += 1;
+    };
   }, [source]);
 
   /** Resolves true only when the operation succeeded; success UI waits for it. */
   const run: RunFn = async (key, operation) => {
     if (busyRef.current) return false;
     busyRef.current = true;
+    const era = epoch.current;
     setBusy(key);
     setActionError(null);
     let ok = true;
@@ -155,16 +170,18 @@ export function InstancesPage({ source }: { source: InstancePageSource }) {
       await operation();
     } catch (cause) {
       ok = false;
-      setActionError(errorText(cause));
+      if (era === epoch.current) setActionError(errorText(cause));
     } finally {
       busyRef.current = false;
       setBusy(null);
-      void refresh();
+      if (era === epoch.current) void refresh();
     }
-    return ok;
+    return ok && era === epoch.current;
   };
 
-  const summary = page ? pageSummary(page) : null;
+  // Rows from an earlier read stay visible after a failed read, but nothing can be done to them.
+  const stale = page !== null && loadError !== null;
+  const summary = page && !stale ? pageSummary(page) : null;
 
   return (
     <SettingsSection
@@ -178,7 +195,7 @@ export function InstancesPage({ source }: { source: InstancePageSource }) {
       ) : null}
       {loadError ? (
         <div className="settings-help settings-help-error" role="alert">
-          读不到实例：{loadError}
+          {stale ? `读不到最新状态：${loadError}。下面是上次读到的，现在不能操作。` : `读不到实例：${loadError}`}
         </div>
       ) : null}
       {summary ? (
@@ -204,7 +221,7 @@ export function InstancesPage({ source }: { source: InstancePageSource }) {
           key={section.vendor}
           section={section}
           source={source}
-          busy={busy}
+          busy={stale ? "stale" : busy}
           now={now}
           run={run}
         />
@@ -265,6 +282,7 @@ function VendorGroup({
               row={row}
               vendor={section.vendor}
               actions={actions}
+              providers={source.providers}
               busy={busy}
               now={now}
               run={run}
@@ -290,7 +308,7 @@ function VendorGroup({
               />
             ) : (
               <div className="settings-agents-actions">
-                <button type="button" className="ghost" disabled={!usable} onClick={() => setCreating(true)}>
+                <button type="button" className="ghost" disabled={!usable || busy !== null} onClick={() => setCreating(true)}>
                   新建 {info.label} 实例
                 </button>
               </div>
@@ -301,6 +319,8 @@ function VendorGroup({
     </div>
   );
 }
+
+const CLI_RAW_STATES = ["INSTALL_FAILED", "BLOCKED", "UPGRADE_FAILED", "PROBE_UNKNOWN"];
 
 function CliRow({
   section,
@@ -327,19 +347,22 @@ function CliRow({
   const call = (op: string, fn?: (v: VendorId) => Promise<void>) =>
     fn ? () => void run(key(op), () => fn(vendor)) : undefined;
 
+  const install = (label: string) =>
+    actions.installCli ? (
+      <button type="button" className="ghost" disabled={busy !== null} onClick={call("install", actions.installCli)}>
+        {label}
+      </button>
+    ) : null;
+
   let primary: ReactNode = null;
-  if (cli.state === "NOT_INSTALLED" && actions.installCli) {
-    primary = (
-      <button type="button" className="ghost" disabled={busy !== null} onClick={call("install", actions.installCli)}>
-        安装
-      </button>
-    );
-  } else if (cli.state === "INSTALL_FAILED" && actions.installCli) {
-    primary = (
-      <button type="button" className="ghost" disabled={busy !== null} onClick={call("install", actions.installCli)}>
-        重试
-      </button>
-    );
+  if (!section.cli) {
+    primary = null;
+  } else if (cli.state === "NOT_INSTALLED") {
+    primary = install("安装");
+  } else if (cli.state === "INSTALL_FAILED") {
+    primary = install("重试");
+  } else if (cli.state === "STAGED" || cli.state === "PROBED") {
+    primary = install("继续安装");
   } else if (cli.state === "BLOCKED" && actions.retryCliSelfTest) {
     primary = (
       <button type="button" className="ghost" disabled={busy !== null} onClick={call("selftest", actions.retryCliSelfTest)}>
@@ -366,7 +389,7 @@ function CliRow({
         <>
           <Dot tone={summary.tone} />
           {summary.text}
-          {["INSTALL_FAILED", "BLOCKED", "UPGRADE_FAILED"].includes(cli.state) ? (
+          {CLI_RAW_STATES.includes(cli.state) ? (
             <RawText raw={cli.raw} open={rawOpen} onToggle={() => setRawOpen((v) => !v)} />
           ) : null}
         </>
@@ -380,11 +403,6 @@ function CliRow({
         </>
       }
     >
-      {cli.progress !== undefined && ["INSTALLING", "UPGRADING"].includes(cli.state) ? (
-        <div className="instances-progress instances-full" role="progressbar" aria-valuenow={cli.progress} aria-valuemin={0} aria-valuemax={100}>
-          <span style={{ width: `${cli.progress}%` }} />
-        </div>
-      ) : null}
       {rawOpen && cli.raw ? <pre className="instances-raw instances-full">{cli.raw}</pre> : null}
       {details ? (
         <dl className="instances-details instances-full">
@@ -404,34 +422,34 @@ function CliRow({
           </dd>
           {section.cli ? (
             <>
-          <dt>检查更新</dt>
-          <dd>
-            {cli.checkedAt ?? "还没检查过"}
-            {actions.checkCliUpdates ? (
-              <>
-                {" "}
-                <button type="button" className="instances-link" disabled={busy !== null} onClick={call("check", actions.checkCliUpdates)}>
-                  {busy === key("check") ? "正在检查…" : "现在检查"}
-                </button>
-              </>
-            ) : null}
-            {cli.previousVersion && actions.rollbackCli ? (
-              <>
-                {" · "}
-                <button type="button" className="instances-link" disabled={busy !== null || running > 0} onClick={call("rollback", actions.rollbackCli)}>
-                  退回 {cli.previousVersion}
-                </button>
-              </>
-            ) : null}
-            {section.instances.length === 0 && cliUsable(cli) && actions.uninstallCli ? (
-              <>
-                {" · "}
-                <button type="button" className="instances-link" disabled={busy !== null} onClick={call("uninstall", actions.uninstallCli)}>
-                  卸载
-                </button>
-              </>
-            ) : null}
-          </dd>
+              <dt>检查更新</dt>
+              <dd>
+                {cli.checkedAt ?? "还没检查过"}
+                {actions.checkCliUpdates ? (
+                  <>
+                    {" "}
+                    <button type="button" className="instances-link" disabled={busy !== null} onClick={call("check", actions.checkCliUpdates)}>
+                      {busy === key("check") ? "正在检查…" : "现在检查"}
+                    </button>
+                  </>
+                ) : null}
+                {cli.previousVersion && actions.rollbackCli ? (
+                  <>
+                    {" · "}
+                    <button type="button" className="instances-link" disabled={busy !== null || running > 0} onClick={call("rollback", actions.rollbackCli)}>
+                      退回 {cli.previousVersion}
+                    </button>
+                  </>
+                ) : null}
+                {section.instances.length === 0 && cli.state === "READY" && actions.uninstallCli ? (
+                  <>
+                    {" · "}
+                    <button type="button" className="instances-link" disabled={busy !== null} onClick={call("uninstall", actions.uninstallCli)}>
+                      卸载
+                    </button>
+                  </>
+                ) : null}
+              </dd>
             </>
           ) : null}
         </dl>
@@ -447,12 +465,14 @@ const PRIMARY_LABEL = {
   check: "检测",
   "cancel-login": "取消登录",
   enable: "启用",
+  configure: "设置",
 } as const;
 
 function InstanceRowView({
   row,
   vendor,
   actions,
+  providers,
   busy,
   now,
   run,
@@ -462,6 +482,7 @@ function InstanceRowView({
   row: InstanceRow;
   vendor: VendorId;
   actions: InstanceActions;
+  providers?: string[];
   busy: string | null;
   now: number;
   run: RunFn;
@@ -472,15 +493,18 @@ function InstanceRowView({
   const [details, setDetails] = useState(false);
   const [rawOpen, setRawOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
+  const [configuring, setConfiguring] = useState(false);
   const [nameDraft, setNameDraft] = useState(row.name);
   const [confirm, setConfirm] = useState<"remove" | "disable" | "blocked" | null>(null);
   const [copied, setCopied] = useState(false);
   const menuRef = useRef<HTMLSpanElement>(null);
-  const summary = instanceSummary(row);
+  const summary = instanceSummary(row, { canCheck: Boolean(actions.check) });
   const primary = primaryAction(row);
   const key = (op: string) => `${row.id}:${op}`;
   const label = VENDORS[vendor].label;
   const locked = busy !== null;
+  const canRename = Boolean(actions.rename) && row.profileReady === true;
+  const canDisable = Boolean(actions.disable) && row.profileReady === true && row.enabled === true;
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -509,13 +533,14 @@ function InstanceRowView({
       case "cancel-login":
         return actions.cancelLogin ? () => actions.cancelLogin!(row.id) : undefined;
       case "enable":
-        return actions.enable ? () => actions.enable!(row.id) : undefined;
+        return actions.enable && row.profileReady ? () => actions.enable!(row.id) : undefined;
       default:
         return undefined;
     }
   };
   const handler = primaryHandler();
-  const blockedByUse = row.seats.length > 0 || (row.runningSessions ?? 0) > 0;
+  const showConfigure = primary === "configure" && !row.profileReady && Boolean(actions.configureProfile);
+  const blockedByUse = (row.seats?.length ?? 0) > 0 || (row.runningSessions ?? 0) > 0;
 
   const copyCode = async () => {
     if (!row.login?.deviceCode) return;
@@ -538,7 +563,7 @@ function InstanceRowView({
         onChange={(event) => setNameDraft(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "Escape") setRenaming(false);
-          if (event.key === "Enter" && nameDraft.trim() && actions.rename) {
+          if (event.key === "Enter" && nameDraft.trim() && actions.rename && !locked) {
             void run(key("rename"), () => actions.rename!(row.id, nameDraft.trim())).then((ok) => ok && setRenaming(false));
           }
         }}
@@ -564,14 +589,14 @@ function InstanceRowView({
 
   return (
     <Row
-      disabled={!row.enabled}
+      disabled={row.enabled === false}
       title={title}
       subtitle={
         <>
           <Dot tone={summary.tone} />
           {summary.text}
           {row.state === "LOGGING_IN" && row.login ? (
-            <> · 已等 {elapsed(row.login.startedAt, now)}，授权完会自己变成“可以用”，关掉设置也不会中断</>
+            <> · 已等 {elapsed(row.login.startedAt, now)}，授权完这里会自己更新，关掉设置也不会中断</>
           ) : null}
           {row.state === "WRONG_ACCOUNT" && actions.create ? (
             <>
@@ -581,10 +606,10 @@ function InstanceRowView({
               </button>
             </>
           ) : null}
-          {row.enabled && row.state === "READY" && row.checkFailed ? (
+          {row.enabled !== false && row.state === "READY" && row.checkFailed ? (
             <>
               <br />
-              状态可能不是最新的：上次确认是 {row.lastConfirmed ?? "之前"}，这次没检测成功
+              状态可能不是最新的：上次确认是 {row.lastConfirmed ?? "之前"}，这次没确认成功
             </>
           ) : null}
           {row.seatIssues?.length ? (
@@ -593,7 +618,7 @@ function InstanceRowView({
               {new Set(row.seatIssues.map((issue) => issue.seat)).size} 个席位的会话出了问题，原话在详情里
             </>
           ) : null}
-          {row.enabled && row.settledLeftover ? (
+          {row.enabled !== false && row.settledLeftover ? (
             <>
               <br />
               上次 gogoke 没正常关闭，留下的进程已经自动收尾
@@ -611,66 +636,80 @@ function InstanceRowView({
               {busy === key(primary) && primary === "check" ? "正在检测…" : PRIMARY_LABEL[primary]}
             </button>
           ) : null}
-          {(
-            <span className="instances-menu-anchor" ref={menuRef}>
-              <button
-                type="button"
-                className="ghost icon-button"
-                aria-haspopup="menu"
-                aria-expanded={menuOpen}
-                aria-label={`${row.name} 的更多操作`}
-                onClick={() => setMenuOpen((v) => !v)}
-              >
-                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-                  <circle cx="5" cy="12" r="1.8" />
-                  <circle cx="12" cy="12" r="1.8" />
-                  <circle cx="19" cy="12" r="1.8" />
-                </svg>
-              </button>
-              {menuOpen ? (
-                <PopoverSurface className="instances-menu" role="menu">
-                  <PopoverMenuItem role="menuitem" onClick={() => { setDetails((v) => !v); setMenuOpen(false); }}>
-                    {details ? "收起详情" : "详情"}
+          {showConfigure && !configuring ? (
+            <button type="button" className="ghost" disabled={locked} onClick={() => setConfiguring(true)}>
+              {PRIMARY_LABEL.configure}
+            </button>
+          ) : null}
+          <span className="instances-menu-anchor" ref={menuRef}>
+            <button
+              type="button"
+              className="ghost icon-button"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              aria-label={`${row.name} 的更多操作`}
+              onClick={() => setMenuOpen((v) => !v)}
+            >
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                <circle cx="5" cy="12" r="1.8" />
+                <circle cx="12" cy="12" r="1.8" />
+                <circle cx="19" cy="12" r="1.8" />
+              </svg>
+            </button>
+            {menuOpen ? (
+              <PopoverSurface className="instances-menu" role="menu">
+                <PopoverMenuItem role="menuitem" onClick={() => { setDetails((v) => !v); setMenuOpen(false); }}>
+                  {details ? "收起详情" : "详情"}
+                </PopoverMenuItem>
+                {canRename ? (
+                  <PopoverMenuItem role="menuitem" onClick={() => { setNameDraft(row.name); setRenaming(true); setMenuOpen(false); }}>
+                    改名字
                   </PopoverMenuItem>
-                  {actions.rename ? (
-                    <PopoverMenuItem role="menuitem" onClick={() => { setNameDraft(row.name); setRenaming(true); setMenuOpen(false); }}>
-                      改名字
+                ) : null}
+                {actions.openFolder ? (
+                  <PopoverMenuItem role="menuitem" onClick={() => { setMenuOpen(false); void run(key("folder"), () => actions.openFolder!(row.id)); }}>
+                    打开它的文件夹
+                  </PopoverMenuItem>
+                ) : null}
+                {canDisable ? (
+                  <PopoverMenuItem role="menuitem" onClick={() => { setConfirm("disable"); setMenuOpen(false); }}>
+                    停用
+                  </PopoverMenuItem>
+                ) : null}
+                {actions.remove ? (
+                  <>
+                    <hr className="instances-menu-separator" />
+                    <PopoverMenuItem
+                      role="menuitem"
+                      className="is-danger"
+                      onClick={() => { setConfirm(blockedByUse ? "blocked" : "remove"); setMenuOpen(false); }}
+                    >
+                      删除实例
                     </PopoverMenuItem>
-                  ) : null}
-                  {actions.openFolder ? (
-                    <PopoverMenuItem role="menuitem" onClick={() => { setMenuOpen(false); void run(key("folder"), () => actions.openFolder!(row.id)); }}>
-                      打开它的文件夹
-                    </PopoverMenuItem>
-                  ) : null}
-                  {row.state === "READY" && row.enabled && actions.disable ? (
-                    <PopoverMenuItem role="menuitem" onClick={() => { setConfirm("disable"); setMenuOpen(false); }}>
-                      停用
-                    </PopoverMenuItem>
-                  ) : null}
-                  {actions.remove ? (
-                    <>
-                      <hr className="instances-menu-separator" />
-                      <PopoverMenuItem
-                        role="menuitem"
-                        className="is-danger"
-                        onClick={() => { setConfirm(blockedByUse ? "blocked" : "remove"); setMenuOpen(false); }}
-                      >
-                        删除实例
-                      </PopoverMenuItem>
-                    </>
-                  ) : null}
-                </PopoverSurface>
-              ) : null}
-            </span>
-          )}
+                  </>
+                ) : null}
+              </PopoverSurface>
+            ) : null}
+          </span>
         </>
       }
     >
+      {configuring && actions.configureProfile ? (
+        <ConfigureForm
+          row={row}
+          vendor={vendor}
+          providers={providers}
+          busy={busy}
+          run={run}
+          configure={actions.configureProfile}
+          onDone={() => setConfiguring(false)}
+        />
+      ) : null}
       {row.state === "LOGGING_IN" && row.login ? (
         <div className="instances-code-line instances-full">
           <span>
             {row.login.browser === "opened"
-              ? "已在浏览器打开授权页。"
+              ? "已请浏览器打开授权页。"
               : row.login.browser === "failed"
                 ? "浏览器没能自动打开。"
                 : "还没打开授权页。"}
@@ -682,9 +721,9 @@ function InstanceRowView({
               {copied ? "已复制" : "复制代码"}
             </button>
           ) : null}
-          {row.login.browser !== "opened" && row.login.authorizationUrl ? (
+          {row.login.authorizationUrl ? (
             <a className="instances-link" href={row.login.authorizationUrl} target="_blank" rel="noreferrer">
-              打开授权页
+              {row.login.browser === "opened" ? "没看到的话，打开授权页" : "打开授权页"}
             </a>
           ) : null}
         </div>
@@ -693,7 +732,7 @@ function InstanceRowView({
       {confirm === "remove" && actions.remove ? (
         <div className="instances-confirm instances-full">
           <span className="settings-help">
-            删除“{row.name}”？它的登录和会话记录会一起删掉，不能恢复。你平时用的 {label} 和厂商账号都不受影响。
+            删除“{row.name}”？删除后它不再出现，主控也不会再用它。它的登录凭据、本机目录和记录会留在本机，不会被删掉。你平时用的 {label} 和厂商账号都不受影响。
           </span>
           <span className="settings-agents-actions">
             <button
@@ -714,7 +753,7 @@ function InstanceRowView({
         <div className="instances-confirm instances-full">
           <span className="settings-help">
             停用“{row.name}”？主控不再给它派活，登录保留，随时能启用。
-            {row.seats.length ? `${seatNames(row)} 要在席位页换一个实例。` : ""}
+            {row.seats?.length ? `${seatNames(row)} 要在席位页换一个实例。` : ""}
           </span>
           <span className="settings-agents-actions">
             <button
@@ -754,7 +793,15 @@ function InstanceRowView({
           {row.models ? (
             <>
               <dt>能用的模型</dt>
-              <dd>{row.models}</dd>
+              <dd>
+                {row.models}
+                {row.modelsSource || row.modelsObservedAt ? (
+                  <span className="settings-help">
+                    {" "}
+                    （{[row.modelsSource, row.modelsObservedAt].filter(Boolean).join(" · ")}）
+                  </span>
+                ) : null}
+              </dd>
             </>
           ) : null}
           {row.seatIssues?.length ? (
@@ -769,33 +816,7 @@ function InstanceRowView({
           ) : null}
           <dt>并发上限</dt>
           <dd>
-            {row.cap !== undefined && actions.setCap ? (
-              <span className="settings-agents-stepper" role="group" aria-label="并发上限">
-                <button
-                  type="button"
-                  className="ghost settings-agents-stepper-button"
-                  aria-label="减少"
-                  disabled={locked || row.cap <= CAP_MIN}
-                  onClick={() => void run(key("cap"), () => actions.setCap!(row.id, row.cap! - 1))}
-                >
-                  ▼
-                </button>
-                <span className="settings-agents-stepper-value" aria-live="polite" aria-atomic="true">
-                  {row.cap}
-                </span>
-                <button
-                  type="button"
-                  className="ghost settings-agents-stepper-button"
-                  aria-label="增加"
-                  disabled={locked || row.cap >= CAP_MAX}
-                  onClick={() => void run(key("cap"), () => actions.setCap!(row.id, row.cap! + 1))}
-                >
-                  ▲
-                </button>
-              </span>
-            ) : (
-              <span>{row.cap ?? "—"}</span>
-            )}{" "}
+            <CapControl row={row} locked={locked} setCap={actions.setCap ? (cap) => run(key("cap"), () => actions.setCap!(row.id, cap)) : undefined} />{" "}
             <span className="settings-help">同一时间最多开几个会话</span>
           </dd>
           <dt>上次确认</dt>
@@ -835,6 +856,155 @@ function InstanceRowView({
   );
 }
 
+/** The cap is the host's value; an unset cap is chosen explicitly, never filled with a default. */
+function CapControl({
+  row,
+  locked,
+  setCap,
+}: {
+  row: InstanceRow;
+  locked: boolean;
+  setCap?: (cap: number) => Promise<boolean>;
+}) {
+  if (!setCap) return <span>{row.cap ?? "还没设"}</span>;
+  if (row.cap === undefined) {
+    return (
+      <select
+        className="settings-select settings-select--compact"
+        aria-label="并发上限"
+        value=""
+        disabled={locked}
+        onChange={(event) => event.target.value && void setCap(Number(event.target.value))}
+      >
+        <option value="">还没设，选一个</option>
+        {Array.from({ length: CAP_MAX - CAP_MIN + 1 }, (_, index) => CAP_MIN + index).map((value) => (
+          <option key={value} value={value}>
+            {value}
+          </option>
+        ))}
+      </select>
+    );
+  }
+  const cap = row.cap;
+  return (
+    <span className="settings-agents-stepper" role="group" aria-label="并发上限">
+      <button
+        type="button"
+        className="ghost settings-agents-stepper-button"
+        aria-label="减少"
+        disabled={locked || cap <= CAP_MIN}
+        onClick={() => void setCap(cap - 1)}
+      >
+        ▼
+      </button>
+      <span className="settings-agents-stepper-value" aria-live="polite" aria-atomic="true">
+        {cap}
+      </span>
+      <button
+        type="button"
+        className="ghost settings-agents-stepper-button"
+        aria-label="增加"
+        disabled={locked || cap >= CAP_MAX}
+        onClick={() => void setCap(cap + 1)}
+      >
+        ▲
+      </button>
+    </span>
+  );
+}
+
+/** First-time profile: the Owner gives the name and enabled state; nothing is filled in for them. */
+function ConfigureForm({
+  row,
+  vendor,
+  providers,
+  busy,
+  run,
+  configure,
+  onDone,
+}: {
+  row: InstanceRow;
+  vendor: VendorId;
+  providers?: string[];
+  busy: string | null;
+  run: RunFn;
+  configure: NonNullable<InstanceActions["configureProfile"]>;
+  onDone: () => void;
+}) {
+  const needsProvider = VENDORS[vendor].needsProvider === true;
+  const [name, setName] = useState("");
+  const [enabled, setEnabled] = useState(true);
+  const [provider, setProvider] = useState(row.provider ?? "");
+  const [error, setError] = useState<string | null>(null);
+  const providerChoices = providers ?? [];
+
+  const submit = () => {
+    if (!name.trim()) {
+      setError("给它起个名字");
+      return;
+    }
+    if (needsProvider && !provider) {
+      setError("选一下它连哪家的模型");
+      return;
+    }
+    setError(null);
+    void run(`${row.id}:configure`, () =>
+      configure(row.id, { name: name.trim(), enabled, ...(needsProvider ? { provider } : {}) }),
+    ).then((ok) => ok && onDone());
+  };
+
+  return (
+    <div className="instances-form instances-full">
+      <input
+        className="settings-input settings-input--compact"
+        value={name}
+        autoFocus
+        placeholder={`名字，比如 ${row.name}`}
+        aria-label="名字"
+        onChange={(event) => setName(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") submit();
+          if (event.key === "Escape") onDone();
+        }}
+      />
+      {needsProvider ? (
+        providerChoices.length ? (
+          <select className="settings-select" value={provider} aria-label="连哪家的模型" onChange={(event) => setProvider(event.target.value)}>
+            <option value="">连哪家的模型</option>
+            {providerChoices.map((option) => (
+              <option key={option} value={option}>
+                连 {option}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="settings-help">还不知道它能连哪家的模型，暂时设不了。</span>
+        )
+      ) : null}
+      <label className="instances-check">
+        <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
+        启用（主控可以给它派活）
+      </label>
+      <button
+        type="button"
+        className="ghost"
+        disabled={busy !== null || (needsProvider && !providerChoices.length)}
+        onClick={submit}
+      >
+        保存
+      </button>
+      <button type="button" className="ghost" onClick={onDone}>
+        取消
+      </button>
+      {error ? (
+        <div className="settings-help settings-help-error instances-full" role="alert">
+          {error}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function NewInstanceForm({
   section,
   providers,
@@ -853,16 +1023,25 @@ function NewInstanceForm({
   onDone: () => void;
 }) {
   const info = VENDORS[section.vendor];
-  const fallback = `${info.label} ${section.instances.length + 1}`;
   const [name, setName] = useState("");
-  const [provider, setProvider] = useState(providers?.[0] ?? "");
+  const [provider, setProvider] = useState("");
   const [error, setError] = useState<string | null>(null);
   const taken = new Set(section.instances.map((row) => row.name));
+  const providerChoices = providers ?? [];
+  const blocked = info.needsProvider === true && !providerChoices.length;
 
   const submit = () => {
-    const finalName = name.trim() || fallback;
-    if (taken.has(finalName)) {
+    const finalName = name.trim();
+    if (takesName && !finalName) {
+      setError("给它起个名字");
+      return;
+    }
+    if (takesName && taken.has(finalName)) {
       setError("已经有叫这个名字的实例了，换一个吧");
+      return;
+    }
+    if (info.needsProvider && !provider) {
+      setError("选一下它连哪家的模型");
       return;
     }
     setError(null);
@@ -874,10 +1053,10 @@ function NewInstanceForm({
   return (
     <Row
       title={`新建 ${info.label} 实例`}
-      subtitle={`建好后直接开始登录。并发上限默认 ${DEFAULT_CAP}，之后在详情里改。`}
+      subtitle="建好后直接开始登录。并发上限在详情里设。"
       controls={
         <>
-          <button type="button" className="ghost" disabled={busy !== null} onClick={submit}>
+          <button type="button" className="ghost" disabled={busy !== null || blocked} onClick={submit}>
             新建并登录
           </button>
           <button type="button" className="ghost" onClick={onDone}>
@@ -888,32 +1067,37 @@ function NewInstanceForm({
     >
       <div className="instances-form instances-full">
         {takesName ? (
-        <input
-          className="settings-input"
-          value={name}
-          autoFocus
-          placeholder={`名字，可以不填（默认叫“${fallback}”）`}
-          aria-label="名字"
-          onChange={(event) => setName(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") submit();
-            if (event.key === "Escape") onDone();
-          }}
-        />
+          <input
+            className="settings-input"
+            value={name}
+            autoFocus
+            placeholder="名字，比如：Plus 1 号"
+            aria-label="名字"
+            onChange={(event) => setName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") submit();
+              if (event.key === "Escape") onDone();
+            }}
+          />
         ) : null}
-        {info.needsProvider && providers?.length ? (
-          <select
-            className="settings-select"
-            value={provider}
-            aria-label="连哪家的模型"
-            onChange={(event) => setProvider(event.target.value)}
-          >
-            {providers.map((option) => (
-              <option key={option} value={option}>
-                连 {option}
-              </option>
-            ))}
-          </select>
+        {info.needsProvider ? (
+          providerChoices.length ? (
+            <select
+              className="settings-select"
+              value={provider}
+              aria-label="连哪家的模型"
+              onChange={(event) => setProvider(event.target.value)}
+            >
+              <option value="">连哪家的模型</option>
+              {providerChoices.map((option) => (
+                <option key={option} value={option}>
+                  连 {option}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span className="settings-help">还不知道 {info.label} 能连哪家的模型，暂时建不了。</span>
+          )
         ) : null}
         {error ? (
           <div className="settings-help settings-help-error instances-full" role="alert">

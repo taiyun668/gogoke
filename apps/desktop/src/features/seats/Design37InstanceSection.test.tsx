@@ -4,13 +4,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DESIGN37_INSTANCES_SCHEMA } from "./design37Instances";
 import { Design37InstanceSection } from "./Design37InstanceSection";
-import { createPreviewHost } from "./preview/host";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 const invokeMock = vi.mocked(invoke);
 
-function instance(state: string, login?: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+function instance(state: string, login?: Record<string, unknown>) {
   return {
     instanceId: "codexTestM1",
     driverId: "codex",
@@ -18,12 +17,7 @@ function instance(state: string, login?: Record<string, unknown>, extra: Record<
     revision: "7",
     state,
     ...(login === undefined ? {} : { login }),
-    ...extra,
   };
-}
-
-function snapshot(...instances: ReturnType<typeof instance>[]) {
-  return { schema: DESIGN37_INSTANCES_SCHEMA, instances };
 }
 
 function login(state: string, extra: Record<string, unknown> = {}) {
@@ -39,198 +33,138 @@ function login(state: string, extra: Record<string, unknown> = {}) {
   };
 }
 
+function profile(extra: Record<string, unknown> = {}) {
+  return {
+    instanceId: "codexTestM1",
+    driverId: "codex",
+    name: "Plus 1 号",
+    enabled: true,
+    profileRevision: "r1",
+    cap: 4,
+    ...extra,
+  };
+}
+
+type Host = {
+  instances: ReturnType<typeof instance>[];
+  profiles: ReturnType<typeof profile>[];
+  cli: Array<Record<string, unknown>>;
+  operations: Array<Record<string, unknown>>;
+  failRead?: boolean;
+};
+
+function host(partial: Partial<Host> = {}): Host {
+  return { instances: [instance("LOGGED_IN")], profiles: [profile()], cli: [], operations: [], ...partial };
+}
+
+function serve(state: Host) {
+  invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+    if (command === "gogoke_design37_instances") {
+      if (state.failRead) throw new Error("宿主没有响应");
+      return { schema: DESIGN37_INSTANCES_SCHEMA, instances: state.instances } as never;
+    }
+    if (command === "gogoke_design37_user_operation") {
+      const frame = JSON.parse((args as { frame: string }).frame) as Record<string, unknown>;
+      state.operations.push(frame);
+      if (frame.command === "instance-management-read") {
+        return JSON.stringify({ schema: "gogoke.37.instance-management.v1", profiles: state.profiles, cli: state.cli }) as never;
+      }
+      return JSON.stringify({ status: "APPLIED" }) as never;
+    }
+    if (command === "gogoke_design37_install_cli") {
+      state.operations.push({ command, ...(args as object) });
+      return undefined as never;
+    }
+    if (command === "gogoke_design37_instance_login" || command === "gogoke_design37_instance_cancel") {
+      state.operations.push({ command, ...(args as object) });
+      return { schema: DESIGN37_INSTANCES_SCHEMA, instances: state.instances } as never;
+    }
+    throw new Error(`unexpected ${command}`);
+  });
+}
+
 describe("Design37InstanceSection", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    invokeMock.mockResolvedValue(snapshot() as never);
-  });
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(cleanup);
 
-  afterEach(() => {
-    cleanup();
-    vi.restoreAllMocks();
-  });
-
-  it("groups by vendor, shows plain state and hides internal identifiers", async () => {
-    invokeMock.mockResolvedValue(snapshot(instance("LOGGED_IN")) as never);
+  it("shows the host's name and plain state, and hides internal identifiers", async () => {
+    serve(host());
     render(<Design37InstanceSection />);
-
-    expect(await screen.findByText(/可以用 · 空闲/)).toBeTruthy();
-    expect(screen.getByText("Codex CLI")).toBeTruthy();
-    expect(screen.getByText("1 个可以用", { exact: false })).toBeTruthy();
-    expect(screen.queryByText(/修订/)).toBeNull();
-    expect(screen.queryByText("1.2.3")).toBeNull();
-    // Antigravity is listed as unsupported with no controls.
+    expect(await screen.findByText("Plus 1 号")).toBeTruthy();
+    expect(screen.getByText("可以用")).toBeTruthy();
+    expect(screen.queryByText(/codexTestM1/)).toBeNull();
     expect(screen.getByText(/暂不支持/)).toBeTruthy();
   });
 
-  it("starts one login for the selected instance and shows the device code", async () => {
-    invokeMock.mockImplementation(async (command: string) => {
-      if (command === "gogoke_design37_instance_login") {
-        return snapshot(instance("NOT_LOGGED_IN", login("PENDING", { deviceCode: "ABCD-EFGH" })));
-      }
-      const calls = invokeMock.mock.calls.filter(([name]) => name === "gogoke_design37_instance_login");
-      return calls.length
-        ? snapshot(instance("NOT_LOGGED_IN", login("PENDING", { deviceCode: "ABCD-EFGH" })))
-        : snapshot(instance("NOT_LOGGED_IN"));
-    });
-
+  it("asks for a name and enabled state when the host has no profile yet, without filling them in", async () => {
+    const state = host({ profiles: [profile({ name: undefined, enabled: undefined, profileRevision: undefined, cap: undefined })] });
+    serve(state);
     render(<Design37InstanceSection />);
-    fireEvent.click(await screen.findByRole("button", { name: "登录" }));
-
-    expect(await screen.findByText("ABCD-EFGH")).toBeTruthy();
-    expect(invokeMock).toHaveBeenCalledWith("gogoke_design37_instance_login", { instanceId: "codexTestM1" });
-    expect(screen.getByRole("button", { name: "取消登录" })).toBeTruthy();
-    expect(screen.queryByText("host-owned-request-id")).toBeNull();
-  });
-
-  it("keeps the CLI's original failure text behind 查看原话", async () => {
-    invokeMock.mockResolvedValue(
-      snapshot(instance("ERROR", login("ERROR", { error: "codex exited 17: invalid_grant" }))) as never,
-    );
-    render(<Design37InstanceSection />);
-
-    expect(await screen.findByText(/这次没登上/)).toBeTruthy();
-    expect(screen.queryByText("codex exited 17: invalid_grant")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "查看原话" }));
-    expect(screen.getByText("codex exited 17: invalid_grant")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "重新登录" })).toBeTruthy();
-  });
-
-  it("cancels the pending host session for only the selected instance", async () => {
-    let cancelled = false;
-    invokeMock.mockImplementation(async (command: string) => {
-      if (command === "gogoke_design37_instance_cancel") cancelled = true;
-      return cancelled
-        ? snapshot(instance("NOT_LOGGED_IN", login("CANCELLED")))
-        : snapshot(instance("NOT_LOGGED_IN", login("PENDING")));
-    });
-
-    render(<Design37InstanceSection />);
-    fireEvent.click(await screen.findByRole("button", { name: "取消登录" }));
-
-    expect(await screen.findByText(/上次登录已取消/)).toBeTruthy();
-    expect(invokeMock).toHaveBeenCalledWith("gogoke_design37_instance_cancel", { instanceId: "codexTestM1" });
-  });
-
-  it("reads the existing host session after remount without starting another login", async () => {
-    invokeMock.mockResolvedValue(
-      snapshot(instance("NOT_LOGGED_IN", login("PENDING", { deviceCode: "WXYZ-1234" }))) as never,
-    );
-
-    const first = render(<Design37InstanceSection />);
-    expect(await screen.findByText("WXYZ-1234")).toBeTruthy();
-    first.unmount();
-
-    render(<Design37InstanceSection />);
-    expect(await screen.findByText("WXYZ-1234")).toBeTruthy();
-    expect(invokeMock).not.toHaveBeenCalledWith("gogoke_design37_instance_login", expect.anything());
-  });
-
-  it("copies the device code", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-    invokeMock.mockResolvedValue(
-      snapshot(instance("NOT_LOGGED_IN", login("PENDING", { deviceCode: "COPY-ME" }))) as never,
-    );
-
-    render(<Design37InstanceSection />);
-    fireEvent.click(await screen.findByRole("button", { name: "复制代码" }));
-
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith("COPY-ME"));
-    expect(await screen.findByRole("button", { name: "已复制" })).toBeTruthy();
-  });
-
-  it("offers only cancel while a failed original request is still unsettled", async () => {
-    invokeMock.mockImplementation(async (command: string) => {
-      if (command === "gogoke_design37_instance_cancel") {
-        return snapshot(instance("NOT_LOGGED_IN", login("CANCELLED")));
-      }
-      return snapshot(instance("ERROR", login("ERROR", { settled: false, error: "original transport failure" })));
-    });
-    render(<Design37InstanceSection />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "取消登录" }));
-    expect(screen.queryByRole("button", { name: "重新登录" })).toBeNull();
+    expect(await screen.findByText(/名字、启用或并发上限还没设好/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "启用" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    expect(screen.getByRole("alert").textContent).toContain("给它起个名字");
+    fireEvent.change(screen.getByLabelText("名字"), { target: { value: "Plus 1 号" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("gogoke_design37_instance_cancel", { instanceId: "codexTestM1" }),
+      expect(state.operations).toContainEqual(
+        expect.objectContaining({ command: "instance-profile", instanceId: "codexTestM1", name: "Plus 1 号", enabled: true }),
+      ),
     );
-    expect(invokeMock).not.toHaveBeenCalledWith("gogoke_design37_instance_login", expect.anything());
   });
 
-  it("does not offer actions the host cannot perform", async () => {
-    invokeMock.mockResolvedValue(snapshot(instance("LOGGED_IN")) as never);
+  it("states only that the host asked the browser to open the page", async () => {
+    serve(
+      host({
+        instances: [instance("NOT_LOGGED_IN", login("PENDING", { deviceCode: "ABCD-EFGH", authorizationUrl: "https://example.test/a" }))],
+      }),
+    );
     render(<Design37InstanceSection />);
-    fireEvent.click(await screen.findByRole("button", { name: "Codex 实例 的更多操作" }));
+    expect(await screen.findByText(/已请浏览器打开授权页/)).toBeTruthy();
+    expect(screen.queryByText(/已在浏览器打开/)).toBeNull();
+    expect(screen.getByRole("link", { name: "没看到的话，打开授权页" })).toBeTruthy();
+    expect(screen.getByText("ABCD-EFGH")).toBeTruthy();
+  });
 
-    expect(screen.getByRole("menuitem", { name: "详情" })).toBeTruthy();
-    expect(screen.queryByRole("menuitem", { name: "删除实例" })).toBeNull();
+  it("does not promise a check the host cannot run", async () => {
+    serve(host({ instances: [instance("NOT_LOGGED_IN", login("UNKNOWN"))] }));
+    render(<Design37InstanceSection />);
+    expect(await screen.findByText("没能确认登没登上，先不当成登上了")).toBeTruthy();
+    expect(screen.queryByText(/检测一下/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "检测" })).toBeNull();
+  });
+
+  it("continues a staged install and reports an unsettled self-test plainly", async () => {
+    const state = host({ cli: [{ driverId: "codex", state: "STAGED" }, { driverId: "claude", state: "PROBE_UNKNOWN", raw: "probe stopped" }] });
+    serve(state);
+    render(<Design37InstanceSection />);
+    const codex = within(await screen.findByLabelText("Codex"));
+    expect(codex.getByText("下载好了，还没装完")).toBeTruthy();
+    fireEvent.click(codex.getByRole("button", { name: "继续安装" }));
+    await waitFor(() => expect(state.operations).toContainEqual(expect.objectContaining({ command: "gogoke_design37_install_cli" })));
+    const claude = within(screen.getByLabelText("Claude Code"));
+    expect(claude.getByText(/自检停下了，没能确认通没通过/)).toBeTruthy();
+    expect(claude.queryByText(/网络/)).toBeNull();
+  });
+
+  it("keeps the last rows after a failed read but offers nothing on them", async () => {
+    const state = host({ instances: [instance("NOT_LOGGED_IN")] });
+    serve(state);
+    render(<Design37InstanceSection />);
+    expect(await screen.findByRole("button", { name: "登录" })).toBeTruthy();
+    state.failRead = true;
+    expect(await screen.findByText(/读不到最新状态：宿主没有响应/, {}, { timeout: 2500 })).toBeTruthy();
+    expect((screen.getByRole("button", { name: "登录" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText(/都正常/)).toBeNull();
+  });
+
+  it("offers no enable or disable while the enabled state is unknown", async () => {
+    serve(host({ profiles: [profile({ enabled: undefined })] }));
+    render(<Design37InstanceSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "Plus 1 号 的更多操作" }));
     expect(screen.queryByRole("menuitem", { name: "停用" })).toBeNull();
-    expect(screen.queryByRole("button", { name: /新建 Claude Code 实例/ })).toBeNull();
-    // The host's register enrolls a fixed test instance; it is not offered as creating one.
-    expect(screen.queryByRole("button", { name: /新建 Codex 实例/ })).toBeNull();
-  });
-
-  it("names the instance readably and never shows its internal id", async () => {
-    invokeMock.mockResolvedValue(snapshot(instance("LOGGED_IN")) as never);
-    render(<Design37InstanceSection />);
-    expect(await screen.findByText("Codex 实例")).toBeTruthy();
-    expect(screen.queryByText(/codexTestM1/)).toBeNull();
-  });
-
-  it("does not offer login while the CLI the instance needs is missing", async () => {
-    invokeMock.mockResolvedValue(snapshot(instance("NOT_INSTALLED")) as never);
-    render(<Design37InstanceSection />);
-    expect(await screen.findByText(/CLI 还没装，装好才能登录/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "登录" })).toBeNull();
-  });
-
-  it("keeps a logged-in instance usable and lists seat session problems apart", async () => {
-    invokeMock.mockResolvedValue(
-      snapshot(
-        instance("LOGGED_IN", undefined, {
-          runtimeIssues: [
-            { seatId: "audit", sessionId: "s1", generation: "g1", reason: "turn aborted: 429", sourceEpoch: "e1", sourceCursor: "c1" },
-          ],
-        }),
-      ) as never,
-    );
-    render(<Design37InstanceSection />);
-    expect(await screen.findByText(/可以用 · 空闲/)).toBeTruthy();
-    expect(screen.getByText(/1 个席位的会话出了问题/)).toBeTruthy();
-    expect(screen.queryByText(/turn aborted: 429/)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Codex 实例 的更多操作" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "详情" }));
-    expect(screen.getByText("turn aborted: 429")).toBeTruthy();
-    expect(screen.queryByText(/audit/)).toBeNull();
-  });
-
-  it.each([
-    ["OPENED", /已在浏览器打开授权页/],
-    ["FAILED", /浏览器没能自动打开/],
-    ["NOT_REQUESTED", /还没打开授权页/],
-  ])("says only what the host reports about the browser (%s)", async (browserState, text) => {
-    invokeMock.mockResolvedValue(
-      snapshot(instance("NOT_LOGGED_IN", login("PENDING", { browserState, authorizationUrl: "https://example.test/auth" }))) as never,
-    );
-    render(<Design37InstanceSection />);
-    expect(await screen.findByText(text)).toBeTruthy();
-    expect(Boolean(screen.queryByRole("link", { name: "打开授权页" }))).toBe(browserState !== "OPENED");
-  });
-
-  it("shows the CLI copy as unreported and hides unknown account and models", async () => {
-    invokeMock.mockResolvedValue(snapshot(instance("LOGGED_IN", undefined, { newVersion: "9.9.9" })) as never);
-    render(<Design37InstanceSection />);
-    await screen.findByText(/可以用 · 空闲/);
-    const codex = within(screen.getByLabelText("Codex"));
-    expect(codex.getByText(/宿主还没报告这份 CLI 的情况/)).toBeTruthy();
-    expect(codex.queryByRole("button", { name: "升级" })).toBeNull();
-    fireEvent.click(codex.getByRole("button", { name: "详情" }));
-    expect(screen.queryByText("9.9.9", { exact: false })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Codex 实例 的更多操作" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "详情" }));
-    expect(screen.queryByText("账号")).toBeNull();
-    expect(screen.queryByText("能用的模型")).toBeNull();
-    expect(screen.queryByText(/登录后才知道/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "启用" })).toBeNull();
   });
 
   it("reports an unexpected host schema", async () => {
@@ -238,33 +172,4 @@ describe("Design37InstanceSection", () => {
     render(<Design37InstanceSection />);
     expect((await screen.findByRole("alert")).textContent).toContain("Instance page returned an unexpected schema.");
   });
-
-  it.each([true, false])(
-    "reads the same host login result after the page closes before completion (success=%s)",
-    async (success) => {
-      const host = createPreviewHost();
-      invokeMock.mockImplementation((command, args) => host.invoke(command, args as Record<string, unknown>));
-      const first = render(<Design37InstanceSection />);
-      fireEvent.click(await screen.findByRole("button", { name: "登录" }));
-      await screen.findByText(/正在登录/);
-      const pending = (await host.invoke("gogoke_design37_instances")) as {
-        instances: { login: { requestId: string } }[];
-      };
-      first.unmount();
-      host.settle(success);
-      const settled = (await host.invoke("gogoke_design37_instances")) as {
-        instances: { login: { requestId: string } }[];
-      };
-      expect(settled.instances[0].login.requestId).toBe(pending.instances[0].login.requestId);
-      render(<Design37InstanceSection />);
-      if (success) {
-        await screen.findByText(/可以用 · 空闲/);
-      } else {
-        await screen.findByText(/这次没登上/);
-        fireEvent.click(screen.getByRole("button", { name: "查看原话" }));
-        expect(screen.getByText(/PREVIEW_CLI_FAILED: synthetic failure/)).toBeTruthy();
-      }
-      expect(invokeMock.mock.calls.filter(([command]) => command === "gogoke_design37_instance_login")).toHaveLength(1);
-    },
-  );
 });

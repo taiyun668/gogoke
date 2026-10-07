@@ -90,6 +90,7 @@ describe("NowBlock", () => {
     const merge = vi.fn();
     const closed = batch({
       closed: true,
+      ready: true,
       landing: { commits: 2, merged: false },
       seats: [seat({ state: "returned", say: "改好了。", diff: { added: 52, removed: 18 } })],
     });
@@ -116,6 +117,37 @@ describe("NowBlock", () => {
     expect(screen.getByRole("button", { name: /席位 4/ })).toBeTruthy();
   });
 
+  it("labels hidden lines by what they are, not always as returned", () => {
+    const running = Array.from({ length: 8 }, (_, index) => seat({ id: `r${index}`, name: `席位 ${index}` }));
+    render(<NowBlock batch={batch({ seats: running })} />);
+    expect(screen.getByRole("button", { name: "另外 3 个席位，点开看" })).toBeTruthy();
+  });
+
+  it("never shows the dispatched instruction as a failure or stop reason", () => {
+    render(<NowBlock batch={batch({ seats: [seat({ state: "failed", say: undefined }), seat({ id: "s", name: "审计", state: "stopped" })] })} />);
+    expect(screen.getByText("失败了，宿主没给出原因")).toBeTruthy();
+    expect(screen.queryByText("按复核意见改实例页 8 条；配色和布局不动。")).toBeNull();
+  });
+
+  it("puts a real CLI question first on the folded line, and keeps the last read time there when offline", () => {
+    const closed = batch({ closed: true, ready: true, landing: { commits: 2, merged: false }, seats: [seat({ state: "returned", say: "好了。" })] });
+    const merge = vi.fn();
+    const { rerender } = render(<NowBlock batch={closed} pendingInput actions={{ merge }} />);
+    expect(screen.getByText("待处理")).toBeTruthy();
+    rerender(<NowBlock batch={closed} actions={{ merge }} frozenAt="10:42" />);
+    expect(screen.getByText(/10:42 最后一次读到/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "并进来" })).toBeNull();
+  });
+
+  it("starts fresh for a different batch", () => {
+    const first = batch({ seats: [seat({ state: "returned", say: "好了。" })] });
+    const { rerender } = render(<NowBlock batch={first} />);
+    fireEvent.click(screen.getByRole("button", { name: /施工 · 实例页/ }));
+    expect(screen.getByText("谁接的")).toBeTruthy();
+    rerender(<NowBlock batch={{ ...first, id: "batch-2" }} />);
+    expect(screen.queryByText("谁接的")).toBeNull();
+  });
+
   it("marks an audit verdict that no longer applies", () => {
     render(<NowBlock batch={batch({ seats: [seat({ id: "a", name: "审计", state: "stale", say: "核对完之后施工又改了 1 个文件，这个结论要重新核" })] })} />);
     expect(screen.getByText("1 结论要重新核")).toBeTruthy();
@@ -132,7 +164,9 @@ describe("NowBlock", () => {
   it("reports the same word as the conversation row; 待处理 only for a real CLI question", () => {
     expect(batchWord(batch(), true)).toBe("待处理");
     expect(batchWord(batch(), false)).toBe("在运行");
-    expect(batchWord(batch({ closed: true, landing: { commits: 2, merged: false }, seats: [seat({ state: "returned" })] }), false)).toBe("改动就绪");
+    expect(batchWord(batch({ closed: true, ready: true, landing: { commits: 2, merged: false }, seats: [seat({ state: "returned" })] }), false)).toBe("改动就绪");
+    // Closed with commits is not enough: readiness is the host's own fact.
+    expect(batchWord(batch({ closed: true, landing: { commits: 2, merged: false }, seats: [seat({ state: "failed" })] }), false)).toBeNull();
     expect(batchWord(batch({ closed: true, seats: [seat({ state: "stopped" })] }), false)).toBeNull();
     expect(batchWord(null, false)).toBeNull();
   });
@@ -154,6 +188,22 @@ describe("NowPin and StopMenu", () => {
     render(<NowPin batch={batch()} onJump={onJump} />);
     fireEvent.click(screen.getByRole("button", { name: /正在进行/ }));
     expect(onJump).toHaveBeenCalled();
+  });
+
+  it("closes the menu and ignores picks once stopping is disabled", () => {
+    const onStopTurn = vi.fn();
+    const { rerender } = render(<StopMenu onStopTurn={onStopTurn} />);
+    fireEvent.click(screen.getByRole("button", { name: "停止" }));
+    expect(screen.getByRole("menuitem", { name: /停这一轮/ })).toBeTruthy();
+    rerender(<StopMenu onStopTurn={onStopTurn} disabled />);
+    expect(screen.queryByRole("menuitem", { name: /停这一轮/ })).toBeNull();
+    expect(onStopTurn).not.toHaveBeenCalled();
+  });
+
+  it("shows no spinner on the pinned line when offline", () => {
+    const { container } = render(<NowPin batch={batch()} onJump={() => {}} frozenAt="10:42" />);
+    expect(container.querySelector(".working-spinner")).toBeNull();
+    expect(screen.getByText(/10:42 最后读到/)).toBeTruthy();
   });
 
   it("offers only the kinds of stop the host can do", () => {

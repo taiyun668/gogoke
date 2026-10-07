@@ -5,6 +5,8 @@ import { VENDOR_ICONS } from "@/features/instances/vendorIcons";
 import {
   canAsk,
   chatStarted,
+  defaultModel,
+  fromLeadLabel,
   instanceById,
   seatById,
   sentLine,
@@ -15,7 +17,8 @@ import {
 } from "./sideChatModel";
 import "./sidechat.css";
 
-export type NewSideChat = { seatId: string; instanceId: string; model: string; effort: string; question: string };
+/** `model` and `effort` are present only when the host verified them for the chosen instance. */
+export type NewSideChat = { seatId: string; instanceId: string; model?: string; effort?: string; question: string };
 
 /** Host operations; a control is shown only when its operation exists. */
 export type SideChatActions = {
@@ -74,43 +77,57 @@ export function SideChatPanel({ source }: { source: SideChatSource }) {
   const [drafts, setDrafts] = useState<Record<string, string>>(readDrafts);
   const busyRef = useRef(false);
   const readSeq = useRef(0);
+  // Bumped when the source changes or the panel unmounts; older results are dropped.
+  const epoch = useRef(0);
+  const sourceRef = useRef(source);
 
-  // Only the latest read is applied, so an older poll never overwrites the read after a write.
+  // Only the latest read of the current source is applied.
   const refresh = async () => {
     const mine = ++readSeq.current;
+    const era = epoch.current;
     try {
-      const next = await source.read();
-      if (mine !== readSeq.current) return;
+      const next = await sourceRef.current.read();
+      if (mine !== readSeq.current || era !== epoch.current) return;
       setPage(next);
       setLoadError(null);
     } catch (cause) {
-      if (mine === readSeq.current) setLoadError(errorText(cause));
+      if (mine === readSeq.current && era === epoch.current) setLoadError(errorText(cause));
     }
   };
 
   useEffect(() => {
+    epoch.current += 1;
+    sourceRef.current = source;
+    setPage(undefined);
+    setLoadError(null);
+    setActionError(null);
+    setView({ kind: "list" });
     void refresh();
     const timer = window.setInterval(() => {
       if (!busyRef.current) void refresh();
     }, 1500);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(timer);
+      epoch.current += 1;
+    };
   }, [source]);
 
   const run: RunFn = async (operation) => {
     if (busyRef.current) return false;
     busyRef.current = true;
+    const era = epoch.current;
     setActionError(null);
     let ok = true;
     try {
       await operation();
     } catch (cause) {
       ok = false;
-      setActionError(errorText(cause));
+      if (era === epoch.current) setActionError(errorText(cause));
     } finally {
       busyRef.current = false;
-      void refresh();
+      if (era === epoch.current) void refresh();
     }
-    return ok;
+    return ok && era === epoch.current;
   };
 
   const setDraft = (key: string, value: string) =>
@@ -217,7 +234,7 @@ function ChatList({
       <button key={chat.id} type="button" className="sidechat-item" onClick={() => onOpen(chat.id)}>
         <span className="sidechat-item-top">
           <span className="sidechat-item-title">{chat.title}</span>
-          <span className="sidechat-item-time">{chat.updatedAt}</span>
+          {chat.updatedAt ? <span className="sidechat-item-time">{chat.updatedAt}</span> : null}
         </span>
         <span className="sidechat-meta">
           {instance ? <VendorMark vendor={instance.vendor} /> : null}
@@ -301,8 +318,8 @@ function NewChat({
   const [seatId, setSeatId] = useState(firstSeat?.id ?? "");
   const [instanceId, setInstanceId] = useState(firstSeat?.defaultInstanceId ?? page.instances[0]?.id ?? "");
   const instance = instanceById(page, instanceId);
-  const [model, setModel] = useState(instance?.models[0] ?? "");
-  const [effort, setEffort] = useState(page.efforts[0] ?? "");
+  const [model, setModel] = useState(defaultModel(instance));
+  const [effort, setEffort] = useState<string | undefined>(page.efforts[0]);
   const seat = seatById(page, seatId);
 
   if (!seat || !instance) {
@@ -319,7 +336,11 @@ function NewChat({
   const send = () => {
     const question = draft.trim();
     if (!question || !actions.create) return;
-    void run(() => actions.create!({ seatId, instanceId, model, effort, question })).then((ok) => ok && onCreated());
+    // The model sent is always one of the chosen instance's verified models, or none.
+    const chosen = model && instance.models.includes(model) ? model : undefined;
+    void run(() =>
+      actions.create!({ seatId, instanceId, ...(chosen ? { model: chosen } : {}), ...(effort ? { effort } : {}), question }),
+    ).then((ok) => ok && onCreated());
   };
 
   return (
@@ -327,7 +348,7 @@ function NewChat({
       <Bar title="新开旁聊" onBack={onBack} />
       <div className="sidechat-scroll">
         <div className="sidechat-help">
-          问{seat.name}，会参考主控到第 {page.leadRound} 轮的进展，只看本项目。你发第一个问题之前，不会调用模型。
+          问{seat.name}，会参考主控{page.leadRound !== undefined ? `到第 ${page.leadRound} 轮` : "当前"}的进展，只看本项目。你发第一个问题之前，不会调用模型。
           <br />
           在输入框下面选问谁、用哪个实例；发出第一个问题后就固定了。
         </div>
@@ -350,15 +371,19 @@ function NewChat({
             setSeatId(id);
             if (next) {
               setInstanceId(next.defaultInstanceId);
-              setModel(instanceById(page, next.defaultInstanceId)?.models[0] ?? model);
+              setModel(defaultModel(instanceById(page, next.defaultInstanceId)));
             }
           },
           onInstance: (id) => {
             setInstanceId(id);
-            setModel(instanceById(page, id)?.models[0] ?? model);
+            setModel(defaultModel(instanceById(page, id)));
           },
         }}
-        modelChoice={{ models: instance.models, efforts: page.efforts, model, effort, onPick: (m, e) => { setModel(m); setEffort(e); } }}
+        modelChoice={
+          instance.models.length || page.efforts.length
+            ? { models: instance.models, efforts: page.efforts, model, effort, onPick: (m, e) => { setModel(m); setEffort(e); } }
+            : undefined
+        }
         permission={seat.permission}
       />
     </>
@@ -444,13 +469,21 @@ function ChatView({
       </Bar>
       {info ? (
         <dl className="sidechat-info">
-          <dt>参考到</dt>
-          <dd>
-            主控第 {chat.referenceRound} 轮
-            {chat.pendingLeadSegments ? `（之后又有 ${chat.pendingLeadSegments} 段，下次提问带上）` : ""}
-          </dd>
-          <dt>同步方式</dt>
-          <dd>{chat.appendsImmediately ? "主控有新进展就直接追加过来" : "攒着，你下次提问时一起带上"}</dd>
+          {chat.referenceRound !== undefined ? (
+            <>
+              <dt>参考到</dt>
+              <dd>
+                主控第 {chat.referenceRound} 轮
+                {chat.pendingLeadSegments ? `（之后又有 ${chat.pendingLeadSegments} 段，下次提问带上）` : ""}
+              </dd>
+            </>
+          ) : null}
+          {chat.appendsImmediately !== undefined ? (
+            <>
+              <dt>同步方式</dt>
+              <dd>{chat.appendsImmediately ? "主控有新进展就直接追加过来" : "攒着，你下次提问时一起带上"}</dd>
+            </>
+          ) : null}
           <dt>权限</dt>
           <dd>{seat?.permission ?? "—"}</dd>
           <dt>注意</dt>
@@ -507,8 +540,12 @@ function ChatView({
       ) : chat.problem?.kind === "seat-removed" ? (
         <footer className="composer sidechat-composer">
           <div className="sidechat-problem is-warn">
-            担任这个旁聊的“{chat.problem.seatName}”席位已经删除，这里只能看不能问。想接着问，就新开一个旁聊。
+            担任这个旁聊的{chat.problem.seatName ? `“${chat.problem.seatName}”` : ""}席位已经删除，这里只能看不能问。想接着问，就新开一个旁聊。
           </div>
+        </footer>
+      ) : chat.problem?.kind === "unavailable" ? (
+        <footer className="composer sidechat-composer">
+          <div className="sidechat-problem is-warn">现在连不上这个旁聊的会话，这里只能看不能问。</div>
         </footer>
       ) : (
         <>
@@ -516,6 +553,9 @@ function ChatView({
             <div className="sidechat-problem is-warn sidechat-inset">
               {chat.problem.instanceName} 同时开的会话满了（{chat.problem.used}/{chat.problem.cap}）。等它空出来再问，或者新开一个旁聊用别的实例。
             </div>
+          ) : null}
+          {chat.questionUnconfirmed ? (
+            <div className="sidechat-problem is-warn sidechat-inset">上一个问题还没确认送到；确认之前只能再发同一句。</div>
           ) : null}
           {seat && instance ? (
             <Composer
@@ -528,15 +568,17 @@ function ChatView({
               onStop={actions.stop ? () => void run(() => actions.stop!(chat.id)) : undefined}
               who={{ label: `${seat.name} · ${instance.name}`, vendor: instance.vendor, fixed: chatStarted(chat) }}
               modelChoice={
-                actions.setModel
+                actions.setModel && instance.models.length
                   ? {
                       models: instance.models,
                       efforts: page.efforts,
                       model: chat.model,
                       effort: chat.effort,
-                      onPick: (m, e) => void run(() => actions.setModel!(chat.id, m, e)),
+                      onPick: (m, e) => m && e && void run(() => actions.setModel!(chat.id, m, e)),
                     }
-                  : { models: [chat.model], efforts: [chat.effort], model: chat.model, effort: chat.effort, fixed: true }
+                  : chat.model || chat.effort
+                    ? { models: [], efforts: [], model: chat.model, effort: chat.effort, fixed: true }
+                    : undefined
               }
               permission={seat.permission}
             />
@@ -566,7 +608,7 @@ function Item({ item }: { item: SideItem }) {
           </div>
           <div className="sidechat-answer-foot">
             {item.leadUpdatedAfter ? <span className="sidechat-updated">之后主控已更新 · 下次提问会带上 </span> : null}
-            <span className="sidechat-basis">依据：这条回答开始时的现场（{item.basis}）</span>
+            {item.basis ? <span className="sidechat-basis">依据：这条回答开始时的现场（{item.basis}）</span> : null}
           </div>
         </div>
       );
@@ -576,7 +618,9 @@ function Item({ item }: { item: SideItem }) {
           <span className="sidechat-sent-mark" aria-hidden>
             ↗
           </span>
-          <span className={item.result === "failed" ? "sidechat-sent-failed" : undefined}>{sentLine(item)}</span>
+          <span className={item.result === "failed" ? "sidechat-sent-failed" : item.result === "unknown" ? "sidechat-sent-unknown" : undefined}>
+            {sentLine(item)}
+          </span>
           {open ? (
             <span className="sidechat-sent-detail">
               “{item.text}”{item.error ? <span className="sidechat-error"> · {item.error}</span> : null}
@@ -588,7 +632,10 @@ function Item({ item }: { item: SideItem }) {
     case "from-lead":
       return (
         <div className="sidechat-from-lead">
-          <div className="sidechat-from-lead-label">来自主控 · {item.at}</div>
+          <div className={`sidechat-from-lead-label${item.delivery === "failed" || item.delivery === "unknown" ? " is-unconfirmed" : ""}`}>
+            {fromLeadLabel(item)}
+            {item.error ? ` · ${item.error}` : ""}
+          </div>
           <div className="message assistant">
             <div className="bubble">
               <Markdown value={item.text} />
@@ -613,10 +660,10 @@ type WhoChoice = {
 type ModelChoice = {
   models: string[];
   efforts: string[];
-  model: string;
-  effort: string;
+  model?: string;
+  effort?: string;
   fixed?: boolean;
-  onPick?: (model: string, effort: string) => void;
+  onPick?: (model: string | undefined, effort: string | undefined) => void;
 };
 
 /** Compact composer: input and send first; who · instance and model · effort as two chips; permission as a lock. */
@@ -640,7 +687,7 @@ function Composer({
   answering?: boolean;
   onStop?: () => void;
   who: WhoChoice;
-  modelChoice: ModelChoice;
+  modelChoice?: ModelChoice;
   permission: string;
 }) {
   const [pop, setPop] = useState<"who" | "model" | null>(null);
@@ -707,7 +754,7 @@ function Composer({
             ))}
           </PopoverSurface>
         ) : null}
-        {pop === "model" && !modelChoice.fixed ? (
+        {pop === "model" && modelChoice && !modelChoice.fixed ? (
           <PopoverSurface className="sidechat-pop is-right" role="menu">
             <div className="sidechat-pop-label">模型</div>
             {modelChoice.models.map((item) => (
@@ -737,19 +784,21 @@ function Composer({
           <span className="sidechat-chip-text">{who.label}</span>
           {who.fixed ? null : <span className="sidechat-caret" aria-hidden>▾</span>}
         </button>
-        <button
-          type="button"
-          className="sidechat-chip"
-          disabled={modelChoice.fixed}
-          aria-haspopup={modelChoice.fixed ? undefined : "menu"}
-          aria-expanded={pop === "model"}
-          onClick={() => setPop((value) => (value === "model" ? null : "model"))}
-        >
-          <span className="sidechat-chip-text">
-            {modelChoice.model} · {modelChoice.effort}
-          </span>
-          {modelChoice.fixed ? null : <span className="sidechat-caret" aria-hidden>▾</span>}
-        </button>
+        {modelChoice ? (
+          <button
+            type="button"
+            className="sidechat-chip"
+            disabled={modelChoice.fixed}
+            aria-haspopup={modelChoice.fixed ? undefined : "menu"}
+            aria-expanded={pop === "model"}
+            onClick={() => setPop((value) => (value === "model" ? null : "model"))}
+          >
+            <span className="sidechat-chip-text">
+              {[modelChoice.model ?? "选模型", modelChoice.effort].filter(Boolean).join(" · ")}
+            </span>
+            {modelChoice.fixed ? null : <span className="sidechat-caret" aria-hidden>▾</span>}
+          </button>
+        ) : null}
         <span className="sidechat-lock" title={permission} aria-label={`权限：${permission}`} role="img">
           <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
             <rect x="5" y="11" width="14" height="9" rx="2" />

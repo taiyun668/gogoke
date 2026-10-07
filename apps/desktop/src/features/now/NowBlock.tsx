@@ -11,6 +11,7 @@ import {
   batchCounts,
   batchWord,
   elapsed,
+  hiddenLabel,
   isRunning,
   landingText,
   lineText,
@@ -144,11 +145,14 @@ export function NowBlock({
   batch,
   actions = {},
   frozenAt,
+  pendingInput = false,
 }: {
   batch: NowBatch;
   actions?: NowActions;
   /** Set when the host cannot be read: the time of the last read, shown instead of live state. */
   frozenAt?: string;
+  /** A real CLI question waits in this conversation: the same fact the conversation row uses. */
+  pendingInput?: boolean;
 }) {
   const [open, setOpen] = useState(!batch.closed);
   const [selected, setSelected] = useState<string | null>(null);
@@ -156,6 +160,16 @@ export function NowBlock({
   const touched = useRef(false);
   const running = isRunning(batch) && !frozenAt;
   const now = useNow(running);
+
+  // A different batch never inherits the previous one's open, selected or show-all state.
+  const [shownBatch, setShownBatch] = useState(batch.id);
+  if (shownBatch !== batch.id) {
+    setShownBatch(batch.id);
+    touched.current = false;
+    setOpen(!batch.closed);
+    setSelected(null);
+    setShowAll(false);
+  }
 
   // Follow the batch closing unless the Owner already chose open or closed.
   useEffect(() => {
@@ -167,12 +181,12 @@ export function NowBlock({
     setOpen((value) => !value);
   };
 
-  const word = batchWord(batch, false);
+  const word = batchWord(batch, pendingInput);
   const diff = totalDiff(batch);
 
   if (batch.closed && !open) {
     return (
-      <div className="now is-folded" data-batch={batch.id}>
+      <div className={`now is-folded${frozenAt ? " is-frozen" : ""}`} data-batch={batch.id}>
         <div className="now-head">
           <span className="now-title">
             {BOT}
@@ -183,7 +197,7 @@ export function NowBlock({
             {batch.landing ? <> · {landingText(batch.landing)}</> : null}
             {diff ? <> · <Diff diff={diff} /></> : null}
           </span>
-          {batch.landing && !batch.landing.merged && actions.merge ? (
+          {batch.landing && !batch.landing.merged && actions.merge && !frozenAt ? (
             <button type="button" className="ghost now-act" onClick={() => actions.merge!(batch.id)}>
               并进来
             </button>
@@ -192,6 +206,7 @@ export function NowBlock({
             展开
           </button>
         </div>
+        {frozenAt ? <div className="now-frozen">读不到宿主了。这一行是 {frozenAt} 最后一次读到的样子。</div> : null}
       </div>
     );
   }
@@ -202,7 +217,7 @@ export function NowBlock({
   const actionsDone = actionCount(batch);
   const settled = settledCount(batch);
   const seats = visibleSeats(batch, showAll);
-  const hidden = batch.seats.length - seats.length;
+  const hidden = batch.seats.filter((seat) => !seats.includes(seat));
   const current = batch.seats.find((seat) => seat.id === selected) ?? null;
 
   return (
@@ -230,10 +245,10 @@ export function NowBlock({
       {open ? (
         <>
           <Graph seats={seats} running={running} selected={selected} onSelect={(id) => setSelected((value) => (value === id ? null : id))} />
-          {hidden > 0 ? (
+          {hidden.length ? (
             <div className="now-more">
               <button type="button" className="now-link" onClick={() => setShowAll(true)}>
-                另外 {hidden} 个已交回，点开看
+                {hiddenLabel(hidden)}
               </button>
             </div>
           ) : null}
@@ -321,7 +336,7 @@ function Graph({
               className="now-node"
               data-s={seat.state}
               aria-expanded={selected === seat.id}
-              aria-label={`${seat.name} ${STATE_WORD[seat.state]}`}
+              aria-label={`${seat.name}，${STATE_WORD[seat.state]}，${line.verb ? `${line.verb} ${line.target ?? ""}` : line.say}`}
               title={seat.ask}
               ref={(el) => {
                 if (el) nodes.current.set(seat.id, el);
@@ -446,13 +461,16 @@ function Panel({ seat, now, actions }: { seat: SeatLine; now: number; actions: N
 }
 
 /** One line above the composer, shown only while the block is out of view. */
-export function NowPin({ batch, onJump }: { batch: NowBatch; onJump: () => void }) {
-  const running = isRunning(batch);
+export function NowPin({ batch, onJump, frozenAt }: { batch: NowBatch; onJump: () => void; frozenAt?: string }) {
+  const running = isRunning(batch) && !frozenAt;
   return (
     <button type="button" className="now-pin" onClick={onJump}>
       {running ? <span className="working-spinner" aria-hidden /> : null}
       <b>正在进行</b>
-      <span className="now-pin-counts">{batchCounts(batch)}</span>
+      <span className="now-pin-counts">
+        {batchCounts(batch)}
+        {frozenAt ? `（${frozenAt} 最后读到）` : ""}
+      </span>
       <span className="now-pin-jump">回到这里 ↓</span>
     </button>
   );
@@ -487,6 +505,14 @@ export function StopMenu({
 }) {
   const [open, setOpen] = useState(false);
   const anchor = useRef<HTMLSpanElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const shown = open && !disabled;
+
+  // Focus the first item on open; arrows move between items; Escape returns to the button.
+  useEffect(() => {
+    if (!shown) return;
+    anchor.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+  }, [shown]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -494,7 +520,18 @@ export function StopMenu({
       if (!anchor.current?.contains(event.target as Node)) setOpen(false);
     };
     const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") {
+        setOpen(false);
+        trigger.current?.focus();
+      }
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        const items = [...(anchor.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])];
+        if (!items.length) return;
+        event.preventDefault();
+        const at = items.indexOf(document.activeElement as HTMLElement);
+        const step = event.key === "ArrowDown" ? 1 : -1;
+        items[(at + step + items.length) % items.length].focus();
+      }
     };
     document.addEventListener("mousedown", close);
     document.addEventListener("keydown", escape);
@@ -507,22 +544,23 @@ export function StopMenu({
   if (!onStopTurn && !onStopWork) return null;
   const pick = (fn: () => void) => () => {
     setOpen(false);
-    fn();
+    if (!disabled) fn();
   };
 
   return (
     <span className="now-stop" ref={anchor}>
       <button
+        ref={trigger}
         type="button"
         className="ghost"
         disabled={disabled}
         aria-haspopup="menu"
-        aria-expanded={open}
+        aria-expanded={shown}
         onClick={() => setOpen((value) => !value)}
       >
         停止
       </button>
-      {open ? (
+      {shown ? (
         <PopoverSurface className="now-stop-menu" role="menu">
           {onStopTurn ? (
             <PopoverMenuItem role="menuitem" onClick={pick(onStopTurn)}>

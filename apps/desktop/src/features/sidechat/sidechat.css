@@ -313,6 +313,11 @@
   color: var(--status-error);
 }
 
+.sidechat-sent-unknown,
+.sidechat-from-lead-label.is-unconfirmed {
+  color: var(--status-warning);
+}
+
 .sidechat-sent-detail {
   flex-basis: 100%;
   padding: 2px 0 2px 22px;

@@ -34,6 +34,15 @@ describe("InstancesPage", () => {
     expect(screen.getByRole("button", { name: "确认删除" })).toBeTruthy();
   });
 
+  it("drops the old source's rows and never sends their actions to a new source", async () => {
+    const remove = vi.fn(async () => {});
+    const { rerender } = render(<InstancesPage source={{ read: async () => page(), actions: { remove } }} />);
+    expect(await screen.findByText("Plus 1 号")).toBeTruthy();
+    rerender(<InstancesPage source={{ read: () => new Promise<InstancePage>(() => {}), actions: { remove } }} />);
+    expect(await screen.findByText("正在读取实例…")).toBeTruthy();
+    expect(screen.queryByText("Plus 1 号")).toBeNull();
+  });
+
   it("applies only the latest read, so a poll that started before a write cannot overwrite it", async () => {
     const named = (name: string) => {
       const data = page();

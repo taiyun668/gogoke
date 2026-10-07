@@ -59,31 +59,44 @@ export function SeatsPanel({ source }: { source: SeatsSource }) {
   const [showRemoved, setShowRemoved] = useState(false);
   const busyRef = useRef(false);
   const readSeq = useRef(0);
+  // Bumped when the source changes or the panel unmounts; older results are dropped.
+  const epoch = useRef(0);
+  const sourceRef = useRef(source);
 
-  // Only the latest read is applied, so an older poll never overwrites the read after a write.
+  // Only the latest read of the current source is applied.
   const refresh = async () => {
     const mine = ++readSeq.current;
+    const era = epoch.current;
     try {
-      const next = await source.read();
-      if (mine !== readSeq.current) return;
+      const next = await sourceRef.current.read();
+      if (mine !== readSeq.current || era !== epoch.current) return;
       setPage(next);
       setLoadError(null);
     } catch (cause) {
-      if (mine === readSeq.current) setLoadError(errorText(cause));
+      if (mine === readSeq.current && era === epoch.current) setLoadError(errorText(cause));
     }
   };
 
   useEffect(() => {
+    epoch.current += 1;
+    sourceRef.current = source;
+    setPage(undefined);
+    setLoadError(null);
+    setActionError(null);
     void refresh();
     const timer = window.setInterval(() => {
       if (!busyRef.current) void refresh();
     }, 2000);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(timer);
+      epoch.current += 1;
+    };
   }, [source]);
 
   const run: RunFn = async (key, operation) => {
     if (busyRef.current) return false;
     busyRef.current = true;
+    const era = epoch.current;
     setBusy(key);
     setActionError(null);
     let ok = true;
@@ -91,13 +104,13 @@ export function SeatsPanel({ source }: { source: SeatsSource }) {
       await operation();
     } catch (cause) {
       ok = false;
-      setActionError(errorText(cause));
+      if (era === epoch.current) setActionError(errorText(cause));
     } finally {
       busyRef.current = false;
       setBusy(null);
-      void refresh();
+      if (era === epoch.current) void refresh();
     }
-    return ok;
+    return ok && era === epoch.current;
   };
 
   if (page === undefined && !loadError) {
@@ -274,10 +287,11 @@ function SeatCard({
               </>
             ) : null}
           </dl>
-          {canTune(row) ? (
+          {(canTune(row) && (actions.tune || (row.isLead && actions.setRange && page.range))) ||
+          (canDelete(row) && actions.remove) ? (
             <div className="git-root-actions">
-              {actions.tune ? <Pill onClick={() => setMode("tune")}>调整</Pill> : null}
-              {row.isLead && actions.setRange && page.range ? (
+              {canTune(row) && actions.tune ? <Pill onClick={() => setMode("tune")}>调整</Pill> : null}
+              {canTune(row) && row.isLead && actions.setRange && page.range ? (
                 <Pill onClick={() => setMode("range")}>编排范围</Pill>
               ) : null}
               {canDelete(row) && actions.remove ? <Pill onClick={() => setMode("delete")}>删除席位</Pill> : null}

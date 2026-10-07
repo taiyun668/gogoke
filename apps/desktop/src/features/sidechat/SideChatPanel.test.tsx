@@ -130,6 +130,53 @@ describe("SideChatPanel", () => {
     );
   });
 
+  it("sends no model from the previous instance when the new one has none verified", async () => {
+    const create = vi.fn(async () => {});
+    const data = page();
+    data.instances[1] = { ...data.instances[1], models: [] };
+    render(<SideChatPanel source={source(data, { create })} />);
+    fireEvent.click(await screen.findByRole("button", { name: "新开旁聊" }));
+    fireEvent.click(screen.getByRole("button", { name: /审计 · SuperGrok 第 2 个/ }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Claude Pro" }));
+    fireEvent.change(screen.getByLabelText("旁聊输入"), { target: { value: "还有什么" } });
+    fireEvent.click(screen.getByRole("button", { name: "发问" }));
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(create).toHaveBeenCalledWith(expect.not.objectContaining({ model: expect.anything() }));
+  });
+
+  it("says plainly when delivery between windows was not confirmed", async () => {
+    const relays = chat({
+      items: [
+        { kind: "sent-to-lead", id: "s1", text: "版本号挪到右上角。", at: "10:52", result: "unknown", error: "回执还没回来" },
+        { kind: "from-lead", id: "l1", text: "收到。", at: "10:53", delivery: "unknown" },
+      ],
+    });
+    render(<SideChatPanel source={source(page([relays]))} />);
+    fireEvent.click(await screen.findByRole("button", { name: /实例卡片还能看到报错吗/ }));
+    expect(screen.getByText("发给主控，未能确认送达")).toBeTruthy();
+    expect(screen.getByText(/主控发来的，未能确认送达 · 10:53/)).toBeTruthy();
+    expect(screen.queryByText(/已发给主控/)).toBeNull();
+  });
+
+  it("hides rounds, counts and model when the host does not report them", async () => {
+    const bare = chat({ model: undefined, effort: undefined, referenceRound: undefined, pendingLeadSegments: undefined, updatedAt: undefined });
+    const data = { ...page([bare]), leadRound: undefined };
+    render(<SideChatPanel source={source(data, { ask: vi.fn(async () => {}) })} />);
+    fireEvent.click(await screen.findByRole("button", { name: /实例卡片还能看到报错吗/ }));
+    fireEvent.click(screen.getByRole("button", { name: "旁聊的更多操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "旁聊信息" }));
+    expect(screen.queryByText("参考到")).toBeNull();
+    expect(screen.queryByText(/undefined/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /Grok 5 · 高/ })).toBeNull();
+  });
+
+  it("keeps a chat readable but not askable when its session is unreachable", async () => {
+    render(<SideChatPanel source={source(page([chat({ problem: { kind: "unavailable" } })]))} />);
+    fireEvent.click(await screen.findByRole("button", { name: /实例卡片还能看到报错吗/ }));
+    expect(screen.getByText(/现在连不上这个旁聊的会话/)).toBeTruthy();
+    expect(screen.queryByLabelText("旁聊输入")).toBeNull();
+  });
+
   it("explains a removed seat and stops asking, without guessing", async () => {
     render(<SideChatPanel source={source(page([chat({ problem: { kind: "seat-removed", seatName: "审计" } })]))} />);
     fireEvent.click(await screen.findByRole("button", { name: /实例卡片还能看到报错吗/ }));
