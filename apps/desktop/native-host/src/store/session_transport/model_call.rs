@@ -232,6 +232,24 @@ fn original_source(db:&VerifiedDatabaseConnection<'_>,proof:&ModelCallProof)->Re
         || seat_id!=proof.seat || incarnation!=proof.incarnation {
         return Err(ModelCallError::Denied);
     }
+    // The provider can emit a tool name that was never registered. The A
+    // session purpose and current E scope are native authority, so enforce the
+    // tool set again for original capture and every later revalidation.
+    let registration=ledger::read_registered_session(db,&proof.session)?
+        .ok_or(ModelCallError::Denied)?;
+    if registration.domain_id!=proof.domain || registration.seat_id!=proof.seat {
+        return Err(ModelCallError::Denied);
+    }
+    match registration.purpose {
+        ledger::SessionPurpose::SideChat if registration.side_id.is_some() &&
+            proof.tool=="gogoke_side_message" => {},
+        ledger::SessionPurpose::Work if registration.side_id.is_none() => {
+            let seat=seat::get(db,&proof.domain,&proof.seat)?
+                .ok_or(ModelCallError::Denied)?;
+            seat::orchestration_scope(&seat).map_err(|_|ModelCallError::Denied)?;
+        },
+        _=>return Err(ModelCallError::Denied),
+    }
     let source=ledger::read_captured_raw_source(db,&proof.source.operation_id,
         &proof.source.source_epoch,&proof.source.source_cursor)?
         .ok_or(ModelCallError::Denied)?;
