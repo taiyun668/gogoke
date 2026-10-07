@@ -192,6 +192,39 @@ impl<'root> ProductDatabase<'root> {
                 let registry=d::list(&mut self.connection,&self.owner,&domain).map_err(side_error)?;
                 let mut chats=Vec::new();
                 for side in registry {
+                    let pending_question=Statement::prepare(self.connection.as_ptr(),
+                        "SELECT 1 FROM main.gogoke_v37_side_sync WHERE domain_id=?1 AND side_id=?2 AND mode='QUESTION' AND state IN ('PREPARED','UNKNOWN') LIMIT 1")?;
+                    pending_question.bind_text(1,&domain)?;pending_question.bind_text(2,&side.side_id)?;
+                    let question_unresolved=pending_question.step_row()?;
+                    drop(pending_question);
+                    // A missing exact H process/claim is unknown to the page,
+                    // never an idle session available for a new question.
+                    let host=if let Some(run)=self.native_sessions.get(&(domain.clone(),side.session_id.clone())) {
+                        if run.operation_id==side.binding_process_operation_id &&
+                            run.custody.binding.generation==side.binding_generation {
+                            let claim=Statement::prepare(self.connection.as_ptr(),
+                                "SELECT revision FROM main.gogoke_v37_h_claim WHERE domain_id=?1 AND session_id=?2 AND generation=?3 AND process_operation_id=?4 AND instance_id=?5 AND state='COMMITTED'")?;
+                            for (index,value) in [&domain,&side.session_id,&side.binding_generation,
+                                &side.binding_process_operation_id,&side.binding_instance_id].iter().enumerate() {
+                                claim.bind_text((index+1) as i32,value)?;
+                            }
+                            if claim.step_row()? {
+                                let revision=claim.column_text(0)?;
+                                if claim.step_row()? {return Err(OrchestrationError::OperationConflict);}
+                                Json::Object(BTreeMap::from([
+                                    (key("sessionId"),text(&side.session_id)),
+                                    (key("generation"),text(&side.binding_generation)),
+                                    (key("expectedRevision"),text(&revision)),
+                                    (key("instanceId"),text(&side.binding_instance_id)),
+                                    (key("driverId"),text(run.evidence.driver_id())),
+                                    (key("model"),text(&run.model)),(key("effort"),text(&run.effort)),
+                                    (key("answering"),Json::Bool(run.turn_id.is_some())),
+                                    (key("canAsk"),Json::Bool(run.turn_id.is_none()&&run.allows_input()&&!question_unresolved)),
+                                    (key("questionUnresolved"),Json::Bool(question_unresolved)),
+                                ]))
+                            } else {Json::Null}
+                        } else {Json::Null}
+                    } else {Json::Null};
                     let lines=d::delivery::lines(&mut self.connection,&self.owner,&domain,&side.side_id)
                         .map_err(side_error)?;
                     let mut transfers=Vec::new();
@@ -224,6 +257,7 @@ impl<'root> ProductDatabase<'root> {
                         (key("sourceCursor"),text(&side.cursor.to_string())),
                         (key("syncedCursor"),text(&side.synced_cursor.to_string())),
                         (key("revision"),text(&side.revision.to_string())),
+                        (key("host"),host),
                         (key("transfers"),Json::Array(transfers)),
                     ])));
                 }
@@ -337,6 +371,7 @@ impl<'root> ProductDatabase<'root> {
                         (key("sourceEventId"),text(&event.input.event_id)),
                         (key("sourceEpoch"),text(&event.input.source_epoch)),
                         (key("sourceCursor"),text(&event.input.source_cursor)),
+                        (key("occurredAt"),text(&event.input.occurred_at)),
                         (key("sessionId"),text(&event.input.session_id)),
                         (key("sideId"),text(&id)),
                         (key("update"),Parser::parse(&event.input.update_json)?),
