@@ -11,7 +11,7 @@
   },
   {
    "path": "docs/design/GOGO-要做的和不做的.md",
-   "blob": "b941188791a7821c13b0ea1466194efde72f398a"
+   "blob": "9def308568a8af309fe0065c0d365ad15a39e367"
   },
   {
    "path": "docs/directions/2026-09-23-direction-candidates.md",
@@ -962,6 +962,72 @@
     "path": "apps/desktop/src/features/composer/components/ComposerInput.tsx",
     "extension": "replace the original stop control with the G StopMenu only when real host round/task stop actions exist; retain the original send and stop behavior for non-design37 threads",
     "serves": [
+     "G"
+    ]
+   },
+   {
+    "path": "apps/desktop/src-tauri/src/backend/app_server.rs",
+    "extension": "Route Design37 visible conversation transport to the same native H session, retain exact source and output anchors, expose lifecycle methods instead of direct Child operations; legacy transport keeps its existing behavior.",
+    "serves": [
+     "H",
+     "A",
+     "B1",
+     "C",
+     "G"
+    ]
+   },
+   {
+    "path": "apps/desktop/src-tauri/src/codex/mod.rs",
+    "extension": "Forward Design37 conversation start/resume/read/list/send/steer/interrupt/approval/input and original events through that verified H session while preserving current Tauri command and event shapes; no legacy ID aliases or global CLI fallback.",
+    "serves": [
+     "H",
+     "A",
+     "B1",
+     "C",
+     "G"
+    ]
+   },
+   {
+    "path": "apps/desktop/src-tauri/src/shared/workspaces_core/connect.rs",
+    "extension": "Use the shared session live/stop methods for connection and cancellation instead of directly probing or killing Child; native stop requires H readback.",
+    "serves": [
+     "H",
+     "A",
+     "B1",
+     "C",
+     "G"
+    ]
+   },
+   {
+    "path": "apps/desktop/src-tauri/src/shared/workspaces_core/crud_persistence.rs",
+    "extension": "Use the same exact session stop method at the existing workspace creation/clone rollback points; preserve original failures and do not manufacture STOPPED.",
+    "serves": [
+     "H",
+     "A",
+     "B1",
+     "C",
+     "G"
+    ]
+   },
+   {
+    "path": "apps/desktop/src-tauri/src/shared/workspaces_core/runtime_codex_args.rs",
+    "extension": "Use exact session stop before existing argument-change lifecycle operations; managed CLI identity and active-session upgrade rules remain unchanged.",
+    "serves": [
+     "H",
+     "A",
+     "B1",
+     "C",
+     "G"
+    ]
+   },
+   {
+    "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon.rs",
+    "extension": "Use the same session lifecycle for stale/prune/shutdown call sites; unsupported native modes refuse before launch, never fall back to an ordinary model process.",
+    "serves": [
+     "H",
+     "A",
+     "B1",
+     "C",
      "G"
     ]
    }

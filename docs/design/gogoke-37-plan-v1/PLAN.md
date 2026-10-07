@@ -292,3 +292,26 @@ G 在自己的新目录提供 context，已授权 MainApp 包裹其现有页面�
 这是范围摘要变更，同一个 PR 更新 v2 回执及签名链三处固定回执 blob，Owner 合并一次后精确读回才可改这三个产品文件。不改变既有需求、权限、契约持久写方、里程碑或 Owner 触点，不构建候选、不签名、不装机、不自行验收。
 
 G context 必须覆盖左栏所有可见 pinned/recent/对话行的确切项目/对话查找，不只 active 行；legacy workspace/thread 标识不能直接当作 native 身份。每批另由宿主提供 native 主控轮次与具体输出 item 的确切关联，现有 NowBatch.id 与 ConversationItem.id 都不自行充当 turn 锚点。身份或锚点缺失明确未接上，不按顺序或最后一条消息猜位置；该关联类型仍在 G 新目录，Messages 消费现有 item id，故不增加 types.ts 范围。
+
+## 2026-10-07：可见对话与 H 共用真实会话的最小范围修订（提案，待 Owner 合并）
+
+直接读回发现：现有可见对话经 `backend/app_server.rs` 自行启动 CLI，使用 workspace 配置的 home；设计 37 的 H 另持 native session、实例 home、process ticket 和原始协议来源。两者是不同的进程和传输，编号相同不能证明同一身份。PR #73 的三个 UI 消费文件已经挂接；缺少上述同一性时明确未接上，预览通过不能结算本体。
+
+新增六个 INTEGRATOR 共享文件，产品代码只在本 PR 由 Owner 合并并精确读回后施工：
+
+- `apps/desktop/src-tauri/src/backend/app_server.rs`：设计 37 对话使用同一个 H 会话及其原始事件，保存宿主身份、原主控轮次与输出 item 的确切关联；会话存活和停止通过 transport 的统一方法执行。既有非设计 37 路径保留原行为。
+- `apps/desktop/src-tauri/src/codex/mod.rs`：现有启动、恢复、读取、列表、发送、插话、停止、审批和输入响应接到同一会话；沿用原 Tauri 命令和事件形状，不把 legacy ID 当 native 身份。
+- `apps/desktop/src-tauri/src/shared/workspaces_core/connect.rs`：连接、取消连接时调用上述存活/停止方法。
+- `apps/desktop/src-tauri/src/shared/workspaces_core/crud_persistence.rs`：原创建/克隆失败回滚时调用上述确切停止方法。
+- `apps/desktop/src-tauri/src/shared/workspaces_core/runtime_codex_args.rs`：原运行参数调整前调用上述确切停止方法。
+- `apps/desktop/src-tauri/src/bin/gogoke_daemon.rs`：原过期清理、回收和关闭调用上述生命周期方法；不支持的 native 模式在启动前明确拒绝，不退到普通用户模型进程。
+
+后四个文件是现有 `WorkspaceSession.child` 的直接生产消费者，改 transport 后必须一并接上，否则关闭与回滚仍会停止错误对象。沿用同一个 session registry，避免另建 map 扩大 `state.rs`；原始协议和事件形状不变，不新增前端 hooks、ConversationItem 类型或任意文件范围。实际发现需要其他文件时，保全未接上状态，重新列出确切依赖，不能借本节扩大施工范围。
+
+原 H 是唯一启动、准入、隔离、权限和停止事实写方；同一固定 CLI、实例 home、LPAC 与 `lpacIdentityServices` 保持不变。模型不在普通用户进程执行。停止请求与确认分开，原始失败保留，不能从 `Child` 缺席补造 STOPPED。登录普通用户阶段沿用 Owner 已裁决的范围。本修订不改需求、契约持久写方、权限、里程碑、验收或 Owner 触点。
+
+验证针对实际可见对话：同一个 H session 的原始输出到达 Messages，历史批次留在原输出 item，左栏每行读到其确切身份；发送、插话、恢复和审批仍作用于该会话。连接取消、创建失败、参数修改、过期回收与关闭均走确切 H stop/readback；断线完整读回，身份或锚点缺失拒绝关联。稳定候选在 Owner Win11 的已登录测试实例上跑真实端到端；K-UI 预览只验证 UI 消费语义。
+
+参照：直接读取现有 `WorkspaceSession`、四处 `Child` 消费者、`codex/mod.rs` 与 `product_entry.rs` 的通用 USER 桥、原 H/A source 和 Claude 已复核的 Now context。采用已有 session registry、原始协议与宿主准入，未另造编号映射或第二条模型通道。T00 列出 main 与既有映射快照的全部共享文件 blob；既有卸载夹具的差异由已合入修订承接，其余不借机修改。
+
+范围摘要因此改变：同一 PR 更新 v2 回执、MANIFEST 和三处固定回执 blob。Owner 合并一次后，主控精确读回并用 main 的 verifier 重算摘要，再接这六个产品文件；本提案不构建候选、不签名、不装机，不宣称完成或接受。

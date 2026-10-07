@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.public-authorization.v2",
-  "owner_instruction": "OWNER_DIRECTED_2026-10-07_NOW_WORK_TREE_MINIMAL_UI_SLOTS",
+  "owner_instruction": "PROPOSED_NATIVE_VISIBLE_CONVERSATION_SCOPE_PENDING_OWNER_MERGE_2026-10-07",
   "validity": {
     "path": "artifacts/gogoke-37/intake/PUBLIC_AUTHORIZATION_RECEIPT.json",
     "introduced_by": "a merge commit on taiyun668/gogoke main whose GitHub merged_by is taiyun668",
@@ -9,12 +9,12 @@
   "repository": "taiyun668/gogoke",
   "supersedes": {
     "schema": "gogoke.37.public-authorization.v2",
-    "scope_digest": "aad8bf4d015a588b1882b4ff9d1c8ed4ac87e24474690fc4385923108f2c85a8",
-    "reason": "Owner-approved ongoing work-tree components require only one added G directory and three exact integrator-owned UI consumer files. Plan, receipt and fixed receipt blob pins are activated together by one Owner merge."
+    "scope_digest": "a43e4d96520a133976ed50a03b500ab8d92764d172fb4a664edf1aeeb0261091",
+    "reason": "Add only the six mechanically required Tauri transport/lifecycle files so visible Design37 conversations and Now anchors come from the same actual native H process, home and source. No implementation authority until one Owner merge and exact readback."
   },
   "plan": {
     "public_plan_path": "docs/design/gogoke-37-plan-v1/",
-    "scope_digest": "a43e4d96520a133976ed50a03b500ab8d92764d172fb4a664edf1aeeb0261091",
+    "scope_digest": "35d93bea667d512f866850efdd62fd1e63d410ba04ae54c63c0bd93efea77eb2",
     "digest_tool": "docs/design/gogoke-37-plan-v1/verify_plan.py --scope-digest PLAN.json, run from trusted main",
     "stale_when": "the scope digest of the plan in force differs from the value above"
   },
@@ -42,5 +42,5 @@
   "owner_touchpoints": "The bound PLAN.json retains its planned and conditional Owner decisions; this receipt does not complete them",
   "completion_claim": false,
   "amendment_rule": "An amendment that leaves the scope digest unchanged changes only details (phase placement and milestone notes, deliverable, contract and check descriptions, assets, source pins); it never widens write scope, adds a shared file, changes contract ownership or a recorded Owner decision. Independent review must preserve requirements, invariants and security. It takes effect when an independent audit passes and the Controller merges the plan PR; no new receipt and no Owner merge. An amendment that changes the scope digest carries the updated receipt in the same PR, and the Owner merges that one PR.",
-  "owner_direction": "Gogoke itself installs and manages each fixed official CLI; no user global npm discovery. Host-managed install, explicit upgrade and rollback, update check, doctor and zero-instance uninstall; version changes refuse active or UNKNOWN holders or sessions. Instance management and source-backed read models follow the 2026-10-06 Owner direction; B5 unsupported account isolation is unchanged. The current project gains a fourth right-side Seats tab with real host SeatsSource or an explicit not-connected state, exact host-backed seat fields, qualified choices and distinct K-SEAT actions; no new login or authorization touchpoint. Owner 2026-10-07 authorizes the Now work-tree scope proposal: only G features/now and the three exact Messages, ThreadRow, ComposerInput consumers; no implementation until this PR is merged and read back."
+  "owner_direction": "Gogoke itself installs and manages each fixed official CLI; no user global npm discovery. Host-managed install, explicit upgrade and rollback, update check, doctor and zero-instance uninstall; version changes refuse active or UNKNOWN holders or sessions. Instance management and source-backed read models follow the 2026-10-06 Owner direction; B5 unsupported account isolation is unchanged. The current project gains a fourth right-side Seats tab with real host SeatsSource or an explicit not-connected state, exact host-backed seat fields, qualified choices and distinct K-SEAT actions; no new login or authorization touchpoint. Owner 2026-10-07 authorizes the Now work-tree scope proposal: only G features/now and the three exact Messages, ThreadRow, ComposerInput consumers; no implementation until this PR is merged and read back. Proposed amendment: six exact integrator-owned Tauri transport/lifecycle files; same native H source for visible conversations. Existing CLI, instance home, LPAC permissions, contract owners, milestones and Owner touchpoints remain unchanged. No new model process or legacy fallback. Pending Owner merge and exact readback."
 }
