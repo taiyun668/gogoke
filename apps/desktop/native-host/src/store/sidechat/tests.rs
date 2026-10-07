@@ -81,27 +81,8 @@ fn registry_ranges_and_unknown_sync_survive_actual_same_open_reopen() {
     let create=request("create","createA",0);
     let binding=CreateBinding {source_seat_id:"leadA".into(),source_session_id:"mainA".into(),seat_id:"sideSeat".into(),session_id:"sideSession".into()};
     assert_eq!(decode_receipt(&execute(&mut db,&owner,&create,Some(&binding)).unwrap()).unwrap().status,V37Status::Applied);
-    let sent=delivery::prepare(&mut db,&owner,"projectA","sideA","relayA","sideSession",
-        delivery::Direction::SideToLead,"Please tell the lead").unwrap();
-    assert!(sent.may_dispatch);assert_eq!(sent.target_seat_id,"leadA");
-    assert!(!delivery::prepare(&mut db,&owner,"projectA","sideA","relayA","sideSession",
-        delivery::Direction::SideToLead,"Please tell the lead").unwrap().may_dispatch);
-    assert!(matches!(delivery::prepare(&mut db,&owner,"projectA","sideA","relayB","otherSession",
-        delivery::Direction::SideToLead,"wrong principal"),Err(SideError::Denied)));
-    assert!(matches!(delivery::prepare(&mut db,&owner,"projectA","sideA","relayA","sideSession",
-        delivery::Direction::SideToLead,"changed bytes"),Err(SideError::Conflict)));
-    delivery::record_error(&mut db,&owner,"projectA","relayA","original transport timeout").unwrap();
-    let read=delivery::observe(&mut db,&owner,"projectA","relayA").unwrap();
-    assert_eq!(read.state,delivery::DeliveryState::Unknown);
-    assert_eq!(read.reason,"original transport timeout");
-    let from_lead=delivery::prepare(&mut db,&owner,"projectA","sideA","relayLead","mainA",
-        delivery::Direction::LeadToSide,"Please review this").unwrap();
-    assert_eq!(from_lead.target_seat_id,"sideSeat");
-    assert_eq!(list(&mut db,&owner,"projectA").unwrap().len(),1);
     assert_eq!(status(&mut db,&owner,"archive","archiveA",1),V37Status::Applied);
     db.close_checked().unwrap();let mut db=open_product_database(&root,&database).unwrap();initialize_schema(&mut db).unwrap();
-    assert!(!delivery::prepare(&mut db,&owner,"projectA","sideA","relayA","sideSession",
-        delivery::Direction::SideToLead,"Please tell the lead").unwrap().may_dispatch);
     assert_eq!(decode_receipt(&execute(&mut db,&owner,&create,None).unwrap()).unwrap().status,V37Status::Replayed);
     assert_eq!(status(&mut db,&owner,"read-thread","archivedRead",2),V37Status::Applied);
     assert_eq!(status(&mut db,&owner,"restore","restoreA",2),V37Status::Applied);
@@ -122,6 +103,24 @@ fn registry_ranges_and_unknown_sync_survive_actual_same_open_reopen() {
     let tail=materialize(&mut db,&owner,"projectA","sideA",3,4,1).unwrap();assert_eq!(tail.events[0].input.event_id,"mainTail");
     let s=side(&db,"projectA","sideA").unwrap();
     assert_eq!(status(&mut db,&owner,"delete","liveDelete",s.revision),V37Status::Denied,"live H claim has no StopFact");
+    let sent=delivery::prepare(&mut db,&owner,"projectA","sideA","relayA","sideSession",
+        delivery::Direction::SideToLead,"Please tell the lead").unwrap();
+    assert!(sent.may_dispatch);assert_eq!(sent.target_seat_id,"leadA");
+    assert!(!delivery::prepare(&mut db,&owner,"projectA","sideA","relayA","sideSession",
+        delivery::Direction::SideToLead,"Please tell the lead").unwrap().may_dispatch);
+    assert!(matches!(delivery::prepare(&mut db,&owner,"projectA","sideA","relayB","otherSession",
+        delivery::Direction::SideToLead,"wrong principal"),Err(SideError::Denied)));
+    assert!(matches!(delivery::prepare(&mut db,&owner,"projectA","sideA","relayA","sideSession",
+        delivery::Direction::SideToLead,"changed bytes"),Err(SideError::Conflict)));
+    delivery::record_error(&mut db,&owner,"projectA","relayA","original transport timeout").unwrap();
+    let read=delivery::observe(&mut db,&owner,"projectA","relayA").unwrap();
+    assert_eq!(read.state,delivery::DeliveryState::Unknown);
+    assert_eq!(read.reason,"original transport timeout");
+    let from_lead=delivery::prepare(&mut db,&owner,"projectA","sideA","relayLead","mainA",
+        delivery::Direction::LeadToSide,"Please review this").unwrap();
+    assert_eq!(from_lead.target_seat_id,"sideSeat");
+    assert_eq!(list(&mut db,&owner,"projectA").unwrap().len(),1);
+    assert_eq!(status(&mut db,&owner,"delete","unknownDeliveryDelete",s.revision),V37Status::Unknown);
     let generation=current_binding(&db,&s).unwrap().generation;
     let send=decode_request(format!(r#"{{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send","requestId":"questionA","targetId":"sideSession","domainId":"projectA","expectedRevision":"2","payload":{{"generation":"{generation}","body":"synthetic explicit question"}}}}"#).as_bytes()).unwrap();
     let intent=begin_sync(&mut db,&owner,"projectA","sideA",&send,SyncMode::Question,4,|_,_,_|Ok(false)).unwrap();assert!(intent.may_submit);
@@ -134,6 +133,8 @@ fn registry_ranges_and_unknown_sync_survive_actual_same_open_reopen() {
         &send.raw_bytes,SyncMode::Question,4,|_,_,_|Ok(false)).unwrap().may_submit);
     let unknown=settle_sync(&mut db,&owner,"projectA","questionA").unwrap();assert_eq!(unknown.state,"UNKNOWN");
     db.close_checked().unwrap();let mut db=open_product_database(&root,&database).unwrap();initialize_schema(&mut db).unwrap();
+    assert!(!delivery::prepare(&mut db,&owner,"projectA","sideA","relayA","sideSession",
+        delivery::Direction::SideToLead,"Please tell the lead").unwrap().may_dispatch);
     let retry=begin_sync(&mut db,&owner,"projectA","sideA",&send,SyncMode::Question,4,|_,_,_|Ok(false)).unwrap();assert!(!retry.may_submit);
     assert_eq!(side(&db,"projectA","sideA").unwrap().synced_cursor,0);
     let newer=decode_request(std::str::from_utf8(&send.raw_bytes).unwrap().replace("questionA","questionB").as_bytes()).unwrap();
