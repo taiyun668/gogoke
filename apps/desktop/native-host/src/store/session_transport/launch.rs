@@ -666,6 +666,7 @@ impl LaunchEvidence {
     }
     pub(crate) fn clear_host_guard(&mut self) {self.host_guard=None;}
     pub(crate) fn seat_id(&self) -> &str { &self.seat.seat_id }
+    pub(crate) fn seat_incarnation(&self) -> &str { &self.seat.incarnation }
 
     pub(crate) fn verify_observed_cwd(&self, observed: &str) -> Result<(), String> {
         let path=Path::new(observed);

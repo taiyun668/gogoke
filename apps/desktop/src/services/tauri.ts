@@ -22,6 +22,105 @@ export async function design37UserConfiguration<T>(
   }
   return result as T;
 }
+
+type NativeSeatPageRow = {
+  id: string;
+  isLead?: boolean;
+  instance: { id: string };
+  allowed: { tune: boolean; changeInstance: boolean; remove: boolean };
+  _revision: string;
+  _incarnation: string;
+  _settings: Record<string, unknown>;
+};
+type NativeSeatTune = { instanceId: string; model?: string; effort: string; permission: string };
+
+/** Source shape is the existing G SeatsSource; the generic keeps this shared
+ * bridge independent of a particular panel. Native tokens are never labels. */
+export function createDesign37SeatsSource<Page>(domainId: string | null) {
+  const read = async (): Promise<Page | null> => domainId
+    ? design37UserConfiguration<Page | null>("seats-page-read", { domainId })
+    : null;
+  const current = async (id: string): Promise<NativeSeatPageRow> => {
+    const page = await read() as (Page & { seats: NativeSeatPageRow[] }) | null;
+    const row = page?.seats.find((seat) => seat.id === id);
+    if (!row || typeof row._revision !== "string" || typeof row._incarnation !== "string") {
+      throw new Error("Native seat mutation identity is unavailable.");
+    }
+    return row;
+  };
+  const operation = async (operation: string, targetId: string, expectedRevision: string,
+    payload: Record<string, unknown>): Promise<string> => {
+    if (!domainId) throw new Error("No project is selected.");
+    const frame = JSON.stringify({ schema: "gogoke.37.operations.v1", family: "K-SEAT",
+      operation, requestId: `ui-${crypto.randomUUID()}`, targetId, domainId, expectedRevision, payload });
+    const raw = await invoke<string>("gogoke_design37_user_operation", { frame });
+    const reply = JSON.parse(raw) as { status?: string; revision?: string };
+    if (!["APPLIED", "REPLAYED"].includes(reply.status ?? "") || typeof reply.revision !== "string") {
+      throw new Error(`Native seat operation failed: ${raw}`);
+    }
+    return reply.revision;
+  };
+  const tune = async (id: string, input: NativeSeatTune): Promise<void> => {
+    let row = await current(id);
+    if (!row.allowed.tune) throw new Error("Native host currently refuses tuning this seat.");
+    if (input.instanceId !== row.instance.id) {
+      if (!row.allowed.changeInstance) throw new Error("Native host currently refuses changing this instance.");
+      await operation("change-instance", id, row._revision, { instanceId: input.instanceId });
+      row = await current(id);
+    }
+    const fields: Array<[string, unknown]> = [["permissionTier", input.permission]];
+    if (input.effort) fields.unshift([
+      "reasoningEffort" in row._settings && !("effort" in row._settings)
+        ? "reasoningEffort" : "effort",
+      input.effort,
+    ]);
+    if (input.model !== undefined) fields.unshift(["model", input.model]);
+    for (const [setting, value] of fields) {
+      if (row._settings[setting] === value) continue;
+      await operation("tune", id, row._revision, { setting, value });
+      row = await current(id);
+    }
+  };
+  return {
+    read,
+    actions: {
+      tune,
+      remove: async (id: string): Promise<void> => {
+        const row = await current(id);
+        if (!row.allowed.remove || row.isLead) throw new Error("Native host refuses reclaiming this seat.");
+        await operation("reclaim", id, row._revision, {});
+      },
+      create: async (input: NativeSeatTune & { name: string; template: string }): Promise<void> => {
+        const id = `seat-${crypto.randomUUID()}`;
+        const revision = await operation("create-from-template", id, "0", {
+          layer: "USER", templateId: input.template,
+        });
+        await operation("bind-instance", id, revision, { instanceId: input.instanceId });
+        const row = await current(id);
+        await design37UserConfiguration("seat-rename", {
+          domainId, seatId: id, incarnation: row._incarnation, name: input.name,
+        });
+        await tune(id, input);
+      },
+      setRange: async (input: { instanceIds: string[]; maxPermission: string; maxConcurrent: number }): Promise<void> => {
+        const page = await read() as (Page & { seats: NativeSeatPageRow[] }) | null;
+        const lead = page?.seats.find((seat) => seat.isLead);
+        if (!lead || !lead.allowed.tune) throw new Error("The native project lead cannot be configured now.");
+        const scope = lead._settings.orchestrationScope;
+        if (!scope || typeof scope !== "object" || Array.isArray(scope)) {
+          throw new Error("Native orchestration scope is unavailable.");
+        }
+        await operation("tune", lead.id, lead._revision, {
+          setting: "orchestrationScope", value: { ...scope,
+            instanceIds: input.instanceIds, maxPermissionTier: input.maxPermission },
+        });
+        await design37UserConfiguration("project-parallel-cap", {
+          domainId, value: input.maxConcurrent,
+        });
+      },
+    },
+  };
+}
 import { open, save } from "@tauri-apps/plugin-dialog";
 import type { Options as NotificationOptions } from "@tauri-apps/plugin-notification";
 import type {

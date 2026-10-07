@@ -130,6 +130,7 @@ impl<'root> ProductDatabase<'root> {
         if !cap.step_row()? { return Ok(Json::Null); }
         drop(cap);
         let (limit, _) = seat::read_effective_project_parallel_cap(&self.connection, domain)?;
+        let owner_cap = seat::read_project_parallel_cap(&self.connection, domain)?;
         let facts = seat::list_page_facts(&self.connection, domain)?;
         let profiles = instance::read_instance_profiles(&self.connection).map_err(|error|
             OrchestrationError::V37StoreFailure(format!("seat instance profiles: {error:?}")))?;
@@ -162,9 +163,24 @@ impl<'root> ProductDatabase<'root> {
         let mut rows = Vec::new();
         let mut running = 0usize;
         let mut range = None;
+        let mut efforts = Vec::new();
         for fact in facts.seats {
             let seat = fact.seat;
-            if seat.state == State::Busy { running += 1; }
+            // E BUSY means the persistent CLI owns the seat, not that a model
+            // turn is running. Read the original H session for presentation;
+            // retain E's separate mutation/quiescence facts below.
+            let active = self.native_sessions.iter().find(|((session_domain, _), run)|
+                session_domain == domain && run.evidence.seat_id() == seat.seat_id &&
+                run.evidence.seat_incarnation() == seat.incarnation &&
+                run.custody.binding.generation == seat.generation.to_string());
+            let display_state = match (seat.state, active) {
+                (State::Reclaimed, _) => "REMOVED",
+                (State::Idle, _) => "IDLE",
+                (State::Busy, Some((_, run))) if run.allows_input() =>
+                    if run.turn_id.is_some() { "WORKING" } else { "IDLE" },
+                (State::Busy, _) => "STUCK",
+            };
+            if display_state == "WORKING" { running += 1; }
             let settings = match seat.settings_json.as_deref() {
                 Some(raw) => match Parser::parse(raw)? {
                     Json::Object(fields) => fields,
@@ -176,8 +192,30 @@ impl<'root> ProductDatabase<'root> {
                 Some(Json::String(value)) => Json::String(value.clone()),
                 _ => string(""),
             };
-            let reference = refs.get(&seat.instance_id)
-                .ok_or(OrchestrationError::Invalid("seat instance presentation unavailable"))?;
+            let historical_reference;
+            let reference = match refs.get(&seat.instance_id) {
+                Some(reference) => reference,
+                None if seat.state == State::Reclaimed && !seat.instance_id.is_empty() => {
+                    // Instance tombstones retain registry/profile history.
+                    // A removed seat must remain readable after its unused
+                    // instance is deleted, without making that instance a choice.
+                    let registered = self.read_registered_instance(&seat.instance_id)?
+                        .ok_or(OrchestrationError::Invalid("historical seat instance"))?;
+                    let name = Statement::prepare(self.connection.as_ptr(),
+                        "SELECT display_name FROM main.gogoke_v37_instance_profiles WHERE instance_id=?1")?;
+                    name.bind_text(1, &seat.instance_id)?;
+                    let display_name = if name.step_row()? { name.column_text(0)? }
+                        else { "未命名实例".to_owned() };
+                    if name.step_row()? { return Err(OrchestrationError::Invalid("historical instance profile rows")); }
+                    historical_reference = Json::Object(BTreeMap::from([
+                        (key("id"), string(&seat.instance_id)),
+                        (key("name"), string(&display_name)),
+                        (key("vendor"), string(&registered.driver_id)),
+                    ])).canonical();
+                    &historical_reference
+                },
+                None => return Err(OrchestrationError::Invalid("seat instance presentation unavailable")),
+            };
             let mut row = BTreeMap::from([
                 (key("id"), string(&seat.seat_id)),
                 // Native mutation tokens are held by the source adapter, never
@@ -191,7 +229,7 @@ impl<'root> ProductDatabase<'root> {
                 (key("layer"), string(if seat.layer == seat::Layer::User { "direct" } else { "sub" })),
                 (key("isLead"), Json::Bool(fact.is_project_lead)),
                 (key("term"), string(if seat.kind == Kind::Long { "long" } else { "short" })),
-                (key("state"), string(match seat.state { State::Idle => "IDLE", State::Busy => "WORKING", State::Reclaimed => "REMOVED" })),
+                (key("state"), string(display_state)),
                 (key("allowed"), Json::Object(BTreeMap::from([
                     (key("tune"), Json::Bool(fact.allowed.tune)),
                     (key("changeInstance"), Json::Bool(fact.allowed.change_instance)),
@@ -215,6 +253,7 @@ impl<'root> ProductDatabase<'root> {
                 }
             }
             if let Some(scope) = fact.orchestration_scope {
+                efforts = scope.reasoning_efforts.iter().map(|effort| string(effort)).collect();
                 let permission = match scope.max_permission_tier {
                     seat::PermissionTier::ReadOnly => "READ_ONLY",
                     seat::PermissionTier::NoNetwork => "NO_NETWORK",
@@ -224,7 +263,7 @@ impl<'root> ProductDatabase<'root> {
                 range = Some(Json::Object(BTreeMap::from([
                     (key("instanceIds"), Json::Array(scope.instance_ids.iter().map(|id| string(id)).collect())),
                     (key("maxPermission"), string(permission)),
-                    (key("maxConcurrent"), Json::Number(limit.to_string())),
+                    (key("maxConcurrent"), Json::Number(owner_cap.to_string())),
                 ])));
             }
             rows.push(Json::Object(row));
@@ -233,7 +272,7 @@ impl<'root> ProductDatabase<'root> {
             (key("running"), Json::Number(running.to_string())),
             (key("limit"), Json::Number(limit.to_string())),
             (key("seats"), Json::Array(rows)), (key("instances"), Json::Array(choices)),
-            (key("efforts"), Json::Array(Vec::new())),
+            (key("efforts"), Json::Array(efforts)),
             (key("permissions"), Json::Array(["READ_ONLY", "NO_NETWORK", "ISOLATED_WRITE", "NETWORKED_WRITE"]
                 .iter().map(|value| string(value)).collect())),
             (key("templates"), Json::Array(seat::list_templates(&self.connection, domain)?
