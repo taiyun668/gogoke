@@ -152,6 +152,41 @@ impl<'root> ProductDatabase<'root> {
         Ok(seat)
     }
 
+    /// The E designation is exact, and an absent or ambiguous live WORK
+    /// binding is reported as no source choice. A ledger cursor is a source
+    /// position, never a claimed count of lead rounds.
+    fn side_current_lead(&self,domain:&str,head:&ledger::LedgerPosition)->Result<Json> {
+        let q=Statement::prepare(self.connection.as_ptr(),
+            "SELECT p.seat_id,p.incarnation,h.session_id,h.generation,h.revision,h.process_operation_id
+             FROM main.gogoke_v37_seat_project_lead p
+             JOIN main.gogoke_v37_seats e ON e.domain_id=p.domain_id AND e.seat_id=p.seat_id AND e.incarnation=p.incarnation AND e.layer='USER' AND e.state IN ('IDLE','BUSY')
+             JOIN main.gogoke_v37_h_seat_binding sb ON sb.domain_id=e.domain_id AND sb.seat_id=e.seat_id AND sb.seat_incarnation=e.incarnation
+             JOIN main.gogoke_v37_h_claim h ON h.domain_id=sb.domain_id AND h.session_id=sb.session_id AND h.generation=sb.generation AND h.instance_id=e.instance_id AND h.state='COMMITTED'
+             JOIN main.v37_ledger_session l ON l.domain_id=h.domain_id AND l.session_id=h.session_id AND l.seat_id=e.seat_id AND l.purpose='WORK' AND l.side_id IS NULL
+             JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=h.binding_id AND b.domain_id=h.domain_id AND b.instance_id=h.instance_id AND b.kind='SESSION' AND b.owner_id=h.session_id AND b.generation=h.generation AND b.state='ACTIVE'
+             WHERE p.domain_id=?1")?;
+        q.bind_text(1,domain)?;
+        let mut found=None;
+        while q.step_row()? {
+            let seat=q.column_text(0)?;let inc=q.column_text(1)?;
+            let session=q.column_text(2)?;let generation=q.column_text(3)?;
+            let revision=q.column_text(4)?;let operation=q.column_text(5)?;
+            let Some(run)=self.native_sessions.get(&(domain.to_owned(),session.clone())) else {continue};
+            if run.operation_id!=operation || run.custody.binding.generation!=generation || !run.allows_input() {
+                continue;
+            }
+            if found.is_some() {return Ok(Json::Null);}
+            found=Some(Json::Object(BTreeMap::from([
+                (key("seatId"),text(&seat)),(key("seatIncarnation"),text(&inc)),
+                (key("sessionId"),text(&session)),(key("generation"),text(&generation)),
+                (key("claimRevision"),text(&revision)),
+                (key("sourceEpoch"),text(&head.epoch)),
+                (key("sourceCursor"),text(&head.cursor.to_string())),
+            ])));
+        }
+        Ok(found.unwrap_or(Json::Null))
+    }
+
     /// Complete an Owner-created side only after its original H/D identities
     /// have produced the two current MESSAGE edges. The policy event is keyed
     /// by the original nested request bytes, so a replay cannot grant a new
@@ -189,6 +224,7 @@ impl<'root> ProductDatabase<'root> {
                 let domain=string(&mut fields,"domainId")?;
                 if !fields.is_empty() {return Err(OrchestrationError::Invalid("side list fields"));}
                 let head=ledger::recover(&self.connection)?;
+                let lead=self.side_current_lead(&domain,&head)?;
                 let registry=d::list(&mut self.connection,&self.owner,&domain).map_err(side_error)?;
                 let mut chats=Vec::new();
                 for side in registry {
@@ -266,6 +302,7 @@ impl<'root> ProductDatabase<'root> {
                     (key("domainId"),text(&domain)),
                     (key("ledgerEpoch"),text(&head.epoch)),
                     (key("ledgerCursor"),text(&head.cursor.to_string())),
+                    (key("lead"),lead),
                     (key("chats"),Json::Array(chats)),
                 ])).canonical().into_bytes();
                 if bytes.len()>crate::ipc::MAX_FRAME_BYTES {

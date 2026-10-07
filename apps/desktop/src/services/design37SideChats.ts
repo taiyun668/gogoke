@@ -21,13 +21,17 @@ export type SideHostView = {
   driverId: string; model: string; effort: string;
   answering: boolean; canAsk: boolean; questionUnresolved: boolean;
 };
+export type LeadSourceView = {
+  seatId:string; seatIncarnation:string; sessionId:string; generation:string;
+  claimRevision:string; sourceEpoch:string; sourceCursor:string;
+};
 export type SideChatView = {
   id: string; title: string; state: "ACTIVE" | "ARCHIVED";
   seatId: string; seatIncarnation: string; sourceSeatId: string; sourceSeatIncarnation: string;
   sourceEpoch: string; sourceCursor: string; syncedCursor: string; revision: string;
   host?: SideHostView; messages: SideMessageView[]; transfers: SideDeliveryView[];
 };
-export type Design37SideChatPage = { domainId: string; chats: SideChatView[] };
+export type Design37SideChatPage = { domainId: string; lead?:LeadSourceView; chats: SideChatView[] };
 
 function record(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("SIDE_INVALID_RECORD");
@@ -67,10 +71,17 @@ function transfer(value: unknown): SideDeliveryView {
     reason:typeof row.reason === "string" ? row.reason : "",
     nativeReceiptId:typeof row.nativeReceiptId === "string" ? row.nativeReceiptId : "" };
 }
-function list(value: unknown, domainId: string): SideChatView[] {
+function list(value: unknown, domainId: string): Design37SideChatPage {
   const page = record(value);
   if (page.schema !== "gogoke.37.side-list.v1" || page.domainId !== domainId) throw new Error("SIDE_INVALID_LIST");
-  return rows(page,"chats").map(value => {
+  const lead=page.lead===null ? undefined : (()=>{
+    const row=record(page.lead);
+    return {seatId:string(row,"seatId"),seatIncarnation:string(row,"seatIncarnation"),
+      sessionId:string(row,"sessionId"),generation:string(row,"generation"),
+      claimRevision:string(row,"claimRevision"),sourceEpoch:string(row,"sourceEpoch"),
+      sourceCursor:string(row,"sourceCursor")};
+  })();
+  const chats=rows(page,"chats").map(value => {
     const row=record(value), state=string(row,"state");
     if (state !== "ACTIVE" && state !== "ARCHIVED") throw new Error("SIDE_INVALID_CHAT_STATE");
     return { id:string(row,"sideId"), title:"旁聊", state,
@@ -80,6 +91,7 @@ function list(value: unknown, domainId: string): SideChatView[] {
       syncedCursor:string(row,"syncedCursor"), revision:string(row,"revision"),
       host:optionalHost(row.host), messages:[], transfers:rows(row,"transfers").map(transfer) };
   });
+  return {domainId,lead,chats};
 }
 function messages(value: unknown, sideId: string, epoch: string, after: string): {cursor:string;events:SideMessageView[]} {
   const page=record(value);
@@ -105,7 +117,7 @@ export function createDesign37SideChatSource(domainId:string, execute:UserSideOp
   const pendingAsk=new Map<string,{body:string;questionRequest:string}>();
   const readList=async()=>list(await execute({schema:LIST,domainId}),domainId);
   const current=async(sideId:string)=>{
-    const side=(await readList()).find(side=>side.id===sideId);
+    const side=(await readList()).chats.find(side=>side.id===sideId);
     if (!side) throw new Error("SIDE_NOT_FOUND");
     return side;
   };
@@ -121,8 +133,8 @@ export function createDesign37SideChatSource(domainId:string, execute:UserSideOp
   };
   return {
     read:async():Promise<Design37SideChatPage>=>{
-      const chats=await readList();
-      for (const chat of chats) {
+      const page=await readList();
+      for (const chat of page.chats) {
         let after="0";
         for (;;) {
           const page=messages(await execute({schema:THREAD,domainId,sideId:chat.id,
@@ -135,7 +147,7 @@ export function createDesign37SideChatSource(domainId:string, execute:UserSideOp
         const first=chat.messages.find(item=>item.role==="user")?.text.trim();
         if (first) chat.title=first.slice(0,48);
       }
-      return {domainId,chats};
+      return page;
     },
     actions:{
       ask:async(sideId:string,body:string)=>{

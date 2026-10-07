@@ -8,7 +8,7 @@ test("side source uses only A text and D receipt states, replaying an unknown qu
   const source=createDesign37SideChatSource("projectA",async frame=>{
     const request=frame as Record<string,unknown>;
     if (request.schema==="gogoke.37.owner-side-list.v1") return {
-      schema:"gogoke.37.side-list.v1",domainId:"projectA",chats:[{
+      schema:"gogoke.37.side-list.v1",domainId:"projectA",lead:null,chats:[{
         sideId:"sideA",state:"ACTIVE",seatId:"seatA",seatIncarnation:"incA",
         sourceSeatId:"leadA",sourceSeatIncarnation:"leadIncA",sourceEpoch:"epochA",
         sourceCursor:"1",syncedCursor:"1",revision:"1",
