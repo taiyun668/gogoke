@@ -80,6 +80,9 @@ export function SeatsPanel({ source }: { source: SeatsSource }) {
   useEffect(() => {
     epoch.current += 1;
     sourceRef.current = source;
+    // An operation still running against the old source never locks the new one.
+    busyRef.current = false;
+    setBusy(null);
     setPage(undefined);
     setLoadError(null);
     setActionError(null);
@@ -106,9 +109,11 @@ export function SeatsPanel({ source }: { source: SeatsSource }) {
       ok = false;
       if (era === epoch.current) setActionError(errorText(cause));
     } finally {
-      busyRef.current = false;
-      setBusy(null);
-      if (era === epoch.current) void refresh();
+      if (era === epoch.current) {
+        busyRef.current = false;
+        setBusy(null);
+        void refresh();
+      }
     }
     return ok && era === epoch.current;
   };
@@ -265,8 +270,12 @@ function SeatCard({
                 <dd>{row.goal}</dd>
               </>
             ) : null}
-            <dt>待决问题</dt>
-            <dd>{row.pending ?? "无"}</dd>
+            {row.pending !== undefined ? (
+              <>
+                <dt>待决问题</dt>
+                <dd>{row.pending || "无"}</dd>
+              </>
+            ) : null}
             {row.reclaimCondition ? (
               <>
                 <dt>回收条件</dt>

@@ -170,6 +170,25 @@ describe("SideChatPanel", () => {
     expect(screen.queryByRole("button", { name: /Grok 5 · 高/ })).toBeNull();
   });
 
+  it("lets the same sentence be sent again while the previous question's delivery is unconfirmed", async () => {
+    const ask = vi.fn(async () => {});
+    render(<SideChatPanel source={source(page([chat({ askable: false, questionUnconfirmed: true })]), { ask })} />);
+    fireEvent.click(await screen.findByRole("button", { name: /实例卡片还能看到报错吗/ }));
+    expect(screen.getByText(/现在只能重发同一句/)).toBeTruthy();
+    const input = screen.getByLabelText("旁聊输入") as HTMLTextAreaElement;
+    expect(input.disabled).toBe(false);
+    fireEvent.change(input, { target: { value: "出错时还能看到原始报错吗？" } });
+    fireEvent.click(screen.getByRole("button", { name: "发问" }));
+    await waitFor(() => expect(ask).toHaveBeenCalledWith("c1", "出错时还能看到原始报错吗？"));
+  });
+
+  it("says a seat is not read yet, not removed, when the seats page is unavailable", async () => {
+    const data = { ...page([chat({ seatId: "unknown-seat", instanceId: "" })]), seats: [], instances: [], seatsKnown: false };
+    render(<SideChatPanel source={source(data, { ask: vi.fn(async () => {}) })} />);
+    expect(await screen.findByText(/席位还没读到 · 实例未知/)).toBeTruthy();
+    expect(screen.queryByText(/已删除的席位/)).toBeNull();
+  });
+
   it("keeps a chat readable but not askable when its session is unreachable", async () => {
     render(<SideChatPanel source={source(page([chat({ problem: { kind: "unavailable" } })]))} />);
     fireEvent.click(await screen.findByRole("button", { name: /实例卡片还能看到报错吗/ }));

@@ -43,6 +43,23 @@ describe("InstancesPage", () => {
     expect(screen.queryByText("Plus 1 号")).toBeNull();
   });
 
+  it("does not let an unfinished operation on the old source lock the new one", async () => {
+    const stuck = vi.fn(() => new Promise<void>(() => {}));
+    const { rerender } = render(<InstancesPage source={{ read: async () => page(), actions: { remove: stuck } }} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Plus 1 号 的更多操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "删除实例" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+    await waitFor(() => expect(stuck).toHaveBeenCalled());
+    const remove = vi.fn(async () => {});
+    rerender(<InstancesPage source={{ read: async () => page(), actions: { remove } }} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Plus 1 号 的更多操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "删除实例" }));
+    const confirm = screen.getByRole("button", { name: "确认删除" }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(false);
+    fireEvent.click(confirm);
+    await waitFor(() => expect(remove).toHaveBeenCalledWith("i1"));
+  });
+
   it("applies only the latest read, so a poll that started before a write cannot overwrite it", async () => {
     const named = (name: string) => {
       const data = page();

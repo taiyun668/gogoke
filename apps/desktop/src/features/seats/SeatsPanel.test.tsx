@@ -71,6 +71,13 @@ describe("SeatsPanel", () => {
     expect(screen.queryByRole("button", { name: "调整" })).toBeNull();
   });
 
+  it("does not claim there is no pending question when the host does not say", async () => {
+    render(<SeatsPanel source={source()} />);
+    fireEvent.click(await screen.findByRole("button", { name: /^审计/ }));
+    expect(screen.queryByText("待决问题")).toBeNull();
+    expect(screen.queryByText("无")).toBeNull();
+  });
+
   it("deletes a seat only after confirmation", async () => {
     const remove = vi.fn(async () => {});
     render(<SeatsPanel source={source({ remove })} />);

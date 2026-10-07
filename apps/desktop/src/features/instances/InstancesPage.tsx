@@ -144,6 +144,9 @@ export function InstancesPage({ source }: { source: InstancePageSource }) {
   useEffect(() => {
     epoch.current += 1;
     sourceRef.current = source;
+    // An operation still running against the old source never locks the new one.
+    busyRef.current = false;
+    setBusy(null);
     setPage(null);
     setLoadError(null);
     setActionError(null);
@@ -172,9 +175,11 @@ export function InstancesPage({ source }: { source: InstancePageSource }) {
       ok = false;
       if (era === epoch.current) setActionError(errorText(cause));
     } finally {
-      busyRef.current = false;
-      setBusy(null);
-      if (era === epoch.current) void refresh();
+      if (era === epoch.current) {
+        busyRef.current = false;
+        setBusy(null);
+        void refresh();
+      }
     }
     return ok && era === epoch.current;
   };

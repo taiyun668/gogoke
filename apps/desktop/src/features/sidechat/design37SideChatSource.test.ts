@@ -68,4 +68,9 @@ describe("projectSideChats", () => {
     expect(projectSideChats(facts({ seatId: "gone" }), null).chats[0].problem).toBeUndefined();
     expect(projectSideChats(facts({ host: undefined }), seats()).chats[0].problem).toEqual({ kind: "unavailable" });
   });
+
+  it("never takes the seat's current instance as the chat's own binding", () => {
+    expect(projectSideChats(facts({ host: undefined }), seats()).chats[0].instanceId).toBe("");
+    expect(projectSideChats(facts(), null).seatsKnown).toBe(false);
+  });
 });

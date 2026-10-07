@@ -4,6 +4,7 @@ import { PopoverMenuItem, PopoverSurface } from "@/features/design-system/compon
 import { VENDOR_ICONS } from "@/features/instances/vendorIcons";
 import {
   canAsk,
+  canRetry,
   chatStarted,
   defaultModel,
   fromLeadLabel,
@@ -98,6 +99,8 @@ export function SideChatPanel({ source }: { source: SideChatSource }) {
   useEffect(() => {
     epoch.current += 1;
     sourceRef.current = source;
+    // An operation still running against the old source never locks the new one.
+    busyRef.current = false;
     setPage(undefined);
     setLoadError(null);
     setActionError(null);
@@ -124,8 +127,10 @@ export function SideChatPanel({ source }: { source: SideChatSource }) {
       ok = false;
       if (era === epoch.current) setActionError(errorText(cause));
     } finally {
-      busyRef.current = false;
-      if (era === epoch.current) void refresh();
+      if (era === epoch.current) {
+        busyRef.current = false;
+        void refresh();
+      }
     }
     return ok && era === epoch.current;
   };
@@ -238,7 +243,7 @@ function ChatList({
         </span>
         <span className="sidechat-meta">
           {instance ? <VendorMark vendor={instance.vendor} /> : null}
-          {seat?.name ?? "已删除的席位"} · {instance?.name ?? "实例不可用"}
+          {seat?.name ?? (page.seatsKnown === false ? "席位还没读到" : "已删除的席位")} · {instance?.name ?? "实例未知"}
           {chat.archived ? " · 已归档" : ""}
         </span>
         {chat.answering || (!chat.archived && chat.pendingLeadSegments) ? (
@@ -415,6 +420,7 @@ function ChatView({
   const instance = instanceById(page, chat.instanceId);
   const sync = syncLine(chat);
   const askable = canAsk(chat);
+  const retry = canRetry(chat);
 
   const send = () => {
     const question = draft.trim();
@@ -555,20 +561,26 @@ function ChatView({
             </div>
           ) : null}
           {chat.questionUnconfirmed ? (
-            <div className="sidechat-problem is-warn sidechat-inset">上一个问题还没确认送到；确认之前只能再发同一句。</div>
+            <div className="sidechat-problem is-warn sidechat-inset">
+              上一个问题还没确认送到。现在只能重发同一句（输入框里留着原句），改过的会被拒绝。
+            </div>
           ) : null}
-          {seat && instance ? (
+          {
             <Composer
-              placeholder={chat.answering ? "写下一个问题，等它答完再发…" : `问${seat.name}…`}
+              placeholder={chat.answering ? "写下一个问题，等它答完再发…" : `问${seat?.name ?? "它"}…`}
               draft={draft}
               onDraft={onDraft}
               onSend={send}
-              disabled={!askable || !actions.ask}
+              disabled={!(askable || retry) || !actions.ask}
               answering={chat.answering}
               onStop={actions.stop ? () => void run(() => actions.stop!(chat.id)) : undefined}
-              who={{ label: `${seat.name} · ${instance.name}`, vendor: instance.vendor, fixed: chatStarted(chat) }}
+              who={{
+                label: [seat?.name ?? "席位还没读到", instance?.name].filter(Boolean).join(" · "),
+                vendor: instance?.vendor,
+                fixed: chatStarted(chat),
+              }}
               modelChoice={
-                actions.setModel && instance.models.length
+                actions.setModel && instance?.models.length
                   ? {
                       models: instance.models,
                       efforts: page.efforts,
@@ -580,9 +592,9 @@ function ChatView({
                     ? { models: [], efforts: [], model: chat.model, effort: chat.effort, fixed: true }
                     : undefined
               }
-              permission={seat.permission}
+              permission={seat?.permission}
             />
-          ) : null}
+          }
         </>
       )}
     </>
@@ -648,7 +660,7 @@ function Item({ item }: { item: SideItem }) {
 
 type WhoChoice = {
   label: string;
-  vendor: keyof typeof VENDOR_ICONS;
+  vendor?: keyof typeof VENDOR_ICONS;
   fixed: boolean;
   seats?: SideChatPage["seats"];
   instances?: SideChatPage["instances"];
@@ -688,7 +700,7 @@ function Composer({
   onStop?: () => void;
   who: WhoChoice;
   modelChoice?: ModelChoice;
-  permission: string;
+  permission?: string;
 }) {
   const [pop, setPop] = useState<"who" | "model" | null>(null);
   const composing = useRef(false);
@@ -780,7 +792,7 @@ function Composer({
           aria-expanded={pop === "who"}
           onClick={() => setPop((value) => (value === "who" ? null : "who"))}
         >
-          <VendorMark vendor={who.vendor} />
+          {who.vendor ? <VendorMark vendor={who.vendor} /> : null}
           <span className="sidechat-chip-text">{who.label}</span>
           {who.fixed ? null : <span className="sidechat-caret" aria-hidden>▾</span>}
         </button>
@@ -799,12 +811,14 @@ function Composer({
             {modelChoice.fixed ? null : <span className="sidechat-caret" aria-hidden>▾</span>}
           </button>
         ) : null}
-        <span className="sidechat-lock" title={permission} aria-label={`权限：${permission}`} role="img">
-          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
-            <rect x="5" y="11" width="14" height="9" rx="2" />
-            <path d="M8 11V8a4 4 0 0 1 8 0v3" />
-          </svg>
-        </span>
+        {permission ? (
+          <span className="sidechat-lock" title={permission} aria-label={`权限：${permission}`} role="img">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+              <rect x="5" y="11" width="14" height="9" rx="2" />
+              <path d="M8 11V8a4 4 0 0 1 8 0v3" />
+            </svg>
+          </span>
+        ) : null}
       </div>
     </footer>
   );

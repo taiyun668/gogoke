@@ -87,14 +87,20 @@ export type SideChat = {
 export type SideChatPage = {
   /** Lead round a new side chat would reference, when the host reports one. */
   leadRound?: number;
+  /** False when the seats page could not be read: a missing seat is then unknown, not removed. */
+  seatsKnown?: boolean;
   seats: SideSeat[];
+  /** Instances a new side chat may use. */
   instances: SideInstance[];
+  /** Further instances known by name, for showing existing chats only; never offered for a new chat. */
+  knownInstances?: SideInstance[];
   efforts: string[];
   chats: SideChat[];
 };
 
 export const seatById = (page: SideChatPage, id: string) => page.seats.find((seat) => seat.id === id);
-export const instanceById = (page: SideChatPage, id: string) => page.instances.find((item) => item.id === id);
+export const instanceById = (page: SideChatPage, id: string) =>
+  page.instances.find((item) => item.id === id) ?? page.knownInstances?.find((item) => item.id === id);
 
 export function syncLine(chat: SideChat): string | null {
   if (chat.archived || !chat.pendingLeadSegments) return null;
@@ -138,6 +144,11 @@ export function canAsk(chat: SideChat): boolean {
     chat.problem?.kind !== "instance-full" &&
     chat.problem?.kind !== "unavailable"
   );
+}
+
+/** The previous question's delivery is unconfirmed: only that same sentence may be sent again. */
+export function canRetry(chat: SideChat): boolean {
+  return chat.questionUnconfirmed === true && !chat.archived && !chat.problem;
 }
 
 /** The current instance's first verified model, or none: never the previous instance's. */

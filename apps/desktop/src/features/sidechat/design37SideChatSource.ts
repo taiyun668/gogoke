@@ -62,7 +62,8 @@ function chatFrom(view: SideChatView, seats: SeatsPage | null): SideChat {
     id: view.id,
     title: view.title,
     seatId: view.seatId,
-    instanceId: view.host?.instanceId ?? seat?.instance.id ?? "",
+    // The chat's own binding comes from its session; the seat's current instance may differ.
+    instanceId: view.host?.instanceId ?? "",
     model: view.host?.model,
     effort: view.host?.effort,
     updatedAt: last ? clock(last) : undefined,
@@ -82,16 +83,25 @@ function chatFrom(view: SideChatView, seats: SeatsPage | null): SideChat {
  * from the seats page because the side chat facts carry identities only.
  */
 export function projectSideChats(side: Design37SideChatPage, seats: SeatsPage | null): SideChatPage {
+  const candidates = (seats?.instances ?? []).map((item) => ({
+    id: item.id,
+    name: item.name,
+    vendor: item.vendor,
+    models: item.models ?? [],
+  }));
+  const known = new Map<string, SideChatPage["instances"][number]>();
+  for (const row of seats?.seats ?? []) {
+    if (!candidates.some((item) => item.id === row.instance.id)) {
+      known.set(row.instance.id, { id: row.instance.id, name: row.instance.name, vendor: row.instance.vendor, models: [] });
+    }
+  }
   return {
+    seatsKnown: seats !== null,
+    knownInstances: [...known.values()],
     seats: (seats?.seats ?? [])
       .filter((row) => row.layer === "direct" && !row.isLead && row.state !== "REMOVED")
       .map((row) => ({ id: row.id, name: row.name, defaultInstanceId: row.instance.id, permission: row.permission })),
-    instances: (seats?.instances ?? []).map((item) => ({
-      id: item.id,
-      name: item.name,
-      vendor: item.vendor,
-      models: item.models ?? [],
-    })),
+    instances: candidates,
     efforts: seats?.efforts ?? [],
     chats: side.chats.map((view) => chatFrom(view, seats)),
   };
