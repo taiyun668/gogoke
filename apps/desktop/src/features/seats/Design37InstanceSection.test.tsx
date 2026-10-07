@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DESIGN37_INSTANCES_SCHEMA } from "./design37Instances";
@@ -220,9 +220,11 @@ describe("Design37InstanceSection", () => {
   it("shows the CLI copy as unreported and hides unknown account and models", async () => {
     invokeMock.mockResolvedValue(snapshot(instance("LOGGED_IN", undefined, { newVersion: "9.9.9" })) as never);
     render(<Design37InstanceSection />);
-    expect(await screen.findByText(/宿主还没报告这份 CLI 的情况/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "升级" })).toBeNull();
-    fireEvent.click(screen.getAllByRole("button", { name: "详情" })[0]);
+    await screen.findByText(/可以用 · 空闲/);
+    const codex = within(screen.getByLabelText("Codex"));
+    expect(codex.getByText(/宿主还没报告这份 CLI 的情况/)).toBeTruthy();
+    expect(codex.queryByRole("button", { name: "升级" })).toBeNull();
+    fireEvent.click(codex.getByRole("button", { name: "详情" }));
     expect(screen.queryByText("9.9.9", { exact: false })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Codex 实例 的更多操作" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "详情" }));
