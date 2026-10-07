@@ -209,7 +209,14 @@ fn desktop_host_survives_service_disconnect_but_stops_after_user_disconnect() {
     let user_path = user_line.trim_end().strip_prefix("USER_PIPE\t").unwrap();
     let mut user = OpenOptions::new().read(true).write(true).open(user_path).expect("User pipe");
     user.write_all(&[0x47]).expect("User preface");
-    let user_request = r#"{"schema":"gogoke.37.operations.v1","family":"K-INSTANCE","operation":"register","requestId":"registerA","targetId":"instanceA","domainId":"global","expectedRevision":"0","payload":{"driverId":"codex"}}"#;
+    // Exercise User transport/replay with a metadata-only operation. The empty
+    // test root has no product-managed CLI copy, even when CI pins a global CLI.
+    let template = br#"{"schema":"gogoke.37.owner-configuration.v1","command":"seat-template","domainId":"projectA","requestId":"templateFixture","templateId":"templateA","settings":{"instruction":"transport fixture"}}"#;
+    write_frame(&mut user, template);
+    let template_reply = read_frame(&mut user);
+    assert!(template_reply.contains("\"APPLIED\""), "template User reply: {template_reply}");
+    let user_request = r#"{"schema":"gogoke.37.operations.v1","family":"K-SEAT","operation":"create-from-template","requestId":"createA","targetId":"seatA","domainId":"projectA","expectedRevision":"0","payload":{"layer":"USER","templateId":"templateA"}}"#;
+    let instance_request = r#"{"schema":"gogoke.37.operations.v1","family":"K-INSTANCE","operation":"register","requestId":"registerA","targetId":"instanceA","domainId":"global","expectedRevision":"0","payload":{"driverId":"codex"}}"#;
     let authenticate = format!("{{\"capability\":\"{capability}\",\"operation\":\"AuthenticateService\"}}");
     let connect_service = || {
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -230,22 +237,30 @@ fn desktop_host_survives_service_disconnect_but_stops_after_user_disconnect() {
     drop(first);
     // The same fresh request must still apply through User. A prior User
     // commit would make an accidental service replay invisible here.
-    let caller_path = user_request.replace("\"driverId\":\"codex\"",
+    let caller_path = instance_request.replace("\"driverId\":\"codex\"",
         "\"driverId\":\"codex\",\"programPath\":\"C:/caller-selected.exe\"");
     write_frame(&mut user, caller_path.as_bytes());
-    assert!(read_frame(&mut user).contains("\"status\":\"DENIED\""),
-        "caller-selected executable was admitted");
+    let caller_reply = read_frame(&mut user);
+    assert!(caller_reply.contains("\"status\":\"DENIED\"") && !caller_reply.contains("\"reason\""),
+        "caller program field was not rejected before managed CLI lookup: {caller_reply}");
+    write_frame(&mut user, instance_request.as_bytes());
+    let missing_cli_reply = read_frame(&mut user);
+    assert!(missing_cli_reply.contains("\"status\":\"DENIED\"")
+        && missing_cli_reply.contains("managed official CLI unavailable"),
+        "empty test root unexpectedly used an unmanaged CLI: {missing_cli_reply}");
     write_frame(&mut user, user_request.as_bytes());
-    assert!(read_frame(&mut user).contains("\"status\":\"APPLIED\""));
+    let applied_reply = read_frame(&mut user);
+    assert!(applied_reply.contains("\"status\":\"APPLIED\""), "User reply: {applied_reply}");
     write_frame(&mut user, user_request.as_bytes());
-    assert!(read_frame(&mut user).contains("\"status\":\"REPLAYED\""));
-    let changed_bytes = user_request.replace("\"driverId\":\"codex\"",
-        "\"driverId\":\"unknown\"");
+    let replay_reply = read_frame(&mut user);
+    assert!(replay_reply.contains("\"status\":\"REPLAYED\""), "User replay: {replay_reply}");
+    let changed_bytes = user_request.replace("\"templateId\":\"templateA\"",
+        "\"templateId\":\"unknown\"");
     write_frame(&mut user, changed_bytes.as_bytes());
     assert!(read_frame(&mut user).contains("\"status\":\"CONFLICT\""),
         "changed bytes reused a committed request ID");
-    let stale = user_request.replace("\"requestId\":\"registerA\"",
-        "\"requestId\":\"registerStale\"")
+    let stale = user_request.replace("\"requestId\":\"createA\"",
+        "\"requestId\":\"createStale\"")
         .replace("\"expectedRevision\":\"0\"", "\"expectedRevision\":\"2\"");
     write_frame(&mut user, stale.as_bytes());
     assert!(read_frame(&mut user).contains("\"status\":\"STALE\""),
