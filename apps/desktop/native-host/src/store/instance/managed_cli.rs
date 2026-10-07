@@ -142,7 +142,8 @@ fn sha256_file(path: &Path, expected: &str) -> Result<(), ManagedCliError> {
         path_after.file_attributes() & REPARSE_POINT != 0 {
         return Err(ManagedCliError::IdentityChanged);
     }
-    if crate::store::digest::sha256_hex(&bytes) != expected {
+    use sha2::{Digest, Sha256};
+    if format!("{:x}", Sha256::digest(&bytes)) != expected {
         return Err(ManagedCliError::IdentityChanged);
     }
     Ok(())

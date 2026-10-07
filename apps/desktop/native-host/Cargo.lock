@@ -87,6 +87,7 @@ dependencies = [
  "cc",
  "gogoke-lpac-path-compat",
  "ryu-js",
+ "sha2",
 ]
 
 [[package]]

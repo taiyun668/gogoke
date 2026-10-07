@@ -83,7 +83,8 @@ impl ProgramObservation {
             || path_after.file_attributes() & REPARSE_POINT != 0 || bytes.len() as u64 != after.len() {
             return Err(RegistryError::IdentityChanged);
         }
-        Ok(Self { digest: content_hash(&bytes), version: version.to_owned() })
+        use sha2::{Digest, Sha256};
+        Ok(Self { digest: format!("sha256:{:x}", Sha256::digest(&bytes)), version: version.to_owned() })
     }
 }
 
