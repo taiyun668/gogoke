@@ -188,6 +188,7 @@ fn operation_admitted(family: &str, operation: &str) -> bool {
             "send",
             "output-stream",
             "capability-probe",
+            "model-list-read",
             "append-without-turn",
             "exit-and-stop-receipt",
             "reconnect",

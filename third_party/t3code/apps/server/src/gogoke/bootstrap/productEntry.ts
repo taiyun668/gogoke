@@ -1,6 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off - executable product boundary owns stdin/stdout.
 import * as NodeFS from "node:fs";
 import { createHash } from "node:crypto";
+import { basename, join } from "node:path";
+import { fixedOfficialCli, stageFixedOfficialCli } from "../instances/managedCli.ts";
 
 import { constructGogokeService, constructGogokeServiceOnExistingHost } from "./index.ts";
 import { parseStrictJsonBytes } from "../contracts/strictJson.ts";
@@ -505,6 +507,21 @@ export async function runGogokeProductProcess(argv: readonly string[]): Promise<
   if (Buffer.from(requestBytes).equals(Buffer.from('{"operation":"readiness"}'))) {
     const response = await handleProductReadiness(paths);
     NodeFS.writeFileSync(1, `${JSON.stringify(response)}\n`);
+    return;
+  }
+  const parsed: unknown = parseStrictJsonBytes(requestBytes);
+  if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) &&
+      (parsed as Record<string, unknown>).operation === "managed-cli-stage") {
+    const action = exactRecord(parsed, "managedCliStage", ["operation", "driverId"]);
+    const driverId = text(action.driverId, "managedCliStage.driverId");
+    if (!fixedOfficialCli(driverId)) throw new Error("MANAGED_CLI_DRIVER_UNSUPPORTED");
+    const root = join(paths.root, "v37-managed-cli", "staging");
+    const staged = await stageFixedOfficialCli(root, driverId as "codex" | "claude" | "opencode" | "grok");
+    NodeFS.writeFileSync(1, `${JSON.stringify({
+      schema: "gogoke.37.managed-cli-stage.v1",
+      driverId: staged.driver, version: staged.version,
+      stageName: basename(staged.stagePath),
+    })}\n`);
     return;
   }
   const request = decodeProductGoalRequest(requestBytes);

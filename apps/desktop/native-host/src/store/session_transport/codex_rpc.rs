@@ -72,6 +72,8 @@ pub(crate) enum Command {
         thread_id: String,
         cursor: Option<String>,
     },
+    /// Read-only catalog metadata from the fixed Codex app-server.
+    ModelList { cursor: Option<String> },
     ThreadStart {
         cwd: String,
         model: String,
@@ -131,6 +133,7 @@ impl Command {
             Self::Initialized => Some("initialized"),
             Self::ConfigRead { .. } => Some("config/read"),
             Self::FeatureList { .. } => Some("experimentalFeature/list"),
+            Self::ModelList { .. } => Some("model/list"),
             Self::ThreadStart { .. } | Self::ThreadStartHostTools { .. } => Some("thread/start"),
             Self::ThreadResume { .. } => Some("thread/resume"),
             Self::TurnStart { .. } => Some("turn/start"),
@@ -237,6 +240,10 @@ impl Command {
                     ("cursor",cursor.as_deref().map_or(Json::Null,s)),
                     ("limit",Json::Number("32".into())),
                 ]));
+            }
+            Self::ModelList {cursor} => {
+                if let Some(cursor)=cursor {required(cursor,"model cursor")?;}
+                return Ok(obj([("cursor",cursor.as_deref().map_or(Json::Null,s))]));
             }
             Self::ThreadStart { cwd, model } => {
                 required(cwd, "cwd")?;
@@ -454,6 +461,11 @@ pub(crate) enum Reply {
         features: Vec<(String,bool)>,
         next_cursor: Option<String>,
     },
+    ModelPage {
+        id: RpcId,
+        models: Vec<String>,
+        next_cursor: Option<String>,
+    },
 }
 
 /// The fixed CLI's actual server request, distinct from an item lifecycle
@@ -654,9 +666,45 @@ pub(crate) fn decode(frame: &[u8], pending: Option<(&RpcId, &Command)>) -> Resul
             };
             Ok(Reply::FeaturePage {id,features,next_cursor})
         }
+        Command::ModelList {..} => {
+            let result=object(result,"model result")?;
+            let Json::Array(data)=field(result,"data")? else {return Err(RpcError::Invalid("model data"));};
+            let mut models=Vec::new();let mut seen=BTreeSet::new();
+            for model in data {
+                let model=object(model,"model")?;
+                let slug=string(field(model,"model")?,"model slug")?;
+                required(&slug,"model slug")?;
+                let Json::Bool(hidden)=field(model,"hidden")? else {return Err(RpcError::Invalid("model hidden"));};
+                if !*hidden && seen.insert(slug.clone()) {models.push(slug);}
+            }
+            let next_cursor=match field(result,"nextCursor")? {
+                Json::Null=>None,
+                value=>{let next=string(value,"model next cursor")?;required(&next,"model next cursor")?;Some(next)},
+            };
+            Ok(Reply::ModelPage {id,models,next_cursor})
+        }
         Command::Initialized | Command::QuestionAnswer { .. } | Command::DynamicToolResponse { .. } => {
             Err(RpcError::Invalid("unexpected response"))
         }
+    }
+}
+
+/// Re-decode only a canonical command and the original matching response kept
+/// by H. Neither model names nor a response object may be supplied by a caller.
+pub(crate) fn decode_stored_model_list(command_frame:&[u8],response_frame:&[u8])
+    -> Result<(Option<String>,Vec<String>,Option<String>),RpcError> {
+    let Json::Object(fields)=Parser::parse(std::str::from_utf8(frame_body(command_frame)?)?)? else {return Err(RpcError::Invalid("stored model command"));};
+    if fields.len()!=3 || string(field(&fields,"method")?,"method")?!="model/list" {return Err(RpcError::Invalid("stored model method"));}
+    let id=parse_id(field(&fields,"id")?)?;
+    let params=object(field(&fields,"params")?,"model params")?;
+    if params.len()!=1 {return Err(RpcError::Invalid("stored model params"));}
+    let cursor=match field(params,"cursor")? {Json::Null=>None,value=>Some(string(value,"model cursor")?)};
+    let command=Command::ModelList {cursor:cursor.clone()};
+    if command.encode(Some(&id))?!=command_frame {return Err(RpcError::Invalid("stored model command mismatch"));}
+    match decode(response_frame,Some((&id,&command)))? {
+        Reply::ModelPage {models,next_cursor,..}=>Ok((cursor,models,next_cursor)),
+        Reply::RemoteError {raw_frame,..}=>Err(RpcError::RemoteResponse(raw_frame)),
+        _=>Err(RpcError::Invalid("stored model response")),
     }
 }
 
@@ -1153,6 +1201,23 @@ mod tests {
         assert!(matches!(decode(response,Some((&wrong,&command))),Err(RpcError::WrongId)));
         assert!(matches!(decode(b"{\"id\":51,\"result\":{\"data\":[{\"name\":\"multi_agent_v2\",\"enabled\":0}],\"nextCursor\":null}}\n",Some((&id,&command))),Err(RpcError::Invalid("feature enabled"))));
         assert!(matches!(decode(b"{\"id\":51,\"result\":{\"data\":[{\"name\":\"a\",\"enabled\":false},{\"name\":\"a\",\"enabled\":true}],\"nextCursor\":null}}\n",Some((&id,&command))),Err(RpcError::Invalid("duplicate feature name"))));
+    }
+
+    #[test]
+    fn model_list_replays_only_canonical_original_pages() {
+        let id=RpcId::client(61).unwrap();
+        let command=Command::ModelList {cursor:None};
+        let original=command.encode(Some(&id)).unwrap();
+        assert_eq!(original,b"{\"id\":61,\"method\":\"model/list\",\"params\":{\"cursor\":null}}\n");
+        let response=b"{\"id\":61,\"result\":{\"data\":[{\"model\":\"gpt-6\",\"hidden\":false},{\"model\":\"hidden-test\",\"hidden\":true}],\"nextCursor\":null}}\n";
+        assert_eq!(decode_stored_model_list(&original,response).unwrap(),
+            (None,vec!["gpt-6".to_owned()],None));
+        let changed=String::from_utf8(original.clone()).unwrap().replace("\"cursor\":null","\"cursor\":null,\"includeHidden\":true");
+        assert!(decode_stored_model_list(changed.as_bytes(),response).is_err());
+        let wrong=std::str::from_utf8(response).unwrap().replace("\"id\":61","\"id\":62");
+        assert!(decode_stored_model_list(&original,wrong.as_bytes()).is_err());
+        let missing_cursor=std::str::from_utf8(response).unwrap().replace(",\"nextCursor\":null","");
+        assert!(decode_stored_model_list(&original,missing_cursor.as_bytes()).is_err());
     }
 
     #[test]

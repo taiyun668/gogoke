@@ -2500,6 +2500,27 @@ impl<'root> ProductDatabase<'root> {
         self.native_rpc(key,&unique_step,Some(number),&Command::FeatureList {thread_id,cursor})
     }
 
+    /// Read the catalog on the already verified Codex H process. This does
+    /// not create a thread or turn and accepts no model names from USER.
+    pub(super) fn native_model_list_rpc(&mut self,key:&(String,String),step_id:&str,
+        cursor:Option<String>)->Result<(String,Option<Reply>)> {
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        if run.evidence.driver_id()!="codex" || !run.allows_input()
+            || self.process_custodian.active(&run.custody.ticket).is_none() {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let claim=failure(runtime::observe_claim(&self.connection,&NativeOrigin::user(&self.owner),
+            &key.0,run.evidence.seat_id(),&key.1))?.ok_or(OrchestrationError::AccessDenied)?;
+        failure(run.evidence.verify_live(&mut self.connection,self.root,&self.owner,
+            &run.operation_id,claim.revision))?;
+        let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
+        let number=run.next_rpc_id;
+        run.next_rpc_id=number.checked_add(1).ok_or(OrchestrationError::Invalid("model list RPC ordinal overflow"))?;
+        let unique_step=format!("{step_id}-rpc{number}");
+        let reply=self.native_rpc(key,&unique_step,Some(number),&Command::ModelList {cursor})?;
+        Ok((unique_step,reply))
+    }
+
     /// Actual process-owned JSONL, with durable native step intent before
     /// writing and A's original provider bytes before interpreting responses.
     fn native_claude_initialize(&mut self,key:&(String,String)) -> Result<()> {
@@ -3174,7 +3195,8 @@ impl<'root> ProductDatabase<'root> {
             let observed = failure(codex_rpc::decode(frame.bytes(), id.as_ref().map(|id| (id, command))))?;
             match observed {
                 Reply::Initialized { .. } | Reply::MemoryOff { .. } | Reply::Thread { .. }
-                | Reply::Turn { .. } | Reply::Ack { .. } | Reply::FeaturePage { .. } => {
+                | Reply::Turn { .. } | Reply::Ack { .. } | Reply::FeaturePage { .. }
+                | Reply::ModelPage { .. } => {
                     if let Reply::Thread {cwd,..}=&observed {
                         failure(run.evidence.verify_observed_cwd(cwd))?;
                     }

@@ -18,6 +18,7 @@ pub(crate) enum AdmissionError {
     ProjectCapacity(crate::store::seat::SeatError),
     InstanceCapacity(crate::store::orchestration::OrchestrationError),
     Catalog(crate::store::instance::CatalogError),
+    ProgramSource(crate::store::instance::ProgramSourceError),
     Store(AtomicError),
     Sqlite(SameOpenError),
     CommitUnknown(SameOpenError),

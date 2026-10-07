@@ -35,6 +35,7 @@ use std::path::Path;
 type Result<T> = std::result::Result<T, OrchestrationError>;
 
 mod v37_seat;
+mod v37_managed_cli;
 mod v37_policy;
 mod v37_session;
 mod v37_runtime;
@@ -50,6 +51,7 @@ mod v37_qcard_user;
 mod v37_ledger_user;
 mod v37_inbox;
 mod v37_capability;
+mod v37_models;
 mod v37_login;
 mod v37_holder_disappearance;
 mod v37_grok_home_recovery;
@@ -245,6 +247,9 @@ impl<'root> ProductDatabase<'root> {
         if v37_login::is_owner_instance_list_frame(frame) {
             return self.dispatch_owner_instance_list_frame(frame);
         }
+        if v37_managed_cli::is_user_managed_cli_frame(frame) {
+            return self.dispatch_user_managed_cli(frame);
+        }
         if v37_login::is_owner_login_frame(frame) {
             return self.dispatch_owner_login_frame(frame);
         }
@@ -338,6 +343,11 @@ impl<'root> ProductDatabase<'root> {
                 let row = self.read_registered_instance(&request.target_id)?
                     .ok_or(OrchestrationError::Invalid("instance for manual upgrade"))?;
                 if row.driver_id != "codex" { return Ok(respond(V37Status::Denied, revision, revision, None)); }
+                let managed=Statement::prepare(self.connection.as_ptr(),
+                    "SELECT 1 FROM main.gogoke_v37_instance_cli_copies WHERE driver_id=?1")?;
+                managed.bind_text(1,&row.driver_id)?;
+                if managed.step_row()? { return Ok(respond(V37Status::Denied,revision,revision,
+                    Some("manual global CLI repin is unavailable after managed lifecycle starts".into()))); }
                 let source = self.registration_source(&request.target_id, &row.driver_id)?;
                 if !source.as_ref().map(|source|
                     self.registered_home_is_current(source, &request.target_id)).transpose()?.unwrap_or(false) {
@@ -486,13 +496,12 @@ impl<'root> ProductDatabase<'root> {
         // keeps this read observational: no registration or revision write is
         // attempted, and true is possible only for the current pinned bytes
         // and version.
-        match instance::locate_pinned_program(
-            &row.driver_id,
-            &row.program_digest,
-            &row.version,
+        match instance::locate_bound_instance_program(
+            &self.connection, instance_id, &row.driver_id,
+            &row.program_digest, &row.version,
         ) {
             Ok(_) => Ok(InstallFact::Installed),
-            Err(error) if catalog_error_is_missing(&error) => Ok(InstallFact::Missing),
+            Err(instance::ProgramSourceError::Legacy(error)) if catalog_error_is_missing(&error) => Ok(InstallFact::Missing),
             Err(_) => Ok(InstallFact::Unknown),
         }
     }
@@ -679,8 +688,10 @@ impl<'root> ProductDatabase<'root> {
             Ok(RegistrationReplay::Unseen) => (),
             Ok(RegistrationReplay::Pending) =>
                 return Ok(receipt(V37Status::Unknown, 0, 0, None)),
-            Ok(RegistrationReplay::Replayed) =>
-                return Ok(receipt(V37Status::Replayed, 0, 1, None)),
+            // A prior F registration may have committed before its managed
+            // source bind. Re-enter the exact original request and bind below;
+            // never return REPLAYED while H would reject an unbound source.
+            Ok(RegistrationReplay::Replayed) => (),
             Err(RegistryError::RequestConflict) =>
                 return Ok(receipt(V37Status::Conflict, 0, 0, None)),
             Err(RegistryError::Invalid(_)) =>
@@ -703,17 +714,21 @@ impl<'root> ProductDatabase<'root> {
             Ok(driver) => driver,
             Err(_) => return Ok(receipt(V37Status::Denied, current, current, None)),
         };
-        let observed = match instance::discover_program(&driver) {
+        let pin = match instance::read_fixed_official_cli(&driver) {
+            Some(pin) => pin,
+            None => return Ok(receipt(V37Status::Unsupported,current,current,
+                Some("no qualified managed official CLI".into()))),
+        };
+        let digest = format!("sha256:{}",pin.image_sha256);
+        let managed = instance::locate_ready_managed_program(&self.connection,self.root,
+            &driver,&digest,pin.version);
+        let observed = match managed.and_then(|path|path.ok_or(instance::ManagedCliError::IdentityChanged))
+            .and_then(|path|instance::ProgramObservation::observe(&path,pin.version)
+                .map_err(|_|instance::ManagedCliError::IdentityChanged)) {
             Ok(observed) => observed,
             Err(error) => {
-                let status = match error {
-                    CatalogError::UnknownDriver | CatalogError::UnsupportedVersion |
-                    CatalogError::PackageIdentity | CatalogError::PackageFormat |
-                    CatalogError::IdentityChanged => V37Status::Denied,
-                    _ => V37Status::Failed,
-                };
-                return Ok(receipt(status, current, current,
-                    Some(format!("native program observation: {error:?}"))));
+                return Ok(receipt(V37Status::Denied,current,current,
+                    Some(format!("managed official CLI unavailable: {error:?}"))));
             }
         };
         let disposition = instance::register_instance(&mut self.connection, self.root,
@@ -725,8 +740,18 @@ impl<'root> ProductDatabase<'root> {
                 program: &observed,
             });
         let (status, reason) = match disposition {
-            Ok(RegistrationDisposition::Applied) => (V37Status::Applied, None),
-            Ok(RegistrationDisposition::Replayed) => (V37Status::Replayed, None),
+            Ok(applied) => {
+                let copy=instance::read_managed_cli(&self.connection,self.root,&driver)
+                    .map_err(|error|OrchestrationError::V37StoreFailure(format!("managed register source read: {error:?}")))?
+                    .ok_or(OrchestrationError::AccessDenied)?;
+                let stage=copy.stage_name.ok_or(OrchestrationError::AccessDenied)?;
+                match instance::bind_managed_instance_program(&mut self.connection,self.root,&self.owner,
+                    &request.target_id,&stage,&request.request_id) {
+                    Ok(()) => (if applied==RegistrationDisposition::Applied {V37Status::Applied}
+                        else {V37Status::Replayed},None),
+                    Err(error) => (V37Status::Unknown,Some(format!("managed source bind: {error:?}"))),
+                }
+            },
             Err(error @ (RegistryError::RequestConflict | RegistryError::InstanceConflict)) =>
                 (V37Status::Conflict, Some(format!("native instance register: {error:?}"))),
             Err(error) => (V37Status::Unknown,

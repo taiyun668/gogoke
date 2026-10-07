@@ -541,6 +541,7 @@ impl<'root> ProductDatabase<'root> {
         if request.operation == "append-without-turn" { return self.dispatch_native_send(request); }
         if request.operation == "output-stream" { return self.dispatch_native_output(request); }
         if request.operation == "capability-probe" { return self.dispatch_native_capability(request); }
+        if request.operation == "model-list-read" { return self.dispatch_native_model_list(request); }
         if !matches!(request.operation.as_str(), "admission-reserve" | "admission-commit" | "admission-release") {
             return Ok(encode_receipt(request, V37Status::Unsupported,
                 request.expected_revision, request.expected_revision, Default::default()));

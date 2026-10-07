@@ -407,8 +407,8 @@ pub(crate) fn current_instance_pin(
     // F's install-state read uses this same catalog observation. Recheck the
     // registered CLI bytes and version at every H admission; a persisted
     // install_state is not maintained by that read.
-    instance::locate_pinned_program(&pin.driver_id, &pin.digest, &pin.version)
-        .map_err(AdmissionError::Catalog)?;
+    instance::locate_bound_instance_program(db,instance_id,&pin.driver_id,&pin.digest,&pin.version)
+        .map_err(AdmissionError::ProgramSource)?;
     Ok(pin)
 }
 

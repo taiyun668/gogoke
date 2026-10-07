@@ -2075,7 +2075,7 @@ impl<'root> ProductDatabase<'root> {
             .map_err(|error| OrchestrationError::V37StoreFailure(format!(
                 "login registered home: {error:?}")))?;
         checked_directory(&home.path)?;
-        let program = instance::locate_pinned_program(&row.driver_id,
+        let program = instance::locate_bound_instance_program(&self.connection,instance_id,&row.driver_id,
             &row.program_digest, &row.version)
             .map_err(|error| OrchestrationError::V37StoreFailure(format!(
                 "login pinned program: {error:?}")))?;
@@ -2565,6 +2565,20 @@ impl<'root> ProductDatabase<'root> {
             instance::record_credential_backend(&mut self.connection, source)
                 .map_err(|error| OrchestrationError::V37StoreFailure(format!("credential backend source: {error:?}")))?;
         }
+        if frame.custody()==prepared && parse_account_read(frame.bytes())==NativeAccountState::CredentialPresent &&
+            owner_login_state_from_receipt(&receipt).is_ok_and(|state|state=="LOGGED_IN") {
+            if let Some((email,plan))=qualified_account_label(frame.bytes()) {
+                let observed_at=std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|error|OrchestrationError::V37StoreFailure(format!("account observed clock: {error}")))?
+                    .as_millis().to_string();
+                instance::record_qualified_account(&mut self.connection,&instance::QualifiedAccount {
+                    instance_id:&request.target_id,
+                    source:instance::QualifiedAccountSource::CodexAccountRead,
+                    account_label:email.as_deref(),subscription:Some(&plan),confirmed_at:&observed_at,
+                }).map_err(|error|OrchestrationError::V37StoreFailure(format!("masked account observation: {error:?}")))?;
+            }
+        }
         Ok(receipt)
     }
 
@@ -2774,6 +2788,45 @@ pub(super) fn parse_account_read(frame: &[u8]) -> NativeAccountState {
         },
         _ => NativeAccountState::Unknown,
     }
+}
+
+/// Extract only source-provided display fields from the already qualified
+/// account/read frame. This is never a credential-file read and the raw email
+/// is immediately handed to F's masking write; no raw account JSON is stored.
+fn qualified_account_label(frame:&[u8])->Option<(Option<String>,String)>{
+    if frame.len()>65_536{return None}
+    let text=std::str::from_utf8(frame).ok()?;
+    let Json::Object(mut envelope)=Parser::parse(text.trim_end()).ok()? else{return None};
+    if !matches!(envelope.remove(&JsonString::from_str("id")),Some(Json::Number(id)) if id=="2")||
+        envelope.contains_key(&JsonString::from_str("error")){return None}
+    let Some(Json::Object(mut result))=envelope.remove(&JsonString::from_str("result")) else{return None};
+    let Some(Json::Object(mut account))=result.remove(&JsonString::from_str("account")) else{return None};
+    if !matches!(account.remove(&JsonString::from_str("type")),Some(Json::String(kind))
+        if kind.to_well_formed_string().as_deref()==Some("chatgpt")){return None}
+    let email=match account.remove(&JsonString::from_str("email")) {
+        Some(Json::String(value))=>Some(value.to_well_formed_string()?),
+        Some(Json::Null)=>None,
+        _=>return None,
+    };
+    if email.as_ref().is_some_and(|value|value.is_empty()||value.len()>160||value.chars().any(char::is_control)){return None}
+    let Some(Json::String(plan))=account.remove(&JsonString::from_str("planType")) else{return None};
+    let plan=plan.to_well_formed_string()?;
+    if !matches!(plan.as_str(),"free"|"go"|"plus"|"pro"|"prolite"|"promax"|"team"|
+        "self_serve_business_prolite"|"self_serve_business_usage_based"|"business"|"ent26"|
+        "enterprise_cbp_automation"|"enterprise_cbp_usage_based"|"enterprise"|
+        "edu"|"edu_plus"|"edu_pro"|"unknown") {return None}
+    Some((email,plan))
+}
+
+#[cfg(test)]
+#[test]
+fn qualified_account_read_uses_fixed_plan_type_and_nullable_email() {
+    let present=br#"{"id":2,"result":{"account":{"type":"chatgpt","email":"private@example.test","planType":"plus"},"requiresOpenaiAuth":true}}"#;
+    assert_eq!(qualified_account_label(present),Some((Some("private@example.test".into()),"plus".into())));
+    let no_email=br#"{"id":2,"result":{"account":{"type":"chatgpt","email":null,"planType":"pro"},"requiresOpenaiAuth":true}}"#;
+    assert_eq!(qualified_account_label(no_email),Some((None,"pro".into())));
+    let old_field=br#"{"id":2,"result":{"account":{"type":"chatgpt","email":"private@example.test","plan":"plus"}}}"#;
+    assert!(qualified_account_label(old_field).is_none());
 }
 
 pub(super) fn login_observation_result(state: NativeAccountState) -> BTreeMap<JsonString, Json> {

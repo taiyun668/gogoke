@@ -328,7 +328,7 @@ impl LaunchEvidence {
         // F's stored instance/tier/generation describe creation provenance.
         // Current execution authority comes from the E seat and H claim;
         // a legitimate idle instance rebind does not change the worktree.
-        let program = evidence(instance::locate_pinned_program(&pin.driver_id, &pin.digest, &pin.version))?;
+        let program = evidence(instance::locate_bound_instance_program(db,&claim.instance_id,&pin.driver_id, &pin.digest, &pin.version))?;
         let program_identity = evidence_at("capture-pinned-program-identity",
             AppContainerProfile::capture_catalog_program_identity(&program))?;
         // Runtime home writes are separate from workspace permission. No
@@ -537,7 +537,7 @@ impl LaunchEvidence {
                 || current.common_identity != original.common_identity) {
             return Err("native session launch: physical worktree group changed".into());
         }
-        let program = evidence(instance::locate_pinned_program(&self.pin.driver_id, &self.pin.digest, &self.pin.version))?;
+        let program = evidence(instance::locate_bound_instance_program(db,&self.claim.instance_id,&self.pin.driver_id, &self.pin.digest, &self.pin.version))?;
         if program != self.program { return Err("native session launch: program path changed".into()); }
         if let Some(grok)=&self.grok_home {
             grok.verify(db,&self.profile,matches!(phase,VerificationPhase::PreActivation))?;
