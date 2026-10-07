@@ -182,7 +182,7 @@ function joinedRow(instance: Design37Instance | undefined, profile: Profile, ord
   if (login?.state === "PENDING" && !login.settled) {
     row.login = {
       deviceCode: login.deviceCode, authorizationUrl: login.authorizationUrl,
-      browser: { OPENED: "opened", FAILED: "failed", NOT_REQUESTED: "not-requested" }[login.browserState],
+      browser: ({ OPENED: "opened", FAILED: "failed", NOT_REQUESTED: "not-requested" } as const)[login.browserState],
       startedAt: login.startedAt,
     };
     row.loginUnsettled = true;

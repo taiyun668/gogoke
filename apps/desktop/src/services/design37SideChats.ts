@@ -88,7 +88,7 @@ function list(value: unknown, domainId: string): Design37SideChatPage {
       claimRevision:string(row,"claimRevision"),sourceEpoch:string(row,"sourceEpoch"),
       sourceCursor:string(row,"sourceCursor")};
   })();
-  const chats=rows(page,"chats").map(value => {
+  const chats=rows(page,"chats").map((value): SideChatView => {
     const row=record(value), state=string(row,"state");
     if (state !== "ACTIVE" && state !== "ARCHIVED") throw new Error("SIDE_INVALID_CHAT_STATE");
     return { id:string(row,"sideId"), title:"旁聊", state,
