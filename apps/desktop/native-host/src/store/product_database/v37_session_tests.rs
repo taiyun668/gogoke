@@ -218,6 +218,7 @@ fn product_admission_enforces_persisted_caps_and_rolls_back_busy_on_denial() {
     let root = RootLock::acquire(&path).unwrap();
     let database = path.join("state.sqlite");
     let mut product = ProductDatabase::open(&root, &database).unwrap();
+    managed_cli_test_setup::ready(&mut product, &root, "codex");
     let register = decode_request(br#"{"schema":"gogoke.37.operations.v1","family":"K-INSTANCE","operation":"register","requestId":"regA","targetId":"instanceA","domainId":"global","expectedRevision":"0","payload":{"driverId":"codex"}}"#).unwrap();
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&register).unwrap()).unwrap().status,
         V37Status::Applied, "actual fixed CLI must be registered by User ingress");
