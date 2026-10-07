@@ -212,12 +212,13 @@ impl QualifiedAccountSource {
     }}
 }
 
-/// Produced only by the host's exact qualified login-status route. The value
-/// is an account label, never a credential or token. No file is inspected.
+/// Produced only by the host's exact qualified login-status route. A missing
+/// email remains unknown while an independently present plan can be retained.
+/// Neither field is a credential or token; no file is inspected.
 pub(crate) struct QualifiedAccount<'a> {
     pub(crate) instance_id: &'a str,
     pub(crate) source: QualifiedAccountSource,
-    pub(crate) account_label: &'a str,
+    pub(crate) account_label: Option<&'a str>,
     pub(crate) subscription: Option<&'a str>,
     pub(crate) confirmed_at: &'a str,
 }
@@ -236,10 +237,11 @@ fn mask_account(label: &str) -> Result<String, InstanceManagementError> {
 pub(crate) fn record_qualified_account(db: &mut VerifiedDatabaseConnection<'_>,
     observation: &QualifiedAccount<'_>) -> Result<(), InstanceManagementError> {
     if !valid_id(observation.instance_id) || !valid_source(observation.confirmed_at) ||
+        (observation.account_label.is_none() && observation.subscription.is_none()) ||
         observation.subscription.is_some_and(|value| !valid_source(value)) {
         return Err(InstanceManagementError::Invalid("qualified account"));
     }
-    let masked = mask_account(observation.account_label)?;
+    let masked = observation.account_label.map(mask_account).transpose()?;
     transaction(db, |db| {
         let row = Statement::prepare(db.as_ptr(),
             "SELECT driver_id,login_state FROM main.gogoke_v37_instances WHERE instance_id=?1")?;
@@ -250,7 +252,7 @@ pub(crate) fn record_qualified_account(db: &mut VerifiedDatabaseConnection<'_>,
         }
         let write = Statement::prepare(db.as_ptr(), "INSERT INTO main.gogoke_v37_instance_evidence(instance_id,account_masked,subscription,account_confirmed_at,account_source) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(instance_id) DO UPDATE SET account_masked=excluded.account_masked,subscription=excluded.subscription,account_confirmed_at=excluded.account_confirmed_at,account_source=excluded.account_source")?;
         write.bind_text(1, observation.instance_id)?;
-        write.bind_text(2, &masked)?;
+        if let Some(masked)=masked.as_deref() {write.bind_text(2, masked)?;}
         if let Some(subscription) = observation.subscription { write.bind_text(3, subscription)?; }
         write.bind_text(4, observation.confirmed_at)?;
         write.bind_text(5, observation.source.key())?;
