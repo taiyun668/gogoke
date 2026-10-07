@@ -1,0 +1,13 @@
+{
+  "schema": "gogoke.37.authorization-readback.v1",
+  "pr": 74,
+  "main_merge": "58f8bb569563104156c0e8b76f4dd5da2d58eae6",
+  "merged_by": "taiyun668",
+  "receipt_blob": "470e27951143b83d5230bfa3602fa6e21148a918",
+  "scope_digest": "7abd79da58def8623ca9afa6b1ee6984ef49d5056fef64a9b67ef6aeeb3ef8ff",
+  "supersedes_scope": "a43e4d96520a133976ed50a03b500ab8d92764d172fb4a664edf1aeeb0261091",
+  "main_verifier": "EXACT_GIT_BYTES",
+  "manifest_self_test_sources_three_pins": "PASS",
+  "state": "AUTHORIZED_AFTER_OWNER_MERGE_EXACT_READBACK",
+  "completion_claim": false
+}
