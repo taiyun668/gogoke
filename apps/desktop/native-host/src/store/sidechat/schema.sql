@@ -54,3 +54,27 @@ CREATE TABLE gogoke_v37_side_sync (
     PRIMARY KEY(domain_id,sync_id),
     FOREIGN KEY(domain_id,side_id) REFERENCES gogoke_v37_side_registry(domain_id,side_id)
 ) STRICT;
+CREATE TABLE gogoke_v37_side_delivery (
+    domain_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    side_id TEXT NOT NULL,
+    direction TEXT NOT NULL CHECK(direction IN ('SIDE_TO_LEAD','LEAD_TO_SIDE')),
+    source_seat_id TEXT NOT NULL,
+    source_seat_incarnation TEXT NOT NULL,
+    source_session_id TEXT NOT NULL,
+    target_seat_id TEXT NOT NULL,
+    target_seat_incarnation TEXT NOT NULL,
+    target_session_id TEXT NOT NULL,
+    target_generation TEXT NOT NULL,
+    body TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    enqueue_request_id TEXT NOT NULL,
+    delivery_request_id TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    dispatch_error TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(domain_id,request_id),
+    UNIQUE(domain_id,message_id),
+    UNIQUE(domain_id,enqueue_request_id),
+    UNIQUE(domain_id,delivery_request_id),
+    FOREIGN KEY(domain_id,side_id) REFERENCES gogoke_v37_side_registry(domain_id,side_id)
+) STRICT;

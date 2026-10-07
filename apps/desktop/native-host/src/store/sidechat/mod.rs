@@ -25,6 +25,7 @@ impl From<super::orchestration::OrchestrationError> for SideError {
 type Result<T> = std::result::Result<T, SideError>;
 mod continuity;
 pub(crate) use continuity::read_current_cache_continuity;
+pub(crate) mod delivery;
 
 /// Root derives these from current native H/E bindings, never from Node input.
 /// Initial cache identities are observed only at creation; seat incarnations
@@ -105,8 +106,15 @@ pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Resu
         while query.step_row()? { observed.insert(query.column_text(0)?, query.column_text(1)?); }
         drop(query);
         if observed == expected { return Ok(()); }
-        if !observed.is_empty() { return Err(SideError::Invalid("side schema mismatch")); }
-        for sql in expected.values() { db.execute(sql)?; }
+        // The original four-table D store may already contain real side chats.
+        // Add only the delivery relation after verifying every old definition.
+        let legacy: BTreeMap<_,_> = expected.iter()
+            .filter(|(name,_)| name.as_str()!="gogoke_v37_side_delivery")
+            .map(|(name,sql)|(name.clone(),sql.clone())).collect();
+        if !observed.is_empty() && observed != legacy { return Err(SideError::Invalid("side schema mismatch")); }
+        for (name,sql) in &expected {
+            if !observed.contains_key(name) { db.execute(sql)?; }
+        }
         Ok(())
     })
 }
@@ -119,6 +127,24 @@ fn load(db: &VerifiedDatabaseConnection<'_>, domain: &str, id: &str) -> Result<O
         source_seat_id: row.column_text(2)?, source_session_id: row.column_text(3)?, seat_id: row.column_text(4)?, session_id: row.column_text(5)?,
         epoch: row.column_text(6)?, cursor: number(row.column_text(7)?)?, synced_cursor: number(row.column_text(8)?)?,
         source_seat_incarnation:row.column_text(9)?,seat_incarnation:row.column_text(10)?,binding_generation:row.column_text(11)?,binding_instance_id:row.column_text(12)?,binding_process_operation_id:row.column_text(13)? }))
+}
+/// Native read model for the current coordination domain. The registry is the
+/// only owner of side membership; a caller cannot enumerate another domain.
+pub(crate) fn list(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,domain:&str)->Result<Vec<Side>> {
+    transact(db,|db| {
+        authority::check_owner_in_current_transaction(db,owner)?;
+        required(domain)?;
+        let query=Statement::prepare(db.as_ptr(),"SELECT side_id FROM main.gogoke_v37_side_registry WHERE domain_id=?1 AND state!='DELETED' ORDER BY rowid")?;
+        query.bind_text(1,domain)?;
+        let mut ids=Vec::new();
+        while query.step_row()? { ids.push(query.column_text(0)?); }
+        drop(query);
+        let mut sides=Vec::new();
+        for id in ids {
+            let s=side(db,domain,&id)?;check_history(db,&s)?;sides.push(s);
+        }
+        Ok(sides)
+    })
 }
 fn side(db: &VerifiedDatabaseConnection<'_>, domain: &str, id: &str) -> Result<Side> {
     let s = load(db, domain, id)?.ok_or(SideError::Conflict)?;
