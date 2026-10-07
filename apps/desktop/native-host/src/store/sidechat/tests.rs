@@ -141,6 +141,22 @@ fn registry_ranges_and_unknown_sync_survive_actual_same_open_reopen() {
     let append_only=delivery::observe(&mut db,&owner,"projectA","relayLead").unwrap();
     assert_eq!(append_only.state,delivery::DeliveryState::Unknown,
         "C append-without-turn cannot be labelled new-turn");
+    let old=delivery::prepare(&mut db,&owner,"projectA","sideA","relayOld","sideSession",
+        delivery::Direction::SideToLead,"old turn",|_,_,_|Ok(true)).unwrap();
+    let old_message=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_inbox_messages(domain_id,message_id,revision,state,sender_seat_id,seat_id,turn_id,generation,body) VALUES(?1,?2,'1','PENDING',?3,?4,'oldTurn',?5,?6)").unwrap();
+    let old_body=old.send_body();
+    for (index,value) in [old.domain_id.as_str(),old.message_id.as_str(),old.source_seat_id.as_str(),
+        old.target_seat_id.as_str(),old.target_generation.as_str(),old_body.as_str()].iter().enumerate() {
+        old_message.bind_text((index+1) as i32,value).unwrap();
+    }
+    old_message.step_done().unwrap();drop(old_message);
+    let steer=decode_request(format!(r#"{{"schema":"gogoke.37.operations.v1","family":"K-INBOX","operation":"steer","requestId":"{}","targetId":"{}","domainId":"projectA","expectedRevision":"1","payload":{{"turnId":"oldTurn","generation":"{}"}}}}"#,
+        old.delivery_request_id,old.message_id,old.target_generation).as_bytes()).unwrap();
+    let ended=encode_receipt(&steer,V37Status::Conflict,1,1,BTreeMap::from([
+        (JsonString::from_str("reason"),text("TURN_ENDED"))]));
+    delivery::record_ended_turn(&mut db,&owner,&old,&ended).unwrap();
+    assert_eq!(delivery::observe(&mut db,&owner,"projectA","relayOld").unwrap().state,
+        delivery::DeliveryState::Failed,"only C's exact old-turn fact closes an unsent steer");
     assert_eq!(list(&mut db,&owner,"projectA").unwrap().len(),1);
     assert_eq!(status(&mut db,&owner,"delete","unknownDeliveryDelete",s.revision),V37Status::Unknown);
     let generation=current_binding(&db,&s).unwrap().generation;
