@@ -250,7 +250,7 @@ pub(crate) fn record_qualified_account(db: &mut VerifiedDatabaseConnection<'_>,
             row.column_text(1)? != "LOGGED_IN" || row.step_row()? {
             return Err(InstanceManagementError::Conflict);
         }
-        let write = Statement::prepare(db.as_ptr(), "INSERT INTO main.gogoke_v37_instance_evidence(instance_id,account_masked,subscription,account_confirmed_at,account_source) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(instance_id) DO UPDATE SET account_masked=excluded.account_masked,subscription=excluded.subscription,account_confirmed_at=excluded.account_confirmed_at,account_source=excluded.account_source")?;
+        let write = Statement::prepare(db.as_ptr(), "INSERT INTO main.gogoke_v37_instance_evidence(instance_id,account_masked,subscription,account_confirmed_at,account_source) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(instance_id) DO UPDATE SET account_masked=excluded.account_masked,subscription=excluded.subscription,account_confirmed_at=excluded.account_confirmed_at,account_source=excluded.account_source,available_models_json=NULL,models_source=NULL,models_observed_at=NULL,models_program_digest=NULL")?;
         write.bind_text(1, observation.instance_id)?;
         if let Some(masked)=masked.as_deref() {write.bind_text(2, masked)?;}
         if let Some(subscription) = observation.subscription { write.bind_text(3, subscription)?; }
@@ -388,4 +388,33 @@ pub(crate) fn record_verified_models_from_original_rpc_source(
         write.step_done()?;
         Ok(())
     })
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn qualified_account_observation_invalidates_prior_models_even_when_mask_collides() {
+    use crate::root::RootLock;
+    use crate::store::same_open::{create_new,route_b_test_guard};
+    let _guard=route_b_test_guard();
+    let nonce=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let path=std::env::temp_dir().join(format!("gogoke-account-model-invalidate-{}-{nonce}",std::process::id()));
+    std::fs::create_dir(&path).unwrap();
+    let root=RootLock::acquire(&path).unwrap();
+    let mut db=create_new(&root,&path.join("state.sqlite")).unwrap();
+    db.execute("PRAGMA foreign_keys=ON").unwrap();
+    super::initialize_schema(&mut db).unwrap();
+    db.execute("INSERT INTO main.gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('instanceA','codex','homeA','identityA','sha256:test','0.160.0','INSTALLED','LOGGED_IN',1)").unwrap();
+    db.execute("INSERT INTO main.gogoke_v37_instance_evidence(instance_id,account_masked,subscription,account_confirmed_at,account_source,available_models_json,models_source,models_observed_at,models_program_digest) VALUES('instanceA','a***@example.test','plus','100','codex-account-read','[\"old-model\"]','codex-model/list:OBSERVED:old','101','sha256:test')").unwrap();
+    assert_eq!(read_instance_evidence(&db,"instanceA").unwrap().unwrap().available_models_json.as_deref(),Some("[\"old-model\"]"));
+    record_qualified_account(&mut db,&QualifiedAccount {instance_id:"instanceA",
+        source:QualifiedAccountSource::CodexAccountRead,
+        account_label:Some("another@example.test"),subscription:Some("pro"),confirmed_at:"102"}).unwrap();
+    let current=read_instance_evidence(&db,"instanceA").unwrap().unwrap();
+    assert_eq!(current.masked_account.as_deref(),Some("a***@example.test"));
+    assert_eq!(current.subscription.as_deref(),Some("pro"));
+    assert!(current.available_models_json.is_none()&&current.models_source.is_none()
+        &&current.models_observed_at.is_none());
+    db.close_checked().unwrap();
+    drop(root);
+    std::fs::remove_dir_all(path).unwrap();
 }
