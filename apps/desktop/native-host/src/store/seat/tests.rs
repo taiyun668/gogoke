@@ -307,6 +307,172 @@ fn secretary_config_refuses_unreleased_h_occupation() {
 }
 
 #[test]
+fn secretary_routines_replay_absence_and_unknown_are_fail_closed() {
+    fixture(|db,owner| {
+        store_template(db,NativeOrigin::user(owner),StoreTemplate {domain_id:"global",
+            template_id:"secretaryRoutineBase",settings_json:br#"{}"#}).unwrap();
+        let seat=create(db,NativeOrigin::user(owner),CreateSeat {domain_id:"global",
+            seat_id:"routineSecretary",template_id:"secretaryRoutineBase",instance_id:None,
+            kind:Kind::Long,request_id:"createRoutineSeat",request_bytes:b"create routine seat"})
+            .unwrap().seat;
+        designate_secretary(db,owner,&seat.seat_id,&seat.incarnation,
+            "designateRoutineSeat",b"designate routine seat").unwrap();
+        let create_input=|raw:&'static [u8]| SecretaryRoutineCreate {
+            routine_id:"routineA",request_id:"routineCreate",request_bytes:raw,
+            original_text:"每天九点提醒我",source_operation_id:"inputA",source_epoch:"epochA",
+            source_cursor:"1",schedule_raw:"每天九点",timezone:"Asia/Shanghai",next_due_ms:100,now_ms:50,
+        };
+        let (first,replayed)=create_secretary_routine(db,owner,create_input(b"original request")).unwrap();
+        assert!(!replayed);assert_eq!(first.original_text,"每天九点提醒我");
+        assert!(create_secretary_routine(db,owner,create_input(b"original request")).unwrap().1);
+        assert!(matches!(create_secretary_routine(db,owner,create_input(b"changed request")),Err(SeatError::Conflict)));
+        let create_b=||SecretaryRoutineCreate {
+            routine_id:"routineB",request_id:"routineBCreate",request_bytes:b"create B",
+            original_text:"每天十点汇总",source_operation_id:"inputB",source_epoch:"epochA",
+            source_cursor:"2",schedule_raw:"每天十点",timezone:"Asia/Shanghai",
+            next_due_ms:100,now_ms:50,
+        };
+        let (other,_)=create_secretary_routine(db,owner,create_b()).unwrap();
+        let pause_b=||SecretaryRoutineChange {routine_id:"routineB",expected_revision:1,
+            request_id:"pauseB",request_bytes:b"pause B",command:SecretaryRoutineCommand::Pause,
+            next_due_ms:None,now_ms:60};
+        assert_eq!(other.revision,1);
+        let (paused_b,_)=change_secretary_routine(db,owner,pause_b()).unwrap();
+        assert_eq!(paused_b.state,"PAUSED");
+        assert!(change_secretary_routine(db,owner,pause_b()).unwrap().1);
+        let (resumed_b,_)=change_secretary_routine(db,owner,SecretaryRoutineChange {
+            routine_id:"routineB",expected_revision:2,request_id:"resumeB",
+            request_bytes:b"resume B",command:SecretaryRoutineCommand::Resume,
+            next_due_ms:Some(200),now_ms:120}).unwrap();
+        assert_eq!(resumed_b.state,"ACTIVE");
+        assert!(matches!(change_secretary_routine(db,owner,pause_b()),Err(SeatError::Conflict)));
+        assert!(matches!(create_secretary_routine(db,owner,create_b()),Err(SeatError::Conflict)));
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        assert_eq!(take_due_secretary_routine_in_transaction(db,owner,"routineA",1,100).unwrap(),
+            SecretaryRoutineDecision::MissingFacts);
+        db.execute("COMMIT").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_instance_profiles(instance_id,display_name,enabled,tombstoned,revision) VALUES('instanceA','A',1,0,1)").unwrap();
+        set_verified_models(db,"instanceA",r#"["modelA"]"#,"sha256:test");
+        configure_secretary(db,owner,seat.generation,seat.revision,"configureRoutineSeat",
+            b"configure routine seat","instanceA","modelA","high","\"READ_ONLY\"").unwrap();
+        configure_absence_policy(db,owner,None,20,"policyInputA").unwrap();
+        record_user_presence(db,owner,"presenceA",UserPresenceKind::Input,
+            "userInputA","epochA","2",90,90).unwrap();
+        assert!(record_user_presence(db,owner,"presenceA",UserPresenceKind::Input,
+            "userInputA","epochA","2",90,90).unwrap());
+        assert!(matches!(record_user_presence(db,owner,"presenceA",UserPresenceKind::Input,
+            "userInputA","epochA","2",91,91),Err(SeatError::Conflict)));
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        let (presence,policy)=read_secretary_presence_in_transaction(db,owner).unwrap();
+        db.execute("COMMIT").unwrap();
+        assert_eq!(presence.unwrap().occurred_at_ms,90);
+        assert_eq!(policy.unwrap().max_absent_ms,20);
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        assert_eq!(take_due_secretary_routine_in_transaction(db,owner,"routineA",1,111).unwrap(),
+            SecretaryRoutineDecision::PausedForAbsence {revision:2,elapsed_ms:21});
+        db.execute("COMMIT").unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        assert_eq!(take_due_secretary_routine_in_transaction(db,owner,"routineA",2,112).unwrap(),
+            SecretaryRoutineDecision::NotDue);
+        db.execute("COMMIT").unwrap();
+        assert!(matches!(change_secretary_routine(db,owner,SecretaryRoutineChange {
+            routine_id:"routineA",expected_revision:1,request_id:"staleResume",
+            request_bytes:b"stale resume",command:SecretaryRoutineCommand::Resume,
+            next_due_ms:Some(200),now_ms:120}),Err(SeatError::Conflict)));
+        let (resumed,_)=change_secretary_routine(db,owner,SecretaryRoutineChange {
+            routine_id:"routineA",expected_revision:2,request_id:"resumeA",
+            request_bytes:b"resume A",command:SecretaryRoutineCommand::Resume,
+            next_due_ms:Some(200),now_ms:120}).unwrap();
+        assert_eq!(resumed.state,"ACTIVE");
+        record_user_presence(db,owner,"presenceB",UserPresenceKind::Foreground,
+            "userForegroundB","epochA","3",195,195).unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        let reserved=take_due_secretary_routine_in_transaction(db,owner,"routineA",3,200).unwrap();
+        let SecretaryRoutineDecision::Reserved {occurrence_id,revision}=reserved else {panic!("expected reserved");};
+        assert_eq!(revision,4);
+        db.execute("COMMIT").unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        assert!(matches!(take_due_secretary_routine_in_transaction(db,owner,"routineA",4,201),
+            Err(SeatError::Denied)));
+        db.execute("COMMIT").unwrap();
+        let (paused_a,_)=change_secretary_routine(db,owner,SecretaryRoutineChange {
+            routine_id:"routineA",expected_revision:4,request_id:"pausePendingA",
+            request_bytes:b"pause pending A",command:SecretaryRoutineCommand::Pause,
+            next_due_ms:None,now_ms:201}).unwrap();
+        assert_eq!(paused_a.state,"PAUSED");
+        let pending_id=paused_a.last_occurrence_id.clone();
+        assert!(matches!(change_secretary_routine(db,owner,SecretaryRoutineChange {
+            routine_id:"routineA",expected_revision:5,request_id:"resumePendingA",
+            request_bytes:b"resume pending A",command:SecretaryRoutineCommand::Resume,
+            next_due_ms:Some(300),now_ms:202}),Err(SeatError::Denied)));
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        assert!(matches!(take_due_secretary_routine_in_transaction(db,owner,"routineA",5,202),
+            Err(SeatError::Denied)));
+        let unknown=record_secretary_occurrence_outcome_in_transaction(db,owner,"routineA",
+            &occurrence_id,5,SecretaryOccurrenceOutcome::Unknown,"","H outcome unknown",None,202).unwrap();
+        assert_eq!(unknown.last_result,"UNKNOWN");
+        assert_eq!(unknown.state,"PAUSED");
+        assert_eq!(unknown.last_occurrence_id,pending_id);
+        db.execute("COMMIT").unwrap();
+        assert!(matches!(change_secretary_routine(db,owner,SecretaryRoutineChange {
+            routine_id:"routineA",expected_revision:6,request_id:"resumeUnknownA",
+            request_bytes:b"resume unknown A",command:SecretaryRoutineCommand::Resume,
+            next_due_ms:Some(300),now_ms:203}),Err(SeatError::Denied)));
+        let (deleted,_)=change_secretary_routine(db,owner,SecretaryRoutineChange {
+            routine_id:"routineA",expected_revision:6,request_id:"deleteA",
+            request_bytes:b"delete A",command:SecretaryRoutineCommand::Delete,
+            next_due_ms:None,now_ms:203}).unwrap();
+        assert_eq!(deleted.state,"DELETED");
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        let settled=record_secretary_occurrence_outcome_in_transaction(db,owner,"routineA",
+            &occurrence_id,7,SecretaryOccurrenceOutcome::Failed,"hReceiptA",
+            "vendor failure original",None,204).unwrap();
+        assert_eq!(settled.state,"DELETED");
+        assert_eq!(settled.last_occurrence_id,pending_id);
+        let history=read_secretary_routines_in_transaction(db,owner).unwrap();
+        let occurrences=read_secretary_occurrences_in_transaction(db,owner,"routineA").unwrap();
+        db.execute("COMMIT").unwrap();
+        assert_eq!(history.len(),1);
+        assert_eq!(history[0].state,"DELETED");
+        assert_eq!(history[0].last_reason,"vendor failure original");
+        assert_eq!(occurrences.len(),1);
+        assert_eq!(occurrences[0].state,"FAILED");
+        assert_eq!(occurrences[0].original_reason,"vendor failure original");
+        record_user_presence(db,owner,"presenceC",UserPresenceKind::Open,
+            "userOpenC","epochA","4",295,295).unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        let reserved_b=take_due_secretary_routine_in_transaction(db,owner,"routineB",3,300).unwrap();
+        let SecretaryRoutineDecision::Reserved {occurrence_id:occurrence_b,revision:revision_b}=reserved_b else {panic!("expected B reservation");};
+        assert_eq!(revision_b,4);
+        db.execute("COMMIT").unwrap();
+        change_secretary_routine(db,owner,SecretaryRoutineChange {
+            routine_id:"routineB",expected_revision:4,request_id:"pausePendingB",
+            request_bytes:b"pause pending B",command:SecretaryRoutineCommand::Pause,
+            next_due_ms:None,now_ms:301}).unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        let settled_b=record_secretary_occurrence_outcome_in_transaction(db,owner,"routineB",
+            &occurrence_b,5,SecretaryOccurrenceOutcome::Failed,"hReceiptB",
+            "B original failure",None,302).unwrap();
+        db.execute("COMMIT").unwrap();
+        assert_eq!(settled_b.state,"PAUSED");
+        assert_eq!(settled_b.last_reason,"B original failure");
+        let (resumed_b,_)=change_secretary_routine(db,owner,SecretaryRoutineChange {
+            routine_id:"routineB",expected_revision:6,request_id:"resumeSettledB",
+            request_bytes:b"resume settled B",command:SecretaryRoutineCommand::Resume,
+            next_due_ms:Some(400),now_ms:303}).unwrap();
+        assert_eq!(resumed_b.state,"ACTIVE");
+        let current=get(db,"global","routineSecretary").unwrap().unwrap();
+        reclaim(db,NativeOrigin::user(owner),SeatChange {domain_id:"global",
+            seat_id:&current.seat_id,expected_generation:current.generation,
+            expected_revision:current.revision,request_id:"reclaimRoutineSecretary",
+            request_bytes:b"reclaim routine secretary"}).unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        assert!(matches!(read_secretary_routines_in_transaction(db,owner),Err(SeatError::Denied)));
+        db.execute("COMMIT").unwrap();
+    });
+}
+
+#[test]
 fn configure_instance_commits_binding_and_full_settings_and_replays_exact_snapshot() {
     fixture(|db,owner| {
         let original=create_e2_lead(db,owner);

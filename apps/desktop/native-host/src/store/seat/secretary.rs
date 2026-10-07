@@ -27,7 +27,7 @@ pub(crate) enum SecretaryConfiguration {
     },
 }
 
-fn designation(db:&VerifiedDatabaseConnection<'_>)
+pub(super) fn designation(db:&VerifiedDatabaseConnection<'_>)
     ->Result<Option<(String,String,String,String)>,SeatError> {
     let q=Statement::prepare(db.as_ptr(),
         "SELECT seat_id,incarnation,request_id,fingerprint FROM main.gogoke_v37_seat_secretary WHERE singleton=1")?;

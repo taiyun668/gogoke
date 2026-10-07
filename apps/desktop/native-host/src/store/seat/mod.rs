@@ -14,9 +14,18 @@ mod continuity;
 mod orchestration;
 mod page_facts;
 mod secretary;
+mod secretary_routines;
 pub(crate) use secretary::{configure_secretary, designate_secretary,
     read_secretary_configuration_in_transaction, SecretaryConfiguration,
     SecretaryDesignation};
+pub(crate) use secretary_routines::{create_secretary_routine,change_secretary_routine,
+    read_secretary_routines_in_transaction,record_user_presence,configure_absence_policy,
+    read_secretary_presence_in_transaction,SecretaryPresenceFact,SecretaryAbsencePolicyFact,
+    read_secretary_occurrences_in_transaction,SecretaryOccurrenceFact,
+    take_due_secretary_routine_in_transaction,record_secretary_occurrence_outcome_in_transaction,
+    SecretaryOccurrenceOutcome,SecretaryRoutine,SecretaryRoutineCreate,
+    SecretaryRoutineChange,SecretaryRoutineCommand,SecretaryRoutineDecision,
+    UserPresenceKind};
 pub(crate) use page_facts::{designate_project_lead,list_page_facts,list_templates,
     rename_seat,PageSeatFacts,SeatActionFacts,SeatPageFacts,TemplateChoice};
 pub(crate) use resource::{read_effective_project_parallel_cap,read_host_parallel_fact,
@@ -337,7 +346,14 @@ fn reject_shadow_or_effect(db: &VerifiedDatabaseConnection<'_>) -> Result<(), Se
 fn expected_schema() -> Vec<(String, String)> {
     let mut entries = pre_secretary_schema();
     entries.push(("gogoke_v37_seat_secretary".into(),secretary::DESIGNATION.into()));
+    entries.extend(secretary_routines::SCHEMA.iter().map(|(name,sql)|(name.to_string(),sql.to_string())));
     entries.sort_by(|left, right| left.0.cmp(&right.0));
+    entries
+}
+fn secretary_only_schema() -> Vec<(String, String)> {
+    let mut entries = pre_secretary_schema();
+    entries.push(("gogoke_v37_seat_secretary".into(),secretary::DESIGNATION.into()));
+    entries.sort_by(|left,right|left.0.cmp(&right.0));
     entries
 }
 fn pre_secretary_schema() -> Vec<(String, String)> {
@@ -410,10 +426,19 @@ pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Resu
     if observed == expected_schema() {
         return Ok(());
     }
+    if observed == secretary_only_schema() {
+        return transact(db,|db| {
+            if schema(db)? != secretary_only_schema() {return Err(SeatError::SchemaDrift);}
+            secretary_routines::create_tables(db)?;
+            if schema(db)? != expected_schema() {return Err(SeatError::SchemaDrift);}
+            Ok(())
+        });
+    }
     if observed == pre_secretary_schema() {
         return transact(db, |db| {
             if schema(db)? != pre_secretary_schema() {return Err(SeatError::SchemaDrift);}
             db.execute(secretary::DESIGNATION)?;
+            secretary_routines::create_tables(db)?;
             if schema(db)? != expected_schema() {return Err(SeatError::SchemaDrift);}
             Ok(())
         });
@@ -423,6 +448,7 @@ pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Resu
             if schema(db)? != e2_schema() {return Err(SeatError::SchemaDrift);}
             page_facts::create_tables(db)?;
             db.execute(secretary::DESIGNATION)?;
+            secretary_routines::create_tables(db)?;
             if schema(db)? != expected_schema() {return Err(SeatError::SchemaDrift);}
             Ok(())
         });
@@ -453,6 +479,7 @@ pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Resu
         create_e2_tables(db)?;
         page_facts::create_tables(db)?;
         db.execute(secretary::DESIGNATION)?;
+        secretary_routines::create_tables(db)?;
         if schema(db)? != expected_schema() {
             return Err(SeatError::SchemaDrift);
         }
@@ -467,6 +494,7 @@ fn migrate_f1_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Result<(), Seat
         create_e2_tables(db)?;
         page_facts::create_tables(db)?;
         db.execute(secretary::DESIGNATION)?;
+        secretary_routines::create_tables(db)?;
         if schema(db)? != expected_schema() { return Err(SeatError::SchemaDrift); }
         Ok(())
     })
@@ -482,6 +510,7 @@ fn migrate_previous_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Result<()
         create_e2_tables(db)?;
         page_facts::create_tables(db)?;
         db.execute(secretary::DESIGNATION)?;
+        secretary_routines::create_tables(db)?;
         if schema(db)? != expected_schema() {
             return Err(SeatError::SchemaDrift);
         }
@@ -512,6 +541,7 @@ fn migrate_legacy_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Result<(), 
         create_e2_tables(db)?;
         page_facts::create_tables(db)?;
         db.execute(secretary::DESIGNATION)?;
+        secretary_routines::create_tables(db)?;
         if schema(db)? != expected_schema() {
             return Err(SeatError::SchemaDrift);
         }
