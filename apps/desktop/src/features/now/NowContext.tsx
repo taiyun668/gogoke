@@ -39,7 +39,7 @@ export type NowSnapshot = {
 export type NowSource = { read: () => Promise<NowSnapshot | null> };
 
 type LegacyPair = { workspaceId: string; threadId: string };
-type ReadState = { source: NowSource; snapshot: NowSnapshot | null; frozen: boolean };
+type ReadState = { source: NowSource; snapshot: NowSnapshot | null; frozen: boolean; error: string | null };
 type Anchor = { key: string; element: HTMLElement };
 type ContextValue = {
   source: NowSource | null;
@@ -90,15 +90,16 @@ export function NowProvider({
     let timer: number | undefined;
     const refresh = async () => {
       let snapshot: NowSnapshot | null = null;
+      let error: string | null = null;
       try {
         snapshot = await source.read();
-      } catch {
-        // A failed full read preserves the last complete snapshot as frozen.
+      } catch (cause) {
+        error = String(cause);
       }
       if (!live) return;
       setRead((previous) => {
         const last = previous?.source === source ? previous.snapshot : null;
-        return { source, snapshot: snapshot ?? last, frozen: snapshot === null };
+        return { source, snapshot: snapshot ?? last, frozen: snapshot === null, error };
       });
       timer = window.setTimeout(refresh, 2500);
     };
@@ -121,6 +122,7 @@ export type NowConversationView = {
   conversation: NowConversation;
   batchWord: BatchWord;
   frozenAt?: string;
+  readError?: string;
 };
 
 /** Exact lookup for any visible pinned, recent, or conversation row. */
@@ -137,7 +139,20 @@ export function useNowConversation(workspaceId: string | null, threadId: string 
     conversation,
     batchWord: current ? batchWord(current, conversation.pendingInput) : conversation.pendingInput ? "待处理" : null,
     frozenAt: context.read.frozen ? context.read.snapshot.readAt : undefined,
+    readError: context.read.frozen ? context.read.error ?? undefined : undefined,
   };
+}
+
+/** The active conversation uses the same exact lookup as every visible row. */
+export function useNowActiveConversation(): NowConversationView | null {
+  const active = useContext(Context)?.active;
+  return useNowConversation(active?.workspaceId ?? null, active?.threadId ?? null);
+}
+
+/** The original read error remains available even before the first snapshot. */
+export function useNowReadError(): string | null {
+  const context = useContext(Context);
+  return context?.source && context.read?.source === context.source ? context.read.error : null;
 }
 
 /** Render only batches explicitly anchored to this exact lead output item. */
