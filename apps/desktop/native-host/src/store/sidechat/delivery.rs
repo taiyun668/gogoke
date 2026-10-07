@@ -81,11 +81,33 @@ fn load_intent(db:&VerifiedDatabaseConnection<'_>,domain:&str,request_id:&str)->
         created_at:row.column_text(13)?,dispatch_error:row.column_text(14)?,may_dispatch:false}))
 }
 
+/// C/H may consume only the exact D row that granted this one dispatch.
+pub(crate) fn verify_intent(db:&VerifiedDatabaseConnection<'_>,intent:&DeliveryIntent)->Result<()> {
+    let mut actual=load_intent(db,&intent.domain_id,&intent.request_id)?.ok_or(SideError::Denied)?;
+    let mut supplied=intent.clone();
+    actual.may_dispatch=false;supplied.may_dispatch=false;
+    if actual!=supplied {return Err(SideError::Conflict);}
+    Ok(())
+}
+pub(crate) fn intent_for_message(db:&VerifiedDatabaseConnection<'_>,domain:&str,
+    message_id:&str)->Result<Option<DeliveryIntent>> {
+    let row=Statement::prepare(db.as_ptr(),"SELECT request_id FROM main.gogoke_v37_side_delivery WHERE domain_id=?1 AND message_id=?2")?;
+    row.bind_text(1,domain)?;row.bind_text(2,message_id)?;
+    if !row.step_row()? {return Ok(None);}
+    let id=row.column_text(0)?;
+    if row.step_row()? {return Err(SideError::Conflict);}
+    drop(row);load_intent(db,domain,&id)
+}
+
 /// The model-tool route supplies the authenticated native session. The caller
 /// selects only the side and direction; D resolves both principals from its
 /// original side binding and current H/E incarnations on this same connection.
+/// Model callers must provide a same-transaction E MESSAGE grant and current
+/// designated lead proof here. The check runs after D derives both seats and
+/// before the durable one-shot permit is inserted.
 pub(crate) fn prepare(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,domain:&str,
-    side_id:&str,request_id:&str,caller_session:&str,direction:Direction,body:&str)->Result<DeliveryIntent> {
+    side_id:&str,request_id:&str,caller_session:&str,direction:Direction,body:&str,
+    authorized:impl FnOnce(&VerifiedDatabaseConnection<'_>,&str,&str)->Result<bool>)->Result<DeliveryIntent> {
     if !valid_id(domain)||!valid_id(side_id)||!valid_id(request_id)||body.trim().is_empty()||
         body.len()>crate::ipc::MAX_FRAME_BYTES/2 {return Err(SideError::Invalid("delivery input"));}
     transact(db,|db| {
@@ -112,6 +134,7 @@ pub(crate) fn prepare(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,
             claim.bind_text(1,domain)?;claim.bind_text(2,session)?;
             if !claim.step_row()? || claim.step_row()? {return Err(SideError::Denied);}
         }
+        if !authorized(db,source_seat,target_seat)? {return Err(SideError::Denied);}
         // C's IDs are fixed before any enqueue/H action. Recovery only reads
         // these exact identities; it cannot derive a fresh request to resend.
         let digest=crate::store::digest::sha256_hex(format!("{domain}\n{request_id}").as_bytes());
