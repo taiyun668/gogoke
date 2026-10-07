@@ -11,7 +11,7 @@
   },
   {
    "path": "docs/design/GOGO-要做的和不做的.md",
-   "blob": "b941188791a7821c13b0ea1466194efde72f398a"
+   "blob": "9def308568a8af309fe0065c0d365ad15a39e367"
   },
   {
    "path": "docs/directions/2026-09-23-direction-candidates.md",
@@ -137,8 +137,8 @@
   },
   {
    "id": "R-SEC",
-   "source": "37 §13a, §7",
-   "text": "Secretary as a global seat: real-time read of all projects' threads, delivery to leads and auditors, resident and scheduled triggers, per-project filtering on distribution."
+   "source": "37 sections7/8c and GOGO direction section8, Owner2026-10-07",
+   "text": "One global secretary seat with its own isolated ledger, memory and decision register; one enduring searchable conversation. User-only instance/model/effort/permission configuration and an explicit unset state. Subscribe to all project-seat ledgers and filter every outgoing project envelope by target scope. Within the configured call table, deliver tasks/progress requests to leads, ask auditors for conclusions, and open a new work for Owner; never directly modify project files or create seats. Return original text and steered/new-turn/failed/unknown delivery facts for every action. Natural-language scheduled tasks support pause/resume/delete, next time and original last outcome, restart-safe de-duplication and automatic pause on evidenced Owner absence. No popups/system notifications; fixed sidebar quiet/waiting/working/unset/down facts, project questions stay in their project, global decisions are queried internally."
   },
   {
    "id": "R-ORCH",
@@ -626,14 +626,15 @@
    },
    {
     "path": "third_party/t3code/apps/server/src/gogoke/host/coordinator.ts",
-    "extension": "coordination of generic sessions next to the existing controlled task",
+    "extension": "coordination of generic sessions next to the existing controlled task; E.3 extends this existing coordinator with durable secretary occurrence dispatch/pause/recovery, sharing H journals and admission; no second scheduler or unattended system service",
     "serves": [
      "H",
      "B1",
      "B2",
      "B3",
      "B4",
-     "B5"
+     "B5",
+     "E"
     ]
    },
    {
@@ -708,7 +709,7 @@
    },
    {
     "path": "apps/desktop/src/features/app/components/MainApp.tsx",
-    "extension": "slots for seat, instance, inbox, side chat, question-card and worktree UI; pass the current-project SeatsSource into the right-side panel without fabricated seat data; mount the G now context and the NowPin above the existing composer node without changing Composer or Sidebar; provide host-backed exact project/thread lookup for every visible Sidebar row and the active output, never equate legacy workspace/thread IDs with native identities; G context also carries the host-verified native lead turn to concrete output-item anchor mapping, never infer the anchor from item order or the final message",
+    "extension": "slots for seat, instance, inbox, side chat, question-card and worktree UI; pass the current-project SeatsSource into the right-side panel without fabricated seat data; mount the G now context and the NowPin above the existing composer node without changing Composer or Sidebar; provide host-backed exact project/thread lookup for every visible Sidebar row and the active output, never equate legacy workspace/thread IDs with native identities; G context also carries the host-verified native lead turn to concrete output-item anchor mapping, never infer the anchor from item order or the final message; for secretary, provide the fixed sidebar entry, select the same verified native global conversation through ordinary Messages/Composer, replace the project right panel with SecretaryPanel and restore previous project selection on exit; no second conversation renderer",
     "serves": [
      "G"
     ]
@@ -946,7 +947,7 @@
    },
    {
     "path": "apps/desktop/src/features/messages/components/Messages.tsx",
-    "extension": "render the current NowBlock as the final block of its exact lead output; closed batches retain their original historical turn anchor; consume the optional G context without changing ConversationItem or the legacy renderer",
+    "extension": "render the current NowBlock as the final block of its exact lead output; closed batches retain their original historical turn anchor; consume the optional G context without changing ConversationItem or the legacy renderer; secretary-only cross-project ActionLine uses exact native output/event association and original delivery facts; resolve navigation through the host, not legacy IDs; no contamination of project conversations",
     "serves": [
      "G"
     ]
@@ -961,6 +962,79 @@
    {
     "path": "apps/desktop/src/features/composer/components/ComposerInput.tsx",
     "extension": "replace the original stop control with the G StopMenu only when real host round/task stop actions exist; retain the original send and stop behavior for non-design37 threads",
+    "serves": [
+     "G"
+    ]
+   },
+   {
+    "path": "apps/desktop/src-tauri/src/backend/app_server.rs",
+    "extension": "Route Design37 visible conversation transport to the same native H session, retain exact source and output anchors, expose lifecycle methods instead of direct Child operations; legacy transport keeps its existing behavior.",
+    "serves": [
+     "H",
+     "A",
+     "B1",
+     "C",
+     "G"
+    ]
+   },
+   {
+    "path": "apps/desktop/src-tauri/src/codex/mod.rs",
+    "extension": "Forward Design37 conversation start/resume/read/list/send/steer/interrupt/approval/input and original events through that verified H session while preserving current Tauri command and event shapes; no legacy ID aliases or global CLI fallback.",
+    "serves": [
+     "H",
+     "A",
+     "B1",
+     "C",
+     "G"
+    ]
+   },
+   {
+    "path": "apps/desktop/src-tauri/src/shared/workspaces_core/connect.rs",
+    "extension": "Use the shared session live/stop methods for connection and cancellation instead of directly probing or killing Child; native stop requires H readback.",
+    "serves": [
+     "H",
+     "A",
+     "B1",
+     "C",
+     "G"
+    ]
+   },
+   {
+    "path": "apps/desktop/src-tauri/src/shared/workspaces_core/crud_persistence.rs",
+    "extension": "Use the same exact session stop method at the existing workspace creation/clone rollback points; preserve original failures and do not manufacture STOPPED.",
+    "serves": [
+     "H",
+     "A",
+     "B1",
+     "C",
+     "G"
+    ]
+   },
+   {
+    "path": "apps/desktop/src-tauri/src/shared/workspaces_core/runtime_codex_args.rs",
+    "extension": "Use exact session stop before existing argument-change lifecycle operations; managed CLI identity and active-session upgrade rules remain unchanged.",
+    "serves": [
+     "H",
+     "A",
+     "B1",
+     "C",
+     "G"
+    ]
+   },
+   {
+    "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon.rs",
+    "extension": "Use the same session lifecycle for stale/prune/shutdown call sites; unsupported native modes refuse before launch, never fall back to an ordinary model process.",
+    "serves": [
+     "H",
+     "A",
+     "B1",
+     "C",
+     "G"
+    ]
+   },
+   {
+    "path": "apps/desktop/src/features/app/components/Sidebar.tsx",
+    "extension": "Add only an integrator-populated fixed SecretaryEntry slot outside the project/pinned/recent scroller and above all conversation rows. Consume native secretary context; preserve existing sidebar controls, row selection and ordinary project behavior. No global identity guessed from workspace/thread labels.",
     "serves": [
      "G"
     ]
@@ -1173,7 +1247,7 @@
      "read-models",
      "actions"
     ],
-    "seams": "Every read model and action maps to an operation of the contracts above with its receipt; G adds no operation or state source of its own; every A1-A4 state has a read model, including unknown and unconfirmed states. At M1 with G.0: instance read models for the four states not installed, not logged in, logged in and error (including a failed login's raw reason), and the login start, progress, result and cancel actions; at M2, the managed CLI/version and source-backed exhaustion read models settle with F.2 and V13; the remaining instance management presentation settles at M3. The CLI read model distinguishes operation status/progress/original failure, current version, verified new version, unverified official new-version notice, previous verified version and last check time. The instance read model may expose display name, enabled state, last-confirmed masked account/subscription and OpenCode connected-model source, current login-status detection error, recent records, seats and active session count, cap, selected model and separately evidenced available models, expiry, explicit CLI recovery time, masked wrong-account-not-adopted and abnormal-close records only from the responsible host observations. Missing or ambiguous values stay UNKNOWN, and no model call is made to measure quota. The detect control only requests non-spending login status; doctor has its own control and result and is never used as detect. Upgrade and rollback run only after an explicit User click, but the host downloads, verifies and installs the bytes without any manual CLI download or installation by the Owner. UI actions are gated by host capability: create immediately starts supported login-only, rename, enable/disable, delete with in-use refusal, cap, detect and open the controlled home; unsupported actions are hidden. Public UI does not display internal IDs, paths, hashes or revisions. Exact create input is vendor, display name and, for OpenCode, connected-model source; this is distinct from credential backend/origin. Read back the last successful login/account confirmation timestamp. An abnormal-exit record includes the host-confirmed automatic cleanup result and its evidence; unresolved cleanup stays UNKNOWN and cannot be shown as completed. CLI installation failure and installed-but-launch-blocked are distinct states, each retaining its original error; install and upgrade progress and failures are also distinct. The current-project SeatsSource.read returns null when the real host seat bridge is absent; SeatsPanel then shows “席位数据还没接上”, never a fake or cached success. Its real read model carries project running-seat count/local concurrency cap and each K-SEAT field including direct/subordinate layer, lead/long-short flags, the seven visible states, current/prior instance display names/vendors, selected model/effort/tier, doing/stuck/last activity, state-card goal/pending/reclaim condition and recent actions. Choices are only host-confirmed LOGGED_IN+enabled instances, instance-bound models, supported efforts/tiers and templates; lead bounds expose allowed instances, maximum permission and seat cap. UI actions map to K-SEAT create-from-template direct user-layer seat, tune, busy-refusing change-instance, lead-refusing reclaim with real H stop/readback for busy seats and retained records, and set-orchestration-bounds. Internal session numbers, PIDs and other host IDs remain offscreen; missing source or capability never masquerades as implemented."
+    "seams": "Every read model and action maps to an operation of the contracts above with its receipt; G adds no operation or state source of its own; every A1-A4 state has a read model, including unknown and unconfirmed states. At M1 with G.0: instance read models for the four states not installed, not logged in, logged in and error (including a failed login's raw reason), and the login start, progress, result and cancel actions; at M2, the managed CLI/version and source-backed exhaustion read models settle with F.2 and V13; the remaining instance management presentation settles at M3. The CLI read model distinguishes operation status/progress/original failure, current version, verified new version, unverified official new-version notice, previous verified version and last check time. The instance read model may expose display name, enabled state, last-confirmed masked account/subscription and OpenCode connected-model source, current login-status detection error, recent records, seats and active session count, cap, selected model and separately evidenced available models, expiry, explicit CLI recovery time, masked wrong-account-not-adopted and abnormal-close records only from the responsible host observations. Missing or ambiguous values stay UNKNOWN, and no model call is made to measure quota. The detect control only requests non-spending login status; doctor has its own control and result and is never used as detect. Upgrade and rollback run only after an explicit User click, but the host downloads, verifies and installs the bytes without any manual CLI download or installation by the Owner. UI actions are gated by host capability: create immediately starts supported login-only, rename, enable/disable, delete with in-use refusal, cap, detect and open the controlled home; unsupported actions are hidden. Public UI does not display internal IDs, paths, hashes or revisions. Exact create input is vendor, display name and, for OpenCode, connected-model source; this is distinct from credential backend/origin. Read back the last successful login/account confirmation timestamp. An abnormal-exit record includes the host-confirmed automatic cleanup result and its evidence; unresolved cleanup stays UNKNOWN and cannot be shown as completed. CLI installation failure and installed-but-launch-blocked are distinct states, each retaining its original error; install and upgrade progress and failures are also distinct. The current-project SeatsSource.read returns null when the real host seat bridge is absent; SeatsPanel then shows “席位数据还没接上”, never a fake or cached success. Its real read model carries project running-seat count/local concurrency cap and each K-SEAT field including direct/subordinate layer, lead/long-short flags, the seven visible states, current/prior instance display names/vendors, selected model/effort/tier, doing/stuck/last activity, state-card goal/pending/reclaim condition and recent actions. Choices are only host-confirmed LOGGED_IN+enabled instances, instance-bound models, supported efforts/tiers and templates; lead bounds expose allowed instances, maximum permission and seat cap. UI actions map to K-SEAT create-from-template direct user-layer seat, tune, busy-refusing change-instance, lead-refusing reclaim with real H stop/readback for busy seats and retained records, and set-orchestration-bounds. Internal session numbers, PIDs and other host IDs remain offscreen; missing source or capability never masquerades as implemented. Secretary read/action projection follows features/secretary/secretaryModel.ts and Secretary.tsx, plus an integrator-owned exact native global-conversation/output association, original ActionLine history and host-resolved open callback. No second persistent writer."
    }
   ]
  },
@@ -1283,7 +1357,8 @@
       "restart reconciliation",
       "scoped query and real-time subscription",
       "handoff rendering",
-      "session purpose and readable-source rules for R-CLEAN"
+      "session purpose and readable-source rules for R-CLEAN",
+      "For E.3, H-attested secretary-only global reader/subscription and separate global ledger/memory/decision-register namespace; project and side queries cannot retrieve global or other-project content. Cursor/epoch catchup and full read after reconnect; outgoing scope-filtered envelope includes provenance. Global decision writes remain A-owned and cite original authenticated Owner ledger input. For M3, native authenticated content search over this same enduring secretary conversation/ledger preserves original positions and scope; the legacy Search threads field is not conversation-content search and cannot stand in for it."
      ]
     }
    ],
@@ -1429,7 +1504,8 @@
      "deliverables": [
       "K-INBOX and K-QCARD with durable state",
       "delivery commitment through H's prepare, beginCommitted, completion chain with current-grant recheck",
-      "borrowed inbox manager with envelope fencing"
+      "borrowed inbox manager with envelope fencing",
+      "For E.3, permission-checked secretary delivery to a project lead/auditor and opening a new work without seat creation; busy recipient steer or idle/new work turn uses original H chain. Persist original content, origin, target scope and delivery steered/new-turn/failed/unknown plus original reason; unknown is not success and does not authorize duplicate effects. Project questions remain in the project with a secretary pointer, not a new global decision answer. Build the actual outbound material/envelope from source-provenance-bearing fragments and target-authorized inputs; target-scope labels alone are not semantic DLP for arbitrary model text. If material provenance/target eligibility is absent or ambiguous, retain an original refusal/unknown result and do not deliver it; V14 inspects the actually delivered content and negative foreign-project markers."
      ]
     }
    ],
@@ -1497,7 +1573,19 @@
      "id": "E.3",
      "milestone": "M3",
      "deliverables": [
-      "secretary resident and scheduled triggers persisted in the existing coordinator (register, recover, cancel, de-duplicate); no second scheduler"
+      "secretary resident and scheduled triggers persisted in the existing coordinator (register, recover, cancel, de-duplicate); no second scheduler",
+      "One User-configured global secretary seat; native immutable purpose/authority binding, not caller-provided global/role flags. Instance/model/effort/permission all explicitly configured or unset, only verified models and supported tiers. Same H admission, instance limits, LPAC, stop/recovery; no new login, permission capability or project writer.",
+      "Natural-language schedule tools extend the existing coordinator and E durable records; no independent scheduler/service or vendor Bot runtime. Original schedule/timezone/next-run/last-run result, pause/resume/delete tombstone and preserved history; unique occurrence identity and H delivery journal prevent duplicate or unconfirmed replay. Pausing blocks future dispatch, not a fabricated stopped fact.",
+      "Owner-presence facts come from attributable User foreground/open/input activity, never secretary/model output, polling or routine progress. Persist last presence, observation time and an explicit documented product-default or User-configured absence policy, calculate elapsed absence from those facts; before each scheduled model call apply the policy and durably pause when due. Unknown presence/clock/policy does not authorize a model call. Reconcile while the app/host runs and at restart; no background system task or guaranteed execution while the product is shut down, no missed-run model burst, no silent automatic resume after an absence pause.",
+      "Secretary can/cannot, unset/down original reason and actual provider recovery time, live doing and unresolved Owner item count are native facts; no count from transcript guesses. Global decision register stores original Owner text, separate interpretation, scope/date/ledger provenance and supersedes links; conflicts and uncertain candidates are not silently promoted or overwritten, old decisions retained, register queried internally without a dedicated page.",
+      "Controller exercises User-origin secretary configuration in the authorized isolated candidate/test coordination domain, using already authorized logged-in test instances, verified existing test model/effort and supported least-permission configuration within Owner bounds. This tests the product User layer; it is not a new human Owner step. Never overwrite real Owner global settings or credentials; preserve/read back existing test records, test unset/configured/rejected variants, then restore the test configuration. Real-use configuration remains the Owner product setting; new credentials, higher privilege or genuinely uncovered preferences use existing conditional touchpoints, not an invented repeated config approval."
+     ],
+     "needs": [
+      "A.1",
+      "C.1",
+      "E.2",
+      "F.2",
+      "H.1"
      ]
     }
    ],
@@ -1555,7 +1643,8 @@
     "apps/desktop/src/features/sidechat/",
     "apps/desktop/src/features/question-cards/",
     "apps/desktop/src/features/worktree-graph/",
-    "apps/desktop/src/features/now/"
+    "apps/desktop/src/features/now/",
+    "apps/desktop/src/features/secretary/"
    ],
    "depends": [
     "L0"
@@ -1584,14 +1673,19 @@
       "existing tokens and primitives only",
       "instance Settings view consumes host-backed managed CLI and instance capability/data only; create begins supported login, actions without host capability are hidden, and internal IDs, paths, hashes and revisions are not shown. Unknown account, subscription, OpenCode source, model, expiry or recovery data stays unknown; no quota-spending model probe.",
       "fourth right-side tab after Git, Files and Prompts uses lucide users and renders <SeatsPanel source={...}/> for the current project. If the real host SeatsSource.read is absent or returns null, show “席位数据还没接上” without fake seat rows. Show running seats/local concurrency cap; per-seat name, direct/subordinate layer, lead and long/short flags, IDLE/WORKING/SWITCHING/STOP_REQUESTED/STUCK/REMOVING/REMOVED, current/prior instance display name/vendor, model/effort/tier, one-line doing, stuck duration, last activity, state-card goal/pending/reclaim condition and recent actions. Eligible instance/model/effort/tier/template choices and lead orchestration bounds come from the host. Create-from-template direct user-layer seat, tune, busy-refusing instance change, reclaim with lead refusal and real H stop/readback before busy removal, and set bounds use their distinct K-SEAT operations; no session/PID/internal IDs. The integrator owns only the exact mapped right-side panel and source-pass-through shared files, while G keeps its existing feature write scope.",
-      "Owner-approved ongoing work tree in features/now/: NowBlock final in each lead output, closed batches at their original history position, batchWord conversation status, StopMenu with distinct requested/confirmed round and task stops, and NowPin above the composer only when the current block is outside view. Real full snapshots after reconnect; unknown without receipt; stale only after the audited files changed; optional actions only from host capability. The three exact shared consumer files are integrator-owned; G supplies its context and components. No new credential, permission, provider, acceptance or Owner touchpoint. G context includes a native identity lookup for every visible pinned/recent/sidebar conversation and a host-verified exact output-item anchor for each batch. These are integration facts, not inferred from NowBatch.id or legacy workspace/thread/item IDs. Missing identity or anchor stays explicitly unavailable; never place a historical block by array order or final-message guessing."
+      "Owner-approved ongoing work tree in features/now/: NowBlock final in each lead output, closed batches at their original history position, batchWord conversation status, StopMenu with distinct requested/confirmed round and task stops, and NowPin above the composer only when the current block is outside view. Real full snapshots after reconnect; unknown without receipt; stale only after the audited files changed; optional actions only from host capability. The three exact shared consumer files are integrator-owned; G supplies its context and components. No new credential, permission, provider, acceptance or Owner touchpoint. G context includes a native identity lookup for every visible pinned/recent/sidebar conversation and a host-verified exact output-item anchor for each batch. These are integration facts, not inferred from NowBatch.id or legacy workspace/thread/item IDs. Missing identity or anchor stays explicitly unavailable; never place a historical block by array order or final-message guessing.",
+      "Secretary UI from Claude9aa6e76a: fixed SecretaryEntry above all pinned/project rows; same ordinary Messages/Composer for one verified native global conversation; SecretaryPanel replaces the project right panel with routines/settings only; exact host-backed SecretaryActionLine per cross-project action. Native context supplies actual global conversation/output association; never infer it from display name or legacy IDs. SecretaryPage/Settings/Routine/ActionLine facts and optional operations match secretaryModel.ts and Secretary.tsx; absent capability hidden, read failures disable old operations, no popups or system notifications. Absence wording follows actual recorded foreground/open/input presence facts, not an unsupported claim that the app was closed."
+     ],
+     "needs": [
+      "E.3"
      ]
     }
    ],
    "precedents": [
     "existing gogoke UI tokens and primitives",
     "gogo-party packages/room/public/index.html",
-    "docs/research/gogo-ui-2026-09-13"
+    "docs/research/gogo-ui-2026-09-13",
+    "Claude claude/g37-secretary9aa6e76a, Secretary.tsx/secretaryModel.ts; Owner-approved secretary artifact; actual global native H source and original Messages/Composer/Sidebar lifecycle"
    ]
   }
  ],
@@ -1968,10 +2062,11 @@
    "lines": [
     "E.3",
     "A",
-    "C"
+    "C",
+    "G.1"
    ],
    "milestone": "M3",
-   "observe": "Secretary seat reads all projects' live events, delivers to a lead and an auditor, runs a scheduled trigger that survives a restart without firing twice, and the content it sends into a project is filtered to that project's scope, judged from the delivered content, not the secretary's statement.",
+   "observe": "Secretary seat reads all projects' live events, delivers to a lead and an auditor, runs a scheduled trigger that survives a restart without firing twice, and the content it sends into a project is filtered to that project's scope, judged from the delivered content, not the secretary's statement. Verify one persistent searchable global conversation, explicit unset/User-only settings and exact verified model/tier; all-project real-time subscription/reconnect and negative project/global memory separation; scope-filtered outgoing original content to lead/auditor/new work and four truthful delivery outcomes, call-table denial, direct file-write/seat-create refusal; original last result, pause/resume/delete/history, next time and restart de-duplication. Owner-presence/absence-policy facts pause before a model call with elapsed duration; absent facts deny, product downtime does not cause catchup model bursts. Global Owner decision original/interpretation/provenance/supersession and conflicts remain internal. Installed UI has one fixed entry above pinned rows, ordinary conversation, two-tab secretary right panel, exact action lines, no popups/system notifications, and no guessed status/capability. Controller runs unset/configured/User-only refusal cases in the isolated test domain using existing authorized test inputs and logged-in instances, preserves and restores test configuration, never alters real Owner secretary settings or asks for a new login just for this check. History search must return original secretary conversation content/ledger positions, not merely thread titles. Scope filtering is verified on actual provenance-backed delivered material, not payload labels; ambiguous material refuses without side effects.",
    "evidence": "REAL"
   },
   {
@@ -2061,7 +2156,7 @@
     "id": "OT3",
     "when": "before M1",
     "what": "Set the user-layer configuration for the test project: lead seat instance, model, effort, permission tier, the lead's orchestration bounds, the project parallel cap and each test instance's concurrency cap; name the test repository and its allowed write range",
-    "why_only_owner": "The user layer belongs to the Owner by design; whether an existing authorization already covers the test repository is to be verified in T00 and, if so, reused.",
+    "why_only_owner": "The user layer belongs to the Owner by design; whether an existing authorization already covers the test repository is to be verified in T00 and, if so, reused. This reserves actual product preferences and authorization for the Owner, not every mechanical USER operation. Under the existing test authorization the Controller applies already approved test values through authenticated User operations; M3 secretary config tests use the isolated candidate/test domain and logged-in instances, without a new human step or changing real Owner global configuration.",
     "batch": "Can be answered together with OT2.",
     "milestone": "M1",
     "needs": [
@@ -2200,7 +2295,7 @@
   "This plan proves no code, cloud run, installer or Owner-machine result.",
   "evidence REAL is a declaration of where a check must be settled; the verifier cannot confirm evidence.",
   "Fakes serve parallel development and contract tests only; no check passes on a fake.",
-  "Second batch is out of scope: decision register, quota, long-term memory.",
+  "The separate future batch for quota, general project decision registers and general long-term-memory automation is out of scope. The isolated secretary global memory and global Owner decision register explicitly required by R-SEC/E.3/V14 are in scope at M3.",
   "Usage is out of scope: role counts, merge-permission holders, flows."
  ]
 }

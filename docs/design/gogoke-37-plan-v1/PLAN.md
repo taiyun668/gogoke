@@ -292,3 +292,56 @@ G 在自己的新目录提供 context，已授权 MainApp 包裹其现有页面�
 这是范围摘要变更，同一个 PR 更新 v2 回执及签名链三处固定回执 blob，Owner 合并一次后精确读回才可改这三个产品文件。不改变既有需求、权限、契约持久写方、里程碑或 Owner 触点，不构建候选、不签名、不装机、不自行验收。
 
 G context 必须覆盖左栏所有可见 pinned/recent/对话行的确切项目/对话查找，不只 active 行；legacy workspace/thread 标识不能直接当作 native 身份。每批另由宿主提供 native 主控轮次与具体输出 item 的确切关联，现有 NowBatch.id 与 ConversationItem.id 都不自行充当 turn 锚点。身份或锚点缺失明确未接上，不按顺序或最后一条消息猜位置；该关联类型仍在 G 新目录，Messages 消费现有 item id，故不增加 types.ts 范围。
+
+## 2026-10-07：可见对话与 H 共用真实会话的最小范围修订（提案，待 Owner 合并）
+
+直接读回发现：现有可见对话经 `backend/app_server.rs` 自行启动 CLI，使用 workspace 配置的 home；设计 37 的 H 另持 native session、实例 home、process ticket 和原始协议来源。两者是不同的进程和传输，编号相同不能证明同一身份。PR #73 的三个 UI 消费文件已经挂接；缺少上述同一性时明确未接上，预览通过不能结算本体。
+
+新增六个 INTEGRATOR 共享文件，产品代码只在本 PR 由 Owner 合并并精确读回后施工：
+
+- `apps/desktop/src-tauri/src/backend/app_server.rs`：设计 37 对话使用同一个 H 会话及其原始事件，保存宿主身份、原主控轮次与输出 item 的确切关联；会话存活和停止通过 transport 的统一方法执行。既有非设计 37 路径保留原行为。
+- `apps/desktop/src-tauri/src/codex/mod.rs`：现有启动、恢复、读取、列表、发送、插话、停止、审批和输入响应接到同一会话；沿用原 Tauri 命令和事件形状，不把 legacy ID 当 native 身份。
+- `apps/desktop/src-tauri/src/shared/workspaces_core/connect.rs`：连接、取消连接时调用上述存活/停止方法。
+- `apps/desktop/src-tauri/src/shared/workspaces_core/crud_persistence.rs`：原创建/克隆失败回滚时调用上述确切停止方法。
+- `apps/desktop/src-tauri/src/shared/workspaces_core/runtime_codex_args.rs`：原运行参数调整前调用上述确切停止方法。
+- `apps/desktop/src-tauri/src/bin/gogoke_daemon.rs`：原过期清理、回收和关闭调用上述生命周期方法；不支持的 native 模式在启动前明确拒绝，不退到普通用户模型进程。
+
+后四个文件是现有 `WorkspaceSession.child` 的直接生产消费者，改 transport 后必须一并接上，否则关闭与回滚仍会停止错误对象。沿用同一个 session registry，避免另建 map 扩大 `state.rs`；原始协议和事件形状不变，不新增前端 hooks、ConversationItem 类型或任意文件范围。实际发现需要其他文件时，保全未接上状态，重新列出确切依赖，不能借本节扩大施工范围。
+
+原 H 是唯一启动、准入、隔离、权限和停止事实写方；同一固定 CLI、实例 home、LPAC 与 `lpacIdentityServices` 保持不变。模型不在普通用户进程执行。停止请求与确认分开，原始失败保留，不能从 `Child` 缺席补造 STOPPED。登录普通用户阶段沿用 Owner 已裁决的范围。本修订不改需求、契约持久写方、权限、里程碑、验收或 Owner 触点。
+
+验证针对实际可见对话：同一个 H session 的原始输出到达 Messages，历史批次留在原输出 item，左栏每行读到其确切身份；发送、插话、恢复和审批仍作用于该会话。连接取消、创建失败、参数修改、过期回收与关闭均走确切 H stop/readback；断线完整读回，身份或锚点缺失拒绝关联。稳定候选在 Owner Win11 的已登录测试实例上跑真实端到端；K-UI 预览只验证 UI 消费语义。
+
+参照：直接读取现有 `WorkspaceSession`、四处 `Child` 消费者、`codex/mod.rs` 与 `product_entry.rs` 的通用 USER 桥、原 H/A source 和 Claude 已复核的 Now context。采用已有 session registry、原始协议与宿主准入，未另造编号映射或第二条模型通道。T00 列出 main 与既有映射快照的全部共享文件 blob；既有卸载夹具的差异由已合入修订承接，其余不借机修改。
+
+范围摘要因此改变：同一 PR 更新 v2 回执、MANIFEST 和三处固定回执 blob。Owner 合并一次后，主控精确读回并用 main 的 verifier 重算摘要，再接这六个产品文件；本提案不构建候选、不签名、不装机，不宣称完成或接受。
+
+## 2026-10-07：秘书长界面与宿主（同一范围提案，待 Owner 合并）
+
+依据 main `33a7a9e5` 的《GOGO 要做的和不做的》§八、设计 37 §7/§8c 和 Owner 本次指令，秘书长在 M3 的 E.3/G.1 结算；不把新增秘书长交付倒排为 M1/M2 的收尾条件。沿用 Claude `claude/g37-secretary` 的 `9aa6e76a`，基于已复核的 `b94a4ebd`，尚不集成未授权目录。现有主控输出同一性缺口与本次秘书长共用 PR #74，一次 Owner 合并更新回执。
+
+### 最小写入范围与挂接
+
+- G 新增一个目录：`apps/desktop/src/features/secretary/`，含 Claude 已提供的组件、类型及后续 K-UI 适配，不另建一套对话渲染器。
+- INTEGRATOR 只再新增一个共享文件：`apps/desktop/src/features/app/components/Sidebar.tsx`。给固定 `SecretaryEntry` 留一个入口槽，置于全部项目、置顶和最近对话行之前，位于这些行的滚动区之外。现有 Sidebar props 由组件类型推导，不新增通用 types/hooks。
+- 已授权 `MainApp.tsx` 提供入口、真实全局会话选择和返回原项目；打开秘书长沿用普通 Messages/Composer，秘书长自有的一条长期对话可搜索，项目选择与历史不得被改写。右侧用 `SecretaryPanel` 替换项目面板，关掉项目 plan 分区，只保留定时任务和设置两个标签；不改 DesktopLayout。
+- 已授权 `Messages.tsx` 在秘书长真实输出中挂 `SecretaryActionLine`，每项动作按原事件/输出 item 的确切关联留在历史；原文、结果、原因和导航由宿主提供。G context 只传类型与事实，长对话和动作来源不塞进 panel-only 的假字段，不借显示名或 legacy ID 伪造 native 绑定。缺事实明确未接上，做不到的操作不传。
+
+### 宿主分工与边界
+
+- **E.3**：一个用户层配置的全局席位，实例、模型、强度、权限档位逐项读回，有明确“没设置”；只用已登录实例的已验证模型和宿主能保证的档位。全局身份来自 H 核实的席位目的与绑定，不能由模型传一个 global/secretary 字段取得。复用既有实例、准入、并发、LPAC、真实停止和恢复，不新增登录触点。
+- **A**：秘书长自己的全局账本、记忆和决策登记册，与项目结构隔离。订阅所有项目所有席位的原账本，按 epoch/cursor 补齐断线，再完整读回；项目和旁聊查询不能取到全局或别的项目。全局决定保存 Owner 原话、独立解释、日期、作用域、账本出处与取代关系；冲突或不确定先标记，不覆盖旧决定、不冒充已定，界面不另设登记册页。
+- **C/E/H**：按调用权限表给项目主控递任务、追进度，向审计要结论，或为 Owner 在项目开新工作。每个投递在落到项目之前按目标作用域过滤，经过原 H prepare/begin/completion 与当前授权复核；动作行保留实际原文和 `steered / new-turn / failed / unknown`，失败保留原话。未知不算成功，不因缺回执再发一次。新工作不等于新席位；秘书长不直接改项目文件、不建席位，配置只能在这些已定边界内选择接收者和调用范围。项目问题留在项目，只在秘书长对话给指向，不替换成新的全局问题。
+- **E.3/现有 coordinator**：自然语言经已准入秘书长的工具创建定时任务，暂停、恢复、删除保留历史，持久记录原时间规则/时区、下次运行、上次结果及原因。现有 coordinator 只有恢复协调，尚没有完成秘书长定时任务；E.3 在它和 E 原有持久域内补齐，不声称现成 API 已存在、不另起调度服务。用唯一 occurrence 与原 H 送达日志去重，重启不能重复执行未知副作用。暂停针对后续投递，不能充当停止确认。
+- **离开事实**：最近一次可归属的用户前台打开/输入/交互、观测时间和持久的自动暂停策略共同决定离开多久；模型输出、轮询和定时任务活动不能刷新 Owner 在场。策略使用明示的产品默认或用户配置，默认值在实现前按现成做法核定并记录理由，不新增单独 Owner 裁决。未知策略、时钟或在场事实不准新定时模型调用。每次运行前执行暂停条件并持久回读；自动暂停后不悄悄恢复。界面用实际事实描述离开，不能把“无交互”说成“没打开”。
+- **运行范围**：产品/宿主活着时运行，并在重启时对账；不新增 Windows 后台任务、系统服务或停机运行承诺，不把停机错过的任务集中补成模型调用。入口的安静、几件等你、正在做什么、没设置、用不了及原始原因/真实恢复时间都由宿主事实给出，不从对话猜。
+
+K-UI 按 `secretaryModel.ts` 的 `SecretaryPage / SecretarySettings / Routine / EntryState / ActionLine` 与 `Secretary.tsx` 的 `SecretarySource / SecretaryActions` 适配；确切全局长对话、动作历史及宿主导航关联由薄 G context 承接，UI 类型不另立持久写方。E.3 依赖 A.1/C.1/E.2/F.2/H.1，G.1 依赖 E.3；原约定的 A/C/E/F/H 持久写方不变。`V14` 在 M3 验完整长期对话、权限拒绝、全球/项目隔离、双向原文与四种送达、定时重启去重和缺事实拒绝、暂停/恢复/删除、用户不在事实、入口/两标签/动作行及不弹窗；预览不能顶替已装候选本体。
+
+参照：直接读 Claude `Secretary.tsx/secretaryModel.ts`、现有 Sidebar/opaque sidebarNode、MainApp 两个右栏节点、普通 Messages/Composer、native A 的 global 查询和原 H/C 调用链；历史 gogo-party `room/src/role-policy.ts` 的角色界定和只读默认只作为参考，沿用新 Owner 决定下可写信箱而不写项目文件的范围。仓库 `kernel-parts-harvest` 的 Hermes Profile/Bot 长期身份、Curator，以及 `reuse-blueprint`/`upstream-reference-map` 仅借做法；Hermes Studio 的独立许可边界不当作 Hermes Agent 的授权，也不引入任一 runtime。Owner 样稿链接无法通过工具读取，依据 Owner 认可和确切分支，不宣称画面比对通过。
+
+这次除 G 目录和 Sidebar 入口槽外，不新增宿主目录或通用前端事件/type 写域。范围摘要、v2 回执、T00、MANIFEST 和三处固定回执 blob 在同一 PR 更新，Owner 合并后精确读回才能实施。
+
+聚焦复核落实：旧“不承诺”里泛称决策登记册、长期记忆在第二批，现明确区分：秘书长隔离的全局记忆和全局决策册属于本次 M3，通用项目登记册、通用长期记忆自动化及额度仍不纳入。历史可搜要由 A 提供同一秘书长对话的原内容/账本位置搜索，不能拿现有线程标题搜索代替。投递必须核实际正文及来源材料：作用域标签本身不能证明任意模型文字没有混入别的项目；来源或目标资格不清楚就保留拒绝/unknown，不投递，V14 对实际材料做跨项目负例。
+
+USER 是产品授权层，不是要求 Owner 手工操作每项设置。Controller 按已有测试授权，在隔离候选/测试协调域中使用已授权、已登录测试实例和既有已验证模型/强度、边界内最低可保证权限，自动走真实 USER 配置，验证没设置、已配置和被拒绝并保全/读回/恢复测试记录；不改 Owner 真实全局设置或凭据。真实使用的偏好仍由 Owner 在产品里设置。只有新增凭据、提权或已有授权确实未覆盖时走原条件触点，不为本次测试再新增 Owner 触点，也不把 M3 秘书长测试变成 OT3 的 M1 前置条件。
