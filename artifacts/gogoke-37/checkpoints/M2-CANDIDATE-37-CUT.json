@@ -1,0 +1,7 @@
+{
+  "schema": "gogoke.37.light-checkpoint.v1",
+  "change": "Cut candidate 0.1.37 with the NativeV2 authorization/physical-generation consumer fixes, real dual-session custody cleanup, strict held-child inheritance and bounded SHA backend integration, plus reviewed G mounts already on this branch. The version cut changes only the three existing desktop version metadata files; native, service and G source bytes remain identical to 9adb81c7.",
+  "result": "9adb81c7 complete 761-case library partition and shim 2 PASS; server 658 PASS; five desktop jobs PASS. Owner main receipt and scope were read back using main verifier and are unchanged. The equal-11-case runtime measurement improved from 3823.76s to 963.01s without shortening deadlines or replacing actual CLI/RPC/stop facts. Candidate37 build, final all-axis review, remaining formal controls, signing, same-byte cloud smoke and Win11 E2E are pending, not acceptance.",
+  "next": "Run the exact-source stable desktop build while the current native formal controls and independent review continue. Verify exact frozen bytes before trusted signing, same-byte cloud smoke, ordinary-view installation and original logged-in-instance E2E.",
+  "reference": "Existing candidate36 frozen-byte chain, desktop product-identity version metadata and managed instance retention; main scope verifier and purpose-bound receipt; measured same-case runtime report and existing sha2 dependency. No empty repack, global CLI update, credential read, G implementation edit or permission change."
+}

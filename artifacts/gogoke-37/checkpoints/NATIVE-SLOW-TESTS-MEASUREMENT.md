@@ -84,7 +84,7 @@ Clock injection is suitable only for tests of deadline arithmetic/expiry semanti
 
 Run `37668010053`, source `81189de`, is the timing-only measurement run. Its source diff changes only `same_open.rs` and `v37_runtime_tests.rs` under test configuration: `route_b_test_guard` records `queue_us` and guard-held `body_us`; `health_control_product` records root-open, CLI-ready, credential, seat, Git fixture, session-open, health body, stop, and cleanup phase durations. No production optimization was included.
 
-Runtime job `112952142589` completed: 11 passed, 0 failed, 738 filtered; 3823.76s. This is a measurement baseline, not an optimization result. Login passed 32 cases in 1485.41s; session passed 4 in 127.58s. Remainder passed 701 and failed 1 in 2659.22s, so the complete run is not green. Its real Job stop fixture used a 20ms close deadline and recorded `CLOSE_BINDING_DEADLINE_EXCEEDED`; the fixture now uses the existing production stop protocol, preserving all kernel/identity/forced-stop assertions. That correction is awaiting cloud validation.
+Runtime job `112952142589` completed: 11 passed, 0 failed, 738 filtered; 3823.76s. This is a measurement baseline, not an optimization result. Login passed 32 cases in 1485.41s; session passed 4 in 127.58s. Remainder passed 701 and failed 1 in 2659.22s, so the complete run is not green. Its real Job stop fixture used a 20ms close deadline and recorded `CLOSE_BINDING_DEADLINE_EXCEEDED`; the fixture now uses the existing production stop protocol, preserving all kernel/identity/forced-stop assertions. Root's exact `9adb81c7` remainder later passed all 713 cases, including that correction, in run `37692089557`.
 
 | Runtime health helper phase | Calls | Total seconds | Mean seconds |
 |---|---:|---:|---:|
@@ -137,7 +137,7 @@ The runtime job is `113000212947`; login `113000213044`, session `113000212733`,
 
 Independent risk review downloaded the original baseline, after-run and mutation artifacts. It verified the same 11 runtime names, all 750 completed cases across disjoint after-run shards, shim results, actual sha2 opt3/debug-assertion flags and the effective mutation failure. It also verified the Root-integrated wrapper and golden-test fragments match those exercised by the diagnostic runs. This is verified SHA diagnostic evidence, not whole NativeV2, E3, candidate or Win11 acceptance.
 
-Root integrated only the five permitted production/dependency/safety-test files, without diagnostic timers or workflow changes. The actual integration SHA still needs its own affected cloud checks; benchmark success is not Root/candidate/Win11 acceptance.
+Root integrated only the five permitted production/dependency/safety-test files, without diagnostic timers or workflow changes. Exact `9adb81c7` run `37692089557` passed the complete 761-case partition, no failures or skips, plus 2 shim cases. Its runtime now contains one additional real dual-session control: 12 cases passed in 1247.22s, so this is not the equal-11-case benchmark above. Separate formal controls and actual Win11 evidence remain required; neither benchmark nor library success is milestone acceptance.
 
 ## Reference points
 
