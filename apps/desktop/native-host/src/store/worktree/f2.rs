@@ -415,28 +415,36 @@ fn cleanup_stop_gate_with<F>(db: &VerifiedDatabaseConnection<'_>, worktree_id: &
 where F: FnMut(&str) -> Result<bool> {
     if !atom(worktree_id) { return Err(WorktreeError::Invalid("worktree id")); }
     let binding = Statement::prepare(db.as_ptr(),
-        "SELECT domain_id,seat_id,seat_incarnation FROM main.gogoke_v37_worktrees WHERE worktree_id=?1 AND state='REGISTERED'")?;
+        "SELECT domain_id,seat_id FROM main.gogoke_v37_worktrees WHERE worktree_id=?1 AND state='REGISTERED'")?;
     binding.bind_text(1, worktree_id)?;
     if !binding.step_row()? { return Err(WorktreeError::Denied); }
     let domain = binding.column_text(0)?;
     let seat = binding.column_text(1)?;
-    let incarnation = binding.column_text(2)?;
     if binding.step_row()? { return Err(WorktreeError::SchemaDrift); }
+    // H's effective relationship includes both the original native selection
+    // (which exists before open) and the unchanged legacy seat binding.
     let reservations = Statement::prepare(db.as_ptr(),
-        "SELECT a.domain_id,a.session_id,COALESCE(s.seat_id,''),COALESCE(s.seat_incarnation,'') FROM main.gogoke_v37_h_claim a LEFT JOIN main.gogoke_v37_h_seat_binding s ON s.domain_id=a.domain_id AND s.session_id=a.session_id WHERE a.state!='RELEASED'")?;
+        "SELECT a.domain_id,a.session_id,a.instance_id,COALESCE(b.seat_id,''),COALESCE(b.seat_incarnation,''),COALESCE(b.selected_instance_id,'') FROM main.gogoke_v37_h_claim a LEFT JOIN main.gogoke_v37_effective_seat b ON b.domain_id=a.domain_id AND b.session_id=a.session_id WHERE a.state!='RELEASED'")?;
     while reservations.step_row()? {
         let claim_domain=reservations.column_text(0)?;
         let session=reservations.column_text(1)?;
-        let claim_seat=reservations.column_text(2)?;
-        let claim_incarnation=reservations.column_text(3)?;
+        let claim_instance=reservations.column_text(2)?;
+        let claim_seat=reservations.column_text(3)?;
+        let claim_incarnation=reservations.column_text(4)?;
+        let selected_instance=reservations.column_text(5)?;
+        // A missing or inconsistent original relationship cannot prove that
+        // an unstarted reservation is unrelated to this physical worktree.
+        if !atom(&claim_seat) || !atom(&claim_incarnation)
+            || selected_instance!=claim_instance { return Err(WorktreeError::Denied); }
         // No open request means an unresolved reservation could still target
         // this tree only when bound to its seat. A model session on another
         // seat still needs a physical comparison once it has an open target.
         match original_session_worktree(db,&claim_domain,&session)? {
             Some(other) if !original_group_overlaps(db,&other,&mut overlaps)?=>continue,
             Some(_)=>return Err(WorktreeError::Denied),
-            None if claim_domain==domain && claim_seat==seat &&
-                claim_incarnation==incarnation=>return Err(WorktreeError::Denied),
+            // The same seat cannot prove non-occupation without an original
+            // open root, even if its incarnation has since changed.
+            None if claim_domain==domain && claim_seat==seat=>return Err(WorktreeError::Denied),
             None=>continue,
         }
     }
@@ -1136,7 +1144,9 @@ mod tests {
         let owner=authority::initialize_profile(&mut db,&root).unwrap();
         authority::initialize_process_custody_schema(&mut db).unwrap();
         instance::initialize_schema(&mut db).unwrap(); seat::initialize_schema(&mut db).unwrap();
-        session_transport::initialize_admission_schema(&mut db).unwrap(); initialize_schema(&mut db).unwrap();
+        session_transport::initialize_admission_schema(&mut db).unwrap();
+        session_transport::session_binding::initialize_schema(&mut db).unwrap();
+        initialize_schema(&mut db).unwrap();
         db.execute("INSERT INTO main.gogoke_v37_instances VALUES('instanceA','codex','homeA','identityA','sha256:test','0.160.0','INSTALLED','LOGGED_IN',1)").unwrap();
         seat::store_template(&mut db,seat::NativeOrigin::user(&owner),seat::StoreTemplate {
             domain_id:"projectA",template_id:"templateA",settings_json:br#"{"permissionTier":"ISOLATED_WRITE"}"#,
@@ -1235,6 +1245,61 @@ mod tests {
         git(db,root,custodian,pin,"fixture_head",Some(path),&[
             "rev-parse".into(),"--verify".into(),"HEAD^{commit}".into(),
         ],true).unwrap()
+    }
+
+    #[test]
+    fn unstarted_native_reservation_fences_cleanup_and_merge_after_real_stop() {
+        use session_transport::session_binding::{self, Provenance, SessionBinding};
+        with_real_child("native-reservation-guard",|db,root,pin,custodian,_binding,_source,owner| {
+            let stopped=cleanup_stop_gate(db,root,"treeA").unwrap();
+            assert_eq!(stopped.len(),1);
+            assert_eq!(stopped[0].process_operation_id,"processA");
+            let idle=seat::get(db,"projectA","seatA").unwrap().unwrap();
+            let busy=seat::set_dispatch_state(db,&idle,true).unwrap();
+            let generation=busy.generation.to_string();
+            db.execute("BEGIN IMMEDIATE").unwrap();
+            session_transport::bind_owner_in_transaction(db,&session_transport::OwnerBinding {
+                binding_id:"bindingNativeB",instance_id:"instanceA",domain_id:"projectA",
+                kind:"SESSION",owner_id:"sessionNativeB",generation:&generation,
+            }).unwrap();
+            db.execute("COMMIT").unwrap();
+            let home=Statement::prepare(db.as_ptr(),
+                "INSERT INTO main.gogoke_v37_instance_homes(home_id,instance_id,domain_id,kind,owner_id,generation,state,revision) VALUES('homeNativeB','instanceA','projectA','SESSION','sessionNativeB',?1,'ACTIVE',1)").unwrap();
+            home.bind_text(1,&generation).unwrap();home.step_done().unwrap();drop(home);
+            let reserve=session_transport::AdmissionRequest {
+                domain_id:"projectA",session_id:"sessionNativeB",request_id:"reserveNativeB",
+                raw_bytes:b"new native reservation",instance_id:"instanceA",home_id:"homeNativeB",
+                generation:&generation,expected_revision:0,
+            };
+            let selection=SessionBinding {domain_id:"projectA".into(),
+                session_id:"sessionNativeB".into(),seat_id:"seatA".into(),
+                seat_incarnation:busy.incarnation.clone(),
+                seat_authorization_generation:busy.generation,
+                selected_instance_id:"instanceA".into(),provenance:Provenance::NativeV2};
+            assert_eq!(session_transport::reserve_admission(db,&reserve,|db| {
+                session_binding::select_native_in_transaction(db,&selection)
+                    .map_err(|_|session_transport::AdmissionError::Denied)?;
+                Ok(session_transport::TrustedLimits {project_parallel:2,instance_concurrency:2})
+            }).unwrap(),session_transport::AdmissionResult::Applied(1));
+            assert!(original_session_worktree(db,"projectA","sessionNativeB").unwrap().is_none());
+            assert!(matches!(cleanup_stop_gate(db,root,"treeA"),Err(WorktreeError::Denied)));
+            assert_merge_denied_stage(merge_worktree(db,root,pin,custodian,MERGE_RAW,
+                authorize_fixture_merger),"merge.cleanup_stop_gate");
+            // A stale incarnation or missing original selection cannot turn an
+            // unreleased claim into proof that the directory is unoccupied.
+            db.execute("UPDATE main.gogoke_v37_native_selection SET seat_incarnation='wrongIncarnation' WHERE session_id='sessionNativeB'").unwrap();
+            assert!(matches!(cleanup_stop_gate(db,root,"treeA"),Err(WorktreeError::Denied)));
+            db.execute("UPDATE main.gogoke_v37_native_selection SET seat_incarnation=(SELECT incarnation FROM main.gogoke_v37_seats WHERE domain_id='projectA' AND seat_id='seatA') WHERE session_id='sessionNativeB'").unwrap();
+            db.execute("DELETE FROM main.gogoke_v37_native_selection WHERE session_id='sessionNativeB'").unwrap();
+            assert!(matches!(cleanup_stop_gate(db,root,"treeA"),Err(WorktreeError::Denied)));
+            session_binding::select_native_in_transaction(db,&selection).unwrap();
+            let release=session_transport::AdmissionRequest {request_id:"releaseNativeB",
+                raw_bytes:b"release unstarted native reservation",expected_revision:1,..reserve};
+            assert_eq!(session_transport::runtime::release_native(db,
+                &seat::NativeOrigin::user(owner),&release).unwrap(),
+                session_transport::AdmissionResult::Applied(2));
+            assert_eq!(cleanup_stop_gate(db,root,"treeA").unwrap(),stopped);
+        });
     }
 
     #[test]
@@ -1633,6 +1698,7 @@ mod tests {
         instance::initialize_schema(&mut db).unwrap();
         seat::initialize_schema(&mut db).unwrap();
         session_transport::initialize_admission_schema(&mut db).unwrap();
+        session_transport::session_binding::initialize_schema(&mut db).unwrap();
         initialize_schema(&mut db).unwrap();
         db.execute("INSERT INTO main.gogoke_v37_instances VALUES('instanceA','codex','homeA','identityA','sha256:test','0.160.0','INSTALLED','LOGGED_IN',1)").unwrap();
         db.execute("INSERT INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('projectA','seatA','incarnationA','USER','LONG','instanceA','IDLE',1,1)").unwrap();
