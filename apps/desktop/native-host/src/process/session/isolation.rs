@@ -1594,7 +1594,7 @@ fn dacl_image(descriptor: Handle, sid: *mut c_void) -> Result<DaclImage, Isolati
         return Err(IsolationError::Acl(io::Error::last_os_error()));
     }
     if present == 0 || acl.is_null() { return Err(IsolationError::AclWitnessMismatch); }
-    let acl_revision = unsafe { *acl.cast::<u8>().add(1) };
+    let acl_revision = unsafe { *acl.cast::<u8>() };
     let mut size = AclSizeInformation { ace_count: 0, acl_bytes_in_use: 0, acl_bytes_free: 0 };
     if unsafe { GetAclInformation(acl, (&mut size as *mut AclSizeInformation).cast(),
         size_of::<AclSizeInformation>() as u32, ACL_SIZE_INFORMATION_CLASS) } == 0 {
@@ -1651,8 +1651,9 @@ fn write_derived_dacl(handle: Handle, derived: Handle, control: u16)
         dacl: ptr::null_mut() };
     let descriptor = (&mut native as *mut DaclDescriptor).cast();
     let mask = SE_DACL_AUTO_INHERIT_REQ | SE_DACL_AUTO_INHERITED | SE_DACL_PROTECTED;
-    let bits = control & mask |
-        if control & SE_DACL_AUTO_INHERITED != 0 { SE_DACL_AUTO_INHERIT_REQ } else { 0 };
+    // Pass only the original control bits. This bound-child writer must not
+    // request a new recursive propagation while other custody remains held.
+    let bits = control & mask;
     if unsafe { InitializeSecurityDescriptor(descriptor, 1) } == 0 ||
         unsafe { SetSecurityDescriptorDacl(descriptor, 1, acl, defaulted) } == 0 ||
         unsafe { SetSecurityDescriptorControl(descriptor, mask, bits) } == 0 {
@@ -1718,7 +1719,14 @@ fn complete_bound_child_inheritance(root_handle: Handle, root: &Path,
             if next.target.as_slice() != expected_target || next.peers != before.peers ||
                 next.control != before.control || next.revision != before.revision ||
                 next.acl_revision != before.acl_revision {
-                return Err(IsolationError::AclWitnessMismatch);
+                return Err(IsolationError::AclWitnessDetail {
+                    object: path.strip_prefix(root).unwrap_or(&path).to_path_buf(),
+                    sid: "bound package SID".to_owned(),
+                    expected: format!("derived target={expected_target:?}; control before={:#x} next={:#x}; SD revision before={} next={}; ACL revision before={} next={}; peer bytes/order preserved={}",
+                        before.control, next.control, before.revision, next.revision,
+                        before.acl_revision, next.acl_revision, next.peers == before.peers),
+                    observed: next.target,
+                });
             }
             Some(projected)
         } else {
@@ -1750,8 +1758,17 @@ fn complete_bound_child_inheritance(root_handle: Handle, root: &Path,
         let observed = full_descriptor(node.handle.0)?;
         let actual = dacl_image(observed.0, sid)?;
         let expected = dacl_image(projected.0, sid)?;
-        if file_identity(node.handle.0)? != node.identity || actual != expected {
-            return Err(IsolationError::AclWitnessMismatch);
+        let identity_matches = file_identity(node.handle.0)? == node.identity;
+        if !identity_matches || actual != expected {
+            return Err(IsolationError::AclWitnessDetail {
+                object: node.path.strip_prefix(root).unwrap_or(&node.path).to_path_buf(),
+                sid: "bound package SID".to_owned(),
+                expected: format!("derived write target={:?}; identity matches={identity_matches}; control expected={:#x} actual={:#x}; SD revision expected={} actual={}; ACL revision expected={} actual={}; peer bytes/order preserved={}",
+                    expected.target, expected.control, actual.control, expected.revision,
+                    actual.revision, expected.acl_revision, actual.acl_revision,
+                    actual.peers == expected.peers),
+                observed: actual.target,
+            });
         }
         require_bound_path(&node.path, &node.identity, node.directory)?;
     }
