@@ -329,6 +329,21 @@ mod tests {
             insert.bind_text((i+1) as i32,v).unwrap();
         }
         insert.step_done().unwrap(); drop(insert);
+        if state == "STOPPED" || state == "UNKNOWN" {
+            let operation_id = format!("open{session}");
+            let insert = Statement::prepare(db.as_ptr(),
+                "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA',?1,'00ff','open',?2,'APPLIED',6,7)").unwrap();
+            insert.bind_text(1,&operation_id).unwrap(); insert.bind_text(2,session).unwrap();
+            insert.step_done().unwrap(); drop(insert);
+            let insert = Statement::prepare(db.as_ptr(),
+                "INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,instance_id,home_id,binding_id,phase,stop_fact_id) VALUES('projectA',?1,?2,?3,'cafebabe',6,'instanceA',?4,?5,?6,?7)").unwrap();
+            let stop = if state == "STOPPED" { "stopFactA" } else { "" };
+            for (i,v) in [operation_id.as_str(),session,generation,home_id.as_str(),
+                binding_id.as_str(),state,stop].iter().enumerate() {
+                insert.bind_text((i+1) as i32,v).unwrap();
+            }
+            insert.step_done().unwrap();
+        }
         if with_binding {
             let insert = Statement::prepare(db.as_ptr(),
                 "INSERT INTO main.gogoke_v37_h_seat_binding(domain_id,session_id,seat_id,seat_incarnation,generation) VALUES('projectA',?1,'seatA','incA',?2)").unwrap();
@@ -351,6 +366,8 @@ mod tests {
             let before = scalar(db,"SELECT group_concat(session_id||':'||state||':'||generation||':'||revision||':'||coalesce(stop_fact_id,'NULL'),'|') FROM main.gogoke_v37_h_claim ORDER BY session_id");
             let owner_before = scalar(db,"SELECT group_concat(binding_id||':'||state||':'||generation,'|') FROM main.gogoke_v37_h_owner_binding ORDER BY binding_id");
             let home_before = scalar(db,"SELECT group_concat(home_id||':'||state||':'||generation,'|') FROM main.gogoke_v37_instance_homes ORDER BY home_id");
+            let raw_before = scalar(db,"SELECT group_concat(request_id||':'||raw_hex||':'||status,'|') FROM main.gogoke_v37_h_operation ORDER BY request_id");
+            let episode_before = scalar(db,"SELECT group_concat(request_id||':'||raw_hex||':'||phase||':'||coalesce(stop_fact_id,'NULL'),'|') FROM main.gogoke_v37_h_process_episode ORDER BY request_id");
             let report = project_legacy(db).unwrap();
             assert_eq!(report.projected,2);
             assert_eq!(report.unprojected.len(),1);
@@ -362,6 +379,8 @@ mod tests {
             assert_eq!(scalar(db,"SELECT group_concat(session_id||':'||state||':'||generation||':'||revision||':'||coalesce(stop_fact_id,'NULL'),'|') FROM main.gogoke_v37_h_claim ORDER BY session_id"),before);
             assert_eq!(scalar(db,"SELECT group_concat(binding_id||':'||state||':'||generation,'|') FROM main.gogoke_v37_h_owner_binding ORDER BY binding_id"),owner_before);
             assert_eq!(scalar(db,"SELECT group_concat(home_id||':'||state||':'||generation,'|') FROM main.gogoke_v37_instance_homes ORDER BY home_id"),home_before);
+            assert_eq!(scalar(db,"SELECT group_concat(request_id||':'||raw_hex||':'||status,'|') FROM main.gogoke_v37_h_operation ORDER BY request_id"),raw_before);
+            assert_eq!(scalar(db,"SELECT group_concat(request_id||':'||raw_hex||':'||phase||':'||coalesce(stop_fact_id,'NULL'),'|') FROM main.gogoke_v37_h_process_episode ORDER BY request_id"),episode_before);
             assert_eq!(scalar(db,"SELECT count(*) FROM main.gogoke_v37_h_claim WHERE state IN ('RESERVED','COMMITTED','STOPPED','UNKNOWN')"),"3");
         });
     }
