@@ -230,16 +230,20 @@ async function updateProfile(id: string, change: (current: Profile) => Pick<Prof
   });
 }
 
-async function configureProfile(id: string, input: { name: string; enabled: boolean }): Promise<void> {
+async function configureProfile(id: string, input: { name: string; enabled: boolean; provider?: string }): Promise<void> {
   const current = await currentProfile(id);
   if (!input.name.trim() || typeof input.enabled !== "boolean") {
     throw new Error("An explicit name and enabled state are required.");
+  }
+  const provider = input.provider ?? current.provider;
+  if (current.driverId === "opencode" && !provider?.trim()) {
+    throw new Error("OpenCode requires an explicit model provider.");
   }
   // Native CAS accepts null only for the first profile. The user supplies
   // both fields; unknown metadata is never replaced with display defaults.
   await design37UserConfiguration("instance-profile", {
     instanceId: id, name: input.name, enabled: input.enabled,
-    provider: current.provider ?? null,
+    provider: provider ?? null,
     expectedProfileRevision: current.profileRevision ?? null,
     requestId: `ui-${crypto.randomUUID()}`,
   });
