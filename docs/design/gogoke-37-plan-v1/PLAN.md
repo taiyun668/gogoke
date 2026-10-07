@@ -290,3 +290,5 @@ G 在自己的新目录提供 context，已授权 MainApp 包裹其现有页面�
 参照：现有 Messages 末尾与历史分组、ThreadRow 状态字、ComposerInput 原停止键，MainApp/shared_files 的既有节点与插槽；采用小型 G context 传递，避免为穿透 Sidebar/Composer 扩大文件清单。Owner 样稿：<https://claude.ai/artifact/KT15K79wwMhLeWQ2PzMBMk>。本次未能通过工具读出样稿内容，不据此宣称画面一致；以 Owner 认可和分支实际代码为审阅依据。
 
 这是范围摘要变更，同一个 PR 更新 v2 回执及签名链三处固定回执 blob，Owner 合并一次后精确读回才可改这三个产品文件。不改变既有需求、权限、契约持久写方、里程碑或 Owner 触点，不构建候选、不签名、不装机、不自行验收。
+
+G context 必须覆盖左栏所有可见 pinned/recent/对话行的确切项目/对话查找，不只 active 行；legacy workspace/thread 标识不能直接当作 native 身份。每批另由宿主提供 native 主控轮次与具体输出 item 的确切关联，现有 NowBatch.id 与 ConversationItem.id 都不自行充当 turn 锚点。身份或锚点缺失明确未接上，不按顺序或最后一条消息猜位置；该关联类型仍在 G 新目录，Messages 消费现有 item id，故不增加 types.ts 范围。
