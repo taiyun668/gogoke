@@ -4,27 +4,29 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { SeatsPanel, type SeatsSource } from "./SeatsPanel";
 import type { SeatsPage } from "./seatsPageModel";
 
-const pro = { id: "codexTestM2", name: "Pro 主号", vendor: "codex" as const };
-const claude = { id: "claudeTestM2", name: "Claude Pro", vendor: "claude" as const };
+const pro = { id: "codexTestM2", name: "Pro 主号", vendor: "codex" as const, models: ["GPT-6.1 Sol", "GPT-6.1 mini"] };
+const claude = { id: "claudeTestM2", name: "Claude Pro", vendor: "claude" as const, models: ["Opus 5.5"] };
+const all = { tune: true, changeInstance: true, remove: true };
 
 function page(): SeatsPage {
   return {
     running: 2,
     limit: 4,
     instances: [pro, claude],
-    models: ["GPT-6.1 Sol", "Opus 5.5"],
     efforts: ["高", "中"],
     permissions: ["只读", "可写自己的工作区"],
     templates: ["审计（从模板复制）"],
     range: { instanceIds: ["codexTestM2"], maxPermission: "可写自己的工作区", maxConcurrent: 4 },
     seats: [
       { id: "lead", name: "主控", layer: "direct", isLead: true, term: "long", state: "WORKING", instance: pro,
+        allowed: { tune: true, changeInstance: false, remove: false }, instanceLockedReason: "它正在干活，这一轮结束后才能换实例",
         model: "GPT-6.1 Sol", effort: "高", permission: "可写本项目", doing: "在拆实例页的任务" },
-      { id: "audit", name: "审计", layer: "direct", term: "long", state: "IDLE", instance: claude,
+      { id: "audit", name: "审计", layer: "direct", term: "long", state: "IDLE", instance: claude, allowed: all,
         model: "Opus 5.5", effort: "高", permission: "只读", lastActivity: "昨天 22:10 复核完" },
-      { id: "test", name: "施工 · 测试", layer: "sub", term: "short", state: "STUCK", instance: claude,
+      { id: "test", name: "施工 · 测试", layer: "sub", term: "short", state: "STUCK", instance: claude, allowed: all,
         model: "Opus 5.5", effort: "中", permission: "可写自己的工作区", doing: "额度用完，停在当前这一轮", stuckFor: "35 分钟" },
       { id: "old", name: "施工 · 调研", layer: "sub", term: "short", state: "REMOVED", instance: claude,
+        allowed: { tune: false, changeInstance: false, remove: false },
         model: "Opus 5.5", effort: "中", permission: "只读", removedNote: "主控回收" },
     ],
   };
@@ -80,13 +82,66 @@ describe("SeatsPanel", () => {
     await waitFor(() => expect(remove).toHaveBeenCalledWith("audit"));
   });
 
-  it("keeps the instance of a working seat until its turn ends", async () => {
+  it("locks the instance only when the host says so, and promises nothing about when changes apply", async () => {
     render(<SeatsPanel source={source()} />);
     fireEvent.click(await screen.findByRole("button", { name: /^主控/ }));
     fireEvent.click(screen.getByRole("button", { name: "调整" }));
     expect((screen.getByLabelText("实例") as HTMLSelectElement).disabled).toBe(true);
-    expect(screen.getByText(/换实例要等这一轮结束/)).toBeTruthy();
+    expect(screen.getByText("它正在干活，这一轮结束后才能换实例")).toBeTruthy();
+    expect(screen.queryByText(/下一轮/)).toBeNull();
   });
+
+  it("follows the host's flags, not the displayed state", async () => {
+    const data = page();
+    data.seats[1] = { ...data.seats[1], allowed: { tune: false, changeInstance: false, remove: false } };
+    render(<SeatsPanel source={source({}, async () => data)} />);
+    fireEvent.click(await screen.findByRole("button", { name: /^审计/ }));
+    expect(screen.queryByRole("button", { name: "调整" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "删除席位" })).toBeNull();
+  });
+
+  it("lists the models of the chosen instance and hides the choice when the host reports none", async () => {
+    const tune = vi.fn(async () => {});
+    const data = page();
+    data.instances = [pro, { ...claude, models: undefined }];
+    data.seats[1] = { ...data.seats[1], instance: data.instances[1] };
+    render(<SeatsPanel source={source({ tune }, async () => data)} />);
+    fireEvent.click(await screen.findByRole("button", { name: /^审计/ }));
+    fireEvent.click(screen.getByRole("button", { name: "调整" }));
+    expect(screen.queryByLabelText("模型")).toBeNull();
+    fireEvent.change(screen.getByLabelText("实例"), { target: { value: "codexTestM2" } });
+    const model = screen.getByLabelText("模型") as HTMLSelectElement;
+    expect([...model.options].map((option) => option.value)).toEqual(["GPT-6.1 Sol", "GPT-6.1 mini"]);
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() =>
+      expect(tune).toHaveBeenCalledWith("audit", expect.objectContaining({ instanceId: "codexTestM2", model: "GPT-6.1 Sol" })),
+    );
+  });
+
+  it("applies only the latest read, so a poll that started before a write cannot overwrite it", async () => {
+    const marked = (text: string) => {
+      const data = page();
+      data.seats[1] = { ...data.seats[1], lastActivity: text };
+      return data;
+    };
+    let release: (value: SeatsPage) => void = () => {};
+    let calls = 0;
+    const read = () => {
+      calls += 1;
+      if (calls === 1) return Promise.resolve(page());
+      if (calls === 2) return new Promise<SeatsPage>((resolve) => (release = resolve));
+      return Promise.resolve(marked("新的读数"));
+    };
+    render(<SeatsPanel source={source({}, read)} />);
+    fireEvent.click(await screen.findByRole("button", { name: /^审计/ }));
+    fireEvent.click(screen.getByRole("button", { name: "删除席位" }));
+    await waitFor(() => expect(calls).toBe(2), { timeout: 3000 });
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+    expect(await screen.findByText(/新的读数/)).toBeTruthy();
+    release(marked("旧的读数"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByText(/旧的读数/)).toBeNull();
+  }, 8000);
 
   it("adds only direct seats and rejects a duplicate name", async () => {
     const create = vi.fn(async () => {});

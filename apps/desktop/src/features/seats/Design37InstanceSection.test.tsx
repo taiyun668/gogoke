@@ -160,12 +160,75 @@ describe("Design37InstanceSection", () => {
   it("does not offer actions the host cannot perform", async () => {
     invokeMock.mockResolvedValue(snapshot(instance("LOGGED_IN")) as never);
     render(<Design37InstanceSection />);
-    fireEvent.click(await screen.findByRole("button", { name: "codexTestM1 的更多操作" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Codex 实例 的更多操作" }));
 
     expect(screen.getByRole("menuitem", { name: "详情" })).toBeTruthy();
     expect(screen.queryByRole("menuitem", { name: "删除实例" })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "停用" })).toBeNull();
     expect(screen.queryByRole("button", { name: /新建 Claude Code 实例/ })).toBeNull();
+    // The host's register enrolls a fixed test instance; it is not offered as creating one.
+    expect(screen.queryByRole("button", { name: /新建 Codex 实例/ })).toBeNull();
+  });
+
+  it("names the instance readably and never shows its internal id", async () => {
+    invokeMock.mockResolvedValue(snapshot(instance("LOGGED_IN")) as never);
+    render(<Design37InstanceSection />);
+    expect(await screen.findByText("Codex 实例")).toBeTruthy();
+    expect(screen.queryByText(/codexTestM1/)).toBeNull();
+  });
+
+  it("does not offer login while the CLI the instance needs is missing", async () => {
+    invokeMock.mockResolvedValue(snapshot(instance("NOT_INSTALLED")) as never);
+    render(<Design37InstanceSection />);
+    expect(await screen.findByText(/CLI 还没装，装好才能登录/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "登录" })).toBeNull();
+  });
+
+  it("keeps a logged-in instance usable and lists seat session problems apart", async () => {
+    invokeMock.mockResolvedValue(
+      snapshot(
+        instance("LOGGED_IN", undefined, {
+          runtimeIssues: [
+            { seatId: "audit", sessionId: "s1", generation: "g1", reason: "turn aborted: 429", sourceEpoch: "e1", sourceCursor: "c1" },
+          ],
+        }),
+      ) as never,
+    );
+    render(<Design37InstanceSection />);
+    expect(await screen.findByText(/可以用 · 空闲/)).toBeTruthy();
+    expect(screen.getByText(/1 个席位的会话出了问题/)).toBeTruthy();
+    expect(screen.queryByText(/turn aborted: 429/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Codex 实例 的更多操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "详情" }));
+    expect(screen.getByText("turn aborted: 429")).toBeTruthy();
+    expect(screen.queryByText(/audit/)).toBeNull();
+  });
+
+  it.each([
+    ["OPENED", /已在浏览器打开授权页/],
+    ["FAILED", /浏览器没能自动打开/],
+    ["NOT_REQUESTED", /还没打开授权页/],
+  ])("says only what the host reports about the browser (%s)", async (browserState, text) => {
+    invokeMock.mockResolvedValue(
+      snapshot(instance("NOT_LOGGED_IN", login("PENDING", { browserState, authorizationUrl: "https://example.test/auth" }))) as never,
+    );
+    render(<Design37InstanceSection />);
+    expect(await screen.findByText(text)).toBeTruthy();
+    expect(Boolean(screen.queryByRole("link", { name: "打开授权页" }))).toBe(browserState !== "OPENED");
+  });
+
+  it("shows the CLI copy as unreported and hides unknown account and models", async () => {
+    invokeMock.mockResolvedValue(snapshot(instance("LOGGED_IN", undefined, { newVersion: "9.9.9" })) as never);
+    render(<Design37InstanceSection />);
+    expect(await screen.findByText(/宿主还没报告这份 CLI 的情况/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "升级" })).toBeNull();
+    fireEvent.click(screen.getAllByRole("button", { name: "详情" })[0]);
+    expect(screen.queryByText("9.9.9", { exact: false })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Codex 实例 的更多操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "详情" }));
+    expect(screen.queryByText("账号")).toBeNull();
+    expect(screen.queryByText("能用的模型")).toBeNull();
+    expect(screen.queryByText(/登录后才知道/)).toBeNull();
   });
 
   it("reports an unexpected host schema", async () => {

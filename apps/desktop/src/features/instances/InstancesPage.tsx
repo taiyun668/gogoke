@@ -118,23 +118,19 @@ export function InstancesPage({ source }: { source: InstancePageSource }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const busyRef = useRef(false);
-  const readingRef = useRef(false);
-  const generation = useRef(0);
+  const readSeq = useRef(0);
 
+  // Only the latest read is applied, so an older poll never overwrites the read after a write.
   const refresh = async () => {
-    if (readingRef.current) return;
-    readingRef.current = true;
-    const mine = generation.current;
+    const mine = ++readSeq.current;
     try {
       const next = await source.read();
-      if (mine === generation.current) {
+      if (mine === readSeq.current) {
         setPage(next);
         setLoadError(null);
       }
     } catch (cause) {
-      if (mine === generation.current) setLoadError(errorText(cause));
-    } finally {
-      readingRef.current = false;
+      if (mine === readSeq.current) setLoadError(errorText(cause));
     }
   };
 
@@ -148,21 +144,24 @@ export function InstancesPage({ source }: { source: InstancePageSource }) {
     return () => window.clearInterval(timer);
   }, [source]);
 
-  const run = async (key: string, operation: () => Promise<void>) => {
-    if (busyRef.current) return;
+  /** Resolves true only when the operation succeeded; success UI waits for it. */
+  const run: RunFn = async (key, operation) => {
+    if (busyRef.current) return false;
     busyRef.current = true;
-    generation.current += 1;
     setBusy(key);
     setActionError(null);
+    let ok = true;
     try {
       await operation();
     } catch (cause) {
+      ok = false;
       setActionError(errorText(cause));
     } finally {
       busyRef.current = false;
       setBusy(null);
       void refresh();
     }
+    return ok;
   };
 
   const summary = page ? pageSummary(page) : null;
@@ -214,7 +213,7 @@ export function InstancesPage({ source }: { source: InstancePageSource }) {
   );
 }
 
-type RunFn = (key: string, operation: () => Promise<void>) => Promise<void>;
+type RunFn = (key: string, operation: () => Promise<void>) => Promise<boolean>;
 
 function VendorGroup({
   section,
@@ -316,13 +315,14 @@ function CliRow({
 }) {
   const vendor = section.vendor;
   const info = VENDORS[vendor];
+  // Placeholder for an unreported copy; no version, upgrade or uninstall is offered from it.
   const cli: CliCopy = section.cli ?? { state: "READY" };
   const [details, setDetails] = useState(false);
   const [rawOpen, setRawOpen] = useState(false);
   const running = runningSessions(section);
   const summary: { tone: Tone; text: string } = section.cli
     ? cliSummary(cli, running)
-    : { tone: "idle", text: "还没检查过，新建实例时会检查" };
+    : { tone: "idle", text: "宿主还没报告这份 CLI 的情况" };
   const key = (op: string) => `${vendor}:${op}`;
   const call = (op: string, fn?: (v: VendorId) => Promise<void>) =>
     fn ? () => void run(key(op), () => fn(vendor)) : undefined;
@@ -388,16 +388,22 @@ function CliRow({
       {rawOpen && cli.raw ? <pre className="instances-raw instances-full">{cli.raw}</pre> : null}
       {details ? (
         <dl className="instances-details instances-full">
-          <dt>版本</dt>
-          <dd>
-            {cli.version ?? "—"}
-            {cli.verifiedVersion ? `（可升级到 ${cli.verifiedVersion}）` : ""}
-            {cli.officialVersion ? `；官方已有 ${cli.officialVersion}，gogoke 还没验证` : ""}
-          </dd>
+          {section.cli ? (
+            <>
+              <dt>版本</dt>
+              <dd>
+                {cli.version ?? "—"}
+                {cli.verifiedVersion ? `（可升级到 ${cli.verifiedVersion}）` : ""}
+                {cli.officialVersion ? `；官方已有 ${cli.officialVersion}，gogoke 还没验证` : ""}
+              </dd>
+            </>
+          ) : null}
           <dt>能力</dt>
           <dd>
             插话：{info.steer} · 提问：{info.questions} · 登录：{info.login}
           </dd>
+          {section.cli ? (
+            <>
           <dt>检查更新</dt>
           <dd>
             {cli.checkedAt ?? "还没检查过"}
@@ -426,6 +432,8 @@ function CliRow({
               </>
             ) : null}
           </dd>
+            </>
+          ) : null}
         </dl>
       ) : null}
     </Row>
@@ -531,7 +539,7 @@ function InstanceRowView({
         onKeyDown={(event) => {
           if (event.key === "Escape") setRenaming(false);
           if (event.key === "Enter" && nameDraft.trim() && actions.rename) {
-            void run(key("rename"), () => actions.rename!(row.id, nameDraft.trim())).then(() => setRenaming(false));
+            void run(key("rename"), () => actions.rename!(row.id, nameDraft.trim())).then((ok) => ok && setRenaming(false));
           }
         }}
       />
@@ -541,7 +549,7 @@ function InstanceRowView({
         disabled={locked || !nameDraft.trim()}
         onClick={() =>
           actions.rename &&
-          void run(key("rename"), () => actions.rename!(row.id, nameDraft.trim())).then(() => setRenaming(false))
+          void run(key("rename"), () => actions.rename!(row.id, nameDraft.trim())).then((ok) => ok && setRenaming(false))
         }
       >
         保存
@@ -577,6 +585,12 @@ function InstanceRowView({
             <>
               <br />
               状态可能不是最新的：上次确认是 {row.lastConfirmed ?? "之前"}，这次没检测成功
+            </>
+          ) : null}
+          {row.seatIssues?.length ? (
+            <>
+              <br />
+              {new Set(row.seatIssues.map((issue) => issue.seat)).size} 个席位的会话出了问题，原话在详情里
             </>
           ) : null}
           {row.enabled && row.settledLeftover ? (
@@ -655,7 +669,12 @@ function InstanceRowView({
       {row.state === "LOGGING_IN" && row.login ? (
         <div className="instances-code-line instances-full">
           <span>
-            {row.login.browserOpened ? "在浏览器里授权，" : "浏览器没自动打开，请打开授权页；"}需要输入代码时填：
+            {row.login.browser === "opened"
+              ? "已在浏览器打开授权页。"
+              : row.login.browser === "failed"
+                ? "浏览器没能自动打开。"
+                : "还没打开授权页。"}
+            {row.login.deviceCode ? "需要输入代码时填：" : ""}
           </span>
           {row.login.deviceCode ? <span className="instances-code">{row.login.deviceCode}</span> : null}
           {row.login.deviceCode ? (
@@ -663,7 +682,7 @@ function InstanceRowView({
               {copied ? "已复制" : "复制代码"}
             </button>
           ) : null}
-          {!row.login.browserOpened && row.login.authorizationUrl ? (
+          {row.login.browser !== "opened" && row.login.authorizationUrl ? (
             <a className="instances-link" href={row.login.authorizationUrl} target="_blank" rel="noreferrer">
               打开授权页
             </a>
@@ -681,7 +700,7 @@ function InstanceRowView({
               type="button"
               className="ghost instances-danger"
               disabled={locked}
-              onClick={() => void run(key("remove"), () => actions.remove!(row.id)).then(() => onRemoved(row.name))}
+              onClick={() => void run(key("remove"), () => actions.remove!(row.id)).then((ok) => ok && onRemoved(row.name))}
             >
               确认删除
             </button>
@@ -702,7 +721,7 @@ function InstanceRowView({
               type="button"
               className="ghost"
               disabled={locked}
-              onClick={() => void run(key("disable"), () => actions.disable!(row.id)).then(() => setConfirm(null))}
+              onClick={() => void run(key("disable"), () => actions.disable!(row.id)).then((ok) => ok && setConfirm(null))}
             >
               停用
             </button>
@@ -722,14 +741,32 @@ function InstanceRowView({
       ) : null}
       {details ? (
         <dl className="instances-details instances-full">
-          <dt>账号</dt>
-          <dd>
-            {row.account ?? "登录后才知道"}
-            {row.plan ? ` · ${row.plan}` : ""}
-            {row.provider ? ` · 经 ${label} 连 ${row.provider}` : ""}
-          </dd>
-          <dt>能用的模型</dt>
-          <dd>{row.models ?? "登录后才知道"}</dd>
+          {row.account ? (
+            <>
+              <dt>账号</dt>
+              <dd>
+                {row.account}
+                {row.plan ? ` · ${row.plan}` : ""}
+                {row.provider ? ` · 经 ${label} 连 ${row.provider}` : ""}
+              </dd>
+            </>
+          ) : null}
+          {row.models ? (
+            <>
+              <dt>能用的模型</dt>
+              <dd>{row.models}</dd>
+            </>
+          ) : null}
+          {row.seatIssues?.length ? (
+            <>
+              <dt>会话问题</dt>
+              <dd className="instances-log">
+                {row.seatIssues.map((issue, index) => (
+                  <div key={`${issue.seat}-${index}`}>{issue.reason}</div>
+                ))}
+              </dd>
+            </>
+          ) : null}
           <dt>并发上限</dt>
           <dd>
             {row.cap !== undefined && actions.setCap ? (
@@ -831,7 +868,7 @@ function NewInstanceForm({
     setError(null);
     void run(`${section.vendor}:create`, () =>
       create(section.vendor, { name: finalName, ...(info.needsProvider ? { provider } : {}) }),
-    ).then(onDone);
+    ).then((ok) => ok && onDone());
   };
 
   return (

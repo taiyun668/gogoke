@@ -1,6 +1,7 @@
 import type {
   Design37Instance,
   Design37InstancesSnapshot,
+  Design37LoginSnapshot,
 } from "@/features/seats/design37Instances";
 
 /**
@@ -39,6 +40,8 @@ export type CliCopy = {
 };
 
 export type InstanceState =
+  /** The CLI this instance runs on is not installed; it cannot log in yet. */
+  | "CLI_MISSING"
   | "NOT_LOGGED_IN"
   | "LOGGING_IN"
   | "LOGIN_FAILED"
@@ -51,9 +54,13 @@ export type InstanceState =
 export type InstanceLogin = {
   deviceCode?: string;
   authorizationUrl?: string;
-  browserOpened: boolean;
+  /** Only "opened" means the host started opening the page. */
+  browser: "opened" | "failed" | "not-requested";
   startedAt: number;
 };
+
+/** A problem in one seat's session; it does not change the instance's own state. `seat` is an id, never shown. */
+export type SeatIssue = { seat: string; reason: string };
 
 export type InstanceRow = {
   /** Host identifier; used for actions only, never rendered. */
@@ -77,6 +84,7 @@ export type InstanceRow = {
   settledLeftover?: boolean;
   quotaResets?: string;
   raw?: string;
+  seatIssues?: SeatIssue[];
   login?: InstanceLogin;
   /** The host still holds an unsettled login request; only cancel is offered. */
   loginUnsettled?: boolean;
@@ -127,6 +135,7 @@ export const VENDORS: Record<VendorId, VendorInfo> = {
 export const VENDOR_ORDER: VendorId[] = ["codex", "claude", "opencode", "grok", "antigravity"];
 
 export const NEEDS_OWNER: ReadonlySet<InstanceState> = new Set([
+  "CLI_MISSING",
   "LOGIN_FAILED",
   "WRONG_ACCOUNT",
   "LOGIN_UNKNOWN",
@@ -153,8 +162,10 @@ export function instanceSummary(row: InstanceRow): { tone: Tone; text: string } 
         : "空闲";
       return { tone: "ok", text: `可以用 · ${use}` };
     }
+    case "CLI_MISSING":
+      return { tone: "warn", text: "它要用的 CLI 还没装，装好才能登录" };
     case "NOT_LOGGED_IN":
-      return { tone: "idle", text: row.loginNote ?? "还没登录。点登录会打开浏览器，授权一下就行" };
+      return { tone: "idle", text: row.loginNote ?? "还没登录" };
     case "LOGGING_IN":
       return { tone: "busy", text: "正在登录" };
     case "LOGIN_FAILED":
@@ -197,6 +208,8 @@ export function primaryAction(row: InstanceRow): PrimaryAction | null {
       return "check";
     case "READY":
       return row.checkFailed ? "check" : null;
+    case "CLI_MISSING":
+      return null;
   }
 }
 
@@ -251,9 +264,10 @@ function vendorOf(driverId: string): VendorId | null {
 }
 
 /**
- * Adapt today's host snapshot (gogoke.37.instance-page.v1). It reports state,
- * version, a verified newer version, login progress and per-seat runtime issues;
- * account, models, cap, seats and enable state are not reported yet and stay unknown.
+ * Adapt today's host snapshot (gogoke.37.instance-page.v1). It reports each
+ * instance's state, login progress and per-seat runtime issues. Its version
+ * fields pin the program, not gogoke's own CLI copy, so no CLI section is
+ * derived from them; account, models, cap, seats and enable state stay unknown.
  */
 export function pageFromDesign37(snapshot: Design37InstancesSnapshot): InstancePage {
   const sections = new Map<VendorId, VendorSection>();
@@ -262,32 +276,43 @@ export function pageFromDesign37(snapshot: Design37InstancesSnapshot): InstanceP
     const vendor = vendorOf(instance.driverId);
     if (!vendor) continue;
     const section = sections.get(vendor)!;
-    if (instance.state === "NOT_INSTALLED") {
-      section.cli = { state: "NOT_INSTALLED" };
-    } else if (!section.cli || section.cli.state === "NOT_INSTALLED") {
-      section.cli = { state: "READY", version: instance.version, verifiedVersion: instance.newVersion };
-    }
-    section.instances.push(rowFromDesign37(instance));
+    section.instances.push(rowFromDesign37(instance, vendor, section.instances.length + 1));
   }
   return { sections: VENDOR_ORDER.map((vendor) => sections.get(vendor)!) };
 }
 
-function rowFromDesign37(instance: Design37Instance): InstanceRow {
+// The host reports no display name yet; the internal id is never shown.
+const fallbackName = (vendor: VendorId, ordinal: number) =>
+  `${VENDORS[vendor].label} 实例${ordinal > 1 ? ` ${ordinal}` : ""}`;
+
+const BROWSER: Record<Design37LoginSnapshot["browserState"], InstanceLogin["browser"]> = {
+  OPENED: "opened",
+  FAILED: "failed",
+  NOT_REQUESTED: "not-requested",
+};
+
+function rowFromDesign37(instance: Design37Instance, vendor: VendorId, ordinal: number): InstanceRow {
   const login = instance.login;
-  const issues = instance.runtimeIssues ?? [];
   const row: InstanceRow = {
     id: instance.instanceId,
-    name: instance.instanceId,
+    name: fallbackName(vendor, ordinal),
     state: "NOT_LOGGED_IN",
     enabled: true,
     seats: [],
   };
+  if (instance.runtimeIssues?.length) {
+    row.seatIssues = instance.runtimeIssues.map((issue) => ({ seat: issue.seatId, reason: issue.reason }));
+  }
+  if (instance.state === "NOT_INSTALLED") {
+    row.state = "CLI_MISSING";
+    return row;
+  }
   if (login && login.state === "PENDING" && !login.settled) {
     row.state = "LOGGING_IN";
     row.login = {
       deviceCode: login.deviceCode,
       authorizationUrl: login.authorizationUrl,
-      browserOpened: login.browserState !== "FAILED",
+      browser: BROWSER[login.browserState],
       startedAt: login.startedAt,
     };
     return row;
@@ -303,16 +328,6 @@ function rowFromDesign37(instance: Design37Instance): InstanceRow {
     row.state = "LOGIN_UNKNOWN";
     return row;
   }
-  switch (instance.state) {
-    case "LOGGED_IN":
-      row.state = issues.length ? "ERROR" : "READY";
-      break;
-    case "ERROR":
-      row.state = "ERROR";
-      break;
-    default:
-      row.state = "NOT_LOGGED_IN";
-  }
-  if (issues.length) row.raw = issues.map((issue) => issue.reason).join("\n");
+  row.state = instance.state === "LOGGED_IN" ? "READY" : instance.state === "ERROR" ? "ERROR" : "NOT_LOGGED_IN";
   return row;
 }

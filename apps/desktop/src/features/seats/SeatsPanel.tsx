@@ -4,6 +4,7 @@ import {
   canChangeInstance,
   canDelete,
   canTune,
+  modelsOf,
   overview,
   seatLine,
   seatState,
@@ -15,7 +16,8 @@ import {
 } from "./seatsPageModel";
 import "./seats.css";
 
-export type SeatTune = { instanceId: string; model: string; effort: string; permission: string };
+/** `model` is left out when the host reports no models for the chosen instance. */
+export type SeatTune = { instanceId: string; model?: string; effort: string; permission: string };
 export type NewSeat = SeatTune & { name: string; template: string };
 
 /** Host operations; a control is shown only when its operation exists. */
@@ -56,13 +58,18 @@ export function SeatsPanel({ source }: { source: SeatsSource }) {
   const [adding, setAdding] = useState(false);
   const [showRemoved, setShowRemoved] = useState(false);
   const busyRef = useRef(false);
+  const readSeq = useRef(0);
 
+  // Only the latest read is applied, so an older poll never overwrites the read after a write.
   const refresh = async () => {
+    const mine = ++readSeq.current;
     try {
-      setPage(await source.read());
+      const next = await source.read();
+      if (mine !== readSeq.current) return;
+      setPage(next);
       setLoadError(null);
     } catch (cause) {
-      setLoadError(errorText(cause));
+      if (mine === readSeq.current) setLoadError(errorText(cause));
     }
   };
 
@@ -341,6 +348,7 @@ function TuneForm({
 }) {
   const [instanceId, setInstanceId] = useState(row.instance.id);
   const [model, setModel] = useState(row.model);
+  const models = modelsOf(page, instanceId, row.instance);
   const [effort, setEffort] = useState(row.effort);
   const [permission, setPermission] = useState(row.permission);
   const instanceLocked = !canChangeInstance(row);
@@ -356,7 +364,11 @@ function TuneForm({
           id={`${row.id}-instance`}
           value={instanceId}
           disabled={instanceLocked}
-          onChange={(event) => setInstanceId(event.target.value)}
+          onChange={(event) => {
+            const next = modelsOf(page, event.target.value, row.instance);
+            setInstanceId(event.target.value);
+            if (!next.includes(model)) setModel(next[0] ?? row.model);
+          }}
         >
           {choices.map((item) => (
             <option key={item.id} value={item.id}>
@@ -364,12 +376,16 @@ function TuneForm({
             </option>
           ))}
         </select>
-        <label htmlFor={`${row.id}-model`}>模型</label>
-        <select id={`${row.id}-model`} value={model} onChange={(event) => setModel(event.target.value)}>
-          {page.models.map((item) => (
-            <option key={item}>{item}</option>
-          ))}
-        </select>
+        {models.length ? (
+          <>
+            <label htmlFor={`${row.id}-model`}>模型</label>
+            <select id={`${row.id}-model`} value={model} onChange={(event) => setModel(event.target.value)}>
+              {models.map((item) => (
+                <option key={item}>{item}</option>
+              ))}
+            </select>
+          </>
+        ) : null}
         <label htmlFor={`${row.id}-effort`}>推理强度</label>
         <select id={`${row.id}-effort`} value={effort} onChange={(event) => setEffort(event.target.value)}>
           {page.efforts.map((item) => (
@@ -383,13 +399,14 @@ function TuneForm({
           ))}
         </select>
       </div>
-      <div className="seats-help">
-        {instanceLocked
-          ? "它正在干活，换实例要等这一轮结束；模型和权限改了从下一轮起生效。"
-          : "改了从下一轮起生效。"}
-      </div>
+      {instanceLocked ? (
+        <div className="seats-help">{row.instanceLockedReason ?? "现在不能给它换实例"}</div>
+      ) : null}
       <div className="git-root-actions">
-        <Pill disabled={locked} onClick={() => onSave({ instanceId, model, effort, permission })}>
+        <Pill
+          disabled={locked}
+          onClick={() => onSave({ instanceId, ...(models.length ? { model } : {}), effort, permission })}
+        >
           保存
         </Pill>
         <Pill onClick={onCancel}>取消</Pill>
@@ -475,7 +492,8 @@ function NewSeatForm({
   const [name, setName] = useState("");
   const [template, setTemplate] = useState(page.templates[0] ?? "");
   const [instanceId, setInstanceId] = useState(page.instances[0]?.id ?? "");
-  const [model, setModel] = useState(page.models[0] ?? "");
+  const models = modelsOf(page, instanceId);
+  const [model, setModel] = useState(models[0] ?? "");
   const [effort, setEffort] = useState(page.efforts[0] ?? "");
   const [permission, setPermission] = useState(page.permissions[0] ?? "");
   const [error, setError] = useState<string | null>(null);
@@ -492,7 +510,7 @@ function NewSeatForm({
     }
     setError(null);
     void run("seat:create", () =>
-      create({ name: name.trim(), template, instanceId, model, effort, permission }),
+      create({ name: name.trim(), template, instanceId, ...(models.length ? { model } : {}), effort, permission }),
     ).then((ok) => ok && onDone());
   };
 
@@ -519,19 +537,30 @@ function NewSeatForm({
           ))}
         </select>
         <label htmlFor="seats-new-instance">实例</label>
-        <select id="seats-new-instance" value={instanceId} onChange={(event) => setInstanceId(event.target.value)}>
+        <select
+          id="seats-new-instance"
+          value={instanceId}
+          onChange={(event) => {
+            setInstanceId(event.target.value);
+            setModel(modelsOf(page, event.target.value)[0] ?? "");
+          }}
+        >
           {page.instances.map((item) => (
             <option key={item.id} value={item.id}>
               {item.name}
             </option>
           ))}
         </select>
-        <label htmlFor="seats-new-model">模型</label>
-        <select id="seats-new-model" value={model} onChange={(event) => setModel(event.target.value)}>
-          {page.models.map((item) => (
-            <option key={item}>{item}</option>
-          ))}
-        </select>
+        {models.length ? (
+          <>
+            <label htmlFor="seats-new-model">模型</label>
+            <select id="seats-new-model" value={model} onChange={(event) => setModel(event.target.value)}>
+              {models.map((item) => (
+                <option key={item}>{item}</option>
+              ))}
+            </select>
+          </>
+        ) : null}
         <label htmlFor="seats-new-effort">推理强度</label>
         <select id="seats-new-effort" value={effort} onChange={(event) => setEffort(event.target.value)}>
           {page.efforts.map((item) => (

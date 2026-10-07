@@ -25,7 +25,16 @@ export type SeatState =
   | "REMOVING"
   | "REMOVED";
 
-export type SeatInstanceRef = { id: string; name: string; vendor: VendorId };
+export type SeatInstanceRef = {
+  id: string;
+  name: string;
+  vendor: VendorId;
+  /** Models the host verified for this instance; the model choice is hidden without them. */
+  models?: string[];
+};
+
+/** What the host says it can do to this seat right now; never inferred from the state shown. */
+export type SeatAllowed = { tune: boolean; changeInstance: boolean; remove: boolean };
 
 export type SeatRow = {
   /** Host identity; used for actions only. */
@@ -36,6 +45,9 @@ export type SeatRow = {
   isLead?: boolean;
   term: SeatTerm;
   state: SeatState;
+  allowed: SeatAllowed;
+  /** The host's reason the instance cannot be changed now. */
+  instanceLockedReason?: string;
   instance: SeatInstanceRef;
   previousInstance?: SeatInstanceRef;
   model: string;
@@ -64,14 +76,12 @@ export type SeatsPage = {
   seats: SeatRow[];
   /** Instances that may serve a seat (logged in and enabled). */
   instances: SeatInstanceRef[];
-  models: string[];
   efforts: string[];
   permissions: string[];
   templates: string[];
   range?: OrchestrationRange;
 };
 
-export const BUSY_STATES: ReadonlySet<SeatState> = new Set(["WORKING", "STOP_REQUESTED", "SWITCHING"]);
 export const RUNNING_STATES: ReadonlySet<SeatState> = new Set(["WORKING", "STOP_REQUESTED", "SWITCHING", "STUCK"]);
 
 export type Tone = "ok" | "warn" | "err" | "busy" | "idle";
@@ -117,10 +127,12 @@ export function seatLine(row: SeatRow): string {
   }
 }
 
-export const canDelete = (row: SeatRow) => !row.isLead && row.state !== "REMOVING" && row.state !== "REMOVED";
-export const canTune = (row: SeatRow) => row.state !== "REMOVING" && row.state !== "REMOVED";
-/** A busy seat keeps its instance until the current turn ends. */
-export const canChangeInstance = (row: SeatRow) => !BUSY_STATES.has(row.state);
+export const canDelete = (row: SeatRow) => !row.isLead && row.allowed.remove;
+export const canTune = (row: SeatRow) => row.allowed.tune;
+export const canChangeInstance = (row: SeatRow) => row.allowed.changeInstance;
+
+export const modelsOf = (page: SeatsPage, instanceId: string, fallback?: SeatInstanceRef) =>
+  (page.instances.find((item) => item.id === instanceId) ?? fallback)?.models ?? [];
 
 export function overview(page: SeatsPage): string {
   const stuck = page.seats.filter((row) => row.state === "STUCK").map((row) => row.name);

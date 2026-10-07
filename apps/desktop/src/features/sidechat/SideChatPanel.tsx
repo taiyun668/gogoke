@@ -73,13 +73,18 @@ export function SideChatPanel({ source }: { source: SideChatSource }) {
   const [view, setView] = useState<View>({ kind: "list" });
   const [drafts, setDrafts] = useState<Record<string, string>>(readDrafts);
   const busyRef = useRef(false);
+  const readSeq = useRef(0);
 
+  // Only the latest read is applied, so an older poll never overwrites the read after a write.
   const refresh = async () => {
+    const mine = ++readSeq.current;
     try {
-      setPage(await source.read());
+      const next = await source.read();
+      if (mine !== readSeq.current) return;
+      setPage(next);
       setLoadError(null);
     } catch (cause) {
-      setLoadError(errorText(cause));
+      if (mine === readSeq.current) setLoadError(errorText(cause));
     }
   };
 
