@@ -270,7 +270,7 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
         (domain, child_session))
     claim = one(db,
         "SELECT a.state,a.generation,s.seat_id FROM gogoke_v37_h_claim a "
-        "JOIN gogoke_v37_h_seat_binding s ON s.domain_id=a.domain_id AND s.session_id=a.session_id "
+        "JOIN gogoke_v37_effective_seat s ON s.domain_id=a.domain_id AND s.session_id=a.session_id "
         "AND s.generation=a.generation WHERE a.domain_id=? AND a.session_id=?", (domain, child_session))
     child_seat = one(db,
         "SELECT layer,parent_seat_id,instance_id,state,incarnation FROM gogoke_v37_seats WHERE domain_id=? AND seat_id=?",
@@ -380,7 +380,7 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             raise RuntimeError("Stopped child must leave only the uncommitted marker on a clean original source HEAD")
         for claim_domain, claim_session, claim_seat, claim_incarnation in rows(db,
                 "SELECT a.domain_id,a.session_id,COALESCE(s.seat_id,''),COALESCE(s.seat_incarnation,'') "
-                "FROM gogoke_v37_h_claim a LEFT JOIN gogoke_v37_h_seat_binding s "
+                "FROM gogoke_v37_h_claim a LEFT JOIN gogoke_v37_effective_seat s "
                 "ON s.domain_id=a.domain_id AND s.session_id=a.session_id WHERE a.state!='RELEASED'"):
             opened = rows(db, "SELECT raw_hex FROM gogoke_v37_h_operation "
                 "WHERE domain_id=? AND session_id=? AND operation='open'", (claim_domain, claim_session))

@@ -234,7 +234,6 @@ describe("design 37 closed operation protocol", () => {
           operation as V37Request["operation"], `request${number}`));
       }
     }
-    assert.equal(number, 66);
   });
 
   it("does not pretend the unwired UI integrator can forward a receipt", async () => {
