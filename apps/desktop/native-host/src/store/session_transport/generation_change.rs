@@ -85,6 +85,9 @@ pub(crate) fn begin(db:&VerifiedDatabaseConnection<'_>, domain:&str,request_id:&
     if !matches!(operation,"compact"|"renew-session") || active_for_session(db,domain,session)?.is_some() {
         return Err(AtomicError::OperationConflict);
     }
+    super::session_binding::authorization_generation(db,domain,session)
+        .map_err(|error|AtomicError::DurabilityContractFailed(
+            format!("generation change relationship: {error:?}")))?;
     let raw=raw_bytes.iter().map(|b|format!("{b:02x}")).collect::<String>();
     let q=Statement::prepare(db.as_ptr(),
         "INSERT INTO main.gogoke_v37_h_generation_change(domain_id,request_id,raw_hex,
@@ -98,14 +101,18 @@ pub(crate) fn begin(db:&VerifiedDatabaseConnection<'_>, domain:&str,request_id:&
             JOIN main.gogoke_coordination_process_custody c
               ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
               AND c.generation=e.generation
-            JOIN main.gogoke_v37_h_seat_binding b
+            JOIN main.gogoke_v37_effective_seat b
               ON b.domain_id=a.domain_id AND b.session_id=a.session_id
               AND b.generation=a.generation
+             JOIN main.gogoke_v37_seats s ON s.domain_id=b.domain_id
+               AND s.seat_id=b.seat_id AND s.incarnation=b.seat_incarnation
+               AND s.generation=b.seat_authorization_generation
+               AND s.instance_id=b.selected_instance_id AND s.state='BUSY'
             WHERE a.domain_id=?1 AND a.session_id=?5 AND a.generation=?6
               AND a.process_operation_id=?7 AND a.revision=?12
               AND a.state='COMMITTED' AND e.phase='ACTIVE'
               AND c.state='ACTIVE' AND c.ticket=?8 AND c.custodian_nonce=?9
-              AND b.seat_id=?11)")?;
+               AND b.seat_id=?11 AND b.selected_instance_id=a.instance_id)")?;
     for (index,value) in [domain,request_id,raw.as_str(),operation,session,generation,
         process,ticket,nonce,thread,seat].iter().enumerate() {q.bind_text((index+1) as i32,value)?;}
     q.bind_i64(12,revision)?;q.bind_i64(13,watermark)?;q.step_done()?;

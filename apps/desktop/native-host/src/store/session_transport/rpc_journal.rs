@@ -339,6 +339,9 @@ fn has_unresolved(
 fn candidate_binding_fields(db: &VerifiedDatabaseConnection<'_>,
     fields: &StepFields<'_>, required_state: &[&str]) -> Result<Option<(String,String)>> {
     if !has_process_episode_schema(db)? {return Ok(None);}
+    super::session_binding::authorization_generation(db,fields.domain_id,fields.session_id)
+        .map_err(|error|RpcJournalError::Store(AtomicError::DurabilityContractFailed(
+            format!("resume candidate relationship: {error:?}"))))?;
     let q=Statement::prepare(db.as_ptr(),
         "SELECT e.process_operation_id,c.state,e.phase,i.driver_id,i.version
            FROM main.gogoke_v37_h_process_episode e
@@ -352,14 +355,14 @@ fn candidate_binding_fields(db: &VerifiedDatabaseConnection<'_>,
              ON oldc.operation_id=a.process_operation_id AND oldc.domain_id=a.domain_id
              AND oldc.generation=a.generation AND oldc.state='STOPPED'
              AND oldc.stop_proof_hash=a.stop_fact_id AND a.stop_fact_id IS NOT NULL
-           JOIN main.gogoke_v37_h_seat_binding sb
+           JOIN main.gogoke_v37_effective_seat sb
              ON sb.domain_id=a.domain_id AND sb.session_id=a.session_id
              AND sb.generation=a.generation AND sb.seat_id=e.seat_id
              AND sb.seat_incarnation=e.seat_incarnation
            JOIN main.gogoke_v37_seats s
              ON s.domain_id=sb.domain_id AND s.seat_id=sb.seat_id
              AND s.incarnation=sb.seat_incarnation
-             AND CAST(s.generation AS TEXT)=sb.generation AND s.state='BUSY'
+              AND s.generation=sb.seat_authorization_generation AND s.state='BUSY'
              AND s.instance_id=a.instance_id
            JOIN main.gogoke_v37_h_owner_binding b
              ON b.binding_id=e.binding_id AND b.instance_id=e.instance_id
@@ -477,6 +480,9 @@ fn plain_protocol_resume_episode(db: &VerifiedDatabaseConnection<'_>, domain: &s
         || super::generation_change::read(db,domain,request_id)?.is_some() {
         return Ok(false);
     }
+    super::session_binding::authorization_generation(db,domain,session)
+        .map_err(|error|RpcJournalError::Store(AtomicError::DurabilityContractFailed(
+            format!("plain resume relationship: {error:?}"))))?;
     let q=Statement::prepare(db.as_ptr(),
         "SELECT e.old_generation,e.previous_revision,COALESCE(e.result_revision,''),
                 a.revision,e.phase,i.driver_id,i.version
@@ -498,13 +504,13 @@ fn plain_protocol_resume_episode(db: &VerifiedDatabaseConnection<'_>, domain: &s
              ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
              AND c.generation=e.generation AND c.state IN ('PREPARED','ACTIVE','UNKNOWN')
              AND c.binary_digest_sha256=oldc.binary_digest_sha256
-           JOIN main.gogoke_v37_h_seat_binding sb
+           JOIN main.gogoke_v37_effective_seat sb
              ON sb.domain_id=a.domain_id AND sb.session_id=a.session_id
              AND sb.generation=a.generation AND sb.seat_id=e.seat_id
              AND sb.seat_incarnation=e.seat_incarnation
            JOIN main.gogoke_v37_seats s ON s.domain_id=sb.domain_id
              AND s.seat_id=sb.seat_id AND s.incarnation=sb.seat_incarnation
-             AND CAST(s.generation AS TEXT)=sb.generation AND s.state='BUSY'
+              AND s.generation=sb.seat_authorization_generation AND s.state='BUSY'
              AND s.instance_id=e.instance_id
            JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=e.binding_id
              AND b.instance_id=e.instance_id AND b.domain_id=e.domain_id
@@ -966,7 +972,8 @@ fn assert_current_binding(
                 c.pid,c.creation_time_100ns,c.image_path,c.binary_digest_sha256,
                 c.profile_id,c.domain_id,c.generation,c.ticket,c.custodian_nonce,
                 a.generation,b.instance_id,s.instance_id,
-                i.driver_id,i.version,i.login_state,i.program_digest
+                 i.driver_id,i.version,i.login_state,i.program_digest,
+                 sb.seat_authorization_generation,sb.selected_instance_id
            FROM main.gogoke_v37_h_claim a
            JOIN main.gogoke_coordination_process_custody c
              ON c.operation_id=a.process_operation_id AND c.domain_id=a.domain_id
@@ -975,7 +982,7 @@ fn assert_current_binding(
             AND b.instance_id=a.instance_id AND b.domain_id=a.domain_id
             AND b.kind='SESSION' AND b.owner_id=a.session_id
             AND b.generation=a.generation
-           JOIN main.gogoke_v37_h_seat_binding sb
+           JOIN main.gogoke_v37_effective_seat sb
              ON sb.domain_id=a.domain_id AND sb.session_id=a.session_id
             AND sb.generation=a.generation
            JOIN main.gogoke_v37_seats s
@@ -1023,14 +1030,22 @@ fn assert_current_binding(
     let version = q.column_text(20)?;
     let login_state = q.column_text(21)?;
     let program_digest = q.column_text(22)?;
+    let authorization_generation=q.column_text(23)?.parse::<i64>()
+        .map_err(|_|RpcJournalError::Denied)?;
+    let selected_instance=q.column_text(24)?;
+    let original_authorization=super::session_binding::authorization_generation(db,
+        step.domain_id,step.session_id)
+        .map_err(|error|RpcJournalError::Store(AtomicError::DurabilityContractFailed(
+            format!("current RPC relationship: {error:?}"))))?;
     if !(claim_state == "COMMITTED" || (allow_unknown_claim && claim_state == "UNKNOWN"))
         || owner_state != "ACTIVE"
         || seat_state != "BUSY"
         || !required_state.contains(&custody_state.as_str())
         || seat_incarnation.is_empty()
-        || seat_generation != claim_generation
+        || seat_generation.parse::<i64>().ok()!=Some(authorization_generation)
+        || authorization_generation!=original_authorization
         || claim_generation != c.binding.generation
-        || owner_instance != seat_instance
+        || owner_instance != selected_instance || owner_instance != seat_instance
         || login_state != "LOGGED_IN"
         || program_digest != c.binding.binary_digest_sha256
         || !matches!((driver.as_str(), version.as_str()),

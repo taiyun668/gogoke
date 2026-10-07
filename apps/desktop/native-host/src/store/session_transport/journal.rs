@@ -1925,13 +1925,14 @@ fn current_native_seat(
     input: &StdinRequest<'_>,
 ) -> Result<String, JournalError> {
     let query=Statement::prepare(connection.as_ptr(),
-        "SELECT sb.seat_id FROM main.gogoke_v37_h_seat_binding sb
+        "SELECT sb.seat_id FROM main.gogoke_v37_effective_seat sb
          JOIN main.gogoke_v37_h_claim h ON h.domain_id=sb.domain_id AND h.session_id=sb.session_id
            AND h.generation=sb.generation
          JOIN main.gogoke_v37_seats e ON e.domain_id=sb.domain_id AND e.seat_id=sb.seat_id
-           AND e.incarnation=sb.seat_incarnation AND CAST(e.generation AS TEXT)=sb.generation
+            AND e.incarnation=sb.seat_incarnation AND e.generation=sb.seat_authorization_generation
            AND e.instance_id=h.instance_id AND e.state='BUSY'
-         WHERE sb.domain_id=?1 AND sb.session_id=?2 AND sb.generation=?3")?;
+          WHERE sb.domain_id=?1 AND sb.session_id=?2 AND sb.generation=?3
+            AND sb.selected_instance_id=h.instance_id")?;
     for (index,value) in [input.domain_id,input.session_id,input.generation].iter().enumerate() {
         query.bind_text((index+1) as i32,value)?;
     }
@@ -1939,6 +1940,9 @@ fn current_native_seat(
     let seat_id=query.column_text(0)?;
     require_id(&seat_id,"native seat")?;
     if query.step_row()? { return Err(JournalError::Denied); }
+    super::session_binding::authorization_generation(connection,input.domain_id,input.session_id)
+        .map_err(|error|JournalError::Store(AtomicError::DurabilityContractFailed(
+            format!("stdin current relationship: {error:?}"))))?;
     Ok(seat_id)
 }
 

@@ -12,6 +12,7 @@ use crate::store::same_open::VerifiedDatabaseConnection;
 use crate::store::seat::{self, Layer as SeatLayer, NativeOrigin, State as SeatState};
 use crate::store::seat::HostEscalationProof;
 use super::admission::{self, AdmissionError, AdmissionRequest, AdmissionResult, TrustedLimits};
+use super::session_binding::{self, Provenance, SessionBinding};
 
 fn host_recipient_admission_error(error: crate::store::inbox::InboxError) -> AdmissionError {
     use crate::store::inbox::InboxError;
@@ -92,7 +93,12 @@ pub(crate) fn reserve_native(
         if current.state != SeatState::Busy || current.generation.to_string() != request.generation {
             return Err(AdmissionError::Denied);
         }
-        admission::bind_seat_in_transaction(db, &current, request.session_id)?;
+        session_binding::select_native_in_transaction(db,&SessionBinding {
+            domain_id:request.domain_id.into(),session_id:request.session_id.into(),
+            seat_id:current.seat_id.clone(),seat_incarnation:current.incarnation.clone(),
+            seat_authorization_generation:current.generation,
+            selected_instance_id:request.instance_id.into(),provenance:Provenance::NativeV2,
+        }).map_err(AdmissionError::Relationship)?;
         current_instance_pin(db, request.instance_id)?;
         persisted_limits(db, request.domain_id, request.instance_id)
     })
@@ -120,7 +126,12 @@ pub(crate) fn reserve_native_for_host(db:&mut VerifiedDatabaseConnection<'_>,
         if seat.state!=SeatState::Busy || seat.generation.to_string()!=request.generation {
             return Err(AdmissionError::Denied);
         }
-        admission::bind_seat_in_transaction(db,&seat,request.session_id)?;
+        session_binding::select_native_in_transaction(db,&SessionBinding {
+            domain_id:request.domain_id.into(),session_id:request.session_id.into(),
+            seat_id:seat.seat_id.clone(),seat_incarnation:seat.incarnation.clone(),
+            seat_authorization_generation:seat.generation,
+            selected_instance_id:request.instance_id.into(),provenance:Provenance::NativeV2,
+        }).map_err(AdmissionError::Relationship)?;
         current_instance_pin(db,request.instance_id)?;
         persisted_limits(db,request.domain_id,request.instance_id)
     })
@@ -158,7 +169,7 @@ fn exact_lead_reservation(db:&VerifiedDatabaseConnection<'_>,
              AND a.session_id=o.session_id AND a.instance_id=?3
              AND a.home_id=?4 AND a.generation=?5
              AND a.state IN ('RESERVED','COMMITTED')
-           JOIN main.gogoke_v37_h_seat_binding sb ON sb.domain_id=a.domain_id
+           JOIN main.gogoke_v37_effective_seat sb ON sb.domain_id=a.domain_id
              AND sb.session_id=a.session_id AND sb.generation=a.generation
              AND sb.seat_id=?6 AND sb.seat_incarnation=?7
           WHERE o.domain_id=?1 AND o.session_id=?2
@@ -224,7 +235,12 @@ pub(crate) fn reserve_native_with_origin(db:&mut VerifiedDatabaseConnection<'_>,
     admission::reserve_admission(db,request,|db| {
         check_owner_current(db,&identity)?;
         let child=lead_child_for_admission(db,admission,seat_id,request,true)?;
-        admission::bind_seat_in_transaction(db,&child,request.session_id)?;
+        session_binding::select_native_in_transaction(db,&SessionBinding {
+            domain_id:request.domain_id.into(),session_id:request.session_id.into(),
+            seat_id:child.seat_id.clone(),seat_incarnation:child.incarnation.clone(),
+            seat_authorization_generation:child.generation,
+            selected_instance_id:request.instance_id.into(),provenance:Provenance::NativeV2,
+        }).map_err(AdmissionError::Relationship)?;
         current_instance_pin(db,request.instance_id)?;
         persisted_limits(db,request.domain_id,request.instance_id)
     })
@@ -335,7 +351,7 @@ pub(crate) fn release_native_with_origin(db:&mut VerifiedDatabaseConnection<'_>,
         }
         let fact=Statement::prepare(db.as_ptr(),
             "SELECT a.state,a.revision FROM main.gogoke_v37_h_claim a
-               JOIN main.gogoke_v37_h_seat_binding s ON s.domain_id=a.domain_id
+               JOIN main.gogoke_v37_effective_seat s ON s.domain_id=a.domain_id
                  AND s.session_id=a.session_id AND s.generation=a.generation
                JOIN main.gogoke_coordination_process_custody c
                  ON c.operation_id=a.process_operation_id AND c.domain_id=a.domain_id
@@ -353,14 +369,19 @@ pub(crate) fn release_native_with_origin(db:&mut VerifiedDatabaseConnection<'_>,
         let revision=fact.column_text(1)?.parse::<i64>().map_err(|_|AdmissionError::Denied)?;
         if fact.step_row()? {return Err(AdmissionError::Denied);}
         drop(fact);
+        let authorization_generation=session_binding::authorization_generation(db,
+            request.domain_id,request.session_id).map_err(AdmissionError::Relationship)?;
         if state=="STOPPED" && child.state==SeatState::Busy && revision==request.expected_revision
-            && child.generation.to_string()==request.generation {
+            && child.generation==authorization_generation {
             return Ok(());
         }
-        if state!="RELEASED" || child.state!=SeatState::Idle
+        let settled_e= (child.state==SeatState::Idle
+                && authorization_generation.checked_add(1)==Some(child.generation))
+            || (child.state==SeatState::Busy
+                && child.generation==authorization_generation);
+        if state!="RELEASED" || !settled_e
             || request.expected_revision.checked_add(1)!=Some(revision)
-            || request.generation.parse::<i64>().ok().and_then(|generation|generation.checked_add(1))
-                !=Some(child.generation) {
+            {
             return Err(AdmissionError::Denied);
         }
         let prior=Statement::prepare(db.as_ptr(),
@@ -426,7 +447,7 @@ fn check_owner_and_seat(
         return Err(AdmissionError::Denied);
     }
     let binding = Statement::prepare(db.as_ptr(),
-        "SELECT 1 FROM main.gogoke_v37_h_seat_binding WHERE domain_id=?1 AND session_id=?2 AND seat_id=?3 AND seat_incarnation=?4 AND generation=?5")?;
+        "SELECT 1 FROM main.gogoke_v37_effective_seat WHERE domain_id=?1 AND session_id=?2 AND seat_id=?3 AND seat_incarnation=?4 AND generation=?5")?;
     for (index, value) in [request.domain_id, request.session_id, seat_id,
         seat.incarnation.as_str(), request.generation].iter().enumerate() {
         binding.bind_text((index + 1) as i32, value)?;
@@ -564,12 +585,13 @@ pub(crate) fn observe_claim_bound(
          JOIN main.gogoke_v37_instances AS i ON i.instance_id=a.instance_id \
          JOIN main.gogoke_v37_seats AS s \
            ON s.domain_id=a.domain_id AND s.seat_id=?3 \
-          AND s.instance_id=a.instance_id AND CAST(s.generation AS TEXT)=a.generation \
+           AND s.instance_id=a.instance_id \
           AND s.state='BUSY' \
-         JOIN main.gogoke_v37_h_seat_binding AS sb \
+         JOIN main.gogoke_v37_effective_seat AS sb \
            ON sb.domain_id=a.domain_id AND sb.session_id=a.session_id \
           AND sb.seat_id=s.seat_id AND sb.seat_incarnation=s.incarnation \
-          AND sb.generation=a.generation \
+           AND sb.generation=a.generation AND sb.selected_instance_id=a.instance_id \
+           AND s.generation=sb.seat_authorization_generation \
          WHERE a.domain_id=?1 AND a.session_id=?2")?;
     row.bind_text(1, domain_id)?;
     row.bind_text(2, session_id)?;
@@ -596,6 +618,11 @@ pub(crate) fn observe_claim_bound(
         process_operation_id: if operation.is_empty() { None } else { Some(operation) },
     };
     if row.step_row()? { return Err(AtomicError::OperationConflict); }
+    if observation.process_operation_id.is_some() {
+        super::session_binding::authorization_generation(db,domain_id,session_id)
+            .map_err(|error|AtomicError::DurabilityContractFailed(
+                format!("H current relationship: {error:?}")))?;
+    }
     Ok(Some(observation))
 }
 
