@@ -931,6 +931,16 @@ fn actual_pinned_codex_two_scope_file_history_and_stopped_revocation_without_mod
         assert_eq!(opened.status, V37Status::Applied,
             "original native open reply: {}", String::from_utf8_lossy(&opened.raw_bytes));
         assert_eq!(opened.revision, 3);
+        let relationship=h::session_binding::read(&product.connection,domain,session_id)
+            .unwrap().expect("actual native open persists its relationship");
+        assert_eq!(relationship.provenance,h::session_binding::Provenance::NativeV2);
+        assert_eq!(relationship.seat_id,seat_id);
+        assert_eq!(relationship.seat_authorization_generation,2);
+        assert_eq!(relationship.selected_instance_id,"instanceA");
+        let replay=h::decode_receipt(&product.dispatch_user_request(&open).unwrap()).unwrap();
+        assert_eq!(replay.status,V37Status::Replayed);
+        assert_eq!(h::session_binding::read(&product.connection,domain,session_id).unwrap(),
+            Some(relationship));
         let key = (domain.to_owned(), session_id.to_owned());
         assert!(product.native_sessions.get(&key).unwrap().evidence.file_credentials_bound(),
             "original native launch selected fixed File-bound credentials");

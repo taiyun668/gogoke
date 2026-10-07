@@ -274,6 +274,18 @@ fn project_legacy_in_transaction(db: &VerifiedDatabaseConnection<'_>)
         if matches!(existing.as_ref().map(|row| row.provenance), Some(Provenance::NativeV2)) {
             continue;
         }
+        if existing.is_none() {
+            // A reservation can survive a cold reopen before any native open.
+            // Its old H seat-binding is an admission fact, not a legacy session
+            // relationship. H backfills actual old process episodes first.
+            let opened = Statement::prepare(db.as_ptr(),
+                "SELECT 1 FROM main.gogoke_v37_h_process_episode
+                  WHERE domain_id=?1 AND session_id=?2 AND old_generation IS NULL
+                    AND process_operation_id IS NOT NULL LIMIT 1")?;
+            opened.bind_text(1,&domain)?;
+            opened.bind_text(2,&session)?;
+            if !opened.step_row()? { continue; }
+        }
         let source = Statement::prepare(db.as_ptr(),
             "SELECT COALESCE(b.seat_id,''),COALESCE(b.seat_incarnation,''),COALESCE(b.generation,''),COALESCE(c.instance_id,''),COALESCE(c.home_id,''),COALESCE(c.binding_id,''),COALESCE(c.generation,''),COALESCE(o.instance_id,''),COALESCE(o.domain_id,''),COALESCE(o.kind,''),COALESCE(o.owner_id,''),COALESCE(o.generation,''),COALESCE(h.instance_id,''),COALESCE(h.domain_id,''),COALESCE(h.kind,''),COALESCE(h.owner_id,''),COALESCE(h.generation,'') FROM (SELECT ?1 AS domain_id,?2 AS session_id) k LEFT JOIN main.gogoke_v37_h_seat_binding b ON b.domain_id=k.domain_id AND b.session_id=k.session_id LEFT JOIN main.gogoke_v37_h_claim c ON c.domain_id=k.domain_id AND c.session_id=k.session_id LEFT JOIN main.gogoke_v37_h_owner_binding o ON o.binding_id=c.binding_id LEFT JOIN main.gogoke_v37_instance_homes h ON h.home_id=c.home_id")?;
         source.bind_text(1,&domain)?; source.bind_text(2,&session)?;
@@ -386,17 +398,18 @@ mod tests {
             insert.bind_text((i+1) as i32,v).unwrap();
         }
         insert.step_done().unwrap(); drop(insert);
-        if state == "STOPPED" || state == "UNKNOWN" {
+        if state == "STOPPED" || state == "UNKNOWN" || (state == "COMMITTED" && !with_binding) {
             let operation_id = format!("open{session}");
             let insert = Statement::prepare(db.as_ptr(),
                 "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA',?1,'00ff','open',?2,'APPLIED',6,7)").unwrap();
             insert.bind_text(1,&operation_id).unwrap(); insert.bind_text(2,session).unwrap();
             insert.step_done().unwrap(); drop(insert);
             let insert = Statement::prepare(db.as_ptr(),
-                "INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,instance_id,home_id,binding_id,phase,stop_fact_id) VALUES('projectA',?1,?2,?3,'cafebabe',6,'instanceA',?4,?5,?6,?7)").unwrap();
+                "INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,process_operation_id,instance_id,home_id,binding_id,phase,stop_fact_id) VALUES('projectA',?1,?2,?3,'cafebabe',6,?1,'instanceA',?4,?5,?6,?7)").unwrap();
             let stop = if state == "STOPPED" { "stopFactA" } else { "" };
+            let episode_phase = if state == "COMMITTED" { "PREPARED" } else { state };
             for (i,v) in [operation_id.as_str(),session,generation,home_id.as_str(),
-                binding_id.as_str(),state,stop].iter().enumerate() {
+                binding_id.as_str(),episode_phase,stop].iter().enumerate() {
                 insert.bind_text((i+1) as i32,v).unwrap();
             }
             insert.step_done().unwrap();
@@ -460,6 +473,24 @@ mod tests {
             db.execute("UPDATE main.gogoke_v37_session_binding_v2 SET selected_instance_id='wrong' WHERE session_id='legacyA'").unwrap();
             assert!(matches!(project_legacy(db),Err(BindingError::Conflict)));
             assert_eq!(scalar(db,"SELECT state FROM main.gogoke_v37_h_claim WHERE session_id='legacyA'"),"UNKNOWN");
+        });
+    }
+
+    #[test]
+    fn cold_preopen_admission_does_not_become_legacy_binding() {
+        with_product_db(|db| {
+            legacy(db,"reservedA","COMMITTED","1",true);
+            let report=project_legacy(db).unwrap();
+            assert_eq!(report.projected,0);
+            assert!(read(db,"projectA","reservedA").unwrap().is_none());
+            let binding=SessionBinding {domain_id:"projectA".into(),session_id:"reservedA".into(),
+                seat_id:"seatA".into(),seat_incarnation:"incA".into(),
+                seat_authorization_generation:1,selected_instance_id:"instanceA".into(),
+                provenance:Provenance::NativeV2};
+            db.execute("BEGIN IMMEDIATE").unwrap();
+            insert_native_in_transaction(db,&binding).unwrap();
+            db.execute("COMMIT").unwrap();
+            assert_eq!(read(db,"projectA","reservedA").unwrap(),Some(binding));
         });
     }
 

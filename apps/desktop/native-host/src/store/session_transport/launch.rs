@@ -2,6 +2,7 @@
 //! Logical IDs select stored facts; they never supply a path or permission.
 use super::runtime::{self, ClaimObservation, InstancePin, SessionPhase};
 use super::provider_evidence::commands;
+use super::session_binding::{Provenance, SessionBinding};
 use crate::process::{AppContainerProfile, CompatModule, DirectoryRoots, NativeBinding, PrepareRequest, ProcessLaunch};
 use crate::root::{RootIdentity, RootLock};
 use crate::store::authority::{self, OwnerIssuer, ProductIdentitySnapshot};
@@ -113,6 +114,22 @@ impl LaunchEvidence {
     pub(crate) fn instance_id(&self) -> &str { &self.claim.instance_id }
     pub(crate) fn driver_id(&self) -> &str { &self.pin.driver_id }
     pub(crate) fn driver_version(&self) -> &str { &self.pin.version }
+    /// The first native open's sealed E/F/H selection. The caller persists it
+    /// only after verify_in_transaction and the original H process binding.
+    pub(crate) fn initial_session_binding(&self) -> Result<SessionBinding, String> {
+        if self.resume_old.is_some() {
+            return Err("native session binding: resume cannot mint an initial relationship".into());
+        }
+        Ok(SessionBinding {
+            domain_id: self.claim.domain_id.clone(),
+            session_id: self.claim.session_id.clone(),
+            seat_id: self.seat.seat_id.clone(),
+            seat_incarnation: self.seat.incarnation.clone(),
+            seat_authorization_generation: self.seat.generation,
+            selected_instance_id: self.claim.instance_id.clone(),
+            provenance: Provenance::NativeV2,
+        })
+    }
     // A vendor protocol setting, never an OS grant. The same sealed tier has
     // already selected and verified the LPAC capability set and directory ACLs.
     pub(crate) fn network_access(&self) -> bool { self.tier == PermissionTier::NetworkedWrite }

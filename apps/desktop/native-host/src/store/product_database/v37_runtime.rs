@@ -1792,6 +1792,8 @@ impl<'root> ProductDatabase<'root> {
             failure(h::record_initial(&self.connection,&request.domain_id,
                 &request.target_id,&request.request_id,&operation_id))?;
             ledger::register_session(&mut self.connection, &registration)?;
+            let binding=failure(run.evidence.initial_session_binding())?;
+            failure(h::session_binding::insert_native_in_transaction(&self.connection,&binding))?;
             Ok(())
         })();
         if let Err(error) = self.finish_native_transaction(bind) {
