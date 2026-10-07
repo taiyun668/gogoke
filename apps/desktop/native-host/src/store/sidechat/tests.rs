@@ -81,8 +81,27 @@ fn registry_ranges_and_unknown_sync_survive_actual_same_open_reopen() {
     let create=request("create","createA",0);
     let binding=CreateBinding {source_seat_id:"leadA".into(),source_session_id:"mainA".into(),seat_id:"sideSeat".into(),session_id:"sideSession".into()};
     assert_eq!(decode_receipt(&execute(&mut db,&owner,&create,Some(&binding)).unwrap()).unwrap().status,V37Status::Applied);
+    let sent=delivery::prepare(&mut db,&owner,"projectA","sideA","relayA","sideSession",
+        delivery::Direction::SideToLead,"Please tell the lead").unwrap();
+    assert!(sent.may_dispatch);assert_eq!(sent.target_seat_id,"leadA");
+    assert!(!delivery::prepare(&mut db,&owner,"projectA","sideA","relayA","sideSession",
+        delivery::Direction::SideToLead,"Please tell the lead").unwrap().may_dispatch);
+    assert!(matches!(delivery::prepare(&mut db,&owner,"projectA","sideA","relayB","otherSession",
+        delivery::Direction::SideToLead,"wrong principal"),Err(SideError::Denied)));
+    assert!(matches!(delivery::prepare(&mut db,&owner,"projectA","sideA","relayA","sideSession",
+        delivery::Direction::SideToLead,"changed bytes"),Err(SideError::Conflict)));
+    delivery::record_error(&mut db,&owner,"projectA","relayA","original transport timeout").unwrap();
+    let read=delivery::observe(&mut db,&owner,"projectA","relayA").unwrap();
+    assert_eq!(read.state,delivery::DeliveryState::Unknown);
+    assert_eq!(read.reason,"original transport timeout");
+    let from_lead=delivery::prepare(&mut db,&owner,"projectA","sideA","relayLead","mainA",
+        delivery::Direction::LeadToSide,"Please review this").unwrap();
+    assert_eq!(from_lead.target_seat_id,"sideSeat");
+    assert_eq!(list(&mut db,&owner,"projectA").unwrap().len(),1);
     assert_eq!(status(&mut db,&owner,"archive","archiveA",1),V37Status::Applied);
     db.close_checked().unwrap();let mut db=open_product_database(&root,&database).unwrap();initialize_schema(&mut db).unwrap();
+    assert!(!delivery::prepare(&mut db,&owner,"projectA","sideA","relayA","sideSession",
+        delivery::Direction::SideToLead,"Please tell the lead").unwrap().may_dispatch);
     assert_eq!(decode_receipt(&execute(&mut db,&owner,&create,None).unwrap()).unwrap().status,V37Status::Replayed);
     assert_eq!(status(&mut db,&owner,"read-thread","archivedRead",2),V37Status::Applied);
     assert_eq!(status(&mut db,&owner,"restore","restoreA",2),V37Status::Applied);

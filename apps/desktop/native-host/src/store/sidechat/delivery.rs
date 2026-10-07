@@ -172,9 +172,11 @@ fn observed(db:&VerifiedDatabaseConnection<'_>,intent:DeliveryIntent)->Result<De
         ("APPLIED","DELIVERED") if !operation.native_receipt_id.is_empty()=>{
             record.state=if request.operation=="steer" {DeliveryState::Steered} else {DeliveryState::NewTurn};
             record.native_receipt_id=operation.native_receipt_id;
+            record.reason.clear();
         },
         ("FAILED","FAILED") | ("DENIED",_) | ("CONFLICT",_)=>{
             record.state=DeliveryState::Failed;
+            if record.reason.is_empty() {record.reason=operation.phase;}
         },
         _=>{
             if record.reason.is_empty() {record.reason="H delivery remains unconfirmed".into();}
