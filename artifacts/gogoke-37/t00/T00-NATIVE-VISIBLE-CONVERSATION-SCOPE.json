@@ -2,7 +2,7 @@
   "schema": "gogoke.37.t00.scope-amendment-readback.v1",
   "mapping_snapshot": "5b638c73200c0fb691a74c5717e3bdbbba45357d",
   "authorization_base": "33a7a9e512301ca44d4d90dfb50ab45301e825c6",
-  "shared_file_count": 69,
+  "shared_file_count": 70,
   "shared_file_blob_differences": 1,
   "changes": [
     {
@@ -496,6 +496,13 @@
       "authorization_base_blob": "dbe037c0fd259df89776513e58d9cda266da913f",
       "match": true,
       "new_write_scope": true
+    },
+    {
+      "path": "apps/desktop/src/features/app/components/Sidebar.tsx",
+      "mapping_blob": "c62559a032d752baf44af07d577988668a3508e9",
+      "authorization_base_blob": "c62559a032d752baf44af07d577988668a3508e9",
+      "new_write_scope": true,
+      "match": true
     }
   ],
   "assets_unchanged": [
@@ -548,7 +555,27 @@
     "apps/desktop/src-tauri/src/shared/workspaces_core/connect.rs",
     "apps/desktop/src-tauri/src/shared/workspaces_core/crud_persistence.rs",
     "apps/desktop/src-tauri/src/shared/workspaces_core/runtime_codex_args.rs",
-    "apps/desktop/src-tauri/src/bin/gogoke_daemon.rs"
+    "apps/desktop/src-tauri/src/bin/gogoke_daemon.rs",
+    "apps/desktop/src/features/app/components/Sidebar.tsx"
   ],
-  "meaning": "Read-only proposal baseline. No native-to-visible transport implementation, product completion or Owner authorization claimed. Existing baseline differences are retained explicitly; added files read from actual main."
+  "meaning": "Read-only proposal baseline. No native-to-visible transport implementation, product completion or Owner authorization claimed. Existing baseline differences are retained explicitly; added files read from actual main.",
+  "secretary": {
+    "owner_direction_commit": "33a7a9e512301ca44d4d90dfb50ab45301e825c6",
+    "g_new_directory": "apps/desktop/src/features/secretary/",
+    "source_commit": "9aa6e76acf7c09f323ad70621c79b657ba3f4ff9",
+    "source_base": "b94a4ebd2f87309d3321d4c90db84d54a4736f97",
+    "source_blobs": {
+      "Secretary.tsx": "f9997efb9f19a8f463c5cdba7a59715d2168c90f",
+      "secretaryModel.ts": "627916d037ec4fef5ac00c3e71cf063a1a972522",
+      "secretary.css": "980a8b8f07bc4628ebd435a6200b6745774f905d",
+      "Secretary.test.tsx": "fe481546a27badef8c810598b4c0c10be2db4179"
+    },
+    "desktop_run": 37622767242,
+    "desktop_result": "FIVE_JOBS_SUCCESS",
+    "hygiene_run": 37630282775,
+    "hygiene_result": "SUCCESS_EXACT_9aa6e76a",
+    "product_integration": "NOT_AUTHORIZED_NOT_RUN",
+    "minimal_mount": "one Sidebar slot plus already-shared MainApp/Messages/tauri and original ordinary conversation; no new renderer/types/hooks",
+    "artifact_access": "URL could not be read; Owner approval/source code used, no visual-equivalence claim"
+  }
 }
