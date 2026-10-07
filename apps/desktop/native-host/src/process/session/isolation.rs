@@ -1855,6 +1855,95 @@ mod tests {
     }
 
     #[test]
+    fn second_bound_sid_grant_observes_held_directory_roots_acl_propagation() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        fn result_code(result: &Result<AclWitness, IsolationError>) -> String {
+            match result {
+                Ok(_) => "Ok".to_owned(),
+                Err(IsolationError::Acl(error)) =>
+                    format!("Acl OS={:?}", error.raw_os_error()),
+                Err(IsolationError::AclObject { operation, error, .. }) =>
+                    format!("AclObject operation={operation} OS={:?}", error.raw_os_error()),
+                Err(IsolationError::AclWitnessDetail { observed, .. }) =>
+                    format!("AclWitnessDetail observed={observed:?}"),
+                Err(error) => format!("variant={:?}", std::mem::discriminant(error)),
+            }
+        }
+
+        fn snapshot(label: &str, path: &Path, first: &AppContainerProfile,
+            second: &AppContainerProfile) -> RootIdentity {
+            let object = open_physical_object(path, path.is_dir(), READ_CONTROL)
+                .unwrap_or_else(|error| panic!("{label} physical open variant {:?}",
+                    std::mem::discriminant(&error)));
+            let identity = file_identity(object.0).expect("read physical FileID");
+            let mut acl = ptr::null_mut();
+            let mut descriptor = ptr::null_mut();
+            let status = unsafe { GetSecurityInfo(object.0, FILE_OBJECT, DACL_SECURITY_INFORMATION,
+                ptr::null_mut(), ptr::null_mut(), &mut acl, ptr::null_mut(), &mut descriptor) };
+            assert_eq!(status, 0, "{label} GetSecurityInfo status={status}");
+            let _descriptor = LocalAllocation(descriptor);
+            assert!(!descriptor.is_null() && !acl.is_null(), "{label} DACL absent");
+            let mut control = 0u16;
+            let mut revision = 0u32;
+            let status = unsafe { GetSecurityDescriptorControl(descriptor, &mut control,
+                &mut revision) };
+            assert_ne!(status, 0, "{label} GetSecurityDescriptorControl OS error {:?}",
+                io::Error::last_os_error().raw_os_error());
+            let first_aces = package_aces(object.0, first.sid).expect("read first SID ACEs");
+            let second_aces = package_aces(object.0, second.sid).expect("read second SID ACEs");
+            println!("acl-handle-fixture object={label} control={control:#x} revision={revision} protected={} first={first_aces:?} second={second_aces:?} volume={:#x} file_id={:02x?}",
+                control & SE_DACL_PROTECTED != 0, identity.volume_serial, identity.file_id);
+            identity
+        }
+
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let first = AppContainerProfile::derived_for_test("Gogoke37.HeldAclFirst").unwrap();
+        let second = AppContainerProfile::derived_for_test("Gogoke37.HeldAclSecond").unwrap();
+        for held in [false, true] {
+            let case = if held { "held" } else { "control" };
+            let base = std::env::temp_dir().join(format!(
+                "gogoke-v37-held-acl-{}-{stamp}-{case}", std::process::id()));
+            std::fs::create_dir(&base).unwrap();
+            let root_lock = RootLock::acquire(&base).unwrap();
+            let tree = root_lock.canonical_root().canonical_path.join("tree");
+            let git = tree.join(".git");
+            let leaf = git.join("config");
+            std::fs::create_dir_all(&git).unwrap();
+            std::fs::write(&leaf, b"ordinary physical leaf").unwrap();
+            let identity = crate::root::inspect_root(&tree).unwrap().identity;
+            // The same root lock and exact-object pointer guard stay alive in
+            // both cases. Only the real compatibility directory custody varies.
+            let pointer_guard = open_bound_object(&tree, &identity, true)
+                .unwrap_or_else(|error| panic!("pointer guard open variant {:?}",
+                    std::mem::discriminant(&error)));
+            let first_result = first.grant_bound_tree(&tree, &identity, true);
+            println!("acl-handle-fixture case={case} first_grant={}",
+                result_code(&first_result));
+            assert!(first_result.is_ok(), "first SID grant must succeed in both cases");
+            let before = [snapshot(&format!("{case}/root-before"), &tree, &first, &second),
+                snapshot(&format!("{case}/.git-before"), &git, &first, &second),
+                snapshot(&format!("{case}/leaf-before"), &leaf, &first, &second)];
+            let directory_roots = if held {
+                Some(super::super::compat_module::DirectoryRoots::prepare(
+                    &root_lock, &[(tree.clone(), identity.clone())])
+                    .expect("hold actual compatibility directory roots"))
+            } else { None };
+            let second_result = second.grant_bound_tree(&tree, &identity, true);
+            println!("acl-handle-fixture case={case} second_grant={}",
+                result_code(&second_result));
+            let after = [snapshot(&format!("{case}/root-after"), &tree, &first, &second),
+                snapshot(&format!("{case}/.git-after"), &git, &first, &second),
+                snapshot(&format!("{case}/leaf-after"), &leaf, &first, &second)];
+            assert_eq!(before, after, "physical FileIDs changed during ACL experiment");
+            drop(directory_roots);
+            drop(pointer_guard);
+            drop(root_lock);
+            std::fs::remove_dir_all(base).unwrap();
+        }
+    }
+
+    #[test]
     fn active_root_grant_survives_delete_pending_child_without_accepting_wrong_root() {
         use std::time::{SystemTime, UNIX_EPOCH};
         #[link(name = "kernel32")]
