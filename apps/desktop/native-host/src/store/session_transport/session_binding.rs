@@ -5,7 +5,7 @@
 //! it never authorizes execution. Consumers must reread A purpose and the
 //! current H/E/native authority before acting.
 
-use crate::store::atomic::{AtomicError, Statement};
+use crate::store::atomic::{AtomicError, Json, JsonString, Statement};
 use crate::store::same_open::{SameOpenError, VerifiedDatabaseConnection};
 
 pub(crate) const TABLE: &str = "gogoke_v37_session_binding_v2";
@@ -20,6 +20,7 @@ pub(crate) enum BindingError {
     Invalid(&'static str),
     Drift,
     Conflict,
+    Original(String),
     Store(AtomicError),
     Sqlite(SameOpenError),
     CommitUnknown(SameOpenError),
@@ -344,6 +345,81 @@ pub(crate) fn insert_native_in_transaction(db: &VerifiedDatabaseConnection<'_>, 
     insert_exact(db, binding)
 }
 
+fn original_bytes(raw:&str)->Result<Vec<u8>,BindingError> {
+    if raw.len()%2!=0 {return Err(BindingError::Original("legacy reservation odd raw hex".into()));}
+    raw.as_bytes().chunks_exact(2).map(|pair| {
+        let digits=std::str::from_utf8(pair)
+            .map_err(|error|BindingError::Original(format!("legacy reservation raw utf8: {error}")))?;
+        u8::from_str_radix(digits,16)
+            .map_err(|error|BindingError::Original(format!("legacy reservation raw hex: {error}")))
+    }).collect()
+}
+
+/// Upgrade only a real old H reservation after the original native open has
+/// bound its first physical episode and A registration in the same transaction.
+/// No pending NativeV2 selection may be created or inferred on this path.
+pub(crate) fn insert_legacy_initial_in_transaction(db:&VerifiedDatabaseConnection<'_>,
+    binding:&SessionBinding)->Result<(),BindingError> {
+    if binding.provenance!=Provenance::LegacyV1 {return Err(BindingError::Invalid("provenance"));}
+    binding.validate()?;
+    if read_pending(db,&binding.domain_id,&binding.session_id)?.is_some() {
+        return Err(BindingError::Conflict);
+    }
+    let old=Statement::prepare(db.as_ptr(),
+        "SELECT b.seat_id,b.seat_incarnation,b.generation,h.instance_id
+           FROM main.gogoke_v37_h_seat_binding b
+           JOIN main.gogoke_v37_h_claim h ON h.domain_id=b.domain_id
+             AND h.session_id=b.session_id AND h.generation=b.generation
+          WHERE b.domain_id=?1 AND b.session_id=?2 AND h.state='COMMITTED'
+            AND h.revision=2 AND h.process_operation_id IS NOT NULL")?;
+    old.bind_text(1,&binding.domain_id)?;old.bind_text(2,&binding.session_id)?;
+    if !old.step_row()? {return Err(BindingError::Conflict);}
+    let generation=binding.seat_authorization_generation.to_string();
+    if old.column_text(0)?!=binding.seat_id || old.column_text(1)?!=binding.seat_incarnation
+        || old.column_text(2)?!=generation || old.column_text(3)?!=binding.selected_instance_id
+        || old.step_row()? {return Err(BindingError::Conflict);}
+    drop(old);
+    let operations=Statement::prepare(db.as_ptr(),
+        "SELECT operation,request_id,raw_hex,previous_revision,revision,status
+           FROM main.gogoke_v37_h_operation
+          WHERE domain_id=?1 AND session_id=?2
+            AND operation IN ('admission-reserve','admission-commit')")?;
+    operations.bind_text(1,&binding.domain_id)?;
+    operations.bind_text(2,&binding.session_id)?;
+    let mut reserve=false;
+    let mut commit=false;
+    while operations.step_row()? {
+        let operation=operations.column_text(0)?;
+        let id=operations.column_text(1)?;
+        let raw=operations.column_text(2)?;
+        let before=operations.column_text(3)?.parse::<u64>()
+            .map_err(|error|BindingError::Original(format!("legacy {operation} prior revision: {error}")))?;
+        let after=operations.column_text(4)?.parse::<u64>()
+            .map_err(|error|BindingError::Original(format!("legacy {operation} result revision: {error}")))?;
+        if operations.column_text(5)? != "APPLIED" {return Err(BindingError::Conflict);}
+        let original=original_bytes(&raw)?;
+        let request=super::decode_request(&original)
+            .map_err(|error|BindingError::Original(format!("legacy {operation} original wire: {error:?}")))?;
+        let expected=(if operation=="admission-reserve" {(0,1,&mut reserve)}
+            else if operation=="admission-commit" {(1,2,&mut commit)}
+            else {return Err(BindingError::Conflict)});
+        if *expected.2 || before!=expected.0 || after!=expected.1
+            || request.family!="K-SESSION" || request.operation!=operation
+            || request.request_id!=id || request.domain_id!=binding.domain_id
+            || request.target_id!=binding.session_id || request.expected_revision!=before
+            || request.payload.len()!=2
+            || !matches!(request.payload.get(&JsonString::from_str("seatId")),
+                Some(Json::String(value)) if value.to_well_formed_string().as_deref()==Some(binding.seat_id.as_str()))
+            || !matches!(request.payload.get(&JsonString::from_str("generation")),
+                Some(Json::String(value)) if value.to_well_formed_string().as_deref()==Some(generation.as_str())) {
+            return Err(BindingError::Conflict);
+        }
+        *expected.2=true;
+    }
+    if !reserve || !commit {return Err(BindingError::Conflict);}
+    insert_exact(db,binding)
+}
+
 fn insert_exact(db: &VerifiedDatabaseConnection<'_>, binding: &SessionBinding)
     -> Result<(), BindingError> {
     binding.validate()?;
@@ -620,21 +696,50 @@ mod tests {
     }
 
     #[test]
-    fn cold_preopen_admission_does_not_become_legacy_binding() {
+    fn cold_preopen_admission_remains_unclassified() {
         with_product_db(|db| {
             legacy(db,"reservedA","COMMITTED","1",true);
             let report=project_legacy(db).unwrap();
             assert_eq!(report.projected,0);
             assert!(read(db,"projectA","reservedA").unwrap().is_none());
-            let binding=SessionBinding {domain_id:"projectA".into(),session_id:"reservedA".into(),
+            assert!(read_pending(db,"projectA","reservedA").unwrap().is_none());
+            assert_eq!(scalar(db,"SELECT state FROM main.gogoke_v37_h_claim WHERE session_id='reservedA'"),"COMMITTED");
+        });
+    }
+
+    #[test]
+    fn old_unopened_reservation_keeps_legacy_provenance_from_original_bytes() {
+        with_product_db(|db| {
+            legacy(db,"oldUnopened","COMMITTED","1",true);
+            db.execute("UPDATE main.gogoke_v37_h_claim SET revision=2,process_operation_id='originalProcess' WHERE session_id='oldUnopened'").unwrap();
+            for (operation,id,before,after) in [
+                ("admission-reserve","oldReserve",0,1),
+                ("admission-commit","oldCommit",1,2),
+            ] {
+                let raw=format!(r#"{{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"{operation}","requestId":"{id}","targetId":"oldUnopened","domainId":"projectA","expectedRevision":"{before}","payload":{{"seatId":"seatA","generation":"1"}}}}"#);
+                let original=super::decode_request(raw.as_bytes()).unwrap();
+                let hex=original.raw_bytes.iter().map(|byte|format!("{byte:02x}")).collect::<String>();
+                let op=Statement::prepare(db.as_ptr(),
+                    "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA',?1,?2,?3,'oldUnopened','APPLIED',?4,?5)").unwrap();
+                op.bind_text(1,id).unwrap();op.bind_text(2,&hex).unwrap();
+                op.bind_text(3,operation).unwrap();op.bind_i64(4,before).unwrap();
+                op.bind_i64(5,after).unwrap();op.step_done().unwrap();
+            }
+            let binding=SessionBinding {domain_id:"projectA".into(),session_id:"oldUnopened".into(),
                 seat_id:"seatA".into(),seat_incarnation:"incA".into(),
                 seat_authorization_generation:1,selected_instance_id:"instanceA".into(),
-                provenance:Provenance::NativeV2};
+                provenance:Provenance::LegacyV1};
             db.execute("BEGIN IMMEDIATE").unwrap();
-            select_native_in_transaction(db,&binding).unwrap();
-            insert_native_in_transaction(db,&binding).unwrap();
+            insert_legacy_initial_in_transaction(db,&binding).unwrap();
             db.execute("COMMIT").unwrap();
-            assert_eq!(read(db,"projectA","reservedA").unwrap(),Some(binding));
+            assert_eq!(read(db,"projectA","oldUnopened").unwrap(),Some(binding.clone()));
+            assert!(read_pending(db,"projectA","oldUnopened").unwrap().is_none());
+            let mut wrong=binding.clone();wrong.selected_instance_id="otherInstance".into();
+            assert!(matches!(insert_legacy_initial_in_transaction(db,&wrong),Err(BindingError::Conflict)));
+            db.execute("UPDATE main.gogoke_v37_h_operation SET raw_hex='00' WHERE request_id='oldCommit'").unwrap();
+            assert!(matches!(insert_legacy_initial_in_transaction(db,&binding),Err(BindingError::Original(_))));
+            db.execute("DELETE FROM main.gogoke_v37_h_seat_binding WHERE session_id='oldUnopened'").unwrap();
+            assert!(matches!(insert_legacy_initial_in_transaction(db,&binding),Err(BindingError::Conflict)));
         });
     }
 
