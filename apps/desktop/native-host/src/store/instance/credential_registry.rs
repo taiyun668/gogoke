@@ -686,6 +686,18 @@ pub(crate) fn complete_credential_profile(db: &mut VerifiedDatabaseConnection<'_
 /// disappearance/resource release does not replace this physical F receipt.
 pub(crate) fn read_completed_profile_revoke(db: &VerifiedDatabaseConnection<'_>,
     input: &CredentialProfileIntent) -> Result<CredentialProfileRecord> {
+    read_profile_revoke_receipt(db,input,true)
+}
+
+/// Historical read model only: the exact completed revoke remains a fact
+/// after an authorized later source rebind. This is not current ACL authority.
+pub(crate) fn read_historical_profile_revoke(db: &VerifiedDatabaseConnection<'_>,
+    input: &CredentialProfileIntent) -> Result<CredentialProfileRecord> {
+    read_profile_revoke_receipt(db,input,false)
+}
+
+fn read_profile_revoke_receipt(db: &VerifiedDatabaseConnection<'_>,
+    input: &CredentialProfileIntent, current_source: bool) -> Result<CredentialProfileRecord> {
     if input.action != CredentialProfileAction::Revoke || input.expected_revision < 1 {
         return Err(CredentialRegistryError::Invalid("completed revoke input"));
     }
@@ -696,7 +708,7 @@ pub(crate) fn read_completed_profile_revoke(db: &VerifiedDatabaseConnection<'_>,
     let Some((CredentialIntentDisposition::Applied,result))=journal(db,&key,&fingerprint,
         &journal_target(&input.instance_id))? else{return Err(CredentialRegistryError::Unknown);};
     let row=profile(db,&input.instance_id,&input.binding_id)?.ok_or(CredentialRegistryError::Unknown)?;
-    check_profile_source(db,&row,false)?;
+    if current_source { check_profile_source(db,&row,false)?; }
     let revision=input.expected_revision.checked_add(2).ok_or(CredentialRegistryError::Invalid("revoke revision overflow"))?;
     if result!="REVOKED" || row.state!="REVOKED" || row.intent_request!=key || row.revision!=revision
         || row.history_id!=input.history_id || row.generation!=input.generation
@@ -848,10 +860,11 @@ mod tests {
             assert_eq!(read_configured_credential_backend(db, "instanceA").unwrap().backend, CredentialBackend::Other);
             assert!(matches!(read_usable_credential_backend(db, "instanceA"), Err(CredentialRegistryError::Unusable)));
             complete_credential_profile(db, &grant, CredentialProfileResult::Active).unwrap();
-            let revoke = CredentialProfileIntent { request_id: "revokeA".into(), expected_revision: 2,
+            let revoke_input = CredentialProfileIntent { request_id: "revokeA".into(), expected_revision: 2,
                 action: CredentialProfileAction::Revoke, ..input };
-            let revoke = begin_credential_profile(db, &revoke).unwrap();
+            let revoke = begin_credential_profile(db, &revoke_input).unwrap();
             complete_credential_profile(db, &revoke, CredentialProfileResult::Revoked).unwrap();
+            let original_revoke = read_historical_profile_revoke(db,&revoke_input).unwrap();
             let dormant = CredentialAliasIntent { request_id: "dormantA".into(), expected_revision: 2, action: CredentialAliasAction::Dormant, ..alias_intent() };
             let dormant = begin_credential_alias(db, &dormant).unwrap();
             complete_credential_alias(db, &dormant, &physical(CredentialAliasResult::Dormant, 2)).unwrap();
@@ -863,6 +876,10 @@ mod tests {
             let rebound = bind_credential_object(db, &rebind).unwrap();
             assert_eq!(rebound.file_identity, identity(8)); assert_eq!(rebound.revision, 2);
             assert_eq!(read_credential_profiles(db, "instanceA").unwrap()[0].state, "REVOKED");
+            assert_eq!(read_historical_profile_revoke(db,&revoke_input).unwrap(),original_revoke,
+                "exact historical receipt survives the legitimate registry rebind");
+            assert!(read_completed_profile_revoke(db,&revoke_input).is_err(),
+                "current ACL authority still requires the original physical source");
         });
     }
     #[test]

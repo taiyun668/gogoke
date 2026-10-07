@@ -61,7 +61,7 @@ pub(crate) use credential_registry::{initialize_credential_schema, record_creden
     read_credential_aliases, begin_credential_alias, complete_credential_alias,
     recover_pending_credential_remove,
     read_credential_profiles, begin_credential_profile, complete_credential_profile,
-    read_completed_profile_revoke,
+    read_completed_profile_revoke, read_historical_profile_revoke,
     CredentialRegistryError, CredentialBackend, CredentialStartupSelector, BackendSource,
     CredentialObjectInput, CredentialObjectRecord, CredentialIntentDisposition,
     CredentialAliasAction, CredentialAliasResult, CredentialAliasIntent,

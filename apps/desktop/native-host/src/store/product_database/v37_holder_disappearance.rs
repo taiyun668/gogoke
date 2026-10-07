@@ -87,6 +87,58 @@ fn rows(db: &VerifiedDatabaseConnection<'_>, sql: &str, params: &[&str], columns
 }
 
 impl<'root> ProductDatabase<'root> {
+    /// Read the original completed resource release; never manufacture a
+    /// STOPPED fact or re-observe a historical PID which may now be reused.
+    pub(super) fn completed_codex_holder_release(&self, instance_id: &str,
+        domain: &str, session: &str, operation: &str) -> Result<bool> {
+        for profile in fail(instance::read_credential_profiles(&self.connection, instance_id))? {
+            let Some(record) = fail(gone::read_holder_disappearance(&self.connection,
+                &profile.binding_id))? else { continue; };
+            if record.input.process_operation_id != operation { continue; }
+            if record.phase != Phase::Applied || profile.state != "REVOKED"
+                || record.input.instance_id != instance_id { return Ok(false); }
+            if rows(&self.connection,
+                "SELECT 1 FROM main.gogoke_v37_h_claim a
+                 JOIN main.gogoke_coordination_process_custody c ON c.operation_id=a.process_operation_id
+                 JOIN main.gogoke_v37_h_process_episode e ON e.process_operation_id=c.operation_id
+                 WHERE a.instance_id=?1 AND a.domain_id=?2 AND a.session_id=?3
+                   AND a.process_operation_id=?4 AND a.state='RELEASED'
+                   AND a.stop_fact_id IS NULL AND c.stop_proof_hash IS NULL AND e.stop_fact_id IS NULL",
+                &[instance_id,domain,session,operation],1)? != vec![vec!["1".into()]] { return Ok(false); }
+            let capture = decode(&record)?;
+            let current = self.gone_original(&profile)?;
+            if get(&capture,"domain")? != domain || get(&capture,"session")? != session
+                || get(&capture,"instance")? != instance_id || get(&capture,"operation")? != operation
+                || get(&capture,"binding")? != record.input.binding_id
+                || get(&capture,"pid")? != record.input.pid
+                || get(&capture,"creation")? != record.input.creation_time_100ns
+                || get(&capture,"root")? != self.connection.root_identity().opaque()
+                || get(&capture,"database")? != self.connection.identity().opaque() { return Ok(false); }
+            for key in ["binding","instance","history","domain","session","seat","incarnation","generation",
+                "operation","ticket","nonce","sid","pid","creation","image","binary","custodyState",
+                "stopHash","claimBinding","claimHome","episodePhase","episodeHex","episodeRevision"] {
+                if get(&current,key)? != get(&capture,key)? { return Ok(false); }
+            }
+            let previous = number(&capture,"claimRevision")?;
+            let revision = previous.checked_add(1).ok_or_else(||refused("holder released revision overflow"))?;
+            if get(&current,"claimState")? != "RELEASED"
+                || number(&current,"claimRevision")? != revision { return Ok(false); }
+            fail(instance::read_historical_profile_revoke(&self.connection, &instance::CredentialProfileIntent {
+                request_id:format!("{}-revoke",record.input.request_id),instance_id:instance_id.into(),
+                history_id:profile.history_id.clone(),binding_id:profile.binding_id.clone(),
+                generation:profile.generation.clone(),profile_sid:profile.profile_sid.clone(),
+                source_file_identity:profile.source_file_identity.clone(),
+                expected_revision:number(&capture,"profileRevision")?,action:instance::CredentialProfileAction::Revoke
+            }))?;
+            return Ok(rows(&self.connection,
+                "SELECT raw_hex,operation,status,CAST(previous_revision AS TEXT),CAST(revision AS TEXT),session_id
+                 FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND request_id=?2",
+                &[domain,&record.input.request_id],6)? == vec![vec![record.input.snapshot_hex,
+                    "holder-gone-release".into(),"APPLIED".into(),previous.to_string(),revision.to_string(),session.into()]]);
+        }
+        Ok(false)
+    }
+
     fn gone_original(&self, profile: &instance::CredentialProfileRecord) -> Result<Fields> {
         let history=fail(instance::read_private_history_generation(&self.connection,
             &profile.binding_id,&profile.generation))?.ok_or_else(||refused("holder original F generation absent"))?;

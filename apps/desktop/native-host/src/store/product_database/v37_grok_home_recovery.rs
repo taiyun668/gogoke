@@ -65,6 +65,10 @@ impl<'root> ProductDatabase<'root> {
             for (index,value) in values.iter().enumerate(){q.bind_text(index as i32+1,value)?;}
             return Ok(q.step_row()?);
         }
+        self.grok_release_journal_matches(grant,None)
+    }
+
+    fn grok_release_journal_matches(&self,grant:&GrokGrant,expected_revision:Option<i64>)->Result<bool>{
         let prefix=format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
             grant.binding_id,grant.instance_id,grant.domain_id,grant.session_id,
             grant.seat_id,grant.seat_incarnation,grant.generation,grant.request_id,
@@ -78,6 +82,7 @@ impl<'root> ProductDatabase<'root> {
         while q.step_row()?{
             let revision:i64=q.column_text(2)?.parse().map_err(|error|
                 OrchestrationError::V37StoreFailure(format!("Grok retired revision: {error}")))?;
+            if expected_revision.is_some_and(|expected|revision.checked_add(1)!=Some(expected)){continue;}
             let raw=format!("{prefix}{revision}");
             let expected=format!("{}{}",prefix_hex,revision.to_string().as_bytes().iter()
                 .map(|b|format!("{b:02x}")).collect::<String>());
@@ -85,6 +90,20 @@ impl<'root> ProductDatabase<'root> {
                 &&revision.checked_add(1).map(|r|r.to_string()).as_deref()==Some(q.column_text(3)?.as_str()){
                 return Ok(true);
             }
+        }
+        Ok(false)
+    }
+
+    pub(super) fn completed_grok_holder_release(&self,instance_id:&str,
+        domain:&str,session:&str,operation:&str)->Result<bool>{
+        for grant in evidence(instance::read_grok_grants(&self.connection,instance_id))? {
+            if grant.domain_id!=domain || grant.session_id!=session
+                || grant.process_operation_id.as_deref()!=Some(operation){continue;}
+            if !matches!(grant.phase.as_str(),"REVOKED"|"RETIRED_CLEANUP_PENDING")
+                || grant.stop_fact_id.is_some(){return Ok(false);}
+            let original=self.grok_original_claim(&grant)?;
+            if original.state!="RELEASED" || !original.stop_fact.is_empty(){return Ok(false);}
+            return self.grok_release_journal_matches(&grant,Some(original.revision));
         }
         Ok(false)
     }

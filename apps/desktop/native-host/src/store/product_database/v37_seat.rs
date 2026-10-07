@@ -165,9 +165,20 @@ impl<'root> ProductDatabase<'root> {
             let operation = claims.column_text(3)?;
             let stop_fact = claims.column_text(4)?;
             if phase == "RELEASED" {
-                // A released started session must retain the matching durable
-                // kernel stop proof, not only a terminal H state label.
+                // A terminal label alone is insufficient. Holder disappearance
+                // releases resources with its own exact completion receipt and
+                // deliberately preserves the original NULL StopFact.
                 if !operation.is_empty() {
+                    if stop_fact.is_empty() {
+                        let driver = self.read_registered_instance(instance_id)?;
+                        let recovered = match driver.as_ref().map(|instance|instance.driver_id.as_str()) {
+                            Some("codex") => self.completed_codex_holder_release(instance_id,&domain,&session,&operation)?,
+                            Some("grok") => self.completed_grok_holder_release(instance_id,&domain,&session,&operation)?,
+                            _ => false,
+                        };
+                        if !recovered { unknown = true; }
+                        continue;
+                    }
                     let stopped = Statement::prepare(self.connection.as_ptr(),
                         "SELECT 1 FROM main.gogoke_coordination_process_custody \
                          WHERE operation_id=?1 AND domain_id=?2 AND state='STOPPED' \
@@ -175,7 +186,7 @@ impl<'root> ProductDatabase<'root> {
                     stopped.bind_text(1, &operation)?;
                     stopped.bind_text(2, &domain)?;
                     stopped.bind_text(3, &stop_fact)?;
-                    if stop_fact.is_empty() || !stopped.step_row()? || stopped.step_row()? {
+                    if !stopped.step_row()? || stopped.step_row()? {
                         unknown = true;
                     }
                 }
