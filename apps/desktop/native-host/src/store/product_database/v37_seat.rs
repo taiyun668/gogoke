@@ -1185,7 +1185,9 @@ mod tests {
             assert_eq!(status(product, &request("bind-instance", "bindA", "seatA", 2,
                 r#"{"instanceId":"instanceA"}"#)), V37Status::Applied);
             assert_eq!(status(product, &request("change-instance", "changeBusy", "seatA", 1,
-                r#"{"instanceId":"instanceA"}"#)), V37Status::Stale);
+                r#"{"instanceId":"instanceA","model":"modelA","effort":"high","permissionTier":"READ_ONLY"}"#)), V37Status::Stale);
+            assert_eq!(status(product, &request("change-instance", "incompleteChange", "seatA", 3,
+                r#"{"instanceId":"instanceA"}"#)), V37Status::Denied);
             assert_eq!(status(product, &request("reclaim", "reclaimA", "seatA", 3, "{}")), V37Status::Applied);
             assert_eq!(status(product, &request("short-to-long", "latePromote", "seatA", 4, "{}")), V37Status::Conflict);
             assert_eq!(status(product, &request("takeover-answers", "takeoverA", "seatA", 4, "{}")), V37Status::Unsupported);

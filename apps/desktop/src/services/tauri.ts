@@ -102,6 +102,9 @@ export function createDesign37SeatsSource<Page>(domainId: string | null) {
         await operation("reclaim", id, row._revision, {});
       },
       create: async (input: NativeSeatTune & { name: string; template: string }): Promise<void> => {
+        if (!input.model || !input.effort) {
+          throw new Error("A new seat requires a verified selected model and effort before creation.");
+        }
         const id = `seat-${crypto.randomUUID()}`;
         const revision = await operation("create-from-template", id, "0", {
           layer: "USER", templateId: input.template,
