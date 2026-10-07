@@ -1651,9 +1651,13 @@ fn write_derived_dacl(handle: Handle, derived: Handle, control: u16)
         dacl: ptr::null_mut() };
     let descriptor = (&mut native as *mut DaclDescriptor).cast();
     let mask = SE_DACL_AUTO_INHERIT_REQ | SE_DACL_AUTO_INHERITED | SE_DACL_PROTECTED;
-    // Pass only the original control bits. This bound-child writer must not
-    // request a new recursive propagation while other custody remains held.
-    let bits = control & mask;
+    // NtSetSecurityObject consumes AUTO_INHERIT_REQ to retain AUTO_INHERITED,
+    // as in the existing Grok same-handle writer. The direct held-tree cloud
+    // readback without this input bit cleared 0x0400 (0x8404 -> 0x8004) despite
+    // exact target/peer ACE bytes. Keep the original persisted control as the
+    // strict postcondition; never accept the request bit as a new stored bit.
+    let bits = control & mask |
+        if control & SE_DACL_AUTO_INHERITED != 0 { SE_DACL_AUTO_INHERIT_REQ } else { 0 };
     if unsafe { InitializeSecurityDescriptor(descriptor, 1) } == 0 ||
         unsafe { SetSecurityDescriptorDacl(descriptor, 1, acl, defaulted) } == 0 ||
         unsafe { SetSecurityDescriptorControl(descriptor, mask, bits) } == 0 {
