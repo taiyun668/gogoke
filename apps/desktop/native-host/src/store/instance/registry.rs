@@ -88,7 +88,14 @@ impl ProgramObservation {
             || path_after.file_attributes() & REPARSE_POINT != 0 || bytes.len() as u64 != after.len() {
             return Err(RegistryError::IdentityChanged);
         }
-        Ok(Self { digest: content_hash(&bytes), version: version.to_owned() })
+        use sha2::{Digest, Sha256};
+        #[cfg(test)]
+        let measured_hash = std::time::Instant::now();
+        let digest = format!("sha256:{:x}", Sha256::digest(&bytes));
+        #[cfg(test)]
+        eprintln!("native_timing producer=program_sha256 bytes={} elapsed_us={}",
+            bytes.len(), measured_hash.elapsed().as_micros());
+        Ok(Self { digest, version: version.to_owned() })
     }
 }
 

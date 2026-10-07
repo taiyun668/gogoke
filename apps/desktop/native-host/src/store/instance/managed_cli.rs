@@ -147,7 +147,14 @@ fn sha256_file(path: &Path, expected: &str) -> Result<(), ManagedCliError> {
         path_after.file_attributes() & REPARSE_POINT != 0 {
         return Err(ManagedCliError::IdentityChanged);
     }
-    if crate::store::digest::sha256_hex(&bytes) != expected {
+    use sha2::{Digest, Sha256};
+    #[cfg(test)]
+    let measured_hash = std::time::Instant::now();
+    let digest = format!("{:x}", Sha256::digest(&bytes));
+    #[cfg(test)]
+    eprintln!("native_timing producer=managed_sha256 bytes={} elapsed_us={}",
+        bytes.len(), measured_hash.elapsed().as_micros());
+    if digest != expected {
         return Err(ManagedCliError::IdentityChanged);
     }
     Ok(())
