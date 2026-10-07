@@ -29,6 +29,7 @@ pub(crate) use cap::{read_instance_concurrency_cap, set_instance_concurrency_cap
 pub(crate) use management::{read_instance_profiles, set_instance_profile, record_qualified_account,
     read_instance_evidence, tombstone_unused_instance, InstanceProfile, InstanceEvidence,
     InstanceManagementError, QualifiedAccount, QualifiedAccountSource};
+pub(crate) use management::record_verified_models_from_original_rpc_source;
 pub(crate) use managed_cli::{managed_cli_root, inspect_staged_official_cli, read_managed_cli,
     record_managed_cli_stage, confirm_managed_cli_launch, record_managed_cli_failure,
     record_managed_cli_progress, record_official_cli_notice, read_fixed_official_cli,
