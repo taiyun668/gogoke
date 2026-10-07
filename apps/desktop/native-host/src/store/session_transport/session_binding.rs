@@ -717,7 +717,7 @@ mod tests {
                 ("admission-commit","oldCommit",1,2),
             ] {
                 let raw=format!(r#"{{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"{operation}","requestId":"{id}","targetId":"oldUnopened","domainId":"projectA","expectedRevision":"{before}","payload":{{"seatId":"seatA","generation":"1"}}}}"#);
-                let original=super::decode_request(raw.as_bytes()).unwrap();
+                let original=crate::store::session_transport::decode_request(raw.as_bytes()).unwrap();
                 let hex=original.raw_bytes.iter().map(|byte|format!("{byte:02x}")).collect::<String>();
                 let op=Statement::prepare(db.as_ptr(),
                     "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA',?1,?2,?3,'oldUnopened','APPLIED',?4,?5)").unwrap();
