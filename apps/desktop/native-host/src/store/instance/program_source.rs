@@ -197,6 +197,10 @@ pub(crate) fn bind_managed_instance_program(db:&mut VerifiedDatabaseConnection<'
     db.execute("BEGIN IMMEDIATE")?;
     let result=(||{
         check_owner_in_current_transaction(db,owner)?;
+        let retired=Statement::prepare(db.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_instance_profiles WHERE instance_id=?1 AND tombstoned=1")?;
+        retired.bind_text(1,instance_id)?;
+        if retired.step_row()? {return Err(ProgramSourceError::Conflict)}
         let registration=Statement::prepare(db.as_ptr(),
             "SELECT 1 FROM main.gogoke_v37_instance_operations WHERE request_id=?1 AND target_id=?2 AND phase='APPLIED'")?;
         registration.bind_text(1,registration_request_id)?;

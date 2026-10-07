@@ -3,7 +3,8 @@
 //! recording it; H must launch that exact image and report the result before
 //! the PROBED copy can be bound to every quiescent legacy instance and marked READY.
 
-use super::registry::ProgramObservation;
+use super::{legacy_fence,registry::ProgramObservation};
+use crate::process::NativeLegacyHoldersGone;
 use crate::root::RootLock;
 use crate::store::atomic::Statement;
 use crate::store::authority::{check_owner_in_current_transaction, OwnerIssuer};
@@ -59,6 +60,8 @@ pub(crate) enum ManagedCliError {
     Busy,
     Io(io::Error),
     Store(OrchestrationError),
+    Legacy(String),
+    NativeGone(String),
 }
 impl From<io::Error> for ManagedCliError { fn from(error: io::Error) -> Self { Self::Io(error) } }
 impl From<crate::store::atomic::AtomicError> for ManagedCliError {
@@ -231,12 +234,13 @@ fn transaction<T>(db: &mut VerifiedDatabaseConnection<'_>,
     }
 }
 
-pub(super) fn no_unsettled_instance_use(db: &VerifiedDatabaseConnection<'_>, driver: &str)
+pub(crate) fn no_unsettled_instance_use(db: &VerifiedDatabaseConnection<'_>, driver: &str)
     -> Result<(), ManagedCliError> {
     let own_probe = Statement::prepare(db.as_ptr(),
-        "SELECT 1 FROM main.gogoke_coordination_process_custody WHERE profile_id=?1 AND state!='STOPPED' LIMIT 1")?;
+        "SELECT 1 FROM main.gogoke_coordination_process_custody WHERE profile_id=?1 AND (state!='STOPPED' OR stop_proof_hash IS NULL OR stop_proof_hash='') LIMIT 1")?;
     own_probe.bind_text(1, &format!("managed-cli-{driver}"))?;
     if own_probe.step_row()? { return Err(ManagedCliError::Busy); }
+    no_unsettled_global_cli_custody(db,driver)?;
     for sql in [
         "SELECT 1 FROM main.gogoke_v37_h_claim c JOIN main.gogoke_v37_instances i ON i.instance_id=c.instance_id LEFT JOIN main.gogoke_coordination_process_custody p ON p.operation_id=c.process_operation_id AND p.domain_id=c.domain_id AND p.generation=c.generation WHERE i.driver_id=?1 AND (c.state NOT IN ('RELEASED','STOPPED') OR (c.state='STOPPED' AND (c.stop_fact_id IS NULL OR p.state IS NULL OR p.state!='STOPPED' OR p.stop_proof_hash IS NULL OR c.stop_fact_id!=p.stop_proof_hash))) LIMIT 1",
         "SELECT 1 FROM main.gogoke_v37_h_owner_binding b JOIN main.gogoke_v37_instances i ON i.instance_id=b.instance_id LEFT JOIN main.gogoke_v37_h_claim c ON c.binding_id=b.binding_id LEFT JOIN main.gogoke_coordination_process_custody p ON p.operation_id=c.process_operation_id AND p.domain_id=c.domain_id AND p.generation=c.generation WHERE i.driver_id=?1 AND b.state='ACTIVE' AND (c.binding_id IS NULL OR c.state NOT IN ('STOPPED','RELEASED') OR (c.state='STOPPED' AND (c.stop_fact_id IS NULL OR p.state IS NULL OR p.state!='STOPPED' OR p.stop_proof_hash IS NULL OR c.stop_fact_id!=p.stop_proof_hash))) LIMIT 1",
@@ -251,6 +255,67 @@ pub(super) fn no_unsettled_instance_use(db: &VerifiedDatabaseConnection<'_>, dri
         let row = Statement::prepare(db.as_ptr(), sql)?;
         row.bind_text(1, driver)?;
         if row.step_row()? { return Err(ManagedCliError::Busy); }
+    }
+    Ok(())
+}
+
+/// A historical global UNKNOWN is retired only by its already captured exact
+/// legacy ACL fence and applied baseline, plus a fresh kernel observation of
+/// those same original PID/creation pairs. This never writes STOPPED or a new
+/// StopFact. Every other global row needs its actual durable stop proof.
+pub(crate) fn no_unsettled_global_cli_custody(
+    db:&VerifiedDatabaseConnection<'_>,driver:&str)->Result<(),ManagedCliError> {
+    if read_fixed_official_cli(driver).is_none(){return Err(ManagedCliError::Unsupported)}
+    let rows=Statement::prepare(db.as_ptr(),
+        "SELECT i.instance_id,i.home_identity,c.operation_id,c.ticket,c.custodian_nonce,
+           c.pid,c.creation_time_100ns,c.image_path,c.binary_digest_sha256,c.profile_id,
+           c.domain_id,c.generation,c.state,COALESCE(c.stop_proof_hash,''),c.stop_proof_hash IS NULL
+           FROM main.gogoke_coordination_process_custody c
+           JOIN main.gogoke_v37_instances i ON i.instance_id=c.profile_id
+          WHERE i.driver_id=?1 AND c.domain_id='global' ORDER BY i.instance_id,c.operation_id")?;
+    rows.bind_text(1,driver)?;
+    let mut uncertain=std::collections::BTreeMap::<String,(String,Vec<legacy_fence::LegacyCustodyRow>)>::new();
+    while rows.step_row()? {
+        let id=rows.column_text(0)?;
+        let home=rows.column_text(1)?;
+        let row=legacy_fence::LegacyCustodyRow {
+            operation_id:rows.column_text(2)?,ticket:rows.column_text(3)?,
+            custodian_nonce:rows.column_text(4)?,pid:rows.column_text(5)?,
+            creation_time_100ns:rows.column_text(6)?,image_path:rows.column_text(7)?,
+            binary_digest_sha256:rows.column_text(8)?,profile_id:rows.column_text(9)?,
+            domain_id:rows.column_text(10)?,generation:rows.column_text(11)?,
+            state:rows.column_text(12)?,stop_proof_hash:if rows.column_text(14)?=="1" {
+                None
+            }else{Some(rows.column_text(13)?)},
+        };
+        match row.state.as_str(){
+            "STOPPED" if row.stop_proof_hash.as_deref().is_some_and(|value|!value.is_empty())=>(),
+            "UNKNOWN"=>{
+                let entry=uncertain.entry(id).or_insert_with(||(home.clone(),Vec::new()));
+                if entry.0!=home {return Err(ManagedCliError::Busy)}
+                entry.1.push(row);
+            },
+            _=>return Err(ManagedCliError::Busy),
+        }
+    }
+    drop(rows);
+    for (id,(home,unknown)) in uncertain {
+        if driver!="codex" {return Err(ManagedCliError::Busy)}
+        let fence=legacy_fence::read_applied_legacy_retirement(db,&id)
+            .map_err(|error|ManagedCliError::Legacy(format!("fence: {error:?}")))?
+            .ok_or(ManagedCliError::Busy)?;
+        if fence.database_identity!=db.identity().opaque() ||
+            fence.root_identity!=db.root_identity().opaque() || fence.home_identity!=home ||
+            unknown.iter().any(|row| !fence.custody.contains(row)) {
+            return Err(ManagedCliError::Busy);
+        }
+        let pairs=fence.custody.iter().map(legacy_fence::LegacyCustodyRow::native_pair)
+            .collect::<std::result::Result<Vec<_>,_>>()
+            .map_err(|error|ManagedCliError::Legacy(format!("original process identity: {error:?}")))?;
+        let gone=NativeLegacyHoldersGone::observe(&pairs)
+            .map_err(|error|ManagedCliError::NativeGone(format!("original holders: {error:?}")))?;
+        gone.validate(&pairs)
+            .map_err(|error|ManagedCliError::NativeGone(format!("original holders changed: {error:?}")))?;
     }
     Ok(())
 }
