@@ -882,6 +882,38 @@ jobs:
           path: ${{ runner.temp }}/holder-gone-security
           if-no-files-found: ignore
           retention-days: 30
+      - name: Verify native SHA streaming with unchanged production golden vectors
+        if: ${{ matrix.group == 'core' && !cancelled() && steps.fixed-claude.outcome == 'success' && inputs.catalog_program_fixture_only }}
+        shell: pwsh
+        run: |
+          # Diagnostic branch only; all source/test byte restoration is checked.
+          $PSNativeCommandUseErrorActionPreference = $false
+          $path = 'apps/desktop/native-host/src/process/windows.rs'
+          $original = [IO.File]::ReadAllBytes($path)
+          $source = [Text.Encoding]::UTF8.GetString($original)
+          $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+          $needle = '        self.0.update(input);'
+          if ([regex]::Matches($source, [regex]::Escape($needle)).Count -ne 1) { throw 'Exact production SHA update must match once' }
+          function Run-Golden([string]$label, [int]$passed, [int]$failed) {
+            $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib sha256_standard_and_partial_chunks_preserve_exact_bytes -- --nocapture 2>&1
+            $code = $LASTEXITCODE
+            $output | Out-Host
+            $text = $output -join "`n"
+            $compiled = [regex]::IsMatch($text, 'Finished.*test.*profile')
+            $summaries = [regex]::Matches($text, 'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out')
+            $valid = $compiled -and $summaries.Count -eq 1 -and [int]$summaries[0].Groups[2].Value -eq $passed -and [int]$summaries[0].Groups[3].Value -eq $failed -and [int]$summaries[0].Groups[4].Value -eq 0 -and [int]$summaries[0].Groups[5].Value -eq 0 -and (($failed -eq 0 -and $code -eq 0) -or ($failed -gt 0 -and $code -ne 0))
+            if (-not $valid) { throw "Native SHA golden result invalid: $label exit=$code" }
+          }
+          Run-Golden 'original' 1 0
+          try {
+            [IO.File]::WriteAllText($path, $source.Replace($needle, '        let _ = input;'), [Text.UTF8Encoding]::new($false))
+            Run-Golden 'production-update-disabled' 0 1
+          } finally {
+            [IO.File]::WriteAllBytes($path, $original)
+            if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -cne $hash) { throw 'Native SHA original source was not restored' }
+          }
+          Run-Golden 'restored-original' 1 0
+          Write-Host 'SHA_STREAMING_MUTATION=PASS; original and restored golden vectors pass, compiled production update mutation fails; test bytes unchanged.'
       - name: Verify catalog program and unchanged data boundaries with compiled mutations
         if: ${{ matrix.group == 'core' && !cancelled() && steps.fixed-claude.outcome == 'success' }}
         shell: pwsh
