@@ -130,6 +130,80 @@ impl LaunchEvidence {
             provenance: Provenance::NativeV2,
         })
     }
+    /// After H records the first prepared process/episode and A registers the
+    /// session, choose provenance from the original sealed H admission facts.
+    /// The User/open caller cannot supply or change that choice.
+    pub(crate) fn record_initial_session_binding_in_transaction(&self,
+        db:&VerifiedDatabaseConnection<'_>,operation:&str)->Result<(),String> {
+        let mut binding=self.initial_session_binding()?;
+        if evidence(seat::get(db,&self.seat.domain_id,&self.seat.seat_id))?.as_ref()
+            !=Some(&self.seat) {
+            return Err("native initial relationship: sealed E seat changed".into());
+        }
+        let registration=evidence(crate::store::ledger::read_registered_session(db,
+            &self.claim.session_id))?.ok_or("native initial relationship: A registration absent")?;
+        if registration.domain_id!=self.claim.domain_id
+            || registration.session_id!=self.claim.session_id
+            || registration.seat_id!=self.seat.seat_id {
+            return Err("native initial relationship: A registration changed".into());
+        }
+        let original=crate::store::atomic::Statement::prepare(db.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_h_claim a
+              JOIN main.gogoke_v37_h_owner_binding o ON o.binding_id=a.binding_id
+                AND o.instance_id=a.instance_id AND o.domain_id=a.domain_id
+                AND o.owner_id=a.session_id AND o.generation=a.generation
+                AND o.kind='SESSION' AND o.state='ACTIVE'
+              JOIN main.gogoke_v37_instance_homes h ON h.home_id=a.home_id
+                AND h.instance_id=a.instance_id AND h.domain_id=a.domain_id
+                AND h.owner_id=a.session_id AND h.generation=a.generation
+                AND h.kind='SESSION' AND h.state='ACTIVE'
+              JOIN main.gogoke_v37_h_process_episode e ON e.domain_id=a.domain_id
+                AND e.session_id=a.session_id AND e.generation=a.generation
+                AND e.process_operation_id=a.process_operation_id
+                AND e.instance_id=a.instance_id AND e.home_id=a.home_id
+                AND e.binding_id=a.binding_id AND e.old_generation IS NULL
+              JOIN main.gogoke_v37_h_generation g ON g.domain_id=e.domain_id
+                AND g.session_id=e.session_id AND g.generation=e.generation
+                AND g.request_id=e.request_id AND g.process_operation_id=e.process_operation_id
+              JOIN main.gogoke_coordination_process_custody c
+                ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
+                AND c.generation=e.generation AND c.profile_id=e.instance_id
+             WHERE a.domain_id=?1 AND a.session_id=?2 AND a.instance_id=?3
+               AND a.home_id=?4 AND a.binding_id=?5 AND a.generation=?6
+               AND a.revision=?7 AND a.process_operation_id=?8
+               AND a.state='COMMITTED' AND e.phase='PREPARED'
+               AND e.seat_id=?9 AND e.seat_incarnation=?10 AND c.state='PREPARED'")
+            .map_err(|error|format!("native initial relationship query: {error:?}"))?;
+        for (index,value) in [self.claim.domain_id.as_str(),self.claim.session_id.as_str(),
+            self.claim.instance_id.as_str(),self.claim.home_id.as_str(),
+            self.claim.binding_id.as_str(),self.claim.generation.as_str()].iter().enumerate() {
+            original.bind_text((index+1) as i32,value)
+                .map_err(|error|format!("native initial relationship bind: {error:?}"))?;
+        }
+        original.bind_i64(7,self.claim.revision)
+            .map_err(|error|format!("native initial relationship revision: {error:?}"))?;
+        for (index,value) in [operation,self.seat.seat_id.as_str(),self.seat.incarnation.as_str()]
+            .iter().enumerate() {
+            original.bind_text((index+8) as i32,value)
+                .map_err(|error|format!("native initial relationship custody bind: {error:?}"))?;
+        }
+        if !original.step_row().map_err(|error|
+            format!("native initial relationship read: {error:?}"))?
+            || original.step_row().map_err(|error|
+                format!("native initial relationship duplicate: {error:?}"))? {
+            return Err("native initial relationship: original H process/episode absent".into());
+        }
+        drop(original);
+        match evidence(session_binding::read_pending(db,&binding.domain_id,&binding.session_id))? {
+            Some(pending) if pending==binding =>
+                evidence(session_binding::insert_native_in_transaction(db,&binding)),
+            Some(_) => Err("native initial relationship: pending selection changed".into()),
+            None => {
+                binding.provenance=Provenance::LegacyV1;
+                evidence(session_binding::insert_legacy_initial_in_transaction(db,&binding))
+            },
+        }
+    }
     // A vendor protocol setting, never an OS grant. The same sealed tier has
     // already selected and verified the LPAC capability set and directory ACLs.
     pub(crate) fn network_access(&self) -> bool { self.tier == PermissionTier::NetworkedWrite }

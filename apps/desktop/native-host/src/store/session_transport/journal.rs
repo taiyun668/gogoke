@@ -2276,6 +2276,7 @@ mod tests {
         setup_schema(&mut db);
         insert_fake_custody(&mut db);
         crate::store::seat::initialize_schema(&mut db).unwrap();
+        super::super::session_binding::initialize_schema(&mut db).unwrap();
         db.execute("INSERT INTO gogoke_v37_instances(instance_id,driver_id,version) VALUES('instanceA','codex','0.160.0')").unwrap();
         db.execute("INSERT INTO gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('projectA','seatA','seatIncarnationA','USER','LONG','instanceA','BUSY',1,1)").unwrap();
         db.execute("INSERT INTO gogoke_v37_h_seat_binding VALUES('projectA','sessionA','seatA','seatIncarnationA','1')").unwrap();

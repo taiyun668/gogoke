@@ -84,12 +84,12 @@ pub(crate) fn reserve_native(
     let NativeOrigin::User(owner) = origin else { return Err(AdmissionError::Denied); };
     let identity = authority::read_product_identity(db, owner)
         .map_err(AdmissionError::Identity)?;
-    admission::reserve_admission(db, request, |db| {
+    admission::reserve_native_admission(db, request, |db,new_reservation| {
         check_owner_current(db, &identity)?;
         let current = seat::get(db, request.domain_id, seat_id).map_err(AdmissionError::Seat)?
             .ok_or(AdmissionError::Denied)?;
         if current.instance_id != request.instance_id { return Err(AdmissionError::Denied); }
-        let current = if current.state == SeatState::Idle
+        let current = if new_reservation && current.state == SeatState::Idle
             && current.generation.checked_add(1).map(|value| value.to_string()).as_deref()
                 == Some(request.generation) {
             seat::set_dispatch_state_in_transaction(db, &current, true)
@@ -98,12 +98,12 @@ pub(crate) fn reserve_native(
         if current.state != SeatState::Busy || current.generation.to_string() != request.generation {
             return Err(AdmissionError::Denied);
         }
-        session_binding::select_native_in_transaction(db,&SessionBinding {
+        if new_reservation {session_binding::select_native_in_transaction(db,&SessionBinding {
             domain_id:request.domain_id.into(),session_id:request.session_id.into(),
             seat_id:current.seat_id.clone(),seat_incarnation:current.incarnation.clone(),
             seat_authorization_generation:current.generation,
             selected_instance_id:request.instance_id.into(),provenance:Provenance::NativeV2,
-        }).map_err(selection_error)?;
+        }).map_err(selection_error)?;}
         current_instance_pin(db, request.instance_id)?;
         persisted_limits(db, request.domain_id, request.instance_id)
     })
@@ -121,22 +121,22 @@ pub(crate) fn reserve_native_for_host(db:&mut VerifiedDatabaseConnection<'_>,
         return Err(AdmissionError::Denied);
     }
     let identity=authority::read_product_identity(db,host).map_err(AdmissionError::Identity)?;
-    admission::reserve_admission(db,request,|db| {
+    admission::reserve_native_admission(db,request,|db,new_reservation| {
         check_owner_current(db,&identity)?;
         let seat=host_rule::revalidate_host_recipient_in_transaction(db,host,proof,choice)
             .map_err(host_recipient_admission_error)?;
-        let seat=if seat.state==SeatState::Idle {
+        let seat=if new_reservation && seat.state==SeatState::Idle {
             seat::set_dispatch_state_in_transaction(db,&seat,true).map_err(AdmissionError::Seat)?
         } else {seat};
         if seat.state!=SeatState::Busy || seat.generation.to_string()!=request.generation {
             return Err(AdmissionError::Denied);
         }
-        session_binding::select_native_in_transaction(db,&SessionBinding {
+        if new_reservation {session_binding::select_native_in_transaction(db,&SessionBinding {
             domain_id:request.domain_id.into(),session_id:request.session_id.into(),
             seat_id:seat.seat_id.clone(),seat_incarnation:seat.incarnation.clone(),
             seat_authorization_generation:seat.generation,
             selected_instance_id:request.instance_id.into(),provenance:Provenance::NativeV2,
-        }).map_err(selection_error)?;
+        }).map_err(selection_error)?;}
         current_instance_pin(db,request.instance_id)?;
         persisted_limits(db,request.domain_id,request.instance_id)
     })
@@ -237,15 +237,15 @@ pub(crate) fn reserve_native_with_origin(db:&mut VerifiedDatabaseConnection<'_>,
     if matches!(origin,NativeOrigin::User(_)) {return reserve_native(db,origin,seat_id,request);}
     let NativeOrigin::Lead(admission)=origin else {return Err(AdmissionError::Denied)};
     let identity=authority::read_product_identity(db,host).map_err(AdmissionError::Identity)?;
-    admission::reserve_admission(db,request,|db| {
+    admission::reserve_native_admission(db,request,|db,new_reservation| {
         check_owner_current(db,&identity)?;
         let child=lead_child_for_admission(db,admission,seat_id,request,true)?;
-        session_binding::select_native_in_transaction(db,&SessionBinding {
+        if new_reservation {session_binding::select_native_in_transaction(db,&SessionBinding {
             domain_id:request.domain_id.into(),session_id:request.session_id.into(),
             seat_id:child.seat_id.clone(),seat_incarnation:child.incarnation.clone(),
             seat_authorization_generation:child.generation,
             selected_instance_id:request.instance_id.into(),provenance:Provenance::NativeV2,
-        }).map_err(selection_error)?;
+        }).map_err(selection_error)?;}
         current_instance_pin(db,request.instance_id)?;
         persisted_limits(db,request.domain_id,request.instance_id)
     })

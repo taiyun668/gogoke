@@ -445,6 +445,41 @@ pub(crate) fn reserve_admission(
     input: &AdmissionRequest<'_>,
     authorize: impl FnOnce(&mut VerifiedDatabaseConnection<'_>) -> Result<TrustedLimits, AdmissionError>,
 ) -> Result<AdmissionResult, AdmissionError> {
+    reserve_admission_inner(connection,input,false,|db,_|authorize(db))
+}
+
+/// Native ingress may seal a new selection only for a genuinely empty H slot.
+/// Replays and conflicts still pass through the caller's current authorization.
+pub(crate) fn reserve_native_admission(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    input: &AdmissionRequest<'_>,
+    authorize: impl FnOnce(&mut VerifiedDatabaseConnection<'_>,bool) -> Result<TrustedLimits, AdmissionError>,
+) -> Result<AdmissionResult, AdmissionError> {
+    reserve_admission_inner(connection,input,true,authorize)
+}
+
+fn native_slot_empty(connection:&VerifiedDatabaseConnection<'_>,
+    input:&AdmissionRequest<'_>)->Result<bool,AdmissionError> {
+    if claim(connection,input)?.is_some()
+        || count(connection,"SELECT COUNT(*) FROM main.gogoke_v37_h_seat_binding WHERE domain_id=?1 AND session_id=?2",
+            &[input.domain_id,input.session_id])?!=0
+        || count(connection,"SELECT COUNT(*) FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND session_id=?2",
+            &[input.domain_id,input.session_id])?!=0
+        || super::session_binding::read_pending(connection,input.domain_id,input.session_id)
+            .map_err(AdmissionError::Relationship)?.is_some()
+        || super::session_binding::read(connection,input.domain_id,input.session_id)
+            .map_err(AdmissionError::Relationship)?.is_some() {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+fn reserve_admission_inner(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    input: &AdmissionRequest<'_>,
+    native:bool,
+    authorize: impl FnOnce(&mut VerifiedDatabaseConnection<'_>,bool) -> Result<TrustedLimits, AdmissionError>,
+) -> Result<AdmissionResult, AdmissionError> {
     if input.expected_revision != 0 || input.raw_bytes.is_empty() || input.raw_bytes.len() > 65_536
     {
         return Err(AdmissionError::Invalid("reserve"));
@@ -460,10 +495,13 @@ pub(crate) fn reserve_admission(
         require(value, name)?;
     }
     in_transaction(connection, |connection| {
-        let limits = authorize(connection)?;
-        if let Some(result) = prior(connection, input, "admission-reserve")? {
+        let original=prior(connection,input,"admission-reserve")?;
+        let fresh=original.is_none() && (!native || native_slot_empty(connection,input)?);
+        let limits = authorize(connection,fresh)?;
+        if let Some(result) = original {
             return Ok(result);
         }
+        if native && !fresh {return Ok(AdmissionResult::Conflict);}
         if limits.project_parallel <= 0 || limits.instance_concurrency <= 0 {
             return Err(AdmissionError::UnsupportedCapacity);
         }
@@ -1090,6 +1128,40 @@ mod tests {
             raw_bytes: b"owner admission release", instance_id: "instanceA", home_id: "homeA",
             generation: "2", expected_revision,
         }
+    }
+
+    #[test]
+    fn legacy_reserve_replay_and_same_slot_new_id_never_select_native() {
+        owner_unstarted_fixture(|_root,db,_owner,busy| {
+            use super::super::session_binding::{self,Provenance,SessionBinding};
+            let reserve=AdmissionRequest {domain_id:"projectA",session_id:"sessionA",
+                request_id:"legacyReserveA",raw_bytes:b"original legacy reserve",
+                instance_id:"instanceA",home_id:"homeA",generation:"2",expected_revision:0};
+            let original=Statement::prepare(db.as_ptr(),
+                "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA',?1,?2,'admission-reserve','sessionA','APPLIED',0,1)").unwrap();
+            original.bind_text(1,reserve.request_id).unwrap();
+            original.bind_text(2,&hex(reserve.raw_bytes)).unwrap();
+            original.step_done().unwrap();drop(original);
+            let attempt=|db:&mut VerifiedDatabaseConnection<'_>,new:bool| {
+                if new {session_binding::select_native_in_transaction(db,&SessionBinding {
+                    domain_id:"projectA".into(),session_id:"sessionA".into(),
+                    seat_id:busy.seat_id.clone(),seat_incarnation:busy.incarnation.clone(),
+                    seat_authorization_generation:busy.generation,
+                    selected_instance_id:"instanceA".into(),provenance:Provenance::NativeV2,
+                }).map_err(AdmissionError::Relationship)?;}
+                one_capacity(db)
+            };
+            assert_eq!(reserve_native_admission(db,&reserve,attempt).unwrap(),
+                AdmissionResult::Replayed(1));
+            assert!(session_binding::read_pending(db,"projectA","sessionA").unwrap().is_none());
+            let changed=AdmissionRequest {raw_bytes:b"changed original bytes",..reserve};
+            assert_eq!(reserve_native_admission(db,&changed,attempt).unwrap(),
+                AdmissionResult::Conflict);
+            let new_id=AdmissionRequest {request_id:"differentReserveA",raw_bytes:b"other request",..reserve};
+            assert_eq!(reserve_native_admission(db,&new_id,attempt).unwrap(),
+                AdmissionResult::Conflict);
+            assert!(session_binding::read_pending(db,"projectA","sessionA").unwrap().is_none());
+        });
     }
 
     #[test]
