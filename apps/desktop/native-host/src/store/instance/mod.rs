@@ -35,6 +35,7 @@ pub(crate) use managed_cli::{managed_cli_root, inspect_staged_official_cli, read
     record_managed_cli_progress, record_official_cli_notice, read_fixed_official_cli,
     locate_ready_managed_program, locate_ready_managed_program_from_db,
     uninstall_managed_cli, ManagedCliCopy, ManagedCliError, VerifiedOfficialCli};
+pub(crate) use managed_cli::no_unsettled_instance_use;
 pub(crate) use program_source::{bind_managed_instance_program, migrate_quiescent_legacy_instances,
     locate_bound_instance_program,
     ProgramSourceError};
