@@ -2931,6 +2931,7 @@ mod tests {
         fs::create_dir(&path).unwrap();
         let root = RootLock::acquire(&path).unwrap();
         let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        managed_cli_test_setup::ready(&mut product, &root, "codex");
         let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
         assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
             V37Status::Applied);
@@ -2981,7 +2982,7 @@ mod tests {
         assert!(reply.contains("invalid utf-8 sequence"));
         assert!(!reply.contains("owner login cancelled"));
         assert_eq!(scalar(&product,
-            "SELECT count(*) FROM gogoke_coordination_process_custody WHERE operation_id LIKE 'login-observe-%'"), "0",
+            "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex' AND operation_id LIKE 'login-observe-%'"), "0",
             "capture failure must not start account/read or report LOGGED_IN");
         product.close_checked().unwrap();
         drop(root);
@@ -2997,6 +2998,7 @@ mod tests {
         fs::create_dir(&path).unwrap();
         let root = RootLock::acquire(&path).unwrap();
         let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        managed_cli_test_setup::ready(&mut product, &root, "codex");
         let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
         assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
             V37Status::Applied);
@@ -3040,7 +3042,7 @@ mod tests {
         assert!(reply.contains("owner login output limit"));
         assert!(!reply.contains("owner login cancelled"));
         assert_eq!(scalar(&product,
-            "SELECT count(*) FROM gogoke_coordination_process_custody WHERE operation_id LIKE 'login-observe-%'"), "0",
+            "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex' AND operation_id LIKE 'login-observe-%'"), "0",
             "mixed stream output limit must not run account/read");
         product.close_checked().unwrap();
         drop(root);
@@ -3098,6 +3100,7 @@ mod tests {
             fs::create_dir(&path).unwrap();
             let root = RootLock::acquire(&path).unwrap();
             let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+            managed_cli_test_setup::ready(&mut product, &root, "codex");
             let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
             assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
                 V37Status::Applied);
@@ -3145,7 +3148,7 @@ exit 0
             assert!(final_reply.contains("\"state\":\"LOGGED_OUT\""),
                 "synthetic completion cannot substitute for the real LPAC account/read");
             assert_eq!(scalar(&product,
-                "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "2",
+                "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex' AND state='STOPPED'"), "2",
                 "first Job and automatic LPAC account/read must both durably stop");
             product.close_checked().unwrap();
             drop(root);
@@ -3232,6 +3235,7 @@ exit 0
         fs::create_dir(&path).unwrap();
         let root = RootLock::acquire(&path).unwrap();
         let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        managed_cli_test_setup::ready(&mut product, &root, "codex");
         let registration = request("register", "registerLegacyA", 0, r#"{"driverId":"codex"}"#);
         assert_eq!(decode_receipt(&product.register_user_instance(&registration).unwrap()).unwrap().status, V37Status::Applied);
         let home = instance::resolve_codex_instance_home(&product.connection, &root, "instanceA").unwrap();
@@ -3321,11 +3325,11 @@ exit 0
         reopened.close_checked().unwrap();
         let mut reopened = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
         assert!(reopened.recovered_credential_holders.is_empty());
-        let before_count = scalar(&reopened, "SELECT count(*) FROM main.gogoke_coordination_process_custody");
+        let before_count = scalar(&reopened, "SELECT count(*) FROM main.gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex'");
         reopened.ensure_native_credential_backend("instanceA", &registration).unwrap();
         let retained = reopened.recovered_credential_holders.get(&("instanceA".into(), before_source.0.opaque())).unwrap();
         assert!(retained.acl_prepared_in_this_holder().unwrap(), "cold model entry must adopt the original protected source");
-        assert_eq!(scalar(&reopened, "SELECT count(*) FROM main.gogoke_coordination_process_custody"), before_count,
+        assert_eq!(scalar(&reopened, "SELECT count(*) FROM main.gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex'"), before_count,
             "durable File composition must not replace cold adoption with a CLI refresh");
         reopened.connection.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) VALUES('fixtureCurrent','fixtureCurrentTicket','fixtureCurrentNonce','555','666','synthetic.exe','sha256:0000000000000000000000000000000000000000000000000000000000000000','instanceA','global','3','UNKNOWN',NULL)").unwrap();
         for state in ["UNKNOWN", "PREPARED"] {
@@ -3349,6 +3353,7 @@ exit 0
         fs::create_dir(&path).unwrap();
         let root = RootLock::acquire(&path).unwrap();
         let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        managed_cli_test_setup::ready(&mut product, &root, "codex");
         for id in ["instanceA", "instanceB", "instanceC"] {
             let raw = format!(
                 "{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-INSTANCE\",\"operation\":\"register\",\"requestId\":\"register{id}\",\"targetId\":\"{id}\",\"domainId\":\"global\",\"expectedRevision\":\"0\",\"payload\":{{\"driverId\":\"codex\"}}}}"
@@ -3399,6 +3404,7 @@ exit 0
         fs::create_dir(&path).unwrap();
         let root = RootLock::acquire(&path).unwrap();
         let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        managed_cli_test_setup::ready(&mut product, &root, "codex");
         let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
         assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
             V37Status::Applied);
@@ -3410,7 +3416,7 @@ exit 0
         assert!(stale_reply.contains("\"state\":\"UNKNOWN\""));
         assert!(stale_reply.contains("\"settled\":true"));
         assert!(stale_reply.contains(&format!("{stale_error:?}")));
-        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody"), "0");
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex'"), "0");
 
         // The production table is STRICT INTEGER, so malformed revision text
         // cannot be written. Temporarily hide it to exercise an actual SQL
@@ -3429,7 +3435,7 @@ exit 0
             panic!("settled status must preserve the original SQL failure");
         };
         assert_eq!(sql_output.to_well_formed_string().unwrap(), format!("{sql_error:?}"));
-        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody"), "0");
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex'"), "0");
         product.connection.execute(
             "ALTER TABLE main.gogoke_v37_instances_unavailable RENAME TO gogoke_v37_instances").unwrap();
 
@@ -3448,7 +3454,7 @@ exit 0
             assert!(reply.contains("\"state\":\"UNKNOWN\""));
             assert!(reply.contains("\"settled\":true"));
             assert!(reply.contains(&format!("{error:?}")));
-            assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody"), "0");
+            assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex'"), "0");
         }
         product.close_checked().unwrap();
         drop(root);
@@ -3464,6 +3470,7 @@ exit 0
         fs::create_dir(&path).unwrap();
         let root = RootLock::acquire(&path).unwrap();
         let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        managed_cli_test_setup::ready(&mut product, &root, "codex");
         let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
         assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
             V37Status::Applied);
@@ -3499,9 +3506,9 @@ exit 0
         assert!(diagnostic.contains("code=Some(2)"), "actual exit code was not preserved");
         assert!(diagnostic.contains("STDERR_TAIL:"));
         assert!(diagnostic.contains("unexpected argument"), "actual CLI stderr was not preserved");
-        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody"), "1",
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex'"), "1",
             "a failed login must not start a second CLI for account/read");
-        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "0");
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex' AND state='STOPPED'"), "0");
         let held = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
         assert!(held.contains("\"state\":\"UNKNOWN\""));
         assert!(held.contains("\"settled\":false"));
@@ -3516,9 +3523,9 @@ exit 0
         assert!(replay.contains("\"settled\":true"));
         assert!(replay.contains("controlled first CLI stop record failure"));
         assert!(replay.contains("unexpected argument"));
-        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "1");
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex' AND state='STOPPED'"), "1");
         assert!(!runtime_home.exists(), "owned login runtime must be cleaned after confirmation");
-        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody"), "1");
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex'"), "1");
         product.close_checked().unwrap();
         drop(root);
         fs::remove_dir_all(path).unwrap();
@@ -3533,6 +3540,7 @@ exit 0
         fs::create_dir(&path).unwrap();
         let root = RootLock::acquire(&path).unwrap();
         let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        managed_cli_test_setup::ready(&mut product, &root, "codex");
         let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
         assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
             V37Status::Applied);
@@ -3569,7 +3577,7 @@ exit 0
         assert!(reply.contains("owner login cancelled: STDERR_TAIL:"));
         assert!(!runtime_home.exists());
         assert_eq!(scalar(&product,
-            "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state!='STOPPED'"), "0");
+            "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex' AND state!='STOPPED'"), "0");
         product.close_checked().unwrap();
         drop(root);
         fs::remove_dir_all(path).unwrap();
@@ -3613,6 +3621,7 @@ exit 0
         fs::create_dir(&path).unwrap();
         let root = RootLock::acquire(&path).unwrap();
         let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        managed_cli_test_setup::ready(&mut product, &root, "codex");
         let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
         assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
             V37Status::Applied);
@@ -3656,7 +3665,7 @@ exit 0
         assert!(diagnostic.contains("runtime cleanup"), "actual Windows delete failure was lost");
         assert!(sentinel.is_file());
         assert_eq!(scalar(&product,
-            "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "1");
+            "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex' AND state='STOPPED'"), "1");
         drop(held);
         remove_owned_runtime(&launch.runtime_home, &launch.runtime_identity).unwrap();
         drop(launch);
@@ -3673,6 +3682,7 @@ exit 0
         fs::create_dir(&path).unwrap();
         let root = RootLock::acquire(&path).unwrap();
         let mut product = ProductDatabase::open(&root,&path.join("state.sqlite")).unwrap();
+        managed_cli_test_setup::ready(&mut product, &root, "codex");
         let register = request("register","registerA",0,r#"{"driverId":"codex"}"#);
         assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,V37Status::Applied);
         for kind in ["digest","prepared","resume","active","ordinary_active"] {
@@ -3837,7 +3847,7 @@ exit 0
         assert!(result.contains("\"state\":\"UNKNOWN\""));
         assert!(result.contains("raw_os_error"), "private result preserves original Windows failure");
         assert!(runtime.exists(), "failed cleanup retains exact host-owned runtime");
-        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "1");
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex' AND state='STOPPED'"), "1");
         let new_request = br#"{"schema":"gogoke.37.owner-login.v1","action":"begin","instanceId":"instanceA","requestId":"providerNewRequest","expectedRevision":1}"#;
         assert!(matches!(product.dispatch_owner_login_frame(new_request), Err(OrchestrationError::OperationConflict)),
             "new User intent cannot replace retained cleanup custody");
@@ -3846,7 +3856,7 @@ exit 0
         assert!(final_reply.contains("\"settled\":true"), "same request reconciles cleanup after exact handle release");
         assert!(final_reply.contains("raw_os_error"), "recovered result retains prior failure reason");
         assert!(!runtime.exists(), "confirmed provider runtime must be removed");
-        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "1");
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex' AND state='STOPPED'"), "1");
         // The ordinary confirmed-stop path has the same cleanup obligation:
         // a Windows sharing error must retain the original released custody.
         let (runtime, runtime_identity) = runtime_home(&home.path).unwrap();
@@ -3894,7 +3904,7 @@ exit 0
         let pending = String::from_utf8(product.status_owner_device_login(&command).unwrap()).unwrap();
         assert!(pending.contains("\"settled\":false"));
         assert!(pending.contains("original CLI completed") && pending.contains("raw_os_error"));
-        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "2");
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex' AND state='STOPPED'"), "2");
         let new_request = br#"{"schema":"gogoke.37.owner-login.v1","action":"begin","instanceId":"instanceA","requestId":"providerAfterConfirmedFault","expectedRevision":1}"#;
         assert!(matches!(product.dispatch_owner_login_frame(new_request), Err(OrchestrationError::OperationConflict)));
         drop(held);
@@ -3911,7 +3921,7 @@ exit 0
             && final_reply.contains("automatic account/read failed"),
             "synthetic PowerShell metadata must not pass the fixed OpenCode catalog recheck");
         assert!(!runtime.exists());
-        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "2");
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex' AND state='STOPPED'"), "2");
         let (next, next_identity) = runtime_home(&home.path).unwrap();
         remove_owned_runtime(&next, &next_identity).unwrap();
         product.close_checked().unwrap();
@@ -3927,6 +3937,7 @@ exit 0
         fs::create_dir(&path).unwrap();
         let root = RootLock::acquire(&path).unwrap();
         let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        managed_cli_test_setup::ready(&mut product, &root, "codex");
         let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
         assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status, V37Status::Applied);
         let mut launch = product.prepare_owner_codex_login("instanceA").unwrap();
@@ -3968,6 +3979,7 @@ exit 0
         fs::create_dir(&path).unwrap();
         let root = RootLock::acquire(&path).unwrap();
         let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        managed_cli_test_setup::ready(&mut product, &root, "codex");
         let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
         assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
             V37Status::Applied);
@@ -4001,9 +4013,9 @@ exit 0
         assert!(pending.contains("\"state\":\"UNKNOWN\""));
         assert!(pending.contains("\"settled\":false"));
         assert!(pending.contains("controlled account stop record failure"));
-        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody"), "2",
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex'"), "2",
             "the second real CLI must retain its own custody row");
-        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "1",
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex' AND state='STOPPED'"), "1",
             "only the first CLI is durably stopped while the trigger blocks account/read");
         let new_begin = br#"{"schema":"gogoke.37.owner-login.v1","action":"begin","instanceId":"instanceA","requestId":"newWhileHeld","expectedRevision":1}"#;
         assert!(matches!(product.dispatch_owner_login_frame(new_begin),
@@ -4015,7 +4027,7 @@ exit 0
             "the retained real account/read frame must produce the native state; actual Owner-private reply: {settled}");
         assert!(settled.contains("controlled account stop record failure"),
             "the original transient failure remains Owner-private");
-        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "2");
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex' AND state='STOPPED'"), "2");
         let update = Statement::prepare(product.connection.as_ptr(),
             "UPDATE main.gogoke_v37_instances SET version='0.148.0' WHERE instance_id='instanceA'").unwrap();
         update.step_done().unwrap();
@@ -4060,6 +4072,7 @@ exit 0
         fs::create_dir(&path).unwrap();
         let root = RootLock::acquire(&path).unwrap();
         let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        managed_cli_test_setup::ready(&mut product, &root, "codex");
         let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
         assert_eq!(decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap().status,
             V37Status::Applied, "real pinned CLI is required, not a skipped control");
@@ -4124,6 +4137,7 @@ exit 0
         fs::create_dir(&path).unwrap();
         let root = RootLock::acquire(&path).unwrap();
         let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+        managed_cli_test_setup::ready(&mut product, &root, "codex");
         let registered = product.register_user_instance(
             &request("register", "registerA", 0, r#"{"driverId":"codex"}"#)).unwrap();
         assert_eq!(decode_receipt(&registered).unwrap().status, V37Status::Applied);
@@ -4156,19 +4170,20 @@ exit 0
         let root = RootLock::acquire(&path).unwrap();
         let database = path.join("state.sqlite");
         let mut product = ProductDatabase::open(&root, &database).unwrap();
+        managed_cli_test_setup::ready(&mut product, &root, "codex");
         let register = request("register", "registerColdA", 0, r#"{"driverId":"codex"}"#);
         let registered = decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap();
         assert_eq!(registered.status, V37Status::Applied);
-        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody"), "0");
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex'"), "0");
         // Exercise the first real LPAC account observer directly after native
         // registration. No earlier preparation may mutate or warm its scopes.
         let observation = request("login-state", "coldAccountReadA", 1, "{}");
         let observed = product.dispatch_owner_login_observation(&observation).unwrap();
         assert_eq!(owner_login_state_from_receipt(&observed).unwrap(), "LOGGED_OUT");
         assert_eq!(scalar(&product,
-            "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "1");
+            "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex' AND state='STOPPED'"), "1");
         assert_eq!(scalar(&product,
-            "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state<>'STOPPED'"), "0");
+            "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex' AND state<>'STOPPED'"), "0");
         drop(product); drop(root);
         fs::remove_dir_all(path).unwrap();
     }
@@ -4183,6 +4198,7 @@ exit 0
         let root = RootLock::acquire(&path).unwrap();
         let database = path.join("state.sqlite");
         let mut product = ProductDatabase::open(&root, &database).unwrap();
+        managed_cli_test_setup::ready(&mut product, &root, "codex");
         let register = request("register", "registerA", 0, r#"{"driverId":"codex"}"#);
         let registered = decode_receipt(&product.register_user_instance(&register).unwrap()).unwrap();
         assert_eq!(registered.status, V37Status::Applied,
@@ -4227,7 +4243,7 @@ exit 0
         let query = request("login-state", "queryBeforeObservation", 1, "{}");
         let before = product.dispatch_user_request(&query).unwrap();
         assert!(String::from_utf8(before).unwrap().contains("\"state\":\"UNKNOWN\""));
-        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody"), "0",
+        assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex'"), "0",
             "K-INSTANCE login-state is a read; it must not start a provider process");
         let first = request("login-state", "loginReadA", 1, "{}");
         let observed_bytes = product.dispatch_owner_login_observation(&first).unwrap();
@@ -4241,7 +4257,7 @@ exit 0
         assert!(!observed_text.contains("email"));
         assert!(!observed_text.contains("token"));
         assert_eq!(scalar(&product,
-            "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "1");
+            "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex' AND state='STOPPED'"), "1");
         let query = request("login-state", "queryAfterObservation", 2, "{}");
         let after = product.dispatch_user_request(&query).unwrap();
         assert!(String::from_utf8(after).unwrap().contains("\"state\":\"LOGGED_OUT\""));
@@ -4250,7 +4266,7 @@ exit 0
         assert_eq!(replay.status, V37Status::Replayed);
         assert_eq!(replay.revision, 2);
         assert_eq!(scalar(&product,
-            "SELECT count(*) FROM gogoke_coordination_process_custody WHERE state='STOPPED'"), "1",
+            "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex' AND state='STOPPED'"), "1",
             "exact replay cannot restart the pinned CLI");
         let second = request("login-state", "loginReadB", 2, "{}");
         let unchanged = decode_receipt(&product.dispatch_owner_login_observation(&second).unwrap()).unwrap();
@@ -4282,6 +4298,7 @@ exit 0
         let root = RootLock::acquire(&path).unwrap_or_else(|_| panic!("isolated OAuth test root lock failed"));
         let mut product = ProductDatabase::open(&root, &path.join("state.sqlite"))
             .unwrap_or_else(|_| panic!("isolated OAuth product database open failed"));
+        managed_cli_test_setup::ready(&mut product, &root, "codex");
         let registered = decode_receipt(&product.register_user_instance(
             &request("register", "registerA", 0, r#"{"driverId":"codex"}"#))
             .unwrap_or_else(|_| panic!("isolated OAuth instance registration failed")))

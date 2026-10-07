@@ -70,7 +70,7 @@ fn fixture(run: impl FnOnce(&RootLock, &mut ProductDatabase<'_>)) {
     product.close_checked().unwrap(); drop(root);
     std::fs::remove_file(database).unwrap();
     std::fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).unwrap();
-    if let Err(error) = std::fs::remove_dir(&path) { eprintln!("owned fixture retained: {error}"); }
+    if let Err(error) = std::fs::remove_dir_all(&path) { eprintln!("owned fixture retained: {error}"); }
 }
 fn scalar(product: &ProductDatabase<'_>, sql: &str) -> String {
     let statement = Statement::prepare(product.connection.as_ptr(), sql).unwrap();
@@ -810,6 +810,7 @@ fn controlled_vertical_midstage_failure_rolls_back_without_an_action_half_row() 
 #[test]
 fn user_instance_reads_native_install_and_keeps_registration_login_unknown() {
     fixture(|root, product| {
+        managed_cli_test_setup::ready(product, root, "codex");
         let registration = register_request();
         let registered = product.register_user_instance(&registration).unwrap();
         let registered = String::from_utf8(registered).unwrap();
@@ -841,6 +842,7 @@ fn user_instance_reads_native_install_and_keeps_registration_login_unknown() {
 #[test]
 fn user_instance_install_read_rejects_a_changed_registered_digest_without_revision_change() {
     fixture(|root, product| {
+        managed_cli_test_setup::ready(product, root, "codex");
         let registration = register_request();
         assert!(String::from_utf8(product.register_user_instance(&registration).unwrap())
             .unwrap().contains("\"status\":\"APPLIED\""));
@@ -866,6 +868,7 @@ fn user_instance_install_read_rejects_a_changed_registered_digest_without_revisi
 #[test]
 fn user_instance_login_read_replays_a_durable_login_observation() {
     fixture(|root, product| {
+        managed_cli_test_setup::ready(product, root, "codex");
         let registration = register_request();
         assert!(String::from_utf8(product.register_user_instance(&registration).unwrap())
             .unwrap().contains("\"status\":\"APPLIED\""));
@@ -913,6 +916,7 @@ fn user_instance_login_read_replays_a_durable_login_observation() {
 #[test]
 fn user_instance_login_read_does_not_promote_a_durable_login_without_current_observation() {
     fixture(|root, product| {
+        managed_cli_test_setup::ready(product, root, "codex");
         let registration = register_request();
         assert!(String::from_utf8(product.register_user_instance(&registration).unwrap())
             .unwrap().contains("\"status\":\"APPLIED\""));

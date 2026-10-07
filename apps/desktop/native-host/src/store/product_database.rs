@@ -57,6 +57,8 @@ mod v37_holder_disappearance;
 mod v37_grok_home_recovery;
 #[cfg(all(test, windows))]
 mod v37_holder_disappearance_tests;
+#[cfg(all(test, windows))]
+mod managed_cli_test_setup;
 mod v37_side;
 
 fn user_payload_string(request: &V37Request, field: &'static str) -> Result<String> {
