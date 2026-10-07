@@ -155,9 +155,9 @@ impl<'root> ProductDatabase<'root> {
                 .ok_or(OrchestrationError::Invalid("seat registered instance"))?;
             if profile.enabled == Some(true) && registered.login_state == "LOGGED_IN"
                 && self.current_login_observation(&profile.instance_id, registered.revision, "LOGGED_IN")? {
-                choices.push(reference.clone());
+                choices.push(Parser::parse(&reference.canonical())?);
             }
-            refs.insert(profile.instance_id, reference);
+            refs.insert(profile.instance_id, reference.canonical());
         }
         let mut rows = Vec::new();
         let mut running = 0usize;
@@ -172,11 +172,21 @@ impl<'root> ProductDatabase<'root> {
                 },
                 None => BTreeMap::new(),
             };
-            let setting = |name: &str| settings.get(&key(name)).cloned().unwrap_or_else(|| string(""));
-            let reference = refs.get(&seat.instance_id).cloned()
+            let setting = |name: &str| match settings.get(&key(name)) {
+                Some(Json::String(value)) => Json::String(value.clone()),
+                _ => string(""),
+            };
+            let reference = refs.get(&seat.instance_id)
                 .ok_or(OrchestrationError::Invalid("seat instance presentation unavailable"))?;
             let mut row = BTreeMap::from([
                 (key("id"), string(&seat.seat_id)),
+                // Native mutation tokens are held by the source adapter, never
+                // rendered as product labels or substituted for display names.
+                (key("_revision"), string(&seat.revision.to_string())),
+                (key("_incarnation"), string(&seat.incarnation)),
+                (key("_settings"), match seat.settings_json.as_deref() {
+                    Some(raw) => Parser::parse(raw)?, None => Json::Object(BTreeMap::new()),
+                }),
                 (key("name"), string(fact.display_name.as_deref().unwrap_or("未命名席位"))),
                 (key("layer"), string(if seat.layer == seat::Layer::User { "direct" } else { "sub" })),
                 (key("isLead"), Json::Bool(fact.is_project_lead)),
@@ -187,9 +197,9 @@ impl<'root> ProductDatabase<'root> {
                     (key("changeInstance"), Json::Bool(fact.allowed.change_instance)),
                     (key("remove"), Json::Bool(fact.allowed.remove)),
                 ]))),
-                (key("instance"), reference), (key("model"), setting("model")),
-                (key("effort"), settings.get(&key("effort")).or_else(|| settings.get(&key("reasoningEffort")))
-                    .cloned().unwrap_or_else(|| string(""))),
+                (key("instance"), Parser::parse(reference)?), (key("model"), setting("model")),
+                (key("effort"), if settings.contains_key(&key("effort")) { setting("effort") }
+                    else { setting("reasoningEffort") }),
                 (key("permission"), setting("permissionTier")),
             ]);
             if let Some(reason) = fact.allowed.locked_reason {
@@ -198,8 +208,8 @@ impl<'root> ProductDatabase<'root> {
             if let Some(card) = fact.state_card.and_then(|card| card.card_json) {
                 if let Json::Object(card) = Parser::parse(&card)? {
                     for name in ["goal", "pending", "doing", "reclaimCondition"] {
-                        if let Some(value @ Json::String(_)) = card.get(&key(name)) {
-                            row.insert(key(name), value.clone());
+                        if let Some(Json::String(value)) = card.get(&key(name)) {
+                            row.insert(key(name), Json::String(value.clone()));
                         }
                     }
                 }

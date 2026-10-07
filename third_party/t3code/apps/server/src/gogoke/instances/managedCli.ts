@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { lstat, mkdir, mkdtemp, open, realpath, rename, rm, stat } from "node:fs/promises";
-import { join, resolve, sep } from "node:path";
+import { join, resolve, sep, toNamespacedPath } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 import { FIXED_OFFICIAL_CATALOG } from "./fixedOfficialCatalog.ts";
@@ -66,7 +66,7 @@ async function plainDirectory(path: string): Promise<void> {
   if (!item.isDirectory() || item.isSymbolicLink()) {
     throw new ManagedCliError("ROOT_IDENTITY", `not a plain directory: ${path}`);
   }
-  if (await realpath(path) !== resolve(path)) {
+  if (toNamespacedPath(await realpath(path)) !== toNamespacedPath(resolve(path))) {
     throw new ManagedCliError("ROOT_IDENTITY", `directory resolves elsewhere: ${path}`);
   }
 }

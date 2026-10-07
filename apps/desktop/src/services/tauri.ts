@@ -1,4 +1,27 @@
 import { invoke } from "@tauri-apps/api/core";
+
+/** Existing native USER ingress. A model call never goes through this bridge. */
+export async function design37UserConfiguration<T>(
+  command: string,
+  fields: Record<string, unknown> = {},
+): Promise<T> {
+  if ("schema" in fields || "command" in fields) {
+    throw new Error("Design 37 configuration identity cannot be overridden.");
+  }
+  const frame = JSON.stringify({
+    schema: "gogoke.37.owner-configuration.v1",
+    command,
+    ...fields,
+  });
+  const raw = await invoke<string>("gogoke_design37_user_operation", { frame });
+  if (typeof raw !== "string") throw new Error("Native USER reply is not a JSON frame.");
+  const result: unknown = JSON.parse(raw);
+  if (result && typeof result === "object" && "status" in result &&
+      !["APPLIED", "REPLAYED"].includes(String(result.status))) {
+    throw new Error(`Native USER configuration failed: ${raw}`);
+  }
+  return result as T;
+}
 import { open, save } from "@tauri-apps/plugin-dialog";
 import type { Options as NotificationOptions } from "@tauri-apps/plugin-notification";
 import type {
