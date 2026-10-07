@@ -89,7 +89,7 @@ pub(crate) fn reserve_native(
         let current = seat::get(db, request.domain_id, seat_id).map_err(AdmissionError::Seat)?
             .ok_or(AdmissionError::Denied)?;
         if current.instance_id != request.instance_id { return Err(AdmissionError::Denied); }
-        let current = if current.state == SeatState::Idle
+        let current = if new_reservation && current.state == SeatState::Idle
             && current.generation.checked_add(1).map(|value| value.to_string()).as_deref()
                 == Some(request.generation) {
             seat::set_dispatch_state_in_transaction(db, &current, true)
@@ -125,7 +125,7 @@ pub(crate) fn reserve_native_for_host(db:&mut VerifiedDatabaseConnection<'_>,
         check_owner_current(db,&identity)?;
         let seat=host_rule::revalidate_host_recipient_in_transaction(db,host,proof,choice)
             .map_err(host_recipient_admission_error)?;
-        let seat=if seat.state==SeatState::Idle {
+        let seat=if new_reservation && seat.state==SeatState::Idle {
             seat::set_dispatch_state_in_transaction(db,&seat,true).map_err(AdmissionError::Seat)?
         } else {seat};
         if seat.state!=SeatState::Busy || seat.generation.to_string()!=request.generation {
