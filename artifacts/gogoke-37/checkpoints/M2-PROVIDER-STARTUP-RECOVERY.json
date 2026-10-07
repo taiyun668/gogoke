@@ -1,15 +1,42 @@
 {
   "schema": "gogoke.37.light-checkpoint.v1",
-  "state": "PR72_READBACK_PASS_PARALLEL_HOST_WIRING_UI_CI_RUNNING",
+  "state": "PR72_READBACK_PASS_UI_REQUIRES_REVISION_HOST_INTEGRATED_CLOUD_RUNNING",
   "changes": "Protected auth and protected residue revoke retain exact FileID/protection, empty-target no-op and unique explicit rights/flags checks, then reuse the existing held-object Native raw writer to preserve peer bytes/order/control. ROOT retains Win32 propagation and its corrected new-intent inheritance control. Deleted-old-object cold tests now use actual post-ROOT ACL state, preserving original receipts and rejecting missing old revoke evidence; no descriptor-restoration fixture was added.",
   "results": "Exact c57ec50bc7b67001f37422eac47c2a6e3d6f104a cloud run 37531810888 SUCCESS: release/required axes PASS, twelve focused cases all PASS, zero FAIL/SKIP, independent catalog compiled mutations PASS. Fresh independent review checked source identity and raw array/logs. Full library and server skipped by directed scope; model/Owner Win11 and actual36 nonempty residue through complete cold journal remain NOT_RUN. Original installed36 closed read-only metadata confirms old AUTH/ROOT REVOKE/APPLIED empty target; no credential contents read or database writes.",
   "failureOriginal": "REVOKE_AUTH before/expected/actual_control=0x9404 identity_match=true expected/actual_target=empty peer_bytes_preserved=false; deleted-unrevoked fixture post-ROOT successor target unexpectedly empty",
   "references": "Reuse current F journal, original H StopFact/cold ingress and same-held-object Native writer. Direct log fields isolate protected AUTH Win32 merge/set peer changes; Microsoft propagation semantics explain the invalid post-ROOT fixture premise. Existing nonempty file/directory residue tests exercise the real writer while ROOT still granted; deleted-object cold cases preserve actual post-ROOT state and original receipts. No restored-DACL fixture, retry, intent migration or comparison relaxation. Fresh focused static and actual cloud evidence now passed, limited to these known boundaries.",
-  "currentChanges": "Merged authorized main; integrated F instance metadata/fixed official CLI staging primitives and E native seat labels, exact lead designation and explicit action facts. Added USER-only instance-management and seat-page reads/profile mutations; no model-origin USER bridge. CLI state derives managed-copy observation, never a program pin. Download writable errors now propagate through pipeline and Windows namespace forms normalize without removing path checks. Shared account/model/install and natural-language sidechat delivery are being wired; no completed behavior claim yet.",
-  "currentResults": "PR72 Owner merge/current main 8dea3727, receipt blob 373de0bd083201c0e5aefa5634a769ccd7f42000; trusted main verifier recomputed scope aad8bf4d015a588b1882b4ff9d1c8ed4ac87e24474690fc4385923108f2c85a8 and Git-byte MANIFEST with zero errors. Public source scan 25079 files, leaks=0. Fresh F audit confirmed original official archives/image digests and download failure/path fixes. UI run 37576434117 at exact 7ec3fe57: Browser/notices/repro PASS; frozen Windows still running. UI has not been audited or integrated. Root cloud 37578813911 failed compilation: Json is not Clone; source now reconstructs only required original values, rerun pending. No native local build, signing, installation, credentials reads or formal-data changes.",
-  "currentFailureOriginal": "error[E0599]: no method named clone found for enum store::atomic::Json; error[E0277]: Json: Clone is not satisfied. Sidechat existing C deliver is AppendWithoutTurn, so it cannot be reported as new-turn; D is binding new-turn to the original H send/createdTurn receipt.",
-  "currentReferences": "Trusted main governance/PLAN and existing native USER dispatcher, E seat mutation guards/read models, F controlled official artifact pins and original registry/custody. Reuse original C host-rule admission plus H send/steer and original A receipt for side delivery rather than a second scheduler. Missing account/models/managed state stays unreported. Pending native login global custody guard reuses the current login and exact-holder facts, retaining historical UNKNOWN recovery decisions.",
-  "parallel": "D sidechat source/target authorization and real H receipt delivery; F private CLI installation/activation, masked qualified account and original model/list source; Controller E/F read-model composition, fresh audit fixes and cloud compile. UI exact run remains a concrete external gate; no UI integration before all green and a fresh independent review. OpenCode no-ACL research is retained, no ACL/security changes.",
-  "next": "Finish corrected native cloud build and shared wiring. Once exact UI run is all green, launch a fresh independent review, then integrate accepted G bytes and mount seats/sidechat through existing tabs. Connect actual source/actions; stable full chain and original-home Win11 E2E remain NOT_RUN. No new Owner login or reboot.",
-  "retainedTemporaryEvidence": "Two fresh-auditor focused downloads retained: %TEMP%/g37-focused-audit-0492b84641f54f638c23975d30d47442 and %TEMP%/g37-focused-audit-5927c348c8cb4c0da93d303d54ff7f7f. Automatic approval rejected cleanup with blocked by policy; no bypass. Completed worker worktree removed after integration; commit/branch retained."
+  "currentChanges": "Integrated actual managed CLI activation/resume, masked qualified account observations, original Codex model/list pagination and native seat read/actions. D side MESSAGE pair now derives from original Owner side-open and exact designated lead; SIDE_CHAT native tool capture/revalidation allows only side_message. Account re-observation clears prior model cache without comparing masked labels. No G files integrated.",
+  "currentResults": "UI exact 7ec3fe57 run37576434117 all five jobs PASS. Fresh Sol review found five UI logic defects; Controller checked premises and handed back in PR71 comments. F known defects and D side-only repair passed focused static review; this is not acceptance. Root0fa656c4 native run37585297753 compilation failed E0433/E0425; actual resolver-reference fixes committed485f22e7, rerun37585671217 running. Current combined D/F bytes still need their cloud gate. Committed source scan25085 files leaks0. No new local native build/signing/install or Owner login.",
+  "currentFailureOriginal": "error[E0433]: could not find program_source in super, provider_login_preparation.rs:269; error[E0425]: cannot find value fixed_catalog in this scope, grok_home_grants.rs:154. Fixed actual exported resolver path and same-instance managed catalog callback. D reviewer: registering one CLI tool did not enforce native allowlist; fixed exact session-purpose guard.",
+  "currentReferences": "Trusted main AGENTS/PLAN, existing authenticated native USER ingress and original H process/custody/source journals; gogo-party provider login reference retained. Reuse C steer and H original new-turn receipts, not AppendWithoutTurn as a new round. Native side tool policy uses actual A session purpose and D/E pair, never model-supplied permissions. UI only accepts current source reads; missing facts remain unknown. Scope unchanged; PR72 receipt was read back from Owner main8dea3727.",
+  "parallel": "F instance source/actions factory and exact evidence; D sidechat read/source and real receipt delivery; Controller shared integration, cloud failures and fresh audit. G revision is external Claude work. OpenCode no-ACL research retained; no new ACL/security changes.",
+  "next": "Integrate only reviewed source proposals, run cloud on exact combined bytes. Re-review Claude new fixed head, then mount seats/sidechat through shared existing slots and connect real sources. Stable candidate full-chain and original-instance Win11 E2E remain NOT_RUN.",
+  "retainedTemporaryEvidence": "Two fresh-auditor focused downloads retained: %TEMP%/g37-focused-audit-0492b84641f54f638c23975d30d47442 and %TEMP%/g37-focused-audit-5927c348c8cb4c0da93d303d54ff7f7f. Automatic approval rejected cleanup with blocked by policy; no bypass. Completed worker worktree removed after integration; commit/branch retained. F worker proposal files v37_managed_cli.rs/v37_models.rs retained in its exclusive worktree after automatic cleanup blocked by policy; no tool/actor bypass. Canonical reviewed copies are committed.",
+  "items": [
+    {
+      "item": "Claude UI integration",
+      "completed": "Exact cloud run all green; fresh independent review and Controller premise check completed; five revisions handed to Claude in PR71.",
+      "waiting": "Claude revised fixed head and re-review; current7ec3fe57 not integrated.",
+      "parallel": "F source/account/models and D natural delivery already active."
+    },
+    {
+      "item": "Sidechat tab mount",
+      "completed": "Existing shared panel slots mapped; no scope expansion.",
+      "waiting": "Accepted G head before mounting it, preserving requested sequence.",
+      "parallel": "Host D list/message source and native delivery wiring."
+    },
+    {
+      "item": "Host data/actions",
+      "completed": "Native F/E original-fact reads and mutation bridges committed; D message pair/tool guard integrated; original model cache invalidation committed.",
+      "waiting": "Exact integrated-source cloud checks and final bridge proposals; Win11 product E2E NOT_RUN.",
+      "parallel": "F instance source factory; D sidechat source factory; Controller cloud fixes/integration."
+    },
+    {
+      "item": "Reporting",
+      "completed": "Per-item completed/external/parallel status recorded.",
+      "waiting": "No new Owner action currently required.",
+      "parallel": "Construction continues after checkpoint."
+    }
+  ],
+  "inboxObserved": "b4f7e866029b8c5a9a1211100effadf01a03ffbc; index unchanged, no new design37 entry."
 }
