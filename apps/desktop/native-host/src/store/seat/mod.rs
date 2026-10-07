@@ -13,6 +13,10 @@ mod policy;
 mod continuity;
 mod orchestration;
 mod page_facts;
+mod secretary;
+pub(crate) use secretary::{configure_secretary, designate_secretary,
+    read_secretary_configuration_in_transaction, SecretaryConfiguration,
+    SecretaryDesignation};
 pub(crate) use page_facts::{designate_project_lead,list_page_facts,list_templates,
     rename_seat,PageSeatFacts,SeatActionFacts,SeatPageFacts,TemplateChoice};
 pub(crate) use resource::{read_effective_project_parallel_cap,read_host_parallel_fact,
@@ -331,6 +335,12 @@ fn reject_shadow_or_effect(db: &VerifiedDatabaseConnection<'_>) -> Result<(), Se
     Ok(())
 }
 fn expected_schema() -> Vec<(String, String)> {
+    let mut entries = pre_secretary_schema();
+    entries.push(("gogoke_v37_seat_secretary".into(),secretary::DESIGNATION.into()));
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    entries
+}
+fn pre_secretary_schema() -> Vec<(String, String)> {
     let mut entries = e2_schema();
     entries.extend(page_facts::SCHEMA.iter().map(|(name,sql)|(name.to_string(),sql.to_string())));
     entries.sort_by(|left, right| left.0.cmp(&right.0));
@@ -400,10 +410,19 @@ pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Resu
     if observed == expected_schema() {
         return Ok(());
     }
+    if observed == pre_secretary_schema() {
+        return transact(db, |db| {
+            if schema(db)? != pre_secretary_schema() {return Err(SeatError::SchemaDrift);}
+            db.execute(secretary::DESIGNATION)?;
+            if schema(db)? != expected_schema() {return Err(SeatError::SchemaDrift);}
+            Ok(())
+        });
+    }
     if observed == e2_schema() {
         return transact(db, |db| {
             if schema(db)? != e2_schema() {return Err(SeatError::SchemaDrift);}
             page_facts::create_tables(db)?;
+            db.execute(secretary::DESIGNATION)?;
             if schema(db)? != expected_schema() {return Err(SeatError::SchemaDrift);}
             Ok(())
         });
@@ -433,6 +452,7 @@ pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Resu
         db.execute(PROJECT_CAPS)?;
         create_e2_tables(db)?;
         page_facts::create_tables(db)?;
+        db.execute(secretary::DESIGNATION)?;
         if schema(db)? != expected_schema() {
             return Err(SeatError::SchemaDrift);
         }
@@ -446,6 +466,7 @@ fn migrate_f1_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Result<(), Seat
         if schema(db)? != f1_schema() { return Err(SeatError::SchemaDrift); }
         create_e2_tables(db)?;
         page_facts::create_tables(db)?;
+        db.execute(secretary::DESIGNATION)?;
         if schema(db)? != expected_schema() { return Err(SeatError::SchemaDrift); }
         Ok(())
     })
@@ -460,6 +481,7 @@ fn migrate_previous_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Result<()
         db.execute(PROJECT_CAPS)?;
         create_e2_tables(db)?;
         page_facts::create_tables(db)?;
+        db.execute(secretary::DESIGNATION)?;
         if schema(db)? != expected_schema() {
             return Err(SeatError::SchemaDrift);
         }
@@ -489,6 +511,7 @@ fn migrate_legacy_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Result<(), 
         db.execute(PROJECT_CAPS)?;
         create_e2_tables(db)?;
         page_facts::create_tables(db)?;
+        db.execute(secretary::DESIGNATION)?;
         if schema(db)? != expected_schema() {
             return Err(SeatError::SchemaDrift);
         }
@@ -1097,6 +1120,9 @@ fn change(
         }
         let before = read(db, input.domain_id, input.seat_id)?.ok_or(SeatError::Unknown)?;
         check_origin(db, &origin, input.domain_id, Some(&before))?;
+        if secretary::is_designated_current(db,&before)? && action!="reclaim" {
+            return Err(SeatError::Denied);
+        }
         if action=="reclaim" && page_facts::is_designated_lead(db,&before)? {
             return Err(SeatError::Denied);
         }
@@ -1245,8 +1271,16 @@ pub(crate) fn configure_instance(
         }
         if before.state == State::Busy { return Err(SeatError::Busy); }
         page_facts::ensure_mutable(db, &before)?;
-        if before.instance_id.is_empty() { return Err(SeatError::Conflict); }
+        // Only the Owner-designated global secretary may be configured from
+        // an unbound seat in one transaction. This is configuration data, not
+        // H admission or global ledger authority.
+        if before.instance_id.is_empty() && !secretary::is_designated_current(db,&before)? {
+            return Err(SeatError::Conflict);
+        }
         if !instance_exists(db, instance_id)? { return Err(SeatError::Unknown); }
+        if secretary::is_designated_current(db,&before)? {
+            secretary::require_enabled_instance(db,instance_id)?;
+        }
         let evidence = super::instance::read_instance_evidence(db, instance_id)
             .map_err(|error| SeatError::InstanceManagement(format!("{error:?}")))?
             .ok_or(SeatError::Denied)?;
@@ -1360,6 +1394,7 @@ pub(crate) fn tune(
         }
         let before = read(db, input.domain_id, input.seat_id)?.ok_or(SeatError::Unknown)?;
         check_origin(db, &origin, input.domain_id, Some(&before))?;
+        if secretary::is_designated_current(db,&before)? {return Err(SeatError::Denied);}
         if before.state == State::Reclaimed { return Err(SeatError::Denied); }
         if before.generation != input.expected_generation || before.revision != input.expected_revision {
             return Err(SeatError::Conflict);

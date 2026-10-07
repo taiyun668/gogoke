@@ -211,6 +211,101 @@ fn set_verified_models(db:&VerifiedDatabaseConnection<'_>, instance_id:&str,
     write.step_done().unwrap();
 }
 
+fn secretary_fact(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer)
+    ->SecretaryConfiguration {
+    db.execute("BEGIN IMMEDIATE").unwrap();
+    let fact=read_secretary_configuration_in_transaction(db,owner).unwrap();
+    db.execute("COMMIT").unwrap();
+    fact
+}
+
+#[test]
+fn owner_secretary_designation_is_singleton_and_settings_remain_explicit() {
+    fixture(|db,owner| {
+        assert_eq!(secretary_fact(db,owner),SecretaryConfiguration::Unset);
+        store_template(db,NativeOrigin::user(owner),StoreTemplate {domain_id:"global",
+            template_id:"secretaryBase",settings_json:br#"{}"#}).unwrap();
+        let seat=create(db,NativeOrigin::user(owner),CreateSeat {domain_id:"global",
+            seat_id:"globalSeatA",template_id:"secretaryBase",instance_id:None,
+            kind:Kind::Long,request_id:"createGlobalA",request_bytes:b"create global A"})
+            .unwrap().seat;
+        let first=designate_secretary(db,owner,&seat.seat_id,&seat.incarnation,
+            "designateA",b"original designation bytes").unwrap();
+        assert!(!first.replayed);
+        assert!(designate_secretary(db,owner,&seat.seat_id,&seat.incarnation,
+            "designateA",b"original designation bytes").unwrap().replayed);
+        let other=create(db,NativeOrigin::user(owner),CreateSeat {domain_id:"global",
+            seat_id:"secretary",template_id:"secretaryBase",instance_id:None,
+            kind:Kind::Long,request_id:"createGlobalB",request_bytes:b"create global B"})
+            .unwrap().seat;
+        assert!(matches!(designate_secretary(db,owner,&other.seat_id,&other.incarnation,
+            "designateB",b"different global seat"),Err(SeatError::Conflict)));
+        assert!(matches!(designate_secretary(db,owner,&seat.seat_id,&seat.incarnation,
+            "designateA",b"changed bytes"),Err(SeatError::Conflict)));
+        assert!(matches!(secretary_fact(db,owner),SecretaryConfiguration::Designated {
+            instance_id:None,model:None,effort:None,permission:None,..}));
+        assert!(matches!(configure_secretary(db,owner,seat.generation,seat.revision,
+            "configA",b"original config bytes","instanceA","modelA","high",
+            "\"READ_ONLY\""),Err(SeatError::Denied)));
+        db.execute("INSERT INTO main.gogoke_v37_instance_profiles(instance_id,display_name,enabled,tombstoned,revision) VALUES('instanceA','A',1,0,1)").unwrap();
+        set_verified_models(db,"instanceA",r#"["modelA"]"#,"sha256:test");
+        let configured=configure_secretary(db,owner,seat.generation,seat.revision,
+            "configA",b"original config bytes","instanceA","modelA","high",
+            "\"READ_ONLY\"").unwrap();
+        assert!(!configured.replayed);
+        assert_eq!(configured.seat.instance_id,"instanceA");
+        assert!(matches!(secretary_fact(db,owner),SecretaryConfiguration::Designated {
+            instance_id:Some(ref id),model:Some(ref model),effort:Some(ref effort),
+            permission:Some(PermissionTier::ReadOnly),..}
+            if id=="instanceA"&&model=="modelA"&&effort=="high"));
+        assert!(configure_secretary(db,owner,seat.generation,seat.revision,
+            "configA",b"original config bytes","instanceA","modelA","high",
+            "\"READ_ONLY\"").unwrap().replayed);
+        assert!(matches!(configure_secretary(db,owner,seat.generation,seat.revision,
+            "configA",b"changed config bytes","instanceA","modelA","high",
+            "\"READ_ONLY\""),Err(SeatError::Conflict)));
+        assert!(matches!(tune(db,NativeOrigin::user(owner),SeatChange {domain_id:"global",
+            seat_id:&seat.seat_id,expected_generation:configured.seat.generation,
+            expected_revision:configured.seat.revision,request_id:"bypassTune",
+            request_bytes:b"direct tune"},"model","\"unverified\""),Err(SeatError::Denied)));
+        let revoked=reclaim(db,NativeOrigin::user(owner),SeatChange {domain_id:"global",
+            seat_id:&seat.seat_id,expected_generation:configured.seat.generation,
+            expected_revision:configured.seat.revision,request_id:"revokeSecretary",
+            request_bytes:b"revoke secretary"}).unwrap().seat;
+        assert_eq!(revoked.state,State::Reclaimed);
+        assert_eq!(secretary_fact(db,owner),SecretaryConfiguration::Revoked);
+        assert!(matches!(configure_secretary(db,owner,seat.generation,seat.revision,
+            "configA",b"original config bytes","instanceA","modelA","high",
+            "\"READ_ONLY\""),Err(SeatError::Conflict)|Err(SeatError::Denied)));
+    });
+}
+
+#[test]
+fn secretary_config_refuses_unreleased_h_occupation() {
+    fixture(|db,owner| {
+        store_template(db,NativeOrigin::user(owner),StoreTemplate {domain_id:"global",
+            template_id:"secretaryBase",settings_json:br#"{}"#}).unwrap();
+        let seat=create(db,NativeOrigin::user(owner),CreateSeat {domain_id:"global",
+            seat_id:"globalSeatA",template_id:"secretaryBase",instance_id:None,
+            kind:Kind::Long,request_id:"createGlobalA",request_bytes:b"create global A"})
+            .unwrap().seat;
+        designate_secretary(db,owner,&seat.seat_id,&seat.incarnation,
+            "designateA",b"original designation bytes").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_instance_profiles(instance_id,display_name,enabled,tombstoned,revision) VALUES('instanceA','A',1,0,1)").unwrap();
+        set_verified_models(db,"instanceA",r#"["modelA"]"#,"sha256:test");
+        db.execute("CREATE TABLE gogoke_v37_h_claim(domain_id TEXT,session_id TEXT,state TEXT,instance_id TEXT)").unwrap();
+        db.execute("CREATE TABLE gogoke_v37_h_seat_binding(domain_id TEXT,session_id TEXT,seat_id TEXT,seat_incarnation TEXT)").unwrap();
+        let insert=Statement::prepare(db.as_ptr(),"INSERT INTO gogoke_v37_h_seat_binding VALUES('global','sessionA','globalSeatA',?1)").unwrap();
+        insert.bind_text(1,&seat.incarnation).unwrap();insert.step_done().unwrap();
+        db.execute("INSERT INTO gogoke_v37_h_claim VALUES('global','sessionA','STOPPED','instanceA')").unwrap();
+        assert!(matches!(configure_secretary(db,owner,seat.generation,seat.revision,
+            "configBusy",b"config while stopped but unreleased","instanceA","modelA",
+            "high","\"READ_ONLY\""),Err(SeatError::Busy)));
+        assert!(matches!(secretary_fact(db,owner),SecretaryConfiguration::Designated {
+            instance_id:None,model:None,effort:None,permission:None,..}));
+    });
+}
+
 #[test]
 fn configure_instance_commits_binding_and_full_settings_and_replays_exact_snapshot() {
     fixture(|db,owner| {
