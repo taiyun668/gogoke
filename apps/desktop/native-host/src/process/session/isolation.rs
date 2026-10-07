@@ -1856,6 +1856,8 @@ mod tests {
 
     #[test]
     fn second_bound_sid_grant_observes_held_directory_roots_acl_propagation() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
         use std::time::{SystemTime, UNIX_EPOCH};
 
         fn result_code(result: &Result<AclWitness, IsolationError>) -> String {
@@ -1908,15 +1910,24 @@ mod tests {
             let root_lock = RootLock::acquire(&base).unwrap();
             let tree = root_lock.canonical_root().canonical_path.join("tree");
             let git = tree.join(".git");
-            let leaf = git.join("config");
-            std::fs::create_dir_all(&git).unwrap();
+            let leaf = tree.join("ordinary-leaf.txt");
+            std::fs::create_dir(&tree).unwrap();
+            std::fs::write(&git, b"fixture git pointer marker\n").unwrap();
             std::fs::write(&leaf, b"ordinary physical leaf").unwrap();
             let identity = crate::root::inspect_root(&tree).unwrap().identity;
-            // The same root lock and exact-object pointer guard stay alive in
-            // both cases. Only the real compatibility directory custody varies.
-            let pointer_guard = open_bound_object(&tree, &identity, true)
-                .unwrap_or_else(|error| panic!("pointer guard open variant {:?}",
+            // Both cases hold F's .git pointer-file read/share shape before
+            // either SID grant. The extra root guard is identical in both.
+            let root_guard = open_bound_object(&tree, &identity, true)
+                .unwrap_or_else(|error| panic!("root guard open variant {:?}",
                     std::mem::discriminant(&error)));
+            let pointer_meta = std::fs::symlink_metadata(&git).unwrap();
+            assert!(pointer_meta.is_file() &&
+                pointer_meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0);
+            let pointer_guard = std::fs::OpenOptions::new().read(true).share_mode(1)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(&git)
+                .expect("hold ordinary .git pointer file");
+            let pointer_id = file_identity(pointer_guard.as_raw_handle())
+                .expect("read held .git pointer FileID");
             let first_result = first.grant_bound_tree(&tree, &identity, true);
             println!("acl-handle-fixture case={case} first_grant={}",
                 result_code(&first_result));
@@ -1936,8 +1947,12 @@ mod tests {
                 snapshot(&format!("{case}/.git-after"), &git, &first, &second),
                 snapshot(&format!("{case}/leaf-after"), &leaf, &first, &second)];
             assert_eq!(before, after, "physical FileIDs changed during ACL experiment");
+            assert_eq!(pointer_id, after[1], "held .git pointer FileID changed");
+            println!("acl-handle-fixture case={case} pointer_volume={:#x} pointer_file_id={:02x?}",
+                pointer_id.volume_serial, pointer_id.file_id);
             drop(directory_roots);
             drop(pointer_guard);
+            drop(root_guard);
             drop(root_lock);
             std::fs::remove_dir_all(base).unwrap();
         }
