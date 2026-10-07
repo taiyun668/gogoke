@@ -341,3 +341,7 @@ K-UI 按 `secretaryModel.ts` 的 `SecretaryPage / SecretarySettings / Routine / 
 参照：直接读 Claude `Secretary.tsx/secretaryModel.ts`、现有 Sidebar/opaque sidebarNode、MainApp 两个右栏节点、普通 Messages/Composer、native A 的 global 查询和原 H/C 调用链；历史 gogo-party `room/src/role-policy.ts` 的角色界定和只读默认只作为参考，沿用新 Owner 决定下可写信箱而不写项目文件的范围。仓库 `kernel-parts-harvest` 的 Hermes Profile/Bot 长期身份、Curator，以及 `reuse-blueprint`/`upstream-reference-map` 仅借做法；Hermes Studio 的独立许可边界不当作 Hermes Agent 的授权，也不引入任一 runtime。Owner 样稿链接无法通过工具读取，依据 Owner 认可和确切分支，不宣称画面比对通过。
 
 这次除 G 目录和 Sidebar 入口槽外，不新增宿主目录或通用前端事件/type 写域。范围摘要、v2 回执、T00、MANIFEST 和三处固定回执 blob 在同一 PR 更新，Owner 合并后精确读回才能实施。
+
+聚焦复核落实：旧“不承诺”里泛称决策登记册、长期记忆在第二批，现明确区分：秘书长隔离的全局记忆和全局决策册属于本次 M3，通用项目登记册、通用长期记忆自动化及额度仍不纳入。历史可搜要由 A 提供同一秘书长对话的原内容/账本位置搜索，不能拿现有线程标题搜索代替。投递必须核实际正文及来源材料：作用域标签本身不能证明任意模型文字没有混入别的项目；来源或目标资格不清楚就保留拒绝/unknown，不投递，V14 对实际材料做跨项目负例。
+
+USER 是产品授权层，不是要求 Owner 手工操作每项设置。Controller 按已有测试授权，在隔离候选/测试协调域中使用已授权、已登录测试实例和既有已验证模型/强度、边界内最低可保证权限，自动走真实 USER 配置，验证没设置、已配置和被拒绝并保全/读回/恢复测试记录；不改 Owner 真实全局设置或凭据。真实使用的偏好仍由 Owner 在产品里设置。只有新增凭据、提权或已有授权确实未覆盖时走原条件触点，不为本次测试再新增 Owner 触点，也不把 M3 秘书长测试变成 OT3 的 M1 前置条件。
