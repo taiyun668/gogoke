@@ -789,7 +789,7 @@ impl<'root> ProductDatabase<'root> {
     }
 
     pub fn close_checked(self) -> std::result::Result<OpenLedger, SameOpenError> {
-        let Self { root: _, connection, owner: _, process_custodian, owner_login, native_sessions,
+        let Self { root: _, connection, owner: _, session_binding_projection, process_custodian, owner_login, native_sessions,
             pending_native_launches, pending_credential_preparations, recovered_credential_holders,
             disappeared_credential_holders } = self;
         drop(owner_login);
@@ -801,6 +801,7 @@ impl<'root> ProductDatabase<'root> {
         drop(pending_credential_preparations);
         drop(recovered_credential_holders);
         drop(disappeared_credential_holders);
+        drop(session_binding_projection);
         connection.close_checked()
     }
 
