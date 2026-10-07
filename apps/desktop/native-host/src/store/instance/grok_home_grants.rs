@@ -151,7 +151,10 @@ fn existing_domain(db:&VerifiedDatabaseConnection<'_>,instance:&str)->Result<Opt
 
 pub(crate) fn begin_grok_grant(db:&mut VerifiedDatabaseConnection<'_>,
     domain:&GrokDomain,grant:&GrokGrant)->Result<GrokGrant,String>{
-    begin_grok_grant_with_catalog(db,domain,grant,&fixed_catalog)
+    begin_grok_grant_with_catalog(db,domain,grant,&|driver,digest,version|{
+        super::program_source::locate_bound_instance_program(db,&domain.instance_id,driver,digest,version)
+            .map(|_|()).map_err(|error|format!("grok F journal: managed Grok program unavailable: {error:?}"))
+    })
 }
 
 fn begin_grok_grant_with_catalog(db:&mut VerifiedDatabaseConnection<'_>,

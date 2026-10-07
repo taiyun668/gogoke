@@ -266,7 +266,7 @@ pub(crate) fn prepare_registered_provider_login(db: &mut VerifiedDatabaseConnect
     if pin.version != recipe.pinned_version {
         return Err(ProviderLoginPreparationError::denied("registered version differs from fixed login recipe"));
     }
-    let application = super::program_source::locate_bound_instance_program(db,instance_id,
+    let application = crate::store::instance::locate_bound_instance_program(db,instance_id,
         &pin.driver_id, &pin.digest, &pin.version)
         .map_err(|error| ProviderLoginPreparationError::source("pinned executable", error))?;
     if !application.is_absolute() || application.file_name().and_then(|name| name.to_str())
