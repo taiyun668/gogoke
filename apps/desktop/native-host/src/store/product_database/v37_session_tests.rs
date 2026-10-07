@@ -253,14 +253,14 @@ fn product_admission_enforces_persisted_caps_and_rolls_back_busy_on_denial() {
     product.connection.execute("UPDATE gogoke_v37_instances SET driver_id='missing-provider' WHERE instance_id='instanceA'").unwrap();
     let missing = product.dispatch_user_request(&request("admission-reserve", "probeMissing", "sessionMissing", "seatA", 0)).unwrap();
     assert_eq!(h::decode_receipt(&missing).unwrap().status,
-        V37Status::Unknown, "a missing native catalog driver cannot reserve");
-    assert!(String::from_utf8_lossy(&missing).contains("UnknownDriver"));
+        V37Status::Unknown, "a driver inconsistent with the managed source cannot reserve");
+    assert!(String::from_utf8_lossy(&missing).contains("ProgramSource(Conflict)"));
     product.connection.execute("UPDATE gogoke_v37_instances SET driver_id='codex' WHERE instance_id='instanceA'").unwrap();
     product.connection.execute(&format!("UPDATE gogoke_v37_instances SET program_digest='sha256:{}' WHERE instance_id='instanceA'", "0".repeat(64))).unwrap();
     let changed = product.dispatch_user_request(&request("admission-reserve", "probeChanged", "sessionChanged", "seatA", 0)).unwrap();
     assert_eq!(h::decode_receipt(&changed).unwrap().status,
         V37Status::Unknown, "changed CLI pin cannot reserve");
-    assert!(String::from_utf8_lossy(&changed).contains("IdentityChanged"));
+    assert!(String::from_utf8_lossy(&changed).contains("ProgramSource(Conflict)"));
     product.connection.execute(&format!("UPDATE gogoke_v37_instances SET program_digest='{actual_digest}' WHERE instance_id='instanceA'")).unwrap();
     assert_eq!(seat::get(&product.connection, "projectA", "seatA").unwrap().unwrap().state, State::Idle);
     assert_eq!(status(&mut product, &reserve_a), V37Status::Applied);

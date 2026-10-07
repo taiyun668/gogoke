@@ -28,6 +28,7 @@ export type LeadSourceView = {
 export type SideChatView = {
   id: string; title: string; state: "ACTIVE" | "ARCHIVED";
   seatId: string; seatIncarnation: string; sourceSeatId: string; sourceSeatIncarnation: string;
+  bindingInstanceId?: string;
   sourceEpoch: string; sourceCursor: string; syncedCursor: string; revision: string;
   host?: SideHostView; messages: SideMessageView[]; transfers: SideDeliveryView[];
 };
@@ -93,6 +94,7 @@ function list(value: unknown, domainId: string): Design37SideChatPage {
     if (state !== "ACTIVE" && state !== "ARCHIVED") throw new Error("SIDE_INVALID_CHAT_STATE");
     return { id:string(row,"sideId"), title:"旁聊", state,
       seatId:string(row,"seatId"), seatIncarnation:string(row,"seatIncarnation"),
+      bindingInstanceId:row.bindingInstanceId === undefined ? undefined : string(row,"bindingInstanceId"),
       sourceSeatId:string(row,"sourceSeatId"), sourceSeatIncarnation:string(row,"sourceSeatIncarnation"),
       sourceEpoch:string(row,"sourceEpoch"), sourceCursor:string(row,"sourceCursor"),
       syncedCursor:string(row,"syncedCursor"), revision:string(row,"revision"),

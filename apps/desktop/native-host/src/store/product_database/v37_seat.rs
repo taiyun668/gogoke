@@ -413,9 +413,11 @@ impl<'root> ProductDatabase<'root> {
             }
             if let Some(card) = fact.state_card.and_then(|card| card.card_json) {
                 if let Json::Object(card) = Parser::parse(&card)? {
-                    for name in ["goal", "pending", "doing", "reclaimCondition"] {
-                        if let Some(Json::String(value)) = card.get(&key(name)) {
-                            row.insert(key(name), Json::String(value.clone()));
+                    // The original state-card producer uses pendingQuestions.
+                    // No card or missing field is not a claim of no questions.
+                    for (source, display) in [("goal", "goal"), ("pendingQuestions", "pending")] {
+                        if let Some(Json::String(value)) = card.get(&key(source)) {
+                            row.insert(key(display), Json::String(value.clone()));
                         }
                     }
                 }

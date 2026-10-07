@@ -287,6 +287,9 @@ impl<'root> ProductDatabase<'root> {
                         (key("sideId"),text(&side.side_id)),(key("state"),text(&side.state)),
                         (key("seatId"),text(&side.seat_id)),
                         (key("seatIncarnation"),text(&side.seat_incarnation)),
+                        // D retains this original binding even when H is absent.
+                        // The seat's current instance is not historical evidence.
+                        (key("bindingInstanceId"),text(&side.binding_instance_id)),
                         (key("sourceSeatId"),text(&side.source_seat_id)),
                         (key("sourceSeatIncarnation"),text(&side.source_seat_incarnation)),
                         (key("sourceEpoch"),text(&side.epoch)),
