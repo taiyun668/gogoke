@@ -74,7 +74,7 @@ describe("SideChatPanel", () => {
       items: [
         { kind: "user", id: "u1", text: "这一条你告诉主控：版本号挪到右上角。" },
         { kind: "sent-to-lead", id: "s1", text: "版本号挪到右上角。", at: "10:52", result: "steered" },
-        { kind: "from-lead", id: "l1", text: "收到，下一版一起改。", at: "10:53" },
+        { kind: "from-lead", id: "l1", text: "收到，下一版一起改。", at: "10:53", delivery: "steered" },
         { kind: "sent-to-lead", id: "s2", text: "别动配色。", at: "10:55", result: "failed", error: "主控的实例额度用完了" },
       ],
     });
