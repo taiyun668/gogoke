@@ -79,6 +79,25 @@ def require_cloud() -> None:
         raise RuntimeError("Windows GitHub Actions only; never run deletion locally")
 
 
+
+def lifecycle_lock_released(path: Path) -> bool:
+    """Observe the original finalizer's inherited lock release, not receipt alone."""
+    handle = kernel32.CreateFileW(
+        # Attribute-only opens do not participate in data sharing rules.
+        # Use the actual parent's access so a still-live holder is observed.
+        str(path), GENERIC_READ | GENERIC_WRITE, 0, None, OPEN_EXISTING,
+        0x00200000, None,
+    )
+    if handle in (None, INVALID_HANDLE):
+        error = ctypes.get_last_error()
+        if error == 32:  # original finalizer still owns its exclusive handle
+            return False
+        raise AssertionError(f"Finalizer lock observation failed: WinError {error}: {path}")
+    if not kernel32.CloseHandle(handle):
+        raise AssertionError(f"Finalizer lock observation close failed: WinError {ctypes.get_last_error()}")
+    return True
+
+
 def parent_helper(payload_path: Path, delete_ready: Path | None = None,
                   delete_go: Path | None = None) -> int:
     require_cloud()
@@ -284,7 +303,8 @@ class CloudFinalizerTest(unittest.TestCase):
                     while time.monotonic() < deadline:
                         try:
                             observed = json.loads(receipt.read_text(encoding="utf-8"))
-                            if observed.get("state") in ("FAILED", "DELETED"):
+                            if (observed.get("state") in ("FAILED", "DELETED")
+                                    and lifecycle_lock_released(Path(payload["lockPath"]))):
                                 terminal = observed
                                 break
                         except (OSError, json.JSONDecodeError):
@@ -308,6 +328,21 @@ class CloudFinalizerTest(unittest.TestCase):
                     winreg.DeleteKey(winreg.HKEY_CURRENT_USER, REGISTRY)
                 except FileNotFoundError:
                     pass
+
+    def test_lifecycle_lock_probe_distinguishes_the_live_holder(self):
+        with tempfile.TemporaryDirectory(prefix="gogoke-lock-observer-ci-") as temporary:
+            lock_path = Path(temporary) / "gogoke-install-lifecycle.lock"
+            handle = kernel32.CreateFileW(
+                str(lock_path), GENERIC_READ | GENERIC_WRITE, 0, None,
+                OPEN_ALWAYS, 0x00200000, None,
+            )
+            self.assertNotIn(handle, (None, INVALID_HANDLE))
+            try:
+                self.assertFalse(lifecycle_lock_released(lock_path),
+                                 "live exclusive data handle must not report release")
+            finally:
+                self.assertTrue(kernel32.CloseHandle(handle))
+            self.assertTrue(lifecycle_lock_released(lock_path))
 
     def test_formal_shortcut_requires_recorded_bytes_and_file_id(self):
         desktop = Path(subprocess.check_output(
@@ -407,7 +442,8 @@ class CloudFinalizerTest(unittest.TestCase):
                     while time.monotonic() < deadline:
                         try:
                             observed = json.loads(receipt.read_text(encoding="utf-8"))
-                            if observed.get("state") in ("FAILED", "DELETED"):
+                            if (observed.get("state") in ("FAILED", "DELETED")
+                                    and lifecycle_lock_released(Path(payload["lockPath"]))):
                                 terminal = observed
                                 break
                         except (OSError, json.JSONDecodeError):
