@@ -64,9 +64,9 @@ impl<'root> ProductDatabase<'root> {
             "SELECT e.domain_id,e.session_id,e.seat_id,e.generation,e.process_operation_id,
                     c.ticket,c.custodian_nonce
                FROM main.gogoke_v37_h_process_episode e
-               JOIN main.gogoke_v37_seats s ON s.domain_id=e.domain_id AND s.seat_id=e.seat_id
-                 AND s.instance_id=e.instance_id AND s.incarnation=e.seat_incarnation
-                 AND CAST(s.generation AS TEXT)=e.generation AND s.state!='RECLAIMED'
+               JOIN main.gogoke_v37_h_claim h ON h.domain_id=e.domain_id AND h.session_id=e.session_id
+                 AND h.generation=e.generation AND h.process_operation_id=e.process_operation_id
+                 AND h.instance_id=e.instance_id AND h.state<>'RELEASED'
                JOIN main.gogoke_coordination_process_custody c ON c.domain_id=e.domain_id
                  AND c.operation_id=e.process_operation_id AND c.generation=e.generation
               WHERE e.instance_id=?1 AND e.phase IN ('ACTIVE','UNKNOWN','STOPPED')
@@ -76,6 +76,13 @@ impl<'root> ProductDatabase<'root> {
         while episodes.step_row()? {
             let domain=episodes.column_text(0)?;let session=episodes.column_text(1)?;
             let seat=episodes.column_text(2)?;let generation=episodes.column_text(3)?;
+            let relationship=crate::store::session_transport::session_binding::current_relationship(
+                &self.connection,&domain,&session).map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!("instance issue current relationship: {error:?}")))?;
+            if relationship.as_ref().map_or(true,|current|
+                current.seat_id!=seat || current.instance_id!=instance || current.session_generation!=generation) {
+                continue;
+            }
             let operation=episodes.column_text(4)?;let ticket=episodes.column_text(5)?;
             let epoch=episodes.column_text(6)?;
             let sources=Statement::prepare(self.connection.as_ptr(),

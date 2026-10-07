@@ -199,12 +199,17 @@ impl<'root> ProductDatabase<'root> {
             "SELECT event_id,generation,action,state,COALESCE(receipt_id,'') FROM main.gogoke_v37_seat_health WHERE domain_id=?1 AND session_request_id=?2")?;
         row.bind_text(1,&request.domain_id)?;row.bind_text(2,&request.request_id)?;
         if !row.step_row()? {return Ok(());}
-        let event_id=row.column_text(0)?;let old_generation=row.column_text(1)?;
+        let event_id=row.column_text(0)?;
         let action=row.column_text(2)?;let state=row.column_text(3)?;let saved=row.column_text(4)?;
         if row.step_row()? {return Err(OrchestrationError::OperationConflict);}drop(row);
         let receipt=h::decode_receipt(bytes).map_err(source_error)?;
         let c=change::read(&self.connection,&request.domain_id,&request.request_id).map_err(source_error)?
             .ok_or(OrchestrationError::OperationConflict)?;
+        // The health row is indexed by E authorization; the frozen original
+        // K-SESSION request and H change journal identify its physical process.
+        let old_generation=match request.payload.get(&JsonString::from_str("generation")) {
+            Some(Json::String(value))=>value.to_well_formed_string(),_=>None,
+        }.ok_or(OrchestrationError::Invalid("host health physical generation"))?;
         if receipt.status==V37Status::Unsupported {
             if c.stage!="UNSUPPORTED" || c.raw_hex!=hex(&request.raw_bytes)
                 || c.session_id!=request.target_id || c.old_generation!=old_generation

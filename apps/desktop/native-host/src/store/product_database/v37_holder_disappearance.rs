@@ -94,11 +94,15 @@ impl<'root> ProductDatabase<'root> {
         if history.instance_id!=profile.instance_id || history.history_id!=profile.history_id {
             return Err(refused("holder original profile/history changed"));
         }
-        let relationship=fail(crate::store::session_transport::session_binding::current_relationship(
-            &self.connection,&history.domain_id,&history.session_id))?
-            .ok_or_else(||refused("holder original H/E relationship absent"))?;
-        if relationship.seat_id!=history.seat_id || relationship.seat_incarnation!=history.seat_incarnation
-            || relationship.session_generation!=profile.generation || relationship.instance_id!=profile.instance_id {
+        // This reads the original resource association, including an already
+        // released member during the same group's final readback. Current E
+        // execution authority is checked separately before the release CAS;
+        // an applied historical resource must not require a BUSY seat again.
+        let relationship=rows(&self.connection,
+            "SELECT seat_id,seat_incarnation,selected_instance_id
+               FROM main.gogoke_v37_effective_seat WHERE domain_id=?1 AND session_id=?2",
+            &[&history.domain_id,&history.session_id],3)?;
+        if relationship!=vec![vec![history.seat_id.clone(),history.seat_incarnation.clone(),profile.instance_id.clone()]] {
             return Err(refused("holder original H/E relationship changed"));
         }
         let found=rows(&self.connection,

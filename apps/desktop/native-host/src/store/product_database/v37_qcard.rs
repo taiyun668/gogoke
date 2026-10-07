@@ -103,6 +103,13 @@ struct CurrentCardBinding {
 fn native_binding_present(db:&VerifiedDatabaseConnection<'_>,binding:&CurrentCardBinding,captured_only:bool)
     -> std::result::Result<bool,InboxError> {
     if !captured_only && crate::store::session_transport::generation_change::active_for_session(db,&binding.domain,&binding.session)?.is_some() {return Ok(false);}
+    let relationship=crate::store::session_transport::session_binding::current_relationship(
+        db,&binding.domain,&binding.session)
+        .map_err(|error|InboxError::InvalidEvidence(format!("question H/E relationship: {error:?}")))?;
+    let Some(relationship)=relationship else {return Ok(false);};
+    if relationship.seat_id!=binding.seat || relationship.session_generation!=binding.generation {
+        return Ok(false);
+    }
     let q=Statement::prepare(db.as_ptr(),
         "SELECT 1 FROM main.gogoke_v37_h_claim h
          JOIN main.gogoke_v37_h_process_episode p ON p.process_operation_id=h.process_operation_id
@@ -113,12 +120,7 @@ fn native_binding_present(db:&VerifiedDatabaseConnection<'_>,binding:&CurrentCar
          JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=h.binding_id
            AND b.instance_id=h.instance_id AND b.domain_id=h.domain_id AND b.kind='SESSION'
            AND b.owner_id=h.session_id AND b.generation=h.generation AND b.state='ACTIVE'
-         JOIN main.gogoke_v37_h_seat_binding sb ON sb.domain_id=h.domain_id
-           AND sb.session_id=h.session_id AND sb.generation=h.generation
-         JOIN main.gogoke_v37_seats e ON e.domain_id=sb.domain_id AND e.seat_id=sb.seat_id
-           AND e.incarnation=sb.seat_incarnation AND CAST(e.generation AS TEXT)=sb.generation
-           AND e.instance_id=h.instance_id AND e.state='BUSY'
-         WHERE h.domain_id=?1 AND h.session_id=?2 AND sb.seat_id=?3 AND h.generation=?4
+         WHERE h.domain_id=?1 AND h.session_id=?2 AND p.seat_id=?3 AND h.generation=?4
            AND h.process_operation_id=?5 AND c.ticket=?6 AND c.custodian_nonce=?7
            AND h.state='COMMITTED' AND (c.state='ACTIVE' OR (?8=1 AND c.state='UNKNOWN'))")?;
     for (index,value) in [binding.domain.as_str(),binding.session.as_str(),binding.seat.as_str(),

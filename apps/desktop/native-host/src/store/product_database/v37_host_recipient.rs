@@ -160,7 +160,7 @@ impl<'root> ProductDatabase<'root> {
         drop(worktrees);
         let claims=Statement::prepare(self.connection.as_ptr(),
             "SELECT a.session_id,a.generation,a.state,a.revision
-               FROM main.gogoke_v37_h_claim a JOIN main.gogoke_v37_h_seat_binding b
+               FROM main.gogoke_v37_h_claim a JOIN main.gogoke_v37_effective_seat b
                  ON b.domain_id=a.domain_id AND b.session_id=a.session_id
               WHERE a.domain_id=?1 AND b.seat_id=?2 AND b.seat_incarnation=?3
                 AND a.state!='RELEASED' ORDER BY a.session_id")?;
@@ -186,7 +186,14 @@ impl<'root> ProductDatabase<'root> {
                     next.to_string(),tree.clone(),repo.clone())
             },
             [(session,old_generation,state,_)] if state=="STOPPED"
-                && seat.state==State::Busy && seat.generation.to_string()==*old_generation => {
+                && seat.state==State::Busy => {
+                let relationship=h::session_binding::current_relationship(
+                    &self.connection,proof.domain_id(),session).map_err(recipient_error)?;
+                if relationship.as_ref().map_or(true,|binding|
+                    binding.seat_id!=seat.seat_id || binding.seat_incarnation!=seat.incarnation
+                    || binding.instance_id!=seat.instance_id
+                    || binding.session_generation!=*old_generation
+                    || binding.seat_authorization_generation!=seat.generation) {return Ok(None);}
                 let Some(registered)=ledger::read_registered_session(&self.connection,session)? else {
                     return Err(OrchestrationError::V37StoreFailure(
                         "host recipient: original A WORK registration absent".into()));
@@ -256,7 +263,7 @@ impl<'root> ProductDatabase<'root> {
         ->Result<bool> {
         let q=Statement::prepare(self.connection.as_ptr(),
             "SELECT 1 FROM main.gogoke_v37_qcard_native WHERE domain_id=?1 AND seat_id=(
-                SELECT seat_id FROM main.gogoke_v37_h_seat_binding WHERE domain_id=?1 AND session_id=?2)
+                SELECT seat_id FROM main.gogoke_v37_effective_seat WHERE domain_id=?1 AND session_id=?2)
                AND state IN ('OPEN','ANSWER_UNKNOWN') LIMIT 1")?;
         q.bind_text(1,domain)?;q.bind_text(2,session)?;
         if q.step_row()? {return Ok(false);}drop(q);
@@ -387,8 +394,8 @@ impl<'root> ProductDatabase<'root> {
             "SELECT a.instance_id,a.generation,a.state,a.revision,
                     COALESCE(a.process_operation_id,''),s.seat_id,s.seat_incarnation
                FROM main.gogoke_v37_h_claim a
-               JOIN main.gogoke_v37_h_seat_binding s ON s.domain_id=a.domain_id
-                 AND s.session_id=a.session_id AND s.generation=a.generation
+               JOIN main.gogoke_v37_effective_seat s ON s.domain_id=a.domain_id
+                 AND s.session_id=a.session_id AND s.selected_instance_id=a.instance_id
               WHERE a.domain_id=?1 AND a.session_id=?2")?;
         bound.bind_text(1,&candidate.domain_id)?;bound.bind_text(2,&choice.session_id)?;
         if !bound.step_row()? {return Ok(());}

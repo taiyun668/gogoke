@@ -88,6 +88,7 @@ impl HostHealthProof {
     pub(crate) fn incarnation(&self)->&str {&self.incarnation}
     pub(crate) fn instance_id(&self)->&str {&self.instance}
     pub(crate) fn generation(&self)->i64 {self.generation}
+    pub(crate) fn physical_generation(&self)->&str {&self.custody.binding.generation}
     pub(crate) fn process_operation_id(&self)->&str {&self.operation}
     pub(crate) fn thread_id(&self)->&str {&self.thread}
     pub(crate) fn turn_id(&self)->&str {&self.turn}
@@ -526,8 +527,9 @@ pub(crate) fn observe_stalled_host_health_in_transaction(db:&VerifiedDatabaseCon
             AND source_event_id=?5 AND state='RECEIPTED' AND signal=?6 AND action=?7")?;
     let (signal,action)=match health.cause {Cause::ContextCompact=>("CONTEXT_COMPACT","COMPACT"),
         Cause::RepeatedFailure=>("REPEATED_FAILURE","RENEW")};
+    let authorization_generation=health.generation().to_string();
     for (i,v) in [health.domain.as_str(),health.seat.as_str(),repair_event,
-        custody.binding.generation.as_str(),health.source_event_id(),signal,action]
+        authorization_generation.as_str(),health.source_event_id(),signal,action]
         .iter().enumerate() {q.bind_text((i+1) as i32,v)?;}
     if !q.step_row()? {return Ok(None)}
     let repair_request=q.column_text(0)?;let receipt_id=q.column_text(1)?;

@@ -57,6 +57,8 @@ impl ModelCallProof {
     pub(crate) fn seat_id(&self)->&str {&self.seat}
     pub(crate) fn incarnation(&self)->&str {&self.incarnation}
     pub(crate) fn generation(&self)->i64 {self.seat_authorization_generation}
+    /// Physical H process generation; E authorization uses generation() above.
+    pub(crate) fn physical_generation(&self)->&str {&self.custody.binding.generation}
     pub(crate) fn session_id(&self)->&str {&self.session}
     pub(crate) fn thread_id(&self)->&str {&self.thread}
     pub(crate) fn turn_id(&self)->&str {&self.turn}

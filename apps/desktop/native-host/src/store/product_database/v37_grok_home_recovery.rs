@@ -106,9 +106,10 @@ impl<'root> ProductDatabase<'root> {
              JOIN main.gogoke_v37_h_process_episode e ON e.process_operation_id=h.process_operation_id
                AND e.instance_id=h.instance_id AND e.domain_id=h.domain_id
                AND e.session_id=h.session_id AND e.generation=h.generation AND e.binding_id=h.binding_id
-             JOIN main.gogoke_v37_h_seat_binding s ON s.domain_id=h.domain_id
+             JOIN main.gogoke_v37_effective_seat s ON s.domain_id=h.domain_id
                AND s.session_id=h.session_id AND s.generation=h.generation
                AND e.seat_id=s.seat_id AND e.seat_incarnation=s.seat_incarnation
+               AND s.selected_instance_id=h.instance_id
              JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id
                AND c.profile_id=h.instance_id AND c.domain_id=h.domain_id AND c.generation=h.generation
              WHERE h.instance_id=?1 AND h.domain_id=?2 AND h.session_id=?3 AND h.generation=?4
@@ -159,8 +160,14 @@ impl<'root> ProductDatabase<'root> {
             }
             let seat=evidence(crate::store::seat::get(&self.connection,&grant.domain_id,&grant.seat_id))?
                 .ok_or_else(||denied("Grok release original seat absent"))?;
+            let relationship=evidence(crate::store::session_transport::session_binding::current_relationship(
+                &self.connection,&grant.domain_id,&grant.session_id))?
+                .ok_or_else(||denied("Grok release original H/E relationship absent"))?;
             if seat.state!=crate::store::seat::State::Busy || seat.instance_id!=grant.instance_id
-                || seat.incarnation!=grant.seat_incarnation || seat.generation.to_string()!=grant.generation{
+                || seat.incarnation!=grant.seat_incarnation || relationship.seat_id!=grant.seat_id
+                || relationship.seat_incarnation!=grant.seat_incarnation
+                || relationship.instance_id!=grant.instance_id || relationship.session_generation!=grant.generation
+                || seat.generation!=relationship.seat_authorization_generation {
                 return Err(denied("Grok release original seat changed"));
             }
             let q=Statement::prepare(self.connection.as_ptr(),
@@ -176,7 +183,11 @@ impl<'root> ProductDatabase<'root> {
             let count=Statement::prepare(self.connection.as_ptr(),"SELECT changes()")?;
             if !count.step_row()? || count.column_text(0)?!="1"{return Err(denied("Grok release claim CAS"));}
             drop(count);
-            evidence(crate::store::seat::set_dispatch_state_in_transaction(&mut self.connection,&seat,false))?;
+            let occupied=evidence(crate::store::session_transport::session_binding::has_unreleased_seat_claim(
+                &self.connection,&grant.domain_id,&grant.seat_id,&grant.seat_incarnation))?;
+            if !occupied {
+                evidence(crate::store::seat::set_dispatch_state_in_transaction(&mut self.connection,&seat,false))?;
+            }
             // The original F binding and immutable custody tuple are retained;
             // this journal reports resource release, never a process StopFact.
             let raw=format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",

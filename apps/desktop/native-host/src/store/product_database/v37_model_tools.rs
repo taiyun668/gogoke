@@ -99,9 +99,23 @@ impl<'root> ProductDatabase<'root> {
         let stored=crate::store::session_transport::decode_request(&raw).map_err(|error|
             OrchestrationError::V37StoreFailure(format!("native child control source: {error:?}")))?;
         let generation=user_payload_string(&stored,"generation")?;
+        let original=Statement::prepare(self.connection.as_ptr(),
+            "SELECT b.seat_authorization_generation FROM main.gogoke_v37_h_claim a
+               JOIN main.gogoke_v37_effective_seat b ON b.domain_id=a.domain_id AND b.session_id=a.session_id
+              WHERE a.domain_id=?1 AND a.session_id=?2 AND a.generation=?3
+                AND b.seat_id=?4 AND b.seat_incarnation=?5
+                AND b.selected_instance_id=?6 AND a.instance_id=?6")?;
+        for (index,value) in [child.domain_id.as_str(),stored.target_id.as_str(),generation.as_str(),
+            child.seat_id.as_str(),child.incarnation.as_str(),child.instance_id.as_str()].iter().enumerate() {
+            original.bind_text((index+1) as i32,value)?;
+        }
+        if !original.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        let authorization_generation=original.column_text(0)?.parse::<i64>().map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("native child original authorization generation: {error}")))?;
+        if original.step_row()? {return Err(OrchestrationError::OperationConflict);}
         let same_generation=if operation=="admission-release" && child.state==seat::State::Idle {
-            generation.parse::<i64>().ok().and_then(|generation|generation.checked_add(1))==Some(child.generation)
-        } else {generation==child.generation.to_string()};
+            authorization_generation.checked_add(1)==Some(child.generation)
+        } else {authorization_generation==child.generation};
         if stored.family!="K-SESSION" || stored.operation!=operation || stored.request_id!=id
             || stored.domain_id!=child.domain_id || stored.payload.len()!=2
             || user_payload_string(&stored,"seatId")?!=child.seat_id
@@ -127,17 +141,21 @@ impl<'root> ProductDatabase<'root> {
         }
         let row=Statement::prepare(self.connection.as_ptr(),
             "SELECT a.session_id,a.instance_id,a.home_id,a.generation,a.revision,a.state
-               FROM main.gogoke_v37_h_claim a JOIN main.gogoke_v37_h_seat_binding s
-                 ON s.domain_id=a.domain_id AND s.session_id=a.session_id AND s.generation=a.generation
+               FROM main.gogoke_v37_h_claim a JOIN main.gogoke_v37_effective_seat s
+                 ON s.domain_id=a.domain_id AND s.session_id=a.session_id
               WHERE a.domain_id=?1 AND s.seat_id=?2 AND s.seat_incarnation=?3
-                AND a.generation=?4 AND a.instance_id=?5")?;
+                AND CAST(s.seat_authorization_generation AS TEXT)=?4 AND a.instance_id=?5 AND s.selected_instance_id=?5
+                AND ((?6='' AND a.state<>'RELEASED') OR a.session_id=?6)")?;
         let child_generation=match release.as_ref() {
-            Some(release)=>user_payload_string(release,"generation")?,None=>child.generation.to_string(),
+            Some(_) if child.state==seat::State::Idle=>child.generation.checked_sub(1)
+                .ok_or(OrchestrationError::OperationConflict)?.to_string(),
+            _=>child.generation.to_string(),
         };
         for (index,value) in [child.domain_id.as_str(),child.seat_id.as_str(),child.incarnation.as_str(),
             child_generation.as_str(),child.instance_id.as_str()].iter().enumerate() {
             row.bind_text((index+1) as i32,value)?;
         }
+        row.bind_text(6,release.as_ref().map_or("",|original|original.target_id.as_str()))?;
         if !row.step_row()? {return Err(OrchestrationError::AccessDenied)};
         let session=row.column_text(0)?;let instance=row.column_text(1)?;let home=row.column_text(2)?;
         let generation=row.column_text(3)?;
@@ -187,17 +205,18 @@ impl<'root> ProductDatabase<'root> {
                 format!("native child release: {error:?}")))?;
         let status=if matches!(released,AdmissionResult::Replayed(_)) {V37Status::Replayed} else {V37Status::Applied};
         let claim_revision=applied_revision(released)?;
-        let idle=seat::get(&self.connection,&child.domain_id,&child.seat_id)?
+        let settled=seat::get(&self.connection,&child.domain_id,&child.seat_id)?
             .ok_or(OrchestrationError::AccessDenied)?;
-        if idle.state!=seat::State::Idle {return Err(OrchestrationError::OperationConflict)};
-        let revision=u64::try_from(idle.revision).map_err(|error|
-            OrchestrationError::V37StoreFailure(format!("native child Idle revision: {error}")))?;
+        let state=match settled.state {seat::State::Idle=>"IDLE",seat::State::Busy=>"BUSY",
+            _=>return Err(OrchestrationError::OperationConflict)};
+        let revision=u64::try_from(settled.revision).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("native child settled revision: {error}")))?;
         // The local adapter's stop composes the existing H operations. Return
         // that admitted H release envelope, not a new public K-SEAT operation.
         Ok(crate::store::session_transport::encode_receipt(&release,status,release.expected_revision,claim_revision,
-            BTreeMap::from([(key("state"),string("IDLE")),(key("sessionId"),string(&session)),
+            BTreeMap::from([(key("state"),string(state)),(key("sessionId"),string(&session)),
                 (key("seatId"),string(&child.seat_id)),(key("seatRevision"),string(&revision.to_string())),
-                (key("generation"),string(&idle.generation.to_string())),(key("stoppedGeneration"),string(&generation))])))
+                (key("generation"),string(&settled.generation.to_string())),(key("stoppedGeneration"),string(&generation))])))
     }
 
     /// A local adapter operation composes only the existing E/F/H effects.

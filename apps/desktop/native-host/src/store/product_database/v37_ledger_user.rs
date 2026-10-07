@@ -177,23 +177,25 @@ fn committed_receipt(request:&V37Request,previous:u64,revision:u64,result:BTreeM
 
 impl<'root> ProductDatabase<'root> {
     fn native_ledger_reader(&self,request:&V37Request,session:&str)->Result<Reader> {
+        let relationship=crate::store::session_transport::session_binding::current_relationship(
+            &self.connection,&request.domain_id,session)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!("ledger H/E relationship: {error:?}")))?
+            .ok_or(OrchestrationError::AccessDenied)?;
         let row=Statement::prepare(self.connection.as_ptr(),
-            "SELECT h.domain_id,sb.seat_id,h.session_id FROM main.gogoke_v37_h_claim h
+            "SELECT h.domain_id,l.seat_id,h.session_id,h.generation FROM main.gogoke_v37_h_claim h
              JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=h.binding_id
                AND b.domain_id=h.domain_id AND b.instance_id=h.instance_id
                AND b.kind='SESSION' AND b.owner_id=h.session_id AND b.generation=h.generation
-             JOIN main.gogoke_v37_h_seat_binding sb ON sb.domain_id=h.domain_id
-               AND sb.session_id=h.session_id AND sb.generation=h.generation
-             JOIN main.gogoke_v37_seats e ON e.domain_id=sb.domain_id AND e.seat_id=sb.seat_id
-               AND e.incarnation=sb.seat_incarnation AND CAST(e.generation AS TEXT)=sb.generation
-               AND e.instance_id=h.instance_id AND e.state IN ('BUSY','IDLE')
              JOIN main.v37_ledger_session l ON l.session_id=h.session_id
-               AND l.domain_id=h.domain_id AND l.seat_id=sb.seat_id AND l.purpose<>'FORMAL_REVIEW'
+               AND l.domain_id=h.domain_id AND l.purpose<>'FORMAL_REVIEW'
              WHERE h.domain_id=?1 AND h.session_id=?2 AND h.state IN ('COMMITTED','STOPPED')
                AND b.state='ACTIVE'")?;
         row.bind_text(1,&request.domain_id)?;row.bind_text(2,session)?;
         if !row.step_row()? {return Err(OrchestrationError::AccessDenied);}
         let reader=Reader {domain_id:row.column_text(0)?,seat_id:row.column_text(1)?,session_id:row.column_text(2)?};
+        if reader.seat_id!=relationship.seat_id || row.column_text(3)?!=relationship.session_generation {
+            return Err(OrchestrationError::AccessDenied);
+        }
         if row.step_row()? {return Err(OrchestrationError::OperationConflict);}
         Ok(reader)
     }

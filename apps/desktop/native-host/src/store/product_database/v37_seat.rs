@@ -181,6 +181,18 @@ impl<'root> ProductDatabase<'root> {
                 }
                 continue;
             }
+            let relationship=crate::store::session_transport::session_binding::current_relationship(
+                &self.connection,&domain,&session).map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!("instance current H/E relationship: {error:?}")))?;
+            let Some(relationship)=relationship else {unknown=true;continue;};
+            let seat=relationship.seat_id;
+            let incarnation=relationship.seat_incarnation;
+            let generation=relationship.session_generation;
+            let authorization_generation=relationship.seat_authorization_generation.to_string();
+            if relationship.instance_id!=instance_id || !bindings.iter().any(|(d,s,i,g,busy)|
+                d==&domain && s==&seat && i==&incarnation && g==&authorization_generation && *busy) {
+                unknown=true;continue;
+            }
             if phase == "STOPPED" {
                 let stopped = !stop_fact.is_empty() &&
                     crate::store::session_transport::runtime::observe_stop_fact(
@@ -189,21 +201,7 @@ impl<'root> ProductDatabase<'root> {
                             format!("instance stop observation: {error:?}")))?.is_some();
                 if !stopped { unknown = true; }
                 else {
-                    let bound = Statement::prepare(self.connection.as_ptr(),
-                        "SELECT seat_id,seat_incarnation,generation FROM main.gogoke_v37_h_seat_binding \
-                         WHERE domain_id=?1 AND session_id=?2")?;
-                    bound.bind_text(1, &domain)?;
-                    bound.bind_text(2, &session)?;
-                    if bound.step_row()? {
-                        let seat = bound.column_text(0)?;
-                        let incarnation = bound.column_text(1)?;
-                        let generation = bound.column_text(2)?;
-                        if bound.step_row()? { unknown = true; }
-                        else if bindings.iter().any(|(d,s,i,g,busy)|
-                            d==&domain && s==&seat && i==&incarnation && g==&generation && *busy) {
-                            seen_busy.push((domain.clone(), seat, incarnation, generation));
-                        }
-                    }
+                    seen_busy.push((domain.clone(),seat,incarnation,authorization_generation));
                 }
                 continue;
             }
@@ -211,21 +209,7 @@ impl<'root> ProductDatabase<'root> {
                 unknown = true;
                 continue;
             }
-            let bound = Statement::prepare(self.connection.as_ptr(),
-                "SELECT seat_id,seat_incarnation,generation FROM main.gogoke_v37_h_seat_binding \
-                 WHERE domain_id=?1 AND session_id=?2")?;
-            bound.bind_text(1, &domain)?;
-            bound.bind_text(2, &session)?;
-            if !bound.step_row()? { unknown = true; continue; }
-            let seat = bound.column_text(0)?;
-            let incarnation = bound.column_text(1)?;
-            let generation = bound.column_text(2)?;
-            if bound.step_row()? { unknown = true; continue; }
-            let current = bindings.iter().any(|(d,s,i,g,busy)|
-                d == &domain && s == &seat && i == &incarnation &&
-                g == &generation && *busy);
-            if !current { unknown = true; continue; }
-            seen_busy.push((domain.clone(), seat.clone(), incarnation.clone(), generation.clone()));
+            seen_busy.push((domain.clone(),seat.clone(),incarnation.clone(),authorization_generation));
             let claim = crate::store::session_transport::runtime::observe_claim_bound(
                 &self.connection, &domain, &seat, &session)
                 .map_err(|error| OrchestrationError::V37StoreFailure(
@@ -475,7 +459,7 @@ impl<'root> ProductDatabase<'root> {
             return Ok(receipt(request,V37Status::Stale,seat_revision,seat_revision,BTreeMap::new()));
         }
         let q=Statement::prepare(self.connection.as_ptr(),
-            "SELECT c.question_id,c.answer,c.seat_id,c.turn_id,c.generation,o.native_receipt_id,c.vendor_thread_id FROM main.gogoke_v37_qcard_native c JOIN main.gogoke_v37_qcard_native_operations o ON o.domain_id=c.domain_id AND o.card_id=c.card_id WHERE c.domain_id=?1 AND c.card_id=?2 AND o.request_id=?3 AND c.state='ANSWERED' AND o.state='ANSWERED' AND c.answer_kind='WIRE'")?;
+            "SELECT c.question_id,c.answer,c.seat_id,c.turn_id,c.generation,o.native_receipt_id,c.vendor_thread_id,c.session_id FROM main.gogoke_v37_qcard_native c JOIN main.gogoke_v37_qcard_native_operations o ON o.domain_id=c.domain_id AND o.card_id=c.card_id WHERE c.domain_id=?1 AND c.card_id=?2 AND o.request_id=?3 AND c.state='ANSWERED' AND o.state='ANSWERED' AND c.answer_kind='WIRE'")?;
         q.bind_text(1,&request.domain_id)?;q.bind_text(2,&card_id)?;
         q.bind_text(3,&answer_request)?;
         if !q.step_row()? {
@@ -485,11 +469,13 @@ impl<'root> ProductDatabase<'root> {
         let source_seat=q.column_text(2)?;let source_turn=q.column_text(3)?;
         let source_generation=q.column_text(4)?;let source_receipt=q.column_text(5)?;
         let source_thread=q.column_text(6)?;
+        let source_session=q.column_text(7)?;
         if q.step_row()? {return Err(OrchestrationError::OperationConflict);}
         drop(q);
         if source_seat!=caller.seat_id() || source_turn!=caller.turn_id() ||
-            source_generation!=present.generation.to_string() || source_receipt.is_empty()
-            || caller.thread_id()!=Some(source_thread.as_str()) {
+            present.generation!=caller.generation() || source_receipt.is_empty()
+            || caller.model_proof().map(|proof|proof.physical_generation())!=Some(source_generation.as_str())
+            || caller.thread_id()!=Some(source_thread.as_str()) || caller.session_id()!=Some(source_session.as_str()) {
             return Ok(receipt(request,V37Status::Denied,seat_revision,seat_revision,BTreeMap::new()));
         }
         let Json::Object(wire)=Parser::parse(&answer_wire)? else {return Err(OrchestrationError::Invalid("C answer wire"));};
@@ -516,7 +502,7 @@ impl<'root> ProductDatabase<'root> {
                 q.bind_text(1,&request.domain_id)?;q.bind_text(2,&card_id)?;q.bind_text(3,&answer_request)?;
                 if !q.step_row()? || q.column_text(0)?!=question_id || q.column_text(1)?!=answer_wire
                     || q.column_text(2)?!=caller.seat_id() || q.column_text(3)?!=caller.turn_id()
-                    || q.column_text(4)?!=caller.generation().to_string()
+                    || caller.model_proof().map(|proof|proof.physical_generation())!=Some(q.column_text(4)?.as_str())
                     || q.column_text(5)?!=source_thread || q.column_text(6)?!=source_receipt {
                     return Err(SeatError::Denied);
                 }
@@ -626,8 +612,8 @@ impl<'root> ProductDatabase<'root> {
                         AND c.vendor_thread_id=?5 AND c.state='ANSWERED' AND o.state='ANSWERED'
                         AND c.answer_kind='WIRE' AND o.native_receipt_id!=''
                       ORDER BY c.card_id,o.request_id")?;
-                let generation=caller.generation().to_string();
-                for (index,value) in [caller.domain_id(),caller.seat_id(),caller.turn_id(),generation.as_str(),
+                let generation=caller.model_proof().ok_or(OrchestrationError::AccessDenied)?.physical_generation();
+                for (index,value) in [caller.domain_id(),caller.seat_id(),caller.turn_id(),generation,
                     caller.thread_id().ok_or(OrchestrationError::AccessDenied)?].iter().enumerate() {
                     sources.bind_text((index+1) as i32,value)?;
                 }

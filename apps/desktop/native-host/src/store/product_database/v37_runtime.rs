@@ -1169,7 +1169,7 @@ impl<'root> ProductDatabase<'root> {
                 authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
                 if let Some((proof,event_id))=health {
                     if proof.domain_id()!=request.domain_id||proof.session_id()!=request.target_id
-                        ||proof.seat_id()!=seat||proof.generation().to_string()!=generation
+                        ||proof.seat_id()!=seat||proof.physical_generation()!=generation
                         ||!matches!((proof.signal(),request.operation.as_str()),
                             (seat::HealthSignal::ContextCompact,"compact")|(seat::HealthSignal::RepeatedFailure,"renew-session")) {
                         return Err(OrchestrationError::AccessDenied);
@@ -1792,8 +1792,8 @@ impl<'root> ProductDatabase<'root> {
             failure(h::record_initial(&self.connection,&request.domain_id,
                 &request.target_id,&request.request_id,&operation_id))?;
             ledger::register_session(&mut self.connection, &registration)?;
-            let binding=failure(run.evidence.initial_session_binding())?;
-            failure(h::session_binding::insert_native_in_transaction(&self.connection,&binding))?;
+            failure(run.evidence.record_initial_session_binding_in_transaction(
+                &self.connection,&operation_id))?;
             Ok(())
         })();
         if let Err(error) = self.finish_native_transaction(bind) {
@@ -1979,7 +1979,13 @@ impl<'root> ProductDatabase<'root> {
             let child=seat::get(&self.connection,&request.domain_id,&seat_id)?
                 .ok_or(OrchestrationError::AccessDenied)?;
             seat::current_child_dispatch_context(&self.connection,caller,&child)?;
-            if child.generation.to_string()!=generation {return Err(OrchestrationError::OperationConflict);}
+            let relationship=failure(h::session_binding::current_relationship(
+                &self.connection,&request.domain_id,&request.target_id))?
+                .ok_or(OrchestrationError::AccessDenied)?;
+            if relationship.seat_id!=child.seat_id || relationship.seat_incarnation!=child.incarnation
+                || relationship.instance_id!=child.instance_id
+                || relationship.seat_authorization_generation!=child.generation
+                || relationship.session_generation!=generation {return Err(OrchestrationError::OperationConflict);}
         }
         let prior = Statement::prepare(self.connection.as_ptr(),
             "SELECT raw_hex,operation,session_id,status,revision FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND request_id=?2")?;
@@ -2118,7 +2124,12 @@ impl<'root> ProductDatabase<'root> {
                     let current=failure(runtime::observe_claim_bound(&self.connection,
                         &request.domain_id,&seat_id,&request.target_id))?
                         .ok_or(OrchestrationError::AccessDenied)?;
-                    if current.generation!=generation || child.generation.to_string()!=generation
+                    let relationship=failure(h::session_binding::current_relationship(
+                        &self.connection,&request.domain_id,&request.target_id))?
+                        .ok_or(OrchestrationError::AccessDenied)?;
+                    if current.generation!=generation || relationship.session_generation!=generation
+                        || relationship.seat_id!=child.seat_id || relationship.seat_incarnation!=child.incarnation
+                        || relationship.seat_authorization_generation!=child.generation
                         || current.instance_id!=child.instance_id
                         || current.process_operation_id.as_deref()!=Some(operation.as_str())
                         || u64::try_from(current.revision).ok()!=Some(request.expected_revision) {
