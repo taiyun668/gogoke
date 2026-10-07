@@ -1,42 +1,43 @@
 {
   "schema": "gogoke.37.light-checkpoint.v1",
-  "state": "UI_REVISIONS_HANDED_BACK_NOW_SCOPE_READY_FOR_OWNER_MERGE_HOST_CLOUD_RUNNING",
+  "state": "PR73_READBACK_PASS_G_F2_REVISION_REQUIRED_HOST_CONTINUES",
   "changes": "Protected auth and protected residue revoke retain exact FileID/protection, empty-target no-op and unique explicit rights/flags checks, then reuse the existing held-object Native raw writer to preserve peer bytes/order/control. ROOT retains Win32 propagation and its corrected new-intent inheritance control. Deleted-old-object cold tests now use actual post-ROOT ACL state, preserving original receipts and rejecting missing old revoke evidence; no descriptor-restoration fixture was added.",
   "results": "Exact c57ec50bc7b67001f37422eac47c2a6e3d6f104a cloud run 37531810888 SUCCESS: release/required axes PASS, twelve focused cases all PASS, zero FAIL/SKIP, independent catalog compiled mutations PASS. Fresh independent review checked source identity and raw array/logs. Full library and server skipped by directed scope; model/Owner Win11 and actual36 nonempty residue through complete cold journal remain NOT_RUN. Original installed36 closed read-only metadata confirms old AUTH/ROOT REVOKE/APPLIED empty target; no credential contents read or database writes.",
   "failureOriginal": "REVOKE_AUTH before/expected/actual_control=0x9404 identity_match=true expected/actual_target=empty peer_bytes_preserved=false; deleted-unrevoked fixture post-ROOT successor target unexpectedly empty",
   "references": "Reuse current F journal, original H StopFact/cold ingress and same-held-object Native writer. Direct log fields isolate protected AUTH Win32 merge/set peer changes; Microsoft propagation semantics explain the invalid post-ROOT fixture premise. Existing nonempty file/directory residue tests exercise the real writer while ROOT still granted; deleted-object cold cases preserve actual post-ROOT state and original receipts. No restored-DACL fixture, retry, intent migration or comparison relaxation. Fresh focused static and actual cloud evidence now passed, limited to these known boundaries.",
-  "currentChanges": "Integrated managed CLI source/profile/account/model reads and factories, exact seat allowed/locked facts and D list/message sources. Added independent H immutable relationship storage and product reopen metadata projection, retaining legacy raw facts and unresolved occupancy across generations. D routes same-seat communication by distinct original WORK/SIDE_CHAT sessions, revalidates model replay authority and retains Owner history reads; one same-seat MESSAGE edge. Real managed archive/stage/probe/migrate test setup replaces obsolete global-CLI prerequisites. No G UI integrated or newly scoped consumer modified.",
-  "currentResults": "Claude bce2990b exact desktop run37590795796 all five SUCCESS. Fresh Now audit found six actual component defects; Controller verified premises and handed them back in PR71 comment6034576705; earlier five instance/seat/sidechat findings remain. Scope PR73 be4acb6a fresh focused audit no blockers, trusted-main scope/manifest/source checks PASS, six CI checks SUCCESS and ready for Owner merge. Root faa9f4f2 known H/D fixes passed fresh static focused review; release build in exact run37598383066 passed, full library still running. Fixture96448f7a run37595173955 full library still running; no transfer of its result to Root SHA. Native V2 production producer, E/H model-proof separation, actual tier/write occupation, C target consumers and real same-seat delivery are NOT_RUN/unwired; no claim that multi-session delivery works.",
-  "currentFailureOriginal": "e7c1e685 native37589313587:704 passed;36 failed;0 ignored. Direct audit:35 tests stopped at missing per-root READY managed CLI setup (DENIED:managed official CLI unavailable:IdentityChanged);one error-wrapper assertion stale. Root5074b35a run37596180020:error[E0027]:pattern does not mention field session_binding_projection;fixed954682d0. Occupancy predicate fixture targeted nonexistent seats.settings_json;fixed0c10efff using seat_settings. None of these is a Win11 product result.",
-  "currentReferences": "Trusted main AGENTS/model-routing/PLAN and verifier; GOGO-整合设计 sections4/5 and Owner-approved Now source. Reuse native USER ingress, original A raw provider frames and H operation IDs, original D/C/H one-shot receipts, exact F probe/custody and Git ledger. Native parent tool frames can mechanically link to child reserve/send and original turn/item frames; legacy UI has no proven native identity/output-anchor map, so it must not guess. New G context is constrained to per-visible-row host identity and exact per-output anchor. Apple HIG desktop/accessibility references support UI review only; no new approval or macOS rule imposed. Owner artifact link could not be read by tool; no visual-equivalence claim.",
-  "parallel": "Controller shared host/D/H integration and exact cloud gates; real managed CLI fixture repair integrated from its exclusive worker branch; H storage and D helper packages integrated and independently reviewed. Claude owns G revisions. No live worker waits merely for unchanged CI; Controller owns remaining run readbacks.",
-  "next": "Owner merges ready scope PR73 once; exact main receipt/scope/source readback then permits the three new UI consumer files. Re-review Claude fixes before G integration. Continue H producer/authority/launch/C consumer integration and host full snapshots, then stable-point real Win11 E2E/full candidate chain; no new login, signing, installation, release or acceptance performed in this stage.",
+  "currentChanges": "Owner PR73 merged main was read back with its exact receipt, verifier and unchanged recomputed scope; merged into construction branch. Root projects state-card pendingQuestions and original D bindingInstanceId without guessing the seat current binding. Managed-source refusal assertions now expect ProgramSource(Conflict), retaining denial/rollback/capacity assertions. G f2 remains unintegrated after fresh review. Native atomic instance/model/effort/permission configuration implemented and wired through exact K-SEAT ingress, UI source and model-tool description. Missing target model evidence rejects before changing the binding; same-instance full configuration can repair an earlier partial state. Current authority/H/CAS/scope/replay checks remain.",
+  "currentResults": "PR73 receipt/source pins/trusted-main scope and manifest PASS. G f2 exact desktop37602916060 five jobs SUCCESS plus exact hygiene37610823848 SUCCESS. Fresh review handed four G issues to PR71 comment6036407496. Root0217625a local signed-Node typecheck and committed public-source scan PASS, zero leaks. Native37598383066 release PASS, library CANCELLED at 105-minute job limit, no summary; fixture37595173955 also CANCELLED and exposes the old managed-source assertion. No current Win11/SAC or new candidate result. Atomic source072388d1 is pending fresh focused review and exact cloud build/tests; test-only package opt3 retains debug/overflow checks. No claim of a completed suite or hash-only timing cause.",
+  "currentFailureOriginal": "37595173955: assertion failed String::from_utf8_lossy(&missing).contains(\"UnknownDriver\") at v37_session_tests.rs:257. Both full-library jobs exhausted 105 minutes while tests kept completing; cancellation is not PASS.",
+  "currentReferences": "Checked Party room source search and repository reuse-blueprint, then reused the actual E continuity producer, original D registry binding and native managed program-source rejection. No new status interpretation or replacement fixture. Stage-only test package codegen may use opt3 with debug assertions/overflow checks retained; hash validation, fixtures, locks and product budgets stay exact. Current native raw logs show serialized queue completion, but do not isolate hashing as the sole cost.",
+  "parallel": "Fresh G review completed and handed back; Root host projection/typecheck and exact G hygiene completed independently. Atomic seat worker commit integrated; Root shared ingress/tool/source committed. Fresh atomic configuration reviewer started; combined cloud checks next. Native timing investigation completed from original logs.",
+  "next": "Claude repairs the four G findings; fresh focused review precedes integration and the authorized three Now mounts. Root continues atomic seat binding/configuration and cloud-only combined checks, then the remaining H producer/model-proof/launch/C integration. No new login or stable candidate cut in this stage.",
   "retainedTemporaryEvidence": "Two fresh-auditor focused downloads retained: %TEMP%/g37-focused-audit-0492b84641f54f638c23975d30d47442 and %TEMP%/g37-focused-audit-5927c348c8cb4c0da93d303d54ff7f7f. Automatic approval rejected cleanup with blocked by policy; no bypass. Completed worker worktree removed after integration; commit/branch retained. F worker proposal files v37_managed_cli.rs/v37_models.rs retained in its exclusive worktree after automatic cleanup blocked by policy; no tool/actor bypass. Canonical reviewed copies are committed.",
   "items": [
     {
-      "item": "Claude instances/seats/sidechat UI",
-      "completed": "Exact7ec CI green and fresh review;five findings handed back, bce only adds Now files.",
-      "waiting": "Claude fixes and focused re-review before integration.",
-      "parallel": "Real host F/E factories, D natural-delivery and H relationship work integrated."
+      "item": "G review/integration",
+      "completed": "Exact f2 desktop and hygiene green; fresh review posted four findings.",
+      "waiting": "Claude revised G head; integration refused until review clears.",
+      "parallel": "Root original fact mappings committed; atomic host configuration worker integrated and fresh review started."
     },
     {
-      "item": "Sidechat tab",
-      "completed": "Existing authorised right-panel seam mapped;no scope expansion needed.",
-      "waiting": "Accepted Claude G components;not mounted yet.",
-      "parallel": "D raw list/history/result source and session-exact routing integrated."
+      "item": "Now three mounts",
+      "completed": "PR73 exact authorization readback and construction main merge.",
+      "waiting": "Accepted G components and proven native per-row/per-output mapping.",
+      "parallel": "Native raw dispatch/turn/item/Git mapping researched; Root host work continues."
     },
     {
-      "item": "Host data/actions",
-      "completed": "Actual managed CLI/name/masked account/verified Codex models;explicit E action facts;D read/delivery;H storage and occupancy;legacy test preconditions fixed.",
-      "waiting": "Exact combined full native cloud result and remaining H V2 producer/launch/model/C integration;Win11 E2E not run.",
-      "parallel": "H/D focused independent review and two named cloud library runs."
-    },
-    {
-      "item": "Now review and three mounts",
-      "completed": "bce all5 CI green;fresh audit6 defects handed back;minimum G directory+3consumer scope PR73 independently cleared/all6 CIgreen/ready.",
-      "waiting": "Owner single scope merge;Claude component repairs;native identity/output-anchor mapping before actual mounting.",
-      "parallel": "Native dispatch/turn/item/Git fact map researched;H/D and managed CLI cloud work already running."
+      "item": "Host and cloud",
+      "completed": "True producer projection, managed-source refusal assertions, signed-Node typecheck and atomic seat configuration implemented; cloud results pending.",
+      "waiting": "No external decision; native cloud checks and remaining product integration are internal work.",
+      "parallel": "Fresh atomic configuration review plus combined exact-source cloud checks."
     }
   ],
-  "inboxObserved": "b4f7e866029b8c5a9a1211100effadf01a03ffbc; natural-boundary remote read unchanged, no new design37 entry."
+  "inboxObserved": "b4f7e866029b8c5a9a1211100effadf01a03ffbc; natural-boundary remote read unchanged, no new design37 entry.",
+  "authorizationReadback": {
+    "main": "2925c5e43d21bcf4209196a7afab7a326dd5bf70",
+    "receiptBlob": "1ea970593c9f382ba14fccdd3cc345dd3f432472",
+    "scopeDigest": "a43e4d96520a133976ed50a03b500ab8d92764d172fb4a664edf1aeeb0261091",
+    "state": "PASS"
+  },
+  "reflection": "One full fresh G review collected all independent findings before handback. Root fixes producer facts once and returns the shared source change to Claude; it does not independently patch G. Keep long library evidence separate from build success and run combined source checks rather than signing/installing each small fix."
 }
