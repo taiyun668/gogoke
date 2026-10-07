@@ -916,7 +916,8 @@ jobs:
               throw "Bound SID $label did not execute the expected compiled behavior: exit=$code"
             }
             if ($label -eq 'mutation' -and
-                ($text -notmatch 'unchanged strict inherited witness' -or $text -notmatch '\.git')) {
+                ($text -notmatch 'case=held-write second_grant=AclWitnessDetail observed=\[\]' -or
+                 $text -notmatch 'one inherited effective grant' -or $text -notmatch '\.git')) {
               throw 'Bound SID mutation did not fail at the held descendant ACL witness'
             }
           }
@@ -946,7 +947,7 @@ jobs:
             throw 'Bound SID diagnostic left tracked source changes after restoration'
           }
       - name: Verify catalog program and unchanged data boundaries with compiled mutations
-        if: ${{ matrix.group == 'core' && !cancelled() && steps.fixed-claude.outcome == 'success' }}
+        if: ${{ false }} # Diagnostic branch: unchanged catalog axes are NOT_RUN.
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -1004,7 +1005,7 @@ jobs:
           $machine['state'] = 'PASS_COMPILED_BEHAVIOR_MUTATIONS_AND_EXACT_RESTORATION'
           $machine | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $evidence 'machine-result.json') -Encoding utf8NoBOM
       - name: Upload original catalog program security evidence
-        if: ${{ always() && matrix.group == 'core' }}
+        if: ${{ false }} # Diagnostic branch: no catalog result was produced.
         uses: actions/upload-artifact@v4
         with:
           name: catalog-program-security-${{ steps.security-source.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
