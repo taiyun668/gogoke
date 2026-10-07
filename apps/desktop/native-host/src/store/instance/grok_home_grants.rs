@@ -4,7 +4,6 @@
 use crate::root::RootIdentity;
 use crate::store::atomic::Statement;
 use crate::store::same_open::VerifiedDatabaseConnection;
-use super::locate_pinned_program;
 
 const SCHEMA: [(&str, &str); 3] = [
     ("gogoke_v37_grok_home_domains", "CREATE TABLE gogoke_v37_grok_home_domains(instance_id TEXT PRIMARY KEY REFERENCES gogoke_v37_instances(instance_id),root_identity TEXT NOT NULL,home_identity TEXT NOT NULL,program_digest TEXT NOT NULL,version TEXT NOT NULL,registration_revision INTEGER NOT NULL CHECK(registration_revision>=1),revision INTEGER NOT NULL CHECK(revision>=1)) STRICT"),
@@ -113,13 +112,11 @@ pub(crate) fn initialize_grok_home_grant_schema(db:&mut VerifiedDatabaseConnecti
     })
 }
 
-fn fixed_catalog(driver:&str,digest:&str,version:&str)->Result<(),String> {
-    locate_pinned_program(driver,digest,version).map(|_|())
-        .map_err(|error|format!("grok F journal: fixed Grok program unavailable: {error:?}"))
-}
-
 pub(crate) fn current_domain(db:&VerifiedDatabaseConnection<'_>, instance_id:&str)->Result<GrokDomain,String> {
-    current_domain_with_catalog(db,instance_id,&fixed_catalog)
+    current_domain_with_catalog(db,instance_id,&|driver,digest,version|{
+        super::program_source::locate_bound_instance_program(db,instance_id,driver,digest,version)
+            .map(|_|()).map_err(|error|format!("grok F journal: managed Grok program unavailable: {error:?}"))
+    })
 }
 
 fn current_domain_with_catalog(db:&VerifiedDatabaseConnection<'_>,instance_id:&str,

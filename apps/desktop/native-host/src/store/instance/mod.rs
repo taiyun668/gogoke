@@ -7,6 +7,7 @@ pub(crate) mod provider_login;
 mod cap;
 mod management;
 mod managed_cli;
+mod program_source;
 mod registry;
 mod resolver;
 mod reprobe;
@@ -31,7 +32,10 @@ pub(crate) use management::{read_instance_profiles, set_instance_profile, record
 pub(crate) use managed_cli::{managed_cli_root, inspect_staged_official_cli, read_managed_cli,
     record_managed_cli_stage, confirm_managed_cli_launch, record_managed_cli_failure,
     record_managed_cli_progress, record_official_cli_notice, read_fixed_official_cli,
+    locate_ready_managed_program, locate_ready_managed_program_from_db,
     uninstall_managed_cli, ManagedCliCopy, ManagedCliError, VerifiedOfficialCli};
+pub(crate) use program_source::{bind_managed_instance_program, locate_bound_instance_program,
+    ProgramSourceError};
 pub(crate) use registry::{preflight_register_request, reconcile_register_replay,
     register_instance, record_observation, repin_program, reconcile_program_repin,
     InstanceObservation, ObservationRequest, ProgramObservation, Registration,
@@ -77,7 +81,7 @@ use super::atomic::Statement;
 use super::orchestration::OrchestrationError;
 use super::same_open::VerifiedDatabaseConnection;
 
-const SCHEMA: [(&str, &str); 9] = [
+const SCHEMA: [(&str, &str); 10] = [
     (
         "gogoke_v37_instances",
         "CREATE TABLE gogoke_v37_instances(instance_id TEXT PRIMARY KEY, driver_id TEXT NOT NULL, home_ref TEXT NOT NULL UNIQUE, home_identity TEXT NOT NULL UNIQUE, program_digest TEXT NOT NULL, version TEXT NOT NULL, install_state TEXT NOT NULL CHECK(install_state IN ('UNKNOWN','INSTALLED','MISSING')), login_state TEXT NOT NULL CHECK(login_state IN ('UNKNOWN','LOGGED_IN','LOGGED_OUT')), revision INTEGER NOT NULL CHECK(revision >= 1)) STRICT",
@@ -98,7 +102,8 @@ const SCHEMA: [(&str, &str); 9] = [
     ("gogoke_v37_instance_history_generations", private_history::GENERATIONS_SCHEMA),
     ("gogoke_v37_instance_profiles", "CREATE TABLE gogoke_v37_instance_profiles(instance_id TEXT PRIMARY KEY REFERENCES gogoke_v37_instances(instance_id),display_name TEXT NOT NULL,enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),connected_model_source TEXT,tombstoned INTEGER NOT NULL DEFAULT 0 CHECK(tombstoned IN (0,1)),revision INTEGER NOT NULL CHECK(revision>=1)) STRICT"),
     ("gogoke_v37_instance_evidence", "CREATE TABLE gogoke_v37_instance_evidence(instance_id TEXT PRIMARY KEY REFERENCES gogoke_v37_instances(instance_id),account_masked TEXT,subscription TEXT,account_confirmed_at TEXT,account_source TEXT,available_models_json TEXT,models_source TEXT,models_observed_at TEXT,models_program_digest TEXT,detect_error TEXT,detect_error_at TEXT) STRICT"),
-    ("gogoke_v37_instance_cli_copies", "CREATE TABLE gogoke_v37_instance_cli_copies(driver_id TEXT PRIMARY KEY,state TEXT NOT NULL CHECK(state IN ('NOT_INSTALLED','DOWNLOADING','INSTALLING','UPGRADING','STAGED','READY','INSTALL_FAILED','BLOCKED','UPGRADE_FAILED','UNINSTALLING')),version TEXT,archive_sha256 TEXT,image_sha256 TEXT,stage_name TEXT,previous_version TEXT,previous_image_sha256 TEXT,previous_stage_name TEXT,progress_bytes INTEGER NOT NULL DEFAULT 0,raw_error TEXT,checked_at TEXT,official_notice TEXT,revision INTEGER NOT NULL CHECK(revision>=1)) STRICT"),
+    ("gogoke_v37_instance_cli_copies", "CREATE TABLE gogoke_v37_instance_cli_copies(driver_id TEXT PRIMARY KEY,state TEXT NOT NULL CHECK(state IN ('NOT_INSTALLED','DOWNLOADING','INSTALLING','UPGRADING','STAGED','READY','INSTALL_FAILED','BLOCKED','PROBE_UNKNOWN','UPGRADE_FAILED','UNINSTALLING')),version TEXT,archive_sha256 TEXT,image_sha256 TEXT,stage_name TEXT,previous_version TEXT,previous_image_sha256 TEXT,previous_stage_name TEXT,progress_bytes INTEGER NOT NULL DEFAULT 0,raw_error TEXT,checked_at TEXT,official_notice TEXT,revision INTEGER NOT NULL CHECK(revision>=1)) STRICT"),
+    ("gogoke_v37_instance_program_sources", "CREATE TABLE gogoke_v37_instance_program_sources(instance_id TEXT PRIMARY KEY REFERENCES gogoke_v37_instances(instance_id),source TEXT NOT NULL CHECK(source='MANAGED'),stage_name TEXT NOT NULL,program_digest TEXT NOT NULL,version TEXT NOT NULL,home_identity TEXT NOT NULL,registration_request_id TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>=1)) STRICT"),
 ];
 
 fn observed_schema(
@@ -169,7 +174,7 @@ pub(crate) fn initialize_schema(
     }
     if !observed.is_empty() && observed != previous_schema() && observed != pre_history_schema()
         && observed != sorted_schema_prefix(6) && observed != sorted_schema_prefix(7)
-        && observed != sorted_schema_prefix(8) {
+        && observed != sorted_schema_prefix(8) && observed != sorted_schema_prefix(9) {
         return Err(OrchestrationError::AccessDenied);
     }
     connection
