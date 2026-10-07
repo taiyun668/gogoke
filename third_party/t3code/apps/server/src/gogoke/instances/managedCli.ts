@@ -87,21 +87,20 @@ async function downloadPinned(url: string, destination: string, progress?: Stage
   if (!response.ok || response.url !== url || !response.body) {
     throw new ManagedCliError("DOWNLOAD", `official response ${response.status} ${response.statusText}`);
   }
+  const body = response.body;
   let received = 0;
-  const output = createWriteStream(destination, { flags: "wx" });
-  try {
-    for await (const chunk of response.body) {
+  async function* boundedBody() {
+    // pipeline owns both backpressure and writable errors, including an
+    // asynchronous open failure before the first write.
+    for await (const chunk of body) {
       const bytes = Buffer.from(chunk);
       received += bytes.length;
       if (received > MAX_ARCHIVE_BYTES) throw new ManagedCliError("SIZE", "archive exceeds fixed limit");
-      if (!output.write(bytes)) await new Promise<void>((done) => output.once("drain", done));
       progress?.("downloading", received);
+      yield bytes;
     }
-    await new Promise<void>((done, reject) => output.end((error?: Error | null) => error ? reject(error) : done()));
-  } catch (error) {
-    output.destroy();
-    throw error;
   }
+  await pipeline(boundedBody(), createWriteStream(destination, { flags: "wx" }));
 }
 
 function safeMember(name: string): boolean {

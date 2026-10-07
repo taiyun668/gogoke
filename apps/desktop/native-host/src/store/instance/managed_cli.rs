@@ -57,6 +57,7 @@ pub(crate) enum ManagedCliError {
     Invalid,
     IdentityChanged,
     Busy,
+    Observation(String),
     Io(io::Error),
     Store(OrchestrationError),
 }
@@ -110,7 +111,8 @@ fn create_plain_dir(path: &Path) -> Result<(), ManagedCliError> {
 pub(crate) fn managed_cli_root(root: &RootLock) -> Result<PathBuf, ManagedCliError> {
     let base = &root.canonical_root().canonical_path;
     plain_dir(base)?;
-    if crate::root::inspect_root(base).map_err(|_| ManagedCliError::IdentityChanged)?.identity
+    if crate::root::inspect_root(base).map_err(|error|
+        ManagedCliError::Observation(format!("managed root observation: {error:?}")))?.identity
         != root.canonical_root().identity { return Err(ManagedCliError::IdentityChanged); }
     let managed = base.join(CONTAINER);
     create_plain_dir(&managed)?;
@@ -171,7 +173,7 @@ pub(crate) fn inspect_staged_official_cli(root: &RootLock, driver: &str,
     if !pin.raw_image { sha256_file(&stage.join("source.download"), pin.archive_sha256)?; }
     sha256_file(&image, pin.image_sha256)?;
     let observation = ProgramObservation::observe(&image, pin.version)
-        .map_err(|_| ManagedCliError::IdentityChanged)?;
+        .map_err(|error| ManagedCliError::Observation(format!("managed program observation: {error:?}")))?;
     if !observation.matches_pin(&format!("sha256:{}", pin.image_sha256), pin.version) {
         return Err(ManagedCliError::IdentityChanged);
     }
