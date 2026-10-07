@@ -119,10 +119,11 @@ fn registry_ranges_and_unknown_sync_survive_actual_same_open_reopen() {
     let from_lead=delivery::prepare(&mut db,&owner,"projectA","sideA","relayLead","mainA",
         delivery::Direction::LeadToSide,"Please review this",|_,_,_|Ok(true)).unwrap();
     assert_eq!(from_lead.target_seat_id,"sideSeat");
+    let from_lead_wire=from_lead.send_body();
     let c_message=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_inbox_messages(domain_id,message_id,revision,state,sender_seat_id,seat_id,turn_id,generation,body) VALUES(?1,?2,'1','DELIVERED',?3,?4,'turnA',?5,?6)").unwrap();
     for (index,value) in [from_lead.domain_id.as_str(),from_lead.message_id.as_str(),
         from_lead.source_seat_id.as_str(),from_lead.target_seat_id.as_str(),
-        from_lead.target_generation.as_str(),from_lead.body.as_str()].iter().enumerate() {
+        from_lead.target_generation.as_str(),from_lead_wire.as_str()].iter().enumerate() {
         c_message.bind_text((index+1) as i32,value).unwrap();
     }
     c_message.step_done().unwrap();drop(c_message);

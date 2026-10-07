@@ -29,6 +29,7 @@ pub(crate) struct DeliveryIntent {
     pub(crate) delivery_request_id:String,
     pub(crate) created_at:String,
     pub(crate) dispatch_error:String,
+    pub(crate) confirmed_failure:String,
     /// Only the transaction inserting this intent grants one C dispatch.
     pub(crate) may_dispatch:bool,
 }
@@ -68,7 +69,7 @@ fn from_hex(value:&str)->Result<Vec<u8>> {
     }).collect()
 }
 fn load_intent(db:&VerifiedDatabaseConnection<'_>,domain:&str,request_id:&str)->Result<Option<DeliveryIntent>> {
-    let row=Statement::prepare(db.as_ptr(),"SELECT side_id,direction,source_seat_id,source_seat_incarnation,source_session_id,target_seat_id,target_seat_incarnation,target_session_id,target_generation,body,message_id,enqueue_request_id,delivery_request_id,created_at,dispatch_error FROM main.gogoke_v37_side_delivery WHERE domain_id=?1 AND request_id=?2")?;
+    let row=Statement::prepare(db.as_ptr(),"SELECT side_id,direction,source_seat_id,source_seat_incarnation,source_session_id,target_seat_id,target_seat_incarnation,target_session_id,target_generation,body,message_id,enqueue_request_id,delivery_request_id,created_at,dispatch_error,confirmed_failure FROM main.gogoke_v37_side_delivery WHERE domain_id=?1 AND request_id=?2")?;
     row.bind_text(1,domain)?;row.bind_text(2,request_id)?;
     if !row.step_row()? {return Ok(None);}
     Ok(Some(DeliveryIntent {domain_id:domain.into(),request_id:request_id.into(),
@@ -78,7 +79,8 @@ fn load_intent(db:&VerifiedDatabaseConnection<'_>,domain:&str,request_id:&str)->
         target_session_id:row.column_text(7)?,target_generation:row.column_text(8)?,
         body:row.column_text(9)?,message_id:row.column_text(10)?,
         enqueue_request_id:row.column_text(11)?,delivery_request_id:row.column_text(12)?,
-        created_at:row.column_text(13)?,dispatch_error:row.column_text(14)?,may_dispatch:false}))
+        created_at:row.column_text(13)?,dispatch_error:row.column_text(14)?,
+        confirmed_failure:row.column_text(15)?,may_dispatch:false}))
 }
 
 /// C/H may consume only the exact D row that granted this one dispatch.
@@ -86,6 +88,8 @@ pub(crate) fn verify_intent(db:&VerifiedDatabaseConnection<'_>,intent:&DeliveryI
     let mut actual=load_intent(db,&intent.domain_id,&intent.request_id)?.ok_or(SideError::Denied)?;
     let mut supplied=intent.clone();
     actual.may_dispatch=false;supplied.may_dispatch=false;
+    actual.dispatch_error.clear();supplied.dispatch_error.clear();
+    actual.confirmed_failure.clear();supplied.confirmed_failure.clear();
     if actual!=supplied {return Err(SideError::Conflict);}
     Ok(())
 }
@@ -146,7 +150,7 @@ pub(crate) fn prepare(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,
             target_session_id:target.0.clone(),target_generation:target.1.clone(),body:body.into(),
             message_id:format!("sidemsg-{suffix}"),enqueue_request_id:format!("sideenqueue-{suffix}"),
             delivery_request_id:format!("sidedeliver-{suffix}"),created_at:String::new(),
-            dispatch_error:String::new(),may_dispatch:true};
+            dispatch_error:String::new(),confirmed_failure:String::new(),may_dispatch:true};
         let row=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_side_delivery(domain_id,request_id,side_id,direction,source_seat_id,source_seat_incarnation,source_session_id,target_seat_id,target_seat_incarnation,target_session_id,target_generation,body,message_id,enqueue_request_id,delivery_request_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)")?;
         for (index,value) in [&intent.domain_id,&intent.request_id,&intent.side_id,&intent.direction,
             &intent.source_seat_id,&intent.source_seat_incarnation,&intent.source_session_id,
@@ -178,16 +182,55 @@ pub(crate) fn record_error(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIs
     })
 }
 
+/// Only C's exact old-turn conflict may close an unsent steer as FAILED.
+/// A timeout, generic exception or model string remains UNKNOWN.
+pub(crate) fn record_ended_turn(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,
+    intent:&DeliveryIntent,receipt_bytes:&[u8])->Result<()> {
+    let receipt=decode_receipt(receipt_bytes)
+        .map_err(|error|SideError::Corrupt(format!("side original C receipt: {error:?}")))?;
+    if receipt.family!="K-INBOX"||receipt.operation!="steer"||
+        receipt.request_id!=intent.delivery_request_id||
+        receipt.target_id!=intent.message_id||receipt.status!=V37Status::Conflict {
+        return Err(SideError::Denied);
+    }
+    if !matches!(receipt.into_result().get(&JsonString::from_str("reason")),
+        Some(Json::String(value)) if value==&JsonString::from_str("TURN_ENDED")) {
+        return Err(SideError::Denied);
+    }
+    let original=std::str::from_utf8(receipt_bytes)
+        .map_err(|_|SideError::Invalid("side C receipt UTF-8"))?;
+    transact(db,|db| {
+        authority::check_owner_in_current_transaction(db,owner)?;
+        verify_intent(db,intent)?;
+        let s=side(db,&intent.domain_id,&intent.side_id)?;check_history(db,&s)?;
+        let message=inbox::read_message(db,&intent.domain_id,&intent.message_id).map_err(inbox_error)?
+            .ok_or(SideError::Conflict)?;
+        if message.state!="PENDING"||message.sender_seat_id!=intent.source_seat_id||
+            message.seat_id!=intent.target_seat_id||message.body!=intent.send_body()||
+            message.generation!=intent.target_generation||
+            inbox::read_operation(db,&intent.domain_id,&intent.delivery_request_id)
+                .map_err(inbox_error)?.is_some() {return Err(SideError::Conflict);}
+        let row=Statement::prepare(db.as_ptr(),"UPDATE main.gogoke_v37_side_delivery SET confirmed_failure='TURN_ENDED',dispatch_error=?3 WHERE domain_id=?1 AND request_id=?2 AND confirmed_failure=''")?;
+        row.bind_text(1,&intent.domain_id)?;row.bind_text(2,&intent.request_id)?;
+        row.bind_text(3,original)?;row.step_done()?;
+        Ok(())
+    })
+}
+
 fn observed(db:&VerifiedDatabaseConnection<'_>,intent:DeliveryIntent)->Result<DeliveryRecord> {
     let mut record=DeliveryRecord {reason:intent.dispatch_error.clone(),intent,
         state:DeliveryState::Unknown,native_receipt_id:String::new()};
     let i=&record.intent;
+    if i.confirmed_failure=="TURN_ENDED" {
+        record.state=DeliveryState::Failed;
+        return Ok(record);
+    }
     let Some(message)=inbox::read_message(db,&i.domain_id,&i.message_id).map_err(inbox_error)? else {
         if record.reason.is_empty() {record.reason="C enqueue has no recorded result; delivery is unconfirmed".into();}
         return Ok(record);
     };
     if message.sender_seat_id!=i.source_seat_id||message.seat_id!=i.target_seat_id||
-        message.generation!=i.target_generation||message.body!=i.body {
+        message.generation!=i.target_generation||message.body!=i.send_body() {
         return Err(SideError::Conflict);
     }
     let Some(operation)=inbox::read_operation(db,&i.domain_id,&i.delivery_request_id).map_err(inbox_error)? else {
