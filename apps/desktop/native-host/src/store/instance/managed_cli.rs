@@ -261,7 +261,12 @@ pub(crate) fn record_managed_cli_stage(db: &mut VerifiedDatabaseConnection<'_>, 
     owner: &OwnerIssuer, driver: &str, stage_name: &str)
     -> Result<(), ManagedCliError> {
     let pin = read_fixed_official_cli(driver).ok_or(ManagedCliError::Unsupported)?;
-    inspect_staged_official_cli(root, driver, stage_name)?;
+    let image=inspect_staged_official_cli(root, driver, stage_name)?;
+    let downloaded=if pin.raw_image {image} else {
+        managed_cli_root(root)?.join(stage_name).join("source.download")
+    };
+    let progress_bytes=i64::try_from(fs::symlink_metadata(&downloaded)?.len())
+        .map_err(|_|ManagedCliError::Invalid)?;
     transaction(db, |db| {
         check_owner_in_current_transaction(db, owner)?;
         no_unsettled_instance_use(db, driver)?;
@@ -280,7 +285,7 @@ pub(crate) fn record_managed_cli_stage(db: &mut VerifiedDatabaseConnection<'_>, 
             if matches!(state.as_str(), "READY" | "UPGRADING") { Some(value) } else { None }
         } else { None };
         let write = Statement::prepare(db.as_ptr(),
-            "INSERT INTO main.gogoke_v37_instance_cli_copies(driver_id,state,version,archive_sha256,image_sha256,stage_name,previous_version,previous_image_sha256,previous_stage_name,revision) VALUES(?1,'STAGED',?2,?3,?4,?5,?6,?7,?8,1) ON CONFLICT(driver_id) DO UPDATE SET state='STAGED',version=excluded.version,archive_sha256=excluded.archive_sha256,image_sha256=excluded.image_sha256,stage_name=excluded.stage_name,previous_version=excluded.previous_version,previous_image_sha256=excluded.previous_image_sha256,previous_stage_name=excluded.previous_stage_name,raw_error=NULL,revision=revision+1")?;
+            "INSERT INTO main.gogoke_v37_instance_cli_copies(driver_id,state,version,archive_sha256,image_sha256,stage_name,previous_version,previous_image_sha256,previous_stage_name,progress_bytes,revision) VALUES(?1,'STAGED',?2,?3,?4,?5,?6,?7,?8,?9,1) ON CONFLICT(driver_id) DO UPDATE SET state='STAGED',version=excluded.version,archive_sha256=excluded.archive_sha256,image_sha256=excluded.image_sha256,stage_name=excluded.stage_name,previous_version=excluded.previous_version,previous_image_sha256=excluded.previous_image_sha256,previous_stage_name=excluded.previous_stage_name,progress_bytes=excluded.progress_bytes,raw_error=NULL,revision=revision+1")?;
         write.bind_text(1, driver)?;
         write.bind_text(2, pin.version)?;
         write.bind_text(3, pin.archive_sha256)?;
@@ -289,6 +294,7 @@ pub(crate) fn record_managed_cli_stage(db: &mut VerifiedDatabaseConnection<'_>, 
         if let Some((version, digest, name)) = previous {
             write.bind_text(6, &version)?; write.bind_text(7, &digest)?; write.bind_text(8, &name)?;
         }
+        write.bind_i64(9,progress_bytes)?;
         write.step_done()?;
         Ok(())
     })
@@ -351,12 +357,16 @@ pub(crate) fn record_managed_cli_progress(db: &mut VerifiedDatabaseConnection<'_
         check_owner_in_current_transaction(db, owner)?;
         no_unsettled_instance_use(db, driver)?;
         let prior = Statement::prepare(db.as_ptr(),
-            "SELECT state,progress_bytes FROM main.gogoke_v37_instance_cli_copies WHERE driver_id=?1")?;
+            "SELECT state,progress_bytes,COALESCE(version,'') FROM main.gogoke_v37_instance_cli_copies WHERE driver_id=?1")?;
         prior.bind_text(1, driver)?;
         if prior.step_row()? {
             let old = prior.column_text(0)?;
             let count = prior.column_text(1)?.parse::<i64>().map_err(|_| ManagedCliError::Invalid)?;
-            if prior.step_row()? || (old == state && bytes < count) || old == "STAGED" {
+            let version=prior.column_text(2)?;
+            if prior.step_row()? || (old == state && bytes < count) ||
+                matches!(old.as_str(),"STAGED"|"PROBED"|"PROBE_UNKNOWN"|"UNINSTALLING") ||
+                (old=="READY"&&version==read_fixed_official_cli(driver)
+                    .ok_or(ManagedCliError::Unsupported)?.version) {
                 return Err(ManagedCliError::Busy);
             }
         }
