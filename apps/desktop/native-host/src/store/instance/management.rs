@@ -310,6 +310,7 @@ pub(crate) fn record_verified_models_from_original_rpc_source(
         let mut models=Vec::new();
         let mut expected_cursor=None;
         let mut first_source=None;
+        let mut prior_source_cursor=None;
         let mut prior_process=None;
         let mut pin_digest=None;
         for (index,step_id) in step_ids.iter().enumerate() {
@@ -343,6 +344,8 @@ pub(crate) fn record_verified_models_from_original_rpc_source(
             let response=original_hex_bytes(&row.column_text(1)?)?;
             let epoch=row.column_text(2)?;
             let cursor=row.column_text(3)?;
+            let cursor_number=cursor.parse::<u64>().map_err(|_|InstanceManagementError::Conflict)?;
+            if cursor_number==0 {return Err(InstanceManagementError::Conflict);}
             let process=row.column_text(4)?;
             let digest=row.column_text(5)?;
             if row.step_row()? {return Err(InstanceManagementError::Conflict);}
@@ -353,6 +356,11 @@ pub(crate) fn record_verified_models_from_original_rpc_source(
             }
             prior_process=Some(process);pin_digest=Some(digest);
             if index==0 {first_source=Some((epoch.clone(),cursor.clone()));}
+            else if first_source.as_ref().is_none_or(|(first_epoch,_)|first_epoch!=&epoch)
+                || prior_source_cursor.is_none_or(|previous|previous>=cursor_number) {
+                return Err(InstanceManagementError::Conflict);
+            }
+            prior_source_cursor=Some(cursor_number);
             let (request_cursor,page,next)=codex_rpc::decode_stored_model_list(&command,&response)
                 .map_err(|_|InstanceManagementError::Conflict)?;
             if request_cursor!=expected_cursor || (index+1<step_ids.len())!=next.is_some() {
