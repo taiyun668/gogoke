@@ -507,7 +507,7 @@ jobs:
               }
             })
             if ($selected.Count -ne 1) { throw "Diagnostic timing must select exactly one original compact case: $shard" }
-            Write-Host 'DIAGNOSTIC_TIMING_ONLY: one unchanged original runtime case; complete library and after-optimization comparison NOT_RUN.' 
+            Write-Host 'DIAGNOSTIC_TIMING_ONLY: one unchanged original runtime case; complete library and after-optimization comparison NOT_RUN.'
             if ($shard -ne 'remainder') { $arguments += $prefixes[$shard] }
           }
           $arguments += @('--','--nocapture')
