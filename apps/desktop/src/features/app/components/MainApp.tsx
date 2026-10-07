@@ -83,6 +83,7 @@ import { subscribeTrayOpenThread } from "@services/events";
 import { I18nProvider } from "@/i18n";
 import { hasNativeBackendTransport } from "@/platform/runtime";
 import { signalGogokeUpdateReady } from "@/services/tauri";
+import { NowProvider, NowPinSlot, type NowSource } from "@/features/now/NowContext";
 
 const SettingsView = lazy(() =>
   import("@settings/components/SettingsView").then((module) => ({
@@ -90,7 +91,7 @@ const SettingsView = lazy(() =>
   })),
 );
 
-export default function MainApp() {
+export default function MainApp({ nowSource = null }: { nowSource?: NowSource | null } = {}) {
   const bootstrap = useAppBootstrapOrchestration();
   useEffect(() => {
     if (hasNativeBackendTransport()) {
@@ -101,15 +102,17 @@ export default function MainApp() {
   }, []);
   return (
     <I18nProvider language={bootstrap.appSettings.appLanguage}>
-      <MainAppContent bootstrap={bootstrap} />
+      <MainAppContent bootstrap={bootstrap} nowSource={nowSource} />
     </I18nProvider>
   );
 }
 
 function MainAppContent({
   bootstrap,
+  nowSource,
 }: {
   bootstrap: ReturnType<typeof useAppBootstrapOrchestration>;
+  nowSource: NowSource | null;
 }) {
   const {
     appSettings,
@@ -1321,7 +1324,7 @@ function MainAppContent({
     activeWorkspace,
     selectedPullRequest,
     selectedCommit: selectedCommitEntry,
-    filePanelMode,
+    filePanelMode: filePanelMode === "seats" || filePanelMode === "sidechat" ? "git" : filePanelMode,
     gitPanelMode,
     centerMode,
     isCompact,
@@ -1868,7 +1871,7 @@ function MainAppContent({
       activeWorkspace: Boolean(activeWorkspace),
       sidebarNode,
       messagesNode: mainMessagesNode,
-      composerNode,
+      composerNode: <><NowPinSlot />{composerNode}</>,
       approvalToastsNode,
       updateToastNode,
       errorToastsNode,
@@ -1899,5 +1902,12 @@ function MainAppContent({
     },
   });
 
-  return <MainAppShell {...mainAppShellProps} />;
+  return (
+    <NowProvider source={nowSource} active={
+      !isNewAgentDraftMode && composerNode && activeWorkspaceId && activeThreadId
+        ? { workspaceId: activeWorkspaceId, threadId: activeThreadId } : null
+    }>
+      <MainAppShell {...mainAppShellProps} />
+    </NowProvider>
+  );
 }

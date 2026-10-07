@@ -39,10 +39,11 @@ export type NowSnapshot = {
 export type NowSource = { read: () => Promise<NowSnapshot | null> };
 
 type LegacyPair = { workspaceId: string; threadId: string };
-type ReadState = { source: NowSource; snapshot: NowSnapshot | null; frozen: boolean; error: string | null };
+type ReadState = { source: NowSource; token: object; snapshot: NowSnapshot | null; frozen: boolean; error: string | null };
 type Anchor = { key: string; element: HTMLElement };
 type ContextValue = {
   source: NowSource | null;
+  token: object;
   read: ReadState | null;
   active: LegacyPair | null;
   anchor: Anchor | null;
@@ -83,6 +84,8 @@ export function NowProvider({
 }) {
   const [read, setRead] = useState<ReadState | null>(null);
   const [anchor, setAnchor] = useState<Anchor | null>(null);
+  // A -> B -> A starts a new read lifecycle, including reuse of source A.
+  const token = useMemo(() => ({}), [source]);
 
   useEffect(() => {
     if (!source) return undefined;
@@ -98,8 +101,8 @@ export function NowProvider({
       }
       if (!live) return;
       setRead((previous) => {
-        const last = previous?.source === source ? previous.snapshot : null;
-        return { source, snapshot: snapshot ?? last, frozen: snapshot === null, error };
+        const last = previous?.token === token ? previous.snapshot : null;
+        return { source, token, snapshot: snapshot ?? last, frozen: snapshot === null, error };
       });
       timer = window.setTimeout(refresh, 2500);
     };
@@ -108,11 +111,11 @@ export function NowProvider({
       live = false;
       window.clearTimeout(timer);
     };
-  }, [source]);
+  }, [source, token]);
 
   const value = useMemo<ContextValue>(
-    () => ({ source, read, active, anchor, setAnchor }),
-    [source, read, active, anchor],
+    () => ({ source, token, read, active, anchor, setAnchor }),
+    [source, token, read, active, anchor],
   );
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }
@@ -128,7 +131,7 @@ export type NowConversationView = {
 /** Exact lookup for any visible pinned, recent, or conversation row. */
 export function useNowConversation(workspaceId: string | null, threadId: string | null): NowConversationView | null {
   const context = useContext(Context);
-  if (!workspaceId || !threadId || !context?.source || context.read?.source !== context.source || !context.read.snapshot) return null;
+  if (!workspaceId || !threadId || !context?.source || context.read?.token !== context.token || !context.read.snapshot) return null;
   const conversation = exactConversation(context.read.snapshot, { workspaceId, threadId });
   if (!conversation) return null;
   const current = conversation.currentBatchId
@@ -152,7 +155,7 @@ export function useNowActiveConversation(): NowConversationView | null {
 /** The original read error remains available even before the first snapshot. */
 export function useNowReadError(): string | null {
   const context = useContext(Context);
-  return context?.source && context.read?.source === context.source ? context.read.error : null;
+  return context?.source && context.read?.token === context.token ? context.read.error : null;
 }
 
 /** Render only batches explicitly anchored to this exact lead output item. */
@@ -188,7 +191,7 @@ export function NowOutputSlot({ workspaceId, threadId, itemId }: {
       return <div key={batch.id} ref={key === currentKey ? setCurrentAnchor : undefined}>
         <NowBlock
           batch={batch}
-          pendingInput={conversation.pendingInput}
+          pendingInput={batch.id === conversation.currentBatchId && conversation.pendingInput}
           frozenAt={view.frozenAt}
           actions={view.status === "known" ? conversation.actions : undefined}
         />

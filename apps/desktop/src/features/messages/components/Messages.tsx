@@ -1,4 +1,5 @@
-import { memo, useCallback } from "react";
+import { Fragment, memo, useCallback } from "react";
+import { NowOutputSlot, useNowConversation, useNowReadError } from "@/features/now/NowContext";
 import { useI18n } from "@/i18n";
 import ChevronDown from "lucide-react/dist/esm/icons/chevron-down";
 import ChevronUp from "lucide-react/dist/esm/icons/chevron-up";
@@ -72,6 +73,8 @@ export const Messages = memo(function Messages({
   onOpenThreadLink,
   onQuoteMessage,
 }: MessagesProps) {
+  const now = useNowConversation(workspaceId, threadId);
+  const nowReadError = useNowReadError();
   const { tx } = useI18n();
   const activeUserInputRequestId =
     threadId && userInputRequests.length
@@ -150,8 +153,8 @@ export const Messages = memo(function Messages({
     if (item.kind === "message") {
       const isCopied = copiedMessageId === item.id;
       return (
+        <Fragment key={item.id}>
         <MessageRow
-          key={item.id}
           item={item}
           isCopied={isCopied}
           onCopy={handleCopyMessage}
@@ -163,6 +166,10 @@ export const Messages = memo(function Messages({
           onOpenFileLinkMenu={showFileLinkMenu}
           onOpenThreadLink={handleOpenThreadLink}
         />
+        {item.role === "assistant" ? (
+          <NowOutputSlot workspaceId={workspaceId} threadId={threadId} itemId={item.id} />
+        ) : null}
+        </Fragment>
       );
     }
     if (item.kind === "reasoning") {
@@ -290,6 +297,11 @@ export const Messages = memo(function Messages({
           return renderItem(entry.item);
         })}
         {planFollowupNode}
+        {threadId && !now && !isLoadingMessages ? (
+          <div className="empty" role="status">
+            正在进行的数据还没接上{nowReadError ? `：${nowReadError}` : ""}
+          </div>
+        ) : null}
         {userInputNode}
         <WorkingIndicator
           isThinking={isThinking}

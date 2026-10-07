@@ -1,4 +1,5 @@
 import { useCallback, useRef } from "react";
+import { NowComposerStop, useNowActiveConversation } from "@/features/now/NowContext";
 import type {
   ChangeEvent,
   ClipboardEvent,
@@ -137,6 +138,8 @@ export function ComposerInput({
   onReviewPromptUpdateCustomInstructions,
   onReviewPromptConfirmCustom,
 }: ComposerInputProps) {
+  const now = useNowActiveConversation();
+  const hasNowStop = Boolean(now?.conversation.actions?.stopTurn || now?.conversation.actions?.stopWork);
   const { tx } = useI18n();
   const suggestionListRef = useRef<HTMLDivElement | null>(null);
   const suggestionRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -324,7 +327,14 @@ export function ComposerInput({
                 <Mic aria-hidden />
               )}
             </button>
-            <button
+            {hasNowStop && now ? (
+              <NowComposerStop
+                workspaceId={now.conversation.workspaceId}
+                threadId={now.conversation.threadId}
+                disabled={isDictationBusy || (disabled && !canStop)}
+              />
+            ) : null}
+            {(!hasNowStop || !canStop) && <button
               className={`composer-action${canStop ? " is-stop" : " is-send"}${
                 canStop && isProcessing ? " is-loading" : ""
               }`}
@@ -351,7 +361,7 @@ export function ComposerInput({
                   />
                 </svg>
               )}
-            </button>
+            </button>}
           </div>
         </div>
         {isDictationBusy && (

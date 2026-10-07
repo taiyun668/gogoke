@@ -25,7 +25,7 @@ type UseMainAppComposerWorkspaceStateArgs = {
     isTablet: boolean;
     activeTab: "home" | "projects" | "codex" | "git" | "log";
     tabletTab: "codex" | "git" | "log";
-    filePanelMode: "git" | "files" | "prompts";
+    filePanelMode: import("../../layout/components/PanelTabs").PanelTabId;
     rightPanelCollapsed: boolean;
   };
   workspace: {

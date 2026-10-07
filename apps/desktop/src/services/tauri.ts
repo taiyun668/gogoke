@@ -1,5 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 
+/** An existing USER frame; native ingress authenticates and validates its family. */
+export async function design37UserFrame(frame: object): Promise<unknown> {
+  const raw = await invoke<string>("gogoke_design37_user_operation", { frame: JSON.stringify(frame) });
+  if (typeof raw !== "string") throw new Error("Native USER reply is not a JSON frame.");
+  return JSON.parse(raw) as unknown;
+}
+
 /** Existing native USER ingress. A model call never goes through this bridge. */
 export async function design37UserConfiguration<T>(
   command: string,
