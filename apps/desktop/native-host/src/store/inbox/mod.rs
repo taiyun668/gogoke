@@ -750,9 +750,13 @@ pub(crate) fn settle_native_delivery_observed(connection: &mut VerifiedDatabaseC
                JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=ep.binding_id
                  AND b.domain_id=ep.domain_id AND b.instance_id=ep.instance_id
                  AND b.kind='SESSION' AND b.owner_id=ep.session_id AND b.generation=ep.generation
+               LEFT JOIN main.gogoke_v37_effective_seat sb ON sb.domain_id=ep.domain_id
+                 AND sb.session_id=ep.session_id AND sb.generation=ep.generation
+                 AND sb.seat_id=ep.seat_id AND sb.seat_incarnation=ep.seat_incarnation
+                 AND sb.selected_instance_id=ep.instance_id
                LEFT JOIN main.gogoke_v37_seats e ON e.domain_id=ep.domain_id
                  AND e.seat_id=ep.seat_id AND e.incarnation=ep.seat_incarnation
-                 AND CAST(e.generation AS TEXT)=ep.generation AND e.instance_id=ep.instance_id
+                 AND e.generation=sb.seat_authorization_generation AND e.instance_id=ep.instance_id
                JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
                  AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
                  AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
@@ -1478,9 +1482,13 @@ pub(crate) fn settle_native_answer_written(connection: &mut VerifiedDatabaseConn
                JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=ep.binding_id
                  AND b.domain_id=ep.domain_id AND b.instance_id=ep.instance_id
                  AND b.kind='SESSION' AND b.owner_id=ep.session_id AND b.generation=ep.generation
+               LEFT JOIN main.gogoke_v37_effective_seat sb ON sb.domain_id=ep.domain_id
+                 AND sb.session_id=ep.session_id AND sb.generation=ep.generation
+                 AND sb.seat_id=ep.seat_id AND sb.seat_incarnation=ep.seat_incarnation
+                 AND sb.selected_instance_id=ep.instance_id
                LEFT JOIN main.gogoke_v37_seats e ON e.domain_id=ep.domain_id
                  AND e.seat_id=ep.seat_id AND e.incarnation=ep.seat_incarnation
-                 AND CAST(e.generation AS TEXT)=ep.generation AND e.instance_id=ep.instance_id
+                 AND e.generation=sb.seat_authorization_generation AND e.instance_id=ep.instance_id
               WHERE s.domain_id=?1 AND s.session_id=?2 AND s.step_id=?3
                 AND s.phase='WRITTEN' AND s.requires_response=0 AND s.command_hex=?4
                 AND s.generation=?5 AND ep.seat_id=?6
@@ -1897,8 +1905,9 @@ mod tests {
         ledger::initialize_schema(&mut db).unwrap();
         // These rows model the original native facts for the SQL proof and
         // failure controls. This is not an actual CLI/writer/model test.
-        db.execute("CREATE TABLE gogoke_v37_h_claim(domain_id TEXT,session_id TEXT,generation TEXT,process_operation_id TEXT,state TEXT,stop_fact_id TEXT) STRICT").unwrap();
-        db.execute("CREATE TABLE gogoke_v37_h_seat_binding(domain_id TEXT,session_id TEXT,generation TEXT,seat_id TEXT) STRICT").unwrap();
+        db.execute("CREATE TABLE gogoke_v37_h_claim(domain_id TEXT,session_id TEXT,generation TEXT,process_operation_id TEXT,state TEXT,stop_fact_id TEXT,instance_id TEXT) STRICT").unwrap();
+        db.execute("CREATE TABLE gogoke_v37_h_seat_binding(domain_id TEXT,session_id TEXT,seat_id TEXT,seat_incarnation TEXT,generation TEXT) STRICT").unwrap();
+        crate::store::session_transport::session_binding::initialize_schema(&mut db).unwrap();
         db.execute("CREATE TABLE gogoke_v37_h_process_episode(domain_id TEXT,request_id TEXT,session_id TEXT,generation TEXT,old_generation TEXT,raw_hex TEXT,previous_revision INTEGER,result_revision INTEGER,process_operation_id TEXT,binding_id TEXT,instance_id TEXT,home_id TEXT,seat_id TEXT,seat_incarnation TEXT,phase TEXT,stop_fact_id TEXT) STRICT").unwrap();
         db.execute("CREATE TABLE gogoke_v37_h_generation(domain_id TEXT,session_id TEXT,generation TEXT,request_id TEXT,process_operation_id TEXT) STRICT").unwrap();
         db.execute("CREATE TABLE gogoke_v37_h_owner_binding(binding_id TEXT,domain_id TEXT,instance_id TEXT,kind TEXT,owner_id TEXT,generation TEXT,state TEXT) STRICT").unwrap();
@@ -1906,12 +1915,14 @@ mod tests {
         db.execute("CREATE TABLE gogoke_v37_instances(instance_id TEXT PRIMARY KEY,driver_id TEXT,version TEXT) STRICT").unwrap();
         authority::initialize_process_custody_schema(&mut db).unwrap();
         db.execute("INSERT INTO gogoke_v37_instances VALUES('instanceA','codex','0.160.0')").unwrap();
-        db.execute("INSERT INTO gogoke_v37_h_claim VALUES('projectA','sessionA','1','operationA','COMMITTED',NULL)").unwrap();
-        db.execute("INSERT INTO gogoke_v37_h_seat_binding VALUES('projectA','sessionA','1','seatA')").unwrap();
+        db.execute("INSERT INTO gogoke_v37_h_claim VALUES('projectA','sessionA','1','operationA','COMMITTED',NULL,'instanceA')").unwrap();
+        db.execute("INSERT INTO gogoke_v37_h_seat_binding VALUES('projectA','sessionA','seatA','incarnationA','1')").unwrap();
+        db.execute("INSERT INTO gogoke_v37_native_selection VALUES('projectA','sessionA','seatA','incarnationA',9,'instanceA')").unwrap();
+        db.execute("INSERT INTO gogoke_v37_session_binding_v2 VALUES('projectA','sessionA','seatA','incarnationA',9,'instanceA','NATIVE_V2')").unwrap();
         db.execute("INSERT INTO gogoke_v37_h_process_episode VALUES('projectA','openA','sessionA','1',NULL,'',1,2,'operationA','bindingA','instanceA','homeA','seatA','incarnationA','ACTIVE',NULL)").unwrap();
         db.execute("INSERT INTO gogoke_v37_h_generation VALUES('projectA','sessionA','1','openA','operationA')").unwrap();
         db.execute("INSERT INTO gogoke_v37_h_owner_binding VALUES('bindingA','projectA','instanceA','SESSION','sessionA','1','ACTIVE')").unwrap();
-        db.execute("INSERT INTO gogoke_v37_seats VALUES('projectA','seatA','incarnationA','1','instanceA','BUSY')").unwrap();
+        db.execute("INSERT INTO gogoke_v37_seats VALUES('projectA','seatA','incarnationA','9','instanceA','BUSY')").unwrap();
         db.execute("INSERT INTO gogoke_coordination_process_custody VALUES('operationA','ticketA','nonceA','42','99','fixture-image','fixture-digest','profileA','projectA','1','ACTIVE',NULL)").unwrap();
         let question_frame=b"{\"id\":44,\"method\":\"item/tool/requestUserInput\",\"params\":{\"threadId\":\"threadA\",\"turnId\":\"turnA\",\"itemId\":\"itemA\",\"questions\":[{\"id\":\"q\",\"header\":\"Choose\",\"question\":\"Which?\",\"isOther\":true,\"isSecret\":false,\"options\":null}]}}\n";
         let thread_frame=b"{\"id\":3,\"result\":{\"thread\":{\"id\":\"threadA\",\"cwd\":\"sealed-tree\"}}}\n";
@@ -1951,6 +1962,10 @@ mod tests {
         assert!(matches!(settle_native_answer_written(&mut db,&owner,&answer,"sessionA","qanswerA"),Err(InboxError::Denied)),"another exact command cannot settle this answer");
         let restore=Statement::prepare(db.as_ptr(),"UPDATE main.gogoke_v37_rpc_steps SET command_hex=?1 WHERE step_id='qanswerA'").unwrap();
         restore.bind_text(1,&raw_hex(&wire)).unwrap();restore.step_done().unwrap();drop(restore);
+        db.execute("UPDATE gogoke_v37_seats SET generation=10").unwrap();
+        assert!(matches!(settle_native_answer_written(&mut db,&owner,&answer,"sessionA","qanswerA"),Err(InboxError::Denied)),
+            "a stale E authorization cannot settle an otherwise exact H write");
+        db.execute("UPDATE gogoke_v37_seats SET generation=9").unwrap();
         db.execute("CREATE TRIGGER inject_answer_settle_failure BEFORE UPDATE ON gogoke_v37_qcard_native_operations WHEN NEW.state='ANSWERED' BEGIN SELECT RAISE(ABORT,'injected answer receipt write failure'); END").unwrap();
         assert!(settle_native_answer_written(&mut db,&owner,&answer,"sessionA","qanswerA").is_err());
         assert_eq!(query_native_card(&mut db,"projectA","cardA",|_|Ok(true)).unwrap().unwrap().state,"ANSWER_UNKNOWN");

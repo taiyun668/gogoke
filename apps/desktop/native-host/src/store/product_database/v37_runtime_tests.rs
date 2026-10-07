@@ -63,12 +63,28 @@ fn health_control_product(driver:&str, run:impl FnOnce(&mut ProductDatabase<'_>)
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&open).unwrap()).unwrap().status,V37Status::Applied);
     run(&mut product);
     let claim=Statement::prepare(product.connection.as_ptr(),
-        "SELECT generation,revision FROM main.gogoke_v37_h_claim WHERE domain_id='projectA' AND session_id='sessionA'").unwrap();
+        "SELECT generation,revision,state FROM main.gogoke_v37_h_claim WHERE domain_id='projectA' AND session_id='sessionA'").unwrap();
     assert!(claim.step_row().unwrap());let generation=claim.column_text(0).unwrap();
-    let revision=claim.column_text(1).unwrap().parse::<u64>().unwrap();drop(claim);
-    let stop=operation("K-SESSION","stop","health-final-stop","sessionA",revision,
-        &format!(r#"{{"seatId":"seatA","generation":"{generation}"}}"#));
-    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status,V37Status::Applied);
+    let revision=claim.column_text(1).unwrap().parse::<u64>().unwrap();
+    let released=claim.column_text(2).unwrap()=="RELEASED";drop(claim);
+    if released {
+        let proof=Statement::prepare(product.connection.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_h_claim h
+               JOIN main.gogoke_v37_h_process_episode e ON e.process_operation_id=h.process_operation_id
+                 AND e.domain_id=h.domain_id AND e.session_id=h.session_id AND e.generation=h.generation
+               JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id
+                 AND c.domain_id=e.domain_id AND c.generation=e.generation
+              WHERE h.domain_id='projectA' AND h.session_id='sessionA' AND h.state='RELEASED'
+                AND e.phase='STOPPED' AND c.state='STOPPED'
+                AND h.stop_fact_id=e.stop_fact_id AND e.stop_fact_id=c.stop_proof_hash
+                AND length(c.stop_proof_hash)>0").unwrap();
+        assert!(proof.step_row().unwrap(),"an already released test session requires its actual stop/custody proof");
+        assert!(!proof.step_row().unwrap());
+    } else {
+        let stop=operation("K-SESSION","stop","health-final-stop","sessionA",revision,
+            &format!(r#"{{"seatId":"seatA","generation":"{generation}"}}"#));
+        assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status,V37Status::Applied);
+    }
     product.close_checked().unwrap();drop(root);std::fs::remove_dir_all(path).unwrap();
 }
 
@@ -81,6 +97,7 @@ fn health_control_rows(product:&ProductDatabase<'_>,sql:&str)->Vec<Vec<String>> 
 #[test]
 fn actual_pinned_codex_same_seat_work_and_side_resume_preserve_authorization_without_model_call() {
     health_control_product("codex",|product| {
+        seat::initialize_policy(&mut product.connection,&product.owner,"projectA","draft").unwrap();
         instance::set_instance_concurrency_cap(&mut product.connection,&product.owner,"instanceA",2).unwrap();
         seat::set_project_parallel_cap(&mut product.connection,&product.owner,"projectA",2).unwrap();
         let original_seat=seat::get(&product.connection,"projectA","seatA").unwrap().unwrap();
@@ -141,6 +158,10 @@ fn actual_pinned_codex_same_seat_work_and_side_resume_preserve_authorization_wit
             for (i,name) in ["sessionA","sideSession"].into_iter().enumerate() {
                 assert_eq!(h::session_binding::read(&product.connection,"projectA",name).unwrap().as_ref(),Some(&initial[i]));
             }
+            let page=product.configure_user_v37(br#"{"schema":"gogoke.37.owner-configuration.v1","command":"seats-page-read","domainId":"projectA"}"#).unwrap();
+            let page=std::str::from_utf8(&page).unwrap();
+            assert!(page.contains("\"state\":\"IDLE\""),"actual resumed no-model CLI remains idle in its seat read model: {page}");
+            assert!(!page.contains("\"state\":\"STUCK\""));
             let stale=operation("K-SESSION","send",&format!("dual-stale-send-{index}"),session,resumed.revision,
                 &format!(r#"{{"generation":"{}","body":"must not reach a model"}}"#,old.generation));
             assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stale).unwrap()).unwrap().status,V37Status::Conflict);
@@ -160,6 +181,21 @@ fn actual_pinned_codex_same_seat_work_and_side_resume_preserve_authorization_wit
         assert_eq!(released.status,V37Status::Applied,"actual release: {}",String::from_utf8_lossy(&released.raw_bytes));
         assert_eq!(seat::get(&product.connection,"projectA","seatA").unwrap().as_ref(),Some(&original_seat),
             "releasing one session must not invalidate the still-live sibling");
+        let main=runtime::observe_claim_bound(&product.connection,"projectA","seatA","sessionA").unwrap().unwrap();
+        let stop=operation("K-SESSION","stop","dual-final-main-stop","sessionA",main.revision as u64,
+            &format!(r#"{{"seatId":"seatA","generation":"{}"}}"#,main.generation));
+        let stopped=h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap();
+        assert_eq!(stopped.status,V37Status::Applied);
+        let release=operation("K-SESSION","admission-release","dual-main-release","sessionA",stopped.revision,
+            &format!(r#"{{"seatId":"seatA","generation":"{}"}}"#,main.generation));
+        assert_eq!(h::decode_receipt(&product.dispatch_user_request(&release).unwrap()).unwrap().status,V37Status::Applied);
+        let idle=seat::get(&product.connection,"projectA","seatA").unwrap().unwrap();
+        assert_eq!(idle.state,seat::State::Idle,"the last real stopped occupation returns E to IDLE");
+        assert_eq!(idle.generation,original_seat.generation+1);
+        for (index,session) in ["sessionA","sideSession"].into_iter().enumerate() {
+            assert_eq!(h::session_binding::read(&product.connection,"projectA",session).unwrap().as_ref(),Some(&initial[index]),
+                "final release does not rewrite the immutable relationship");
+        }
     });
 }
 

@@ -321,16 +321,30 @@ impl<'root> ProductDatabase<'root> {
             // E BUSY means the persistent CLI owns the seat, not that a model
             // turn is running. Read the original H session for presentation;
             // retain E's separate mutation/quiescence facts below.
-            let active = self.native_sessions.iter().find(|((session_domain, _), run)|
-                session_domain == domain && run.evidence.seat_id() == seat.seat_id &&
-                run.evidence.seat_incarnation() == seat.incarnation &&
-                run.custody.binding.generation == seat.generation.to_string());
-            let display_state = match (seat.state, active) {
-                (State::Reclaimed, _) => "REMOVED",
-                (State::Idle, _) => "IDLE",
-                (State::Busy, Some((_, run))) if run.allows_input() =>
-                    if run.turn_id.is_some() { "WORKING" } else { "IDLE" },
-                (State::Busy, _) => "STUCK",
+            let mut available = false;
+            let mut working = false;
+            for ((session_domain, session_id), run) in &self.native_sessions {
+                if session_domain != domain || run.evidence.seat_id() != seat.seat_id
+                    || run.evidence.seat_incarnation() != seat.incarnation { continue; }
+                let Some(relationship)=h::session_binding::current_relationship(
+                    &self.connection,domain,session_id).map_err(|error|
+                        OrchestrationError::V37StoreFailure(format!("seat running relationship: {error:?}")))?
+                    else { continue; };
+                if relationship.seat_id!=seat.seat_id || relationship.seat_incarnation!=seat.incarnation
+                    || relationship.seat_authorization_generation!=seat.generation
+                    || relationship.instance_id!=seat.instance_id
+                    || relationship.session_generation!=run.custody.binding.generation { continue; }
+                if run.allows_input() {
+                    available = true;
+                    working |= run.turn_id.is_some();
+                }
+            }
+            let display_state = match seat.state {
+                State::Reclaimed => "REMOVED",
+                State::Idle => "IDLE",
+                State::Busy if working => "WORKING",
+                State::Busy if available => "IDLE",
+                State::Busy => "STUCK",
             };
             if display_state == "WORKING" { running += 1; }
             let settings = match seat.settings_json.as_deref() {

@@ -64,6 +64,8 @@ mod tests {
         product.connection.execute("UPDATE gogoke_v37_seats SET state='BUSY' WHERE domain_id='projectA' AND seat_id='seatA'").unwrap();
         let row=Statement::prepare(product.connection.as_ptr(),"INSERT INTO gogoke_v37_h_owner_binding VALUES('bindingA','instanceA','projectA','SESSION','sessionA',?1,'ACTIVE')").unwrap();
         row.bind_text(1,&generation).unwrap();row.step_done().unwrap();drop(row);
+        let row=Statement::prepare(product.connection.as_ptr(),"INSERT INTO gogoke_v37_instance_homes(home_id,instance_id,domain_id,kind,owner_id,generation,state,revision) VALUES('syntheticHome','instanceA','projectA','SESSION','sessionA',?1,'ACTIVE',1)").unwrap();
+        row.bind_text(1,&generation).unwrap();row.step_done().unwrap();drop(row);
         let row=Statement::prepare(product.connection.as_ptr(),"INSERT INTO gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision) VALUES('projectA','sessionA','instanceA','syntheticHome','bindingA',?1,'COMMITTED',2)").unwrap();
         row.bind_text(1,&generation).unwrap();row.step_done().unwrap();drop(row);
         let row=Statement::prepare(product.connection.as_ptr(),"INSERT INTO gogoke_v37_h_seat_binding VALUES('projectA','sessionA','seatA',?1,?2)").unwrap();

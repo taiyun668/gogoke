@@ -307,7 +307,21 @@ pub(crate) fn revalidate_host_recipient_in_transaction(db: &VerifiedDatabaseConn
         (seat.state==State::Idle && seat.generation.checked_add(1)
             .is_some_and(|next|next.to_string()==choice.generation))
             || (seat.state==State::Busy && seat.generation.to_string()==choice.generation)
-    } else {seat.state==State::Busy && seat.generation.to_string()==choice.generation};
+    } else {
+        let binding=crate::store::session_transport::session_binding::read(db,
+            proof.domain_id(),&choice.session_id)
+            .map_err(|error|InboxError::InvalidEvidence(format!("H recipient relationship: {error:?}")))?;
+        if let Some(binding)=binding.filter(|binding|
+            binding.provenance==crate::store::session_transport::session_binding::Provenance::NativeV2) {
+            let authorization=crate::store::session_transport::session_binding::authorization_generation(
+                db,proof.domain_id(),&choice.session_id)
+                .map_err(|error|InboxError::InvalidEvidence(format!("H recipient authorization: {error:?}")))?;
+            seat.state==State::Busy && binding.seat_id==proof.destination_seat_id()
+                && binding.seat_incarnation==choice.seat_incarnation
+                && binding.selected_instance_id==choice.instance_id
+                && authorization==seat.generation
+        } else {seat.state==State::Busy && seat.generation.to_string()==choice.generation}
+    };
     if !generation {return Err(InboxError::Denied);}
     let pin=crate::store::session_transport::runtime::current_instance_pin(db,&choice.instance_id)
         .map_err(|error|InboxError::InvalidEvidence(format!("F pin/login: {error:?}")))?;

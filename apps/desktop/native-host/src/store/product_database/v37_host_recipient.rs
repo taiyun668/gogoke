@@ -80,12 +80,10 @@ impl<'root> ProductDatabase<'root> {
             || format!("{:?}",seat::permission_tier(&seat).map_err(recipient_error)?)!=choice.permission_tier {
             return Err(OrchestrationError::AccessDenied);
         }
-        let valid_generation=if choice.mode=="FRESH" {
-            (seat.state==State::Idle && seat.generation.checked_add(1)
-                .is_some_and(|next|next.to_string()==choice.generation))
-                || (seat.state==State::Busy && seat.generation.to_string()==choice.generation)
-        } else {seat.state==State::Busy && seat.generation.to_string()==choice.generation};
-        if !valid_generation {return Err(OrchestrationError::AccessDenied);}
+        // C already revalidated E's authorization above. The frozen RESUME
+        // choice names the old H physical episode, not E's authorization epoch.
+        // Actual H generation/STOPPED and original stage bytes are checked
+        // again before the resume effect below.
         let pin=runtime::current_instance_pin(&self.connection,&choice.instance_id)
             .map_err(recipient_error)?;
         if pin.driver_id!="codex" {return Err(OrchestrationError::AccessDenied);}
