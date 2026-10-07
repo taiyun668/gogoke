@@ -18,7 +18,7 @@ export type SideMessageView = {
 };
 export type SideHostView = {
   sessionId: string; generation: string; expectedRevision: string; instanceId: string;
-  driverId: string; model: string; effort: string;
+  driverId: string; model?: string; effort?: string;
   answering: boolean; canAsk: boolean; questionUnresolved: boolean;
 };
 export type LeadSourceView = {
@@ -31,7 +31,10 @@ export type SideChatView = {
   sourceEpoch: string; sourceCursor: string; syncedCursor: string; revision: string;
   host?: SideHostView; messages: SideMessageView[]; transfers: SideDeliveryView[];
 };
-export type Design37SideChatPage = { domainId: string; lead?:LeadSourceView; chats: SideChatView[] };
+export type Design37SideChatPage = {
+  domainId: string; ledgerEpoch:string; ledgerCursor:string;
+  lead?:LeadSourceView; chats: SideChatView[];
+};
 
 function record(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("SIDE_INVALID_RECORD");
@@ -55,7 +58,9 @@ function optionalHost(value: unknown): SideHostView | undefined {
   const row = record(value);
   return { sessionId: string(row,"sessionId"), generation: string(row,"generation"),
     expectedRevision: string(row,"expectedRevision"), instanceId: string(row,"instanceId"),
-    driverId: string(row,"driverId"), model: string(row,"model"), effort: string(row,"effort"),
+    driverId: string(row,"driverId"),
+    model:typeof row.model === "string" && row.model ? row.model : undefined,
+    effort:typeof row.effort === "string" && row.effort ? row.effort : undefined,
     answering: flag(row,"answering"), canAsk: flag(row,"canAsk"),
     questionUnresolved: flag(row,"questionUnresolved") };
 }
@@ -74,6 +79,8 @@ function transfer(value: unknown): SideDeliveryView {
 function list(value: unknown, domainId: string): Design37SideChatPage {
   const page = record(value);
   if (page.schema !== "gogoke.37.side-list.v1" || page.domainId !== domainId) throw new Error("SIDE_INVALID_LIST");
+  const ledgerEpoch=string(page,"ledgerEpoch"),ledgerCursor=string(page,"ledgerCursor");
+  if (!/^(0|[1-9][0-9]*)$/.test(ledgerCursor)) throw new Error("SIDE_INVALID_LEDGER_CURSOR");
   const lead=page.lead===null ? undefined : (()=>{
     const row=record(page.lead);
     return {seatId:string(row,"seatId"),seatIncarnation:string(row,"seatIncarnation"),
@@ -91,15 +98,19 @@ function list(value: unknown, domainId: string): Design37SideChatPage {
       syncedCursor:string(row,"syncedCursor"), revision:string(row,"revision"),
       host:optionalHost(row.host), messages:[], transfers:rows(row,"transfers").map(transfer) };
   });
-  return {domainId,lead,chats};
+  return {domainId,ledgerEpoch,ledgerCursor,lead,chats};
 }
-function messages(value: unknown, sideId: string, epoch: string, after: string): {cursor:string;events:SideMessageView[]} {
+function messages(value: unknown, sideId: string, epoch: string, after: string,
+    through:string): {cursor:string;events:SideMessageView[]} {
   const page=record(value);
   if (page.schema !== "gogoke.37.side-thread.v1" || page.sideId !== sideId ||
       page.ledgerEpoch !== epoch || page.afterCursor !== after) throw new Error("SIDE_INVALID_THREAD");
   const events:SideMessageView[]=[];
   for (const value of rows(page,"events")) {
-    const row=record(value), update=record(row.update), kind=string(update,"sessionUpdate");
+    const row=record(value),cursor=string(row,"cursor");
+    if (!/^(0|[1-9][0-9]*)$/.test(cursor)) throw new Error("SIDE_INVALID_EVENT_CURSOR");
+    if (BigInt(cursor)>BigInt(through)) continue;
+    const update=record(row.update), kind=string(update,"sessionUpdate");
     if (kind !== "user_message_chunk" && kind !== "agent_message_chunk") continue;
     const content=record(update.content);
     if (content.type !== "text" || typeof content.text !== "string" || !content.text) continue;
@@ -107,7 +118,9 @@ function messages(value: unknown, sideId: string, epoch: string, after: string):
       text:content.text, occurredAt:string(row,"occurredAt"),
       sourceEpoch:string(row,"sourceEpoch"), sourceCursor:string(row,"sourceCursor")});
   }
-  return {cursor:string(page,"cursor"),events};
+  const cursor=string(page,"cursor");
+  if (!/^(0|[1-9][0-9]*)$/.test(cursor)) throw new Error("SIDE_INVALID_THREAD_CURSOR");
+  return {cursor,events};
 }
 
 /** Only operations with a current native USER route are exposed. Creation
@@ -135,14 +148,15 @@ export function createDesign37SideChatSource(domainId:string, execute:UserSideOp
     read:async():Promise<Design37SideChatPage>=>{
       const page=await readList();
       for (const chat of page.chats) {
+        if (chat.sourceEpoch!==page.ledgerEpoch) throw new Error("SIDE_LEDGER_EPOCH_CHANGED");
         let after="0";
         for (;;) {
-          const page=messages(await execute({schema:THREAD,domainId,sideId:chat.id,
-            ledgerEpoch:chat.sourceEpoch,afterCursor:after}),chat.id,chat.sourceEpoch,after);
-          chat.messages.push(...page.events);
-          if (page.cursor===after) break;
-          if (BigInt(page.cursor)<BigInt(after)) throw new Error("SIDE_THREAD_CURSOR_REGRESSION");
-          after=page.cursor;
+          const thread=messages(await execute({schema:THREAD,domainId,sideId:chat.id,
+            ledgerEpoch:chat.sourceEpoch,afterCursor:after}),chat.id,chat.sourceEpoch,after,page.ledgerCursor);
+          chat.messages.push(...thread.events);
+          if (BigInt(thread.cursor)<BigInt(after)) throw new Error("SIDE_THREAD_CURSOR_REGRESSION");
+          if (thread.cursor===after || BigInt(thread.cursor)>=BigInt(page.ledgerCursor)) break;
+          after=thread.cursor;
         }
         const first=chat.messages.find(item=>item.role==="user")?.text.trim();
         if (first) chat.title=first.slice(0,48);
