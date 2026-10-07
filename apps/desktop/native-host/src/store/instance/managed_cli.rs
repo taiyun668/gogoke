@@ -1,7 +1,7 @@
 //! Product-owned fixed official CLI copies. A staged copy is never READY.
 //! The native host checks the original archive and executable again before
 //! recording it; H must launch that exact image and report the result before
-//! `confirm_managed_cli_launch` can mark the copy usable.
+//! the PROBED copy can be bound to every quiescent legacy instance and marked READY.
 
 use super::registry::ProgramObservation;
 use crate::root::RootLock;
@@ -233,15 +233,15 @@ fn transaction<T>(db: &mut VerifiedDatabaseConnection<'_>,
     }
 }
 
-fn no_unsettled_instance_use(db: &VerifiedDatabaseConnection<'_>, driver: &str)
+pub(super) fn no_unsettled_instance_use(db: &VerifiedDatabaseConnection<'_>, driver: &str)
     -> Result<(), ManagedCliError> {
     let own_probe = Statement::prepare(db.as_ptr(),
         "SELECT 1 FROM main.gogoke_coordination_process_custody WHERE profile_id=?1 AND state!='STOPPED' LIMIT 1")?;
     own_probe.bind_text(1, &format!("managed-cli-{driver}"))?;
     if own_probe.step_row()? { return Err(ManagedCliError::Busy); }
     for sql in [
-        "SELECT 1 FROM main.gogoke_v37_h_claim c JOIN main.gogoke_v37_instances i ON i.instance_id=c.instance_id WHERE i.driver_id=?1 AND c.state!='RELEASED' LIMIT 1",
-        "SELECT 1 FROM main.gogoke_v37_h_owner_binding b JOIN main.gogoke_v37_instances i ON i.instance_id=b.instance_id WHERE i.driver_id=?1 AND b.state='ACTIVE' LIMIT 1",
+        "SELECT 1 FROM main.gogoke_v37_h_claim c JOIN main.gogoke_v37_instances i ON i.instance_id=c.instance_id LEFT JOIN main.gogoke_coordination_process_custody p ON p.operation_id=c.process_operation_id AND p.domain_id=c.domain_id AND p.generation=c.generation WHERE i.driver_id=?1 AND (c.state NOT IN ('RELEASED','STOPPED') OR (c.state='STOPPED' AND (c.stop_fact_id IS NULL OR p.state IS NULL OR p.state!='STOPPED' OR p.stop_proof_hash IS NULL OR c.stop_fact_id!=p.stop_proof_hash))) LIMIT 1",
+        "SELECT 1 FROM main.gogoke_v37_h_owner_binding b JOIN main.gogoke_v37_instances i ON i.instance_id=b.instance_id LEFT JOIN main.gogoke_v37_h_claim c ON c.binding_id=b.binding_id LEFT JOIN main.gogoke_coordination_process_custody p ON p.operation_id=c.process_operation_id AND p.domain_id=c.domain_id AND p.generation=c.generation WHERE i.driver_id=?1 AND b.state='ACTIVE' AND (c.binding_id IS NULL OR c.state NOT IN ('STOPPED','RELEASED') OR (c.state='STOPPED' AND (c.stop_fact_id IS NULL OR p.state IS NULL OR p.state!='STOPPED' OR p.stop_proof_hash IS NULL OR c.stop_fact_id!=p.stop_proof_hash))) LIMIT 1",
         "SELECT 1 FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id LEFT JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id WHERE i.driver_id=?1 AND (e.phase NOT IN ('STOPPED','FAILED') OR (e.process_operation_id IS NOT NULL AND (e.stop_fact_id IS NULL OR c.state IS NULL OR c.state!='STOPPED' OR c.stop_proof_hash IS NULL OR e.stop_fact_id!=c.stop_proof_hash))) LIMIT 1",
         "SELECT 1 FROM main.gogoke_v37_h_generation_change g JOIN main.gogoke_v37_h_process_episode e ON e.process_operation_id=g.old_process_operation_id JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id WHERE i.driver_id=?1 AND g.stage NOT IN ('APPLIED','CANCELLED','UNSUPPORTED') LIMIT 1",
         "SELECT 1 FROM main.gogoke_v37_instance_homes h JOIN main.gogoke_v37_instances i ON i.instance_id=h.instance_id WHERE i.driver_id=?1 AND h.state NOT IN ('CLEANED','CLOSED') LIMIT 1",
@@ -275,7 +275,7 @@ pub(crate) fn record_managed_cli_stage(db: &mut VerifiedDatabaseConnection<'_>, 
         let previous = if prior.step_row()? {
             let state = prior.column_text(0)?;
             let value = (prior.column_text(1)?, prior.column_text(2)?, prior.column_text(3)?);
-            if prior.step_row()? || matches!(state.as_str(), "STAGED" | "PROBE_UNKNOWN" | "UNINSTALLING") ||
+            if prior.step_row()? || matches!(state.as_str(), "STAGED" | "PROBED" | "PROBE_UNKNOWN" | "UNINSTALLING") ||
                 (matches!(state.as_str(), "READY" | "UPGRADING") && value.0 == pin.version) {
                 return Err(ManagedCliError::Busy);
             }
@@ -297,7 +297,8 @@ pub(crate) fn record_managed_cli_stage(db: &mut VerifiedDatabaseConnection<'_>, 
 }
 
 /// Only the native H launch/probe caller may invoke this after the exact
-/// signed-image process returned its actual identity and launch result.
+/// image process returned its actual identity and launch result. PROBED is
+/// not READY; F promotes it with all existing instance bindings atomically.
 pub(crate) fn confirm_managed_cli_launch(db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
     driver: &str, stage_name: &str, observed_digest: &str, observed_version: &str)
     -> Result<(), ManagedCliError> {
@@ -308,14 +309,14 @@ pub(crate) fn confirm_managed_cli_launch(db: &mut VerifiedDatabaseConnection<'_>
     transaction(db, |db| {
         no_unsettled_instance_use(db, driver)?;
         inspect_staged_official_cli(root, driver, stage_name)?;
-        let write = Statement::prepare(db.as_ptr(), "UPDATE main.gogoke_v37_instance_cli_copies SET state='READY',raw_error=NULL,revision=revision+1 WHERE driver_id=?1 AND state='STAGED' AND stage_name=?2 AND image_sha256=?3")?;
+        let write = Statement::prepare(db.as_ptr(), "UPDATE main.gogoke_v37_instance_cli_copies SET state='PROBED',raw_error=NULL,revision=revision+1 WHERE driver_id=?1 AND state='STAGED' AND stage_name=?2 AND image_sha256=?3")?;
         write.bind_text(1, driver)?;
         write.bind_text(2, stage_name)?;
         write.bind_text(3, pin.image_sha256)?;
         write.step_done()?;
         let check = Statement::prepare(db.as_ptr(), "SELECT state FROM main.gogoke_v37_instance_cli_copies WHERE driver_id=?1")?;
         check.bind_text(1, driver)?;
-        if !check.step_row()? || check.column_text(0)? != "READY" || check.step_row()? {
+        if !check.step_row()? || check.column_text(0)? != "PROBED" || check.step_row()? {
             return Err(ManagedCliError::Busy);
         }
         Ok(())
