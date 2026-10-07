@@ -1,6 +1,7 @@
 //! Native-only Design 37 request framing. The existing Node service pipe stays unwired.
 mod wire;
 mod admission;
+pub(crate) mod session_binding;
 mod episodes;
 pub(crate) mod generation_change;
 mod journal;
