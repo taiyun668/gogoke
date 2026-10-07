@@ -3,9 +3,11 @@ import { readDesign37InstancesSnapshot, type Design37Instance } from "@/features
 import { design37UserConfiguration } from "./tauri";
 
 type Vendor = "codex" | "claude" | "opencode" | "grok";
+type ProfileVendor = Vendor | "antigravity";
 const VENDORS: readonly Vendor[] = ["codex", "claude", "opencode", "grok"];
-const LABEL: Record<Vendor, string> = {
+const LABEL: Record<ProfileVendor, string> = {
   codex: "Codex", claude: "Claude Code", opencode: "OpenCode", grok: "Grok Build",
+  antigravity: "Antigravity",
 };
 type CliState = "NOT_INSTALLED" | "DOWNLOADING" | "INSTALLING" | "INSTALL_FAILED" |
   "STAGED" | "PROBED" | "PROBE_UNKNOWN" | "BLOCKED" | "READY" | "UPGRADING" |
@@ -55,7 +57,7 @@ export type ManagedInstancePage = {
 };
 
 type Profile = {
-  instanceId: string; driverId: Vendor; name?: string; enabled?: boolean;
+  instanceId: string; driverId: ProfileVendor; name?: string; enabled?: boolean;
   provider?: string; profileRevision?: string; cap?: number; account?: string;
   plan?: string; lastConfirmed?: string; checkFailed?: string;
   models?: string[]; modelsSource?: string; modelsObservedAt?: string;
@@ -65,6 +67,8 @@ const object = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 const vendor = (value: unknown): value is Vendor =>
   typeof value === "string" && (VENDORS as readonly string[]).includes(value);
+const profileVendor = (value: unknown): value is ProfileVendor =>
+  vendor(value) || value === "antigravity";
 function optionalString(value: unknown, name: string): string | undefined {
   if (value === null || value === undefined) return undefined;
   if (typeof value !== "string") throw new Error(`Invalid native ${name}.`);
@@ -96,7 +100,7 @@ function parseManagement(value: unknown): Management {
   const seen = new Set<string>();
   for (const item of value.profiles) {
     if (!object(item) || typeof item.instanceId !== "string" || !item.instanceId ||
-        !vendor(item.driverId) || seen.has(item.instanceId)) {
+        !profileVendor(item.driverId) || seen.has(item.instanceId)) {
       throw new Error("Invalid native instance profile.");
     }
     seen.add(item.instanceId);
@@ -226,11 +230,27 @@ async function updateProfile(id: string, change: (current: Profile) => Pick<Prof
   });
 }
 
+async function configureProfile(id: string, input: { name: string; enabled: boolean }): Promise<void> {
+  const current = await currentProfile(id);
+  if (!input.name.trim() || typeof input.enabled !== "boolean") {
+    throw new Error("An explicit name and enabled state are required.");
+  }
+  // Native CAS accepts null only for the first profile. The user supplies
+  // both fields; unknown metadata is never replaced with display defaults.
+  await design37UserConfiguration("instance-profile", {
+    instanceId: id, name: input.name, enabled: input.enabled,
+    provider: current.provider ?? null,
+    expectedProfileRevision: current.profileRevision ?? null,
+    requestId: `ui-${crypto.randomUUID()}`,
+  });
+}
+
 /** USER bridge only. Unsupported actions are absent rather than advertised. */
 export function createDesign37ManagedInstanceSource<Page>(project: (value: ManagedInstancePage) => Page) {
   return {
     read: async (): Promise<Page> => project(await readPage()),
     actions: {
+      configureProfile,
       login: async (id: string): Promise<void> => {
         await invoke("gogoke_design37_instance_login", { instanceId: id });
       },
