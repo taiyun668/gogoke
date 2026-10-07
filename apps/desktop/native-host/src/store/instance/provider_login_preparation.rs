@@ -7,7 +7,7 @@ use crate::process::{NativeBinding, PrepareRequest, ProcessLaunch};
 use crate::root::RootLock;
 use crate::store::atomic::{Json, JsonString, Statement};
 use crate::store::authority::{read_product_identity, OwnerIssuer};
-use crate::store::instance::{locate_pinned_program, reconcile_register_replay,
+use crate::store::instance::{reconcile_register_replay,
     RegistryError, RegistrationReplay, ResolvedDirectory};
 use crate::store::instance::registry::resolve_registered_provider_home;
 use crate::store::same_open::VerifiedDatabaseConnection;
@@ -266,7 +266,8 @@ pub(crate) fn prepare_registered_provider_login(db: &mut VerifiedDatabaseConnect
     if pin.version != recipe.pinned_version {
         return Err(ProviderLoginPreparationError::denied("registered version differs from fixed login recipe"));
     }
-    let application = locate_pinned_program(&pin.driver_id, &pin.digest, &pin.version)
+    let application = super::program_source::locate_bound_instance_program(db,instance_id,
+        &pin.driver_id, &pin.digest, &pin.version)
         .map_err(|error| ProviderLoginPreparationError::source("pinned executable", error))?;
     if !application.is_absolute() || application.file_name().and_then(|name| name.to_str())
         != Some(match provider { LoginProvider::Claude => "claude.exe",

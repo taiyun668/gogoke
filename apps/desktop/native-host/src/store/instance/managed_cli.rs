@@ -156,9 +156,14 @@ fn safe_stage_name(name: &str, pin: VerifiedOfficialCli) -> bool {
 /// npm, PATH, installer script, or credential path is touched.
 pub(crate) fn inspect_staged_official_cli(root: &RootLock, driver: &str,
     stage_name: &str) -> Result<PathBuf, ManagedCliError> {
+    inspect_stage_at(&managed_cli_root(root)?, driver, stage_name)
+}
+
+fn inspect_stage_at(staging: &Path, driver: &str, stage_name: &str)
+    -> Result<PathBuf, ManagedCliError> {
     let pin = read_fixed_official_cli(driver).ok_or(ManagedCliError::Unsupported)?;
     if !safe_stage_name(stage_name, pin) { return Err(ManagedCliError::Invalid); }
-    let staging = managed_cli_root(root)?;
+    plain_dir(staging)?;
     let stage = staging.join(stage_name);
     plain_dir(&stage)?;
     let content = stage.join("content");
@@ -180,6 +185,38 @@ pub(crate) fn inspect_staged_official_cli(root: &RootLock, driver: &str,
     Ok(image)
 }
 
+fn verified_staging_from_db(db: &VerifiedDatabaseConnection<'_>)
+    -> Result<PathBuf, ManagedCliError> {
+    let root = db.path().parent().ok_or(ManagedCliError::IdentityChanged)?;
+    plain_dir(root)?;
+    if crate::root::inspect_root(root).map_err(|_|ManagedCliError::IdentityChanged)?.identity
+        != *db.root_identity() { return Err(ManagedCliError::IdentityChanged); }
+    let managed=root.join(CONTAINER);
+    plain_dir(&managed)?;
+    let staging=managed.join(STAGING);
+    plain_dir(&staging)?;
+    Ok(staging)
+}
+
+pub(crate) fn locate_ready_managed_program_from_db(db: &VerifiedDatabaseConnection<'_>,
+    driver: &str, digest: &str, version: &str) -> Result<Option<PathBuf>, ManagedCliError> {
+    let pin=read_fixed_official_cli(driver).ok_or(ManagedCliError::Unsupported)?;
+    let row=Statement::prepare(db.as_ptr(),
+        "SELECT state,COALESCE(stage_name,''),COALESCE(image_sha256,''),COALESCE(version,'') FROM main.gogoke_v37_instance_cli_copies WHERE driver_id=?1")?;
+    row.bind_text(1,driver)?;
+    if !row.step_row()? { return Ok(None); }
+    let state=row.column_text(0)?;
+    let name=row.column_text(1)?;
+    let stored_digest=row.column_text(2)?;
+    let stored_version=row.column_text(3)?;
+    if row.step_row()? || state!="READY" || stored_digest!=pin.image_sha256 ||
+        stored_version!=pin.version || version!=pin.version ||
+        digest!=format!("sha256:{}",pin.image_sha256) {
+        return Err(ManagedCliError::IdentityChanged);
+    }
+    Ok(Some(inspect_stage_at(&verified_staging_from_db(db)?,driver,&name)?))
+}
+
 fn transaction<T>(db: &mut VerifiedDatabaseConnection<'_>,
     action: impl FnOnce(&VerifiedDatabaseConnection<'_>) -> Result<T, ManagedCliError>)
     -> Result<T, ManagedCliError> {
@@ -198,6 +235,10 @@ fn transaction<T>(db: &mut VerifiedDatabaseConnection<'_>,
 
 fn no_unsettled_instance_use(db: &VerifiedDatabaseConnection<'_>, driver: &str)
     -> Result<(), ManagedCliError> {
+    let own_probe = Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM main.gogoke_coordination_process_custody WHERE profile_id=?1 AND state!='STOPPED' LIMIT 1")?;
+    own_probe.bind_text(1, &format!("managed-cli-{driver}"))?;
+    if own_probe.step_row()? { return Err(ManagedCliError::Busy); }
     for sql in [
         "SELECT 1 FROM main.gogoke_v37_h_claim c JOIN main.gogoke_v37_instances i ON i.instance_id=c.instance_id WHERE i.driver_id=?1 AND c.state!='RELEASED' LIMIT 1",
         "SELECT 1 FROM main.gogoke_v37_h_owner_binding b JOIN main.gogoke_v37_instances i ON i.instance_id=b.instance_id WHERE i.driver_id=?1 AND b.state='ACTIVE' LIMIT 1",
@@ -234,7 +275,7 @@ pub(crate) fn record_managed_cli_stage(db: &mut VerifiedDatabaseConnection<'_>, 
         let previous = if prior.step_row()? {
             let state = prior.column_text(0)?;
             let value = (prior.column_text(1)?, prior.column_text(2)?, prior.column_text(3)?);
-            if prior.step_row()? || state == "STAGED" ||
+            if prior.step_row()? || matches!(state.as_str(), "STAGED" | "PROBE_UNKNOWN" | "UNINSTALLING") ||
                 (matches!(state.as_str(), "READY" | "UPGRADING") && value.0 == pin.version) {
                 return Err(ManagedCliError::Busy);
             }
@@ -285,7 +326,7 @@ pub(crate) fn confirm_managed_cli_launch(db: &mut VerifiedDatabaseConnection<'_>
 pub(crate) fn record_managed_cli_failure(db: &mut VerifiedDatabaseConnection<'_>,
     driver: &str, state: &str, raw_error: &str) -> Result<(), ManagedCliError> {
     if read_fixed_official_cli(driver).is_none() ||
-        !matches!(state, "INSTALL_FAILED" | "UPGRADE_FAILED" | "BLOCKED") ||
+        !matches!(state, "INSTALL_FAILED" | "UPGRADE_FAILED" | "BLOCKED" | "PROBE_UNKNOWN") ||
         raw_error.is_empty() || raw_error.len() > 16_384 {
         return Err(ManagedCliError::Invalid);
     }
@@ -378,6 +419,28 @@ pub(crate) fn read_managed_cli(db: &VerifiedDatabaseConnection<'_>, root: &RootL
         }
     }
     Ok(Some(result))
+}
+
+/// A configured managed copy is authoritative. None means no lifecycle row
+/// exists, not permission to fall back to a user-global CLI. H decides whether
+/// an original legacy instance has separate explicit migration authority.
+pub(crate) fn locate_ready_managed_program(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
+    driver: &str, digest: &str, version: &str) -> Result<Option<PathBuf>, ManagedCliError> {
+    let pin = read_fixed_official_cli(driver).ok_or(ManagedCliError::Unsupported)?;
+    let row = Statement::prepare(db.as_ptr(),
+        "SELECT state,COALESCE(stage_name,''),COALESCE(image_sha256,''),COALESCE(version,'') FROM main.gogoke_v37_instance_cli_copies WHERE driver_id=?1")?;
+    row.bind_text(1, driver)?;
+    if !row.step_row()? { return Ok(None); }
+    let state = row.column_text(0)?;
+    let stage_name = row.column_text(1)?;
+    let image_sha256 = row.column_text(2)?;
+    let stored_version = row.column_text(3)?;
+    if row.step_row()? || state != "READY" || image_sha256 != pin.image_sha256 ||
+        stored_version != pin.version || version != pin.version ||
+        digest != format!("sha256:{}", pin.image_sha256) {
+        return Err(ManagedCliError::IdentityChanged);
+    }
+    Ok(Some(inspect_staged_official_cli(root, driver, &stage_name)?))
 }
 
 fn verify_plain_tree(path: &Path) -> Result<(), ManagedCliError> {
