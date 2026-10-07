@@ -47,7 +47,7 @@ export type ManagedInstanceView = {
     browser: "opened" | "failed" | "not-requested"; startedAt: number };
   loginUnsettled?: boolean;
   loginNote?: string;
-  // No E/H occupancy read is wired here; absence is unknown, never zero.
+  // Missing or unsettled H evidence remains unknown, never zero.
   seats?: string[];
   runningSessions?: number;
 };
@@ -61,6 +61,7 @@ type Profile = {
   provider?: string; profileRevision?: string; cap?: number; account?: string;
   plan?: string; lastConfirmed?: string; checkFailed?: string;
   models?: string[]; modelsSource?: string; modelsObservedAt?: string;
+  seats?: string[]; runningSessions?: number;
 };
 type Management = { profiles: Profile[]; cli: Map<Vendor, ManagedCliView> };
 const object = (value: unknown): value is Record<string, unknown> =>
@@ -113,6 +114,11 @@ function parseManagement(value: unknown): Management {
         !models.every((model) => typeof model === "string" && model.length > 0))) {
       throw new Error("Invalid native verified model list.");
     }
+    const seats = item.seats;
+    if (seats !== undefined && (!Array.isArray(seats) ||
+        !seats.every((name) => typeof name === "string" && name.length > 0))) {
+      throw new Error("Invalid native seat assignment list.");
+    }
     profiles.push({
       instanceId: item.instanceId, driverId: item.driverId,
       name: optionalString(item.name, "name"),
@@ -127,6 +133,9 @@ function parseManagement(value: unknown): Management {
       models: models as string[] | undefined,
       modelsSource: optionalString(item.modelsSource, "model source"),
       modelsObservedAt: hostTime(item.modelsObservedAt, "model observation time"),
+      seats: seats as string[] | undefined,
+      runningSessions: item.runningSessions === 0 ? 0 :
+        positiveInteger(item.runningSessions, "running sessions"),
     });
   }
   const cli = new Map<Vendor, ManagedCliView>();
@@ -178,6 +187,7 @@ function joinedRow(instance: Design37Instance | undefined, profile: Profile, ord
       profile.models.length ? profile.models.join("、") : "已验证无可用模型",
     modelsSource: profile.modelsSource, modelsObservedAt: profile.modelsObservedAt,
     lastConfirmed: profile.lastConfirmed, checkFailed: profile.checkFailed,
+    seats: profile.seats, runningSessions: profile.runningSessions,
   };
   if (login?.state === "PENDING" && !login.settled) {
     row.login = {

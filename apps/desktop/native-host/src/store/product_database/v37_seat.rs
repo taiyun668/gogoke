@@ -123,6 +123,174 @@ fn status_for(error: &SeatError, request: &V37Request, present: Option<&Seat>) -
 }
 
 impl<'root> ProductDatabase<'root> {
+    fn read_instance_seat_occupancy(&self, instance_id: &str) -> Result<(Vec<Json>, Option<usize>)> {
+        // E owns assignment across every domain. Names are joined by the exact
+        // incarnation; a missing name is never replaced with an internal ID.
+        let q = Statement::prepare(self.connection.as_ptr(),
+            "SELECT s.domain_id,s.seat_id,s.incarnation,CAST(s.generation AS TEXT),s.state,\
+                    COALESCE(n.display_name,'') \
+             FROM main.gogoke_v37_seats AS s LEFT JOIN main.gogoke_v37_seat_display_names AS n \
+               ON n.domain_id=s.domain_id AND n.seat_id=s.seat_id AND n.incarnation=s.incarnation \
+             WHERE s.instance_id=?1 AND s.state<>'RECLAIMED' ORDER BY s.domain_id,s.seat_id")?;
+        q.bind_text(1, instance_id)?;
+        let mut seats = Vec::new();
+        let mut bindings = Vec::new();
+        while q.step_row()? {
+            let domain = q.column_text(0)?;
+            let seat = q.column_text(1)?;
+            let incarnation = q.column_text(2)?;
+            let generation = q.column_text(3)?;
+            let busy = q.column_text(4)? == "BUSY";
+            let name = q.column_text(5)?;
+            seats.push(Json::String(JsonString::from_str(if name.is_empty() {
+                "未命名席位"
+            } else { &name })));
+            bindings.push((domain, seat, incarnation, generation, busy));
+        }
+        // A persisted COMMITTED/ACTIVE row is not a live process. The count is
+        // known only when every unsettled H holder has current E, native and
+        // kernel custody evidence. A restarted host retains UNKNOWN.
+        let claims = Statement::prepare(self.connection.as_ptr(),
+            "SELECT domain_id,session_id,state,COALESCE(process_operation_id,''),\
+                    COALESCE(stop_fact_id,'') FROM main.gogoke_v37_h_claim WHERE instance_id=?1")?;
+        claims.bind_text(1, instance_id)?;
+        let mut seen_busy = Vec::new();
+        let mut counted_sessions = Vec::new();
+        let mut running = 0usize;
+        let mut unknown = false;
+        while claims.step_row()? {
+            let domain = claims.column_text(0)?;
+            let session = claims.column_text(1)?;
+            let phase = claims.column_text(2)?;
+            let operation = claims.column_text(3)?;
+            let stop_fact = claims.column_text(4)?;
+            if phase == "RELEASED" {
+                // A released started session must retain the matching durable
+                // kernel stop proof, not only a terminal H state label.
+                if !operation.is_empty() {
+                    let stopped = Statement::prepare(self.connection.as_ptr(),
+                        "SELECT 1 FROM main.gogoke_coordination_process_custody \
+                         WHERE operation_id=?1 AND domain_id=?2 AND state='STOPPED' \
+                           AND stop_proof_hash=?3")?;
+                    stopped.bind_text(1, &operation)?;
+                    stopped.bind_text(2, &domain)?;
+                    stopped.bind_text(3, &stop_fact)?;
+                    if stop_fact.is_empty() || !stopped.step_row()? || stopped.step_row()? {
+                        unknown = true;
+                    }
+                }
+                continue;
+            }
+            if phase == "STOPPED" {
+                let stopped = !stop_fact.is_empty() &&
+                    crate::store::session_transport::runtime::observe_stop_fact(
+                        &self.connection, &domain, &session)
+                        .map_err(|error| OrchestrationError::V37StoreFailure(
+                            format!("instance stop observation: {error:?}")))?.is_some();
+                if !stopped { unknown = true; }
+                else {
+                    let bound = Statement::prepare(self.connection.as_ptr(),
+                        "SELECT seat_id,seat_incarnation,generation FROM main.gogoke_v37_h_seat_binding \
+                         WHERE domain_id=?1 AND session_id=?2")?;
+                    bound.bind_text(1, &domain)?;
+                    bound.bind_text(2, &session)?;
+                    if bound.step_row()? {
+                        let seat = bound.column_text(0)?;
+                        let incarnation = bound.column_text(1)?;
+                        let generation = bound.column_text(2)?;
+                        if bound.step_row()? { unknown = true; }
+                        else if bindings.iter().any(|(d,s,i,g,busy)|
+                            d==&domain && s==&seat && i==&incarnation && g==&generation && *busy) {
+                            seen_busy.push((domain.clone(), seat, incarnation, generation));
+                        }
+                    }
+                }
+                continue;
+            }
+            if phase != "COMMITTED" || operation.is_empty() {
+                unknown = true;
+                continue;
+            }
+            let bound = Statement::prepare(self.connection.as_ptr(),
+                "SELECT seat_id,seat_incarnation,generation FROM main.gogoke_v37_h_seat_binding \
+                 WHERE domain_id=?1 AND session_id=?2")?;
+            bound.bind_text(1, &domain)?;
+            bound.bind_text(2, &session)?;
+            if !bound.step_row()? { unknown = true; continue; }
+            let seat = bound.column_text(0)?;
+            let incarnation = bound.column_text(1)?;
+            let generation = bound.column_text(2)?;
+            if bound.step_row()? { unknown = true; continue; }
+            let current = bindings.iter().any(|(d,s,i,g,busy)|
+                d == &domain && s == &seat && i == &incarnation &&
+                g == &generation && *busy);
+            if !current { unknown = true; continue; }
+            seen_busy.push((domain.clone(), seat.clone(), incarnation.clone(), generation.clone()));
+            let claim = crate::store::session_transport::runtime::observe_claim_bound(
+                &self.connection, &domain, &seat, &session)
+                .map_err(|error| OrchestrationError::V37StoreFailure(
+                    format!("instance H claim observation: {error:?}")))?;
+            let Some(claim) = claim else { unknown = true; continue; };
+            if claim.phase != crate::store::session_transport::runtime::SessionPhase::Committed ||
+                claim.instance_id != instance_id || claim.generation != generation ||
+                claim.process_operation_id.as_deref() != Some(operation.as_str()) {
+                unknown = true;
+                continue;
+            }
+            let Some(run) = self.native_sessions.get(&(domain.clone(), session.clone())) else {
+                unknown = true;
+                continue;
+            };
+            if run.operation_id != operation || run.evidence.instance_id() != instance_id ||
+                run.evidence.seat_id() != seat || run.evidence.seat_incarnation() != incarnation ||
+                run.custody.binding.domain_id != domain ||
+                run.custody.binding.generation != generation || !run.allows_input() {
+                unknown = true;
+                continue;
+            }
+            let custody = Statement::prepare(self.connection.as_ptr(),
+                "SELECT c.state FROM main.gogoke_coordination_process_custody AS c \
+                 JOIN main.gogoke_v37_h_process_episode AS e \
+                   ON e.process_operation_id=c.operation_id AND e.domain_id=c.domain_id \
+                  AND e.generation=c.generation AND e.session_id=?11 \
+                  AND e.instance_id=?12 AND e.phase='ACTIVE' \
+                 WHERE c.operation_id=?1 AND c.ticket=?2 AND c.custodian_nonce=?3 AND c.pid=?4 \
+                   AND c.creation_time_100ns=?5 AND c.image_path=?6 AND c.binary_digest_sha256=?7 \
+                   AND c.profile_id=?8 AND c.domain_id=?9 AND c.generation=?10")?;
+            let pid = run.custody.identity.pid.to_string();
+            let created = run.custody.identity.creation_time_100ns.to_string();
+            let image = run.custody.identity.image_path.to_string_lossy();
+            for (index, value) in [operation.as_str(), run.custody.ticket.opaque(),
+                run.custody.custodian_nonce.as_str(), pid.as_str(), created.as_str(),
+                image.as_ref(), run.custody.binding.binary_digest_sha256.as_str(),
+                run.custody.binding.profile_id.as_str(), domain.as_str(), generation.as_str(),
+                session.as_str(), instance_id]
+                .iter().enumerate() { custody.bind_text((index + 1) as i32, value)?; }
+            let durable_active = custody.step_row()? && custody.column_text(0)? == "ACTIVE";
+            if custody.step_row()? { unknown = true; continue; }
+            let live = self.process_custodian.active(&run.custody.ticket)
+                .is_some_and(|process| process.identity() == &run.custody.identity &&
+                    process.exit_code().ok() == Some(None));
+            if !durable_active || !live { unknown = true; continue; }
+            running += 1;
+            counted_sessions.push((domain, session));
+        }
+        if bindings.iter().any(|(d,s,i,g,busy)| *busy &&
+            !seen_busy.iter().any(|(sd,ss,si,sg)| sd==d && ss==s && si==i && sg==g)) {
+            unknown = true;
+        }
+        // A current native process without the counted H/E tuple must not be
+        // erased by an apparently empty durable claim query.
+        for ((domain, session), run) in &self.native_sessions {
+            if run.evidence.instance_id() != instance_id ||
+                counted_sessions.iter().any(|(d,s)| d==domain && s==session) { continue; }
+            if self.process_custodian.active(&run.custody.ticket)
+                .is_some_and(|process| process.identity() == &run.custody.identity &&
+                    process.exit_code().ok() == Some(None)) { unknown = true; }
+        }
+        Ok((seats, if unknown { None } else { Some(running) }))
+    }
+
     fn read_user_seats_page(&self, domain: &str) -> Result<Json> {
         let cap = Statement::prepare(self.connection.as_ptr(),
             "SELECT 1 FROM main.gogoke_v37_seat_project_caps WHERE domain_id=?1")?;
@@ -721,6 +889,10 @@ impl<'root> ProductDatabase<'root> {
                         row.insert(key("models"), Json::Array(models));
                     }
                 }
+                let (seats, running) = self.read_instance_seat_occupancy(&profile.instance_id)?;
+                row.insert(key("seats"), Json::Array(seats));
+                row.insert(key("runningSessions"), running.map(|value|
+                    Json::Number(value.to_string())).unwrap_or(Json::Null));
                 profiles.push(Json::Object(row));
             }
             let mut cli = Vec::new();
