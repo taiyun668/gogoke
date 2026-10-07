@@ -46,6 +46,63 @@ pub(crate) struct SessionBinding {
     pub(crate) selected_instance_id: String,
     pub(crate) provenance: Provenance,
 }
+
+/// Current E/H metadata, not a launch or model-call permission. In particular
+/// a RESERVED claim may legitimately have no A registration. Execution callers
+/// must check the original A purpose, native process and current grant as well.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CurrentRelationship {
+    pub(crate) seat_id: String,
+    pub(crate) seat_incarnation: String,
+    pub(crate) seat_authorization_generation: i64,
+    pub(crate) instance_id: String,
+    pub(crate) session_generation: String,
+    pub(crate) native_v2: bool,
+}
+
+/// Native V2 separates the current E authorization snapshot from the H process
+/// generation and selected instance. Legacy execution keeps its existing exact
+/// E/H equality rules; a historical LEGACY_V1 projection cannot replace them.
+pub(crate) fn current_relationship(db: &VerifiedDatabaseConnection<'_>,
+    domain: &str, session: &str) -> Result<Option<CurrentRelationship>, BindingError> {
+    schema_state(db)?.ok_or(BindingError::Drift)?;
+    let q = Statement::prepare(db.as_ptr(),
+        "SELECT s.seat_id,s.incarnation,s.generation,h.instance_id,h.generation,CASE WHEN v.provenance='NATIVE_V2' THEN '1' ELSE '0' END
+           FROM main.gogoke_v37_h_claim h
+           JOIN main.gogoke_v37_h_owner_binding o ON o.binding_id=h.binding_id
+             AND o.instance_id=h.instance_id AND o.domain_id=h.domain_id
+             AND o.kind='SESSION' AND o.owner_id=h.session_id
+             AND o.generation=h.generation AND o.state='ACTIVE'
+           JOIN main.gogoke_v37_instance_homes home ON home.home_id=h.home_id
+             AND home.instance_id=h.instance_id AND home.domain_id=h.domain_id
+             AND home.kind='SESSION' AND home.owner_id=h.session_id
+             AND home.generation=h.generation AND home.state='ACTIVE'
+           JOIN main.gogoke_v37_instances i ON i.instance_id=h.instance_id
+           LEFT JOIN main.gogoke_v37_session_binding_v2 v
+             ON v.domain_id=h.domain_id AND v.session_id=h.session_id
+           LEFT JOIN main.gogoke_v37_h_seat_binding old
+             ON old.domain_id=h.domain_id AND old.session_id=h.session_id
+           JOIN main.gogoke_v37_seats s ON s.domain_id=h.domain_id AND s.state='BUSY'
+             AND ((v.provenance='NATIVE_V2' AND s.seat_id=v.seat_id
+               AND s.incarnation=v.seat_incarnation
+               AND s.generation=v.seat_authorization_generation
+               AND h.instance_id=v.selected_instance_id)
+             OR ((v.provenance IS NULL OR v.provenance='LEGACY_V1')
+               AND s.seat_id=old.seat_id AND s.incarnation=old.seat_incarnation
+               AND CAST(s.generation AS TEXT)=old.generation
+               AND old.generation=h.generation AND s.instance_id=h.instance_id))
+          WHERE h.domain_id=?1 AND h.session_id=?2 AND h.state<>'RELEASED'")?;
+    q.bind_text(1,domain)?; q.bind_text(2,session)?;
+    if !q.step_row()? { return Ok(None); }
+    let relationship = CurrentRelationship {
+        seat_id:q.column_text(0)?, seat_incarnation:q.column_text(1)?,
+        seat_authorization_generation:q.column_text(2)?.parse().map_err(|_|BindingError::Drift)?,
+        instance_id:q.column_text(3)?, session_generation:q.column_text(4)?,
+        native_v2:q.column_text(5)?=="1",
+    };
+    if q.step_row()? { return Err(BindingError::Conflict); }
+    Ok(Some(relationship))
+}
 impl SessionBinding {
     fn validate(&self) -> Result<(), BindingError> {
         for (name, value) in [
@@ -403,6 +460,51 @@ mod tests {
             db.execute("UPDATE main.gogoke_v37_session_binding_v2 SET selected_instance_id='wrong' WHERE session_id='legacyA'").unwrap();
             assert!(matches!(project_legacy(db),Err(BindingError::Conflict)));
             assert_eq!(scalar(db,"SELECT state FROM main.gogoke_v37_h_claim WHERE session_id='legacyA'"),"UNKNOWN");
+        });
+    }
+
+    #[test]
+    fn current_relation_separates_selected_instance_and_session_generation() {
+        with_product_db(|db| {
+            legacy(db,"sideA","COMMITTED","4",true);
+            assert!(current_relationship(db,"projectA","sideA").unwrap().is_none());
+            db.execute("INSERT INTO main.gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('instanceB','codex','refB','identityB','sha256:fixture','fixture','INSTALLED','LOGGED_OUT',1)").unwrap();
+            db.execute("UPDATE main.gogoke_v37_seats SET instance_id='instanceB' WHERE seat_id='seatA'").unwrap();
+            let binding=SessionBinding {domain_id:"projectA".into(),session_id:"sideA".into(),
+                seat_id:"seatA".into(),seat_incarnation:"incA".into(),
+                seat_authorization_generation:1,selected_instance_id:"instanceA".into(),
+                provenance:Provenance::NativeV2};
+            db.execute("BEGIN IMMEDIATE").unwrap();
+            insert_native_in_transaction(db,&binding).unwrap();
+            db.execute("COMMIT").unwrap();
+            let current=current_relationship(db,"projectA","sideA").unwrap().unwrap();
+            assert!(current.native_v2);
+            assert_eq!(current.seat_authorization_generation,1);
+            assert_eq!(current.session_generation,"4");
+            assert_eq!(current.instance_id,"instanceA");
+            // Neither metadata reading nor the V2 record creates A purpose.
+            assert!(crate::store::ledger::read_registered_session(db,"sideA").unwrap().is_none());
+            db.execute("UPDATE main.gogoke_v37_seats SET generation=2 WHERE seat_id='seatA'").unwrap();
+            assert!(current_relationship(db,"projectA","sideA").unwrap().is_none());
+            db.execute("UPDATE main.gogoke_v37_seats SET generation=1 WHERE seat_id='seatA'").unwrap();
+            db.execute("UPDATE main.gogoke_v37_h_owner_binding SET state='REVOKED' WHERE owner_id='sideA'").unwrap();
+            assert!(current_relationship(db,"projectA","sideA").unwrap().is_none());
+            assert_eq!(read(db,"projectA","sideA").unwrap(),Some(binding));
+        });
+    }
+
+    #[test]
+    fn unreleased_old_or_unprojected_claim_blocks_seat_mutation() {
+        with_product_db(|db| {
+            legacy(db,"oldA","STOPPED","1",true);
+            db.execute("UPDATE main.gogoke_v37_seats SET state='IDLE',generation=99,settings_json='{}' WHERE seat_id='seatA'").unwrap();
+            let facts=crate::store::seat::list_page_facts(db,"projectA").unwrap();
+            assert!(!facts.seats[0].allowed.tune);
+            assert_eq!(facts.seats[0].allowed.locked_reason,Some("H_PENDING_OR_UNRESOLVED"));
+            db.execute("DELETE FROM main.gogoke_v37_h_seat_binding WHERE session_id='oldA'").unwrap();
+            assert!(!crate::store::seat::list_page_facts(db,"projectA").unwrap().seats[0].allowed.change_instance);
+            db.execute("UPDATE main.gogoke_v37_h_claim SET state='RELEASED' WHERE session_id='oldA'").unwrap();
+            assert!(crate::store::seat::list_page_facts(db,"projectA").unwrap().seats[0].allowed.tune);
         });
     }
 

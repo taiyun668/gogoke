@@ -111,9 +111,32 @@ pub(super) fn is_designated_lead(db:&VerifiedDatabaseConnection<'_>,seat:&Seat)
 fn unresolved_h(db:&VerifiedDatabaseConnection<'_>,seat:&Seat)->Result<bool,SeatError> {
     if !has_table(db,"gogoke_v37_h_claim")?||
         !has_table(db,"gogoke_v37_h_seat_binding")? {return Ok(false);}
-    exists(db,
-        "SELECT h.state FROM main.gogoke_v37_h_claim h JOIN main.gogoke_v37_h_seat_binding b ON b.domain_id=h.domain_id AND b.session_id=h.session_id AND b.generation=h.generation WHERE b.domain_id=?1 AND b.seat_id=?2 AND b.seat_incarnation=?3 AND h.state IN ('RESERVED','COMMITTED','UNKNOWN') LIMIT 1",
-        &seat.domain_id,&seat.seat_id,&seat.incarnation)
+    // Occupancy is a session fact, not the current E generation. A stopped
+    // but unreleased claim still consumes capacity and cannot be tuned away.
+    // A legacy claim with no seat relationship remains unresolved rather than
+    // vanishing from the instance's permission-mutation checks.
+    let v2=has_table(db,"gogoke_v37_session_binding_v2")?;
+    let sql=if v2 {
+        "SELECT h.state FROM main.gogoke_v37_h_claim h
+          LEFT JOIN main.gogoke_v37_h_seat_binding b ON b.domain_id=h.domain_id AND b.session_id=h.session_id
+          LEFT JOIN main.gogoke_v37_session_binding_v2 v ON v.domain_id=h.domain_id AND v.session_id=h.session_id
+          WHERE h.domain_id=?1 AND h.state<>'RELEASED'
+            AND ((b.seat_id=?2 AND b.seat_incarnation=?3)
+              OR (v.seat_id=?2 AND v.seat_incarnation=?3)
+              OR (b.session_id IS NULL AND v.session_id IS NULL AND h.instance_id=?4)) LIMIT 1"
+    } else {
+        "SELECT h.state FROM main.gogoke_v37_h_claim h
+          LEFT JOIN main.gogoke_v37_h_seat_binding b ON b.domain_id=h.domain_id AND b.session_id=h.session_id
+          WHERE h.domain_id=?1 AND h.state<>'RELEASED'
+            AND ((b.seat_id=?2 AND b.seat_incarnation=?3)
+              OR (b.session_id IS NULL AND h.instance_id=?4)) LIMIT 1"
+    };
+    let q=Statement::prepare(db.as_ptr(),sql)?;
+    for (index,value) in [seat.domain_id.as_str(),seat.seat_id.as_str(),
+        seat.incarnation.as_str(),seat.instance_id.as_str()].iter().enumerate() {
+        q.bind_text((index+1) as i32,value)?;
+    }
+    Ok(q.step_row()?)
 }
 fn unresolved_episode(db:&VerifiedDatabaseConnection<'_>,seat:&Seat)->Result<bool,SeatError> {
     if !has_table(db,"gogoke_v37_h_process_episode")? {return Ok(false);}

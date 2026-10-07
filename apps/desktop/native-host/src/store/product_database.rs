@@ -158,6 +158,9 @@ pub struct ProductDatabase<'root> {
     root: &'root RootLock,
     connection: VerifiedDatabaseConnection<'root>,
     owner: OwnerIssuer,
+    // Retain the metadata migration result. Missing old relationships do not
+    // become execution authority or disappear from the admission cap ledger.
+    session_binding_projection: super::session_transport::session_binding::ProjectionReport,
     process_custodian: ProcessCustodian,
     owner_login: Option<v37_login::OwnerLoginSession>,
     native_sessions: BTreeMap<(String, String), v37_runtime::NativeSession>,
@@ -191,6 +194,8 @@ impl<'root> ProductDatabase<'root> {
         // Reopen the already-persisted bootstrap identity, not a second owner or
         // grant store. initialize_profile checks the exact retained database pin.
         let owner = authority::initialize_profile(&mut connection, root)?;
+        let session_binding_projection = super::session_transport::session_binding::project_legacy(&mut connection)
+            .map_err(|error| OrchestrationError::V37StoreFailure(format!("H session relationship projection: {error:?}")))?;
         let process_custodian = ProcessCustodian::new()?;
         super::session_transport::rpc_journal::initialize_schema(&mut connection)
             .map_err(|error| OrchestrationError::V37StoreFailure(format!("native RPC schema: {error:?}")))?;
@@ -198,7 +203,7 @@ impl<'root> ProductDatabase<'root> {
         // Opening the DB initializes records only; it is not holder retirement.
         instance::initialize_grok_home_grant_schema(&mut connection)
             .map_err(|error| OrchestrationError::V37StoreFailure(format!("Grok HOME schema: {error}")))?;
-        Ok(Self { root, connection, owner, process_custodian, owner_login: None,
+        Ok(Self { root, connection, owner, session_binding_projection, process_custodian, owner_login: None,
             native_sessions: BTreeMap::new(), pending_native_launches: BTreeMap::new(),
             pending_credential_preparations: BTreeMap::new(),
             recovered_credential_holders: BTreeMap::new(),
