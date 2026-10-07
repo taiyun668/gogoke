@@ -8,7 +8,7 @@ const intent: SideDeliveryIntent = {
   targetSeatId: "lead-seat", targetSeatIncarnation: "1", targetSessionId: "lead-session",
   targetGeneration: "2", body: "Tell the lead", messageId: "sidemsg-x",
   enqueueRequestId: "sideenqueue-x", deliveryRequestId: "sidedeliver-x", mayDispatch: true,
-  createdAt: "2026-10-06T00:00:00.000Z", dispatchError: "",
+  createdAt: "2026-10-06T00:00:00.000Z", dispatchError: "", confirmedFailure: "",
 };
 
 test("uncertain C submit remains observable and never grants a replay send", async () => {

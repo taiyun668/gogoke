@@ -21,6 +21,7 @@ export interface SideDeliveryIntent {
   readonly deliveryRequestId: string;
   readonly createdAt: string;
   readonly dispatchError: string;
+  readonly confirmedFailure: string;
   /** True only for D's first durable insertion. A replay can only observe. */
   readonly mayDispatch: boolean;
 }

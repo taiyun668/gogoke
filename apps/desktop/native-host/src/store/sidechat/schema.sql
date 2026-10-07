@@ -72,6 +72,7 @@ CREATE TABLE gogoke_v37_side_delivery (
     delivery_request_id TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     dispatch_error TEXT NOT NULL DEFAULT '',
+    confirmed_failure TEXT NOT NULL DEFAULT '',
     PRIMARY KEY(domain_id,request_id),
     UNIQUE(domain_id,message_id),
     UNIQUE(domain_id,enqueue_request_id),
