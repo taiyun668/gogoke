@@ -1,4 +1,4 @@
-import { Fragment, memo, useCallback } from "react";
+import { Fragment, memo, useCallback, type ReactNode } from "react";
 import { NowOutputSlot, useNowConversation, useNowReadError } from "@/features/now/NowContext";
 import { useI18n } from "@/i18n";
 import ChevronDown from "lucide-react/dist/esm/icons/chevron-down";
@@ -49,6 +49,7 @@ type MessagesProps = {
   onPlanSubmitChanges?: (changes: string) => void;
   onOpenThreadLink?: (threadId: string, workspaceId?: string | null) => void;
   onQuoteMessage?: (text: string) => void;
+  afterItem?: (itemId: string) => ReactNode;
 };
 
 export const Messages = memo(function Messages({
@@ -72,6 +73,7 @@ export const Messages = memo(function Messages({
   onPlanSubmitChanges,
   onOpenThreadLink,
   onQuoteMessage,
+  afterItem,
 }: MessagesProps) {
   const now = useNowConversation(workspaceId, threadId);
   const nowReadError = useNowReadError();
@@ -149,7 +151,7 @@ export const Messages = memo(function Messages({
       />
     ) : null;
 
-  const renderItem = (item: ConversationItem) => {
+  const renderItemContent = (item: ConversationItem) => {
     if (item.kind === "message") {
       const isCopied = copiedMessageId === item.id;
       return (
@@ -166,9 +168,6 @@ export const Messages = memo(function Messages({
           onOpenFileLinkMenu={showFileLinkMenu}
           onOpenThreadLink={handleOpenThreadLink}
         />
-        {item.role === "assistant" ? (
-          <NowOutputSlot workspaceId={workspaceId} threadId={threadId} itemId={item.id} />
-        ) : null}
         </Fragment>
       );
     }
@@ -239,6 +238,16 @@ export const Messages = memo(function Messages({
     }
     return null;
   };
+
+  const renderItem = (item: ConversationItem) => (
+    <Fragment key={item.id}>
+      {renderItemContent(item)}
+      {afterItem?.(item.id)}
+      {item.kind === "message" && item.role === "assistant" ? (
+        <NowOutputSlot workspaceId={workspaceId} threadId={threadId} itemId={item.id} />
+      ) : null}
+    </Fragment>
+  );
 
   return (
     <div

@@ -4563,6 +4563,15 @@ exit 0
                     remove_test_entry(base, &child.path())?;
                 }
             }
+            // The real CLI can leave readonly Git pack files in its test-owned
+            // temp directory. Clear only that bit on ordinary file leaves;
+            // never follow a reparse point or change any directory permissions.
+            if !metadata.is_dir() && attributes & 0x400 == 0 && attributes & 1 != 0 {
+                let mut permissions = metadata.permissions();
+                permissions.set_readonly(false);
+                fs::set_permissions(entry, permissions).map_err(|error|
+                    format!("test readonly attribute {relative:?}: {error}; raw_os_error={:?}", error.raw_os_error()))?;
+            }
             let deleted = if attributes & 0x10 != 0 { fs::remove_dir(entry) } else { fs::remove_file(entry) };
             deleted.map_err(|error| format!("test deletion {relative:?}: {error}; raw_os_error={:?}; attributes={attributes}; {}",
                 error.raw_os_error(), failed_entry_details(base, entry)))

@@ -1,4 +1,6 @@
-import { lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
+import type { Messages } from "@/features/messages/components/Messages";
+import type { Composer } from "@/features/composer/components/Composer";
 import successSoundUrl from "@/assets/success-notification.mp3";
 import errorSoundUrl from "@/assets/error-notification.mp3";
 import { MainAppShell } from "@app/components/MainAppShell";
@@ -84,6 +86,36 @@ import { I18nProvider } from "@/i18n";
 import { hasNativeBackendTransport } from "@/platform/runtime";
 import { signalGogokeUpdateReady } from "@/services/tauri";
 import { NowProvider, NowPinSlot, type NowSource } from "@/features/now/NowContext";
+import { SecretaryEntry, SecretaryPanel, SecretaryActionLine, type SecretarySource } from "@/features/secretary/Secretary";
+import { entryLine, type EntryState, type ActionLine } from "@/features/secretary/secretaryModel";
+
+/** Complete host read, with explicit native identity and separate UI/output anchors. */
+export type SecretaryView = {
+  association: {
+    workspaceId: string;
+    threadId: string;
+    domainId: string;
+    seatId: string;
+    sessionId: string;
+  };
+  entry: EntryState;
+  source: SecretarySource;
+  readState: "known" | "frozen";
+  readAt: string;
+  readError?: string;
+  actionLines: Array<{ turnId: string; itemId: string; line: ActionLine }>;
+  /** Native host data/actions for the ordinary renderers; never inherited from the active project. */
+  conversation: {
+    messages: Omit<ComponentProps<typeof Messages>, "afterItem">;
+    composer: ComponentProps<typeof Composer> | null;
+  };
+  openConversation?: () => Promise<void>;
+  openAction?: (id: string) => void;
+};
+
+const secretaryAssociationKey = (view: SecretaryView | null) => view
+  ? JSON.stringify([view.association.workspaceId, view.association.threadId,
+      view.association.domainId, view.association.seatId, view.association.sessionId]) : null;
 
 const SettingsView = lazy(() =>
   import("@settings/components/SettingsView").then((module) => ({
@@ -91,7 +123,10 @@ const SettingsView = lazy(() =>
   })),
 );
 
-export default function MainApp({ nowSource = null }: { nowSource?: NowSource | null } = {}) {
+export default function MainApp({ nowSource = null, secretaryView = null }: {
+  nowSource?: NowSource | null;
+  secretaryView?: SecretaryView | null;
+} = {}) {
   const bootstrap = useAppBootstrapOrchestration();
   useEffect(() => {
     if (hasNativeBackendTransport()) {
@@ -102,7 +137,7 @@ export default function MainApp({ nowSource = null }: { nowSource?: NowSource | 
   }, []);
   return (
     <I18nProvider language={bootstrap.appSettings.appLanguage}>
-      <MainAppContent bootstrap={bootstrap} nowSource={nowSource} />
+      <MainAppContent bootstrap={bootstrap} nowSource={nowSource} secretaryView={secretaryView} />
     </I18nProvider>
   );
 }
@@ -110,10 +145,31 @@ export default function MainApp({ nowSource = null }: { nowSource?: NowSource | 
 function MainAppContent({
   bootstrap,
   nowSource,
+  secretaryView,
 }: {
   bootstrap: ReturnType<typeof useAppBootstrapOrchestration>;
   nowSource: NowSource | null;
+  secretaryView: SecretaryView | null;
 }) {
+  const secretaryKey = secretaryAssociationKey(secretaryView);
+  const secretaryToken = useMemo(() => ({}), [secretaryView?.source, secretaryKey]);
+  const currentSecretary = useRef<{ view: SecretaryView | null; token: object | null }>({ view: secretaryView, token: secretaryToken });
+  currentSecretary.current = { view: secretaryView, token: secretaryToken };
+  const [secretaryOpening, setSecretaryOpening] = useState<object | null>(null);
+  const secretaryOpeningRef = useRef<object | null>(null);
+  const [selectedSecretary, setSelectedSecretary] = useState<object | null>(null);
+  const secretaryNavigation = useRef(0);
+  const secretaryMounted = useRef(true);
+  const leaveSecretary = useCallback(() => { secretaryNavigation.current += 1; setSelectedSecretary(null); }, []);
+  const [secretaryOpenError, setSecretaryOpenError] = useState<{ token: object; text: string } | null>(null);
+  const secretaryPanelSource = useMemo<SecretarySource | null>(() => secretaryView ? {
+    read: () => secretaryView.source.read(),
+    actions: secretaryView.readState === "known" ? secretaryView.source.actions : {},
+  } : null, [secretaryView?.source, secretaryView?.readState]);
+  useEffect(() => {
+    secretaryMounted.current = true;
+    return () => { secretaryMounted.current = false; };
+  }, []);
   const {
     appSettings,
     setAppSettings,
@@ -1372,10 +1428,11 @@ function MainAppContent({
 
   const handleOpenThreadLinkFromExternal = useCallback(
     (workspaceId: string, threadId: string) => {
+      leaveSecretary();
       setActiveTab("codex");
       handleOpenThreadLink(threadId, workspaceId);
     },
-    [handleOpenThreadLink, setActiveTab],
+    [handleOpenThreadLink, setActiveTab, leaveSecretary],
   );
 
   const { recordPendingThreadLink, openThreadLinkOrQueue } =
@@ -1806,6 +1863,94 @@ function MainAppContent({
     handleDebugClick,
   });
 
+  const projectNavigation = useRef({ workspaceId: activeWorkspaceId, threadId: activeThreadId });
+  projectNavigation.current = { workspaceId: activeWorkspaceId, threadId: activeThreadId };
+  useEffect(() => { leaveSecretary(); }, [activeWorkspaceId, activeThreadId, leaveSecretary]);
+  const secretaryHasAssociation = secretaryView !== null && Object.values(secretaryView.association)
+    .every((value) => typeof value === "string" && value.length > 0)
+    && secretaryView.conversation.messages.workspaceId === secretaryView.association.workspaceId
+    && secretaryView.conversation.messages.threadId === secretaryView.association.threadId;
+  const secretaryActive = secretaryHasAssociation && selectedSecretary === secretaryToken;
+  const secretaryCanOpen = secretaryHasAssociation && secretaryView!.readState === "known"
+    && Boolean(secretaryView!.openConversation) && secretaryOpening !== secretaryToken;
+  const openSecretary = async () => {
+    if (!secretaryCanOpen || !secretaryView?.openConversation
+      || secretaryOpeningRef.current === secretaryToken) return;
+    const view = secretaryView;
+    const token = secretaryToken;
+    const navigation = secretaryNavigation.current;
+    const project = projectNavigation.current;
+    secretaryOpeningRef.current = token;
+    setSecretaryOpening(token);
+    setSecretaryOpenError(null);
+    try {
+      await view.openConversation!();
+      if (!secretaryMounted.current || currentSecretary.current.token !== token
+        || currentSecretary.current.view?.readState !== "known" || secretaryNavigation.current !== navigation
+        || projectNavigation.current.workspaceId !== project.workspaceId
+        || projectNavigation.current.threadId !== project.threadId) return;
+      // Reuse the ordinary renderers with host-owned data; never call the legacy thread-resume hook.
+      setSelectedSecretary(token);
+      setActiveTab("codex");
+      expandRightPanel();
+    } catch (cause) {
+      if (secretaryMounted.current && currentSecretary.current.token === token) {
+        setSecretaryOpenError({ token, text: cause instanceof Error ? cause.message : String(cause) });
+      }
+    } finally {
+      if (secretaryOpeningRef.current === token) secretaryOpeningRef.current = null;
+      if (secretaryMounted.current && currentSecretary.current.token === token) setSecretaryOpening(null);
+    }
+  };
+  const integratedSurfaces = { ...layoutSurfaces, primary: {
+    ...layoutSurfaces.primary,
+    sidebarProps: { ...layoutSurfaces.primary.sidebarProps },
+    messagesProps: { ...layoutSurfaces.primary.messagesProps },
+  } };
+  const ordinarySidebar = layoutSurfaces.primary.sidebarProps;
+  integratedSurfaces.primary.sidebarProps.onSelectHome = () => { leaveSecretary(); ordinarySidebar.onSelectHome(); };
+  integratedSurfaces.primary.sidebarProps.onSelectWorkspace = (id) => { leaveSecretary(); ordinarySidebar.onSelectWorkspace(id); };
+  integratedSurfaces.primary.sidebarProps.onSelectThread = (workspaceId, threadId) => {
+    leaveSecretary(); ordinarySidebar.onSelectThread(workspaceId, threadId);
+  };
+  if (secretaryActive) {
+    integratedSurfaces.primary.sidebarProps.activeWorkspaceId = null;
+    integratedSurfaces.primary.sidebarProps.activeThreadId = null;
+    integratedSurfaces.primary.messagesProps = { ...secretaryView!.conversation.messages };
+    if (secretaryView!.readState === "frozen") {
+      integratedSurfaces.primary.messagesProps.onUserInputSubmit = undefined;
+      integratedSurfaces.primary.messagesProps.onPlanAccept = undefined;
+      integratedSurfaces.primary.messagesProps.onPlanSubmitChanges = undefined;
+    }
+    integratedSurfaces.primary.composerProps = secretaryView!.conversation.composer
+      ? { ...secretaryView!.conversation.composer, disabled: secretaryView!.readState === "frozen"
+        || secretaryView!.conversation.composer.disabled,
+        canStop: secretaryView!.readState === "known" && secretaryView!.conversation.composer.canStop } : null;
+  }
+  // Fixed entry stays outside the conversation scroll region. Missing host data is not "unset".
+  integratedSurfaces.primary.sidebarProps.secretaryEntry = <>
+    {secretaryCanOpen ? (
+      <SecretaryEntry state={secretaryView!.entry} active={secretaryActive} onOpen={() => void openSecretary()} />
+    ) : (
+      <button type="button" className="sec-entry" disabled>
+        <span className="sec-entry-main">
+          <span className="sec-entry-name">秘书长</span>
+          <span className="sec-entry-sub">{secretaryOpening === secretaryToken ? "正在打开…"
+            : secretaryView ? entryLine(secretaryView.entry).text : "数据还没接上"}</span>
+        </span>
+      </button>
+    )}
+    {secretaryView?.readState === "frozen" ? <div role="status">
+      上次读到：{secretaryView.readAt}；{secretaryView.readError ?? "最新状态未读到"}
+    </div> : null}
+    {secretaryOpenError?.token === secretaryToken ? <div role="alert">{secretaryOpenError.text}</div> : null}
+  </>;
+  integratedSurfaces.primary.messagesProps.afterItem = secretaryActive ? (itemId) => <>
+    {secretaryView!.actionLines.filter((action) => action.itemId === itemId && action.turnId.length > 0)
+      .map((action) => <SecretaryActionLine key={action.line.id} line={action.line}
+        onOpen={secretaryView!.readState === "known" ? secretaryView!.openAction : undefined} />)}
+  </> : undefined;
+
   const {
     sidebarNode,
     messagesNode,
@@ -1827,9 +1972,9 @@ function MainAppContent({
     compactEmptyCodexNode,
     compactEmptyGitNode,
     compactGitBackNode,
-  } = useMainAppLayoutNodes(layoutSurfaces);
+  } = useMainAppLayoutNodes(integratedSurfaces);
 
-  const mainMessagesNode = showWorkspaceHome ? workspaceHomeNode : messagesNode;
+  const mainMessagesNode = !secretaryActive && showWorkspaceHome ? workspaceHomeNode : messagesNode;
   const compactThreadConnectionState: "live" | "polling" | "disconnected" =
     !activeWorkspace?.connected
       ? "disconnected"
@@ -1860,15 +2005,15 @@ function MainAppContent({
     appLayout: {
       isPhone,
       isTablet,
-      showHome,
-      showGitDetail,
+      showHome: !secretaryActive && showHome,
+      showGitDetail: !secretaryActive && showGitDetail,
       activeTab,
       tabletTab,
-      centerMode,
-      preloadGitDiffs: appSettings.preloadGitDiffs,
-      splitChatDiffView: appSettings.splitChatDiffView,
-      hasActivePlan: hasActivePlan,
-      activeWorkspace: Boolean(activeWorkspace),
+      centerMode: secretaryActive ? "chat" : centerMode,
+      preloadGitDiffs: !secretaryActive && appSettings.preloadGitDiffs,
+      splitChatDiffView: !secretaryActive && appSettings.splitChatDiffView,
+      hasActivePlan: !secretaryActive && hasActivePlan,
+      activeWorkspace: secretaryActive || Boolean(activeWorkspace),
       sidebarNode,
       messagesNode: mainMessagesNode,
       composerNode: <><NowPinSlot />{composerNode}</>,
@@ -1876,15 +2021,16 @@ function MainAppContent({
       updateToastNode,
       errorToastsNode,
       homeNode,
-      mainHeaderNode,
+      mainHeaderNode: secretaryActive ? null : mainHeaderNode,
       tabletNavNode,
       tabBarNode,
-      gitDiffPanelNode,
-      gitDiffViewerNode,
-      planPanelNode,
+      gitDiffPanelNode: secretaryActive && secretaryPanelSource
+        ? <SecretaryPanel source={secretaryPanelSource} /> : gitDiffPanelNode,
+      gitDiffViewerNode: secretaryActive ? null : gitDiffViewerNode,
+      planPanelNode: secretaryActive ? null : planPanelNode,
       debugPanelNode,
       debugPanelFullNode,
-      terminalDockNode,
+      terminalDockNode: secretaryActive ? null : terminalDockNode,
       compactEmptyCodexNode,
       compactEmptyGitNode,
       compactGitBackNode,
@@ -1895,7 +2041,7 @@ function MainAppContent({
     },
     topbar: {
       isCompact,
-      desktopTopbarLeftNode,
+      desktopTopbarLeftNode: secretaryActive ? null : desktopTopbarLeftNode,
       hasActiveWorkspace: Boolean(activeWorkspace),
       backendMode: appSettings.backendMode,
       remoteThreadConnectionState: compactThreadConnectionState,
@@ -1904,7 +2050,9 @@ function MainAppContent({
 
   return (
     <NowProvider source={nowSource} active={
-      !isNewAgentDraftMode && composerNode && activeWorkspaceId && activeThreadId
+      secretaryActive && composerNode
+        ? { workspaceId: secretaryView!.association.workspaceId, threadId: secretaryView!.association.threadId }
+        : !isNewAgentDraftMode && composerNode && activeWorkspaceId && activeThreadId
         ? { workspaceId: activeWorkspaceId, threadId: activeThreadId } : null
     }>
       <MainAppShell {...mainAppShellProps} />
