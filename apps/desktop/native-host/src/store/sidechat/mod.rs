@@ -180,6 +180,7 @@ fn incarnation(db:&VerifiedDatabaseConnection<'_>,domain:&str,seat:&str)->Result
 /// the native Owner issuer in this transaction. A registration remains the
 /// scope source after H release, revoke, or a later cache/seat generation.
 fn check_history(db: &VerifiedDatabaseConnection<'_>, s: &Side) -> Result<()> {
+    if s.source_session_id==s.session_id {return Err(SideError::Denied);}
     for (seat,session,purpose,id) in [(&s.source_seat_id,&s.source_session_id,"WORK",""),(&s.seat_id,&s.session_id,"SIDE_CHAT",s.side_id.as_str())] {
         let row=Statement::prepare(db.as_ptr(),"SELECT 1 FROM main.v37_ledger_session WHERE domain_id=?1 AND seat_id=?2 AND session_id=?3 AND purpose=?4 AND COALESCE(side_id,'')=?5")?;
         for (i,v) in [s.domain_id.as_str(),seat,session,purpose,id].iter().enumerate() {row.bind_text((i+1) as i32,v)?;}
@@ -205,7 +206,7 @@ pub(crate) struct NativeCacheFact {
 }
 pub(crate) enum CacheContinuity { Preserved(NativeCacheFact), Replaced(NativeCacheFact), Unknown }
 
-fn current_session(db:&VerifiedDatabaseConnection<'_>,s:&Side,source:bool)->Result<(String,String,String,String)> {
+fn current_session(db:&VerifiedDatabaseConnection<'_>,s:&Side,source:bool,exact_session:Option<&str>)->Result<(String,String,String,String)> {
     let (seat,inc,purpose,side_id)=if source {(&s.source_seat_id,&s.source_seat_incarnation,"WORK","")} else {(&s.seat_id,&s.seat_incarnation,"SIDE_CHAT",s.side_id.as_str())};
     let row=Statement::prepare(db.as_ptr(),"SELECT h.session_id,h.generation,h.instance_id,COALESCE(h.process_operation_id,'')
         FROM main.gogoke_v37_h_claim h
@@ -216,15 +217,17 @@ fn current_session(db:&VerifiedDatabaseConnection<'_>,s:&Side,source:bool)->Resu
           AND CAST(e.generation AS TEXT)=sb.generation AND e.instance_id=h.instance_id AND e.state IN ('BUSY','IDLE')
         JOIN main.v37_ledger_session l ON l.session_id=h.session_id AND l.domain_id=h.domain_id AND l.seat_id=sb.seat_id
         WHERE h.domain_id=?1 AND sb.seat_id=?2 AND sb.seat_incarnation=?3 AND b.state='ACTIVE'
-          AND l.purpose=?4 AND COALESCE(l.side_id,'')=?5 AND h.state IN ('COMMITTED','STOPPED')")?;
+          AND l.purpose=?4 AND COALESCE(l.side_id,'')=?5 AND h.state IN ('COMMITTED','STOPPED')
+          AND (?6='' OR h.session_id=?6)")?;
     for (i,v) in [s.domain_id.as_str(),seat,inc,purpose,side_id].iter().enumerate() {row.bind_text((i+1) as i32,v)?;}
+    row.bind_text(6,exact_session.unwrap_or(""))?;
     if !row.step_row()? {return Err(SideError::Denied);}
     let result=(row.column_text(0)?,row.column_text(1)?,row.column_text(2)?,row.column_text(3)?);
     if row.step_row()? {return Err(SideError::Conflict);}
     Ok(result)
 }
 fn current_binding(db:&VerifiedDatabaseConnection<'_>,s:&Side)->Result<CurrentBinding> {
-    let source=current_session(db,s,true)?;let side=current_session(db,s,false)?;
+    let source=current_session(db,s,true,None)?;let side=current_session(db,s,false,None)?;
     required(&side.3)?;
     Ok(CurrentBinding {source_session_id:source.0,session_id:side.0,generation:side.1,instance_id:side.2,process_operation_id:side.3})
 }
