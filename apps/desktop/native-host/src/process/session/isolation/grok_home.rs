@@ -11,6 +11,24 @@ extern "system" {
     fn InitializeAcl(acl: *mut c_void, length: u32, revision: u32) -> i32;
     fn AddAce(acl: *mut c_void, revision: u32, index: u32,
         bytes: *const c_void, length: u32) -> i32;
+    fn GetLengthSid(sid: *mut c_void) -> u32;
+    fn AddAccessAllowedAceEx(acl: *mut c_void, revision: u32, flags: u32,
+        mask: u32, sid: *mut c_void) -> i32;
+    fn InitializeSecurityDescriptor(descriptor: *mut c_void, revision: u32) -> i32;
+    fn SetSecurityDescriptorDacl(descriptor: *mut c_void, present: i32,
+        acl: *mut c_void, defaulted: i32) -> i32;
+    fn SetSecurityDescriptorControl(descriptor: *mut c_void, mask: u16, bits: u16) -> i32;
+}
+
+#[link(name = "ntdll")]
+extern "system" {
+    fn NtSetSecurityObject(handle: Handle, information: u32, descriptor: *mut c_void) -> i32;
+}
+
+#[repr(C)]
+struct GrokDaclDescriptor {
+    revision: u8, reserved: u8, control: u16,
+    owner: *mut c_void, group: *mut c_void, sacl: *mut c_void, dacl: *mut c_void,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -27,6 +45,7 @@ pub(crate) struct GrokAclSnapshot {
     pub(crate) dacl_protected: bool,
     pub(crate) dacl_control: u16,
     other_aces: Vec<Vec<u8>>,
+    other_aces_in_order: Vec<Vec<u8>>,
 }
 
 fn snapshot(handle: Handle, profile: &AppContainerProfile) -> Result<GrokAclSnapshot, IsolationError> {
@@ -58,6 +77,7 @@ fn snapshot(handle: Handle, profile: &AppContainerProfile) -> Result<GrokAclSnap
                 header.ace_size as usize)}.to_vec());
         }
     }
+    let other_aces_in_order=other_aces.clone();
     other_aces.sort();
     let mut control=0u16;
     let mut revision=0u32;
@@ -66,12 +86,12 @@ fn snapshot(handle: Handle, profile: &AppContainerProfile) -> Result<GrokAclSnap
     }
     Ok(GrokAclSnapshot {identity,target_aces:target.iter().map(|(mode,mask,flags)|
         format!("{mode}:{mask}:{flags}")).collect::<Vec<_>>().join(","),
-        dacl_protected:control & SE_DACL_PROTECTED !=0,dacl_control:control,other_aces})
+        dacl_protected:control & SE_DACL_PROTECTED !=0,dacl_control:control,other_aces,other_aces_in_order})
 }
 
 impl GrokAclSnapshot {
     pub(crate) fn preserves_other_aces(&self,after:&Self)->bool {
-        self.other_aces==after.other_aces
+        self.other_aces==after.other_aces &&self.other_aces_in_order==after.other_aces_in_order
     }
     pub(crate) fn other_aces_bytes(&self)->Vec<u8>{
         let mut bytes=Vec::new();
@@ -259,30 +279,77 @@ fn rewrite_grok_target(handle:Handle,profile:&AppContainerProfile,identity:&Root
             other.push(unsafe{std::slice::from_raw_parts(ace.cast::<u8>(),header.ace_size as usize)}.to_vec());
         }
     }
-    let length=8usize+other.iter().map(Vec::len).sum::<usize>();
+    let sid_length=unsafe{GetLengthSid(profile.sid)} as usize;
+    if sid_length==0 {return Err(IsolationError::AclWitnessMismatch);}
+    let length=8usize+other.iter().map(Vec::len).sum::<usize>()+if grant{8+sid_length}else{0};
     if length>u16::MAX as usize{return Err(IsolationError::AclWitnessMismatch);}
     let mut storage=vec![0usize;length.div_ceil(size_of::<usize>())];let base=storage.as_mut_ptr().cast();
     if unsafe{InitializeAcl(base,length as u32,4)}==0{return Err(IsolationError::Acl(io::Error::last_os_error()));}
-    for ace in &other {if unsafe{AddAce(base,4,u32::MAX,ace.as_ptr().cast(),ace.len() as u32)}==0 {
+    let mut target_added=false;
+    for ace in &other {
+        // Add the exact explicit allow before existing allow/inherited ACEs,
+        // without reconstructing or reordering any non-target ACE.
+        if grant && !target_added && (ace[0]==ACCESS_ALLOWED_ACE_TYPE ||ace[1]&INHERITED_ACE as u8!=0) {
+            if unsafe{AddAccessAllowedAceEx(base,4,NO_INHERITANCE,directory_rights(true),profile.sid)}==0 {
+                return Err(IsolationError::Acl(io::Error::last_os_error()));
+            }
+            target_added=true;
+        }
+        if unsafe{AddAce(base,4,u32::MAX,ace.as_ptr().cast(),ace.len() as u32)}==0 {
+            return Err(IsolationError::Acl(io::Error::last_os_error()));
+        }
+    }
+    if grant && !target_added && unsafe{AddAccessAllowedAceEx(base,4,NO_INHERITANCE,
+        directory_rights(true),profile.sid)}==0 {return Err(IsolationError::Acl(io::Error::last_os_error()));}
+    let mut built=AclSizeInformation{ace_count:0,acl_bytes_in_use:0,acl_bytes_free:0};
+    if unsafe{GetAclInformation(base,(&mut built as *mut AclSizeInformation).cast(),
+        size_of::<AclSizeInformation>() as u32,ACL_SIZE_INFORMATION_CLASS)}==0 {
         return Err(IsolationError::Acl(io::Error::last_os_error()));
-    }}
-    let mut allocated=ptr::null_mut();
-    let acl=if grant {
-        let mut entry=ExplicitAccessW{permissions:directory_rights(true),access_mode:GRANT_ACCESS,
-            inheritance:NO_INHERITANCE,trustee:TrusteeW{multiple:ptr::null_mut(),multiple_operation:0,
-                form:TRUSTEE_IS_SID,kind:TRUSTEE_IS_UNKNOWN,name:profile.sid.cast()}};
-        let status=unsafe{SetEntriesInAclW(1,&mut entry,base,&mut allocated)};
-        if status!=0{return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32)));}
-        if allocated.is_null(){return Err(IsolationError::AclWitnessMismatch);}allocated
-    }else{base};
-    let _allocated=LocalAllocation(allocated);
-    let security=DACL_SECURITY_INFORMATION|if protect{PROTECTED_DACL_SECURITY_INFORMATION}else{0};
-    let status=unsafe{SetSecurityInfo(handle,FILE_OBJECT,security,ptr::null_mut(),ptr::null_mut(),acl,ptr::null_mut())};
-    if status!=0{return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32)));}
+    }
+    let mut built_other=Vec::new();let mut built_target=Vec::new();
+    for index in 0..built.ace_count {
+        let mut ace=ptr::null_mut();
+        if unsafe{GetAce(base,index,&mut ace)}==0 ||ace.is_null(){return Err(IsolationError::AclWitnessMismatch);}
+        let header=unsafe{&*ace.cast::<AceHeader>()};
+        if header.ace_size<16{return Err(IsolationError::AclWitnessMismatch);}
+        let bytes=unsafe{std::slice::from_raw_parts(ace.cast::<u8>(),header.ace_size as usize)};
+        if unsafe{EqualSid(ace.cast::<u8>().add(8).cast(),profile.sid)}==0 {built_other.push(bytes.to_vec());}
+        else{built_target.push((header.ace_type,header.ace_flags,unsafe{(*ace.cast::<AccessAce>()).mask}));}
+    }
+    let expected_target=if grant{vec![(ACCESS_ALLOWED_ACE_TYPE,0,directory_rights(true))]}else{Vec::new()};
+    if built_other!=other ||built_target!=expected_target {
+        return Err(IsolationError::Acl(io::Error::new(io::ErrorKind::InvalidData,
+            "Grok in-memory ACL target or original peer bytes/order changed before write")));
+    }
+    // The supported same-handle Native API avoids the Win32 ACL merge and
+    // automatic propagation layers. Its exact output is still verified below.
+    let mut sd=GrokDaclDescriptor{revision:0,reserved:0,control:0,
+        owner:ptr::null_mut(),group:ptr::null_mut(),sacl:ptr::null_mut(),dacl:ptr::null_mut()};
+    let descriptor=(&mut sd as *mut GrokDaclDescriptor).cast();
+    let control_mask=0x0100|0x0400|0x1000;
+    // NtSetSecurityObject consumes AUTO_INHERIT_REQ to retain an existing
+    // AUTO_INHERITED control bit (the same pattern is used by wimlib's Windows
+    // descriptor restore). Keep the persisted journal's original control
+    // expectation; this request bit is not a new permission or a second write.
+    let control=(before.dacl_control&control_mask)|if protect{0x1000}else{0}|
+        if before.dacl_control&0x0400!=0{0x0100}else{0};
+    if unsafe{InitializeSecurityDescriptor(descriptor,1)}==0 ||
+        unsafe{SetSecurityDescriptorDacl(descriptor,1,base,i32::from(before.dacl_control&0x0008!=0))}==0 ||
+        unsafe{SetSecurityDescriptorControl(descriptor,control_mask,control)}==0 {
+        return Err(IsolationError::Acl(io::Error::last_os_error()));
+    }
+    let status=unsafe{NtSetSecurityObject(handle,DACL_SECURITY_INFORMATION,descriptor)};
+    if status<0 {return Err(IsolationError::Acl(io::Error::new(io::ErrorKind::Other,
+        format!("NtSetSecurityObject original NTSTATUS=0x{:08x}",status as u32))));}
     let after=snapshot(handle,profile)?;
     let expected=if grant{format!("1:{}:0",directory_rights(true))}else{String::new()};
+    let expected_control=if protect{before.dacl_control|0x1000}else{before.dacl_control};
     if after.identity!=*identity ||after.target_aces!=expected ||after.dacl_protected!=protect ||
-        !before.preserves_other_aces(&after){return Err(IsolationError::AclWitnessMismatch);}
+        after.dacl_control!=expected_control ||
+        !before.preserves_other_aces(&after){return Err(IsolationError::Acl(io::Error::new(
+            io::ErrorKind::InvalidData,format!("Grok exact ACL transition readback: identity_matches={}; target_expected={expected}; target_actual={}; protected_expected={protect}; protected_actual={}; other_aces_unchanged={}; control_before={:#x}; control_after={:#x}",
+                after.identity==*identity,after.target_aces,after.dacl_protected,
+                before.preserves_other_aces(&after),before.dacl_control,after.dacl_control))));}
     Ok(())
 }
 
@@ -392,7 +459,22 @@ pub(crate) fn revoke_grok_home_root(profile: &AppContainerProfile, home: &Path,
 pub(crate) fn revoke_grok_auth(profile: &AppContainerProfile,
     auth: &GrokAuthMetadata) -> Result<(), IsolationError> {
     auth.verify_retired_physical()?;
-    revoke_exact(auth.handle(), profile.sid, &auth.identity, true, NO_INHERITANCE)
+    revoke_protected_auth_exact(auth.handle(),profile,&auth.identity)
+}
+
+fn revoke_protected_auth_exact(handle:Handle,profile:&AppContainerProfile,
+    expected:&RootIdentity)->Result<(),IsolationError>{
+    if file_identity(handle)?!=*expected || !dacl_protected(handle)? {
+        return Err(IsolationError::AclWitnessMismatch);
+    }
+    let entries=package_aces(handle,profile.sid)?;
+    if entries.is_empty(){return Ok(());}
+    if entries.as_slice()!=&[(GRANT_ACCESS,directory_rights(true),NO_INHERITANCE)] {
+        return Err(IsolationError::AclWitnessMismatch);
+    }
+    // Preserve the protected auth object's exact peer bytes/order, using the
+    // same held-object Native writer already used for successor transitions.
+    rewrite_grok_target(handle,profile,expected,false,false,true)
 }
 
 /// Called only after the caller's durable revoke intent. This readback catches
@@ -440,7 +522,7 @@ pub(crate) fn revoke_grok_home_residue(profile: &AppContainerProfile, home: &Pat
     let path = home.join(&object.relative_name);
     let held = open_bound_object(&path, &object.identity, object.directory)?;
     if dacl_protected(held.0)? {
-        revoke_exact(held.0,profile.sid,&object.identity,true,NO_INHERITANCE)?;
+        revoke_protected_auth_exact(held.0,profile,&object.identity)?;
     }else{
         rewrite_grok_target(held.0,profile,&object.identity,object.directory,false,false)?;
     }
@@ -500,16 +582,74 @@ mod tests {
         let before=grok_residue_acl(&profile,&home,&root,directory).unwrap();
         assert_eq!(before.target_aces,format!("1:{}:{}",directory_rights(true),
             INHERITED_ACE as u32|OBJECT_AND_CONTAINER_INHERIT));
-        revoke_grok_home_root(&profile,&home,&root).unwrap();
+        assert!(!grok_root_acl(&profile,&home,&root).unwrap().target_aces.is_empty());
         revoke_grok_home_residue(&profile,&home,&root,directory).unwrap();
         let after=grok_residue_acl(&profile,&home,&root,directory).unwrap();
         assert!(after.target_aces.is_empty());assert!(!after.dacl_protected);
+        assert_eq!(before.dacl_control,after.dacl_control);
         assert!(before.preserves_other_aces(&after));
+        assert!(!grok_root_acl(&profile,&home,&root).unwrap().target_aces.is_empty(),
+            "the directory target must be removed while the inherited HOME grant still exists");
         let peer_after=grok_residue_acl(&peer,&home,&root,directory).unwrap();
         assert_eq!(peer_after.target_aces,format!("1:{}:{}",directory_rights(true),
             INHERITED_ACE as u32|OBJECT_AND_CONTAINER_INHERIT));
+        assert_eq!(grok_residue_acl(&peer,&home,&root,directory).unwrap().dacl_control,
+            before.dacl_control);
         revoke_grok_home_root(&peer,&home,&root).unwrap();
+        revoke_grok_home_root(&profile,&home,&root).unwrap();
         drop(profile);drop(peer);std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn inherited_auth_residue_removes_only_original_sid_before_home_revoke(){
+        let (home,root)=fixture();
+        let profile=AppContainerProfile::derived_for_test("Gogoke37.GrokInheritedAuthCleanup").unwrap();
+        let peer=AppContainerProfile::derived_for_test("Gogoke37.GrokInheritedAuthCleanupPeer").unwrap();
+        let old=observe_grok_auth(&home,&root).unwrap();
+        grant_grok_home_root(&profile,&home,&root).unwrap();
+        grant_grok_home_root(&peer,&home,&root).unwrap();
+        let successor_path=home.join("auth-successor.json");
+        std::fs::write(&successor_path,b"synthetic non-secret auth fixture").unwrap();
+        std::fs::remove_file(home.join("auth.json")).unwrap();
+        std::fs::rename(&successor_path,home.join("auth.json")).unwrap();
+
+        let auth=observe_grok_auth_candidate(&home,&root).unwrap();
+        assert_ne!(auth.identity,old.identity);
+        let before=auth.candidate_acl(&profile).unwrap();
+        assert!(!before.dacl_protected);
+        assert_eq!(before.target_aces,format!("1:{}:{}",directory_rights(true),INHERITED_ACE));
+        let peer_before=auth.candidate_acl(&peer).unwrap();
+        assert_eq!(peer_before.target_aces,format!("1:{}:{}",directory_rights(true),INHERITED_ACE));
+        assert_eq!(peer_before.dacl_control,before.dacl_control);
+        let objects=inspect_grok_home_residue(&profile,&home,&root,&[]).unwrap();
+        let residue=objects.iter().find(|object|object.identity==auth.identity).unwrap();
+        assert!(!residue.directory);
+        assert_eq!(grok_residue_acl(&profile,&home,&root,residue).unwrap(),before);
+        let root_before=grok_root_acl(&profile,&home,&root).unwrap();
+        assert!(!root_before.target_aces.is_empty());
+
+        // Exercise the exact residue writer while inheritance is still present
+        // at HOME, so parent removal cannot make this child check vacuous.
+        revoke_grok_home_residue(&profile,&home,&root,residue).unwrap();
+        let after=auth.candidate_acl(&profile).unwrap();
+        assert_eq!(auth.identity,residue.identity);
+        assert!(after.target_aces.is_empty());
+        assert!(!after.dacl_protected);
+        assert_eq!(after.dacl_control,before.dacl_control);
+        assert!(before.preserves_other_aces(&after));
+        let peer_after=auth.candidate_acl(&peer).unwrap();
+        assert_eq!(peer_after.target_aces,peer_before.target_aces);
+        assert_eq!(peer_after.dacl_control,peer_before.dacl_control);
+        assert!(root_before.target_aces==grok_root_acl(&profile,&home,&root).unwrap().target_aces,
+            "the original profile still owns its HOME grant during file cleanup");
+
+        revoke_grok_home_root(&profile,&home,&root).unwrap();
+        for leftover in inspect_grok_home_residue(&profile,&home,&root,&[]).unwrap() {
+            revoke_grok_home_residue(&profile,&home,&root,&leftover).unwrap();
+        }
+        revoke_grok_home_root(&peer,&home,&root).unwrap();
+        assert!(inspect_grok_home_residue(&profile,&home,&root,&[]).unwrap().is_empty());
+        drop(auth);drop(old);drop(profile);drop(peer);std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

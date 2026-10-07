@@ -17,6 +17,7 @@ fn health_control_product(driver:&str, run:impl FnOnce(&mut ProductDatabase<'_>)
     std::fs::create_dir(&path).unwrap();
     let root=RootLock::acquire(&path).unwrap();
     let mut product=ProductDatabase::open(&root,&path.join("state.sqlite")).unwrap();
+    managed_cli_test_setup::ready(&mut product,&root,driver);
     let register=operation("K-INSTANCE","register","health-register","instanceA",0,
         &format!(r#"{{"driverId":"{driver}"}}"#));
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&register).unwrap()).unwrap().status,V37Status::Applied);
@@ -269,6 +270,7 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let root = RootLock::acquire(&path).unwrap();
     let database = path.join("state.sqlite");
     let mut product = ProductDatabase::open(&root, &database).unwrap();
+    managed_cli_test_setup::ready(&mut product, &root, "codex");
     let register = operation("K-INSTANCE", "register", "register-cli", "instanceA", 0,
         r#"{"driverId":"codex"}"#);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&register).unwrap()).unwrap().status,
@@ -873,6 +875,7 @@ fn actual_pinned_codex_two_scope_file_history_and_stopped_revocation_without_mod
     let root = RootLock::acquire(&path).unwrap();
     let database = path.join("state.sqlite");
     let mut product = ProductDatabase::open(&root, &database).unwrap();
+    managed_cli_test_setup::ready(&mut product, &root, "codex");
     let register = operation("K-INSTANCE", "register", "two-scope-register", "instanceA", 0,
         r#"{"driverId":"codex"}"#);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&register).unwrap()).unwrap().status,

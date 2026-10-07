@@ -4,7 +4,6 @@
 use crate::root::RootIdentity;
 use crate::store::atomic::Statement;
 use crate::store::same_open::VerifiedDatabaseConnection;
-use super::locate_pinned_program;
 
 const SCHEMA: [(&str, &str); 3] = [
     ("gogoke_v37_grok_home_domains", "CREATE TABLE gogoke_v37_grok_home_domains(instance_id TEXT PRIMARY KEY REFERENCES gogoke_v37_instances(instance_id),root_identity TEXT NOT NULL,home_identity TEXT NOT NULL,program_digest TEXT NOT NULL,version TEXT NOT NULL,registration_revision INTEGER NOT NULL CHECK(registration_revision>=1),revision INTEGER NOT NULL CHECK(revision>=1)) STRICT"),
@@ -113,13 +112,11 @@ pub(crate) fn initialize_grok_home_grant_schema(db:&mut VerifiedDatabaseConnecti
     })
 }
 
-fn fixed_catalog(driver:&str,digest:&str,version:&str)->Result<(),String> {
-    locate_pinned_program(driver,digest,version).map(|_|())
-        .map_err(|error|format!("grok F journal: fixed Grok program unavailable: {error:?}"))
-}
-
 pub(crate) fn current_domain(db:&VerifiedDatabaseConnection<'_>, instance_id:&str)->Result<GrokDomain,String> {
-    current_domain_with_catalog(db,instance_id,&fixed_catalog)
+    current_domain_with_catalog(db,instance_id,&|driver,digest,version|{
+        super::program_source::locate_bound_instance_program(db,instance_id,driver,digest,version)
+            .map(|_|()).map_err(|error|format!("grok F journal: managed Grok program unavailable: {error:?}"))
+    })
 }
 
 fn current_domain_with_catalog(db:&VerifiedDatabaseConnection<'_>,instance_id:&str,
@@ -154,14 +151,14 @@ fn existing_domain(db:&VerifiedDatabaseConnection<'_>,instance:&str)->Result<Opt
 
 pub(crate) fn begin_grok_grant(db:&mut VerifiedDatabaseConnection<'_>,
     domain:&GrokDomain,grant:&GrokGrant)->Result<GrokGrant,String>{
-    begin_grok_grant_with_catalog(db,domain,grant,&fixed_catalog)
+    begin_grok_grant_with_catalog(db,domain,grant,&current_domain)
 }
 
 fn begin_grok_grant_with_catalog(db:&mut VerifiedDatabaseConnection<'_>,
     domain:&GrokDomain,grant:&GrokGrant,
-    catalog:&impl Fn(&str,&str,&str)->Result<(),String>)->Result<GrokGrant,String>{
+    observe:&impl Fn(&VerifiedDatabaseConnection<'_>,&str)->Result<GrokDomain,String>)->Result<GrokGrant,String>{
     tx(db,|db|{
-        if current_domain_with_catalog(db,&domain.instance_id,catalog)?!=*domain {return Err("grok F journal: current F pin/revision changed".into());}
+        if observe(db,&domain.instance_id)?!=*domain {return Err("grok F journal: current F pin/revision changed".into());}
         if let Some((old,revision))=existing_domain(db,&domain.instance_id)? {
             if old.instance_id!=domain.instance_id ||old.root_identity!=domain.root_identity ||
                 old.home_identity!=domain.home_identity ||old.program_digest!=domain.program_digest ||
@@ -414,7 +411,7 @@ mod tests {
         assert!(current_domain(&db,"grokA").is_err(),"production catalog must reject synthetic bytes");
         assert!(begin_grok_grant(&mut db,&domain,&grant("bindingA","openA","sid-A",&digest)).is_err(),
             "production grant must reject synthetic bytes before an intent");
-        let first=begin_grok_grant_with_catalog(&mut db,&domain,&grant("bindingA","openA","sid-A",&digest),&catalog).unwrap();
+        let first=begin_grok_grant_with_catalog(&mut db,&domain,&grant("bindingA","openA","sid-A",&digest),&|db,id|current_domain_with_catalog(db,id,&catalog)).unwrap();
         let root_effect=acl_effect("bindingA","GRANT_ROOT",identity(1));
         let pending=begin_grok_effect(&mut db,&root_effect).unwrap();
         assert_eq!(begin_grok_effect(&mut db,&root_effect).unwrap().phase,"INTENT");
@@ -427,7 +424,7 @@ mod tests {
         // A failure before the first auth grant has a positive NoAttempt
         // settlement: exact root/auth revoke readbacks, without inventing a
         // GRANT_AUTH effect or process tuple.
-        let failed=begin_grok_grant_with_catalog(&mut db,&domain,&grant("failedA","failedOpen","sid-failed",&digest),&catalog).unwrap();
+        let failed=begin_grok_grant_with_catalog(&mut db,&domain,&grant("failedA","failedOpen","sid-failed",&digest),&|db,id|current_domain_with_catalog(db,id,&catalog)).unwrap();
         set_grok_grant_phase(&mut db,&failed,"REVOKE_PENDING",None).unwrap();
         for (action,id) in [("REVOKE_ROOT",identity(1)),("REVOKE_AUTH",identity(2))] {
             let mut effect=acl_effect("failedA",action,id);
@@ -440,7 +437,7 @@ mod tests {
         set_grok_grant_phase(&mut db,&pending,"REVOKED",None).unwrap();
         db.execute("UPDATE main.gogoke_v37_instances SET revision=2 WHERE instance_id='grokA'").unwrap();
         let domain2=current_domain_with_catalog(&db,"grokA",&catalog).unwrap();
-        begin_grok_grant_with_catalog(&mut db,&domain2,&grant("bindingB","openB","sid-B",&digest),&catalog).unwrap();
+        begin_grok_grant_with_catalog(&mut db,&domain2,&grant("bindingB","openB","sid-B",&digest),&|db,id|current_domain_with_catalog(db,id,&catalog)).unwrap();
         let row=Statement::prepare(db.as_ptr(),"SELECT registration_revision,revision FROM main.gogoke_v37_grok_home_domains WHERE instance_id='grokA'").unwrap();
         assert!(row.step_row().unwrap());
         assert_eq!(row.column_text(0).unwrap(),"2");
@@ -455,7 +452,7 @@ mod tests {
         std::fs::write(&program,bytes).unwrap();
         db.execute(&format!("UPDATE main.gogoke_v37_instances SET home_identity='{}',revision=5 WHERE instance_id='grokA'",identity(3).opaque())).unwrap();
         let changed=current_domain_with_catalog(&db,"grokA",&catalog).unwrap();
-        assert!(begin_grok_grant_with_catalog(&mut db,&changed,&grant("bindingC","openC","sid-C",&digest),&catalog).is_err());
+        assert!(begin_grok_grant_with_catalog(&mut db,&changed,&grant("bindingC","openC","sid-C",&digest),&|db,id|current_domain_with_catalog(db,id,&catalog)).is_err());
         db.close_checked().unwrap();drop(root);std::fs::remove_dir_all(path).unwrap();
     }
 }

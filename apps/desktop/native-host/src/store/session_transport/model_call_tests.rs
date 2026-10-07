@@ -18,6 +18,7 @@ const THREAD: &str = r#"{"id":3,"result":{"thread":{"id":"threadA","cwd":"fixtur
 const TURN: &str = r#"{"id":4,"result":{"turn":{"id":"turnA","status":"inProgress"}}}"#;
 const STARTED: &str = r#"{"method":"turn/started","params":{"threadId":"threadA","turn":{"id":"turnA","status":"inProgress"}}}"#;
 const CALL: &str = r#"{"id":91,"method":"item/tool/call","params":{"callId":"callA","threadId":"threadA","turnId":"turnA","tool":"gogoke_seat","arguments":{"callerSeatId":"Owner","callerGrant":"Owner","action":"self-authorize"}}}"#;
+const SIDE_CALL: &str = r#"{"id":92,"method":"item/tool/call","params":{"callId":"callSide","threadId":"threadA","turnId":"turnA","tool":"gogoke_side_message","arguments":{"operation":"send","targetId":"sideA","expectedRevision":null,"payload":{"body":"hello"}}}}"#;
 const ENDED: &str = r#"{"method":"turn/completed","params":{"threadId":"threadA","turn":{"id":"turnA","status":"completed"}}}"#;
 
 fn hex(bytes: &[u8]) -> String {
@@ -117,6 +118,11 @@ fn with_source(extra: &[&str], action: impl FnOnce(&mut VerifiedDatabaseConnecti
     insert.step_done().unwrap(); drop(insert);
     db.execute("INSERT INTO gogoke_v37_instance_homes(home_id,instance_id,domain_id,kind,owner_id,generation,state,revision) VALUES('homeA','instanceA','projectA','SESSION','sessionA','1','ACTIVE',1)").unwrap();
     db.execute("INSERT INTO gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('projectA','seatA','incarnationA','USER','LONG','instanceA','BUSY',1,1)").unwrap();
+    install_settings(&mut db,"seatA",PARENT_SCOPE);
+    ledger::register_session(&mut db,&ledger::SessionRegistration {
+        domain_id:"projectA".into(),seat_id:"seatA".into(),session_id:"sessionA".into(),
+        purpose:ledger::SessionPurpose::Work,side_id:None,
+    }).unwrap();
     db.execute("INSERT INTO gogoke_v37_h_owner_binding VALUES('bindingA','instanceA','projectA','SESSION','sessionA','1','ACTIVE')").unwrap();
     db.execute("INSERT INTO gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id) VALUES('projectA','sessionA','instanceA','homeA','bindingA','1','COMMITTED',1,'processA')").unwrap();
     db.execute("INSERT INTO gogoke_v37_h_seat_binding VALUES('projectA','sessionA','seatA','incarnationA','1')").unwrap();
@@ -160,6 +166,26 @@ fn denied<T: std::fmt::Debug>(result: Result<T>, boundary: &str) {
     assert!(matches!(result, Err(ModelCallError::Denied | ModelCallError::Conflict)
         | Err(ModelCallError::Rpc(rpc_journal::RpcJournalError::Denied))),
         "{boundary}: expected an authority denial, got {result:?}");
+}
+
+#[test]
+fn side_purpose_denies_unregistered_host_tools_in_the_production_caller_factory() {
+    with_source(&[SIDE_CALL], |db, _, custody, frames, keys, _, _| {
+        let work=caller(db,custody,&frames[3],&keys[3]);
+        db.execute("UPDATE main.v37_ledger_session SET purpose='SIDE_CHAT',side_id='sideA' WHERE session_id='sessionA'").unwrap();
+        db.execute("DELETE FROM main.gogoke_v37_seat_settings WHERE domain_id='projectA' AND seat_id='seatA'").unwrap();
+        denied(revalidate_model_call_in_transaction(db,&work),
+            "a SIDE_CHAT session cannot keep a previously sealed WORK seat tool");
+        denied(observe_model_call(db,custody,&frames[3],&keys[3],"threadA","turnA"),
+            "a provider-emitted gogoke_seat call is not registered for SIDE_CHAT");
+        let side_key=capture(db,&frames[4],5);
+        let side=caller(db,custody,&frames[4],&side_key);
+        assert_eq!(side.tool(),Some("gogoke_side_message"));
+        revalidate_model_call_in_transaction(db,&side).unwrap();
+        db.execute("UPDATE main.v37_ledger_session SET purpose='FORMAL_REVIEW',side_id=NULL WHERE session_id='sessionA'").unwrap();
+        denied(revalidate_model_call_in_transaction(db,&side),
+            "a later purpose change cannot retain SIDE_CHAT model tool authority");
+    });
 }
 
 #[test]

@@ -1457,6 +1457,7 @@ pub(crate) fn complete_response(
             | Reply::Turn { .. }
             | Reply::Ack { .. }
             | Reply::FeaturePage { .. }
+            | Reply::ModelPage { .. }
             | Reply::RemoteError { .. }
     ) {
         return Err(RpcJournalError::Invalid("not a response"));

@@ -123,6 +123,332 @@ fn status_for(error: &SeatError, request: &V37Request, present: Option<&Seat>) -
 }
 
 impl<'root> ProductDatabase<'root> {
+    fn read_instance_seat_occupancy(&self, instance_id: &str) -> Result<(Vec<Json>, Option<usize>)> {
+        // E owns assignment across every domain. Names are joined by the exact
+        // incarnation; a missing name is never replaced with an internal ID.
+        let q = Statement::prepare(self.connection.as_ptr(),
+            "SELECT s.domain_id,s.seat_id,s.incarnation,CAST(s.generation AS TEXT),s.state,\
+                    COALESCE(n.display_name,'') \
+             FROM main.gogoke_v37_seats AS s LEFT JOIN main.gogoke_v37_seat_display_names AS n \
+               ON n.domain_id=s.domain_id AND n.seat_id=s.seat_id AND n.incarnation=s.incarnation \
+             WHERE s.instance_id=?1 AND s.state<>'RECLAIMED' ORDER BY s.domain_id,s.seat_id")?;
+        q.bind_text(1, instance_id)?;
+        let mut seats = Vec::new();
+        let mut bindings = Vec::new();
+        while q.step_row()? {
+            let domain = q.column_text(0)?;
+            let seat = q.column_text(1)?;
+            let incarnation = q.column_text(2)?;
+            let generation = q.column_text(3)?;
+            let busy = q.column_text(4)? == "BUSY";
+            let name = q.column_text(5)?;
+            seats.push(Json::String(JsonString::from_str(if name.is_empty() {
+                "未命名席位"
+            } else { &name })));
+            bindings.push((domain, seat, incarnation, generation, busy));
+        }
+        // A persisted COMMITTED/ACTIVE row is not a live process. The count is
+        // known only when every unsettled H holder has current E, native and
+        // kernel custody evidence. A restarted host retains UNKNOWN.
+        let claims = Statement::prepare(self.connection.as_ptr(),
+            "SELECT domain_id,session_id,state,COALESCE(process_operation_id,''),\
+                    COALESCE(stop_fact_id,'') FROM main.gogoke_v37_h_claim WHERE instance_id=?1")?;
+        claims.bind_text(1, instance_id)?;
+        let mut seen_busy = Vec::new();
+        let mut counted_sessions = Vec::new();
+        let mut running = 0usize;
+        let mut unknown = false;
+        while claims.step_row()? {
+            let domain = claims.column_text(0)?;
+            let session = claims.column_text(1)?;
+            let phase = claims.column_text(2)?;
+            let operation = claims.column_text(3)?;
+            let stop_fact = claims.column_text(4)?;
+            if phase == "RELEASED" {
+                // A released started session must retain the matching durable
+                // kernel stop proof, not only a terminal H state label.
+                if !operation.is_empty() {
+                    let stopped = Statement::prepare(self.connection.as_ptr(),
+                        "SELECT 1 FROM main.gogoke_coordination_process_custody \
+                         WHERE operation_id=?1 AND domain_id=?2 AND state='STOPPED' \
+                           AND stop_proof_hash=?3")?;
+                    stopped.bind_text(1, &operation)?;
+                    stopped.bind_text(2, &domain)?;
+                    stopped.bind_text(3, &stop_fact)?;
+                    if stop_fact.is_empty() || !stopped.step_row()? || stopped.step_row()? {
+                        unknown = true;
+                    }
+                }
+                continue;
+            }
+            if phase == "STOPPED" {
+                let stopped = !stop_fact.is_empty() &&
+                    crate::store::session_transport::runtime::observe_stop_fact(
+                        &self.connection, &domain, &session)
+                        .map_err(|error| OrchestrationError::V37StoreFailure(
+                            format!("instance stop observation: {error:?}")))?.is_some();
+                if !stopped { unknown = true; }
+                else {
+                    let bound = Statement::prepare(self.connection.as_ptr(),
+                        "SELECT seat_id,seat_incarnation,generation FROM main.gogoke_v37_h_seat_binding \
+                         WHERE domain_id=?1 AND session_id=?2")?;
+                    bound.bind_text(1, &domain)?;
+                    bound.bind_text(2, &session)?;
+                    if bound.step_row()? {
+                        let seat = bound.column_text(0)?;
+                        let incarnation = bound.column_text(1)?;
+                        let generation = bound.column_text(2)?;
+                        if bound.step_row()? { unknown = true; }
+                        else if bindings.iter().any(|(d,s,i,g,busy)|
+                            d==&domain && s==&seat && i==&incarnation && g==&generation && *busy) {
+                            seen_busy.push((domain.clone(), seat, incarnation, generation));
+                        }
+                    }
+                }
+                continue;
+            }
+            if phase != "COMMITTED" || operation.is_empty() {
+                unknown = true;
+                continue;
+            }
+            let bound = Statement::prepare(self.connection.as_ptr(),
+                "SELECT seat_id,seat_incarnation,generation FROM main.gogoke_v37_h_seat_binding \
+                 WHERE domain_id=?1 AND session_id=?2")?;
+            bound.bind_text(1, &domain)?;
+            bound.bind_text(2, &session)?;
+            if !bound.step_row()? { unknown = true; continue; }
+            let seat = bound.column_text(0)?;
+            let incarnation = bound.column_text(1)?;
+            let generation = bound.column_text(2)?;
+            if bound.step_row()? { unknown = true; continue; }
+            let current = bindings.iter().any(|(d,s,i,g,busy)|
+                d == &domain && s == &seat && i == &incarnation &&
+                g == &generation && *busy);
+            if !current { unknown = true; continue; }
+            seen_busy.push((domain.clone(), seat.clone(), incarnation.clone(), generation.clone()));
+            let claim = crate::store::session_transport::runtime::observe_claim_bound(
+                &self.connection, &domain, &seat, &session)
+                .map_err(|error| OrchestrationError::V37StoreFailure(
+                    format!("instance H claim observation: {error:?}")))?;
+            let Some(claim) = claim else { unknown = true; continue; };
+            if claim.phase != crate::store::session_transport::runtime::SessionPhase::Committed ||
+                claim.instance_id != instance_id || claim.generation != generation ||
+                claim.process_operation_id.as_deref() != Some(operation.as_str()) {
+                unknown = true;
+                continue;
+            }
+            let Some(run) = self.native_sessions.get(&(domain.clone(), session.clone())) else {
+                unknown = true;
+                continue;
+            };
+            if run.operation_id != operation || run.evidence.instance_id() != instance_id ||
+                run.evidence.seat_id() != seat || run.evidence.seat_incarnation() != incarnation ||
+                run.custody.binding.domain_id != domain ||
+                run.custody.binding.generation != generation || !run.allows_input() {
+                unknown = true;
+                continue;
+            }
+            let custody = Statement::prepare(self.connection.as_ptr(),
+                "SELECT c.state FROM main.gogoke_coordination_process_custody AS c \
+                 JOIN main.gogoke_v37_h_process_episode AS e \
+                   ON e.process_operation_id=c.operation_id AND e.domain_id=c.domain_id \
+                  AND e.generation=c.generation AND e.session_id=?11 \
+                  AND e.instance_id=?12 AND e.phase='ACTIVE' \
+                 WHERE c.operation_id=?1 AND c.ticket=?2 AND c.custodian_nonce=?3 AND c.pid=?4 \
+                   AND c.creation_time_100ns=?5 AND c.image_path=?6 AND c.binary_digest_sha256=?7 \
+                   AND c.profile_id=?8 AND c.domain_id=?9 AND c.generation=?10")?;
+            let pid = run.custody.identity.pid.to_string();
+            let created = run.custody.identity.creation_time_100ns.to_string();
+            let image = run.custody.identity.image_path.to_string_lossy();
+            for (index, value) in [operation.as_str(), run.custody.ticket.opaque(),
+                run.custody.custodian_nonce.as_str(), pid.as_str(), created.as_str(),
+                image.as_ref(), run.custody.binding.binary_digest_sha256.as_str(),
+                run.custody.binding.profile_id.as_str(), domain.as_str(), generation.as_str(),
+                session.as_str(), instance_id]
+                .iter().enumerate() { custody.bind_text((index + 1) as i32, value)?; }
+            let durable_active = custody.step_row()? && custody.column_text(0)? == "ACTIVE";
+            if custody.step_row()? { unknown = true; continue; }
+            let live = self.process_custodian.active(&run.custody.ticket)
+                .is_some_and(|process| process.identity() == &run.custody.identity &&
+                    process.exit_code().ok() == Some(None));
+            if !durable_active || !live { unknown = true; continue; }
+            running += 1;
+            counted_sessions.push((domain, session));
+        }
+        if bindings.iter().any(|(d,s,i,g,busy)| *busy &&
+            !seen_busy.iter().any(|(sd,ss,si,sg)| sd==d && ss==s && si==i && sg==g)) {
+            unknown = true;
+        }
+        // A current native process without the counted H/E tuple must not be
+        // erased by an apparently empty durable claim query.
+        for ((domain, session), run) in &self.native_sessions {
+            if run.evidence.instance_id() != instance_id ||
+                counted_sessions.iter().any(|(d,s)| d==domain && s==session) { continue; }
+            if self.process_custodian.active(&run.custody.ticket)
+                .is_some_and(|process| process.identity() == &run.custody.identity &&
+                    process.exit_code().ok() == Some(None)) { unknown = true; }
+        }
+        Ok((seats, if unknown { None } else { Some(running) }))
+    }
+
+    fn read_user_seats_page(&self, domain: &str) -> Result<Json> {
+        let cap = Statement::prepare(self.connection.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_seat_project_caps WHERE domain_id=?1")?;
+        cap.bind_text(1, domain)?;
+        if !cap.step_row()? { return Ok(Json::Null); }
+        drop(cap);
+        let (limit, _) = seat::read_effective_project_parallel_cap(&self.connection, domain)?;
+        let owner_cap = seat::read_project_parallel_cap(&self.connection, domain)?;
+        let facts = seat::list_page_facts(&self.connection, domain)?;
+        let profiles = instance::read_instance_profiles(&self.connection).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("seat instance profiles: {error:?}")))?;
+        let string = |value: &str| Json::String(JsonString::from_str(value));
+        let mut refs = BTreeMap::new();
+        let mut choices = Vec::new();
+        for profile in profiles {
+            let mut fields = BTreeMap::from([
+                (key("id"), string(&profile.instance_id)),
+                (key("name"), string(profile.display_name.as_deref().unwrap_or("未命名实例"))),
+                (key("vendor"), string(&profile.driver_id)),
+            ]);
+            if let Some(models) = instance::read_instance_evidence(&self.connection, &profile.instance_id)
+                .map_err(|error| OrchestrationError::V37StoreFailure(format!("seat verified models: {error:?}")))?
+                .and_then(|evidence| evidence.available_models_json) {
+                let Json::Array(models) = Parser::parse(&models)? else {
+                    return Err(OrchestrationError::Invalid("verified model list"));
+                };
+                fields.insert(key("models"), Json::Array(models));
+            }
+            let reference = Json::Object(fields);
+            let registered = self.read_registered_instance(&profile.instance_id)?
+                .ok_or(OrchestrationError::Invalid("seat registered instance"))?;
+            if profile.enabled == Some(true) && registered.login_state == "LOGGED_IN"
+                && self.current_login_observation(&profile.instance_id, registered.revision, "LOGGED_IN")? {
+                choices.push(Parser::parse(&reference.canonical())?);
+            }
+            refs.insert(profile.instance_id, reference.canonical());
+        }
+        let mut rows = Vec::new();
+        let mut running = 0usize;
+        let mut range = None;
+        let mut efforts = Vec::new();
+        for fact in facts.seats {
+            let seat = fact.seat;
+            // E BUSY means the persistent CLI owns the seat, not that a model
+            // turn is running. Read the original H session for presentation;
+            // retain E's separate mutation/quiescence facts below.
+            let active = self.native_sessions.iter().find(|((session_domain, _), run)|
+                session_domain == domain && run.evidence.seat_id() == seat.seat_id &&
+                run.evidence.seat_incarnation() == seat.incarnation &&
+                run.custody.binding.generation == seat.generation.to_string());
+            let display_state = match (seat.state, active) {
+                (State::Reclaimed, _) => "REMOVED",
+                (State::Idle, _) => "IDLE",
+                (State::Busy, Some((_, run))) if run.allows_input() =>
+                    if run.turn_id.is_some() { "WORKING" } else { "IDLE" },
+                (State::Busy, _) => "STUCK",
+            };
+            if display_state == "WORKING" { running += 1; }
+            let settings = match seat.settings_json.as_deref() {
+                Some(raw) => match Parser::parse(raw)? {
+                    Json::Object(fields) => fields,
+                    _ => return Err(OrchestrationError::Invalid("seat settings object")),
+                },
+                None => BTreeMap::new(),
+            };
+            let setting = |name: &str| match settings.get(&key(name)) {
+                Some(Json::String(value)) => Json::String(value.clone()),
+                _ => string(""),
+            };
+            let historical_reference;
+            let reference = match refs.get(&seat.instance_id) {
+                Some(reference) => reference,
+                None if seat.state == State::Reclaimed && !seat.instance_id.is_empty() => {
+                    // Instance tombstones retain registry/profile history.
+                    // A removed seat must remain readable after its unused
+                    // instance is deleted, without making that instance a choice.
+                    let registered = self.read_registered_instance(&seat.instance_id)?
+                        .ok_or(OrchestrationError::Invalid("historical seat instance"))?;
+                    let name = Statement::prepare(self.connection.as_ptr(),
+                        "SELECT display_name FROM main.gogoke_v37_instance_profiles WHERE instance_id=?1")?;
+                    name.bind_text(1, &seat.instance_id)?;
+                    let display_name = if name.step_row()? { name.column_text(0)? }
+                        else { "未命名实例".to_owned() };
+                    if name.step_row()? { return Err(OrchestrationError::Invalid("historical instance profile rows")); }
+                    historical_reference = Json::Object(BTreeMap::from([
+                        (key("id"), string(&seat.instance_id)),
+                        (key("name"), string(&display_name)),
+                        (key("vendor"), string(&registered.driver_id)),
+                    ])).canonical();
+                    &historical_reference
+                },
+                None => return Err(OrchestrationError::Invalid("seat instance presentation unavailable")),
+            };
+            let mut row = BTreeMap::from([
+                (key("id"), string(&seat.seat_id)),
+                // Native mutation tokens are held by the source adapter, never
+                // rendered as product labels or substituted for display names.
+                (key("_revision"), string(&seat.revision.to_string())),
+                (key("_incarnation"), string(&seat.incarnation)),
+                (key("_settings"), match seat.settings_json.as_deref() {
+                    Some(raw) => Parser::parse(raw)?, None => Json::Object(BTreeMap::new()),
+                }),
+                (key("name"), string(fact.display_name.as_deref().unwrap_or("未命名席位"))),
+                (key("layer"), string(if seat.layer == seat::Layer::User { "direct" } else { "sub" })),
+                (key("isLead"), Json::Bool(fact.is_project_lead)),
+                (key("term"), string(if seat.kind == Kind::Long { "long" } else { "short" })),
+                (key("state"), string(display_state)),
+                (key("allowed"), Json::Object(BTreeMap::from([
+                    (key("tune"), Json::Bool(fact.allowed.tune)),
+                    (key("changeInstance"), Json::Bool(fact.allowed.change_instance)),
+                    (key("remove"), Json::Bool(fact.allowed.remove)),
+                ]))),
+                (key("instance"), Parser::parse(reference)?), (key("model"), setting("model")),
+                (key("effort"), if settings.contains_key(&key("effort")) { setting("effort") }
+                    else { setting("reasoningEffort") }),
+                (key("permission"), setting("permissionTier")),
+            ]);
+            if let Some(reason) = fact.allowed.locked_reason {
+                if !fact.allowed.change_instance { row.insert(key("instanceLockedReason"), string(reason)); }
+            }
+            if let Some(card) = fact.state_card.and_then(|card| card.card_json) {
+                if let Json::Object(card) = Parser::parse(&card)? {
+                    for name in ["goal", "pending", "doing", "reclaimCondition"] {
+                        if let Some(Json::String(value)) = card.get(&key(name)) {
+                            row.insert(key(name), Json::String(value.clone()));
+                        }
+                    }
+                }
+            }
+            if let Some(scope) = fact.orchestration_scope {
+                efforts = scope.reasoning_efforts.iter().map(|effort| string(effort)).collect();
+                let permission = match scope.max_permission_tier {
+                    seat::PermissionTier::ReadOnly => "READ_ONLY",
+                    seat::PermissionTier::NoNetwork => "NO_NETWORK",
+                    seat::PermissionTier::IsolatedWrite => "ISOLATED_WRITE",
+                    seat::PermissionTier::NetworkedWrite => "NETWORKED_WRITE",
+                };
+                range = Some(Json::Object(BTreeMap::from([
+                    (key("instanceIds"), Json::Array(scope.instance_ids.iter().map(|id| string(id)).collect())),
+                    (key("maxPermission"), string(permission)),
+                    (key("maxConcurrent"), Json::Number(owner_cap.to_string())),
+                ])));
+            }
+            rows.push(Json::Object(row));
+        }
+        let mut page = BTreeMap::from([
+            (key("running"), Json::Number(running.to_string())),
+            (key("limit"), Json::Number(limit.to_string())),
+            (key("seats"), Json::Array(rows)), (key("instances"), Json::Array(choices)),
+            (key("efforts"), Json::Array(efforts)),
+            (key("permissions"), Json::Array(["READ_ONLY", "NO_NETWORK", "ISOLATED_WRITE", "NETWORKED_WRITE"]
+                .iter().map(|value| string(value)).collect())),
+            (key("templates"), Json::Array(seat::list_templates(&self.connection, domain)?
+                .iter().map(|template| string(&template.template_id)).collect())),
+        ]);
+        if let Some(range) = range { page.insert(key("range"), range); }
+        Ok(Json::Object(page))
+    }
     /// H may project only the exact User answer which C already settled for
     /// this live turn. Neither model prose nor request payload becomes an
     /// answer; the source reference names C's original receipt.
@@ -511,6 +837,89 @@ impl<'root> ProductDatabase<'root> {
             return Err(OrchestrationError::Invalid("configuration schema"));
         }
         let command = string_field(&fields, "command")?;
+        if command == "seats-page-read" && fields.len() == 3 {
+            let domain = string_field(&fields, "domainId")?;
+            self.connection.execute("BEGIN").map_err(OrchestrationError::CommitUnknownWithCause)?;
+            let result = self.read_user_seats_page(&domain);
+            match result {
+                Ok(page) => {
+                    self.connection.execute("COMMIT").map_err(OrchestrationError::CommitUnknownWithCause)?;
+                    return Ok(page.canonical().into_bytes());
+                },
+                Err(error) => {
+                    self.connection.execute("ROLLBACK").map_err(OrchestrationError::CommitUnknownWithCause)?;
+                    return Err(error);
+                },
+            }
+        }
+        if command == "instance-management-read" && fields.len() == 2 {
+            let optional = |value: Option<String>| value.map(|value|
+                Json::String(JsonString::from_str(&value))).unwrap_or(Json::Null);
+            let fail = |error| OrchestrationError::V37StoreFailure(format!("instance management read: {error:?}"));
+            let mut profiles = Vec::new();
+            for profile in instance::read_instance_profiles(&self.connection).map_err(fail)? {
+                let evidence = instance::read_instance_evidence(&self.connection, &profile.instance_id).map_err(fail)?;
+                let mut row = BTreeMap::from([
+                    (key("instanceId"), Json::String(JsonString::from_str(&profile.instance_id))),
+                    (key("driverId"), Json::String(JsonString::from_str(&profile.driver_id))),
+                    (key("name"), optional(profile.display_name)),
+                    (key("enabled"), profile.enabled.map(Json::Bool).unwrap_or(Json::Null)),
+                    (key("provider"), optional(profile.connected_model_source)),
+                    (key("profileRevision"), optional(profile.revision.map(|value| value.to_string()))),
+                ]);
+                let cap = Statement::prepare(self.connection.as_ptr(),
+                    "SELECT concurrency_cap FROM main.gogoke_v37_instance_caps WHERE instance_id=?1")?;
+                cap.bind_text(1, &profile.instance_id)?;
+                if cap.step_row()? {
+                    row.insert(key("cap"), Json::Number(instance::read_instance_concurrency_cap(
+                        &self.connection, &profile.instance_id)?.to_string()));
+                    if cap.step_row()? { return Err(OrchestrationError::Invalid("instance cap rows")); }
+                }
+                if let Some(evidence) = evidence {
+                    row.insert(key("account"), optional(evidence.masked_account));
+                    row.insert(key("plan"), optional(evidence.subscription));
+                    row.insert(key("lastConfirmed"), optional(evidence.account_confirmed_at));
+                    row.insert(key("checkFailed"), optional(evidence.detect_error));
+                    row.insert(key("modelsSource"), optional(evidence.models_source));
+                    row.insert(key("modelsObservedAt"), optional(evidence.models_observed_at));
+                    if let Some(models) = evidence.available_models_json {
+                        let Json::Array(models) = Parser::parse(&models)? else {
+                            return Err(OrchestrationError::Invalid("verified instance models"));
+                        };
+                        row.insert(key("models"), Json::Array(models));
+                    }
+                }
+                let (seats, running) = self.read_instance_seat_occupancy(&profile.instance_id)?;
+                row.insert(key("seats"), Json::Array(seats));
+                row.insert(key("runningSessions"), running.map(|value|
+                    Json::Number(value.to_string())).unwrap_or(Json::Null));
+                profiles.push(Json::Object(row));
+            }
+            let mut cli = Vec::new();
+            for driver in ["codex", "claude", "opencode", "grok"] {
+                let copy = instance::read_managed_cli(&self.connection, self.root, driver)
+                    .map_err(|error| OrchestrationError::V37StoreFailure(format!("managed CLI read: {error:?}")))?;
+                let Some(copy) = copy else { continue; };
+                let mut row = BTreeMap::from([
+                    (key("driverId"), Json::String(JsonString::from_str(driver))),
+                    (key("state"), Json::String(JsonString::from_str(&copy.state))),
+                    (key("version"), optional(copy.version)),
+                    (key("previousVersion"), optional(copy.previous_version)),
+                    (key("checkedAt"), optional(copy.checked_at)),
+                    (key("officialVersion"), optional(copy.official_notice)),
+                    (key("raw"), optional(copy.raw_error)),
+                    (key("progressBytes"), Json::Number(copy.progress_bytes.to_string())),
+                ]);
+                // A compiled pin is a qualification constraint, never an observation
+                // of a newer usable installation. No verified upgrade is invented.
+                row.insert(key("verifiedVersion"), Json::Null);
+                cli.push(Json::Object(row));
+            }
+            return Ok(Json::Object(BTreeMap::from([
+                (key("schema"), Json::String(JsonString::from_str("gogoke.37.instance-management.v1"))),
+                (key("profiles"), Json::Array(profiles)), (key("cli"), Json::Array(cli)),
+            ])).canonical().into_bytes());
+        }
         let cap = |name: &'static str| -> Result<i64> {
             match fields.get(&key(name)) {
                 Some(Json::Number(value)) => value.parse::<i64>().ok().filter(|value| *value > 0)
@@ -605,6 +1014,50 @@ impl<'root> ProductDatabase<'root> {
             ])).canonical().into_bytes());
         }
         match command.as_str() {
+            "seat-rename" | "seat-designate-lead" => {
+                let expected = if command == "seat-rename" { 6 } else { 5 };
+                if fields.len() != expected { return Err(OrchestrationError::Invalid("seat metadata fields")); }
+                let domain = string_field(&fields, "domainId")?;
+                let seat_id = string_field(&fields, "seatId")?;
+                let incarnation = string_field(&fields, "incarnation")?;
+                if command == "seat-rename" {
+                    seat::rename_seat(&mut self.connection, &self.owner, &domain, &seat_id,
+                        &incarnation, &string_field(&fields, "name")?)?;
+                } else {
+                    seat::designate_project_lead(&mut self.connection, &self.owner, &domain,
+                        &seat_id, &incarnation)?;
+                }
+            }
+            "instance-profile" if fields.len() == 8 => {
+                let id = string_field(&fields, "instanceId")?;
+                let name = string_field(&fields, "name")?;
+                let enabled = match fields.get(&key("enabled")) {
+                    Some(Json::Bool(value)) => *value,
+                    _ => return Err(OrchestrationError::Invalid("enabled")),
+                };
+                let provider = match fields.get(&key("provider")) {
+                    Some(Json::Null) => None,
+                    Some(Json::String(value)) => Some(value.to_well_formed_string()
+                        .ok_or(OrchestrationError::Invalid("provider"))?),
+                    _ => return Err(OrchestrationError::Invalid("provider")),
+                };
+                let expected = match fields.get(&key("expectedProfileRevision")) {
+                    Some(Json::Null) => None,
+                    Some(Json::String(_)) => Some(revision("expectedProfileRevision")?),
+                    _ => return Err(OrchestrationError::Invalid("expectedProfileRevision")),
+                };
+                // requestId binds the UI write intent; native CAS remains authoritative.
+                string_field(&fields, "requestId")?;
+                instance::set_instance_profile(&mut self.connection, &self.owner, &id, &name,
+                    enabled, provider.as_deref(), expected).map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!("instance profile write: {error:?}")))?;
+            }
+            "instance-remove" if fields.len() == 4 => {
+                let id = string_field(&fields, "instanceId")?;
+                instance::tombstone_unused_instance(&mut self.connection, &self.owner,
+                    &id, revision("expectedProfileRevision")?).map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!("instance remove: {error:?}")))?;
+            }
             "project-parallel-cap" if fields.len() == 4 => {
                 let domain = string_field(&fields, "domainId")?;
                 seat::set_project_parallel_cap(&mut self.connection, &self.owner, &domain, cap("value")?)?;

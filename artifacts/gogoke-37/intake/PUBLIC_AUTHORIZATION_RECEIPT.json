@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.public-authorization.v2",
-  "owner_instruction": "OWNER_MERGED_PUBLIC_GOGOKE_37_AUTHORIZATION",
+  "owner_instruction": "OWNER_DIRECTED_2026-10-06_GOGOKE_MANAGED_CLI_INSTANCE_AND_SEAT_PANEL_SCOPE",
   "validity": {
     "path": "artifacts/gogoke-37/intake/PUBLIC_AUTHORIZATION_RECEIPT.json",
     "introduced_by": "a merge commit on taiyun668/gogoke main whose GitHub merged_by is taiyun668",
@@ -8,13 +8,13 @@
   },
   "repository": "taiyun668/gogoke",
   "supersedes": {
-    "schema": "gogoke.37.public-authorization.v1",
-    "public_plan_manifest_blob": "9d540cbac609b5ba21cb12e1640b375bcc980736",
-    "reason": "bind the Owner-authorized scope instead of plan bytes, so detail amendments need no new receipt"
+    "schema": "gogoke.37.public-authorization.v2",
+    "scope_digest": "e77f7348b84e6b30c27976383c80ab8163c915174d29d22c5274087d3be0fbe0",
+    "reason": "Owner 2026-10-06 replaces manual CLI installation and upgrade with gogoke-managed fixed official CLI lifecycle, extends host-backed instance management, and adds the fourth right-side Seats slot through seven exact integrator-owned shared paths. This one scope-changing plan and receipt take effect only after the Owner merges the same PR and Controller verifies main; no new Owner touchpoint is added."
   },
   "plan": {
     "public_plan_path": "docs/design/gogoke-37-plan-v1/",
-    "scope_digest": "e77f7348b84e6b30c27976383c80ab8163c915174d29d22c5274087d3be0fbe0",
+    "scope_digest": "aad8bf4d015a588b1882b4ff9d1c8ed4ac87e24474690fc4385923108f2c85a8",
     "digest_tool": "docs/design/gogoke-37-plan-v1/verify_plan.py --scope-digest PLAN.json, run from trusted main",
     "stale_when": "the scope digest of the plan in force differs from the value above"
   },
@@ -41,5 +41,6 @@
   "start_condition": "Owner merges the PR that carries this receipt; Controller then reads back the actual merge, the receipt bytes, and recomputes the scope digest of main's PLAN.json with main's verifier before continuing",
   "owner_touchpoints": "The bound PLAN.json retains its planned and conditional Owner decisions; this receipt does not complete them",
   "completion_claim": false,
-  "amendment_rule": "An amendment that leaves the scope digest unchanged changes only details (phase placement and milestone notes, deliverable, contract and check descriptions, assets, source pins); it never widens write scope, adds a shared file, changes contract ownership or a recorded Owner decision. Independent review must preserve requirements, invariants and security. It takes effect when an independent audit passes and the Controller merges the plan PR; no new receipt and no Owner merge. An amendment that changes the scope digest carries the updated receipt in the same PR, and the Owner merges that one PR."
+  "amendment_rule": "An amendment that leaves the scope digest unchanged changes only details (phase placement and milestone notes, deliverable, contract and check descriptions, assets, source pins); it never widens write scope, adds a shared file, changes contract ownership or a recorded Owner decision. Independent review must preserve requirements, invariants and security. It takes effect when an independent audit passes and the Controller merges the plan PR; no new receipt and no Owner merge. An amendment that changes the scope digest carries the updated receipt in the same PR, and the Owner merges that one PR.",
+  "owner_direction": "Gogoke itself installs and manages each fixed official CLI; no user global npm discovery. Host-managed install, explicit upgrade and rollback, update check, doctor and zero-instance uninstall; version changes refuse active or UNKNOWN holders or sessions. Instance management and source-backed read models follow the 2026-10-06 Owner direction; B5 unsupported account isolation is unchanged. The current project gains a fourth right-side Seats tab with real host SeatsSource or an explicit not-connected state, exact host-backed seat fields, qualified choices and distinct K-SEAT actions; no new login or authorization touchpoint."
 }

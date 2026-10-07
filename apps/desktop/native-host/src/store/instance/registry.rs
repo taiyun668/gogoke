@@ -191,6 +191,13 @@ fn repin_receipt_json(revision: i64, home: &str, digest: &str, version: &str, fi
 
 fn reconcile_creation(connection: &VerifiedDatabaseConnection<'_>, root: &RootLock,
     id: &str) -> Result<(), RegistryError> {
+    verified_creation_request(connection,root,id).map(|_|())
+}
+
+/// Recover the original registration request, including its byte-for-byte
+/// journal and physical home, before a legacy source is migrated.
+pub(super) fn verified_creation_request(connection: &VerifiedDatabaseConnection<'_>,
+    root: &RootLock, id: &str) -> Result<String, RegistryError> {
     let rows = Statement::prepare(connection.as_ptr(),
         "SELECT request_id,request_hex FROM main.gogoke_v37_instance_operations WHERE target_id=?1 AND phase='APPLIED' AND native_receipt_id IS NOT NULL")?;
     rows.bind_text(1, id)?;
@@ -200,7 +207,7 @@ fn reconcile_creation(connection: &VerifiedDatabaseConnection<'_>, root: &RootLo
     if fields.len() != 5 || rows.step_row()? { return Err(RegistryError::Unknown); }
     if reconcile_register_replay(connection, root, &request_id, id, &fields[0])?
         != RegistrationReplay::Replayed { return Err(RegistryError::Unknown); }
-    Ok(())
+    Ok(request_id)
 }
 
 pub(crate) fn reconcile_program_repin(connection: &VerifiedDatabaseConnection<'_>, root: &RootLock,

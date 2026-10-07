@@ -94,6 +94,8 @@ pub fn open_product_database<'root>(
     super::ledger::initialize_schema(&mut connection)?;
     super::session_transport::initialize_admission_schema(&mut connection)
         .map_err(|error| OrchestrationError::V37StoreFailure(format!("{error:?}")))?;
+    super::session_transport::session_binding::initialize_schema(&mut connection)
+        .map_err(|error| OrchestrationError::V37StoreFailure(format!("H session relationship schema: {error:?}")))?;
     super::inbox::initialize_schema(&mut connection)
         .map_err(|error| OrchestrationError::V37StoreFailure(format!("{error:?}")))?;
     super::sidechat::initialize_schema(&mut connection)

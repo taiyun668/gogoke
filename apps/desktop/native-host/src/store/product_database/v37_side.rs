@@ -6,11 +6,13 @@ use super::*;
 use crate::store::atomic::Parser;
 use crate::store::ledger;
 use crate::store::sidechat::{self as d, SideError};
+use crate::store::seat::{self,NativeSeatCall,CallAction};
 
 const OPEN: &str = "gogoke.37.owner-side-open.v1";
 const QUESTION: &str = "gogoke.37.owner-side-question.v1";
 const COLLECT: &str = "gogoke.37.owner-side-collect.v1";
 const THREAD: &str = "gogoke.37.owner-side-thread.v1";
+const LIST: &str = "gogoke.37.owner-side-list.v1";
 const QUESTION_BOUNDARY: &str = "\nExplicit user question:\n";
 
 fn key(name: &str) -> JsonString { JsonString::from_str(name) }
@@ -56,10 +58,77 @@ pub(super) fn is_owner_side_frame(frame: &[u8]) -> bool {
     let Ok(value)=std::str::from_utf8(frame) else {return false;};
     let Ok(Json::Object(fields))=Parser::parse(value) else {return false;};
     matches!(fields.get(&key("schema")),Some(Json::String(schema))
-        if matches!(schema.to_well_formed_string().as_deref(),Some(OPEN|QUESTION|COLLECT|THREAD)))
+        if matches!(schema.to_well_formed_string().as_deref(),Some(OPEN|QUESTION|COLLECT|THREAD|LIST)))
 }
 
 impl<'root> ProductDatabase<'root> {
+    /// Native model tool, separate from every Owner frame. Model arguments
+    /// name only an existing side and the words to send; D/E/H derive every
+    /// principal, target and one-shot C identity from sealed current facts.
+    pub(super) fn dispatch_model_side_message(&mut self,caller:&NativeSeatCall)->Result<Vec<u8>> {
+        if caller.tool()!=Some("gogoke_side_message") {return Err(OrchestrationError::AccessDenied);}
+        let args=caller.arguments_json().ok_or(OrchestrationError::AccessDenied)?;
+        let Json::Object(mut fields)=Parser::parse(args)? else {return Err(OrchestrationError::Invalid("side tool arguments"));};
+        if fields.len()!=4 || string(&mut fields,"operation")?!="send" ||
+            !matches!(fields.remove(&key("expectedRevision")),Some(Json::Null)) {
+            return Err(OrchestrationError::Invalid("side tool operation"));
+        }
+        let side_id=string(&mut fields,"targetId")?;
+        let Some(Json::Object(mut payload))=fields.remove(&key("payload")) else {
+            return Err(OrchestrationError::Invalid("side tool payload"));
+        };
+        if !fields.is_empty() || payload.len()!=1 {return Err(OrchestrationError::Invalid("side tool fields"));}
+        let body=string(&mut payload,"body")?;
+        if !payload.is_empty() {return Err(OrchestrationError::Invalid("side tool body"));}
+        let domain=caller.domain_id();
+        let id=caller.host_request_id().ok_or(OrchestrationError::AccessDenied)?;
+        let session=caller.session_id().ok_or(OrchestrationError::AccessDenied)?;
+        let side=d::list(&mut self.connection,&self.owner,domain).map_err(side_error)?
+            .into_iter().find(|row|row.side_id==side_id).ok_or(OrchestrationError::AccessDenied)?;
+        let direction=if session==side.session_id && caller.seat_id()==side.seat_id && caller.incarnation()==side.seat_incarnation {
+            d::delivery::Direction::SideToLead
+        } else if session==side.source_session_id && caller.seat_id()==side.source_seat_id && caller.incarnation()==side.source_seat_incarnation {
+            d::delivery::Direction::LeadToSide
+        } else {return Err(OrchestrationError::AccessDenied)};
+        let lead_id=side.source_seat_id.clone();let lead_inc=side.source_seat_incarnation.clone();
+        let intent=d::delivery::prepare(&mut self.connection,&self.owner,domain,&side_id,id,session,
+            direction,&body,|db,source,target| {
+                let lead=Statement::prepare(db.as_ptr(),"SELECT 1 FROM main.gogoke_v37_seat_project_lead WHERE domain_id=?1 AND seat_id=?2 AND incarnation=?3")?;
+                lead.bind_text(1,domain)?;lead.bind_text(2,&lead_id)?;lead.bind_text(3,&lead_inc)?;
+                if !lead.step_row()? || lead.step_row()? {return Ok(false);}
+                if source!=caller.seat_id() {return Ok(false);}
+                match seat::authorize_current_call(db,caller,domain,target,CallAction::Message) {
+                    Ok(_)=>Ok(true),
+                    Err(seat::SeatError::Denied|seat::SeatError::Conflict)=>Ok(false),
+                    Err(error)=>Err(SideError::Corrupt(format!("E MESSAGE authority: {error:?}"))),
+                }
+            }).map_err(side_error)?;
+        if intent.may_dispatch {
+            if let Err(error)=self.dispatch_side_delivery(&intent,caller) {
+                d::delivery::record_error(&mut self.connection,&self.owner,domain,id,&format!("{error:?}"))
+                    .map_err(side_error)?;
+            }
+        }
+        let observed=d::delivery::observe(&mut self.connection,&self.owner,domain,id).map_err(side_error)?;
+        let status=match observed.state {
+            d::delivery::DeliveryState::Steered|d::delivery::DeliveryState::NewTurn=>V37Status::Applied,
+            d::delivery::DeliveryState::Failed=>V37Status::Failed,
+            d::delivery::DeliveryState::Unknown=>V37Status::Unknown,
+        };
+        let kind=match observed.state {
+            d::delivery::DeliveryState::Steered=>"steered",d::delivery::DeliveryState::NewTurn=>"new-turn",
+            d::delivery::DeliveryState::Failed=>"failed",d::delivery::DeliveryState::Unknown=>"unknown",
+        };
+        let receipt=V37Request {raw_bytes:Vec::new(),family:"K-INBOX".into(),operation:"deliver".into(),
+            request_id:id.into(),target_id:intent.message_id.clone(),domain_id:domain.into(),
+            expected_revision:0,payload:BTreeMap::new()};
+        Ok(encode_receipt(&receipt,status,0,0,BTreeMap::from([
+            (key("state"),text(kind)),(key("sourceSeatId"),text(&intent.source_seat_id)),
+            (key("targetSeatId"),text(&intent.target_seat_id)),
+            (key("nativeReceiptId"),text(&observed.native_receipt_id)),
+            (key("reason"),text(&observed.reason)),
+        ])))
+    }
     /// All lifecycle mutations remain D's existing same-connection operations.
     /// Fresh creation requires the native side-open composition below; a plain
     /// wire request cannot manufacture the source or SIDE_CHAT registration.
@@ -83,6 +152,66 @@ impl<'root> ProductDatabase<'root> {
         Ok(seat)
     }
 
+    /// The E designation is exact, and an absent or ambiguous live WORK
+    /// binding is reported as no source choice. A ledger cursor is a source
+    /// position, never a claimed count of lead rounds.
+    fn side_current_lead(&self,domain:&str,head:&ledger::LedgerPosition)->Result<Json> {
+        let q=Statement::prepare(self.connection.as_ptr(),
+            "SELECT p.seat_id,p.incarnation,h.session_id,h.generation,h.revision,h.process_operation_id
+             FROM main.gogoke_v37_seat_project_lead p
+             JOIN main.gogoke_v37_seats e ON e.domain_id=p.domain_id AND e.seat_id=p.seat_id AND e.incarnation=p.incarnation AND e.layer='USER' AND e.state IN ('IDLE','BUSY')
+             JOIN main.gogoke_v37_h_seat_binding sb ON sb.domain_id=e.domain_id AND sb.seat_id=e.seat_id AND sb.seat_incarnation=e.incarnation
+             JOIN main.gogoke_v37_h_claim h ON h.domain_id=sb.domain_id AND h.session_id=sb.session_id AND h.generation=sb.generation AND h.instance_id=e.instance_id AND h.state='COMMITTED'
+             JOIN main.v37_ledger_session l ON l.domain_id=h.domain_id AND l.session_id=h.session_id AND l.seat_id=e.seat_id AND l.purpose='WORK' AND l.side_id IS NULL
+             JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=h.binding_id AND b.domain_id=h.domain_id AND b.instance_id=h.instance_id AND b.kind='SESSION' AND b.owner_id=h.session_id AND b.generation=h.generation AND b.state='ACTIVE'
+             WHERE p.domain_id=?1")?;
+        q.bind_text(1,domain)?;
+        let mut found=None;
+        while q.step_row()? {
+            let seat=q.column_text(0)?;let inc=q.column_text(1)?;
+            let session=q.column_text(2)?;let generation=q.column_text(3)?;
+            let revision=q.column_text(4)?;let operation=q.column_text(5)?;
+            let Some(run)=self.native_sessions.get(&(domain.to_owned(),session.clone())) else {continue};
+            if run.operation_id!=operation || run.custody.binding.generation!=generation || !run.allows_input() {
+                continue;
+            }
+            if found.is_some() {return Ok(Json::Null);}
+            found=Some(Json::Object(BTreeMap::from([
+                (key("seatId"),text(&seat)),(key("seatIncarnation"),text(&inc)),
+                (key("sessionId"),text(&session)),(key("generation"),text(&generation)),
+                (key("claimRevision"),text(&revision)),
+                (key("sourceEpoch"),text(&head.epoch)),
+                (key("sourceCursor"),text(&head.cursor.to_string())),
+            ])));
+        }
+        Ok(found.unwrap_or(Json::Null))
+    }
+
+    /// Complete an Owner-created side only after its original H/D identities
+    /// have produced the two current MESSAGE edges. The policy event is keyed
+    /// by the original nested request bytes, so a replay cannot grant a new
+    /// seat incarnation or revive an Owner-revoked edge.
+    fn finish_side_open_message_pair(&mut self,open:&V37Request,create:&V37Request,
+        source_session:&str,receipt:Vec<u8>)->Result<Vec<u8>> {
+        let status=super::super::session_transport::decode_receipt(&receipt).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("side create receipt: {error:?}")))?;
+        if !matches!(status.status,V37Status::Applied|V37Status::Replayed) {
+            return Err(OrchestrationError::V37StoreFailure(format!("side create unresolved: {}",
+                String::from_utf8_lossy(&receipt))));
+        }
+        let side=d::list(&mut self.connection,&self.owner,&create.domain_id).map_err(side_error)?
+            .into_iter().find(|side|side.side_id==create.target_id)
+            .ok_or(OrchestrationError::OperationConflict)?;
+        if side.source_session_id!=source_session || side.session_id!=open.target_id ||
+            side.state=="DELETED" {return Err(OrchestrationError::OperationConflict);}
+        seat::ensure_side_message_pair(&mut self.connection,&self.owner,&create.domain_id,
+            &side.side_id,&side.source_seat_id,&side.source_seat_incarnation,
+            &side.seat_id,&side.seat_incarnation,&open.request_id,&open.raw_bytes,
+            &create.request_id,&create.raw_bytes).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("side MESSAGE pair: {error:?}")))?;
+        Ok(receipt)
+    }
+
     pub(super) fn dispatch_owner_side_frame(&mut self, frame:&[u8])->Result<Vec<u8>> {
         authority::read_product_identity(&mut self.connection,&self.owner)?;
         if !is_owner_side_frame(frame) {return Err(OrchestrationError::Invalid("owner side frame"));}
@@ -91,6 +220,96 @@ impl<'root> ProductDatabase<'root> {
             return Err(OrchestrationError::Invalid("owner side object"));
         };
         match string(&mut fields,"schema")?.as_str() {
+            LIST => {
+                let domain=string(&mut fields,"domainId")?;
+                if !fields.is_empty() {return Err(OrchestrationError::Invalid("side list fields"));}
+                let head=ledger::recover(&self.connection)?;
+                let lead=self.side_current_lead(&domain,&head)?;
+                let registry=d::list(&mut self.connection,&self.owner,&domain).map_err(side_error)?;
+                let mut chats=Vec::new();
+                for side in registry {
+                    let pending_question=Statement::prepare(self.connection.as_ptr(),
+                        "SELECT 1 FROM main.gogoke_v37_side_sync WHERE domain_id=?1 AND side_id=?2 AND mode='QUESTION' AND state IN ('PREPARED','UNKNOWN') LIMIT 1")?;
+                    pending_question.bind_text(1,&domain)?;pending_question.bind_text(2,&side.side_id)?;
+                    let question_unresolved=pending_question.step_row()?;
+                    drop(pending_question);
+                    // A missing exact H process/claim is unknown to the page,
+                    // never an idle session available for a new question.
+                    let host=if let Some(run)=self.native_sessions.get(&(domain.clone(),side.session_id.clone())) {
+                        if run.operation_id==side.binding_process_operation_id &&
+                            run.custody.binding.generation==side.binding_generation {
+                            let claim=Statement::prepare(self.connection.as_ptr(),
+                                "SELECT revision FROM main.gogoke_v37_h_claim WHERE domain_id=?1 AND session_id=?2 AND generation=?3 AND process_operation_id=?4 AND instance_id=?5 AND state='COMMITTED'")?;
+                            for (index,value) in [&domain,&side.session_id,&side.binding_generation,
+                                &side.binding_process_operation_id,&side.binding_instance_id].iter().enumerate() {
+                                claim.bind_text((index+1) as i32,value)?;
+                            }
+                            if claim.step_row()? {
+                                let revision=claim.column_text(0)?;
+                                if claim.step_row()? {return Err(OrchestrationError::OperationConflict);}
+                                Json::Object(BTreeMap::from([
+                                    (key("sessionId"),text(&side.session_id)),
+                                    (key("generation"),text(&side.binding_generation)),
+                                    (key("expectedRevision"),text(&revision)),
+                                    (key("instanceId"),text(&side.binding_instance_id)),
+                                    (key("driverId"),text(run.evidence.driver_id())),
+                                    (key("model"),text(&run.model)),(key("effort"),text(&run.effort)),
+                                    (key("answering"),Json::Bool(run.turn_id.is_some())),
+                                    (key("canAsk"),Json::Bool(run.turn_id.is_none()&&run.allows_input()&&!question_unresolved)),
+                                    (key("questionUnresolved"),Json::Bool(question_unresolved)),
+                                ]))
+                            } else {Json::Null}
+                        } else {Json::Null}
+                    } else {Json::Null};
+                    let lines=d::delivery::lines(&mut self.connection,&self.owner,&domain,&side.side_id)
+                        .map_err(side_error)?;
+                    let mut transfers=Vec::new();
+                    for line in lines {
+                        let state=match line.state {
+                            d::delivery::DeliveryState::Steered=>"steered",
+                            d::delivery::DeliveryState::NewTurn=>"new-turn",
+                            d::delivery::DeliveryState::Failed=>"failed",
+                            d::delivery::DeliveryState::Unknown=>"unknown",
+                        };
+                        transfers.push(Json::Object(BTreeMap::from([
+                            (key("id"),text(&line.intent.request_id)),
+                            (key("direction"),text(&line.intent.direction)),
+                            (key("sourceSeatId"),text(&line.intent.source_seat_id)),
+                            (key("targetSeatId"),text(&line.intent.target_seat_id)),
+                            (key("body"),text(&line.intent.body)),
+                            (key("createdAt"),text(&line.intent.created_at)),
+                            (key("state"),text(state)),
+                            (key("reason"),text(&line.reason)),
+                            (key("nativeReceiptId"),text(&line.native_receipt_id)),
+                        ])));
+                    }
+                    chats.push(Json::Object(BTreeMap::from([
+                        (key("sideId"),text(&side.side_id)),(key("state"),text(&side.state)),
+                        (key("seatId"),text(&side.seat_id)),
+                        (key("seatIncarnation"),text(&side.seat_incarnation)),
+                        (key("sourceSeatId"),text(&side.source_seat_id)),
+                        (key("sourceSeatIncarnation"),text(&side.source_seat_incarnation)),
+                        (key("sourceEpoch"),text(&side.epoch)),
+                        (key("sourceCursor"),text(&side.cursor.to_string())),
+                        (key("syncedCursor"),text(&side.synced_cursor.to_string())),
+                        (key("revision"),text(&side.revision.to_string())),
+                        (key("host"),host),
+                        (key("transfers"),Json::Array(transfers)),
+                    ])));
+                }
+                let bytes=Json::Object(BTreeMap::from([
+                    (key("schema"),text("gogoke.37.side-list.v1")),
+                    (key("domainId"),text(&domain)),
+                    (key("ledgerEpoch"),text(&head.epoch)),
+                    (key("ledgerCursor"),text(&head.cursor.to_string())),
+                    (key("lead"),lead),
+                    (key("chats"),Json::Array(chats)),
+                ])).canonical().into_bytes();
+                if bytes.len()>crate::ipc::MAX_FRAME_BYTES {
+                    return Err(OrchestrationError::Invalid("side list exceeds transport bound"));
+                }
+                Ok(bytes)
+            },
             OPEN => {
                 let source=string(&mut fields,"sourceSessionId")?;
                 let open=decode(string(&mut fields,"openRequest")?.as_bytes())?;
@@ -122,7 +341,8 @@ impl<'root> ProductDatabase<'root> {
                         || original.column_text(1)?!=raw_hex || original.column_text(2)?!="APPLIED"
                         || original.step_row()? {return Err(OrchestrationError::OperationConflict);}
                     drop(original);
-                    return self.dispatch_user_side(&create);
+                    let receipt=self.dispatch_user_side(&create)?;
+                    return self.finish_side_open_message_pair(&open,&create,&source,receipt);
                 }
                 drop(known);
                 if create.expected_revision!=0 || create.payload.len()!=1 {
@@ -150,8 +370,10 @@ impl<'root> ProductDatabase<'root> {
                         String::from_utf8_lossy(&opened))));
                 }
                 let binding=d::CreateBinding {source_seat_id:source_seat,source_session_id:source,
-                    seat_id:side_seat,session_id:open.target_id};
-                d::execute(&mut self.connection,&self.owner,&create,Some(&binding)).map_err(side_error)
+                    seat_id:side_seat,session_id:open.target_id.clone()};
+                let receipt=d::execute(&mut self.connection,&self.owner,&create,Some(&binding))
+                    .map_err(side_error)?;
+                self.finish_side_open_message_pair(&open,&create,&binding.source_session_id,receipt)
             },
             COLLECT => {
                 let domain=string(&mut fields,"domainId")?;
@@ -186,6 +408,7 @@ impl<'root> ProductDatabase<'root> {
                         (key("sourceEventId"),text(&event.input.event_id)),
                         (key("sourceEpoch"),text(&event.input.source_epoch)),
                         (key("sourceCursor"),text(&event.input.source_cursor)),
+                        (key("occurredAt"),text(&event.input.occurred_at)),
                         (key("sessionId"),text(&event.input.session_id)),
                         (key("sideId"),text(&id)),
                         (key("update"),Parser::parse(&event.input.update_json)?),

@@ -12,6 +12,9 @@ mod resource;
 mod policy;
 mod continuity;
 mod orchestration;
+mod page_facts;
+pub(crate) use page_facts::{designate_project_lead,list_page_facts,list_templates,
+    rename_seat,PageSeatFacts,SeatActionFacts,SeatPageFacts,TemplateChoice};
 pub(crate) use resource::{read_effective_project_parallel_cap,read_host_parallel_fact,
     refresh_host_parallel_fact_in_transaction,HostParallelFact};
 pub(crate) use policy::{authorize_current_call,authorize_merge_for_f2,
@@ -20,6 +23,7 @@ pub(crate) use policy::{authorize_current_call,authorize_merge_for_f2,
     begin_host_escalation_in_transaction,
     apply_owner_policy_configuration,
     begin_escalation,begin_trigger_cancel,begin_trigger_register,configure_call_grant,
+    ensure_side_message_pair,
     configure_escalation_route,configure_gate,
     current_call_permission_table,current_policy_revision,gate_decide,gate_submit,initialize_policy,
     policy_revision_for_native_request,
@@ -326,6 +330,12 @@ fn reject_shadow_or_effect(db: &VerifiedDatabaseConnection<'_>) -> Result<(), Se
     Ok(())
 }
 fn expected_schema() -> Vec<(String, String)> {
+    let mut entries = e2_schema();
+    entries.extend(page_facts::SCHEMA.iter().map(|(name,sql)|(name.to_string(),sql.to_string())));
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    entries
+}
+fn e2_schema() -> Vec<(String, String)> {
     let mut entries = f1_schema();
     entries.push(("gogoke_v37_seat_host_resources".into(),resource::HOST_RESOURCES.into()));
     entries.extend([
@@ -389,6 +399,14 @@ pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Resu
     if observed == expected_schema() {
         return Ok(());
     }
+    if observed == e2_schema() {
+        return transact(db, |db| {
+            if schema(db)? != e2_schema() {return Err(SeatError::SchemaDrift);}
+            page_facts::create_tables(db)?;
+            if schema(db)? != expected_schema() {return Err(SeatError::SchemaDrift);}
+            Ok(())
+        });
+    }
     if observed == f1_schema() {
         return migrate_f1_schema(db);
     }
@@ -413,6 +431,7 @@ pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Resu
         db.execute(OPERATION_SNAPSHOTS)?;
         db.execute(PROJECT_CAPS)?;
         create_e2_tables(db)?;
+        page_facts::create_tables(db)?;
         if schema(db)? != expected_schema() {
             return Err(SeatError::SchemaDrift);
         }
@@ -425,6 +444,7 @@ fn migrate_f1_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Result<(), Seat
         reject_shadow_or_effect(db)?;
         if schema(db)? != f1_schema() { return Err(SeatError::SchemaDrift); }
         create_e2_tables(db)?;
+        page_facts::create_tables(db)?;
         if schema(db)? != expected_schema() { return Err(SeatError::SchemaDrift); }
         Ok(())
     })
@@ -438,6 +458,7 @@ fn migrate_previous_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Result<()
         }
         db.execute(PROJECT_CAPS)?;
         create_e2_tables(db)?;
+        page_facts::create_tables(db)?;
         if schema(db)? != expected_schema() {
             return Err(SeatError::SchemaDrift);
         }
@@ -466,6 +487,7 @@ fn migrate_legacy_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Result<(), 
         db.execute(OPERATION_SNAPSHOTS)?;
         db.execute(PROJECT_CAPS)?;
         create_e2_tables(db)?;
+        page_facts::create_tables(db)?;
         if schema(db)? != expected_schema() {
             return Err(SeatError::SchemaDrift);
         }
@@ -1074,6 +1096,9 @@ fn change(
         }
         let before = read(db, input.domain_id, input.seat_id)?.ok_or(SeatError::Unknown)?;
         check_origin(db, &origin, input.domain_id, Some(&before))?;
+        if action=="reclaim" && page_facts::is_designated_lead(db,&before)? {
+            return Err(SeatError::Denied);
+        }
         if before.state == State::Reclaimed {
             return Err(SeatError::Denied);
         }
@@ -1086,6 +1111,7 @@ fn change(
         if before.state == State::Busy {
             return Err(SeatError::Busy);
         }
+        page_facts::ensure_mutable(db,&before)?;
         if let NativeOrigin::Lead(admission)=&origin {
             if matches!(action,"bind-instance"|"change-instance") {
                 let parent=read(db,input.domain_id,&admission.seat_id)?.ok_or(SeatError::Denied)?;
@@ -1227,6 +1253,7 @@ pub(crate) fn tune(
             return Err(SeatError::Conflict);
         }
         if before.state == State::Busy { return Err(SeatError::Busy); }
+        page_facts::ensure_mutable(db,&before)?;
         let Some(settings_json) = &before.settings_json else { return Err(SeatError::SchemaDrift); };
         let Json::Object(mut settings) = Parser::parse(settings_json)? else {
             return Err(SeatError::SchemaDrift);

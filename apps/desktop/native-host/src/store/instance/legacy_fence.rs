@@ -374,6 +374,22 @@ pub(crate) fn read_legacy_step(db: &VerifiedDatabaseConnection<'_>, instance: &s
     if q.step_row()? { return Err(LegacyFenceError::Conflict); }
     Ok(Some(row))
 }
+
+/// Read-only reuse of the already applied exact legacy ACL baseline. This
+/// proves the original UNKNOWN custody was fenced and physically retired at
+/// completion; callers still make a fresh kernel holder-gone observation.
+pub(crate) fn read_applied_legacy_retirement(
+    db:&VerifiedDatabaseConnection<'_>,instance:&str)->Result<Option<LegacyFenceRecord>> {
+    let Some(fence)=read_legacy_fence(db,instance)? else{return Ok(None)};
+    check_binding(db,instance,&fence.database_identity,&fence.root_identity,
+        &fence.home_identity,&fence.source_identity,&fence.source_parent_identity,
+        fence.source_revision)?;
+    check_custody(db,&fence)?;
+    let baseline=read_legacy_step(db,instance,LegacyAclStep::Baseline)?
+        .ok_or(LegacyFenceError::Unsafe)?;
+    if baseline.phase!=LegacyStepPhase::Applied {return Err(LegacyFenceError::Unsafe)}
+    Ok(Some(fence))
+}
 fn eligible_holders(fence: &LegacyFenceRecord, proof: &LegacyPhysicalProof) -> Result<()> {
     let pairs = fence.custody.iter().map(LegacyCustodyRow::native_pair).collect::<Result<Vec<_>>>()?;
     proof.holders_gone.validate(&pairs).map_err(LegacyFenceError::NativeHolders)

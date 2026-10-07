@@ -1,6 +1,6 @@
 /** Design 37 L0 operation names and durable owners. This list is closed. */
 export const V37_OPERATIONS = {
-  "K-SESSION": ["open", "resume", "stop", "send", "output-stream", "capability-probe", "append-without-turn", "exit-and-stop-receipt", "reconnect", "compact", "renew-session", "admission-reserve", "admission-commit", "admission-release"],
+  "K-SESSION": ["open", "resume", "stop", "send", "output-stream", "capability-probe", "model-list-read", "append-without-turn", "exit-and-stop-receipt", "reconnect", "compact", "renew-session", "admission-reserve", "admission-commit", "admission-release"],
   "K-LEDGER": ["record", "scoped-query", "subscribe", "resume-subscription", "end-subscription"],
   "K-INBOX": ["enqueue", "edit", "cancel", "steer", "deliver", "check-unknown", "requeue"],
   "K-QCARD": ["raise", "answer", "expire", "recover"],
@@ -22,7 +22,7 @@ export const V37_DURABLE_OWNER = Object.freeze({
 } as const);
 
 export const V37_READ_OPERATIONS: Readonly<Record<V37Family, readonly string[]>> = Object.freeze({
-  "K-SESSION": Object.freeze(["output-stream", "capability-probe"]),
+  "K-SESSION": Object.freeze(["output-stream", "capability-probe", "model-list-read"]),
   "K-LEDGER": Object.freeze(["scoped-query"]),
   "K-INBOX": Object.freeze(["check-unknown"]),
   "K-QCARD": Object.freeze([]),

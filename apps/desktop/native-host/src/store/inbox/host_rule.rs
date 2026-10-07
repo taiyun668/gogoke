@@ -930,7 +930,7 @@ fn historical_host(db: &VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
     Ok(historical)
 }
 
-fn observed_codex_turn(db: &VerifiedDatabaseConnection<'_>, historical: &HistoricalHost,
+fn observed_codex_turn(db: &VerifiedDatabaseConnection<'_>, domain:&str, expected_body:&str,
     target: &HostDeliveryTarget<'_>, record: &crate::store::session_transport::StdinJournalRecord,
     turn_id: &str) -> Result<(), InboxError> {
     let step_id = format!("send-{}",
@@ -951,7 +951,7 @@ fn observed_codex_turn(db: &VerifiedDatabaseConnection<'_>, historical: &Histori
             AND s.generation=?4 AND s.ticket=?5 AND s.custodian_nonce=?6
             AND s.step_id=?7 AND s.phase='OBSERVED' AND s.requires_response=1
             AND r.state='NO_EVENT' AND r.no_event_reason='CODEX_RPC_RESPONSE'")?;
-    for (index, value) in [historical.domain.as_str(), target.session_id,
+    for (index, value) in [domain, target.session_id,
         record.process_operation_id.as_str(), target.generation, target.ticket,
         record.custodian_nonce.as_str(), step_id.as_str()].iter().enumerate() {
         source.bind_text((index + 1) as i32, value)?;
@@ -967,9 +967,9 @@ fn observed_codex_turn(db: &VerifiedDatabaseConnection<'_>, historical: &Histori
     let codex_rpc::Command::TurnStart {thread_id, text, ..} = &command else {
         return Err(InboxError::Denied);
     };
-    if text != &historical.body { return Err(InboxError::Denied); }
+    if text.as_str() != expected_body { return Err(InboxError::Denied); }
     let original_thread = crate::store::session_transport::rpc_journal::observed_thread_id(
-        db, &historical.domain, target.session_id, &record.process_operation_id,
+        db, domain, target.session_id, &record.process_operation_id,
         target.generation, &open_request_id, target.ticket, &record.custodian_nonce)
         .map_err(|error| InboxError::InvalidEvidence(format!("H original thread: {error:?}")))?;
     if thread_id != &original_thread { return Err(InboxError::Denied); }
@@ -1044,7 +1044,7 @@ pub(crate) fn settle_host_turn_start_observed(db: &mut VerifiedDatabaseConnectio
             _ => return Err(InboxError::Unknown),
         };
         if turn_id.is_empty() || !valid_id(&receipt_id) { return Err(InboxError::Denied); }
-        observed_codex_turn(db, &historical, target, &record, &turn_id)?;
+        observed_codex_turn(db, domain, &historical.body, target, &record, &turn_id)?;
         let used = Statement::prepare(db.as_ptr(),
             "SELECT 1 FROM main.gogoke_v37_inbox_operations
               WHERE domain_id=?1 AND native_receipt_id=?2 AND phase='APPLIED' LIMIT 1")?;
@@ -1072,6 +1072,88 @@ pub(crate) fn settle_host_turn_start_observed(db: &mut VerifiedDatabaseConnectio
         row.step_done()?;
         require_one_change(db)?;
         read_operation(db, domain, &ids.delivery_request_id)?.ok_or(InboxError::Unknown)
+    })
+}
+
+/// D's paired side message uses the same C UNKNOWN -> original H/A TurnStart
+/// settlement as HOST_RULE. A generic K-INBOX/deliver append cannot satisfy
+/// this proof. The side intent and C operation IDs are fixed before H writes.
+pub(crate) fn settle_side_turn_start_observed(db:&mut VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,intent:&crate::store::sidechat::delivery::DeliveryIntent,
+    target:&HostDeliveryTarget<'_>)->Result<StoredOperation,InboxError> {
+    if !target_valid(target)||target.session_id!=intent.target_session_id||
+        target.generation!=intent.target_generation {return Err(InboxError::Denied);}
+    transact(db,|db| {
+        check_owner_in_current_transaction(db,owner).map_err(InboxError::Authority)?;
+        crate::store::sidechat::delivery::verify_intent(db,intent)
+            .map_err(|error|InboxError::InvalidEvidence(format!("D side source: {error:?}")))?;
+        let message=read_message(db,&intent.domain_id,&intent.message_id)?
+            .ok_or(InboxError::Denied)?;
+        let prior=read_operation(db,&intent.domain_id,&intent.delivery_request_id)?
+            .ok_or(InboxError::Denied)?;
+        if prior.phase=="APPLIED" && message.state=="DELIVERED" &&
+            !prior.native_receipt_id.is_empty() {return Ok(prior);}
+        if prior.phase!="UNKNOWN"||prior.message_id!=intent.message_id||
+            prior.result_state!="UNKNOWN"||message.state!="UNKNOWN"||
+            prior.revision!=message.revision||message.sender_seat_id!=intent.source_seat_id||
+            message.seat_id!=intent.target_seat_id||message.turn_id!="SIDE_NEW_TURN"||
+            message.generation!=intent.target_generation||message.body!=intent.send_body() {
+            return Err(InboxError::Denied);
+        }
+        let original=decode_request(&unhex_native(&prior.request_hex)?)
+            .map_err(|error|InboxError::InvalidEvidence(format!("C side original: {error:?}")))?;
+        if original.family!="K-INBOX"||original.operation!="deliver"||
+            original.domain_id!=intent.domain_id||original.target_id!=intent.message_id||
+            original.request_id!=intent.delivery_request_id||original.expected_revision!=1||
+            original.payload.len()!=1||payload_text(&original,"generation")?!=intent.target_generation {
+            return Err(InboxError::Denied);
+        }
+        let record=read_stdin_journal(db,&StdinJournalKey {domain_id:&intent.domain_id,
+            request_id:&intent.send_request_id(),session_id:target.session_id,
+            ticket:target.ticket,generation:target.generation})
+            .map_err(|error|InboxError::InvalidEvidence(format!("H side original: {error:?}")))?
+            .ok_or(InboxError::Unknown)?;
+        if record.state!=JournalState::Receipted||record.receipt_status!=Some(V37Status::Applied) {
+            return Err(InboxError::Unknown);
+        }
+        let sent=decode_request(&record.request_bytes)
+            .map_err(|error|InboxError::InvalidEvidence(format!("H side request: {error:?}")))?;
+        if sent.family!="K-SESSION"||sent.operation!="send"||
+            sent.domain_id!=intent.domain_id||sent.target_id!=intent.target_session_id||
+            sent.request_id!=intent.send_request_id()||sent.payload.len()!=2||
+            payload_text(&sent,"generation")?!=intent.target_generation||
+            payload_text(&sent,"body")?!=intent.send_body() {
+            return Err(InboxError::Denied);
+        }
+        original_target(db,&intent.domain_id,&intent.target_seat_id,target,true)?;
+        let receipt=decode_receipt(record.receipt_bytes.as_deref().ok_or(InboxError::Unknown)?)
+            .map_err(|error|InboxError::InvalidEvidence(format!("H side receipt: {error:?}")))?;
+        if receipt.family!="K-SESSION"||receipt.operation!="send"||
+            receipt.request_id!=intent.send_request_id()||receipt.target_id!=intent.target_session_id||
+            receipt.status!=V37Status::Applied {return Err(InboxError::Denied);}
+        let result=receipt.into_result();
+        if !matches!(result.get(&JsonString::from_str("createdTurn")),Some(Json::Bool(true))) {
+            return Err(InboxError::Unknown);
+        }
+        let turn=match result.get(&JsonString::from_str("turnId")) {
+            Some(Json::String(value))=>value.to_well_formed_string().filter(|v|!v.is_empty()),_=>None,
+        }.ok_or(InboxError::Unknown)?;
+        let native=match result.get(&JsonString::from_str("receiptId")) {
+            Some(Json::String(value))=>value.to_well_formed_string().filter(|v|valid_id(v)),_=>None,
+        }.ok_or(InboxError::Unknown)?;
+        observed_codex_turn(db,&intent.domain_id,&intent.send_body(),target,&record,&turn)?;
+        let used=Statement::prepare(db.as_ptr(),"SELECT 1 FROM main.gogoke_v37_inbox_operations WHERE domain_id=?1 AND native_receipt_id=?2 AND phase='APPLIED' LIMIT 1")?;
+        used.bind_text(1,&intent.domain_id)?;used.bind_text(2,&native)?;
+        if used.step_row()? {return Err(InboxError::Conflict);}drop(used);
+        let row=Statement::prepare(db.as_ptr(),"UPDATE main.gogoke_v37_inbox_messages SET state='DELIVERED',turn_id=?3 WHERE domain_id=?1 AND message_id=?2 AND state='UNKNOWN' AND revision=?4")?;
+        row.bind_text(1,&intent.domain_id)?;row.bind_text(2,&intent.message_id)?;
+        row.bind_text(3,&turn)?;row.bind_text(4,&message.revision.to_string())?;
+        row.step_done()?;require_one_change(db)?;drop(row);
+        let row=Statement::prepare(db.as_ptr(),"UPDATE main.gogoke_v37_inbox_operations SET phase='APPLIED',result_state='DELIVERED',native_receipt_id=?3 WHERE domain_id=?1 AND request_id=?2 AND phase='UNKNOWN' AND revision=?4")?;
+        row.bind_text(1,&intent.domain_id)?;row.bind_text(2,&intent.delivery_request_id)?;
+        row.bind_text(3,&native)?;row.bind_text(4,&prior.revision.to_string())?;
+        row.step_done()?;require_one_change(db)?;
+        read_operation(db,&intent.domain_id,&intent.delivery_request_id)?.ok_or(InboxError::Unknown)
     })
 }
 

@@ -25,8 +25,8 @@ pub(super) struct NativeSession {
     pub(super) open_request_bytes: Vec<u8>,
     domain_id: String,
     session_id: String,
-    model: String,
-    effort: String,
+    pub(super) model: String,
+    pub(super) effort: String,
     pub(super) thread_id: Option<String>,
     pub(super) turn_id: Option<String>,
     pub(super) raw_capture: super::v37_output::NativeRawCapture,
@@ -589,8 +589,10 @@ impl<'root> ProductDatabase<'root> {
                 return Ok(());
             }
             if driver!="codex" {return Err(OrchestrationError::Invalid("native provider metadata resume unsupported"));}
+            let side_tools=ledger::read_registered_session(&self.connection,&key.1)?
+                .ok_or(OrchestrationError::OperationConflict)?.purpose==SessionPurpose::SideChat;
             let host_tools=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?
-                .evidence.host_tools_enabled();
+                .evidence.host_tools_enabled() || side_tools;
             let initialize=if host_tools {Command::InitializeHostTools {client_version:"0.1.0".into()}}
                 else {Command::Initialize {client_version:"0.1.0".into()}};
             self.native_rpc(&key,&format!("{operation_id}-initialize"),Some(1),
@@ -1809,7 +1811,7 @@ impl<'root> ProductDatabase<'root> {
             let driver=run.evidence.driver_id().to_owned();
             let cwd=run.evidence.cwd().to_string_lossy().into_owned();
             let model=run.model.clone();
-            let host_tools=run.evidence.host_tools_enabled();
+            let host_tools=run.evidence.host_tools_enabled() || purpose==SessionPurpose::SideChat;
             let thread_id=match driver.as_str() {
                 "codex" => {
                     let initialize=if host_tools {Command::InitializeHostTools {client_version:"0.1.0".into()}}
@@ -1817,7 +1819,8 @@ impl<'root> ProductDatabase<'root> {
                     self.native_rpc(&key,"initialize",Some(1),&initialize)?;
                     self.native_rpc(&key,"initialized",None,&Command::Initialized)?;
                     self.native_credential_config_read(&key,"config-read",cwd.clone())?;
-                    let start=if host_tools {Command::ThreadStartHostTools {cwd,model}}
+                    let start=if purpose==SessionPurpose::SideChat {Command::ThreadStartSideTools {cwd,model}}
+                        else if host_tools {Command::ThreadStartHostTools {cwd,model}}
                         else {Command::ThreadStart {cwd,model}};
                     let Some(Reply::Thread {thread_id,..})=self.native_rpc(&key,"thread-start",Some(3),&start)? else {
                         return Err(OrchestrationError::Invalid("native open thread response"));
@@ -2241,7 +2244,7 @@ impl<'root> ProductDatabase<'root> {
     }
 
     pub(super) fn dispatch_native_send(&mut self, request: &V37Request) -> Result<Vec<u8>> {
-        if request.request_id.starts_with("hostsend-") {
+        if request.request_id.starts_with("hostsend-") || request.request_id.starts_with("sidesend-") {
             return Ok(encode_receipt(request,V37Status::Denied,request.expected_revision,
                 request.expected_revision,Default::default()));
         }
@@ -2255,6 +2258,20 @@ impl<'root> ProductDatabase<'root> {
         if !self.host_rule_recipient_idle(&key)? {return Err(OrchestrationError::AccessDenied);}
         self.check_host_rule_send(request,proof)?;
         if !self.host_rule_recipient_idle(&key)? {return Err(OrchestrationError::AccessDenied);}
+        self.dispatch_native_send_inner(request)
+    }
+
+    pub(super) fn dispatch_side_send(&mut self,request:&V37Request,
+        intent:&crate::store::sidechat::delivery::DeliveryIntent,
+        caller:&crate::store::seat::NativeSeatCall)->Result<Vec<u8>> {
+        let key=(intent.domain_id.clone(),intent.target_session_id.clone());
+        self.drain_native_output(&key)?;
+        self.check_side_send(request,intent,caller)?;
+        if !self.side_recipient_idle(&key,crate::store::ledger::SessionPurpose::SideChat)? &&
+            !self.side_recipient_idle(&key,crate::store::ledger::SessionPurpose::Work)? {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        self.check_side_send(request,intent,caller)?;
         self.dispatch_native_send_inner(request)
     }
 
@@ -2484,6 +2501,27 @@ impl<'root> ProductDatabase<'root> {
             OrchestrationError::Invalid("native feature RPC ordinal overflow"))?;
         let unique_step=format!("{step_id}-rpc{number}");
         self.native_rpc(key,&unique_step,Some(number),&Command::FeatureList {thread_id,cursor})
+    }
+
+    /// Read the catalog on the already verified Codex H process. This does
+    /// not create a thread or turn and accepts no model names from USER.
+    pub(super) fn native_model_list_rpc(&mut self,key:&(String,String),step_id:&str,
+        cursor:Option<String>)->Result<(String,Option<Reply>)> {
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        if run.evidence.driver_id()!="codex" || !run.allows_input()
+            || self.process_custodian.active(&run.custody.ticket).is_none() {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let claim=failure(runtime::observe_claim(&self.connection,&NativeOrigin::user(&self.owner),
+            &key.0,run.evidence.seat_id(),&key.1))?.ok_or(OrchestrationError::AccessDenied)?;
+        failure(run.evidence.verify_live(&mut self.connection,self.root,&self.owner,
+            &run.operation_id,claim.revision))?;
+        let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
+        let number=run.next_rpc_id;
+        run.next_rpc_id=number.checked_add(1).ok_or(OrchestrationError::Invalid("model list RPC ordinal overflow"))?;
+        let unique_step=format!("{step_id}-rpc{number}");
+        let reply=self.native_rpc(key,&unique_step,Some(number),&Command::ModelList {cursor})?;
+        Ok((unique_step,reply))
     }
 
     /// Actual process-owned JSONL, with durable native step intent before
@@ -3160,7 +3198,8 @@ impl<'root> ProductDatabase<'root> {
             let observed = failure(codex_rpc::decode(frame.bytes(), id.as_ref().map(|id| (id, command))))?;
             match observed {
                 Reply::Initialized { .. } | Reply::MemoryOff { .. } | Reply::Thread { .. }
-                | Reply::Turn { .. } | Reply::Ack { .. } | Reply::FeaturePage { .. } => {
+                | Reply::Turn { .. } | Reply::Ack { .. } | Reply::FeaturePage { .. }
+                | Reply::ModelPage { .. } => {
                     if let Reply::Thread {cwd,..}=&observed {
                         failure(run.evidence.verify_observed_cwd(cwd))?;
                     }

@@ -186,6 +186,98 @@ pub(crate) fn configure_call_grant(db:&mut VerifiedDatabaseConnection<'_>,issuer
     })
 }
 
+/// The authenticated Owner's original side-open grants only its fixed pair of
+/// MESSAGE edges. D and the designated E incarnation are rechecked here; a
+/// replay observes the original event and current grants, never restores a
+/// later Owner revocation or silently broadens a different policy action.
+pub(crate) fn ensure_side_message_pair(db:&mut VerifiedDatabaseConnection<'_>,issuer:&OwnerIssuer,
+    domain:&str,side_id:&str,source_seat:&str,source_incarnation:&str,
+    side_seat:&str,side_incarnation:&str,open_id:&str,open_bytes:&[u8],
+    create_id:&str,create_bytes:&[u8])->Result<i64,SeatError> {
+    if [domain,side_id,source_seat,source_incarnation,side_seat,side_incarnation,open_id,create_id]
+        .iter().any(|value|!valid_id(value))||
+        (source_seat==side_seat&&source_incarnation!=side_incarnation)||
+        open_bytes.is_empty()||create_bytes.is_empty() {
+        return Err(SeatError::Invalid("side MESSAGE pair"));
+    }
+    let cause=crate::store::digest::sha256_hex(
+        format!("{domain}\n{side_id}\n{open_id}\n{create_id}").as_bytes());
+    let event_id=format!("sidepair-{}",&cause[..40]);
+    let mut basis=format!("{domain}\n{side_id}\n{source_seat}\n{source_incarnation}\n{side_seat}\n{side_incarnation}\n{open_id}\n{create_id}\n").into_bytes();
+    basis.extend_from_slice(&(open_bytes.len() as u64).to_be_bytes());basis.extend_from_slice(open_bytes);
+    basis.extend_from_slice(&(create_bytes.len() as u64).to_be_bytes());basis.extend_from_slice(create_bytes);
+    let fingerprint=crate::store::digest::sha256_hex(&basis);
+    let detail=format!("{source_seat}/{source_incarnation}->{side_seat}/{side_incarnation}");
+    transact(db,|db| {
+        check_current_owner(db,issuer)?;
+        let source=read(db,domain,source_seat)?.ok_or(SeatError::Denied)?;
+        let side=read(db,domain,side_seat)?.ok_or(SeatError::Denied)?;
+        if source.incarnation!=source_incarnation||side.incarnation!=side_incarnation||
+            source.layer!=Layer::User||source.state==State::Reclaimed||side.state==State::Reclaimed {
+            return Err(SeatError::Denied);
+        }
+        let designated=Statement::prepare(db.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_seat_project_lead WHERE domain_id=?1 AND seat_id=?2 AND incarnation=?3")?;
+        designated.bind_text(1,domain)?;designated.bind_text(2,source_seat)?;
+        designated.bind_text(3,source_incarnation)?;
+        if !designated.step_row()?||designated.step_row()? {return Err(SeatError::Denied);}drop(designated);
+        let registry=Statement::prepare(db.as_ptr(),
+            "SELECT source_seat_id,source_seat_incarnation,seat_id,seat_incarnation,state,source_session_id,session_id FROM main.gogoke_v37_side_registry WHERE domain_id=?1 AND side_id=?2")?;
+        registry.bind_text(1,domain)?;registry.bind_text(2,side_id)?;
+        if !registry.step_row()?||registry.column_text(0)?!=source_seat||
+            registry.column_text(1)?!=source_incarnation||registry.column_text(2)?!=side_seat||
+            registry.column_text(3)?!=side_incarnation||registry.column_text(4)?=="DELETED"||
+            registry.column_text(5)?==registry.column_text(6)?||
+            registry.step_row()? {return Err(SeatError::Denied);}drop(registry);
+        let previous=prior_event(db,domain,&event_id,"side-message-pair",&fingerprint)?;
+        if let Some(ref event)=previous {
+            if event.target_id!=side_id||event.state!="APPLIED"||event.detail!=detail {
+                return Err(SeatError::Conflict);
+            }
+        }
+        let mut missing=Vec::new();
+        // A side window can use the same logical seat as its WORK source.
+        // D still binds two distinct exact sessions; E stores one self edge.
+        let edges=if source_seat==side_seat {vec![(source_seat,side_seat)]}
+            else {vec![(source_seat,side_seat),(side_seat,source_seat)]};
+        for (from,to) in edges {
+            let grant=Statement::prepare(db.as_ptr(),
+                "SELECT expires_at_ms FROM main.gogoke_v37_seat_policy_grants WHERE domain_id=?1 AND caller_seat_id=?2 AND target_id=?3 AND action='MESSAGE'")?;
+            grant.bind_text(1,domain)?;grant.bind_text(2,from)?;grant.bind_text(3,to)?;
+            if grant.step_row()? {
+                let expiry=grant.column_text(0)?.parse::<i64>().map_err(|_|SeatError::SchemaDrift)?;
+                if expiry<0||(expiry>0&&now_ms()?>=expiry)||grant.step_row()? {
+                    return Err(SeatError::Denied);
+                }
+            } else {missing.push((from,to));}
+        }
+        if let Some(event)=previous {
+            if !missing.is_empty() {return Err(SeatError::Denied);}
+            return Ok(event.policy_revision);
+        }
+        let head=head_revision(db,domain)?;
+        let next=if missing.is_empty() {head} else {
+            let next=head.checked_add(1).ok_or(SeatError::Conflict)?;
+            for (from,to) in missing {
+                let row=Statement::prepare(db.as_ptr(),
+                    "INSERT INTO main.gogoke_v37_seat_policy_grants(domain_id,caller_seat_id,target_id,action,expires_at_ms,revision) VALUES(?1,?2,?3,'MESSAGE',0,?4)")?;
+                row.bind_text(1,domain)?;row.bind_text(2,from)?;row.bind_text(3,to)?;
+                row.bind_i64(4,next)?;row.step_done()?;
+            }
+            let row=Statement::prepare(db.as_ptr(),
+                "UPDATE main.gogoke_v37_seat_policy_head SET revision=?3 WHERE domain_id=?1 AND revision=?2")?;
+            row.bind_text(1,domain)?;row.bind_i64(2,head)?;row.bind_i64(3,next)?;
+            row.step_done()?;
+            if head_revision(db,domain)?!=next {return Err(SeatError::Conflict);}
+            next
+        };
+        record_event(db,domain,PolicyEvent {event_id,operation:"side-message-pair".into(),
+            target_id:side_id.into(),policy_revision:next,state:"APPLIED".into(),
+            detail,replayed:false},&fingerprint)?;
+        Ok(next)
+    })
+}
+
 pub(crate) fn authorize_current_call(db:&VerifiedDatabaseConnection<'_>,caller:&NativeSeatCall,
     target_domain:&str,target_id:&str,action:CallAction)->Result<i64,SeatError> {
     if caller.domain_id!=target_domain || !valid_id(target_id) { return Err(SeatError::Denied); }

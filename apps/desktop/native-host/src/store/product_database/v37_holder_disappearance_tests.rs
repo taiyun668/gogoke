@@ -198,6 +198,7 @@ fn cold_two_grants(run: impl for<'a> FnOnce(ProductDatabase<'a>, &'a RootLock, &
     let root = RootLock::acquire(&path).unwrap();
     let database = path.join("state.sqlite");
     let mut product = ProductDatabase::open(&root, &database).unwrap();
+    managed_cli_test_setup::ready(&mut product, &root, "codex");
     applied(&mut product, &operation("global", "K-INSTANCE", "register", "holder-register", INSTANCE, 0,
         r#"{"driverId":"codex"}"#));
     qualify_file_backend(&mut product, &root);

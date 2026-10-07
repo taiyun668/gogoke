@@ -353,6 +353,7 @@ pub fn run() {
             public_runtime::product_entry::gogoke_r2_goal_probe,
             public_runtime::product_entry::gogoke_design37_register_codex_instance,
             public_runtime::product_entry::gogoke_design37_user_operation,
+            public_runtime::product_entry::gogoke_design37_install_cli,
             public_runtime::design37_instances::gogoke_design37_instances,
             public_runtime::design37_instances::gogoke_design37_instance_register,
             public_runtime::design37_instances::gogoke_design37_instance_login,

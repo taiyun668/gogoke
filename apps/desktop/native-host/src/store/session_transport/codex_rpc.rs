@@ -72,11 +72,17 @@ pub(crate) enum Command {
         thread_id: String,
         cursor: Option<String>,
     },
+    /// Read-only catalog metadata from the fixed Codex app-server.
+    ModelList { cursor: Option<String> },
     ThreadStart {
         cwd: String,
         model: String,
     },
     ThreadStartHostTools {
+        cwd: String,
+        model: String,
+    },
+    ThreadStartSideTools {
         cwd: String,
         model: String,
     },
@@ -131,7 +137,9 @@ impl Command {
             Self::Initialized => Some("initialized"),
             Self::ConfigRead { .. } => Some("config/read"),
             Self::FeatureList { .. } => Some("experimentalFeature/list"),
-            Self::ThreadStart { .. } | Self::ThreadStartHostTools { .. } => Some("thread/start"),
+            Self::ModelList { .. } => Some("model/list"),
+            Self::ThreadStart { .. } | Self::ThreadStartHostTools { .. } |
+                Self::ThreadStartSideTools { .. } => Some("thread/start"),
             Self::ThreadResume { .. } => Some("thread/resume"),
             Self::TurnStart { .. } => Some("turn/start"),
             Self::TurnSteer { .. } => Some("turn/steer"),
@@ -238,6 +246,10 @@ impl Command {
                     ("limit",Json::Number("32".into())),
                 ]));
             }
+            Self::ModelList {cursor} => {
+                if let Some(cursor)=cursor {required(cursor,"model cursor")?;}
+                return Ok(obj([("cursor",cursor.as_deref().map_or(Json::Null,s))]));
+            }
             Self::ThreadStart { cwd, model } => {
                 required(cwd, "cwd")?;
                 required(model, "model")?;
@@ -253,6 +265,13 @@ impl Command {
                     cwd: cwd.clone(), model: model.clone(),
                 }).params()? else { return Err(RpcError::Invalid("host tool thread params")); };
                 fields.insert(k("dynamicTools"), host_tools());
+                return Ok(Json::Object(fields));
+            }
+            Self::ThreadStartSideTools { cwd, model } => {
+                let Json::Object(mut fields) = (Self::ThreadStart {
+                    cwd: cwd.clone(), model: model.clone(),
+                }).params()? else { return Err(RpcError::Invalid("side tool thread params")); };
+                fields.insert(k("dynamicTools"), side_tools());
                 return Ok(Json::Object(fields));
             }
             Self::ThreadResume {
@@ -454,6 +473,11 @@ pub(crate) enum Reply {
         features: Vec<(String,bool)>,
         next_cursor: Option<String>,
     },
+    ModelPage {
+        id: RpcId,
+        models: Vec<String>,
+        next_cursor: Option<String>,
+    },
 }
 
 /// The fixed CLI's actual server request, distinct from an item lifecycle
@@ -580,7 +604,8 @@ pub(crate) fn decode(frame: &[u8], pending: Option<(&RpcId, &Command)>) -> Resul
                 cwd: cwd.clone(),
             })
         }
-        Command::ThreadStart { .. } | Command::ThreadStartHostTools { .. } | Command::ThreadResume { .. } => {
+        Command::ThreadStart { .. } | Command::ThreadStartHostTools { .. } |
+            Command::ThreadStartSideTools { .. } | Command::ThreadResume { .. } => {
             let thread = object(field(object(result, "thread result")?, "thread")?, "thread")?;
             let found = string(field(thread, "id")?, "thread id")?;
             let actual_cwd = string(field(thread, "cwd")?, "thread cwd")?;
@@ -654,9 +679,45 @@ pub(crate) fn decode(frame: &[u8], pending: Option<(&RpcId, &Command)>) -> Resul
             };
             Ok(Reply::FeaturePage {id,features,next_cursor})
         }
+        Command::ModelList {..} => {
+            let result=object(result,"model result")?;
+            let Json::Array(data)=field(result,"data")? else {return Err(RpcError::Invalid("model data"));};
+            let mut models=Vec::new();let mut seen=BTreeSet::new();
+            for model in data {
+                let model=object(model,"model")?;
+                let slug=string(field(model,"model")?,"model slug")?;
+                required(&slug,"model slug")?;
+                let Json::Bool(hidden)=field(model,"hidden")? else {return Err(RpcError::Invalid("model hidden"));};
+                if !*hidden && seen.insert(slug.clone()) {models.push(slug);}
+            }
+            let next_cursor=match field(result,"nextCursor")? {
+                Json::Null=>None,
+                value=>{let next=string(value,"model next cursor")?;required(&next,"model next cursor")?;Some(next)},
+            };
+            Ok(Reply::ModelPage {id,models,next_cursor})
+        }
         Command::Initialized | Command::QuestionAnswer { .. } | Command::DynamicToolResponse { .. } => {
             Err(RpcError::Invalid("unexpected response"))
         }
+    }
+}
+
+/// Re-decode only a canonical command and the original matching response kept
+/// by H. Neither model names nor a response object may be supplied by a caller.
+pub(crate) fn decode_stored_model_list(command_frame:&[u8],response_frame:&[u8])
+    -> Result<(Option<String>,Vec<String>,Option<String>),RpcError> {
+    let Json::Object(fields)=Parser::parse(std::str::from_utf8(frame_body(command_frame)?)?)? else {return Err(RpcError::Invalid("stored model command"));};
+    if fields.len()!=3 || string(field(&fields,"method")?,"method")?!="model/list" {return Err(RpcError::Invalid("stored model method"));}
+    let id=parse_id(field(&fields,"id")?)?;
+    let params=object(field(&fields,"params")?,"model params")?;
+    if params.len()!=1 {return Err(RpcError::Invalid("stored model params"));}
+    let cursor=match field(params,"cursor")? {Json::Null=>None,value=>Some(string(value,"model cursor")?)};
+    let command=Command::ModelList {cursor:cursor.clone()};
+    if command.encode(Some(&id))?!=command_frame {return Err(RpcError::Invalid("stored model command mismatch"));}
+    match decode(response_frame,Some((&id,&command)))? {
+        Reply::ModelPage {models,next_cursor,..}=>Ok((cursor,models,next_cursor)),
+        Reply::RemoteError {raw_frame,..}=>Err(RpcError::RemoteResponse(raw_frame)),
+        _=>Err(RpcError::Invalid("stored model response")),
     }
 }
 
@@ -679,7 +740,9 @@ pub(crate) fn decode_stored_thread_start(
     let cwd = string(field(params, "cwd")?, "thread cwd")?;
     let model = string(field(params, "model")?, "thread model")?;
     let command = if params.contains_key(&k("dynamicTools")) {
-        Command::ThreadStartHostTools { cwd, model }
+        let side=Command::ThreadStartSideTools {cwd:cwd.clone(),model:model.clone()};
+        if stored_thread_command_matches(&side,&id,command_frame)? {side}
+        else {Command::ThreadStartHostTools { cwd, model }}
     } else { Command::ThreadStart { cwd, model } };
     if !stored_thread_command_matches(&command,&id,command_frame)? {
         return Err(RpcError::Invalid("stored thread command mismatch"));
@@ -1038,8 +1101,15 @@ fn host_tool_input_schema() -> Json {
     ])
 }
 
+fn side_tool() -> Json {
+    let (name,description)=("gogoke_side_message", "send: targetId=the existing side-chat ID, expectedRevision=null, payload={body}. The native host derives the current sender and the only paired lead or side recipient. MESSAGE permission and the Owner-designated project lead are checked at delivery. No domain, seat, session, turn, grant or receipt may be supplied. UNKNOWN means delivery is unconfirmed: do not repeat the message with a new request.");
+    obj([("type", s("function")), ("name", s(name)),
+        ("description", s(description)), ("inputSchema", host_tool_input_schema())])
+}
+fn side_tools() -> Json {Json::Array(vec![side_tool()])}
+
 fn host_tools() -> Json {
-    Json::Array([
+    let mut tools:Vec<Json>=[
         ("gogoke_seat", "Manage only direct subordinate seats in the native parent scope. create-from-template: targetId=new seat ID, expectedRevision='0', payload={layer:'LEAD',templateId,instanceId}. dispatch: targetId=child seat ID, payload={repositoryId,layout:'SINGLE'|'MIXED',body}; confirms submission only and returns the registered logical worktreeId for later graph/merge selection. stop: targetId=child, payload={}; derives the session, proves process stop, then releases admission. state-card: payload={}; reads self or child control facts, not private task output; self includes nativeAnswerSources for its own answered current-turn cards. tune: payload={setting,value}. bind-instance/change-instance: payload={instanceId}. reclaim/short-to-long: payload={}. Existing child operations require its current seat revision as a string. No caller, domain, grant or path is accepted from model arguments."),
         ("gogoke_policy", "Read native permission facts and submit or decide an authorized stage gate."),
         ("gogoke_worktree", "create: targetId=Idle child seat ID, expectedRevision='0', payload={repositoryId,layout:'SINGLE'|'MIXED'}; creates and registers a host-derived worktree and returns worktreeId. merge: targetId=worktreeId, payload={decision:'MERGE',reason}; needs current merge permission and lifecycle revision as a string. No filesystem path, caller or grant is accepted."),
@@ -1047,7 +1117,9 @@ fn host_tools() -> Json {
     ].into_iter().map(|(name, description)| obj([
         ("type", s("function")), ("name", s(name)),
         ("description", s(description)), ("inputSchema", host_tool_input_schema()),
-    ])).collect())
+    ])).collect();
+    tools.push(side_tool());
+    Json::Array(tools)
 }
 
 fn memory_off() -> Json {
@@ -1114,6 +1186,21 @@ fn optional_bool(
 mod tests {
     use super::*;
     #[test]
+    fn side_thread_registers_only_message_tool_and_recovers_exact_original() {
+        let id=RpcId::Number(2);
+        let command=Command::ThreadStartSideTools {cwd:"D:/sealed-tree".into(),model:"m".into()};
+        let original=command.encode(Some(&id)).unwrap();
+        let Json::Object(frame)=Parser::parse(std::str::from_utf8(&original[..original.len()-1]).unwrap()).unwrap() else {panic!("frame");};
+        let params=object(field(&frame,"params").unwrap(),"params").unwrap();
+        let Json::Array(tools)=field(params,"dynamicTools").unwrap() else {panic!("tools");};
+        assert_eq!(tools.len(),1);
+        assert_eq!(string(field(object(&tools[0],"tool").unwrap(),"name").unwrap(),"name").unwrap(),"gogoke_side_message");
+        let response=b"{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-a\",\"cwd\":\"D:/sealed-tree\"}}}\n";
+        assert_eq!(decode_stored_thread_start(&original,response).unwrap(),"thread-a");
+        let changed=std::str::from_utf8(&original).unwrap().replace("gogoke_side_message","gogoke_policy");
+        assert!(decode_stored_thread_start(changed.as_bytes(),response).is_err());
+    }
+    #[test]
     fn thread_overrides_preserve_process_features_and_exact_old_history() {
         let id=RpcId::Number(2);
         let command=Command::ThreadStart{cwd:"D:/sealed-tree".into(),model:"m".into()};
@@ -1152,6 +1239,23 @@ mod tests {
         assert!(matches!(decode(response,Some((&wrong,&command))),Err(RpcError::WrongId)));
         assert!(matches!(decode(b"{\"id\":51,\"result\":{\"data\":[{\"name\":\"multi_agent_v2\",\"enabled\":0}],\"nextCursor\":null}}\n",Some((&id,&command))),Err(RpcError::Invalid("feature enabled"))));
         assert!(matches!(decode(b"{\"id\":51,\"result\":{\"data\":[{\"name\":\"a\",\"enabled\":false},{\"name\":\"a\",\"enabled\":true}],\"nextCursor\":null}}\n",Some((&id,&command))),Err(RpcError::Invalid("duplicate feature name"))));
+    }
+
+    #[test]
+    fn model_list_replays_only_canonical_original_pages() {
+        let id=RpcId::client(61).unwrap();
+        let command=Command::ModelList {cursor:None};
+        let original=command.encode(Some(&id)).unwrap();
+        assert_eq!(original,b"{\"id\":61,\"method\":\"model/list\",\"params\":{\"cursor\":null}}\n");
+        let response=b"{\"id\":61,\"result\":{\"data\":[{\"model\":\"gpt-6\",\"hidden\":false},{\"model\":\"hidden-test\",\"hidden\":true}],\"nextCursor\":null}}\n";
+        assert_eq!(decode_stored_model_list(&original,response).unwrap(),
+            (None,vec!["gpt-6".to_owned()],None));
+        let changed=String::from_utf8(original.clone()).unwrap().replace("\"cursor\":null","\"cursor\":null,\"includeHidden\":true");
+        assert!(decode_stored_model_list(changed.as_bytes(),response).is_err());
+        let wrong=std::str::from_utf8(response).unwrap().replace("\"id\":61","\"id\":62");
+        assert!(decode_stored_model_list(&original,wrong.as_bytes()).is_err());
+        let missing_cursor=std::str::from_utf8(response).unwrap().replace(",\"nextCursor\":null","");
+        assert!(decode_stored_model_list(&original,missing_cursor.as_bytes()).is_err());
     }
 
     #[test]

@@ -407,8 +407,8 @@ pub(crate) fn current_instance_pin(
     // F's install-state read uses this same catalog observation. Recheck the
     // registered CLI bytes and version at every H admission; a persisted
     // install_state is not maintained by that read.
-    instance::locate_pinned_program(&pin.driver_id, &pin.digest, &pin.version)
-        .map_err(AdmissionError::Catalog)?;
+    instance::locate_bound_instance_program(db,instance_id,&pin.driver_id,&pin.digest,&pin.version)
+        .map_err(AdmissionError::ProgramSource)?;
     Ok(pin)
 }
 
@@ -819,10 +819,10 @@ mod tests {
         assert_eq!((current.digest, current.version), (digest, version));
         db.execute(&format!("UPDATE gogoke_v37_instances SET program_digest='sha256:{}' WHERE instance_id='instanceA'", "0".repeat(64))).unwrap();
         assert!(matches!(current_instance_pin(&db, "instanceA"),
-            Err(AdmissionError::Catalog(instance::CatalogError::IdentityChanged))));
+            Err(AdmissionError::ProgramSource(instance::ProgramSourceError::Legacy(instance::CatalogError::IdentityChanged)))));
         db.execute("UPDATE gogoke_v37_instances SET driver_id='missing-provider' WHERE instance_id='instanceA'").unwrap();
         assert!(matches!(current_instance_pin(&db, "instanceA"),
-            Err(AdmissionError::Catalog(instance::CatalogError::UnknownDriver))));
+            Err(AdmissionError::ProgramSource(instance::ProgramSourceError::Legacy(instance::CatalogError::UnknownDriver)))));
         db.close_checked().unwrap();
         drop(root);
         std::fs::remove_dir_all(folder).unwrap();
