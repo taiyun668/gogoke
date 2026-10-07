@@ -74,7 +74,7 @@
 
 原生绑定（NativeV2）把 E 席位授权与 H 单个会话的物理进程代次分开。首次准入必须有 H 自己记录的原生关联和选定实例，实际启动时封存原授权、席位 incarnation、实例和 home；缺少旧绑定记录不是原生授权。恢复只允许同一份未撤销授权、同一选定实例和原有作用域，逐项核对原记录及当前 E 授权；不自动采用后来的席位配置。符合这些条件时，保留 E 的 generation 和 revision，只推进该 H 会话的物理代次、home 与进程 episode。另一个仍在运行的主会话或旁聊继续使用自己的当前 H 证明，不因同席位另一个会话恢复而失效。
 
-旧进程消失或停止的证明、Job/custody、pid 与创建时间、ticket、nonce、原协议回执和数据库事务核对仍沿用现有 H 边界；旧物理代次不能发起新的模型操作。UNKNOWN 对账也必须走相同的原绑定核对。所有未释放的同席位占用（包括已停止但尚未释放的会话）都阻止调整作用域；只释放其中一个会话不能把仍有占用的 E 席位置为空闲，最后一个占用释放后才解除占用。已释放或已撤销的会话不得恢复。旧绑定（LegacyV1）的兼容行为保持原样，不把旧记录升级解释为原生授权。
+原 continuation 仍要求已确认的 STOPPED、原协议回执和原绑定；持有者消失不能代替 StopFact 或授权续接。Job/custody、pid 与创建时间、ticket、nonce 和数据库事务核对仍沿用现有 H 边界；旧物理代次不能发起新的模型操作。UNKNOWN 对账也必须走相同的原绑定核对。所有未释放的同席位占用（包括已停止但尚未释放的会话）都阻止调整作用域；只释放其中一个会话不能把仍有占用的 E 席位置为空闲，最后一个占用释放后才解除占用。已释放或已撤销的会话不得恢复。旧绑定（LegacyV1）的兼容行为保持原样，不把旧记录升级解释为原生授权。
 
 验证覆盖同席位主会话与旁聊同时存在、各自停止并恢复、另一个会话继续有效，原授权不变而 H 物理代次改变；错实例、错 home、错 incarnation、授权变动、旧物理证明和缺原绑定均拒绝。这里细化既有 H 恢复和统一准入，不新增权限、持久写方、写入范围或 Owner 触点；原生验证只在云端执行，稳定点再在已安装候选上实测。
 
@@ -275,7 +275,7 @@ Owner 已裁定：正常退出或崩溃丢失原 custodian 后，产品应在同
 
 F 先持久保存不可扩充的独立 holder-disappearance capture 和 revision CAS：原物理 DB/root/home/认证 FileID、完整受控别名及 link count、原 profile/history/SID、H claim/episode/custody 绑定、状态与修订号，以及 ACL 原值和精确目标。该记录不能构造 StopFact。后续只撤销列明的原 SID 精确 ACE，保留 Owner、系统和其他合法 SID；不重置整个 DACL、不删除别名或历史、不读写凭据内容。每个 begin、prewrite、finish 都重验原捕获、内核消失事实及物理对象；未知 holder/intent、对象替换、未知 link/SID、重解析或原值漂移均拒绝。崩溃后的同一原 intent 只允许两种确定分支：实际 ACL 为封存原值时执行尚未完成的原精确步骤；实际 ACL 为目标时仅读回完成。其他状态保留 UNKNOWN，不用新请求重做副作用。第二条 SID 的原值必须匹配第一条精确步骤完成后的值。
 
-实际撤权回执与独立恢复记录齐全后，由 H 在同一事务核当前 Owner、原 claim 修订号/绑定/seat incarnation、无未决 generation change，将确切原资源占用结算为 RELEASED、对应席位置为 IDLE，并写明独立 holder-gone 依据；不经过 STOPPED、不填写停止 hash。原 custody、episode、RPC 和业务历史保留，新宿主既有 ACTIVE/PREPARED→UNKNOWN 初始化也不得冒充停止事实。F 的冷 source holder 仅对精确 APPLIED 恢复集合核实既有 protected DACL 残余并取得只读 adoption witness，不修改通用 `stopped_instance`；后来新 holder/intent 仍按原规则拒绝。旧 continuation、worktree merge/delete 和任何需要原 StopFact 的操作仍拒绝。三个更早的 UNKNOWN 和原 legacy fences 不在此恢复集合中。
+实际撤权回执与独立恢复记录齐全后，由 H 在同一事务核当前 Owner、原 claim 修订号/绑定/seat incarnation、无未决 generation change，将确切原资源占用结算为 RELEASED；只在该席位 incarnation 的所有占用均已释放后才置为 IDLE，并写明独立 holder-gone 依据。多成员逐项结算期间只要还存在一个未释放占用，席位继续 BUSY；不经过 STOPPED、不填写停止 hash。原 custody、episode、RPC 和业务历史保留，新宿主既有 ACTIVE/PREPARED→UNKNOWN 初始化也不得冒充停止事实。F 的冷 source holder 仅对精确 APPLIED 恢复集合核实既有 protected DACL 残余并取得只读 adoption witness，不修改通用 `stopped_instance`；后来新 holder/intent 仍按原规则拒绝。旧 continuation、worktree merge/delete 和任何需要原 StopFact 的操作仍拒绝。三个更早的 UNKNOWN 和原 legacy fences 不在此恢复集合中。
 
 在 Owner Win11 本体用原实例及原认证物理对象验证两条恢复、原并发占用释放和新真实模型会话；保留原失败、旧三条 UNKNOWN、认证元数据及正式版五组保护快照。每次关闭候选前必须先对本次所有 live 会话执行原 H stop，并读回确切 StopFact，再正常关闭；测量失败先保全原请求，不能仅关闭窗口后把进程缺席记为停止。本次限定一轮恢复施工和实测；若仍不能干净恢复，保全现场、报告后才进入 Owner 允许的一次新 Codex 登录。
 
