@@ -251,10 +251,43 @@ async function configureProfile(id: string, input: { name: string; enabled: bool
 
 /** USER bridge only. Unsupported actions are absent rather than advertised. */
 export function createDesign37ManagedInstanceSource<Page>(project: (value: ManagedInstancePage) => Page) {
+  const pendingCreates = new Map<string, { id: string; frame: string }>();
   return {
     read: async (): Promise<Page> => project(await readPage()),
     actions: {
       configureProfile,
+      create: async (driverId: string, input: { name: string; provider?: string }): Promise<void> => {
+        if (!vendor(driverId) || !input.name.trim()) {
+          throw new Error("A supported driver and explicit instance name are required.");
+        }
+        if (driverId === "opencode" && !input.provider?.trim()) {
+          throw new Error("OpenCode requires an explicit model provider.");
+        }
+        if (driverId !== "opencode" && input.provider !== undefined) {
+          throw new Error("This driver does not accept a separate model provider.");
+        }
+        const key = JSON.stringify([driverId, input.name, input.provider ?? null]);
+        let intent = pendingCreates.get(key);
+        if (!intent) {
+          const id = `instance-${crypto.randomUUID()}`;
+          intent = { id, frame: JSON.stringify({ schema: "gogoke.37.operations.v1",
+            family: "K-INSTANCE", operation: "register", requestId: `ui-${crypto.randomUUID()}`,
+            targetId: id, domainId: "global", expectedRevision: "0", payload: { driverId } }) };
+          pendingCreates.set(key, intent);
+        }
+        // A repeated unresolved click observes the same native register intent;
+        // no new home or replacement identity is created to hide its failure.
+        const raw = await invoke<string>("gogoke_design37_user_operation", { frame: intent.frame });
+        const receipt = JSON.parse(raw) as { status?: string; targetId?: string };
+        if (receipt.targetId !== intent.id || !["APPLIED", "REPLAYED"].includes(receipt.status ?? "")) {
+          throw new Error(`Native instance registration failed: ${raw}`);
+        }
+        await configureProfile(intent.id, { name: input.name, enabled: true, provider: input.provider });
+        // This action runs only after the user asks to create and log in.
+        // Capacity is still set explicitly in the instance page.
+        await invoke("gogoke_design37_instance_login", { instanceId: intent.id });
+        pendingCreates.delete(key);
+      },
       login: async (id: string): Promise<void> => {
         await invoke("gogoke_design37_instance_login", { instanceId: id });
       },

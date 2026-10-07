@@ -724,7 +724,7 @@ impl<'root> ProductDatabase<'root> {
             &driver,&digest,pin.version);
         let observed = match managed.and_then(|path|path.ok_or(instance::ManagedCliError::IdentityChanged))
             .and_then(|path|instance::ProgramObservation::observe(&path,pin.version)
-                .map_err(|_|instance::ManagedCliError::IdentityChanged)) {
+                .map_err(|error|instance::ManagedCliError::Observation(format!("{error:?}")))) {
             Ok(observed) => observed,
             Err(error) => {
                 return Ok(receipt(V37Status::Denied,current,current,
