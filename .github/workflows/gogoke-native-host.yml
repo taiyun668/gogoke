@@ -64,7 +64,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(inputs.full_library_only && '["runtime"]' || '["all"]') }}
+        shard: ${{ fromJSON(inputs.full_library_only && '["runtime","login","session","remainder"]' || '["all"]') }}
     env:
       RUSTUP_TOOLCHAIN: 1.85.1
     steps:
@@ -483,7 +483,7 @@ jobs:
           $arguments = @('test','--locked','--manifest-path','apps/desktop/native-host/Cargo.toml','--lib')
           if ($shard -ne 'all') {
             $prefixes = [ordered]@{
-              runtime = 'store::product_database::v37_runtime::tests::health_compact_late_original_ack_continues_without_second_write_or_new_request'
+              runtime = 'store::product_database::v37_runtime::'
               login = 'store::product_database::v37_login::'
               session = 'store::product_database::v37_session::'
             }
@@ -506,8 +506,7 @@ jobs:
                 $name.StartsWith($prefixes[$shard], [StringComparison]::Ordinal)
               }
             })
-            if ($selected.Count -ne 1) { throw "Diagnostic timing must select exactly one original compact case: $shard" }
-            Write-Host 'DIAGNOSTIC_TIMING_ONLY: one unchanged original runtime case; complete library and after-optimization comparison NOT_RUN.'
+            if ($selected.Count -eq 0) { throw "Original native library shard has zero tests: $shard" }
             if ($shard -ne 'remainder') { $arguments += $prefixes[$shard] }
           }
           $arguments += @('--','--nocapture')
@@ -633,7 +632,7 @@ jobs:
           retention-days: 30
 
   native-host-library-partitions:
-    if: ${{ false }} # Diagnostic-only branch: complete partition verification NOT_RUN.
+    if: ${{ always() && inputs.full_library_only && !inputs.security_remainder_source }}
     needs: native-host-windows-real-axes
     name: Verify complete native-host library partitions
     timeout-minutes: 15

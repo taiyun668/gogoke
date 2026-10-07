@@ -18,6 +18,8 @@ path = "src/root/lock_probe.rs"
 
 [dependencies]
 ryu-js = "=1.0.3"
+# Reuse the exact SHA-256 crate already pinned for the LPAC shim build.
+sha2 = "=0.10.9"
 
 [target.'cfg(windows)'.dependencies]
 gogoke-lpac-path-compat = { path = "src/process/session/compat" }
@@ -31,6 +33,12 @@ cc = "=1.4.2"
 # this test package while retaining the test profile's debug assertions and
 # overflow checks; release construction and production budgets are unchanged.
 [profile.test.package.gogoke-native-host]
+opt-level = 3
+debug-assertions = true
+overflow-checks = true
+
+# The normal SHA backend also runs at opt3 in tests. Assertions remain enabled.
+[profile.test.package.sha2]
 opt-level = 3
 debug-assertions = true
 overflow-checks = true
