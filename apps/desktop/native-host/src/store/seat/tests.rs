@@ -201,6 +201,148 @@ fn create_e2_lead(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer)->Se
         request_id:"createLead",request_bytes:wire("createLead")}).unwrap().seat
 }
 
+fn set_verified_models(db:&VerifiedDatabaseConnection<'_>, instance_id:&str,
+    models_json:&str, digest:&str) {
+    let write=Statement::prepare(db.as_ptr(),
+        "INSERT INTO main.gogoke_v37_instance_evidence(instance_id,available_models_json,models_source,models_observed_at,models_program_digest) VALUES(?1,?2,'codex-model/list:OBSERVED:fixture','100',?3) ON CONFLICT(instance_id) DO UPDATE SET available_models_json=excluded.available_models_json,models_source=excluded.models_source,models_observed_at=excluded.models_observed_at,models_program_digest=excluded.models_program_digest").unwrap();
+    write.bind_text(1,instance_id).unwrap();
+    write.bind_text(2,models_json).unwrap();
+    write.bind_text(3,digest).unwrap();
+    write.step_done().unwrap();
+}
+
+#[test]
+fn configure_instance_commits_binding_and_full_settings_and_replays_exact_snapshot() {
+    fixture(|db,owner| {
+        let original=create_e2_lead(db,owner);
+        set_verified_models(db,"instanceB",r#"["modelB","modelC"]"#,"sha256:test");
+        db.execute("INSERT INTO main.gogoke_v37_seat_takeover_answers(domain_id,seat_id,question_id,instance_id,answer,basis,source_ref,how_to_find,revision) VALUES('projectA','lead','q','instanceA','old answer','CITED','repo:old','',1)").unwrap();
+        let raw=br#"{"op":"configure-instance","requestId":"configureA","instanceId":"instanceB","model":"modelB","effort":"low","permissionTier":"READ_ONLY"}"#;
+        let input=||SeatChange {domain_id:"projectA",seat_id:"lead",
+            expected_generation:original.generation,expected_revision:original.revision,
+            request_id:"configureA",request_bytes:raw};
+        let receipt=configure_instance(db,NativeOrigin::user(owner),input(),
+            "instanceB","modelB","low","\"READ_ONLY\"").unwrap();
+        assert!(!receipt.replayed);
+        assert_eq!(receipt.seat.instance_id,"instanceB");
+        assert_eq!(receipt.seat.generation,original.generation+1);
+        assert_eq!(receipt.seat.revision,original.revision+1);
+        assert_eq!(seat_effort(&receipt.seat).unwrap(),"low");
+        assert_eq!(permission_tier(&receipt.seat).unwrap(),PermissionTier::ReadOnly);
+        let settings=receipt.seat.settings_json.as_deref().unwrap();
+        assert!(settings.contains("\"model\":\"modelB\""));
+        assert!(settings.contains("\"instruction\":\"default\""));
+        assert!(settings.contains("\"takeoverQuestions\""));
+        assert!(!settings.contains("reasoningEffort"));
+        assert_eq!(get(db,"projectA","lead").unwrap().unwrap(),receipt.seat);
+        let answers=Statement::prepare(db.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_seat_takeover_answers WHERE domain_id='projectA' AND seat_id='lead'").unwrap();
+        assert!(!answers.step_row().unwrap());
+        drop(answers);
+        let replay=configure_instance(db,NativeOrigin::user(owner),input(),
+            "instanceB","modelB","low","\"READ_ONLY\"").unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.seat,receipt.seat);
+        assert!(matches!(configure_instance(db,NativeOrigin::user(owner),SeatChange {
+            request_bytes:b"different request bytes",..input()
+        },"instanceB","modelB","low","\"READ_ONLY\""),Err(SeatError::Conflict)));
+        let repair=configure_instance(db,NativeOrigin::user(owner),SeatChange {
+            expected_generation:receipt.seat.generation,expected_revision:receipt.seat.revision,
+            request_id:"repairSameInstance",request_bytes:b"complete same instance repair",..input()
+        },"instanceB","modelC","high","\"NO_NETWORK\"").unwrap().seat;
+        assert_eq!(repair.instance_id,"instanceB");
+        assert!(repair.settings_json.as_deref().unwrap().contains("\"model\":\"modelC\""));
+        assert_eq!(permission_tier(&repair).unwrap(),PermissionTier::NoNetwork);
+        assert!(matches!(configure_instance(db,NativeOrigin::user(owner),input(),
+            "instanceB","modelB","low","\"READ_ONLY\""),Err(SeatError::Conflict)));
+    });
+}
+
+#[test]
+fn configure_instance_requires_current_verified_model_list_and_preserves_old_state_on_failure() {
+    fixture(|db,owner| {
+        let before=create_e2_lead(db,owner);
+        let input=||SeatChange {domain_id:"projectA",seat_id:"lead",
+            expected_generation:before.generation,expected_revision:before.revision,
+            request_id:"noEvidence",request_bytes:b"full configuration request"};
+        let attempt=|db:&mut VerifiedDatabaseConnection<'_>|
+            configure_instance(db,NativeOrigin::user(owner),input(),
+                "instanceB","modelB","high","\"READ_ONLY\"");
+        assert!(matches!(attempt(db),Err(SeatError::Denied)));
+        set_verified_models(db,"instanceB",r#"["modelB"]"#,"sha256:old");
+        assert!(matches!(attempt(db),Err(SeatError::Denied)),"old program digest is not current evidence");
+        set_verified_models(db,"instanceB",r#"{"model":"modelB"}"#,"sha256:test");
+        assert!(matches!(attempt(db),Err(SeatError::Denied)),"non-list evidence must fail closed");
+        set_verified_models(db,"instanceB",r#"["another"]"#,"sha256:test");
+        assert!(matches!(attempt(db),Err(SeatError::Denied)),"unverified model must fail closed");
+        set_verified_models(db,"instanceB",r#"["modelB"]"#,"sha256:test");
+        db.execute("UPDATE main.gogoke_v37_instance_evidence SET models_source=NULL WHERE instance_id='instanceB'").unwrap();
+        assert!(matches!(attempt(db),Err(SeatError::Denied)),"source-less model list must fail closed");
+        set_verified_models(db,"instanceB",r#"["modelB"]"#,"sha256:test");
+        db.execute("UPDATE main.gogoke_v37_instances SET login_state='LOGGED_OUT' WHERE instance_id='instanceB'").unwrap();
+        assert!(matches!(attempt(db),Err(SeatError::Denied)),"logged-out evidence must fail closed");
+        assert_eq!(get(db,"projectA","lead").unwrap().unwrap(),before);
+    });
+}
+
+#[test]
+fn configure_instance_repairs_legacy_partial_change_on_same_instance() {
+    fixture(|db,owner| {
+        let original=create_e2_lead(db,owner);
+        let partial=change_instance(db,NativeOrigin::user(owner),SeatChange {
+            domain_id:"projectA",seat_id:"lead",expected_generation:original.generation,
+            expected_revision:original.revision,request_id:"legacyPartial",
+            request_bytes:b"legacy instance only change",
+        },"instanceB").unwrap().seat;
+        assert_eq!(partial.instance_id,"instanceB");
+        assert!(partial.settings_json.as_deref().unwrap().contains("\"model\":\"modelA\""));
+        set_verified_models(db,"instanceB",r#"["modelB"]"#,"sha256:test");
+        let restored=configure_instance(db,NativeOrigin::user(owner),SeatChange {
+            domain_id:"projectA",seat_id:"lead",expected_generation:partial.generation,
+            expected_revision:partial.revision,request_id:"repairPartial",
+            request_bytes:b"complete same instance repair",
+        },"instanceB","modelB","high","\"READ_ONLY\"").unwrap().seat;
+        assert_eq!(restored.instance_id,"instanceB");
+        assert!(restored.settings_json.as_deref().unwrap().contains("\"model\":\"modelB\""));
+        assert_eq!(permission_tier(&restored).unwrap(),PermissionTier::ReadOnly);
+    });
+}
+
+#[test]
+fn configure_instance_checks_complete_lead_target_scope_and_idle_cas() {
+    fixture(|db,owner| {
+        let parent=create_e2_lead(db,owner);
+        let active=set_dispatch_state(db,&parent,true).unwrap();
+        let admission=NativeLeadAdmission::from_native_runtime_snapshot(&active).unwrap();
+        let child=create(db,NativeOrigin::lead(&admission),CreateSeat {
+            domain_id:"projectA",seat_id:"worker",template_id:"templateE2",
+            instance_id:Some("instanceA"),kind:Kind::Short,
+            request_id:"createWorker",request_bytes:wire("createWorker"),
+        }).unwrap().seat;
+        set_verified_models(db,"instanceB",r#"["modelA","modelB"]"#,"sha256:test");
+        let input=||SeatChange {domain_id:"projectA",seat_id:"worker",
+            expected_generation:child.generation,expected_revision:child.revision,
+            request_id:"configureWorker",request_bytes:b"complete child configuration"};
+        assert!(matches!(configure_instance(db,NativeOrigin::lead(&admission),input(),
+            "instanceB","modelB","high","\"NETWORKED_WRITE\""),Err(SeatError::Denied)));
+        assert_eq!(get(db,"projectA","worker").unwrap().unwrap(),child);
+        let busy=set_dispatch_state(db,&child,true).unwrap();
+        assert!(matches!(configure_instance(db,NativeOrigin::lead(&admission),SeatChange {
+            expected_generation:busy.generation,expected_revision:busy.revision,
+            request_id:"configureBusyWorker",..input()
+        },"instanceB","modelA","high","\"NETWORKED_WRITE\""),Err(SeatError::Busy)));
+        let idle=set_dispatch_state(db,&busy,false).unwrap();
+        assert!(matches!(configure_instance(db,NativeOrigin::lead(&admission),input(),
+            "instanceB","modelA","high","\"NETWORKED_WRITE\""),Err(SeatError::Conflict)));
+        let configured=configure_instance(db,NativeOrigin::lead(&admission),SeatChange {
+            expected_generation:idle.generation,expected_revision:idle.revision,
+            request_id:"configureIdleWorker",..input()
+        },"instanceB","modelA","high","\"NETWORKED_WRITE\"").unwrap().seat;
+        assert_eq!(configured.instance_id,"instanceB");
+        assert_eq!(get(db,"projectA","worker").unwrap().unwrap(),configured);
+    });
+}
+
 #[test]
 fn exact_schema_reopens_and_drift_refuses_repair() {
     fixture(|db, _| {

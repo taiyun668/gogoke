@@ -53,6 +53,7 @@ pub(crate) enum SeatError {
     Invalid(&'static str),
     HostResourceObservation(String),
     HostHealthObservation(String),
+    InstanceManagement(String),
     Denied,
     Conflict,
     Busy,
@@ -1193,6 +1194,117 @@ pub(crate) fn change_instance(
         return Err(SeatError::Invalid("instance_id"));
     }
     change(db, origin, input, "change-instance", instance_id)
+}
+
+/// Commit a complete runnable configuration with its instance binding. This
+/// also repairs a previously partial configuration on the same instance.
+pub(crate) fn configure_instance(
+    db: &mut VerifiedDatabaseConnection<'_>,
+    origin: NativeOrigin<'_>,
+    input: SeatChange<'_>,
+    instance_id: &str,
+    model: &str,
+    effort: &str,
+    permission_json: &str,
+) -> Result<SeatReceipt, SeatError> {
+    validate(input.domain_id, input.seat_id, input.request_id, input.request_bytes)?;
+    if input.expected_generation < 1 || input.expected_revision < 1 {
+        return Err(SeatError::Invalid("seat revision"));
+    }
+    if !valid_id(instance_id) { return Err(SeatError::Invalid("instance_id")); }
+    if model.is_empty() || model.len() > 256 || effort.is_empty() || effort.len() > 256 {
+        return Err(SeatError::Invalid("model or effort"));
+    }
+    super::atomic::require_canonical_json(permission_json.as_bytes(), "seat.permissionTier")?;
+    let permission = Parser::parse(permission_json)?;
+    PermissionTier::from_json(&permission)?;
+    let (origin_id, origin_incarnation, origin_generation) = match &origin {
+        NativeOrigin::User(_) => ("", "", String::new()),
+        NativeOrigin::Lead(admission) => (
+            admission.seat_id.as_str(), admission.incarnation.as_str(),
+            admission.generation.to_string(),
+        ),
+    };
+    let fp = fingerprint(&[
+        "configure-instance", input.domain_id, input.seat_id,
+        &input.expected_generation.to_string(), &input.expected_revision.to_string(),
+        instance_id, model, effort, permission_json,
+        origin_id, origin_incarnation, &origin_generation,
+    ], input.request_bytes);
+    transact(db, |db| {
+        check_origin(db, &origin, input.domain_id, None)?;
+        if let Some(receipt) = operation(db, input.domain_id, input.request_id, &fp)? {
+            authorize_replay(db, &origin, &receipt)?;
+            return Ok(receipt);
+        }
+        let before = read(db, input.domain_id, input.seat_id)?.ok_or(SeatError::Unknown)?;
+        check_origin(db, &origin, input.domain_id, Some(&before))?;
+        if before.state == State::Reclaimed { return Err(SeatError::Denied); }
+        if before.generation != input.expected_generation || before.revision != input.expected_revision {
+            return Err(SeatError::Conflict);
+        }
+        if before.state == State::Busy { return Err(SeatError::Busy); }
+        page_facts::ensure_mutable(db, &before)?;
+        if before.instance_id.is_empty() { return Err(SeatError::Conflict); }
+        if !instance_exists(db, instance_id)? { return Err(SeatError::Unknown); }
+        let evidence = super::instance::read_instance_evidence(db, instance_id)
+            .map_err(|error| SeatError::InstanceManagement(format!("{error:?}")))?
+            .ok_or(SeatError::Denied)?;
+        let models_json = evidence.available_models_json.ok_or(SeatError::Denied)?;
+        if evidence.models_source.is_none() || evidence.models_observed_at.is_none() {
+            return Err(SeatError::Denied);
+        }
+        let Json::Array(models) = Parser::parse(&models_json)? else { return Err(SeatError::Denied); };
+        if models.is_empty() || !models.iter().all(|item| matches!(item, Json::String(_)))
+            || !models.iter().any(|item| matches!(item, Json::String(value)
+                if value.to_well_formed_string().as_deref() == Some(model))) {
+            return Err(SeatError::Denied);
+        }
+        let settings_json = before.settings_json.as_deref().ok_or(SeatError::SchemaDrift)?;
+        let Json::Object(mut settings) = Parser::parse(settings_json)? else {
+            return Err(SeatError::SchemaDrift);
+        };
+        settings.remove(&JsonString::from_str("reasoningEffort"));
+        settings.insert(JsonString::from_str("model"), Json::String(JsonString::from_str(model)));
+        settings.insert(JsonString::from_str("effort"), Json::String(JsonString::from_str(effort)));
+        settings.insert(JsonString::from_str("permissionTier"), permission);
+        let updated_settings = orchestration::normalized_effort_json(&Json::Object(settings).canonical())?;
+        validate_template_settings(updated_settings.as_bytes())?;
+        if let NativeOrigin::Lead(admission) = &origin {
+            let parent = read(db, input.domain_id, &admission.seat_id)?.ok_or(SeatError::Denied)?;
+            orchestration::child_within_scope(&parent, &updated_settings, instance_id)?;
+        }
+        let next_generation = before.generation.checked_add(1).ok_or(SeatError::Conflict)?;
+        let next_revision = before.revision.checked_add(1).ok_or(SeatError::Conflict)?;
+        let update_settings = Statement::prepare(db.as_ptr(),
+            "UPDATE main.gogoke_v37_seat_settings SET settings_json=?1 WHERE domain_id=?2 AND seat_id=?3")?;
+        update_settings.bind_text(1, &updated_settings)?;
+        update_settings.bind_text(2, input.domain_id)?;
+        update_settings.bind_text(3, input.seat_id)?;
+        update_settings.step_done()?;
+        let update_seat = Statement::prepare(db.as_ptr(),
+            "UPDATE main.gogoke_v37_seats SET instance_id=?1,generation=?2,revision=?3 WHERE domain_id=?4 AND seat_id=?5 AND generation=?6 AND revision=?7 AND state='IDLE'")?;
+        update_seat.bind_text(1, instance_id)?;
+        update_seat.bind_i64(2, next_generation)?;
+        update_seat.bind_i64(3, next_revision)?;
+        update_seat.bind_text(4, input.domain_id)?;
+        update_seat.bind_text(5, input.seat_id)?;
+        update_seat.bind_i64(6, before.generation)?;
+        update_seat.bind_i64(7, before.revision)?;
+        update_seat.step_done()?;
+        let seat = read(db, input.domain_id, input.seat_id)?.ok_or(SeatError::SchemaDrift)?;
+        if seat.instance_id != instance_id || seat.settings_json.as_deref() != Some(updated_settings.as_str())
+            || seat.generation != next_generation || seat.revision != next_revision {
+            return Err(SeatError::Conflict);
+        }
+        let clear = Statement::prepare(db.as_ptr(),
+            "DELETE FROM main.gogoke_v37_seat_takeover_answers WHERE domain_id=?1 AND seat_id=?2")?;
+        clear.bind_text(1, input.domain_id)?;
+        clear.bind_text(2, input.seat_id)?;
+        clear.step_done()?;
+        record_operation(db, input.request_id, &fp, &seat)?;
+        Ok(SeatReceipt { seat, replayed: false })
+    })
 }
 pub(crate) fn promote(
     db: &mut VerifiedDatabaseConnection<'_>,
