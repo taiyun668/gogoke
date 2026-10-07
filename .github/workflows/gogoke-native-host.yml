@@ -43,6 +43,10 @@ on:
         description: Verify real catalog hardlinks and three compiled isolation mutations only; other native, library, mutation and server gates are NOT_RUN
         type: boolean
         default: false
+      receipt_mutation_fixture_only:
+        description: Run only the compiled Native receipt SQL mutation diagnostic; formal library, process, server and acceptance gates are NOT_RUN
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -52,8 +56,186 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  native-host-receipt-mutation-diagnostic:
+    if: ${{ inputs.receipt_mutation_fixture_only }}
+    name: Native host receipt mutation diagnostic
+    # This is a dispatch-only diagnostic. It does not replace or weaken any
+    # formal native, process, server, acceptance or release gate.
+    timeout-minutes: 45
+    runs-on: windows-latest
+    env:
+      RUSTUP_TOOLCHAIN: 1.85.1
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Bind exact diagnostic source and saved file hashes
+        id: receipt-source
+        shell: pwsh
+        env:
+          WORKFLOW_SOURCE: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actual -cnotmatch '^[0-9a-f]{40}$' -or $actual -cne $env:WORKFLOW_SOURCE) {
+            throw 'Receipt diagnostic source differs from workflow source'
+          }
+          if (@(& git status --porcelain --untracked-files=no).Count) { throw 'Receipt diagnostic source must begin unchanged' }
+          $conflictingScope = @('${{ inputs.security_remainder_source }}','${{ inputs.trace_canonicalize }}','${{ inputs.job_descendant_fixture_only }}','${{ inputs.stop_124_fixture_only }}','${{ inputs.ordinary_oauth_fixture_only }}','${{ inputs.code_mode_fixture_only }}','${{ inputs.private_history_fixture_only }}','${{ inputs.grok_home_fixture_only }}','${{ inputs.full_library_only }}','${{ inputs.catalog_program_fixture_only }}')
+          if (($conflictingScope | Where-Object { $_ -and $_ -ne 'false' }).Count) { throw 'Receipt diagnostic scope cannot combine with another workflow scope' }
+          $evidence = Join-Path $env:RUNNER_TEMP 'receipt-mutation-security'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $files = @(
+            'apps/desktop/native-host/src/store/inbox/mod.rs',
+            'apps/desktop/native-host/Cargo.toml',
+            'apps/desktop/native-host/Cargo.lock'
+          )
+          $hashes = @($files | ForEach-Object {
+            if (-not (Test-Path -LiteralPath $_ -PathType Leaf)) { throw "Receipt diagnostic source file missing: $_" }
+            [ordered]@{ path=$_; sha256=(Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant() }
+          })
+          [ordered]@{
+            schema='gogoke.receipt-mutation-source.v1'
+            sourceCommit=$actual
+            workflowCommit=$env:WORKFLOW_SOURCE
+            sourceTree=(& git rev-parse 'HEAD:apps/desktop/native-host').Trim()
+            acceptance=$false
+            formalGates=[ordered]@{
+              nativeLibrary='NOT_RUN'
+              nativeProcess='NOT_RUN'
+              server='NOT_RUN'
+              ownerWin11='NOT_RUN'
+              acceptance='NOT_RUN'
+              release='NOT_RUN'
+            }
+            files=$hashes
+          } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidence 'source-before.json') -Encoding utf8NoBOM
+          "sha=$actual" >> $env:GITHUB_OUTPUT
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.13.1
+      - name: Bind native-host build to controlled Node runtime
+        shell: pwsh
+        run: |
+          $node = Get-Command node.exe -CommandType Application | Select-Object -First 1 -ExpandProperty Source
+          if (-not (Test-Path -LiteralPath $node -PathType Leaf)) { throw 'Controlled Node runtime unavailable' }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CONTROLLED_NODE_PATH=$node"
+      - uses: dtolnay/rust-toolchain@1.85.1
+      - name: Verify QCard settlement with a compiled SQL mutation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $path = 'apps/desktop/native-host/src/store/inbox/mod.rs'
+          $manifest = Join-Path $env:RUNNER_TEMP 'receipt-mutation-security\source-before.json'
+          $evidence = Split-Path -Parent $manifest
+          $filter = 'native_answer_exact_written_fact_rejects_other_bytes_and_recovers_settle_failure'
+          $tracked = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
+          $original = [IO.File]::ReadAllBytes($path)
+          $originalToken = [Convert]::ToBase64String($original)
+          $source = [Text.Encoding]::UTF8.GetString($original)
+          $sourceHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+          $machine = [ordered]@{
+            schema='gogoke.receipt-mutation.v1'
+            sourceCommit=$tracked.sourceCommit
+            workflowCommit=$tracked.workflowCommit
+            acceptance=$false
+            fixtureKind='SQL_ONLY_NOT_REAL_WRITER_OR_MODEL'
+            mutationAxis='QCARD_ACTIVE_AUTHORIZATION_PREDICATE'
+            productionSitesChanged=2
+            deliveryAxis='NOT_RUN'
+            formalGates=$tracked.formalGates
+            sourceHash=$sourceHash
+            cases=@()
+          }
+          function Write-Machine {
+            $script:machine | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidence 'machine-result.json') -Encoding utf8NoBOM
+          }
+          function Assert-SavedHashes([string]$label) {
+            if (@(& git status --porcelain --untracked-files=no).Count) { throw "Receipt diagnostic left tracked changes at $label" }
+            foreach ($entry in $tracked.files) {
+              $actualHash = (Get-FileHash -LiteralPath $entry.path -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($actualHash -cne $entry.sha256) { throw "Saved source hash changed at ${label}: $($entry.path)" }
+            }
+          }
+          function Invoke-ReceiptTest([string]$label, [int]$expectedPassed, [int]$expectedFailed) {
+            $log = Join-Path $evidence "$label.log"
+            $output = @(& cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $filter --lib -- --nocapture 2>&1)
+            $code = $LASTEXITCODE
+            $output | Tee-Object -FilePath $log | Out-Host
+            $text = $output -join "`n"
+            $summaries = [regex]::Matches($text, 'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out')
+            $valid = $summaries.Count -eq 1 -and
+              [int]$summaries[0].Groups[2].Value -eq $expectedPassed -and
+              [int]$summaries[0].Groups[3].Value -eq $expectedFailed -and
+              [int]$summaries[0].Groups[4].Value -eq 0 -and
+              [int]$summaries[0].Groups[5].Value -eq 0 -and
+              (($expectedFailed -eq 0 -and $code -eq 0) -or ($expectedFailed -gt 0 -and $code -ne 0))
+            $state = if ($valid) { 'PASS' } else { 'FAIL_INSTRUMENT_OR_BEHAVIOR' }
+            $script:machine.cases += [ordered]@{
+              label=$label
+              filter=$filter
+              exitCode=$code
+              expectedPassed=$expectedPassed
+              expectedFailed=$expectedFailed
+              state=$state
+              log="$label.log"
+            }
+            Write-Machine
+            if (-not $valid) { throw "Receipt diagnostic $label did not execute the expected compiled behavior: exit=$code" }
+            if ($label -eq 'mutation' -and
+                ($text -notmatch 'panicked' -or $text -notmatch 'Result::unwrap\(\)' -or $text -notmatch 'value: Denied')) {
+              throw 'Receipt mutation did not fail at the final settle Err(Denied) witness'
+            }
+          }
+
+          Assert-SavedHashes 'before'
+          Invoke-ReceiptTest 'original' 1 0
+          $needle = '                 AND e.generation=sb.seat_authorization_generation AND e.instance_id=ep.instance_id'
+          $replacement = '                 AND CAST(e.generation AS TEXT)=ep.generation AND e.instance_id=ep.instance_id'
+          if ([regex]::Matches($source, [regex]::Escape($needle)).Count -ne 2) {
+            throw 'Receipt production SQL locator must match exactly twice'
+          }
+          if ([regex]::Matches($source, [regex]::Escape($replacement)).Count -ne 0) {
+            throw 'Receipt old SQL mutation is already present in the production source'
+          }
+          try {
+            $mutated = $source.Replace($needle, $replacement)
+            if ([regex]::Matches($mutated, [regex]::Escape($needle)).Count -ne 0 -or
+                [regex]::Matches($mutated, [regex]::Escape($replacement)).Count -ne 2) {
+              throw 'Receipt mutation did not replace exactly two production SQL predicates'
+            }
+            [IO.File]::WriteAllText($path, $mutated, [Text.UTF8Encoding]::new($false))
+            foreach ($entry in $tracked.files | Where-Object { $_.path -ne $path }) {
+              $actualHash = (Get-FileHash -LiteralPath $entry.path -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($actualHash -cne $entry.sha256) { throw "Non-target source changed during mutation: $($entry.path)" }
+            }
+            Invoke-ReceiptTest 'mutation' 0 1
+          } finally {
+            [IO.File]::WriteAllBytes($path, $original)
+            $restored = [IO.File]::ReadAllBytes($path)
+            if ([Convert]::ToBase64String($restored) -cne $originalToken -or
+                (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -cne $sourceHash) {
+              throw 'Exact unchanged receipt production restoration failed'
+            }
+            Assert-SavedHashes 'restored'
+          }
+          Invoke-ReceiptTest 'restored' 1 0
+          $machine.state = 'PASS_COMPILED_RECEIPT_MUTATION_AND_EXACT_RESTORATION'
+          Write-Machine
+      - name: Upload receipt mutation diagnostic evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: receipt-mutation-security-${{ steps.receipt-source.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/receipt-mutation-security
+          if-no-files-found: error
+          retention-days: 30
+
   native-host-windows-real-axes:
-    if: ${{ !inputs.catalog_program_fixture_only && !inputs.security_remainder_source }}
+    if: ${{ !inputs.receipt_mutation_fixture_only && !inputs.catalog_program_fixture_only && !inputs.security_remainder_source }}
     name: ${{ matrix.shard == 'all' && 'Native host Windows real process axes' || format('Native host Windows library {0}', matrix.shard) }}
     # Full-library shards use independent runners so their fixed native fixtures
     # never execute in separate test processes on the same Windows host.
@@ -632,7 +814,7 @@ jobs:
           retention-days: 30
 
   native-host-library-partitions:
-    if: ${{ always() && inputs.full_library_only && !inputs.security_remainder_source }}
+    if: ${{ always() && !inputs.receipt_mutation_fixture_only && inputs.full_library_only && !inputs.security_remainder_source }}
     needs: native-host-windows-real-axes
     name: Verify complete native-host library partitions
     timeout-minutes: 15
@@ -750,7 +932,7 @@ jobs:
           retention-days: 30
 
   native-host-windows-security-mutations:
-    if: ${{ !inputs.full_library_only || inputs.security_remainder_source }}
+    if: ${{ !inputs.receipt_mutation_fixture_only && (!inputs.full_library_only || inputs.security_remainder_source) }}
     name: Native host Windows security mutations (${{ matrix.group }})
     # Keep unchanged mutation commands, but separate compile-heavy groups.
     # A remainder run tests the explicitly checked-out ancestor, not workflow SHA.
@@ -1260,7 +1442,7 @@ jobs:
           retention-days: 30
 
   gogoke-server-tests:
-    if: ${{ !inputs.security_remainder_source && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.full_library_only && !inputs.catalog_program_fixture_only }}
+    if: ${{ !inputs.receipt_mutation_fixture_only && !inputs.security_remainder_source && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.full_library_only && !inputs.catalog_program_fixture_only }}
     name: Gogoke server cloud tests
     timeout-minutes: 45
     runs-on: windows-latest
