@@ -2659,7 +2659,12 @@ impl<'root> ProductDatabase<'root> {
             }
             match rpc_frame_identity(frame.bytes(), expected_id) {
                 RpcIdentity::Notification => continue,
-                RpcIdentity::Expected => return Ok(frame),
+                RpcIdentity::Expected => {
+                    #[cfg(test)]
+                    eprintln!("native_timing producer=login_rpc_response id={expected_id} elapsed_us={}",
+                        started.elapsed().as_micros());
+                    return Ok(frame);
+                },
                 RpcIdentity::RemoteError => return Err(OrchestrationError::Process(
                     self.process_custodian.protocol_error_with_stderr(&prepared.ticket,
                         ProcessCustodyError::ProtocolPipe(std::io::Error::new(

@@ -75,7 +75,12 @@ impl ProgramObservation {
             return Err(RegistryError::IdentityChanged);
         }
         let mut bytes = Vec::new();
+        #[cfg(test)]
+        let measured_read = std::time::Instant::now();
         file.read_to_end(&mut bytes)?;
+        #[cfg(test)]
+        eprintln!("native_timing producer=program_file_read bytes={} elapsed_us={}",
+            bytes.len(), measured_read.elapsed().as_micros());
         let after = file.metadata()?;
         let path_after = fs::symlink_metadata(path)?;
         if before.len() != after.len() || before.modified()? != after.modified()?

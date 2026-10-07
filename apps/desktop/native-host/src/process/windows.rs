@@ -2503,6 +2503,8 @@ fn random_hex_32() -> Result<String, ProcessCustodyError> {
 }
 
 fn file_sha256(path: &PathBuf) -> Result<String, ProcessCustodyError> {
+    #[cfg(test)]
+    let measured_start = Instant::now();
     let mut file = File::open(path).map_err(ProcessCustodyError::BinaryDigest)?;
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
@@ -2515,7 +2517,11 @@ fn file_sha256(path: &PathBuf) -> Result<String, ProcessCustodyError> {
         }
         hasher.update(&buffer[..read]);
     }
-    Ok(format!("sha256:{}", hex_bytes(&hasher.finish())))
+    let digest = format!("sha256:{}", hex_bytes(&hasher.finish()));
+    #[cfg(test)]
+    eprintln!("native_timing producer=process_file_sha256 elapsed_us={}",
+        measured_start.elapsed().as_micros());
+    Ok(digest)
 }
 
 fn append_field(output: &mut Vec<u8>, value: &str) {

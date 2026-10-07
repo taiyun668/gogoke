@@ -2,6 +2,8 @@ use std::fmt::Write as _;
 
 /// SHA-256 hex digest. Same algorithm as native-host `build.rs`.
 pub fn sha256_hex(input: &[u8]) -> String {
+    #[cfg(test)]
+    let measured_start = std::time::Instant::now();
     const INITIAL: [u32; 8] = [
         0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
         0x5be0cd19,
@@ -66,11 +68,17 @@ pub fn sha256_hex(input: &[u8]) -> String {
             *slot = slot.wrapping_add(value);
         }
     }
-    hash.iter()
+    let output = hash.iter()
         .fold(String::with_capacity(64), |mut output, word| {
             write!(output, "{word:08x}").expect("writing to String cannot fail");
             output
-        })
+        });
+    #[cfg(test)]
+    if input.len() >= 1024 * 1024 {
+        eprintln!("native_timing producer=store_sha256 bytes={} elapsed_us={}",
+            input.len(), measured_start.elapsed().as_micros());
+    }
+    output
 }
 
 pub fn content_hash(bytes: &[u8]) -> String {

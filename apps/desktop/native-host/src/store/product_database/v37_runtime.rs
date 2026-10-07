@@ -3211,6 +3211,9 @@ impl<'root> ProductDatabase<'root> {
                         let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
                         if run.turn_id.as_deref()==Some(turn_id.as_str()) {run.turn_id=None;}
                     }
+                    #[cfg(test)]
+                    eprintln!("native_timing producer=codex_rpc_response step={step_id} elapsed_us={}",
+                        start.elapsed().as_micros());
                     return Ok(Some(RpcObservation { reply, frame }));
                 }
                 Reply::RemoteError { raw_frame, .. } => {

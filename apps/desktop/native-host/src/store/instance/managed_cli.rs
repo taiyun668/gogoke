@@ -134,7 +134,12 @@ fn sha256_file(path: &Path, expected: &str) -> Result<(), ManagedCliError> {
     if !opened.is_file() || opened.file_attributes() & REPARSE_POINT != 0 ||
         opened.len() != before.len() { return Err(ManagedCliError::IdentityChanged); }
     let mut bytes = Vec::new();
+    #[cfg(test)]
+    let measured_read = std::time::Instant::now();
     file.read_to_end(&mut bytes)?;
+    #[cfg(test)]
+    eprintln!("native_timing producer=managed_file_read bytes={} elapsed_us={}",
+        bytes.len(), measured_read.elapsed().as_micros());
     let after = file.metadata()?;
     let path_after = fs::symlink_metadata(path)?;
     if after.len() != opened.len() || after.modified()? != opened.modified()? ||
