@@ -174,14 +174,34 @@ fn command_encodes(kind:NativeDeliveryKind,thread:&str,turn:&str,body:&str)->Res
 
 /// Resolve a physical recipient under the current Owner/E/F/H connection.
 /// A wire seat or generation never identifies a process on its own.
-fn live_target(db:&mut ProductDatabase<'_>,domain:&str,seat:&str,generation:&str,
-    turn:&str)->Result<Target> {
+/// Candidate hints only; the selected recipient still needs live_target's
+/// current H/E/F/kernel and write-time checks before it receives any bytes.
+pub(super) fn live_inbox_candidate_keys(db:&ProductDatabase<'_>,domain:&str,seat:&str,
+    generation:&str,turn:&str)->Result<Vec<(String,String)>> {
     let matching:Vec<_>=db.native_sessions.iter().filter(|(key,run)|
         key.0==domain && run.evidence.seat_id()==seat
             && run.custody.binding.generation==generation)
         .map(|(key,_)|key.clone()).collect();
-    if matching.len()!=1 {return Err(OrchestrationError::AccessDenied);}
-    let key=matching.into_iter().next().ok_or(OrchestrationError::AccessDenied)?;
+    // A seat can own WORK and SIDE with the same physical generation. Resolve
+    // the original turn before checking uniqueness; never pick the first one.
+    let mut qualified=Vec::new();
+    for key in matching {
+        let run=db.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
+        if !run.allows_input(){continue;}
+        let Some(thread)=run.thread_id.clone() else {continue;};
+        let target=Target {key:key.clone(),seat:seat.into(),generation:generation.into(),turn:turn.into(),
+            thread,operation:run.operation_id.clone(),ticket:run.custody.ticket.opaque().into(),
+            nonce:run.custody.custodian_nonce.clone(),turn_is_current:run.turn_id.as_deref()==Some(turn)};
+        if target.turn_is_current || observed_turn(&db.connection,&target)? {qualified.push(key);}
+    }
+    Ok(qualified)
+}
+
+fn live_target(db:&mut ProductDatabase<'_>,domain:&str,seat:&str,generation:&str,
+    turn:&str)->Result<Target> {
+    let qualified=live_inbox_candidate_keys(db,domain,seat,generation,turn)?;
+    if qualified.len()!=1 {return Err(OrchestrationError::AccessDenied);}
+    let key=qualified.into_iter().next().ok_or(OrchestrationError::AccessDenied)?;
     db.drain_native_output(&key)?;
     let run=db.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
     if !run.allows_input() {return Err(OrchestrationError::AccessDenied);}
@@ -902,30 +922,37 @@ fn original_target(db:&VerifiedDatabaseConnection<'_>,domain:&str,message:&str,
     for (index,value) in [domain,row.seat_id.as_str(),row.generation.as_str()].iter().enumerate(){
         q.bind_text((index+1) as i32,value)?;
     }
-    if !q.step_row()? {return Ok(None);}
-    let session=q.column_text(0)?;let generation=q.column_text(1)?;
-    let operation=q.column_text(2)?;let ticket=q.column_text(3)?;
-    let nonce=q.column_text(4)?;let open_request=q.column_text(5)?;
-    if q.step_row()? {return Err(OrchestrationError::OperationConflict);}drop(q);
-    if let Some(request)=delivery_request {
-        let step=inbox_step(domain,&session,request);
-        let observed=Statement::prepare(db.as_ptr(),
-            "SELECT process_operation_id,generation,ticket,custodian_nonce
-             FROM main.gogoke_v37_rpc_steps WHERE domain_id=?1 AND session_id=?2 AND step_id=?3")?;
-        observed.bind_text(1,domain)?;observed.bind_text(2,&session)?;observed.bind_text(3,&step)?;
-        if observed.step_row()? {
-            let matches=observed.column_text(0)?==operation && observed.column_text(1)?==generation
-                && observed.column_text(2)?==ticket && observed.column_text(3)?==nonce;
-            if !matches || observed.step_row()? {return Err(OrchestrationError::OperationConflict);}
+    let mut selected=None;
+    while q.step_row()? {
+        let session=q.column_text(0)?;let generation=q.column_text(1)?;
+        let operation=q.column_text(2)?;let ticket=q.column_text(3)?;
+        let nonce=q.column_text(4)?;let open_request=q.column_text(5)?;
+        let thread=match crate::store::session_transport::rpc_journal::observed_thread_id(db,
+            domain,&session,&operation,&generation,&open_request,&ticket,&nonce) {
+            Ok(thread)=>thread,
+            Err(crate::store::session_transport::rpc_journal::RpcJournalError::Denied)=>continue,
+            Err(error)=>return Err(inbox_error("original H thread",error)),
+        };
+        let target=Target {key:(domain.into(),session.clone()),seat:row.seat_id.clone(),
+            generation:generation.clone(),turn:row.turn_id.clone(),thread:thread.clone(),
+            operation:operation.clone(),ticket:ticket.clone(),nonce:nonce.clone(),turn_is_current:false};
+        if !observed_turn(db,&target)? {continue;}
+        if let Some(request)=delivery_request {
+            let step=inbox_step(domain,&session,request);
+            let observed=Statement::prepare(db.as_ptr(),
+                "SELECT process_operation_id,generation,ticket,custodian_nonce
+                 FROM main.gogoke_v37_rpc_steps WHERE domain_id=?1 AND session_id=?2 AND step_id=?3")?;
+            observed.bind_text(1,domain)?;observed.bind_text(2,&session)?;observed.bind_text(3,&step)?;
+            if observed.step_row()? {
+                let matches=observed.column_text(0)?==operation && observed.column_text(1)?==generation
+                    && observed.column_text(2)?==ticket && observed.column_text(3)?==nonce;
+                if !matches || observed.step_row()? {return Err(OrchestrationError::OperationConflict);}
+            }
         }
+        if selected.is_some(){return Err(OrchestrationError::OperationConflict);}
+        selected=Some(OriginalTarget {session,generation,operation,ticket,nonce,thread,turn:row.turn_id.clone()});
     }
-    let thread=match crate::store::session_transport::rpc_journal::observed_thread_id(db,
-        domain,&session,&operation,&generation,&open_request,&ticket,&nonce) {
-        Ok(thread)=>thread,
-        Err(crate::store::session_transport::rpc_journal::RpcJournalError::Denied)=>return Ok(None),
-        Err(error)=>return Err(inbox_error("original H thread",error)),
-    };
-    Ok(Some(OriginalTarget {session,generation,operation,ticket,nonce,thread,turn:row.turn_id}))
+    Ok(selected)
 }
 
 #[cfg(all(test,windows))]

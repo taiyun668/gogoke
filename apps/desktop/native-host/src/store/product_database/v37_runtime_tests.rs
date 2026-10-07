@@ -131,6 +131,27 @@ fn actual_pinned_codex_same_seat_work_and_side_resume_preserve_authorization_wit
         assert!(initial.iter().all(|binding|binding.provenance==h::session_binding::Provenance::NativeV2));
         assert_eq!(ledger::read_registered_session(&product.connection,"sideSession").unwrap().unwrap().purpose,
             ledger::SessionPurpose::SideChat);
+        let main_key=("projectA".to_owned(),"sessionA".to_owned());
+        let side_key=("projectA".to_owned(),"sideSession".to_owned());
+        assert_eq!(product.host_rule_work_candidate_keys("projectA","seatA").unwrap(),vec![main_key.clone()],
+            "the actual registered SIDE does not hide the unique WORK recipient");
+        // Synthetic cached-turn inputs exercise the production preselection
+        // only. H processes, physical bindings and A purposes are real; this
+        // does not send a command or assert a vendor turn/writer observation.
+        let prior_main=product.native_sessions.get(&main_key).unwrap().turn_id.clone();
+        let prior_side=product.native_sessions.get(&side_key).unwrap().turn_id.clone();
+        product.native_sessions.get_mut(&main_key).unwrap().turn_id=Some("selection-main".into());
+        product.native_sessions.get_mut(&side_key).unwrap().turn_id=Some("selection-side".into());
+        assert_eq!(super::super::v37_inbox::live_inbox_candidate_keys(product,"projectA","seatA","2","selection-main").unwrap(),
+            vec![main_key.clone()],"same-generation original main turn candidate");
+        assert_eq!(super::super::v37_inbox::live_inbox_candidate_keys(product,"projectA","seatA","2","selection-side").unwrap(),
+            vec![side_key.clone()],"same-generation original side turn candidate");
+        assert!(super::super::v37_inbox::live_inbox_candidate_keys(product,"projectA","seatA","2","absent-turn").unwrap().is_empty());
+        product.native_sessions.get_mut(&side_key).unwrap().turn_id=Some("selection-main".into());
+        assert_eq!(super::super::v37_inbox::live_inbox_candidate_keys(product,"projectA","seatA","2","selection-main").unwrap().len(),2,
+            "ambiguous turn candidates remain visible to the caller's refusal");
+        product.native_sessions.get_mut(&main_key).unwrap().turn_id=prior_main;
+        product.native_sessions.get_mut(&side_key).unwrap().turn_id=prior_side;
         for session in ["sessionA","sideSession"] {
             let key=("projectA".to_owned(),session.to_owned());
             let thread=product.native_sessions.get(&key).unwrap().thread_id.clone().unwrap();

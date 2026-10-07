@@ -55,6 +55,20 @@ impl<'root> ProductDatabase<'root> {
         Ok(proofs)
     }
 
+    /// Purpose-qualified candidates, not a delivery permit. Idle/frozen target
+    /// and current H/E/F checks remain in the existing delivery path below.
+    pub(super) fn host_rule_work_candidate_keys(&self,domain:&str,seat:&str)->Result<Vec<(String,String)>> {
+        let mut candidate=Vec::new();
+        for (key,run) in &self.native_sessions {
+            if key.0!=domain || run.evidence.seat_id()!=seat || run.evidence.driver_id()!="codex"
+                || run.thread_id.is_none() || !run.allows_input(){continue;}
+            let registration=crate::store::ledger::read_registered_session(&self.connection,&key.1)?
+                .ok_or(OrchestrationError::AccessDenied)?;
+            if registration.purpose==crate::store::ledger::SessionPurpose::Work {candidate.push(key.clone());}
+        }
+        Ok(candidate)
+    }
+
     pub(super) fn pump_host_rules(&mut self)->Result<()> {
         self.settle_original_side_deliveries()?;
         self.settle_original_host_deliveries()?;
@@ -93,12 +107,9 @@ impl<'root> ProductDatabase<'root> {
             }
             // No current process or a currently busy upper seat is not a
             // failed delivery. The original C pending survives without a turn.
-            let candidate=self.native_sessions.iter().filter(|(key,run)|key.0==proof.domain_id()
-                &&run.evidence.seat_id()==proof.destination_seat_id()&&run.evidence.driver_id()=="codex"
-                &&run.thread_id.is_some()&&run.allows_input())
-                .map(|(key,run)|(key.clone(),run.custody.clone())).collect::<Vec<_>>();
+            let candidate=self.host_rule_work_candidate_keys(proof.domain_id(),proof.destination_seat_id())?;
             let key=match candidate.as_slice() {
-                [(key,_)]=>{
+                [key]=>{
                     if c::read_host_recipient(&self.connection,&proof).map_err(failure)?
                         .is_some_and(|choice|choice.session_id!=key.1) {continue;}
                     key.clone()
