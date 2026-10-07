@@ -35,8 +35,15 @@ const TOKEN_APP_CONTAINER_SID: u32 = 31;
 const PROFILE_ALREADY_EXISTS: u32 = 0x8007_00b7;
 const FILE_OBJECT: u32 = 1;
 const DACL_SECURITY_INFORMATION: u32 = 4;
+const OWNER_SECURITY_INFORMATION: u32 = 1;
+const GROUP_SECURITY_INFORMATION: u32 = 2;
 const PROTECTED_DACL_SECURITY_INFORMATION: u32 = 0x8000_0000;
 const SE_DACL_PROTECTED: u16 = 0x1000;
+const SE_DACL_AUTO_INHERIT_REQ: u16 = 0x0100;
+const SE_DACL_AUTO_INHERITED: u16 = 0x0400;
+const SEF_DACL_AUTO_INHERIT: u32 = 0x01;
+const SEF_AVOID_PRIVILEGE_CHECK: u32 = 0x08;
+const SEF_AVOID_OWNER_CHECK: u32 = 0x10;
 const GRANT_ACCESS: u32 = 1;
 const DENY_ACCESS: u32 = 3;
 const REVOKE_ACCESS: u32 = 4;
@@ -128,6 +135,15 @@ struct AceHeader { ace_type: u8, ace_flags: u8, ace_size: u16 }
 #[repr(C)]
 struct AccessAce { header: AceHeader, mask: u32 }
 
+#[repr(C)]
+struct GenericMapping { read: u32, write: u32, execute: u32, all: u32 }
+
+#[repr(C)]
+struct DaclDescriptor {
+    revision: u8, reserved: u8, control: u16,
+    owner: *mut c_void, group: *mut c_void, sacl: *mut c_void, dacl: *mut c_void,
+}
+
 #[link(name = "userenv")]
 extern "system" {
     fn CreateAppContainerProfile(name: *const u16, display: *const u16,
@@ -161,6 +177,21 @@ extern "system" {
     fn ConvertSidToStringSidW(sid: *mut c_void, text: *mut *mut u16) -> i32;
     fn GetSecurityDescriptorControl(descriptor: *mut c_void,
         control: *mut u16, revision: *mut u32) -> i32;
+    fn GetSecurityDescriptorDacl(descriptor: *mut c_void, present: *mut i32,
+        acl: *mut *mut c_void, defaulted: *mut i32) -> i32;
+    fn CreatePrivateObjectSecurityEx(parent: *mut c_void, creator: *mut c_void,
+        result: *mut *mut c_void, object_type: *mut c_void, container: i32,
+        flags: u32, token: Handle, mapping: *const GenericMapping) -> i32;
+    fn DestroyPrivateObjectSecurity(descriptor: *mut *mut c_void) -> i32;
+    fn InitializeSecurityDescriptor(descriptor: *mut c_void, revision: u32) -> i32;
+    fn SetSecurityDescriptorDacl(descriptor: *mut c_void, present: i32,
+        acl: *mut c_void, defaulted: i32) -> i32;
+    fn SetSecurityDescriptorControl(descriptor: *mut c_void, mask: u16, bits: u16) -> i32;
+}
+
+#[link(name = "ntdll")]
+extern "system" {
+    fn NtSetSecurityObject(handle: Handle, information: u32, descriptor: *mut c_void) -> i32;
 }
 
 #[link(name = "OneCoreUAP")]
@@ -450,12 +481,26 @@ impl AppContainerProfile {
         writable: bool) -> Result<AclWitness, IsolationError> {
         let root = open_bound_object(path, expected, true)?;
         let before = collect_tree(path)?;
+        // A protected descendant cannot take an inherited grant. Reject it
+        // before the root authorization changes, including when another SID
+        // has already populated the ordinary children.
+        for (child, identity, directory) in &before {
+            let object = open_physical_object(child, *directory, READ_CONTROL)?;
+            if &file_identity(object.0)? != identity || dacl_protected(object.0)? {
+                return Err(IsolationError::AclWitnessMismatch);
+            }
+        }
         let rights = directory_rights(writable);
         let result = grant_exact_acl(root.0, self.sid, expected, rights,
             OBJECT_AND_CONTAINER_INHERIT)?;
         require_bound_path(path, expected, true)?;
         let after = collect_tree(path)?;
         if before != after { return Err(IsolationError::AclWitnessMismatch); }
+        // A second profile's root grant can succeed while Win32 propagation
+        // leaves already-existing children untouched (notably a held .git
+        // pointer). Derive the missing ACE from each real parent, in memory,
+        // before writing any child. The ordinary strict witness stays below.
+        complete_bound_child_inheritance(root.0, path, expected, self.sid, rights, &after)?;
         let witness = self.verify_bound_tree_grant(path, expected, writable)?;
         if witness.identity != result { return Err(IsolationError::AclWitnessMismatch); }
         Ok(witness)
@@ -1506,6 +1551,235 @@ fn package_aces(handle: Handle, sid: *mut c_void)
     Ok(matched)
 }
 
+// CreatePrivateObjectSecurityEx owns its result; LocalFree is only for the
+// GetSecurityInfo descriptors. Keep candidates alive through the parent-first
+// preflight because a child's parent may itself be a projected descriptor.
+struct PrivateDescriptor(Handle);
+impl Drop for PrivateDescriptor {
+    fn drop(&mut self) {
+        unsafe { DestroyPrivateObjectSecurity(&mut self.0); }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct DaclImage {
+    control: u16,
+    revision: u32,
+    acl_revision: u8,
+    target: Vec<(u32, u32, u32)>,
+    peers: Vec<Vec<u8>>,
+}
+
+fn full_descriptor(handle: Handle) -> Result<LocalAllocation, IsolationError> {
+    let mut descriptor = ptr::null_mut();
+    let status = unsafe { GetSecurityInfo(handle, FILE_OBJECT,
+        OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+        ptr::null_mut(), ptr::null_mut(), ptr::null_mut(), ptr::null_mut(), &mut descriptor) };
+    if status != 0 { return Err(IsolationError::Acl(io::Error::from_raw_os_error(status as i32))); }
+    if descriptor.is_null() { return Err(IsolationError::AclWitnessMismatch); }
+    Ok(LocalAllocation(descriptor))
+}
+
+fn dacl_image(descriptor: Handle, sid: *mut c_void) -> Result<DaclImage, IsolationError> {
+    let mut control = 0u16;
+    let mut revision = 0u32;
+    if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 {
+        return Err(IsolationError::Acl(io::Error::last_os_error()));
+    }
+    let mut present = 0;
+    let mut defaulted = 0;
+    let mut acl = ptr::null_mut();
+    if unsafe { GetSecurityDescriptorDacl(descriptor, &mut present, &mut acl,
+        &mut defaulted) } == 0 {
+        return Err(IsolationError::Acl(io::Error::last_os_error()));
+    }
+    if present == 0 || acl.is_null() { return Err(IsolationError::AclWitnessMismatch); }
+    let acl_revision = unsafe { *acl.cast::<u8>() };
+    let mut size = AclSizeInformation { ace_count: 0, acl_bytes_in_use: 0, acl_bytes_free: 0 };
+    if unsafe { GetAclInformation(acl, (&mut size as *mut AclSizeInformation).cast(),
+        size_of::<AclSizeInformation>() as u32, ACL_SIZE_INFORMATION_CLASS) } == 0 {
+        return Err(IsolationError::Acl(io::Error::last_os_error()));
+    }
+    let mut target = Vec::new();
+    let mut peers = Vec::new();
+    for index in 0..size.ace_count {
+        let mut ace = ptr::null_mut();
+        if unsafe { GetAce(acl, index, &mut ace) } == 0 || ace.is_null() {
+            return Err(IsolationError::AclWitnessMismatch);
+        }
+        let header = unsafe { &*ace.cast::<AceHeader>() };
+        if header.ace_size < 16 ||
+            !matches!(header.ace_type, ACCESS_ALLOWED_ACE_TYPE | ACCESS_DENIED_ACE_TYPE) {
+            return Err(IsolationError::AclWitnessMismatch);
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(ace.cast::<u8>(), header.ace_size as usize) };
+        if unsafe { EqualSid(ace.cast::<u8>().add(8).cast(), sid) } != 0 {
+            let mode = if header.ace_type == ACCESS_ALLOWED_ACE_TYPE {
+                GRANT_ACCESS
+            } else { DENY_ACCESS };
+            target.push((mode, unsafe { (*ace.cast::<AccessAce>()).mask },
+                u32::from(header.ace_flags)));
+        } else {
+            peers.push(bytes.to_vec());
+        }
+    }
+    Ok(DaclImage { control, revision, acl_revision, target, peers })
+}
+
+struct BoundChild {
+    path: PathBuf,
+    identity: RootIdentity,
+    directory: bool,
+    handle: Token,
+    current: LocalAllocation,
+    before: DaclImage,
+    candidate: Option<PrivateDescriptor>,
+}
+
+fn write_derived_dacl(handle: Handle, derived: Handle, control: u16)
+    -> Result<(), IsolationError> {
+    let mut present = 0;
+    let mut defaulted = 0;
+    let mut acl = ptr::null_mut();
+    if unsafe { GetSecurityDescriptorDacl(derived, &mut present, &mut acl,
+        &mut defaulted) } == 0 {
+        return Err(IsolationError::Acl(io::Error::last_os_error()));
+    }
+    if present == 0 || acl.is_null() { return Err(IsolationError::AclWitnessMismatch); }
+    let mut native = DaclDescriptor { revision: 0, reserved: 0, control: 0,
+        owner: ptr::null_mut(), group: ptr::null_mut(), sacl: ptr::null_mut(),
+        dacl: ptr::null_mut() };
+    let descriptor = (&mut native as *mut DaclDescriptor).cast();
+    let mask = SE_DACL_AUTO_INHERIT_REQ | SE_DACL_AUTO_INHERITED | SE_DACL_PROTECTED;
+    // NtSetSecurityObject consumes AUTO_INHERIT_REQ to retain AUTO_INHERITED,
+    // as in the existing Grok same-handle writer. The direct held-tree cloud
+    // readback without this input bit cleared 0x0400 (0x8404 -> 0x8004) despite
+    // exact target/peer ACE bytes. Keep the original persisted control as the
+    // strict postcondition; never accept the request bit as a new stored bit.
+    let bits = control & mask |
+        if control & SE_DACL_AUTO_INHERITED != 0 { SE_DACL_AUTO_INHERIT_REQ } else { 0 };
+    if unsafe { InitializeSecurityDescriptor(descriptor, 1) } == 0 ||
+        unsafe { SetSecurityDescriptorDacl(descriptor, 1, acl, defaulted) } == 0 ||
+        unsafe { SetSecurityDescriptorControl(descriptor, mask, bits) } == 0 {
+        return Err(IsolationError::Acl(io::Error::last_os_error()));
+    }
+    let status = unsafe { NtSetSecurityObject(handle, DACL_SECURITY_INFORMATION, descriptor) };
+    if status < 0 {
+        return Err(IsolationError::Acl(io::Error::new(io::ErrorKind::Other,
+            format!("NtSetSecurityObject status=0x{:08x}", status as u32))));
+    }
+    Ok(())
+}
+
+fn complete_bound_child_inheritance(root_handle: Handle, root: &Path,
+    root_identity: &RootIdentity, sid: *mut c_void, rights: u32,
+    children: &[(PathBuf, RootIdentity, bool)]) -> Result<(), IsolationError> {
+    if &file_identity(root_handle)? != root_identity {
+        return Err(IsolationError::AclWitnessMismatch);
+    }
+    let root_descriptor = full_descriptor(root_handle)?;
+    let mapping = GenericMapping { read: FILE_GENERIC_READ, write: FILE_GENERIC_WRITE,
+        execute: FILE_GENERIC_EXECUTE, all: FILE_ALL_ACCESS };
+    let mut ordered = children.to_vec();
+    ordered.sort_by(|left, right| left.0.components().count()
+        .cmp(&right.0.components().count()).then_with(|| left.0.cmp(&right.0)));
+    let mut bound: Vec<BoundChild> = Vec::with_capacity(ordered.len());
+    for (path, identity, directory) in ordered {
+        let handle = open_bound_object(&path, &identity, directory)?;
+        let current = full_descriptor(handle.0)?;
+        let before = dacl_image(current.0, sid)
+            .map_err(|error| acl_object(error, &path, "read child DACL"))?;
+        if before.control & SE_DACL_PROTECTED != 0 {
+            return Err(IsolationError::AclWitnessMismatch);
+        }
+        let flags = INHERITED_ACE |
+            if directory { OBJECT_AND_CONTAINER_INHERIT } else { NO_INHERITANCE };
+        let expected_target = [(GRANT_ACCESS, rights, flags)];
+        let candidate = if before.target.as_slice() == expected_target {
+            None
+        } else if before.target.is_empty() {
+            let parent = path.parent().ok_or(IsolationError::AclWitnessMismatch)?;
+            let parent_descriptor = if parent == root { root_descriptor.0 } else {
+                let parent_node = bound.iter().find(|node| node.path == parent)
+                    .ok_or(IsolationError::AclWitnessMismatch)?;
+                parent_node.candidate.as_ref().map_or(parent_node.current.0, |sd| sd.0)
+            };
+            let mut projected = ptr::null_mut();
+            // The documented inheritance algorithm drops old INHERITED_ACE
+            // entries from the creator DACL and regenerates them from this
+            // physical parent's descriptor. It never marks an explicit ACE
+            // inherited by hand.
+            if unsafe { CreatePrivateObjectSecurityEx(parent_descriptor, current.0,
+                &mut projected, ptr::null_mut(), i32::from(directory),
+                SEF_DACL_AUTO_INHERIT | SEF_AVOID_PRIVILEGE_CHECK | SEF_AVOID_OWNER_CHECK,
+                ptr::null_mut(), &mapping) } == 0 {
+                return Err(acl_object(IsolationError::Acl(io::Error::last_os_error()),
+                    &path, "derive child inheritance"));
+            }
+            if projected.is_null() { return Err(IsolationError::AclWitnessMismatch); }
+            let projected = PrivateDescriptor(projected);
+            let next = dacl_image(projected.0, sid)
+                .map_err(|error| acl_object(error, &path, "inspect derived child DACL"))?;
+            if next.target.as_slice() != expected_target || next.peers != before.peers ||
+                next.control != before.control || next.revision != before.revision ||
+                next.acl_revision != before.acl_revision {
+                return Err(IsolationError::AclWitnessDetail {
+                    object: path.strip_prefix(root).unwrap_or(&path).to_path_buf(),
+                    sid: "bound package SID".to_owned(),
+                    expected: format!("derived target={expected_target:?}; control before={:#x} next={:#x}; SD revision before={} next={}; ACL revision before={} next={}; peer bytes/order preserved={}",
+                        before.control, next.control, before.revision, next.revision,
+                        before.acl_revision, next.acl_revision, next.peers == before.peers),
+                    observed: next.target,
+                });
+            }
+            Some(projected)
+        } else {
+            return Err(IsolationError::AclWitnessMismatch);
+        };
+        bound.push(BoundChild { path, identity, directory, handle, current, before, candidate });
+    }
+    // Preflight every physical object, control bit and peer byte before the
+    // first child write. Keep all handles pinned through the readback.
+    for node in &bound {
+        if file_identity(node.handle.0)? != node.identity {
+            return Err(IsolationError::AclWitnessMismatch);
+        }
+        require_bound_path(&node.path, &node.identity, node.directory)?;
+        if dacl_image(full_descriptor(node.handle.0)?.0, sid)? != node.before {
+            return Err(IsolationError::AclWitnessMismatch);
+        }
+    }
+    require_bound_path(root, root_identity, true)?;
+    for node in &bound {
+        let Some(projected) = &node.candidate else { continue; };
+        if file_identity(node.handle.0)? != node.identity ||
+            dacl_image(full_descriptor(node.handle.0)?.0, sid)? != node.before {
+            return Err(IsolationError::AclWitnessMismatch);
+        }
+        require_bound_path(&node.path, &node.identity, node.directory)?;
+        write_derived_dacl(node.handle.0, projected.0, node.before.control)
+            .map_err(|error| acl_object(error, &node.path, "write derived child DACL"))?;
+        let observed = full_descriptor(node.handle.0)?;
+        let actual = dacl_image(observed.0, sid)?;
+        let expected = dacl_image(projected.0, sid)?;
+        let identity_matches = file_identity(node.handle.0)? == node.identity;
+        if !identity_matches || actual != expected {
+            return Err(IsolationError::AclWitnessDetail {
+                object: node.path.strip_prefix(root).unwrap_or(&node.path).to_path_buf(),
+                sid: "bound package SID".to_owned(),
+                expected: format!("derived write target={:?}; identity matches={identity_matches}; control expected={:#x} actual={:#x}; SD revision expected={} actual={}; ACL revision expected={} actual={}; peer bytes/order preserved={}",
+                    expected.target, expected.control, actual.control, expected.revision,
+                    actual.revision, expected.acl_revision, actual.acl_revision,
+                    actual.peers == expected.peers),
+                observed: actual.target,
+            });
+        }
+        require_bound_path(&node.path, &node.identity, node.directory)?;
+    }
+    require_bound_path(root, root_identity, true)?;
+    Ok(())
+}
+
 fn grant_exact_acl(handle: Handle, sid: *mut c_void, expected: &RootIdentity,
     rights: u32, inheritance: u32) -> Result<RootIdentity, IsolationError> {
     if &file_identity(handle)? != expected { return Err(IsolationError::AclWitnessMismatch); }
@@ -1902,8 +2176,9 @@ mod tests {
         let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let first = AppContainerProfile::derived_for_test("Gogoke37.HeldAclFirst").unwrap();
         let second = AppContainerProfile::derived_for_test("Gogoke37.HeldAclSecond").unwrap();
-        for held in [false, true] {
-            let case = if held { "held" } else { "control" };
+        for (held, writable) in [(false, true), (true, true), (true, false)] {
+            let case = format!("{}-{}", if held { "held" } else { "control" },
+                if writable { "write" } else { "read" });
             let base = std::env::temp_dir().join(format!(
                 "gogoke-v37-held-acl-{}-{stamp}-{case}", std::process::id()));
             std::fs::create_dir(&base).unwrap();
@@ -1911,9 +2186,35 @@ mod tests {
             let tree = root_lock.canonical_root().canonical_path.join("tree");
             let git = tree.join(".git");
             let leaf = tree.join("ordinary-leaf.txt");
+            let nested = tree.join("nested");
+            let nested_leaf = nested.join("nested-leaf.txt");
             std::fs::create_dir(&tree).unwrap();
+            std::fs::create_dir(&nested).unwrap();
             std::fs::write(&git, b"fixture git pointer marker\n").unwrap();
             std::fs::write(&leaf, b"ordinary physical leaf").unwrap();
+            std::fs::write(&nested_leaf, b"nested physical leaf").unwrap();
+            let denied_peer = AppContainerProfile::derived_for_test("Gogoke37.HeldAclDeniedPeer")
+                .unwrap();
+            let leaf_object = open_physical_object(&leaf, false, READ_CONTROL | WRITE_DAC).unwrap();
+            let leaf_descriptor = full_descriptor(leaf_object.0).unwrap();
+            let mut old_acl = ptr::null_mut();
+            let mut present = 0;
+            let mut defaulted = 0;
+            assert_ne!(unsafe { GetSecurityDescriptorDacl(leaf_descriptor.0, &mut present,
+                &mut old_acl, &mut defaulted) }, 0);
+            assert_ne!(present, 0);
+            let mut denial = ExplicitAccessW { permissions: FILE_GENERIC_WRITE,
+                access_mode: DENY_ACCESS, inheritance: NO_INHERITANCE,
+                trustee: TrusteeW { multiple: ptr::null_mut(), multiple_operation: 0,
+                    form: TRUSTEE_IS_SID, kind: TRUSTEE_IS_UNKNOWN,
+                    name: denied_peer.sid.cast() } };
+            let mut new_acl = ptr::null_mut();
+            assert_eq!(unsafe { SetEntriesInAclW(1, &mut denial, old_acl, &mut new_acl) }, 0);
+            let new_acl = LocalAllocation(new_acl);
+            assert_eq!(unsafe { SetSecurityInfo(leaf_object.0, FILE_OBJECT,
+                DACL_SECURITY_INFORMATION, ptr::null_mut(), ptr::null_mut(),
+                new_acl.0, ptr::null_mut()) }, 0);
+            drop(leaf_object);
             let identity = crate::root::inspect_root(&tree).unwrap().identity;
             // Both cases hold F's .git pointer-file read/share shape before
             // either SID grant. The extra root guard is identical in both.
@@ -1934,20 +2235,53 @@ mod tests {
             assert!(first_result.is_ok(), "first SID grant must succeed in both cases");
             let before = [snapshot(&format!("{case}/root-before"), &tree, &first, &second),
                 snapshot(&format!("{case}/.git-before"), &git, &first, &second),
-                snapshot(&format!("{case}/leaf-before"), &leaf, &first, &second)];
+                snapshot(&format!("{case}/leaf-before"), &leaf, &first, &second),
+                snapshot(&format!("{case}/nested-before"), &nested, &first, &second),
+                snapshot(&format!("{case}/nested-leaf-before"), &nested_leaf, &first, &second)];
+            let peer_before: Vec<DaclImage> = [&git, &leaf, &nested, &nested_leaf]
+                .iter().map(|path| {
+                    let object = open_physical_object(path, path.is_dir(), READ_CONTROL).unwrap();
+                    dacl_image(full_descriptor(object.0).unwrap().0, second.sid).unwrap()
+                }).collect();
             let directory_roots = if held {
                 Some(super::super::compat_module::DirectoryRoots::prepare(
                     &root_lock, &[(tree.clone(), identity.clone())])
                     .expect("hold actual compatibility directory roots"))
             } else { None };
-            let second_result = second.grant_bound_tree(&tree, &identity, true);
+            let second_result = second.grant_bound_tree(&tree, &identity, writable);
             println!("acl-handle-fixture case={case} second_grant={}",
                 result_code(&second_result));
+            let second_witness = second_result.expect("both held and control grants must complete");
+            assert_eq!(second_witness.rights, directory_rights(writable));
+            second.verify_bound_tree_grant(&tree, &identity, writable)
+                .expect("unchanged strict inherited witness");
+            assert_eq!(second.grant_bound_tree(&tree, &identity, writable).unwrap(),
+                second_witness, "repeat grant must be idempotent");
             let after = [snapshot(&format!("{case}/root-after"), &tree, &first, &second),
                 snapshot(&format!("{case}/.git-after"), &git, &first, &second),
-                snapshot(&format!("{case}/leaf-after"), &leaf, &first, &second)];
+                snapshot(&format!("{case}/leaf-after"), &leaf, &first, &second),
+                snapshot(&format!("{case}/nested-after"), &nested, &first, &second),
+                snapshot(&format!("{case}/nested-leaf-after"), &nested_leaf, &first, &second)];
             assert_eq!(before, after, "physical FileIDs changed during ACL experiment");
             assert_eq!(pointer_id, after[1], "held .git pointer FileID changed");
+            for (path, original) in [&git, &leaf, &nested, &nested_leaf]
+                .iter().zip(peer_before.iter()) {
+                let object = open_physical_object(path, path.is_dir(), READ_CONTROL).unwrap();
+                let current = dacl_image(full_descriptor(object.0).unwrap().0, second.sid).unwrap();
+                assert_eq!(current.peers, original.peers, "peer ACE bytes/order changed at {path:?}");
+                assert_eq!(current.control, original.control, "DACL control changed at {path:?}");
+                assert_eq!(current.acl_revision, original.acl_revision,
+                    "ACL revision changed at {path:?}");
+                assert_eq!(current.target.as_slice(), &[(GRANT_ACCESS,
+                    directory_rights(writable), INHERITED_ACE |
+                    if path.is_dir() { OBJECT_AND_CONTAINER_INHERIT } else { NO_INHERITANCE })]);
+            }
+            let created_after = tree.join("created-after-grant.txt");
+            std::fs::write(&created_after, b"new physical leaf").unwrap();
+            let new_object = open_physical_object(&created_after, false, READ_CONTROL).unwrap();
+            assert_eq!(package_aces(new_object.0, second.sid).unwrap().as_slice(),
+                &[(GRANT_ACCESS, directory_rights(writable), INHERITED_ACE)]);
+            drop(new_object);
             println!("acl-handle-fixture case={case} pointer_volume={:#x} pointer_file_id={:02x?}",
                 pointer_id.volume_serial, pointer_id.file_id);
             drop(directory_roots);
@@ -1956,6 +2290,51 @@ mod tests {
             drop(root_lock);
             std::fs::remove_dir_all(base).unwrap();
         }
+    }
+
+    #[test]
+    fn protected_child_rejects_second_bound_sid_before_root_write() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let base = std::env::temp_dir().join(format!(
+            "gogoke-v37-protected-child-{}-{stamp}", std::process::id()));
+        let tree = base.join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        let leaf = tree.join("leaf");
+        std::fs::write(&leaf, b"physical leaf").unwrap();
+        let identity = crate::root::inspect_root(&tree).unwrap().identity;
+        let wrong_identity = crate::root::inspect_root(&base).unwrap().identity;
+        let first = AppContainerProfile::derived_for_test("Gogoke37.ProtectedFirst").unwrap();
+        let second = AppContainerProfile::derived_for_test("Gogoke37.ProtectedSecond").unwrap();
+        first.grant_bound_tree(&tree, &identity, true).unwrap();
+        let leaf_identity = file_identity(open_physical_object(&leaf, false, READ_CONTROL)
+            .unwrap().0).unwrap();
+        let leaf_object = open_bound_object(&leaf, &leaf_identity, false).unwrap();
+        let descriptor = full_descriptor(leaf_object.0).unwrap();
+        let mut acl = ptr::null_mut();
+        let mut present = 0;
+        let mut defaulted = 0;
+        assert_ne!(unsafe { GetSecurityDescriptorDacl(descriptor.0, &mut present,
+            &mut acl, &mut defaulted) }, 0);
+        assert_ne!(present, 0);
+        assert_eq!(unsafe { SetSecurityInfo(leaf_object.0, FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            ptr::null_mut(), ptr::null_mut(), acl, ptr::null_mut()) }, 0);
+        let before = dacl_image(full_descriptor(leaf_object.0).unwrap().0, second.sid).unwrap();
+        assert!(before.target.is_empty());
+        assert!(dacl_protected(leaf_object.0).unwrap());
+        assert!(matches!(second.grant_bound_tree(&tree, &wrong_identity, true),
+            Err(IsolationError::AclWitnessMismatch)));
+        assert!(matches!(second.grant_bound_tree(&tree, &identity, true),
+            Err(IsolationError::AclWitnessMismatch)));
+        let after = dacl_image(full_descriptor(leaf_object.0).unwrap().0, second.sid).unwrap();
+        assert_eq!(before, after, "protected child DACL changed on rejection");
+        let root = open_physical_object(&tree, true, READ_CONTROL).unwrap();
+        assert!(package_aces(root.0, second.sid).unwrap().is_empty(),
+            "preflight must reject before the second root grant");
+        drop(root);
+        drop(leaf_object);
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
