@@ -54,12 +54,17 @@ concurrency:
 jobs:
   native-host-windows-real-axes:
     if: ${{ !inputs.catalog_program_fixture_only && !inputs.security_remainder_source }}
-    name: Native host Windows real process axes
-    # Real-process/focused/full-library and shim evidence stays in this job.
+    name: ${{ matrix.shard == 'all' && 'Native host Windows real process axes' || format('Native host Windows library {0}', matrix.shard) }}
+    # Full-library shards use independent runners so their fixed native fixtures
+    # never execute in separate test processes on the same Windows host.
     # Compile-heavy security mutations run independently below: the combined
     # exact-source run exhausted 105 minutes after the library had passed.
     timeout-minutes: 105
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(inputs.full_library_only && '["runtime","login","session","remainder"]' || '["all"]') }}
     env:
       RUSTUP_TOOLCHAIN: 1.85.1
     steps:
@@ -474,7 +479,41 @@ jobs:
           $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
           New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
           $log = Join-Path $evidenceRoot 'lib-tests.log'
-          $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib -- --nocapture 2>&1 |
+          $shard = '${{ matrix.shard }}'
+          $arguments = @('test','--locked','--manifest-path','apps/desktop/native-host/Cargo.toml','--lib')
+          if ($shard -ne 'all') {
+            $prefixes = [ordered]@{
+              runtime = 'store::product_database::v37_runtime::'
+              login = 'store::product_database::v37_login::'
+              session = 'store::product_database::v37_session::'
+            }
+            if ($shard -notin @('runtime','login','session','remainder')) { throw "Unknown native library shard: $shard" }
+            $listing = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib -- --list 2>&1
+            $listExit = $LASTEXITCODE
+            $listing | Set-Content -LiteralPath (Join-Path $evidenceRoot 'lib-tests-list.log') -Encoding utf8NoBOM
+            $fullNames = @($listing | ForEach-Object { if ($_ -match '^(.+): test$') { $Matches[1] } })
+            $fullSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            foreach ($name in $fullNames) { if (-not $fullSet.Add($name)) { throw "Duplicate original library test: $name" } }
+            $listSummary = [regex]::Matches(($listing -join "`n"), '(?m)^(\d+) tests?, (\d+) benchmarks?$')
+            if ($listExit -ne 0 -or $listSummary.Count -ne 1 -or $fullNames.Count -eq 0 -or
+                $fullNames.Count -ne [int]$listSummary[0].Groups[1].Value -or
+                [int]$listSummary[0].Groups[2].Value -ne 0) { throw "Original native library --list invalid: $shard" }
+            $selected = @($fullNames | Where-Object {
+              $name = $_
+              if ($shard -eq 'remainder') {
+                -not @($prefixes.Values | Where-Object { $name.StartsWith($_, [StringComparison]::Ordinal) }).Count
+              } else {
+                $name.StartsWith($prefixes[$shard], [StringComparison]::Ordinal)
+              }
+            })
+            if ($selected.Count -eq 0) { throw "Original native library shard has zero tests: $shard" }
+            if ($shard -ne 'remainder') { $arguments += $prefixes[$shard] }
+          }
+          $arguments += @('--','--nocapture')
+          if ($shard -eq 'remainder') {
+            foreach ($prefix in $prefixes.Values) { $arguments += @('--skip',$prefix) }
+          }
+          $output = & cargo @arguments 2>&1 |
             Tee-Object -FilePath $log | ForEach-Object { Write-Host $_; $_ }
           $exitCode = $LASTEXITCODE
           $text = $output -join "`n"
@@ -491,6 +530,36 @@ jobs:
             'FAIL'
           } else {
             'PASS'
+          }
+          if ($shard -ne 'all') {
+            # Rust libtest's original bare result lines identify completed names.
+            $completed = @($output | ForEach-Object { if ($_ -match '^test (.+) \.\.\. (ok|FAILED|ignored)$') { $Matches[1] } })
+            $selectedSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            $completedSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            foreach ($name in $selected) { [void]$selectedSet.Add($name) }
+            foreach ($name in $completed) { [void]$completedSet.Add($name) }
+            $measured = if ($summaries.Count -eq 1) { [int]$summaries[0].Groups[5].Value } else { 0 }
+            $filtered = if ($summaries.Count -eq 1) { [int]$summaries[0].Groups[6].Value } else { 0 }
+            if ($running.Count -ne 1 -or $summaries.Count -ne 1 -or
+                $selectedSet.Count -ne $selected.Count -or
+                $completed.Count -ne $selected.Count -or $completedSet.Count -ne $completed.Count -or
+                -not $completedSet.SetEquals([string[]]$selected) -or
+                $discovered -ne ($passed + $testFailed + $skipped + $measured) -or
+                $completed.Count -ne ($passed + $testFailed + $skipped) -or
+                $filtered -ne ($fullNames.Count - $selected.Count)) { $state = 'FAIL_INSTRUMENT' }
+            if ($measured -ne 0 -or $passed -ne $selected.Count) {
+              if ($state -eq 'PASS') { $state = 'FAIL' }
+            }
+            [ordered]@{
+              schema='gogoke.native-library-partition.v1'
+              commit_sha='${{ github.sha }}'
+              run_id='${{ github.run_id }}'
+              run_attempt='${{ github.run_attempt }}'
+              shard=$shard
+              full_names=$fullNames
+              selected_names=$selected
+              completed_names=$completed
+            } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'lib-name-manifest.json') -Encoding utf8NoBOM
           }
           $machineResult = Join-Path $evidenceRoot 'machine-result.json'
           $machine = if (Test-Path -LiteralPath $machineResult -PathType Leaf) {
@@ -518,6 +587,16 @@ jobs:
             state = $state
             log = 'lib-tests.log'
           }
+          if ($shard -ne 'all') {
+            $machine['evidence_scope'] = 'FULL_LIBRARY_PARTITION_NOT_OTHER_GATES'
+            $machine['release_build'] = Get-Content -LiteralPath (Join-Path $evidenceRoot 'release-build-result.json') -Raw | ConvertFrom-Json
+            $machine['lib_tests']['command'] = 'cargo ' + ($arguments -join ' ')
+            $machine['lib_tests']['shard'] = $shard
+            $machine['lib_tests']['full_discovered'] = $fullNames.Count
+            $machine['lib_tests']['selected'] = $selected.Count
+            $machine['lib_tests']['measured'] = $measured
+            $machine['lib_tests']['filtered'] = $filtered
+          }
           $focusedPath = Join-Path $evidenceRoot 'focused-lib-probes.json'
           $machine['focused_lib_probes'] = if (Test-Path -LiteralPath $focusedPath -PathType Leaf) {
             @(Get-Content -LiteralPath $focusedPath -Raw | ConvertFrom-Json)
@@ -527,7 +606,7 @@ jobs:
           $machine | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $machineResult -Encoding utf8NoBOM
           if ($state -ne 'PASS') { throw "Native-host library unit tests failed or did not execute: $state (exit $exitCode)" }
       - name: Test production LPAC path shim behavior in cloud
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && (matrix.shard == 'all' || matrix.shard == 'remainder') }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -547,9 +626,127 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: native-host-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ matrix.shard == 'all' && format('native-host-evidence-{0}-{1}-{2}', github.sha, github.run_id, github.run_attempt) || format('native-host-evidence-{0}-{1}-{2}-{3}', github.sha, github.run_id, github.run_attempt, matrix.shard) }}
           path: ${{ runner.temp }}/gogoke-native-host-evidence
           if-no-files-found: error
+          retention-days: 30
+
+  native-host-library-partitions:
+    if: ${{ always() && inputs.full_library_only && !inputs.security_remainder_source }}
+    needs: native-host-windows-real-axes
+    name: Verify complete native-host library partitions
+    timeout-minutes: 15
+    runs-on: windows-latest
+    steps:
+      - name: Download the four independent original evidence artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-host-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: ${{ runner.temp }}/native-library-partitions
+      - name: Prove original library coverage and all four results
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'native-library-partitions'
+          $shards = @('runtime','login','session','remainder')
+          $baseline = $null
+          $unionSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+          $summary = @()
+          foreach ($shard in $shards) {
+            $artifact = Join-Path $root ('native-host-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-' + $shard)
+            $manifestPath = Join-Path $artifact 'lib-name-manifest.json'
+            $machinePath = Join-Path $artifact 'machine-result.json'
+            $shimPath = Join-Path $artifact 'lpac-path-shim-result.json'
+            if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf) -or
+                -not (Test-Path -LiteralPath $machinePath -PathType Leaf)) { throw "Library partition evidence missing: $shard" }
+            $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+            $machine = Get-Content -LiteralPath $machinePath -Raw | ConvertFrom-Json
+            if ($manifest.schema -cne 'gogoke.native-library-partition.v1' -or
+                $manifest.shard -cne $shard -or $machine.lib_tests.shard -cne $shard -or
+                $manifest.commit_sha -cne '${{ github.sha }}' -or
+                $machine.commit_sha -cne '${{ github.sha }}' -or
+                $manifest.run_id -cne '${{ github.run_id }}' -or
+                $machine.run_id -cne '${{ github.run_id }}' -or
+                $manifest.run_attempt -cne '${{ github.run_attempt }}' -or
+                $machine.run_attempt -cne '${{ github.run_attempt }}' -or
+                $machine.release_build.state -cne 'PASS' -or
+                $machine.lib_tests.state -cne 'PASS' -or
+                [int]$machine.lib_tests.exit_code -ne 0 -or
+                [int]$machine.lib_tests.failed -ne 0 -or
+                [int]$machine.lib_tests.skipped -ne 0 -or
+                [int]$machine.lib_tests.measured -ne 0) { throw "Library partition identity, build or result invalid: $shard" }
+            $full = @($manifest.full_names)
+            $selected = @($manifest.selected_names)
+            $completed = @($manifest.completed_names)
+            $fullSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            foreach ($name in $full) { [void]$fullSet.Add($name) }
+            $selectedSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            foreach ($name in $selected) { [void]$selectedSet.Add($name) }
+            $completedSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            foreach ($name in $completed) { [void]$completedSet.Add($name) }
+            if ($null -eq $baseline) { $baseline = $full }
+            if ($full.Count -eq 0 -or $selected.Count -eq 0 -or
+                $fullSet.Count -ne $full.Count -or
+                -not $fullSet.SetEquals([string[]]$baseline) -or
+                $selected.Count -ne $completed.Count -or
+                $selectedSet.Count -ne $selected.Count -or
+                $completedSet.Count -ne $completed.Count -or
+                -not $completedSet.SetEquals([string[]]$selected) -or
+                [int]$machine.lib_tests.full_discovered -ne $full.Count -or
+                [int]$machine.lib_tests.selected -ne $selected.Count -or
+                [int]$machine.lib_tests.discovered -ne $selected.Count -or
+                [int]$machine.lib_tests.passed -ne $selected.Count -or
+                [int]$machine.lib_tests.executed -ne $selected.Count) { throw "Library partition names or counts invalid: $shard" }
+            $prefixes = @('store::product_database::v37_runtime::','store::product_database::v37_login::','store::product_database::v37_session::')
+            $expected = @($full | Where-Object {
+              $name = $_
+              if ($shard -eq 'remainder') {
+                -not @($prefixes | Where-Object { $name.StartsWith($_, [StringComparison]::Ordinal) }).Count
+              } else {
+                $prefix = $prefixes[@{runtime=0;login=1;session=2}[$shard]]
+                $name.StartsWith($prefix, [StringComparison]::Ordinal)
+              }
+            })
+            if ($expected.Count -ne $selected.Count -or -not $selectedSet.SetEquals([string[]]$expected)) {
+              throw "Library partition selection differs from the full original list: $shard"
+            }
+            if ($shard -eq 'remainder') {
+              if (-not (Test-Path -LiteralPath $shimPath -PathType Leaf)) { throw 'Production LPAC shim result missing' }
+              $shim = Get-Content -LiteralPath $shimPath -Raw | ConvertFrom-Json
+              if ($shim.state -cne 'PASS' -or [int]$shim.exit_code -ne 0 -or
+                  [int]$shim.passed -ne 2 -or [int]$shim.failed -ne 0 -or [int]$shim.skipped -ne 0) {
+                throw 'Production LPAC shim did not pass on the remainder runner'
+              }
+            }
+            foreach ($name in $selected) {
+              if (-not $unionSet.Add($name)) { throw "Library partition overlap: $name" }
+            }
+            $summary += [ordered]@{ shard=$shard; selected=$selected.Count; passed=[int]$machine.lib_tests.passed; artifact=(Split-Path -Leaf $artifact) }
+          }
+          if ($unionSet.Count -ne $baseline.Count -or -not $unionSet.SetEquals([string[]]$baseline)) {
+            throw 'Four completed partitions are not a disjoint union of the full original library list'
+          }
+          [ordered]@{
+            schema='gogoke.native-library-aggregate.v1'
+            commit_sha='${{ github.sha }}'
+            run_id='${{ github.run_id }}'
+            run_attempt='${{ github.run_attempt }}'
+            state='PASS_COMPLETE_ORIGINAL_LIBRARY_AND_LPAC_SHIM'
+            full_discovered=$baseline.Count
+            passed=$unionSet.Count
+            failed=0
+            skipped=0
+            lpac_shim_passed=2
+            partitions=$summary
+            other_native_process_focused_mutation_server_gates='NOT_RUN'
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $root 'native-library-aggregate.json') -Encoding utf8NoBOM
+      - name: Upload complete library partition result
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-library-aggregate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-library-partitions/native-library-aggregate.json
+          if-no-files-found: warn
           retention-days: 30
 
   native-host-windows-security-mutations:
