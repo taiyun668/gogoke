@@ -82,6 +82,10 @@ pub(crate) enum Command {
         cwd: String,
         model: String,
     },
+    ThreadStartSideTools {
+        cwd: String,
+        model: String,
+    },
     ThreadResume {
         thread_id: String,
         cwd: String,
@@ -134,7 +138,8 @@ impl Command {
             Self::ConfigRead { .. } => Some("config/read"),
             Self::FeatureList { .. } => Some("experimentalFeature/list"),
             Self::ModelList { .. } => Some("model/list"),
-            Self::ThreadStart { .. } | Self::ThreadStartHostTools { .. } => Some("thread/start"),
+            Self::ThreadStart { .. } | Self::ThreadStartHostTools { .. } |
+                Self::ThreadStartSideTools { .. } => Some("thread/start"),
             Self::ThreadResume { .. } => Some("thread/resume"),
             Self::TurnStart { .. } => Some("turn/start"),
             Self::TurnSteer { .. } => Some("turn/steer"),
@@ -260,6 +265,13 @@ impl Command {
                     cwd: cwd.clone(), model: model.clone(),
                 }).params()? else { return Err(RpcError::Invalid("host tool thread params")); };
                 fields.insert(k("dynamicTools"), host_tools());
+                return Ok(Json::Object(fields));
+            }
+            Self::ThreadStartSideTools { cwd, model } => {
+                let Json::Object(mut fields) = (Self::ThreadStart {
+                    cwd: cwd.clone(), model: model.clone(),
+                }).params()? else { return Err(RpcError::Invalid("side tool thread params")); };
+                fields.insert(k("dynamicTools"), side_tools());
                 return Ok(Json::Object(fields));
             }
             Self::ThreadResume {
@@ -592,7 +604,8 @@ pub(crate) fn decode(frame: &[u8], pending: Option<(&RpcId, &Command)>) -> Resul
                 cwd: cwd.clone(),
             })
         }
-        Command::ThreadStart { .. } | Command::ThreadStartHostTools { .. } | Command::ThreadResume { .. } => {
+        Command::ThreadStart { .. } | Command::ThreadStartHostTools { .. } |
+            Command::ThreadStartSideTools { .. } | Command::ThreadResume { .. } => {
             let thread = object(field(object(result, "thread result")?, "thread")?, "thread")?;
             let found = string(field(thread, "id")?, "thread id")?;
             let actual_cwd = string(field(thread, "cwd")?, "thread cwd")?;
@@ -727,7 +740,9 @@ pub(crate) fn decode_stored_thread_start(
     let cwd = string(field(params, "cwd")?, "thread cwd")?;
     let model = string(field(params, "model")?, "thread model")?;
     let command = if params.contains_key(&k("dynamicTools")) {
-        Command::ThreadStartHostTools { cwd, model }
+        let side=Command::ThreadStartSideTools {cwd:cwd.clone(),model:model.clone()};
+        if stored_thread_command_matches(&side,&id,command_frame)? {side}
+        else {Command::ThreadStartHostTools { cwd, model }}
     } else { Command::ThreadStart { cwd, model } };
     if !stored_thread_command_matches(&command,&id,command_frame)? {
         return Err(RpcError::Invalid("stored thread command mismatch"));
@@ -1086,17 +1101,25 @@ fn host_tool_input_schema() -> Json {
     ])
 }
 
+fn side_tool() -> Json {
+    let (name,description)=("gogoke_side_message", "send: targetId=the existing side-chat ID, expectedRevision=null, payload={body}. The native host derives the current sender and the only paired lead or side recipient. MESSAGE permission and the Owner-designated project lead are checked at delivery. No domain, seat, session, turn, grant or receipt may be supplied. UNKNOWN means delivery is unconfirmed: do not repeat the message with a new request.");
+    obj([("type", s("function")), ("name", s(name)),
+        ("description", s(description)), ("inputSchema", host_tool_input_schema())])
+}
+fn side_tools() -> Json {Json::Array(vec![side_tool()])}
+
 fn host_tools() -> Json {
-    Json::Array([
+    let mut tools:Vec<Json>=[
         ("gogoke_seat", "Manage only direct subordinate seats in the native parent scope. create-from-template: targetId=new seat ID, expectedRevision='0', payload={layer:'LEAD',templateId,instanceId}. dispatch: targetId=child seat ID, payload={repositoryId,layout:'SINGLE'|'MIXED',body}; confirms submission only and returns the registered logical worktreeId for later graph/merge selection. stop: targetId=child, payload={}; derives the session, proves process stop, then releases admission. state-card: payload={}; reads self or child control facts, not private task output; self includes nativeAnswerSources for its own answered current-turn cards. tune: payload={setting,value}. bind-instance/change-instance: payload={instanceId}. reclaim/short-to-long: payload={}. Existing child operations require its current seat revision as a string. No caller, domain, grant or path is accepted from model arguments."),
         ("gogoke_policy", "Read native permission facts and submit or decide an authorized stage gate."),
         ("gogoke_worktree", "create: targetId=Idle child seat ID, expectedRevision='0', payload={repositoryId,layout:'SINGLE'|'MIXED'}; creates and registers a host-derived worktree and returns worktreeId. merge: targetId=worktreeId, payload={decision:'MERGE',reason}; needs current merge permission and lifecycle revision as a string. No filesystem path, caller or grant is accepted."),
         ("gogoke_takeover", "takeover-answers: targetId=self seat ID, expectedRevision=self current seat revision as a string, payload={cardId,cardAnswerRequestId,answerRevision}. Ask the native requestUserInput questions from the self state-card takeoverQuestions, using their exact question IDs. After the User answers, read self state-card nativeAnswerSources for those opaque references and answerRevision. Only the original already-written current-turn C answer can be consumed; model text alone is not an answer."),
-        ("gogoke_side_message", "send: targetId=the existing side-chat ID, expectedRevision=null, payload={body}. The native host derives the current sender and the only paired lead or side recipient. MESSAGE permission and the Owner-designated project lead are checked at delivery. No domain, seat, session, turn, grant or receipt may be supplied. UNKNOWN means delivery is unconfirmed: do not repeat the message with a new request."),
     ].into_iter().map(|(name, description)| obj([
         ("type", s("function")), ("name", s(name)),
         ("description", s(description)), ("inputSchema", host_tool_input_schema()),
-    ])).collect())
+    ])).collect();
+    tools.push(side_tool());
+    Json::Array(tools)
 }
 
 fn memory_off() -> Json {
@@ -1162,6 +1185,21 @@ fn optional_bool(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn side_thread_registers_only_message_tool_and_recovers_exact_original() {
+        let id=RpcId::Number(2);
+        let command=Command::ThreadStartSideTools {cwd:"D:/sealed-tree".into(),model:"m".into()};
+        let original=command.encode(Some(&id)).unwrap();
+        let Json::Object(frame)=Parser::parse(std::str::from_utf8(&original[..original.len()-1]).unwrap()).unwrap() else {panic!("frame");};
+        let params=object(field(&frame,"params").unwrap(),"params").unwrap();
+        let Json::Array(tools)=field(params,"dynamicTools").unwrap() else {panic!("tools");};
+        assert_eq!(tools.len(),1);
+        assert_eq!(string(field(object(&tools[0],"tool").unwrap(),"name").unwrap(),"name").unwrap(),"gogoke_side_message");
+        let response=b"{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-a\",\"cwd\":\"D:/sealed-tree\"}}}\n";
+        assert_eq!(decode_stored_thread_start(&original,response).unwrap(),"thread-a");
+        let changed=std::str::from_utf8(&original).unwrap().replace("gogoke_side_message","gogoke_policy");
+        assert!(decode_stored_thread_start(changed.as_bytes(),response).is_err());
+    }
     #[test]
     fn thread_overrides_preserve_process_features_and_exact_old_history() {
         let id=RpcId::Number(2);

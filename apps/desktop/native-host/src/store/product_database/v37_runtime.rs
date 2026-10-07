@@ -589,8 +589,10 @@ impl<'root> ProductDatabase<'root> {
                 return Ok(());
             }
             if driver!="codex" {return Err(OrchestrationError::Invalid("native provider metadata resume unsupported"));}
+            let side_tools=ledger::read_registered_session(&self.connection,&key.1)?
+                .ok_or(OrchestrationError::OperationConflict)?.purpose==SessionPurpose::SideChat;
             let host_tools=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?
-                .evidence.host_tools_enabled();
+                .evidence.host_tools_enabled() || side_tools;
             let initialize=if host_tools {Command::InitializeHostTools {client_version:"0.1.0".into()}}
                 else {Command::Initialize {client_version:"0.1.0".into()}};
             self.native_rpc(&key,&format!("{operation_id}-initialize"),Some(1),
@@ -1809,7 +1811,7 @@ impl<'root> ProductDatabase<'root> {
             let driver=run.evidence.driver_id().to_owned();
             let cwd=run.evidence.cwd().to_string_lossy().into_owned();
             let model=run.model.clone();
-            let host_tools=run.evidence.host_tools_enabled();
+            let host_tools=run.evidence.host_tools_enabled() || purpose==SessionPurpose::SideChat;
             let thread_id=match driver.as_str() {
                 "codex" => {
                     let initialize=if host_tools {Command::InitializeHostTools {client_version:"0.1.0".into()}}
@@ -1817,7 +1819,8 @@ impl<'root> ProductDatabase<'root> {
                     self.native_rpc(&key,"initialize",Some(1),&initialize)?;
                     self.native_rpc(&key,"initialized",None,&Command::Initialized)?;
                     self.native_credential_config_read(&key,"config-read",cwd.clone())?;
-                    let start=if host_tools {Command::ThreadStartHostTools {cwd,model}}
+                    let start=if purpose==SessionPurpose::SideChat {Command::ThreadStartSideTools {cwd,model}}
+                        else if host_tools {Command::ThreadStartHostTools {cwd,model}}
                         else {Command::ThreadStart {cwd,model}};
                     let Some(Reply::Thread {thread_id,..})=self.native_rpc(&key,"thread-start",Some(3),&start)? else {
                         return Err(OrchestrationError::Invalid("native open thread response"));
