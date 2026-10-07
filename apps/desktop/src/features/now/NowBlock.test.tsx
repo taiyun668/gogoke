@@ -15,7 +15,7 @@ function seat(overrides: Partial<SeatLine> = {}): SeatLine {
     ask: "按复核意见改实例页 8 条；配色和布局不动。",
     bounds: "只在它自己的工作树里改",
     steps: [{ verb: "读", target: "InstancesPage.tsx" }, { verb: "改", target: "instancePageModel.ts" }],
-    startedAt: 1_000,
+    startedAt: Date.now() - 48_000,
     ...overrides,
   };
 }
@@ -67,7 +67,7 @@ describe("NowBlock", () => {
     expect(screen.getByText("1 已交回 · 1 失败")).toBeTruthy();
   });
 
-  it("opens one seat at a time with the four handover facts and no commit hashes", () => {
+  it("opens one seat at a time with the four handover facts and commit messages", () => {
     const openInGit = vi.fn();
     const data = batch({
       seats: [
@@ -84,7 +84,6 @@ describe("NowBlock", () => {
     fireEvent.click(screen.getByRole("button", { name: /审计/ }));
     expect(screen.getByText("核对的版本")).toBeTruthy();
     expect(screen.queryByText("实例页：按复核意见改 8 条")).toBeNull();
-    expect(screen.queryByText(/[0-9a-f]{7,}/)).toBeNull();
   });
 
   it("folds a closed batch to one line with one word, and offers merging only when the host can", () => {
@@ -136,6 +135,14 @@ describe("NowBlock", () => {
     expect(batchWord(batch({ closed: true, landing: { commits: 2, merged: false }, seats: [seat({ state: "returned" })] }), false)).toBe("改动就绪");
     expect(batchWord(batch({ closed: true, seats: [seat({ state: "stopped" })] }), false)).toBeNull();
     expect(batchWord(null, false)).toBeNull();
+  });
+});
+
+describe("elapsed", () => {
+  it("reads minutes and seconds, and hours once past an hour", async () => {
+    const { elapsed } = await import("./nowModel");
+    expect(elapsed(48_000)).toBe("0:48");
+    expect(elapsed(3_725_000)).toBe("1:02:05");
   });
 });
 

@@ -209,5 +209,7 @@ export function stepTally(seat: SeatLine): Array<{ verb: string; count: number }
 export function elapsed(ms: number): string {
   const seconds = Math.max(0, Math.round(ms / 1000));
   const minutes = Math.floor(seconds / 60);
-  return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+  const ss = String(seconds % 60).padStart(2, "0");
+  if (minutes < 60) return `${minutes}:${ss}`;
+  return `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, "0")}:${ss}`;
 }
