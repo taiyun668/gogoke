@@ -2,7 +2,7 @@
 //! Logical IDs select stored facts; they never supply a path or permission.
 use super::runtime::{self, ClaimObservation, InstancePin, SessionPhase};
 use super::provider_evidence::commands;
-use super::session_binding::{Provenance, SessionBinding};
+use super::session_binding::{self, Provenance, SessionBinding};
 use crate::process::{AppContainerProfile, CompatModule, DirectoryRoots, NativeBinding, PrepareRequest, ProcessLaunch};
 use crate::root::{RootIdentity, RootLock};
 use crate::store::authority::{self, OwnerIssuer, ProductIdentitySnapshot};
@@ -448,14 +448,39 @@ impl LaunchEvidence {
     pub(crate) fn adopt_resume(&mut self, db: &VerifiedDatabaseConnection<'_>,
         owner: &OwnerIssuer, operation: &str) -> Result<(),String> {
         if self.resume_old.is_none() {return Err("native resume evidence already adopted".into());}
-        self.seat=evidence(seat::get(db,&self.seat.domain_id,&self.seat.seat_id))?
+        let current_seat=evidence(seat::get(db,&self.seat.domain_id,&self.seat.seat_id))?
             .ok_or("native resume seat disappeared")?;
-        self.claim=evidence(runtime::observe_claim(db,&NativeOrigin::user(owner),
+        let initial=evidence(session_binding::read(db,&self.claim.domain_id,&self.claim.session_id))?;
+        let pending=evidence(session_binding::read_pending(db,&self.claim.domain_id,&self.claim.session_id))?;
+        let native=match (initial.as_ref(),pending.as_ref()) {
+            (Some(binding),Some(selection)) if binding.provenance==Provenance::NativeV2
+                && binding==selection => {
+                if current_seat!=self.seat
+                    || binding.seat_id!=self.seat.seat_id
+                    || binding.seat_incarnation!=self.seat.incarnation
+                    || binding.seat_authorization_generation!=self.seat.generation
+                    || binding.selected_instance_id!=self.claim.instance_id {
+                    return Err("native resume: sealed E selection changed".into());
+                }
+                true
+            },
+            (None,None)=>false,
+            (Some(binding),None) if binding.provenance==Provenance::LegacyV1=>false,
+            _=>return Err("native resume: original relationship changed".into()),
+        };
+        let next_claim=evidence(runtime::observe_claim(db,&NativeOrigin::user(owner),
             &self.claim.domain_id,&self.seat.seat_id,&self.claim.session_id))?
             .ok_or("native resume claim disappeared")?;
-        if self.claim.process_operation_id.as_deref()!=Some(operation) {
+        if next_claim.process_operation_id.as_deref()!=Some(operation)
+            || next_claim.generation!=self.claim.generation
+            || next_claim.instance_id!=self.claim.instance_id
+            || next_claim.home_id!=self.claim.home_id
+            || next_claim.binding_id!=self.claim.binding_id
+            || next_claim.phase!=SessionPhase::Committed {
             return Err("native resume operation not current".into());
         }
+        if !native {self.seat=current_seat;}
+        self.claim=next_claim;
         self.resume_old=None;
         self.resume_request_id=None;
         Ok(())
