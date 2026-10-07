@@ -27,7 +27,8 @@ fn error_status(error:&SeatError)->V37Status {
         SeatError::Busy=>V37Status::Conflict,
         SeatError::Unknown|SeatError::Store(_)|SeatError::Open(_)|
         SeatError::CommitUnknown(_)|SeatError::RollbackUnknown(_)|
-        SeatError::HostResourceObservation(_)|SeatError::HostHealthObservation(_)|SeatError::SchemaDrift=>V37Status::Unknown,
+        SeatError::HostResourceObservation(_)|SeatError::HostHealthObservation(_)|
+        SeatError::InstanceManagement(_)|SeatError::SchemaDrift=>V37Status::Unknown,
     }
 }
 

@@ -118,7 +118,7 @@ fn status_for(error: &SeatError, request: &V37Request, present: Option<&Seat>) -
         SeatError::Unknown => V37Status::Conflict,
         SeatError::Store(_) | SeatError::Open(_) | SeatError::CommitUnknown(_)
         | SeatError::RollbackUnknown(_) | SeatError::HostResourceObservation(_) | SeatError::HostHealthObservation(_)
-        | SeatError::SchemaDrift => V37Status::Unknown,
+        | SeatError::InstanceManagement(_) | SeatError::SchemaDrift => V37Status::Unknown,
     }
 }
 
@@ -756,7 +756,9 @@ impl<'root> ProductDatabase<'root> {
                 }
             }
             "tune" | "bind-instance" | "change-instance" | "reclaim" | "short-to-long" => {
-                let expected_fields: &[&str] = if matches!(request.operation.as_str(), "bind-instance" | "change-instance") {
+                let expected_fields: &[&str] = if request.operation == "change-instance" {
+                    &["instanceId", "model", "effort", "permissionTier"]
+                } else if request.operation == "bind-instance" {
                     &["instanceId"]
                 } else if request.operation == "tune" {
                     &["setting", "value"]
@@ -792,7 +794,12 @@ impl<'root> ProductDatabase<'root> {
                             Ok(value) => value,
                             Err(_) => return Ok(receipt(request, V37Status::Denied, prior_revision, prior_revision, BTreeMap::new())),
                         };
-                        seat::change_instance(&mut self.connection, native, change, &instance_id)
+                        let model = string_field(&request.payload, "model")?;
+                        let effort = string_field(&request.payload, "effort")?;
+                        let permission = request.payload.get(&key("permissionTier"))
+                            .expect("exact payload").canonical();
+                        seat::configure_instance(&mut self.connection, native, change,
+                            &instance_id, &model, &effort, &permission)
                     }
                     "reclaim" => seat::reclaim(&mut self.connection, native, change),
                     _ => seat::promote(&mut self.connection, native, change),

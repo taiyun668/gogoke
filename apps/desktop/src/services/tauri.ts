@@ -63,10 +63,21 @@ export function createDesign37SeatsSource<Page>(domainId: string | null) {
   const tune = async (id: string, input: NativeSeatTune): Promise<void> => {
     let row = await current(id);
     if (!row.allowed.tune) throw new Error("Native host currently refuses tuning this seat.");
-    if (input.instanceId !== row.instance.id) {
-      if (!row.allowed.changeInstance) throw new Error("Native host currently refuses changing this instance.");
-      await operation("change-instance", id, row._revision, { instanceId: input.instanceId });
-      row = await current(id);
+    const changingInstance = input.instanceId !== row.instance.id;
+    if (changingInstance && !row.allowed.changeInstance) {
+      throw new Error("Native host currently refuses changing this instance.");
+    }
+    if (changingInstance && (input.model === undefined || !input.model || !input.effort)) {
+      throw new Error("The new instance has no verified selected model and effort; the original binding is unchanged.");
+    }
+    if (input.model !== undefined && input.model && input.effort) {
+      // One native transaction replaces binding and complete configuration.
+      // The same route can repair an earlier partial change on this instance.
+      await operation("change-instance", id, row._revision, {
+        instanceId: input.instanceId, model: input.model,
+        effort: input.effort, permissionTier: input.permission,
+      });
+      return;
     }
     const fields: Array<[string, unknown]> = [["permissionTier", input.permission]];
     if (input.effort) fields.unshift([
