@@ -237,7 +237,7 @@ pub(crate) fn change_secretary_routine(db:&mut VerifiedDatabaseConnection<'_>,is
         }
         let state=match input.command {
             SecretaryRoutineCommand::Pause if before.state=="ACTIVE"||before.state=="WAITING_NEXT"=>"PAUSED",
-            SecretaryRoutineCommand::Resume if before.state=="PAUSED"||before.state=="ABSENCE_PAUSED"=>"ACTIVE",
+            SecretaryRoutineCommand::Resume if before.state=="PAUSED"||before.state=="ABSENCE_PAUSED"||before.state=="WAITING_NEXT"=>"ACTIVE",
             SecretaryRoutineCommand::Delete if before.state!="DELETED"=>"DELETED",
             _=>return Err(SeatError::Denied),
         };
@@ -438,9 +438,6 @@ pub(crate) fn record_secretary_occurrence_outcome_in_transaction(
     if before.state!="WAITING_NEXT"&&before.state!="PAUSED"&&before.state!="DELETED" {
         return Err(SeatError::Denied);
     }
-    if before.state=="WAITING_NEXT"&&outcome!=SecretaryOccurrenceOutcome::Unknown&&next_due_ms.is_none() {
-        return Err(SeatError::Invalid("next_due_ms"));
-    }
     let q=Statement::prepare(db.as_ptr(),"SELECT state FROM main.gogoke_v37_seat_secretary_occurrences WHERE occurrence_id=?1 AND routine_id=?2")?;
     q.bind_text(1,occurrence_id)?;q.bind_text(2,routine_id)?;
     if !q.step_row()?||q.column_text(0)?!="UNKNOWN" {return Err(SeatError::Denied);}
@@ -449,9 +446,12 @@ pub(crate) fn record_secretary_occurrence_outcome_in_transaction(
     q.bind_text(1,outcome.sql())?;q.bind_text(2,h_receipt_id)?;
     q.bind_text(3,original_reason)?;q.bind_text(4,occurrence_id)?;q.bind_text(5,routine_id)?;q.step_done()?;
     let revision=before.revision.checked_add(1).ok_or(SeatError::Conflict)?;
-    let state=if before.state=="WAITING_NEXT"&&outcome!=SecretaryOccurrenceOutcome::Unknown {"ACTIVE"} else {before.state.as_str()};
-    let due=if state=="ACTIVE" {next_due_ms.ok_or(SeatError::Invalid("next_due_ms"))?}
-        else {before.next_due_ms};
+    let state=if before.state=="WAITING_NEXT"&&outcome!=SecretaryOccurrenceOutcome::Unknown&&next_due_ms.is_some() {
+        "ACTIVE"
+    } else {before.state.as_str()};
+    let due=if before.state=="WAITING_NEXT"&&outcome!=SecretaryOccurrenceOutcome::Unknown {
+        next_due_ms.unwrap_or(0)
+    } else {before.next_due_ms};
     let q=Statement::prepare(db.as_ptr(),"UPDATE main.gogoke_v37_seat_secretary_routines SET state=?1,next_due_ms=?2,revision=?3,last_result=?4,last_reason=?5 WHERE routine_id=?6 AND revision=?7")?;
     q.bind_text(1,state)?;q.bind_i64(2,due)?;q.bind_i64(3,revision)?;
     q.bind_text(4,outcome.sql())?;q.bind_text(5,original_reason)?;

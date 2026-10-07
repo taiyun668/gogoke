@@ -461,6 +461,28 @@ fn secretary_routines_replay_absence_and_unknown_are_fail_closed() {
             request_bytes:b"resume settled B",command:SecretaryRoutineCommand::Resume,
             next_due_ms:Some(400),now_ms:303}).unwrap();
         assert_eq!(resumed_b.state,"ACTIVE");
+        record_user_presence(db,owner,"presenceD",UserPresenceKind::Input,
+            "userInputD","epochA","5",395,395).unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        let reserved_b=take_due_secretary_routine_in_transaction(db,owner,"routineB",7,400).unwrap();
+        let SecretaryRoutineDecision::Reserved {occurrence_id:second_b,revision:second_revision}=reserved_b else {panic!("expected B second reservation");};
+        assert_eq!(second_revision,8);
+        let without_next=record_secretary_occurrence_outcome_in_transaction(db,owner,"routineB",
+            &second_b,8,SecretaryOccurrenceOutcome::Failed,"hReceiptB2",
+            "B second original failure",None,401).unwrap();
+        assert_eq!(without_next.state,"WAITING_NEXT");
+        assert_eq!(without_next.next_due_ms,0);
+        assert_eq!(without_next.last_result,"FAILED");
+        assert_eq!(without_next.last_reason,"B second original failure");
+        assert_eq!(take_due_secretary_routine_in_transaction(db,owner,"routineB",9,402).unwrap(),
+            SecretaryRoutineDecision::NotDue);
+        db.execute("COMMIT").unwrap();
+        let (explicit_b,_)=change_secretary_routine(db,owner,SecretaryRoutineChange {
+            routine_id:"routineB",expected_revision:9,request_id:"resumeNoNextB",
+            request_bytes:b"resume B after no next",command:SecretaryRoutineCommand::Resume,
+            next_due_ms:Some(500),now_ms:403}).unwrap();
+        assert_eq!(explicit_b.state,"ACTIVE");
+        assert_eq!(explicit_b.next_due_ms,500);
         let current=get(db,"global","routineSecretary").unwrap().unwrap();
         reclaim(db,NativeOrigin::user(owner),SeatChange {domain_id:"global",
             seat_id:&current.seat_id,expected_generation:current.generation,
