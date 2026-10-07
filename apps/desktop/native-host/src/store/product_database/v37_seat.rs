@@ -326,7 +326,7 @@ impl<'root> ProductDatabase<'root> {
             for ((session_domain, session_id), run) in &self.native_sessions {
                 if session_domain != domain || run.evidence.seat_id() != seat.seat_id
                     || run.evidence.seat_incarnation() != seat.incarnation { continue; }
-                let Some(relationship)=h::session_binding::current_relationship(
+                let Some(relationship)=crate::store::session_transport::session_binding::current_relationship(
                     &self.connection,domain,session_id).map_err(|error|
                         OrchestrationError::V37StoreFailure(format!("seat running relationship: {error:?}")))?
                     else { continue; };
