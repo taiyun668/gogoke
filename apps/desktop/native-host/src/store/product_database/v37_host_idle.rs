@@ -62,6 +62,14 @@ impl<'root> ProductDatabase<'root> {
     /// Re-read original A at the authority safe point. Every observation is
     /// tied to the retained process ticket/nonce and this exact generation.
     pub(super) fn host_rule_recipient_idle(&mut self, key: &(String, String)) -> Result<bool> {
+        self.recipient_idle_with_purpose(key,ledger::SessionPurpose::Work)
+    }
+    pub(super) fn side_recipient_idle(&mut self,key:&(String,String),
+        purpose:ledger::SessionPurpose)->Result<bool> {
+        self.recipient_idle_with_purpose(key,purpose)
+    }
+    fn recipient_idle_with_purpose(&mut self, key:&(String,String),
+        purpose:ledger::SessionPurpose)->Result<bool> {
         let Some(run) = self.native_sessions.get(key) else { return Ok(false); };
         if run.evidence.driver_id() != "codex" || !run.allows_input() || run.turn_id.is_some() {
             return Ok(false);
@@ -72,7 +80,7 @@ impl<'root> ProductDatabase<'root> {
         let seat = run.evidence.seat_id().to_owned();
         if ledger::read_registered_session(&self.connection, &key.1)?
             .is_none_or(|registration| registration.domain_id != key.0 || registration.seat_id != seat
-                || registration.purpose != ledger::SessionPurpose::Work) {
+                || registration.purpose != purpose) {
             return Ok(false);
         }
         if h::generation_change::active_for_session(&self.connection, &key.0, &key.1)?.is_some() {

@@ -6,11 +6,13 @@ use super::*;
 use crate::store::atomic::Parser;
 use crate::store::ledger;
 use crate::store::sidechat::{self as d, SideError};
+use crate::store::seat::{self,NativeSeatCall,CallAction};
 
 const OPEN: &str = "gogoke.37.owner-side-open.v1";
 const QUESTION: &str = "gogoke.37.owner-side-question.v1";
 const COLLECT: &str = "gogoke.37.owner-side-collect.v1";
 const THREAD: &str = "gogoke.37.owner-side-thread.v1";
+const LIST: &str = "gogoke.37.owner-side-list.v1";
 const QUESTION_BOUNDARY: &str = "\nExplicit user question:\n";
 
 fn key(name: &str) -> JsonString { JsonString::from_str(name) }
@@ -56,10 +58,77 @@ pub(super) fn is_owner_side_frame(frame: &[u8]) -> bool {
     let Ok(value)=std::str::from_utf8(frame) else {return false;};
     let Ok(Json::Object(fields))=Parser::parse(value) else {return false;};
     matches!(fields.get(&key("schema")),Some(Json::String(schema))
-        if matches!(schema.to_well_formed_string().as_deref(),Some(OPEN|QUESTION|COLLECT|THREAD)))
+        if matches!(schema.to_well_formed_string().as_deref(),Some(OPEN|QUESTION|COLLECT|THREAD|LIST)))
 }
 
 impl<'root> ProductDatabase<'root> {
+    /// Native model tool, separate from every Owner frame. Model arguments
+    /// name only an existing side and the words to send; D/E/H derive every
+    /// principal, target and one-shot C identity from sealed current facts.
+    pub(super) fn dispatch_model_side_message(&mut self,caller:&NativeSeatCall)->Result<Vec<u8>> {
+        if caller.tool()!=Some("gogoke_side_message") {return Err(OrchestrationError::AccessDenied);}
+        let args=caller.arguments_json().ok_or(OrchestrationError::AccessDenied)?;
+        let Json::Object(mut fields)=Parser::parse(args)? else {return Err(OrchestrationError::Invalid("side tool arguments"));};
+        if fields.len()!=4 || string(&mut fields,"operation")?!="send" ||
+            !matches!(fields.remove(&key("expectedRevision")),Some(Json::Null)) {
+            return Err(OrchestrationError::Invalid("side tool operation"));
+        }
+        let side_id=string(&mut fields,"targetId")?;
+        let Some(Json::Object(mut payload))=fields.remove(&key("payload")) else {
+            return Err(OrchestrationError::Invalid("side tool payload"));
+        };
+        if !fields.is_empty() || payload.len()!=1 {return Err(OrchestrationError::Invalid("side tool fields"));}
+        let body=string(&mut payload,"body")?;
+        if !payload.is_empty() {return Err(OrchestrationError::Invalid("side tool body"));}
+        let domain=caller.domain_id();
+        let id=caller.host_request_id().ok_or(OrchestrationError::AccessDenied)?;
+        let session=caller.session_id().ok_or(OrchestrationError::AccessDenied)?;
+        let side=d::list(&mut self.connection,&self.owner,domain).map_err(side_error)?
+            .into_iter().find(|row|row.side_id==side_id).ok_or(OrchestrationError::AccessDenied)?;
+        let direction=if caller.seat_id()==side.seat_id && caller.incarnation()==side.seat_incarnation {
+            d::delivery::Direction::SideToLead
+        } else if caller.seat_id()==side.source_seat_id && caller.incarnation()==side.source_seat_incarnation {
+            d::delivery::Direction::LeadToSide
+        } else {return Err(OrchestrationError::AccessDenied)};
+        let lead_id=side.source_seat_id.clone();let lead_inc=side.source_seat_incarnation.clone();
+        let intent=d::delivery::prepare(&mut self.connection,&self.owner,domain,&side_id,id,session,
+            direction,&body,|db,source,target| {
+                let lead=Statement::prepare(db.as_ptr(),"SELECT 1 FROM main.gogoke_v37_seat_project_lead WHERE domain_id=?1 AND seat_id=?2 AND incarnation=?3")?;
+                lead.bind_text(1,domain)?;lead.bind_text(2,&lead_id)?;lead.bind_text(3,&lead_inc)?;
+                if !lead.step_row()? || lead.step_row()? {return Ok(false);}
+                if source!=caller.seat_id() {return Ok(false);}
+                match seat::authorize_current_call(db,caller,domain,target,CallAction::Message) {
+                    Ok(_)=>Ok(true),
+                    Err(seat::SeatError::Denied|seat::SeatError::Conflict)=>Ok(false),
+                    Err(error)=>Err(SideError::Corrupt(format!("E MESSAGE authority: {error:?}"))),
+                }
+            }).map_err(side_error)?;
+        if intent.may_dispatch {
+            if let Err(error)=self.dispatch_side_delivery(&intent,caller) {
+                d::delivery::record_error(&mut self.connection,&self.owner,domain,id,&format!("{error:?}"))
+                    .map_err(side_error)?;
+            }
+        }
+        let observed=d::delivery::observe(&mut self.connection,&self.owner,domain,id).map_err(side_error)?;
+        let status=match observed.state {
+            d::delivery::DeliveryState::Steered|d::delivery::DeliveryState::NewTurn=>V37Status::Applied,
+            d::delivery::DeliveryState::Failed=>V37Status::Failed,
+            d::delivery::DeliveryState::Unknown=>V37Status::Unknown,
+        };
+        let kind=match observed.state {
+            d::delivery::DeliveryState::Steered=>"steered",d::delivery::DeliveryState::NewTurn=>"new-turn",
+            d::delivery::DeliveryState::Failed=>"failed",d::delivery::DeliveryState::Unknown=>"unknown",
+        };
+        let receipt=V37Request {raw_bytes:Vec::new(),family:"K-INBOX".into(),operation:"deliver".into(),
+            request_id:id.into(),target_id:intent.message_id.clone(),domain_id:domain.into(),
+            expected_revision:0,payload:BTreeMap::new()};
+        Ok(encode_receipt(&receipt,status,0,0,BTreeMap::from([
+            (key("state"),text(kind)),(key("sourceSeatId"),text(&intent.source_seat_id)),
+            (key("targetSeatId"),text(&intent.target_seat_id)),
+            (key("nativeReceiptId"),text(&observed.native_receipt_id)),
+            (key("reason"),text(&observed.reason)),
+        ])))
+    }
     /// All lifecycle mutations remain D's existing same-connection operations.
     /// Fresh creation requires the native side-open composition below; a plain
     /// wire request cannot manufacture the source or SIDE_CHAT registration.
@@ -91,6 +160,60 @@ impl<'root> ProductDatabase<'root> {
             return Err(OrchestrationError::Invalid("owner side object"));
         };
         match string(&mut fields,"schema")?.as_str() {
+            LIST => {
+                let domain=string(&mut fields,"domainId")?;
+                if !fields.is_empty() {return Err(OrchestrationError::Invalid("side list fields"));}
+                let head=ledger::recover(&self.connection)?;
+                let registry=d::list(&mut self.connection,&self.owner,&domain).map_err(side_error)?;
+                let mut chats=Vec::new();
+                for side in registry {
+                    let lines=d::delivery::lines(&mut self.connection,&self.owner,&domain,&side.side_id)
+                        .map_err(side_error)?;
+                    let mut transfers=Vec::new();
+                    for line in lines {
+                        let state=match line.state {
+                            d::delivery::DeliveryState::Steered=>"steered",
+                            d::delivery::DeliveryState::NewTurn=>"new-turn",
+                            d::delivery::DeliveryState::Failed=>"failed",
+                            d::delivery::DeliveryState::Unknown=>"unknown",
+                        };
+                        transfers.push(Json::Object(BTreeMap::from([
+                            (key("id"),text(&line.intent.request_id)),
+                            (key("direction"),text(&line.intent.direction)),
+                            (key("sourceSeatId"),text(&line.intent.source_seat_id)),
+                            (key("targetSeatId"),text(&line.intent.target_seat_id)),
+                            (key("body"),text(&line.intent.body)),
+                            (key("createdAt"),text(&line.intent.created_at)),
+                            (key("state"),text(state)),
+                            (key("reason"),text(&line.reason)),
+                            (key("nativeReceiptId"),text(&line.native_receipt_id)),
+                        ])));
+                    }
+                    chats.push(Json::Object(BTreeMap::from([
+                        (key("sideId"),text(&side.side_id)),(key("state"),text(&side.state)),
+                        (key("seatId"),text(&side.seat_id)),
+                        (key("seatIncarnation"),text(&side.seat_incarnation)),
+                        (key("sourceSeatId"),text(&side.source_seat_id)),
+                        (key("sourceSeatIncarnation"),text(&side.source_seat_incarnation)),
+                        (key("sourceEpoch"),text(&side.epoch)),
+                        (key("sourceCursor"),text(&side.cursor.to_string())),
+                        (key("syncedCursor"),text(&side.synced_cursor.to_string())),
+                        (key("revision"),text(&side.revision.to_string())),
+                        (key("transfers"),Json::Array(transfers)),
+                    ])));
+                }
+                let bytes=Json::Object(BTreeMap::from([
+                    (key("schema"),text("gogoke.37.side-list.v1")),
+                    (key("domainId"),text(&domain)),
+                    (key("ledgerEpoch"),text(&head.epoch)),
+                    (key("ledgerCursor"),text(&head.cursor.to_string())),
+                    (key("chats"),Json::Array(chats)),
+                ])).canonical().into_bytes();
+                if bytes.len()>crate::ipc::MAX_FRAME_BYTES {
+                    return Err(OrchestrationError::Invalid("side list exceeds transport bound"));
+                }
+                Ok(bytes)
+            },
             OPEN => {
                 let source=string(&mut fields,"sourceSessionId")?;
                 let open=decode(string(&mut fields,"openRequest")?.as_bytes())?;

@@ -56,6 +56,7 @@ impl<'root> ProductDatabase<'root> {
     }
 
     pub(super) fn pump_host_rules(&mut self)->Result<()> {
+        self.settle_original_side_deliveries()?;
         self.settle_original_host_deliveries()?;
         self.cleanup_host_rule_preparations()?;
         self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
@@ -245,6 +246,42 @@ impl<'root> ProductDatabase<'root> {
             let evidence=seat::NativeDeliveryEvidence::from_verified_c_delivery(&domain,&trigger,&escalation,
                 &destination,&operation.native_receipt_id).map_err(failure)?;
             seat::settle_escalation(&mut self.connection,&evidence).map_err(failure)?;
+        }
+        Ok(())
+    }
+
+    /// Reconcile D's existing UNKNOWN sends on the Host rule safe point.
+    /// Only H/A original receipts settle C; this path never calls H send.
+    fn settle_original_side_deliveries(&mut self)->Result<()> {
+        let query=Statement::prepare(self.connection.as_ptr(),
+            "SELECT o.domain_id,o.message_id FROM main.gogoke_v37_inbox_operations o JOIN main.gogoke_v37_inbox_messages m ON m.domain_id=o.domain_id AND m.message_id=o.message_id WHERE o.request_id LIKE 'sidedeliver-%' AND o.phase='UNKNOWN' AND m.state='UNKNOWN' ORDER BY o.domain_id,o.message_id")?;
+        let mut rows=Vec::new();while query.step_row()? {rows.push((query.column_text(0)?,query.column_text(1)?));}drop(query);
+        for (domain,message) in rows {
+            let Some(intent)=crate::store::sidechat::delivery::intent_for_message(&self.connection,&domain,&message)
+                .map_err(failure)? else {return Err(OrchestrationError::OperationConflict);};
+            let journal=Statement::prepare(self.connection.as_ptr(),
+                "SELECT ticket FROM main.gogoke_v37_h_stdin_journal WHERE domain_id=?1 AND request_id=?2")?;
+            journal.bind_text(1,&domain)?;journal.bind_text(2,&intent.send_request_id())?;
+            if !journal.step_row()? {
+                drop(journal);
+                self.record_side_unknown(&intent,"original H send journal absent; delivery unconfirmed")?;
+                continue;
+            }
+            let ticket=journal.column_text(0)?;
+            if journal.step_row()? {return Err(OrchestrationError::OperationConflict);}drop(journal);
+            h::rpc_journal::reconcile_written_sends_from_a(&mut self.connection,&self.owner,
+                &domain,&intent.target_session_id,&intent.target_generation).map_err(failure)?;
+            h::reconcile_observed_codex_sends(&mut self.connection,&domain,&intent.target_session_id,
+                &intent.target_generation).map_err(failure)?;
+            let target=c::HostDeliveryTarget {session_id:&intent.target_session_id,ticket:&ticket,
+                generation:&intent.target_generation};
+            match c::settle_side_turn_start_observed(&mut self.connection,&self.owner,&intent,&target) {
+                Ok(_)=>{},
+                Err(error @ (inbox::InboxError::Unknown|inbox::InboxError::Denied))=>{
+                    self.record_side_unknown(&intent,&format!("original H/A recovery: {error:?}"))?;
+                },
+                Err(error)=>return Err(failure(error)),
+            }
         }
         Ok(())
     }

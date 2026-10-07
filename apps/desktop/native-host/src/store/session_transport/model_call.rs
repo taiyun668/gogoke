@@ -324,7 +324,7 @@ fn build_from_captured_source(db:&VerifiedDatabaseConnection<'_>,
     if call.namespace.is_some() || call.thread_id!=expected_thread
         || call.turn_id!=expected_turn
         || !matches!(call.tool.as_str(),"gogoke_seat"|"gogoke_policy"|
-            "gogoke_worktree"|"gogoke_takeover") {
+            "gogoke_worktree"|"gogoke_takeover"|"gogoke_side_message") {
         return Err(ModelCallError::Denied);
     }
     let (operation,open_request_id,seat,incarnation)=
