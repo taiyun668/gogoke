@@ -1,0 +1,663 @@
+/* 正在进行: the lead's dispatch as a work tree at the end of the lead's output.
+   Structure from the approved demo (docs/design/demos/gogo-work-tree.html v8);
+   gogoke tokens only, plus the original working-spinner. */
+
+.now {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--cm-border-default);
+  border-radius: 12px;
+  background: var(--cm-surface-panel-soft);
+  overflow: hidden;
+  font-size: 12px;
+}
+
+.now-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-faint);
+  text-align: left;
+  cursor: pointer;
+}
+
+button.now-head:hover {
+  background: var(--cm-surface-panel);
+  transform: none;
+  box-shadow: none;
+}
+
+.now-head:focus-visible,
+.now-node:focus-visible {
+  outline: 1px solid var(--border-strong);
+  outline-offset: -1px;
+}
+
+.now.is-folded .now-head {
+  cursor: default;
+}
+
+.now-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  font-weight: 600;
+  color: var(--text-stronger);
+}
+
+.now-title svg,
+.now-root svg {
+  width: 15px;
+  height: 15px;
+}
+
+.now-counts {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.now-summary {
+  flex: none;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.now-word {
+  font-weight: 600;
+}
+
+.now-word.is-ready {
+  color: var(--status-success);
+}
+
+.now-caret {
+  display: flex;
+  flex: none;
+  color: var(--text-faint);
+  opacity: 0.7;
+  transition: transform var(--ds-dur-normal) var(--ds-ease-out);
+}
+
+.now.is-open .now-caret {
+  transform: rotate(180deg);
+}
+
+.now-act {
+  flex: none;
+}
+
+.now-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-accent);
+  cursor: pointer;
+}
+
+.now-link:hover:not(:disabled) {
+  text-decoration: underline;
+  transform: none;
+  box-shadow: none;
+}
+
+.now-link.now-quiet {
+  flex: none;
+  color: var(--text-faint);
+}
+
+.now-progress {
+  height: 2px;
+  background: var(--cm-surface-panel);
+}
+
+.now-progress i {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--text-faint);
+  opacity: 0.5;
+  transform-origin: left center;
+  transition: transform 420ms var(--ds-ease-out);
+}
+
+.now-frozen {
+  padding: 6px 12px 0;
+  color: var(--status-warning);
+}
+
+.now-graph {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 36px;
+  align-items: center;
+  padding: 12px;
+}
+
+.now-wires {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.now-wire {
+  fill: none;
+  stroke: var(--cm-border-heavy);
+  stroke-width: 1.25;
+}
+
+.now-flow {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.25;
+  stroke-dasharray: 3 5;
+  animation: now-flow 0.9s linear infinite;
+}
+
+@keyframes now-flow {
+  to {
+    stroke-dashoffset: -8;
+  }
+}
+
+.now-end {
+  fill: currentColor;
+}
+
+.now-port {
+  fill: var(--text-faint);
+}
+
+.now-wires g {
+  color: var(--status-unknown);
+}
+
+.now-wires g[data-s="starting"],
+.now-wires g[data-s="running"],
+.now-wires g[data-s="stopping"],
+.now-wires g[data-s="stale"] {
+  color: var(--status-warning);
+}
+
+.now-wires g[data-s="returned"] {
+  color: var(--status-success);
+}
+
+.now-wires g[data-s="failed"] {
+  color: var(--status-error);
+}
+
+.now-wires g[data-s="held"] {
+  color: var(--text-accent);
+}
+
+.now-root {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--cm-surface-panel-strong);
+  color: var(--text-stronger);
+  font-weight: 600;
+}
+
+.now-root[data-running="true"] svg {
+  animation: now-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes now-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.now-nodes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.now-node {
+  --tint: var(--status-unknown);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 8px;
+  background: var(--cm-surface-row);
+  font: inherit;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.now-node:hover:not(:disabled),
+.now-node[aria-expanded="true"] {
+  background: var(--cm-surface-panel-hover);
+  transform: none;
+  box-shadow: none;
+}
+
+.now-node[data-s="returned"] {
+  --tint: var(--status-success);
+}
+
+.now-node[data-s="failed"] {
+  --tint: var(--status-error);
+}
+
+.now-node[data-s="held"] {
+  --tint: var(--text-accent);
+}
+
+.now-node[data-s="stale"],
+.now-node[data-s="stopping"] {
+  --tint: var(--status-warning);
+}
+
+.now-node[data-s="gone"] {
+  opacity: 0.7;
+}
+
+.now-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--cm-surface-panel-strong);
+  color: var(--tint);
+}
+
+.now-avatar svg {
+  width: 12px;
+  height: 12px;
+}
+
+.now-avatar .working-spinner {
+  width: 12px;
+  height: 12px;
+  border-color: color-mix(in srgb, var(--text-stronger) 20%, transparent);
+  border-top-color: var(--text-stronger);
+}
+
+.now-node[data-s="returned"] .now-avatar,
+.now-node[data-s="failed"] .now-avatar {
+  background: var(--tint);
+  color: var(--surface-sidebar-opaque);
+}
+
+.now-name {
+  flex: none;
+  font-weight: 600;
+  font-size: 12.5px;
+  color: var(--text-stronger);
+}
+
+.now-vendor {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  background: var(--text-faint);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}
+
+.now-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--text-faint);
+}
+
+.now-verb {
+  flex: none;
+  font-weight: 500;
+}
+
+.now-target,
+.now-say {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.now-target {
+  font-family: var(--code-font-family);
+  font-size: 11.5px;
+}
+
+.now-node[data-s="running"] .now-target,
+.now-node[data-s="running"] .now-say {
+  color: var(--text-muted);
+}
+
+.now-node[data-s="failed"] .now-say {
+  color: var(--status-error);
+}
+
+.now-node[data-s="held"] .now-say {
+  color: var(--text-accent);
+}
+
+.now-node[data-s="stale"] .now-say,
+.now-warn {
+  color: var(--status-warning);
+}
+
+.now-diff {
+  flex: none;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.now-diff b {
+  font-weight: 500;
+  color: var(--status-success);
+}
+
+.now-diff i {
+  font-style: normal;
+  color: var(--status-error);
+}
+
+.now-chev {
+  display: flex;
+  flex: none;
+  color: var(--text-faint);
+  opacity: 0.5;
+}
+
+.now-node[aria-expanded="true"] .now-chev {
+  opacity: 1;
+  transform: rotate(90deg);
+}
+
+.now-more {
+  padding: 0 12px 10px;
+}
+
+.now-panel {
+  padding: 8px 12px 12px;
+  border-top: 1px solid var(--cm-border-soft);
+  color: var(--text-faint);
+}
+
+.now-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+}
+
+.now-panel-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 12.5px;
+  color: var(--text-stronger);
+}
+
+.now-panel-title em {
+  font-style: normal;
+  font-weight: 400;
+  color: var(--text-faint);
+}
+
+.now-steps {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
+.now-step {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--cm-surface-row);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.now-step[data-write="true"] {
+  background: var(--cm-surface-panel-strong);
+  color: var(--text-muted);
+}
+
+.now-panel-time {
+  flex: none;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.now-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0 0;
+}
+
+.now-fact {
+  display: grid;
+  grid-template-columns: 5.5em minmax(0, 1fr);
+  gap: 10px;
+}
+
+.now-fact dd {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.now-fail {
+  margin: 8px 0 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--status-error) 9%, transparent);
+  color: var(--status-error);
+  line-height: 1.45;
+}
+
+.now-fail span {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-faint);
+}
+
+.now-log {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--cm-border-soft);
+}
+
+.now-log-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.now-log-verb {
+  flex: none;
+  width: 3.5em;
+  font-weight: 500;
+}
+
+.now-log-target {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--code-font-family);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.now-log-note {
+  font-style: italic;
+}
+
+.now-report {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--cm-border-soft);
+  color: var(--text-muted);
+  line-height: 1.55;
+}
+
+.now-report ul {
+  margin: 2px 0 0;
+  padding-left: 18px;
+}
+
+.now-panel-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 8px;
+}
+
+.now-pin {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 0 0 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--cm-border-soft);
+  border-radius: 10px;
+  background: var(--cm-surface-panel-soft);
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-faint);
+  text-align: left;
+  cursor: pointer;
+}
+
+.now-pin:hover:not(:disabled) {
+  background: var(--cm-surface-panel);
+  transform: none;
+  box-shadow: none;
+}
+
+.now-pin b {
+  font-weight: 600;
+  color: var(--text-stronger);
+}
+
+.now-pin .working-spinner {
+  width: 10px;
+  height: 10px;
+}
+
+.now-pin-counts {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.now-pin-jump {
+  margin-left: auto;
+  flex: none;
+}
+
+.now-stop {
+  position: relative;
+  display: inline-flex;
+}
+
+.now-stop-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 20;
+  min-width: 240px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+}
+
+.now-stop-menu .ds-popover-item {
+  display: block;
+  width: 100%;
+  height: auto;
+  padding: 7px 9px;
+  text-align: left;
+  white-space: normal;
+  color: var(--text-stronger);
+}
+
+.now-stop-menu small {
+  display: block;
+  margin-top: 1px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* Last known state: nothing animates, so nothing claims it is still running. */
+.now.is-frozen .working-spinner,
+.now.is-frozen .now-root svg {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .now-flow,
+  .now-root[data-running="true"] svg {
+    animation: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .now-graph {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .now-root,
+  .now-wires {
+    display: none;
+  }
+}
