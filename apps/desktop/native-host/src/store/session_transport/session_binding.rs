@@ -309,7 +309,7 @@ mod tests {
         std::fs::remove_dir_all(folder).unwrap();
     }
 
-    fn legacy(db: &VerifiedDatabaseConnection<'_>, session: &str, state: &str,
+    fn legacy(db: &mut VerifiedDatabaseConnection<'_>, session: &str, state: &str,
         generation: &str, with_binding: bool) {
         db.execute("INSERT OR IGNORE INTO main.gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('instanceA','codex','refA','identityA','sha256:fixture','fixture','INSTALLED','LOGGED_OUT',1)").unwrap();
         db.execute("INSERT OR IGNORE INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,parent_seat_id,kind,instance_id,state,generation,revision) VALUES('projectA','seatA','incA','USER',NULL,'LONG','instanceA','BUSY',1,1)").unwrap();
