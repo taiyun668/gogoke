@@ -639,6 +639,31 @@ mod tests {
     }
 
     #[test]
+    fn two_native_reservations_share_e_without_minting_open_authority() {
+        with_product_db(|db| {
+            legacy(db,"nativeA","RESERVED","1",false);
+            legacy(db,"nativeB","RESERVED","1",false);
+            let selection=|session:&str| SessionBinding {
+                domain_id:"projectA".into(),session_id:session.into(),
+                seat_id:"seatA".into(),seat_incarnation:"incA".into(),
+                seat_authorization_generation:1,selected_instance_id:"instanceA".into(),
+                provenance:Provenance::NativeV2};
+            db.execute("BEGIN IMMEDIATE").unwrap();
+            select_native_in_transaction(db,&selection("nativeA")).unwrap();
+            select_native_in_transaction(db,&selection("nativeB")).unwrap();
+            db.execute("COMMIT").unwrap();
+            assert!(read(db,"projectA","nativeA").unwrap().is_none());
+            assert!(read(db,"projectA","nativeB").unwrap().is_none());
+            assert!(current_relationship(db,"projectA","nativeA").unwrap().is_none());
+            assert!(has_unreleased_seat_claim(db,"projectA","seatA","incA").unwrap());
+            db.execute("UPDATE main.gogoke_v37_h_claim SET state='RELEASED' WHERE session_id='nativeA'").unwrap();
+            assert!(has_unreleased_seat_claim(db,"projectA","seatA","incA").unwrap());
+            db.execute("UPDATE main.gogoke_v37_h_claim SET state='RELEASED' WHERE session_id='nativeB'").unwrap();
+            assert!(!has_unreleased_seat_claim(db,"projectA","seatA","incA").unwrap());
+        });
+    }
+
+    #[test]
     fn current_relation_separates_selected_instance_and_session_generation() {
         with_product_db(|db| {
             legacy(db,"sideA","COMMITTED","4",true);

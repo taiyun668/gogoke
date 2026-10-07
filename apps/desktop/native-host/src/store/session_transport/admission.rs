@@ -1050,6 +1050,7 @@ mod tests {
         crate::store::instance::initialize_schema(&mut db).unwrap();
         crate::store::seat::initialize_schema(&mut db).unwrap();
         initialize_admission_schema(&mut db).unwrap();
+        super::super::session_binding::initialize_schema(&mut db).unwrap();
         db.execute("INSERT INTO main.gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('instanceA','codex','homeRefA','homeIdentityA','sha256:test','0.160.0','INSTALLED','LOGGED_IN',1)").unwrap();
         db.execute("INSERT INTO main.gogoke_v37_instance_homes(home_id,instance_id,domain_id,kind,owner_id,generation,directory_ref,directory_identity,state,revision) VALUES('homeA','instanceA','projectA','SESSION','sessionA','2',NULL,NULL,'ACTIVE',1)").unwrap();
         crate::store::seat::store_template(&mut db,
@@ -1200,9 +1201,12 @@ mod tests {
         db.execute("INSERT INTO gogoke_v37_instances VALUES('instanceA')")
             .unwrap();
         db.execute("INSERT INTO gogoke_v37_instance_homes VALUES('homeA','instanceA','projectA','SESSION','sessionA','1','ACTIVE'),('homeB','instanceA','projectA','SESSION','sessionB','1','ACTIVE')").unwrap();
+        crate::store::seat::initialize_schema(&mut db).unwrap();
         initialize_admission_schema(&mut db).unwrap();
+        super::super::session_binding::initialize_schema(&mut db).unwrap();
+        db.execute("INSERT INTO gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('projectA','seatA','incA','USER','LONG','instanceA','BUSY',1,1),('projectA','seatB','incB','USER','LONG','instanceA','BUSY',1,1)").unwrap();
         in_transaction(&mut db, |connection| {
-            for (binding_id, session_id) in [("bindingA", "sessionA"), ("bindingB", "sessionB")] {
+            for (binding_id, session_id, seat_id) in [("bindingA", "sessionA", "seatA"), ("bindingB", "sessionB", "seatB")] {
                 bind_owner_in_transaction(
                     connection,
                     &OwnerBinding {
@@ -1214,6 +1218,9 @@ mod tests {
                         generation: "1",
                     },
                 )?;
+                let seat=crate::store::seat::get(connection,"projectA",seat_id)
+                    .map_err(AdmissionError::Seat)?.ok_or(AdmissionError::Denied)?;
+                bind_seat_in_transaction(connection,&seat,session_id)?;
             }
             Ok(())
         })
@@ -1289,6 +1296,7 @@ mod tests {
         db.close_checked().unwrap();
         let mut db = open_existing(&root, &path).unwrap();
         initialize_admission_schema(&mut db).unwrap();
+        super::super::session_binding::initialize_schema(&mut db).unwrap();
         assert_eq!(
             prior(&db, &opened, "open").unwrap(),
             Some(AdmissionResult::Unknown)

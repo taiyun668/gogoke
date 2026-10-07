@@ -867,6 +867,7 @@ mod tests {
         instance::initialize_grok_home_grant_schema(&mut db).unwrap();
         crate::store::seat::initialize_schema(&mut db).unwrap();
         super::super::admission::initialize_admission_schema(&mut db).unwrap();
+        super::super::session_binding::initialize_schema(&mut db).unwrap();
         let powershell=Path::new(&std::env::var("SystemRoot").unwrap())
             .join("System32/WindowsPowerShell/v1.0/powershell.exe");
         let program=instance::ProgramObservation::observe(&powershell,"1.0.41").unwrap();
@@ -1052,6 +1053,7 @@ mod tests {
         instance::initialize_grok_home_grant_schema(&mut db).unwrap();
         crate::store::seat::initialize_schema(&mut db).unwrap();
         super::super::admission::initialize_admission_schema(&mut db).unwrap();
+        super::super::session_binding::initialize_schema(&mut db).unwrap();
         let powershell=Path::new(&std::env::var("SystemRoot").unwrap())
             .join("System32/WindowsPowerShell/v1.0/powershell.exe");
         let program=instance::ProgramObservation::observe(&powershell,"1.0.41").unwrap();
@@ -1279,6 +1281,7 @@ mod tests {
         crate::store::instance::initialize_grok_home_grant_schema(&mut db).unwrap();
         crate::store::seat::initialize_schema(&mut db).unwrap();
         super::super::admission::initialize_admission_schema(&mut db).unwrap();
+        super::super::session_binding::initialize_schema(&mut db).unwrap();
         db.execute("INSERT INTO main.gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('grokA','grok','homeA','volume:0000000000000001/file:01010101010101010101010101010101','sha256:fixture','1.0.41','INSTALLED','LOGGED_IN',1)").unwrap();
         db.execute("INSERT INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('domainA','seatA','incA','USER','LONG','grokA','BUSY',1,1)").unwrap();
         db.execute("INSERT INTO main.gogoke_v37_h_owner_binding VALUES('oldBinding','grokA','domainA','SESSION','sessionA','1','ACTIVE')").unwrap();

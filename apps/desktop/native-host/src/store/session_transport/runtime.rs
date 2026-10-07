@@ -12,7 +12,12 @@ use crate::store::same_open::VerifiedDatabaseConnection;
 use crate::store::seat::{self, Layer as SeatLayer, NativeOrigin, State as SeatState};
 use crate::store::seat::HostEscalationProof;
 use super::admission::{self, AdmissionError, AdmissionRequest, AdmissionResult, TrustedLimits};
-use super::session_binding::{self, Provenance, SessionBinding};
+use super::session_binding::{self, BindingError, Provenance, SessionBinding};
+
+fn selection_error(error:BindingError)->AdmissionError {
+    match error {BindingError::Conflict=>AdmissionError::Conflict,
+        other=>AdmissionError::Relationship(other)}
+}
 
 fn host_recipient_admission_error(error: crate::store::inbox::InboxError) -> AdmissionError {
     use crate::store::inbox::InboxError;
@@ -98,7 +103,7 @@ pub(crate) fn reserve_native(
             seat_id:current.seat_id.clone(),seat_incarnation:current.incarnation.clone(),
             seat_authorization_generation:current.generation,
             selected_instance_id:request.instance_id.into(),provenance:Provenance::NativeV2,
-        }).map_err(AdmissionError::Relationship)?;
+        }).map_err(selection_error)?;
         current_instance_pin(db, request.instance_id)?;
         persisted_limits(db, request.domain_id, request.instance_id)
     })
@@ -131,7 +136,7 @@ pub(crate) fn reserve_native_for_host(db:&mut VerifiedDatabaseConnection<'_>,
             seat_id:seat.seat_id.clone(),seat_incarnation:seat.incarnation.clone(),
             seat_authorization_generation:seat.generation,
             selected_instance_id:request.instance_id.into(),provenance:Provenance::NativeV2,
-        }).map_err(AdmissionError::Relationship)?;
+        }).map_err(selection_error)?;
         current_instance_pin(db,request.instance_id)?;
         persisted_limits(db,request.domain_id,request.instance_id)
     })
@@ -240,7 +245,7 @@ pub(crate) fn reserve_native_with_origin(db:&mut VerifiedDatabaseConnection<'_>,
             seat_id:child.seat_id.clone(),seat_incarnation:child.incarnation.clone(),
             seat_authorization_generation:child.generation,
             selected_instance_id:request.instance_id.into(),provenance:Provenance::NativeV2,
-        }).map_err(AdmissionError::Relationship)?;
+        }).map_err(selection_error)?;
         current_instance_pin(db,request.instance_id)?;
         persisted_limits(db,request.domain_id,request.instance_id)
     })
