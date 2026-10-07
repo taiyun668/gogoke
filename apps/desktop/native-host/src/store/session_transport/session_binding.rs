@@ -494,15 +494,18 @@ mod tests {
     }
 
     #[test]
-    fn unreleased_old_or_unprojected_claim_blocks_seat_mutation() {
+    fn seat_action_predicate_counts_unreleased_old_and_unprojected_claims() {
         with_product_db(|db| {
             legacy(db,"oldA","STOPPED","1",true);
-            db.execute("UPDATE main.gogoke_v37_seats SET state='IDLE',generation=99,settings_json='{}' WHERE seat_id='seatA'").unwrap();
+            db.execute("UPDATE main.gogoke_v37_seats SET state='IDLE',generation=99 WHERE seat_id='seatA'").unwrap();
+            db.execute("INSERT INTO main.gogoke_v37_seat_settings(domain_id,seat_id,incarnation,template_id,settings_json) VALUES('projectA','seatA','incA','fixture','{}')").unwrap();
             let facts=crate::store::seat::list_page_facts(db,"projectA").unwrap();
             assert!(!facts.seats[0].allowed.tune);
             assert_eq!(facts.seats[0].allowed.locked_reason,Some("H_PENDING_OR_UNRESOLVED"));
             db.execute("DELETE FROM main.gogoke_v37_h_seat_binding WHERE session_id='oldA'").unwrap();
             assert!(!crate::store::seat::list_page_facts(db,"projectA").unwrap().seats[0].allowed.change_instance);
+            // This is a metadata predicate fixture, not a StopFact/release
+            // lifecycle test. Actual release still requires original custody.
             db.execute("UPDATE main.gogoke_v37_h_claim SET state='RELEASED' WHERE session_id='oldA'").unwrap();
             assert!(crate::store::seat::list_page_facts(db,"projectA").unwrap().seats[0].allowed.tune);
         });
