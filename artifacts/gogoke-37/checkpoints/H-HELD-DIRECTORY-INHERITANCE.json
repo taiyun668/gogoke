@@ -1,0 +1,12 @@
+{
+  "change": "Direct cloud contrast of the actual DirectoryRoots holder and the existing bound-tree ACL producer; both cases retain the same .git pointer-file read/share custody.",
+  "result": {
+    "cloud_run": 37675266314,
+    "case_result": "1 passed, 0 failed, 0 ignored; observation only, not a product repair result.",
+    "control": "Second root grant and inherited grants on .git and the ordinary leaf were present.",
+    "held": "Second root grant was present; second SID on .git and ordinary leaf was absent. Both children retained the first SID; protection was false; original FileIDs were unchanged.",
+    "conclusion": "In this contrast, retaining DirectoryRoots prevents automatic inheritance propagation. The original real dual-session failure is consistent with this directly reproduced producer defect."
+  },
+  "next": "Derive missing inheritance from exact physical parent descriptors and write through the bound child handle; retain all namespace pins and the original strict inherited witness. Fresh focused review has identified one candidate ACL revision offset defect; fix before cloud repair validation. Latest repair and original WORK/SIDE runtime are NOT_RUN.",
+  "reference": "Existing isolation/grok_home.rs same-handle Native DACL writer; Windows CreatePrivateObjectSecurityEx inheritance rules. ConvertToAutoInheritPrivateObjectSecurity is an equivalent-rights conversion and does not add this missing grant. No pin release, share-mode change, explicit-ACE substitute, retry or new capability is authorized by this observation."
+}
