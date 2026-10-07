@@ -442,23 +442,54 @@ pub fn open_ledger() -> Result<OpenLedger, SameOpenError> {
 }
 
 #[cfg(test)]
-pub(crate) fn route_b_test_guard() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) struct RouteBTestGuard {
+    _guard: std::sync::MutexGuard<'static, ()>,
+    acquired_at: std::time::Instant,
+    queue_us: u128,
+    case: String,
+}
+
+#[cfg(test)]
+impl Drop for RouteBTestGuard {
+    fn drop(&mut self) {
+        eprintln!(
+            "route_b_test_guard case={} queue_us={} body_us={}",
+            self.case,
+            self.queue_us,
+            self.acquired_at.elapsed().as_micros()
+        );
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn route_b_test_guard() -> RouteBTestGuard {
     use std::sync::{Mutex, OnceLock};
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    let requested_at = std::time::Instant::now();
+    let guard = LOCK
+        .get_or_init(|| Mutex::new(()))
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let acquired_at = std::time::Instant::now();
+    RouteBTestGuard {
+        _guard: guard,
+        acquired_at,
+        queue_us: acquired_at.duration_since(requested_at).as_micros(),
+        case: std::thread::current()
+            .name()
+            .unwrap_or("<unnamed>")
+            .to_owned(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::root::RootLockError;
-    use std::sync::MutexGuard;
     use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn test_guard() -> MutexGuard<'static, ()> {
+    fn test_guard() -> RouteBTestGuard {
         route_b_test_guard()
     }
 

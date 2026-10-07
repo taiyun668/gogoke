@@ -2,7 +2,7 @@ use super::*;
 use crate::root::RootLock;
 use crate::store::seat::{CreateSeat, Kind, StoreTemplate};
 use crate::store::same_open::route_b_test_guard;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[path = "v37_stalled_health_tests.rs"]
 mod stalled_health;
@@ -12,12 +12,19 @@ mod stalled_health;
 // marker; no valid credentials or model are loaded.
 fn health_control_product(driver:&str, run:impl FnOnce(&mut ProductDatabase<'_>)) {
     let _guard=route_b_test_guard();
+    let thread=std::thread::current();
+    let case=thread.name().unwrap_or("<unnamed>");
+    let mut stage=Instant::now();
     let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
     let path=std::env::temp_dir().join(format!("gogoke-v37-health-control-{}-{stamp}",std::process::id()));
     std::fs::create_dir(&path).unwrap();
     let root=RootLock::acquire(&path).unwrap();
     let mut product=ProductDatabase::open(&root,&path.join("state.sqlite")).unwrap();
+    eprintln!("health_control_product case={case} driver={driver} stage=root_open elapsed_ms={}",stage.elapsed().as_millis());
+    stage=Instant::now();
     managed_cli_test_setup::ready(&mut product,&root,driver);
+    eprintln!("health_control_product case={case} driver={driver} stage=ready elapsed_ms={}",stage.elapsed().as_millis());
+    stage=Instant::now();
     let register=operation("K-INSTANCE","register","health-register","instanceA",0,
         &format!(r#"{{"driverId":"{driver}"}}"#));
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&register).unwrap()).unwrap().status,V37Status::Applied);
@@ -29,6 +36,8 @@ fn health_control_product(driver:&str, run:impl FnOnce(&mut ProductDatabase<'_>)
             instance_id:"instanceA",expected_revision:1,observation:instance::InstanceObservation::LoggedIn,
         }).unwrap();
     }
+    eprintln!("health_control_product case={case} driver={driver} stage=credential elapsed_ms={}",stage.elapsed().as_millis());
+    stage=Instant::now();
     instance::set_instance_concurrency_cap(&mut product.connection,&product.owner,"instanceA",1).unwrap();
     seat::set_project_parallel_cap(&mut product.connection,&product.owner,"projectA",1).unwrap();
     let model=if driver=="claude" {"claude-sonnet-4-6"} else {"gpt-6-sol"};
@@ -40,6 +49,8 @@ fn health_control_product(driver:&str, run:impl FnOnce(&mut ProductDatabase<'_>)
         domain_id:"projectA",seat_id:"seatA",template_id:"templateA",instance_id:Some("instanceA"),
         kind:Kind::Long,request_id:"health-create-seat",request_bytes:b"actual health control seat",
     }).unwrap();
+    eprintln!("health_control_product case={case} driver={driver} stage=seat_setup elapsed_ms={}",stage.elapsed().as_millis());
+    stage=Instant::now();
     let source=crate::store::worktree::tests::make_source_fixture(&mut product.connection,&root,
         &product.owner,&mut product.process_custodian);
     let git=std::env::var_os("GOGOKE_CONTROLLED_GIT_PATH").unwrap();
@@ -54,6 +65,8 @@ fn health_control_product(driver:&str, run:impl FnOnce(&mut ProductDatabase<'_>)
     let create=operation("K-WORKTREE","create","health-create-tree","treeA",0,
         r#"{"repositoryId":"fixtureRepo","seatId":"seatA"}"#);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&create).unwrap()).unwrap().status,V37Status::Applied);
+    eprintln!("health_control_product case={case} driver={driver} stage=git_fixture elapsed_ms={}",stage.elapsed().as_millis());
+    stage=Instant::now();
     for (verb,id,rev) in [("admission-reserve","health-reserve",0),("admission-commit","health-commit",1)] {
         let request=operation("K-SESSION",verb,id,"sessionA",rev,r#"{"seatId":"seatA","generation":"2"}"#);
         assert_eq!(h::decode_receipt(&product.dispatch_user_request(&request).unwrap()).unwrap().status,V37Status::Applied);
@@ -61,7 +74,11 @@ fn health_control_product(driver:&str, run:impl FnOnce(&mut ProductDatabase<'_>)
     let open=operation("K-SESSION","open","health-open","sessionA",2,
         r#"{"seatId":"seatA","generation":"2","repositoryId":"fixtureRepo","worktreeId":"treeA"}"#);
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&open).unwrap()).unwrap().status,V37Status::Applied);
+    eprintln!("health_control_product case={case} driver={driver} stage=session_open elapsed_ms={}",stage.elapsed().as_millis());
+    stage=Instant::now();
     run(&mut product);
+    eprintln!("health_control_product case={case} driver={driver} stage=health_body elapsed_ms={}",stage.elapsed().as_millis());
+    stage=Instant::now();
     let claim=Statement::prepare(product.connection.as_ptr(),
         "SELECT generation,revision FROM main.gogoke_v37_h_claim WHERE domain_id='projectA' AND session_id='sessionA'").unwrap();
     assert!(claim.step_row().unwrap());let generation=claim.column_text(0).unwrap();
@@ -69,7 +86,10 @@ fn health_control_product(driver:&str, run:impl FnOnce(&mut ProductDatabase<'_>)
     let stop=operation("K-SESSION","stop","health-final-stop","sessionA",revision,
         &format!(r#"{{"seatId":"seatA","generation":"{generation}"}}"#));
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status,V37Status::Applied);
+    eprintln!("health_control_product case={case} driver={driver} stage=stop elapsed_ms={}",stage.elapsed().as_millis());
+    stage=Instant::now();
     product.close_checked().unwrap();drop(root);std::fs::remove_dir_all(path).unwrap();
+    eprintln!("health_control_product case={case} driver={driver} stage=close_cleanup elapsed_ms={}",stage.elapsed().as_millis());
 }
 
 fn health_control_rows(product:&ProductDatabase<'_>,sql:&str)->Vec<Vec<String>> {
