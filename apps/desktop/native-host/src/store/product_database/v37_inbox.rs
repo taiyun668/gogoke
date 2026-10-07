@@ -207,6 +207,15 @@ fn live_target(db:&mut ProductDatabase<'_>,domain:&str,seat:&str,generation:&str
 fn target_present(db:&VerifiedDatabaseConnection<'_>,target:&Target)
     ->std::result::Result<bool,InboxError> {
     if crate::store::session_transport::generation_change::active_for_session(db,&target.key.0,&target.key.1)?.is_some() {return Ok(false);}
+    // E authorizes the seat; H identifies this particular live process. Native
+    // sessions can resume without changing a sibling session's E authorization.
+    let relationship=crate::store::session_transport::session_binding::current_relationship(
+        db,&target.key.0,&target.key.1)
+        .map_err(|error|InboxError::InvalidEvidence(format!("current H/E relationship: {error:?}")))?;
+    let Some(relationship)=relationship else {return Ok(false);};
+    if relationship.seat_id!=target.seat || relationship.session_generation!=target.generation {
+        return Ok(false);
+    }
     let q=Statement::prepare(db.as_ptr(),
         "SELECT 1 FROM main.gogoke_v37_h_claim h
          JOIN main.gogoke_coordination_process_custody c ON c.operation_id=h.process_operation_id
@@ -214,14 +223,12 @@ fn target_present(db:&VerifiedDatabaseConnection<'_>,target:&Target)
          JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=h.binding_id
            AND b.instance_id=h.instance_id AND b.domain_id=h.domain_id AND b.kind='SESSION'
            AND b.owner_id=h.session_id AND b.generation=h.generation AND b.state='ACTIVE'
-         JOIN main.gogoke_v37_h_seat_binding sb ON sb.domain_id=h.domain_id
-           AND sb.session_id=h.session_id AND sb.generation=h.generation
-         JOIN main.gogoke_v37_seats e ON e.domain_id=sb.domain_id AND e.seat_id=sb.seat_id
-           AND e.incarnation=sb.seat_incarnation AND CAST(e.generation AS TEXT)=sb.generation
-           AND e.instance_id=h.instance_id AND e.state='BUSY'
-         WHERE h.domain_id=?1 AND h.session_id=?2 AND sb.seat_id=?3 AND h.generation=?4
+         JOIN main.gogoke_v37_h_process_episode ep ON ep.domain_id=h.domain_id
+           AND ep.session_id=h.session_id AND ep.generation=h.generation
+           AND ep.process_operation_id=h.process_operation_id AND ep.seat_id=?3
+         WHERE h.domain_id=?1 AND h.session_id=?2 AND h.generation=?4
            AND h.process_operation_id=?5 AND c.ticket=?6 AND c.custodian_nonce=?7
-           AND h.state='COMMITTED' AND c.state='ACTIVE'")?;
+           AND h.state='COMMITTED' AND ep.phase='ACTIVE' AND c.state='ACTIVE'")?;
     for (index,value) in [target.key.0.as_str(),target.key.1.as_str(),target.seat.as_str(),
         target.generation.as_str(),target.operation.as_str(),target.ticket.as_str(),
         target.nonce.as_str()].iter().enumerate(){q.bind_text((index+1) as i32,value)?;}

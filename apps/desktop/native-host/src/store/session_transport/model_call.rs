@@ -3,6 +3,7 @@
 //! principal, grant, source identity, or native operation receipt.
 
 use super::{codex_rpc, decode_receipt, decode_request, rpc_journal, V37Status};
+use super::session_binding;
 use crate::process::{OriginBoundFrame, PreparedCustody};
 use crate::store::atomic::{AtomicError, Json, JsonString, Parser, Statement};
 use crate::store::digest::sha256_hex;
@@ -41,6 +42,7 @@ pub(crate) struct ModelCallProof {
     open_request_id:String,
     seat:String,
     incarnation:String,
+    seat_authorization_generation:i64,
     thread:String,
     turn:String,
     rpc_id:codex_rpc::RpcId,
@@ -54,7 +56,7 @@ impl ModelCallProof {
     pub(crate) fn domain_id(&self)->&str {&self.domain}
     pub(crate) fn seat_id(&self)->&str {&self.seat}
     pub(crate) fn incarnation(&self)->&str {&self.incarnation}
-    pub(crate) fn generation(&self)->i64 {self.custody.binding.generation.parse().unwrap_or(-1)}
+    pub(crate) fn generation(&self)->i64 {self.seat_authorization_generation}
     pub(crate) fn session_id(&self)->&str {&self.session}
     pub(crate) fn thread_id(&self)->&str {&self.thread}
     pub(crate) fn turn_id(&self)->&str {&self.turn}
@@ -232,6 +234,10 @@ fn original_source(db:&VerifiedDatabaseConnection<'_>,proof:&ModelCallProof)->Re
         || seat_id!=proof.seat || incarnation!=proof.incarnation {
         return Err(ModelCallError::Denied);
     }
+    if session_binding::authorization_generation(db,&proof.domain,&proof.session)
+        .map_err(|error|ModelCallError::Store(AtomicError::DurabilityContractFailed(
+            format!("model caller relationship: {error:?}"))))?
+        !=proof.seat_authorization_generation {return Err(ModelCallError::Denied);}
     // The provider can emit a tool name that was never registered. The A
     // session purpose and current E scope are native authority, so enforce the
     // tool set again for original capture and every later revalidation.
@@ -349,6 +355,10 @@ fn build_from_captured_source(db:&VerifiedDatabaseConnection<'_>,
         rpc_journal::current_codex_model_binding(db,custody,
             &source.domain_id,&source.session_id)?;
     if operation!=key.operation_id {return Err(ModelCallError::Denied);}
+    let seat_authorization_generation=session_binding::authorization_generation(db,
+        &source.domain_id,&source.session_id)
+        .map_err(|error|ModelCallError::Store(AtomicError::DurabilityContractFailed(
+            format!("model caller relationship: {error:?}"))))?;
     let typed_id=match &call.request_id {
         codex_rpc::RpcId::Number(number)=>format!("n:{number}"),
         codex_rpc::RpcId::String(value)=>format!("s:{value}"),
@@ -358,7 +368,8 @@ fn build_from_captured_source(db:&VerifiedDatabaseConnection<'_>,
     let proof=ModelCallProof {custody:custody.clone(),source:key.clone(),
         raw_sha256:sha256_hex(&source.raw_bytes),raw:source.raw_bytes,
         domain:source.domain_id,session:source.session_id,operation,open_request_id,
-        seat,incarnation,thread:call.thread_id,turn:call.turn_id,
+        seat,incarnation,seat_authorization_generation,
+        thread:call.thread_id,turn:call.turn_id,
         rpc_id:call.request_id,call_id:call.call_id,tool:call.tool,
         host_request_id:format!("model-{}",&sha256_hex(identity.as_bytes())[..40]),
         arguments_json:call.arguments.canonical()};

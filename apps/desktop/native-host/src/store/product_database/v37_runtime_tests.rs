@@ -78,6 +78,91 @@ fn health_control_rows(product:&ProductDatabase<'_>,sql:&str)->Vec<Vec<String>> 
     result
 }
 
+#[test]
+fn actual_pinned_codex_same_seat_work_and_side_resume_preserve_authorization_without_model_call() {
+    health_control_product("codex",|product| {
+        instance::set_instance_concurrency_cap(&mut product.connection,&product.owner,"instanceA",2).unwrap();
+        seat::set_project_parallel_cap(&mut product.connection,&product.owner,"projectA",2).unwrap();
+        let original_seat=seat::get(&product.connection,"projectA","seatA").unwrap().unwrap();
+        seat::designate_project_lead(&mut product.connection,&product.owner,"projectA","seatA",
+            &original_seat.incarnation).unwrap();
+        for (verb,id,revision) in [("admission-reserve","dual-side-reserve",0),
+            ("admission-commit","dual-side-commit",1)] {
+            let request=operation("K-SESSION",verb,id,"sideSession",revision,
+                r#"{"seatId":"seatA","generation":"2"}"#);
+            let reply=h::decode_receipt(&product.dispatch_user_request(&request).unwrap()).unwrap();
+            assert_eq!(reply.status,V37Status::Applied,"original second-session reply: {}",
+                String::from_utf8_lossy(&reply.raw_bytes));
+        }
+        let open=operation("K-SESSION","open","dual-side-open","sideSession",2,
+            r#"{"seatId":"seatA","generation":"2","repositoryId":"fixtureRepo","worktreeId":"treeA"}"#);
+        let create=operation("K-SIDE","create","dual-side-create","sideA",0,
+            r#"{"sourceCursor":"0"}"#);
+        let frame=Json::Object(BTreeMap::from([
+            (JsonString::from_str("schema"),Json::String(JsonString::from_str("gogoke.37.owner-side-open.v1"))),
+            (JsonString::from_str("sourceSessionId"),Json::String(JsonString::from_str("sessionA"))),
+            (JsonString::from_str("openRequest"),Json::String(JsonString::from_str(std::str::from_utf8(&open.raw_bytes).unwrap()))),
+            (JsonString::from_str("createRequest"),Json::String(JsonString::from_str(std::str::from_utf8(&create.raw_bytes).unwrap()))),
+        ])).canonical();
+        let reply=h::decode_receipt(&product.dispatch_owner_side_frame(frame.as_bytes()).unwrap()).unwrap();
+        assert_eq!(reply.status,V37Status::Applied,"original side composition reply: {}",
+            String::from_utf8_lossy(&reply.raw_bytes));
+        assert_eq!(seat::get(&product.connection,"projectA","seatA").unwrap().as_ref(),Some(&original_seat),
+            "second native admission must not revise the first session's E authorization");
+        let initial:Vec<_>=["sessionA","sideSession"].into_iter().map(|session|
+            h::session_binding::read(&product.connection,"projectA",session).unwrap().unwrap()).collect();
+        assert!(initial.iter().all(|binding|binding.provenance==h::session_binding::Provenance::NativeV2));
+        assert_eq!(ledger::read_registered_session(&product.connection,"sideSession").unwrap().unwrap().purpose,
+            ledger::SessionPurpose::SideChat);
+        for session in ["sessionA","sideSession"] {
+            let key=("projectA".to_owned(),session.to_owned());
+            let thread=product.native_sessions.get(&key).unwrap().thread_id.clone().unwrap();
+            let ack=product.native_append_rpc(&key,&format!("dual-history-{session}"),&thread,
+                "cloud no-model durable history marker".into()).unwrap();
+            assert!(matches!(ack,Some(Reply::Ack {..})),"actual history response: {ack:?}");
+        }
+        for (index,session) in ["sessionA","sideSession","sessionA","sideSession"].into_iter().enumerate() {
+            let sibling=if session=="sessionA" {"sideSession"} else {"sessionA"};
+            let old=runtime::observe_claim_bound(&product.connection,"projectA","seatA",session).unwrap().unwrap();
+            let sibling_before=runtime::observe_claim_bound(&product.connection,"projectA","seatA",sibling).unwrap().unwrap();
+            let stop=operation("K-SESSION","stop",&format!("dual-stop-{index}"),session,old.revision as u64,
+                &format!(r#"{{"seatId":"seatA","generation":"{}"}}"#,old.generation));
+            let stopped=h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap();
+            assert_eq!(stopped.status,V37Status::Applied,"actual stop: {}",String::from_utf8_lossy(&stopped.raw_bytes));
+            let resume=operation("K-SESSION","resume",&format!("dual-resume-{index}"),session,stopped.revision,
+                &format!(r#"{{"generation":"{}"}}"#,old.generation));
+            let resumed=h::decode_receipt(&product.dispatch_user_request(&resume).unwrap()).unwrap();
+            assert_eq!(resumed.status,V37Status::Applied,"actual resume: {}",String::from_utf8_lossy(&resumed.raw_bytes));
+            let current=runtime::observe_claim_bound(&product.connection,"projectA","seatA",session).unwrap().unwrap();
+            assert_ne!(current.generation,old.generation);
+            assert_ne!(current.process_operation_id,old.process_operation_id);
+            assert_eq!(seat::get(&product.connection,"projectA","seatA").unwrap().as_ref(),Some(&original_seat));
+            assert_eq!(runtime::observe_claim_bound(&product.connection,"projectA","seatA",sibling).unwrap().unwrap(),sibling_before);
+            for (i,name) in ["sessionA","sideSession"].into_iter().enumerate() {
+                assert_eq!(h::session_binding::read(&product.connection,"projectA",name).unwrap().as_ref(),Some(&initial[i]));
+            }
+            let stale=operation("K-SESSION","send",&format!("dual-stale-send-{index}"),session,resumed.revision,
+                &format!(r#"{{"generation":"{}","body":"must not reach a model"}}"#,old.generation));
+            assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stale).unwrap()).unwrap().status,V37Status::Conflict);
+            let check=operation("K-SESSION","capability-probe",&format!("dual-sibling-check-{index}"),sibling,
+                sibling_before.revision as u64,&format!(r#"{{"generation":"{}"}}"#,sibling_before.generation));
+            let checked=h::decode_receipt(&product.dispatch_user_request(&check).unwrap()).unwrap();
+            assert_eq!(checked.status,V37Status::Applied,"live sibling remains usable: {}",String::from_utf8_lossy(&checked.raw_bytes));
+        }
+        let side=runtime::observe_claim_bound(&product.connection,"projectA","seatA","sideSession").unwrap().unwrap();
+        let stop=operation("K-SESSION","stop","dual-final-side-stop","sideSession",side.revision as u64,
+            &format!(r#"{{"seatId":"seatA","generation":"{}"}}"#,side.generation));
+        let stopped=h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap();
+        assert_eq!(stopped.status,V37Status::Applied);
+        let release=operation("K-SESSION","admission-release","dual-side-release","sideSession",stopped.revision,
+            &format!(r#"{{"seatId":"seatA","generation":"{}"}}"#,side.generation));
+        let released=h::decode_receipt(&product.dispatch_user_request(&release).unwrap()).unwrap();
+        assert_eq!(released.status,V37Status::Applied,"actual release: {}",String::from_utf8_lossy(&released.raw_bytes));
+        assert_eq!(seat::get(&product.connection,"projectA","seatA").unwrap().as_ref(),Some(&original_seat),
+            "releasing one session must not invalidate the still-live sibling");
+    });
+}
+
 // Existing synthetic A ordering seam, under the actual opened H/C identity.
 // This is not an OriginBoundFrame/pipe observation or a hand-made health proof.
 fn health_control_source(product:&mut ProductDatabase<'_>,raw:&[u8])->ledger::RawSourceKey {
@@ -931,6 +1016,16 @@ fn actual_pinned_codex_two_scope_file_history_and_stopped_revocation_without_mod
         assert_eq!(opened.status, V37Status::Applied,
             "original native open reply: {}", String::from_utf8_lossy(&opened.raw_bytes));
         assert_eq!(opened.revision, 3);
+        let relationship=h::session_binding::read(&product.connection,domain,session_id)
+            .unwrap().expect("actual native open persists its relationship");
+        assert_eq!(relationship.provenance,h::session_binding::Provenance::NativeV2);
+        assert_eq!(relationship.seat_id,seat_id);
+        assert_eq!(relationship.seat_authorization_generation,2);
+        assert_eq!(relationship.selected_instance_id,"instanceA");
+        let replay=h::decode_receipt(&product.dispatch_user_request(&open).unwrap()).unwrap();
+        assert_eq!(replay.status,V37Status::Replayed);
+        assert_eq!(h::session_binding::read(&product.connection,domain,session_id).unwrap(),
+            Some(relationship));
         let key = (domain.to_owned(), session_id.to_owned());
         assert!(product.native_sessions.get(&key).unwrap().evidence.file_credentials_bound(),
             "original native launch selected fixed File-bound credentials");

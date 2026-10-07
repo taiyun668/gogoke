@@ -372,15 +372,35 @@ impl<'root> ProductDatabase<'root> {
         if seat.instance_id.is_empty() || !matches!(seat.state, State::Idle | State::Busy) {
             return Err(OrchestrationError::AccessDenied);
         }
-        let expected = if seat.state == State::Idle || resume {
-            seat.generation.checked_add(1).ok_or(OrchestrationError::OperationConflict)?
-        } else { seat.generation };
+        let native_resume=if resume {
+            h::session_binding::read_pending(&self.connection,&request.domain_id,&request.target_id)
+                .map_err(|error|OrchestrationError::V37StoreFailure(format!("native resume selection: {error:?}")))?
+        } else {None};
+        let (expected,selected_instance)=if let Some(binding)=native_resume {
+            if binding.seat_id!=seat.seat_id || binding.seat_incarnation!=seat.incarnation
+                || binding.seat_authorization_generation!=seat.generation
+                || binding.selected_instance_id!=seat.instance_id || seat.state!=State::Busy {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            let original=h::session_binding::read(&self.connection,&request.domain_id,&request.target_id)
+                .map_err(|error|OrchestrationError::V37StoreFailure(format!("native resume relationship: {error:?}")))?;
+            if original.as_ref()!=Some(&binding) {return Err(OrchestrationError::OperationConflict);}
+            let old=runtime::observe_claim_bound(&self.connection,&request.domain_id,seat_id,&request.target_id)?
+                .ok_or(OrchestrationError::OperationConflict)?;
+            if old.phase!=runtime::SessionPhase::Stopped || old.instance_id!=binding.selected_instance_id {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            (old.generation.parse::<i64>().ok().and_then(|n|n.checked_add(1))
+                .ok_or(OrchestrationError::OperationConflict)?,binding.selected_instance_id)
+        } else if seat.state == State::Idle || resume {
+            (seat.generation.checked_add(1).ok_or(OrchestrationError::OperationConflict)?,seat.instance_id.clone())
+        } else {(seat.generation,seat.instance_id.clone())};
         if expected.to_string() != generation { return Err(OrchestrationError::OperationConflict); }
         // Refuse absent configuration before any filesystem work. H reads both
         // again under BEGIN IMMEDIATE when it decides actual capacity.
         seat::read_project_parallel_cap(&self.connection, &request.domain_id)?;
-        instance::read_instance_concurrency_cap(&self.connection, &seat.instance_id)?;
-        runtime::current_instance_pin(&self.connection, &seat.instance_id)
+        instance::read_instance_concurrency_cap(&self.connection, &selected_instance)?;
+        runtime::current_instance_pin(&self.connection, &selected_instance)
             .map_err(|error| OrchestrationError::V37StoreFailure(format!("session pin: {error:?}")))?;
         let identity_bytes = format!("{}\n{}\n{}\n{}\n{}", self.root.canonical_root().identity.opaque(),
             request.domain_id, request.target_id, seat.incarnation, generation);
@@ -405,12 +425,12 @@ impl<'root> ProductDatabase<'root> {
             found.bind_text(2, &request.target_id)?;
             found.bind_text(3, generation)?;
             if found.step_row()? {
-                if found.column_text(0)? != binding_id || found.column_text(1)? != seat.instance_id
+                if found.column_text(0)? != binding_id || found.column_text(1)? != selected_instance
                     || found.column_text(2)? != generation || found.column_text(3)? != "ACTIVE"
                     || found.step_row()? { return Err(OrchestrationError::OperationConflict); }
             } else {
                 h::bind_owner_in_transaction(&mut self.connection, &OwnerBinding {
-                    binding_id: &binding_id, instance_id: &seat.instance_id,
+                    binding_id: &binding_id, instance_id: &selected_instance,
                     domain_id: &request.domain_id, kind: "SESSION", owner_id: &request.target_id,
                     generation,
                 }).map_err(|error| OrchestrationError::V37StoreFailure(format!("session home binding: {error:?}")))?;
@@ -436,13 +456,13 @@ impl<'root> ProductDatabase<'root> {
         let home = instance::create_temporary_home(&mut self.connection, self.root, &profile,
             &instance::CreateTemporaryHome {
                 request_id: &preparation_id, request_bytes: &request.raw_bytes, home_id: &home_id,
-                instance_id: &seat.instance_id, domain_id: &request.domain_id,
+                instance_id: &selected_instance, domain_id: &request.domain_id,
                 kind: instance::TemporaryKind::Session, owner_id: &request.target_id, generation,
             }).map_err(|error| OrchestrationError::V37StoreFailure(format!("session home preparation: {error:?}")))?;
         if !matches!(home.disposition, "APPLIED" | "REPLAYED") {
             return Err(OrchestrationError::V37StoreFailure(format!("session home unresolved: {}", home.disposition)));
         }
-        Ok((seat.instance_id, home_id))
+        Ok((selected_instance, home_id))
     }
 
     pub(super) fn dispatch_host_recipient_admission(&mut self,request:&V37Request,
@@ -572,7 +592,7 @@ impl<'root> ProductDatabase<'root> {
             }
         } else {
             let row = Statement::prepare(self.connection.as_ptr(),
-                "SELECT a.instance_id,a.home_id FROM main.gogoke_v37_h_claim AS a JOIN main.gogoke_v37_h_seat_binding AS s ON s.domain_id=a.domain_id AND s.session_id=a.session_id AND s.generation=a.generation WHERE a.domain_id=?1 AND a.session_id=?2 AND s.seat_id=?3 AND a.generation=?4")?;
+                "SELECT a.instance_id,a.home_id FROM main.gogoke_v37_h_claim AS a JOIN main.gogoke_v37_effective_seat AS s ON s.domain_id=a.domain_id AND s.session_id=a.session_id AND s.generation=a.generation WHERE a.domain_id=?1 AND a.session_id=?2 AND s.seat_id=?3 AND a.generation=?4")?;
             for (index, value) in [request.domain_id.as_str(), request.target_id.as_str(),
                 seat_id.as_str(), generation.as_str()].iter().enumerate() { row.bind_text((index + 1) as i32, value)?; }
             if !row.step_row()? {

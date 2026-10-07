@@ -94,6 +94,13 @@ impl<'root> ProductDatabase<'root> {
         if history.instance_id!=profile.instance_id || history.history_id!=profile.history_id {
             return Err(refused("holder original profile/history changed"));
         }
+        let relationship=fail(crate::store::session_transport::session_binding::current_relationship(
+            &self.connection,&history.domain_id,&history.session_id))?
+            .ok_or_else(||refused("holder original H/E relationship absent"))?;
+        if relationship.seat_id!=history.seat_id || relationship.seat_incarnation!=history.seat_incarnation
+            || relationship.session_generation!=profile.generation || relationship.instance_id!=profile.instance_id {
+            return Err(refused("holder original H/E relationship changed"));
+        }
         let found=rows(&self.connection,
             "SELECT c.pid,c.creation_time_100ns,c.image_path,c.binary_digest_sha256,c.state,
                     COALESCE(c.stop_proof_hash,''),a.state,CAST(a.revision AS TEXT),a.binding_id,a.home_id,
@@ -103,12 +110,10 @@ impl<'root> ProductDatabase<'root> {
                  AND e.instance_id=c.profile_id AND e.domain_id=c.domain_id AND e.generation=c.generation
                JOIN main.gogoke_v37_h_claim a ON a.process_operation_id=c.operation_id
                  AND a.instance_id=c.profile_id AND a.domain_id=c.domain_id AND a.generation=c.generation
-               JOIN main.gogoke_v37_h_seat_binding s ON s.domain_id=a.domain_id
-                 AND s.session_id=a.session_id AND s.generation=a.generation
               WHERE c.operation_id=?1 AND c.ticket=?2 AND c.custodian_nonce=?3 AND c.profile_id=?4
                 AND c.domain_id=?5 AND c.generation=?6 AND a.session_id=?7
-                AND s.seat_id=?8 AND s.seat_incarnation=?9 AND e.binding_id=?10
-                AND e.session_id=a.session_id AND e.seat_id=s.seat_id AND e.seat_incarnation=s.seat_incarnation",
+                AND e.seat_id=?8 AND e.seat_incarnation=?9 AND e.binding_id=?10
+                AND e.session_id=a.session_id",
             &[&source.process_operation_id,&source.ticket,&source.custodian_nonce,&profile.instance_id,
                 &history.domain_id,&profile.generation,&history.session_id,&history.seat_id,
                 &history.seat_incarnation,&profile.binding_id],13)?;
@@ -215,8 +220,14 @@ impl<'root> ProductDatabase<'root> {
         let seat_id=get(capture,"seat")?;
         let seat=fail(crate::store::seat::get(&self.connection,&domain,&seat_id))?
             .ok_or_else(||refused("holder release seat absent"))?;
+        let relationship=fail(crate::store::session_transport::session_binding::current_relationship(
+            &self.connection,&domain,&session))?
+            .ok_or_else(||refused("holder release original H/E relationship absent"))?;
         if seat.state!=crate::store::seat::State::Busy || seat.instance_id!=instance
-            || seat.incarnation!=get(capture,"incarnation")? || seat.generation.to_string()!=generation {
+            || seat.incarnation!=get(capture,"incarnation")?
+            || relationship.seat_id!=seat_id || relationship.seat_incarnation!=seat.incarnation
+            || relationship.session_generation!=generation || relationship.instance_id!=instance
+            || seat.generation!=relationship.seat_authorization_generation {
             return Err(refused("holder release original seat changed"));
         }
         let q=Statement::prepare(self.connection.as_ptr(),
@@ -232,7 +243,11 @@ impl<'root> ProductDatabase<'root> {
         if rows(&self.connection,"SELECT changes()",&[],1)?!=vec![vec![String::from("1")]] {
             return Err(refused("holder release claim CAS"));
         }
-        fail(crate::store::seat::set_dispatch_state_in_transaction(&mut self.connection,&seat,false))?;
+        let occupied=fail(crate::store::session_transport::session_binding::has_unreleased_seat_claim(
+            &self.connection,&domain,&seat_id,&seat.incarnation))?;
+        if !occupied {
+            fail(crate::store::seat::set_dispatch_state_in_transaction(&mut self.connection,&seat,false))?;
+        }
         let raw=encoded(capture);
         let op=Statement::prepare(self.connection.as_ptr(),
             "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,

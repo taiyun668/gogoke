@@ -418,7 +418,7 @@ impl<'root> ProductDatabase<'root> {
                 effective_revision,Default::default()));
         }
         let binding=Statement::prepare(self.connection.as_ptr(),
-            "SELECT seat_id FROM main.gogoke_v37_h_seat_binding
+            "SELECT seat_id FROM main.gogoke_v37_effective_seat
               WHERE domain_id=?1 AND session_id=?2 AND generation=?3")?;
         binding.bind_text(1,&request.domain_id)?;
         binding.bind_text(2,&request.target_id)?;
@@ -1399,7 +1399,7 @@ impl<'root> ProductDatabase<'root> {
         }
         drop(prior);
         let binding=Statement::prepare(self.connection.as_ptr(),
-            "SELECT seat_id FROM main.gogoke_v37_h_seat_binding
+            "SELECT seat_id FROM main.gogoke_v37_effective_seat
               WHERE domain_id=?1 AND session_id=?2")?;
         binding.bind_text(1,&request.domain_id)?;binding.bind_text(2,&request.target_id)?;
         if !binding.step_row()? {return Ok(encode_receipt(request,V37Status::Conflict,
@@ -1792,6 +1792,8 @@ impl<'root> ProductDatabase<'root> {
             failure(h::record_initial(&self.connection,&request.domain_id,
                 &request.target_id,&request.request_id,&operation_id))?;
             ledger::register_session(&mut self.connection, &registration)?;
+            let binding=failure(run.evidence.initial_session_binding())?;
+            failure(h::session_binding::insert_native_in_transaction(&self.connection,&binding))?;
             Ok(())
         })();
         if let Err(error) = self.finish_native_transaction(bind) {
@@ -2045,7 +2047,7 @@ impl<'root> ProductDatabase<'root> {
                 // committed and before the H receipt. Complete only from that
                 // exact durable fact; absence/UNKNOWN never permits OS replay.
                 let stopped = Statement::prepare(self.connection.as_ptr(),
-                    "SELECT c.operation_id,c.stop_proof_hash FROM main.gogoke_v37_h_claim a JOIN main.gogoke_coordination_process_custody c ON c.operation_id=a.process_operation_id AND c.domain_id=a.domain_id AND c.generation=a.generation JOIN main.gogoke_v37_h_seat_binding s ON s.domain_id=a.domain_id AND s.session_id=a.session_id AND s.generation=a.generation WHERE a.domain_id=?1 AND a.session_id=?2 AND a.generation=?3 AND s.seat_id=?4 AND c.state='STOPPED' AND c.stop_proof_hash IS NOT NULL")?;
+                    "SELECT c.operation_id,c.stop_proof_hash FROM main.gogoke_v37_h_claim a JOIN main.gogoke_coordination_process_custody c ON c.operation_id=a.process_operation_id AND c.domain_id=a.domain_id AND c.generation=a.generation JOIN main.gogoke_v37_effective_seat s ON s.domain_id=a.domain_id AND s.session_id=a.session_id AND s.generation=a.generation WHERE a.domain_id=?1 AND a.session_id=?2 AND a.generation=?3 AND s.seat_id=?4 AND c.state='STOPPED' AND c.stop_proof_hash IS NOT NULL")?;
                 for (index, value) in [request.domain_id.as_str(), request.target_id.as_str(),
                     generation.as_str(), seat_id.as_str()].iter().enumerate() {
                     stopped.bind_text((index + 1) as i32, value)?;

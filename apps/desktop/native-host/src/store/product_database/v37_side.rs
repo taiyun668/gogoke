@@ -7,6 +7,7 @@ use crate::store::atomic::Parser;
 use crate::store::ledger;
 use crate::store::sidechat::{self as d, SideError};
 use crate::store::seat::{self,NativeSeatCall,CallAction};
+use crate::store::session_transport as h;
 
 const OPEN: &str = "gogoke.37.owner-side-open.v1";
 const QUESTION: &str = "gogoke.37.owner-side-question.v1";
@@ -138,16 +139,20 @@ impl<'root> ProductDatabase<'root> {
     }
 
     fn side_source_seat(&self, domain:&str, session:&str)->Result<String> {
+        let relationship=h::session_binding::current_relationship(&self.connection,domain,session)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!("side source H/E relationship: {error:?}")))?
+            .ok_or(OrchestrationError::AccessDenied)?;
         let q=Statement::prepare(self.connection.as_ptr(),
-            "SELECT l.seat_id FROM main.v37_ledger_session l
+            "SELECT l.seat_id,h.generation FROM main.v37_ledger_session l
              JOIN main.gogoke_v37_h_claim h ON h.domain_id=l.domain_id AND h.session_id=l.session_id
-             JOIN main.gogoke_v37_h_seat_binding sb ON sb.domain_id=h.domain_id AND sb.session_id=h.session_id AND sb.generation=h.generation AND sb.seat_id=l.seat_id
-             JOIN main.gogoke_v37_seats e ON e.domain_id=sb.domain_id AND e.seat_id=sb.seat_id AND e.incarnation=sb.seat_incarnation AND CAST(e.generation AS TEXT)=sb.generation AND e.instance_id=h.instance_id
              JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=h.binding_id AND b.domain_id=h.domain_id AND b.instance_id=h.instance_id AND b.kind='SESSION' AND b.owner_id=h.session_id AND b.generation=h.generation AND b.state='ACTIVE'
-             WHERE l.domain_id=?1 AND l.session_id=?2 AND l.purpose='WORK' AND l.side_id IS NULL AND h.state IN ('COMMITTED','STOPPED') AND e.state IN ('BUSY','IDLE')")?;
+             WHERE l.domain_id=?1 AND l.session_id=?2 AND l.purpose='WORK' AND l.side_id IS NULL AND h.state IN ('COMMITTED','STOPPED')")?;
         q.bind_text(1,domain)?;q.bind_text(2,session)?;
         if !q.step_row()? {return Err(OrchestrationError::AccessDenied);}
         let seat=q.column_text(0)?;
+        if seat!=relationship.seat_id || q.column_text(1)?!=relationship.session_generation {
+            return Err(OrchestrationError::AccessDenied);
+        }
         if q.step_row()? {return Err(OrchestrationError::OperationConflict);}
         Ok(seat)
     }
@@ -160,9 +165,8 @@ impl<'root> ProductDatabase<'root> {
             "SELECT p.seat_id,p.incarnation,h.session_id,h.generation,h.revision,h.process_operation_id
              FROM main.gogoke_v37_seat_project_lead p
              JOIN main.gogoke_v37_seats e ON e.domain_id=p.domain_id AND e.seat_id=p.seat_id AND e.incarnation=p.incarnation AND e.layer='USER' AND e.state IN ('IDLE','BUSY')
-             JOIN main.gogoke_v37_h_seat_binding sb ON sb.domain_id=e.domain_id AND sb.seat_id=e.seat_id AND sb.seat_incarnation=e.incarnation
-             JOIN main.gogoke_v37_h_claim h ON h.domain_id=sb.domain_id AND h.session_id=sb.session_id AND h.generation=sb.generation AND h.instance_id=e.instance_id AND h.state='COMMITTED'
-             JOIN main.v37_ledger_session l ON l.domain_id=h.domain_id AND l.session_id=h.session_id AND l.seat_id=e.seat_id AND l.purpose='WORK' AND l.side_id IS NULL
+             JOIN main.v37_ledger_session l ON l.domain_id=e.domain_id AND l.seat_id=e.seat_id AND l.purpose='WORK' AND l.side_id IS NULL
+             JOIN main.gogoke_v37_h_claim h ON h.domain_id=l.domain_id AND h.session_id=l.session_id AND h.state='COMMITTED'
              JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=h.binding_id AND b.domain_id=h.domain_id AND b.instance_id=h.instance_id AND b.kind='SESSION' AND b.owner_id=h.session_id AND b.generation=h.generation AND b.state='ACTIVE'
              WHERE p.domain_id=?1")?;
         q.bind_text(1,domain)?;
@@ -171,8 +175,14 @@ impl<'root> ProductDatabase<'root> {
             let seat=q.column_text(0)?;let inc=q.column_text(1)?;
             let session=q.column_text(2)?;let generation=q.column_text(3)?;
             let revision=q.column_text(4)?;let operation=q.column_text(5)?;
+            let relationship=h::session_binding::current_relationship(&self.connection,domain,&session)
+                .map_err(|error|OrchestrationError::V37StoreFailure(format!("side lead H/E relationship: {error:?}")))?;
+            let Some(relationship)=relationship else {continue};
+            if relationship.seat_id!=seat || relationship.seat_incarnation!=inc
+                || relationship.session_generation!=generation {continue;}
             let Some(run)=self.native_sessions.get(&(domain.to_owned(),session.clone())) else {continue};
-            if run.operation_id!=operation || run.custody.binding.generation!=generation || !run.allows_input() {
+            if run.operation_id!=operation || run.custody.binding.generation!=generation || !run.allows_input()
+                || self.process_custodian.active(&run.custody.ticket).is_none() {
                 continue;
             }
             if found.is_some() {return Ok(Json::Null);}

@@ -2,6 +2,7 @@
 //! the current admission pointer; old A and C evidence is owned by these rows.
 use crate::store::atomic::{AtomicError, Statement};
 use crate::store::same_open::VerifiedDatabaseConnection;
+use super::session_binding::{self, Provenance};
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -21,7 +22,7 @@ pub(crate) fn record_initial(connection: &VerifiedDatabaseConnection<'_>, domain
            FROM main.gogoke_v37_h_claim a
            JOIN main.gogoke_v37_h_operation o ON o.domain_id=a.domain_id
              AND o.session_id=a.session_id AND o.operation='open'
-           JOIN main.gogoke_v37_h_seat_binding s ON s.domain_id=a.domain_id
+           JOIN main.gogoke_v37_effective_seat s ON s.domain_id=a.domain_id
              AND s.session_id=a.session_id AND s.generation=a.generation
           WHERE a.domain_id=?1 AND a.session_id=?2 AND o.request_id=?3
             AND a.process_operation_id=?4 AND a.state='COMMITTED'")?;
@@ -114,7 +115,7 @@ pub(crate) fn begin_resume(connection: &VerifiedDatabaseConnection<'_>,
          SELECT a.domain_id,?3,a.session_id,?4,a.generation,?5,?9,NULL,NULL,
                 a.instance_id,?6,?7,s.seat_id,s.seat_incarnation,'INTENT',NULL
            FROM main.gogoke_v37_h_claim a
-           JOIN main.gogoke_v37_h_seat_binding s
+           JOIN main.gogoke_v37_effective_seat s
              ON s.domain_id=a.domain_id AND s.session_id=a.session_id
              AND s.generation=a.generation
            JOIN main.gogoke_coordination_process_custody c
@@ -263,6 +264,28 @@ pub(crate) fn promote_resume(connection: &VerifiedDatabaseConnection<'_>,
     drop(candidate);
     let (new_generation,old_generation,home_id,binding_id,seat_id,incarnation,instance_id)=
         (&row[0],&row[1],&row[2],&row[3],&row[4],&row[5],&row[6]);
+    let pending=session_binding::read_pending(connection,domain,session)
+        .map_err(|error|AtomicError::DurabilityContractFailed(format!("native resume selection: {error:?}")))?;
+    let native=if let Some(selection)=pending {
+        let original=session_binding::read(connection,domain,session)
+            .map_err(|error|AtomicError::DurabilityContractFailed(format!("native resume relationship: {error:?}")))?
+            .ok_or(AtomicError::OperationConflict)?;
+        if original.provenance!=Provenance::NativeV2 || original!=selection
+            || original.seat_id!=*seat_id || original.seat_incarnation!=*incarnation
+            || original.selected_instance_id!=*instance_id {
+            return Err(AtomicError::OperationConflict);
+        }
+        let current=crate::store::seat::get(connection,domain,seat_id)
+            .map_err(|error|AtomicError::DurabilityContractFailed(format!("native resume E seat: {error:?}")))?
+            .ok_or(AtomicError::OperationConflict)?;
+        if current.state!=crate::store::seat::State::Busy
+            || current.incarnation!=original.seat_incarnation
+            || current.generation!=original.seat_authorization_generation
+            || current.instance_id!=original.selected_instance_id {
+            return Err(AtomicError::OperationConflict);
+        }
+        true
+    } else { false };
     let expected_new=old_generation.parse::<i64>().ok()
         .and_then(|value|value.checked_add(1))
         .ok_or(AtomicError::OperationConflict)?;
@@ -314,6 +337,7 @@ pub(crate) fn promote_resume(connection: &VerifiedDatabaseConnection<'_>,
           WHERE operation_id=?1 AND domain_id=?2 AND generation=?3 AND state='UNKNOWN'")?;
     settle.bind_text(1,operation_id)?;settle.bind_text(2,domain)?;
     settle.bind_text(3,new_generation)?;settle.step_done()?;
+    if !native {
     let seat=Statement::prepare(connection.as_ptr(),
         "UPDATE main.gogoke_v37_seats SET generation=?1,revision=revision+1
           WHERE domain_id=?2 AND seat_id=?3 AND incarnation=?4
@@ -335,6 +359,7 @@ pub(crate) fn promote_resume(connection: &VerifiedDatabaseConnection<'_>,
         binding.bind_text((index+1) as i32,value)?;
     }
     binding.step_done()?;
+    }
     let claim=Statement::prepare(connection.as_ptr(),
         "UPDATE main.gogoke_v37_h_claim SET generation=?1,home_id=?2,binding_id=?3,
           process_operation_id=?4,stop_fact_id=NULL,state='COMMITTED',revision=revision+1

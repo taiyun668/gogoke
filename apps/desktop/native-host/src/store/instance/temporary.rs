@@ -887,6 +887,8 @@ mod tests {
         connection.execute("PRAGMA foreign_keys=ON").unwrap();
         initialize_schema(&mut connection).unwrap();
         initialize_admission_schema(&mut connection).unwrap();
+        crate::store::seat::initialize_schema(&mut connection).unwrap();
+        crate::store::session_transport::session_binding::initialize_schema(&mut connection).unwrap();
         initialize_process_custody_schema(&mut connection).unwrap();
         let program_path = root_path.join("test-program.bin");
         fs::write(&program_path, b"fixture program bytes").unwrap();
@@ -927,6 +929,11 @@ mod tests {
         let original_home = original.column_text(0).unwrap();
         assert!(!original.step_row().unwrap());
         drop(original);
+        // Existing synthetic F control, including the exact E/legacy H
+        // relationship required by release; this is not launch authority.
+        connection.execute("INSERT INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,parent_seat_id,kind,instance_id,state,generation,revision) VALUES('projectA','seatA','incA','USER',NULL,'LONG','instanceA','BUSY',1,1)").unwrap();
+        connection.execute("INSERT INTO main.gogoke_v37_seat_settings(domain_id,seat_id,template_id,settings_json) VALUES('projectA','seatA','templateA','{}')").unwrap();
+        connection.execute("INSERT INTO main.gogoke_v37_h_seat_binding(domain_id,session_id,seat_id,seat_incarnation,generation) VALUES('projectA','sessionA','seatA','incA','1')").unwrap();
         connection.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) VALUES('processA','ticketA','nonceA','11','1','fixture-program','sha256:fixture','profileA','projectA','1','STOPPED','proofA')").unwrap();
         let claim = Statement::prepare(connection.as_ptr(),
             "INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id,stop_fact_id) VALUES('projectA','sessionA','instanceA',?1,'bindingA','1','STOPPED',1,'processA','proofA')").unwrap();

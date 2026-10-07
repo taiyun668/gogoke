@@ -681,20 +681,23 @@ fn target_valid(target: &HostDeliveryTarget<'_>) -> bool {
 
 fn original_target(db: &VerifiedDatabaseConnection<'_>, domain: &str, destination: &str,
     target: &HostDeliveryTarget<'_>, observed_readback: bool) -> Result<(), InboxError> {
-    let reserve_sql = "SELECT 1 FROM main.gogoke_v37_h_seat_binding sb
-          JOIN main.gogoke_v37_h_claim h ON h.domain_id=sb.domain_id
-            AND h.session_id=sb.session_id AND h.generation=sb.generation
+    if !observed_readback {
+        let relationship=crate::store::session_transport::session_binding::current_relationship(
+            db,domain,target.session_id)
+            .map_err(|error|InboxError::InvalidEvidence(format!("host target H/E relationship: {error:?}")))?
+            .ok_or(InboxError::Denied)?;
+        if relationship.seat_id!=destination || relationship.session_generation!=target.generation {
+            return Err(InboxError::Denied);
+        }
+    }
+    let reserve_sql = "SELECT 1 FROM main.gogoke_v37_h_claim h
           JOIN main.gogoke_v37_h_process_episode ep ON ep.domain_id=h.domain_id
             AND ep.session_id=h.session_id AND ep.generation=h.generation
-            AND ep.process_operation_id=h.process_operation_id
-          JOIN main.gogoke_v37_seats seat ON seat.domain_id=sb.domain_id
-            AND seat.seat_id=sb.seat_id AND seat.incarnation=sb.seat_incarnation
-            AND CAST(seat.generation AS TEXT)=sb.generation
-            AND seat.instance_id=h.instance_id AND seat.state='BUSY'
+            AND ep.process_operation_id=h.process_operation_id AND ep.seat_id=?3
           JOIN main.gogoke_coordination_process_custody c ON c.operation_id=ep.process_operation_id
             AND c.domain_id=ep.domain_id AND c.generation=ep.generation
-          WHERE sb.domain_id=?1 AND sb.session_id=?2 AND sb.seat_id=?3
-            AND sb.generation=?4 AND c.ticket=?5 AND h.state='COMMITTED'
+          WHERE h.domain_id=?1 AND h.session_id=?2
+            AND h.generation=?4 AND c.ticket=?5 AND h.state='COMMITTED'
             AND ep.phase='ACTIVE' AND c.state='ACTIVE'";
     // The seat binding is updated by a later generation. Historical readback
     // must use this exact episode's original seat, not the new live binding.

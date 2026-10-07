@@ -20,6 +20,7 @@ pub(crate) enum AdmissionError {
     Catalog(crate::store::instance::CatalogError),
     ProgramSource(crate::store::instance::ProgramSourceError),
     Store(AtomicError),
+    Relationship(super::session_binding::BindingError),
     Sqlite(SameOpenError),
     CommitUnknown(SameOpenError),
     RollbackUnknown(SameOpenError),
@@ -685,23 +686,34 @@ fn release_admission_inner(
         // A product seat becomes IDLE only in the transaction that releases
         // its unstarted reservation or its already proven STOPPED claim.
         let binding = Statement::prepare(connection.as_ptr(),
-            "SELECT seat_id,seat_incarnation FROM main.gogoke_v37_h_seat_binding WHERE domain_id=?1 AND session_id=?2 AND generation=?3")?;
+            "SELECT seat_id,seat_incarnation,seat_authorization_generation,selected_instance_id FROM main.gogoke_v37_effective_seat WHERE domain_id=?1 AND session_id=?2 AND generation=?3")?;
         binding.bind_text(1, input.domain_id)?;
         binding.bind_text(2, input.session_id)?;
         binding.bind_text(3, input.generation)?;
         if binding.step_row()? {
             let seat_id = binding.column_text(0)?;
             let incarnation = binding.column_text(1)?;
+            let authorization_generation=binding.column_text(2)?.parse::<i64>()
+                .map_err(|_|AdmissionError::Denied)?;
+            let selected_instance=binding.column_text(3)?;
             if binding.step_row()? { return Err(AdmissionError::Conflict); }
             let seat = crate::store::seat::get(connection, input.domain_id, &seat_id)
                 .map_err(AdmissionError::Seat)?.ok_or(AdmissionError::Denied)?;
-            if seat.incarnation != incarnation || seat.generation.to_string() != input.generation
-                || seat.instance_id != input.instance_id || seat.state != crate::store::seat::State::Busy {
+            if seat.incarnation != incarnation || seat.generation!=authorization_generation
+                || selected_instance != input.instance_id || seat.instance_id != selected_instance
+                || seat.state != crate::store::seat::State::Busy {
                 return Err(AdmissionError::Denied);
             }
-            crate::store::seat::set_dispatch_state_in_transaction(connection, &seat, false)
-                .map_err(AdmissionError::Seat)?;
-        }
+            // E belongs to the seat, not this physical H episode. Releasing
+            // one native session cannot revoke a sibling's still-held scope.
+            let siblings=super::session_binding::has_unreleased_seat_claim(
+                connection,input.domain_id,&seat_id,&incarnation)
+                .map_err(AdmissionError::Relationship)?;
+            if !siblings {
+                crate::store::seat::set_dispatch_state_in_transaction(connection, &seat, false)
+                    .map_err(AdmissionError::Seat)?;
+            }
+        } else {return Err(AdmissionError::Denied);}
         journal(
             connection,
             input,

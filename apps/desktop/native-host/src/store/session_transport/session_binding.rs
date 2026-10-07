@@ -10,6 +10,10 @@ use crate::store::same_open::{SameOpenError, VerifiedDatabaseConnection};
 
 pub(crate) const TABLE: &str = "gogoke_v37_session_binding_v2";
 const SCHEMA: &str = "CREATE TABLE gogoke_v37_session_binding_v2(domain_id TEXT NOT NULL,session_id TEXT NOT NULL,seat_id TEXT NOT NULL,seat_incarnation TEXT NOT NULL,seat_authorization_generation INTEGER NOT NULL CHECK(seat_authorization_generation>=0),selected_instance_id TEXT NOT NULL,provenance TEXT NOT NULL CHECK(provenance IN ('LEGACY_V1','NATIVE_V2')),PRIMARY KEY(domain_id,session_id)) STRICT";
+const PENDING: &str = "gogoke_v37_native_selection";
+const PENDING_SCHEMA: &str = "CREATE TABLE gogoke_v37_native_selection(domain_id TEXT NOT NULL,session_id TEXT NOT NULL,seat_id TEXT NOT NULL,seat_incarnation TEXT NOT NULL,seat_authorization_generation INTEGER NOT NULL CHECK(seat_authorization_generation>=0),selected_instance_id TEXT NOT NULL,PRIMARY KEY(domain_id,session_id)) STRICT";
+pub(crate) const EFFECTIVE_SEAT: &str = "gogoke_v37_effective_seat";
+const EFFECTIVE_SEAT_SCHEMA: &str = "CREATE VIEW gogoke_v37_effective_seat AS SELECT p.domain_id,p.session_id,p.seat_id,p.seat_incarnation,c.generation,p.seat_authorization_generation,p.selected_instance_id,'NATIVE_V2' AS provenance FROM main.gogoke_v37_native_selection p JOIN main.gogoke_v37_h_claim c ON c.domain_id=p.domain_id AND c.session_id=p.session_id UNION ALL SELECT b.domain_id,b.session_id,b.seat_id,b.seat_incarnation,b.generation,CAST(b.generation AS INTEGER),c.instance_id,'LEGACY_V1' FROM main.gogoke_v37_h_seat_binding b JOIN main.gogoke_v37_h_claim c ON c.domain_id=b.domain_id AND c.session_id=b.session_id WHERE b.generation=CAST(CAST(b.generation AS INTEGER) AS TEXT) AND NOT EXISTS(SELECT 1 FROM main.gogoke_v37_native_selection p WHERE p.domain_id=b.domain_id AND p.session_id=b.session_id)";
 
 #[derive(Debug)]
 pub(crate) enum BindingError {
@@ -86,7 +90,8 @@ pub(crate) fn current_relationship(db: &VerifiedDatabaseConnection<'_>,
              AND ((v.provenance='NATIVE_V2' AND s.seat_id=v.seat_id
                AND s.incarnation=v.seat_incarnation
                AND s.generation=v.seat_authorization_generation
-               AND h.instance_id=v.selected_instance_id)
+                AND h.instance_id=v.selected_instance_id
+                AND s.instance_id=v.selected_instance_id)
              OR ((v.provenance IS NULL OR v.provenance='LEGACY_V1')
                AND s.seat_id=old.seat_id AND s.incarnation=old.seat_incarnation
                AND CAST(s.generation AS TEXT)=old.generation
@@ -101,6 +106,9 @@ pub(crate) fn current_relationship(db: &VerifiedDatabaseConnection<'_>,
         native_v2:q.column_text(5)?=="1",
     };
     if q.step_row()? { return Err(BindingError::Conflict); }
+    if relationship.native_v2
+        && authorization_generation(db,domain,session)?
+            !=relationship.seat_authorization_generation {return Err(BindingError::Conflict);}
     Ok(Some(relationship))
 }
 impl SessionBinding {
@@ -148,14 +156,43 @@ fn schema_state(db: &VerifiedDatabaseConnection<'_>) -> Result<Option<String>, B
     Ok(Some(sql))
 }
 
+fn auxiliary_state(db: &VerifiedDatabaseConnection<'_>, name: &str,
+    kind: &str, expected: &str) -> Result<bool, BindingError> {
+    let temp = Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM temp.sqlite_schema WHERE lower(name)=?1 OR lower(tbl_name)=?1 LIMIT 1")?;
+    temp.bind_text(1,name)?;
+    if temp.step_row()? { return Err(BindingError::Drift); }
+    let effects = Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM main.sqlite_schema WHERE type IN ('trigger','index') AND sql IS NOT NULL AND lower(tbl_name)=?1 LIMIT 1")?;
+    effects.bind_text(1,name)?;
+    if effects.step_row()? { return Err(BindingError::Drift); }
+    let row = Statement::prepare(db.as_ptr(),
+        "SELECT type,sql FROM main.sqlite_schema WHERE lower(name)=?1")?;
+    row.bind_text(1,name)?;
+    if !row.step_row()? { return Ok(false); }
+    if row.column_text(0)? != kind || row.column_text(1)? != expected || row.step_row()? {
+        return Err(BindingError::Drift);
+    }
+    Ok(true)
+}
+
 /// Independent of admission's historical 5/6/8/9-table upgrade chain.
 pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Result<(), BindingError> {
-    if schema_state(db)?.is_some() { return Ok(()); }
+    if schema_state(db)?.is_some()
+        && auxiliary_state(db,PENDING,"table",PENDING_SCHEMA)?
+        && auxiliary_state(db,EFFECTIVE_SEAT,"view",EFFECTIVE_SEAT_SCHEMA)? { return Ok(()); }
     db.execute("BEGIN IMMEDIATE")?;
     let outcome = (|| {
-        if schema_state(db)?.is_some() { return Err(BindingError::Drift); }
-        db.execute(SCHEMA)?;
+        if schema_state(db)?.is_none() { db.execute(SCHEMA)?; }
+        if !auxiliary_state(db,PENDING,"table",PENDING_SCHEMA)? { db.execute(PENDING_SCHEMA)?; }
+        if !auxiliary_state(db,EFFECTIVE_SEAT,"view",EFFECTIVE_SEAT_SCHEMA)? {
+            db.execute(EFFECTIVE_SEAT_SCHEMA)?;
+        }
         if schema_state(db)?.is_none() { return Err(BindingError::Drift); }
+        if !auxiliary_state(db,PENDING,"table",PENDING_SCHEMA)?
+            || !auxiliary_state(db,EFFECTIVE_SEAT,"view",EFFECTIVE_SEAT_SCHEMA)? {
+            return Err(BindingError::Drift);
+        }
         Ok(())
     })();
     match outcome {
@@ -193,12 +230,117 @@ pub(crate) fn read(db: &VerifiedDatabaseConnection<'_>, domain: &str, session: &
     Ok(Some(binding))
 }
 
+pub(crate) fn read_pending(db: &VerifiedDatabaseConnection<'_>, domain: &str, session: &str)
+    -> Result<Option<SessionBinding>, BindingError> {
+    if !auxiliary_state(db,PENDING,"table",PENDING_SCHEMA)? { return Err(BindingError::Drift); }
+    let row=Statement::prepare(db.as_ptr(),
+        "SELECT domain_id,session_id,seat_id,seat_incarnation,seat_authorization_generation,selected_instance_id FROM main.gogoke_v37_native_selection WHERE domain_id=?1 AND session_id=?2")?;
+    row.bind_text(1,domain)?; row.bind_text(2,session)?;
+    if !row.step_row()? { return Ok(None); }
+    let binding=SessionBinding {domain_id:row.column_text(0)?,session_id:row.column_text(1)?,
+        seat_id:row.column_text(2)?,seat_incarnation:row.column_text(3)?,
+        seat_authorization_generation:row.column_text(4)?.parse()
+            .map_err(|_|BindingError::Drift)?,selected_instance_id:row.column_text(5)?,
+        provenance:Provenance::NativeV2};
+    if row.step_row()? { return Err(BindingError::Drift); }
+    binding.validate()?;
+    Ok(Some(binding))
+}
+
+/// Use only after a caller has independently proved the current H operation,
+/// physical custody and A source. This value is the E authorization epoch,
+/// never a substitute for that physical proof.
+pub(crate) fn authorization_generation(db:&VerifiedDatabaseConnection<'_>,
+    domain:&str,session:&str)->Result<i64,BindingError> {
+    if let Some(pending)=read_pending(db,domain,session)? {
+        if read(db,domain,session)?.as_ref()!=Some(&pending) {return Err(BindingError::Conflict);}
+        return Ok(pending.seat_authorization_generation);
+    }
+    let old=Statement::prepare(db.as_ptr(),
+        "SELECT generation FROM main.gogoke_v37_h_seat_binding WHERE domain_id=?1 AND session_id=?2")?;
+    old.bind_text(1,domain)?;old.bind_text(2,session)?;
+    if !old.step_row()? {return Err(BindingError::Conflict);}
+    let raw=old.column_text(0)?;
+    let generation=raw.parse::<i64>().map_err(|_|BindingError::Drift)?;
+    if generation<0 || generation.to_string()!=raw {return Err(BindingError::Drift);}
+    if old.step_row()? {return Err(BindingError::Conflict);}
+    Ok(generation)
+}
+
+/// Read only, inside the caller's product transaction after it settles one
+/// claim. Every non-RELEASED H claim for this exact seat incarnation still
+/// holds E BUSY, including STOPPED and pre-open native reservations.
+pub(crate) fn has_unreleased_seat_claim(db:&VerifiedDatabaseConnection<'_>,
+    domain:&str,seat:&str,incarnation:&str)->Result<bool,BindingError> {
+    if !auxiliary_state(db,EFFECTIVE_SEAT,"view",EFFECTIVE_SEAT_SCHEMA)? {
+        return Err(BindingError::Drift);
+    }
+    let unbound=Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_h_claim c
+           LEFT JOIN main.gogoke_v37_effective_seat b
+             ON b.domain_id=c.domain_id AND b.session_id=c.session_id
+          WHERE c.domain_id=?1 AND c.state<>'RELEASED'
+            AND b.session_id IS NULL LIMIT 1")?;
+    unbound.bind_text(1,domain)?;
+    if unbound.step_row()? {return Err(BindingError::Conflict);}
+    let rows=Statement::prepare(db.as_ptr(),
+        "SELECT c.session_id,COALESCE(c.process_operation_id,''),b.provenance
+           FROM main.gogoke_v37_h_claim c
+           JOIN main.gogoke_v37_effective_seat b
+             ON b.domain_id=c.domain_id AND b.session_id=c.session_id
+          WHERE c.domain_id=?1 AND b.seat_id=?2 AND b.seat_incarnation=?3
+            AND c.state<>'RELEASED'")?;
+    rows.bind_text(1,domain)?;rows.bind_text(2,seat)?;rows.bind_text(3,incarnation)?;
+    let mut found=false;
+    while rows.step_row()? {
+        let session=rows.column_text(0)?;
+        let operation=rows.column_text(1)?;
+        let provenance=rows.column_text(2)?;
+        if provenance=="NATIVE_V2" {
+            let pending=read_pending(db,domain,&session)?.ok_or(BindingError::Conflict)?;
+            if pending.seat_id!=seat || pending.seat_incarnation!=incarnation {
+                return Err(BindingError::Conflict);
+            }
+            if !operation.is_empty() && read(db,domain,&session)?.as_ref()!=Some(&pending) {
+                return Err(BindingError::Conflict);
+            }
+        } else if provenance!="LEGACY_V1" {return Err(BindingError::Drift);}
+        found=true;
+    }
+    Ok(found)
+}
+
+/// H's original admission transaction records this selection before a process
+/// exists. It is not an execution grant and never infers provenance from an
+/// absent legacy row. Initial native open must match it exactly.
+pub(crate) fn select_native_in_transaction(db: &VerifiedDatabaseConnection<'_>,
+    binding:&SessionBinding) -> Result<(),BindingError> {
+    if binding.provenance!=Provenance::NativeV2 { return Err(BindingError::Invalid("provenance")); }
+    binding.validate()?;
+    if let Some(existing)=read_pending(db,&binding.domain_id,&binding.session_id)? {
+        return if existing==*binding {Ok(())} else {Err(BindingError::Conflict)};
+    }
+    let row=Statement::prepare(db.as_ptr(),
+        "INSERT INTO main.gogoke_v37_native_selection(domain_id,session_id,seat_id,seat_incarnation,seat_authorization_generation,selected_instance_id) VALUES(?1,?2,?3,?4,?5,?6)")?;
+    for (index,value) in [binding.domain_id.as_str(),binding.session_id.as_str(),
+        binding.seat_id.as_str(),binding.seat_incarnation.as_str()].iter().enumerate() {
+        row.bind_text((index+1) as i32,value)?;
+    }
+    row.bind_i64(5,binding.seat_authorization_generation)?;
+    row.bind_text(6,&binding.selected_instance_id)?;
+    row.step_done()?;
+    Ok(())
+}
+
 /// Requires the caller's open product transaction and original native E seat
 /// authorization plus User/native request proof. No authority is minted here.
 /// Exact same-session replay is idempotent; a changed field is a conflict.
 pub(crate) fn insert_native_in_transaction(db: &VerifiedDatabaseConnection<'_>, binding: &SessionBinding)
     -> Result<(), BindingError> {
     if binding.provenance != Provenance::NativeV2 { return Err(BindingError::Invalid("provenance")); }
+    if read_pending(db,&binding.domain_id,&binding.session_id)?.as_ref()!=Some(binding) {
+        return Err(BindingError::Conflict);
+    }
     insert_exact(db, binding)
 }
 
@@ -273,6 +415,18 @@ fn project_legacy_in_transaction(db: &VerifiedDatabaseConnection<'_>)
         // relationship. It is never a legacy projection candidate.
         if matches!(existing.as_ref().map(|row| row.provenance), Some(Provenance::NativeV2)) {
             continue;
+        }
+        if existing.is_none() {
+            // A reservation can survive a cold reopen before any native open.
+            // Its old H seat-binding is an admission fact, not a legacy session
+            // relationship. H backfills actual old process episodes first.
+            let opened = Statement::prepare(db.as_ptr(),
+                "SELECT 1 FROM main.gogoke_v37_h_process_episode
+                  WHERE domain_id=?1 AND session_id=?2 AND old_generation IS NULL
+                    AND process_operation_id IS NOT NULL LIMIT 1")?;
+            opened.bind_text(1,&domain)?;
+            opened.bind_text(2,&session)?;
+            if !opened.step_row()? { continue; }
         }
         let source = Statement::prepare(db.as_ptr(),
             "SELECT COALESCE(b.seat_id,''),COALESCE(b.seat_incarnation,''),COALESCE(b.generation,''),COALESCE(c.instance_id,''),COALESCE(c.home_id,''),COALESCE(c.binding_id,''),COALESCE(c.generation,''),COALESCE(o.instance_id,''),COALESCE(o.domain_id,''),COALESCE(o.kind,''),COALESCE(o.owner_id,''),COALESCE(o.generation,''),COALESCE(h.instance_id,''),COALESCE(h.domain_id,''),COALESCE(h.kind,''),COALESCE(h.owner_id,''),COALESCE(h.generation,'') FROM (SELECT ?1 AS domain_id,?2 AS session_id) k LEFT JOIN main.gogoke_v37_h_seat_binding b ON b.domain_id=k.domain_id AND b.session_id=k.session_id LEFT JOIN main.gogoke_v37_h_claim c ON c.domain_id=k.domain_id AND c.session_id=k.session_id LEFT JOIN main.gogoke_v37_h_owner_binding o ON o.binding_id=c.binding_id LEFT JOIN main.gogoke_v37_instance_homes h ON h.home_id=c.home_id")?;
@@ -386,17 +540,18 @@ mod tests {
             insert.bind_text((i+1) as i32,v).unwrap();
         }
         insert.step_done().unwrap(); drop(insert);
-        if state == "STOPPED" || state == "UNKNOWN" {
+        if state == "STOPPED" || state == "UNKNOWN" || (state == "COMMITTED" && !with_binding) {
             let operation_id = format!("open{session}");
             let insert = Statement::prepare(db.as_ptr(),
                 "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA',?1,'00ff','open',?2,'APPLIED',6,7)").unwrap();
             insert.bind_text(1,&operation_id).unwrap(); insert.bind_text(2,session).unwrap();
             insert.step_done().unwrap(); drop(insert);
             let insert = Statement::prepare(db.as_ptr(),
-                "INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,instance_id,home_id,binding_id,phase,stop_fact_id) VALUES('projectA',?1,?2,?3,'cafebabe',6,'instanceA',?4,?5,?6,?7)").unwrap();
+                "INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,process_operation_id,instance_id,home_id,binding_id,phase,stop_fact_id) VALUES('projectA',?1,?2,?3,'cafebabe',6,?1,'instanceA',?4,?5,?6,?7)").unwrap();
             let stop = if state == "STOPPED" { "stopFactA" } else { "" };
+            let episode_phase = if state == "COMMITTED" { "PREPARED" } else { state };
             for (i,v) in [operation_id.as_str(),session,generation,home_id.as_str(),
-                binding_id.as_str(),state,stop].iter().enumerate() {
+                binding_id.as_str(),episode_phase,stop].iter().enumerate() {
                 insert.bind_text((i+1) as i32,v).unwrap();
             }
             insert.step_done().unwrap();
@@ -450,6 +605,7 @@ mod tests {
                 seat_authorization_generation:0,selected_instance_id:"instanceA".into(),
                 provenance:Provenance::NativeV2 };
             db.execute("BEGIN IMMEDIATE").unwrap();
+            select_native_in_transaction(db,&original).unwrap();
             insert_native_in_transaction(db,&original).unwrap();
             insert_native_in_transaction(db,&original).unwrap();
             let mut changed = original.clone(); changed.selected_instance_id="instanceB".into();
@@ -464,17 +620,36 @@ mod tests {
     }
 
     #[test]
+    fn cold_preopen_admission_does_not_become_legacy_binding() {
+        with_product_db(|db| {
+            legacy(db,"reservedA","COMMITTED","1",true);
+            let report=project_legacy(db).unwrap();
+            assert_eq!(report.projected,0);
+            assert!(read(db,"projectA","reservedA").unwrap().is_none());
+            let binding=SessionBinding {domain_id:"projectA".into(),session_id:"reservedA".into(),
+                seat_id:"seatA".into(),seat_incarnation:"incA".into(),
+                seat_authorization_generation:1,selected_instance_id:"instanceA".into(),
+                provenance:Provenance::NativeV2};
+            db.execute("BEGIN IMMEDIATE").unwrap();
+            select_native_in_transaction(db,&binding).unwrap();
+            insert_native_in_transaction(db,&binding).unwrap();
+            db.execute("COMMIT").unwrap();
+            assert_eq!(read(db,"projectA","reservedA").unwrap(),Some(binding));
+        });
+    }
+
+    #[test]
     fn current_relation_separates_selected_instance_and_session_generation() {
         with_product_db(|db| {
             legacy(db,"sideA","COMMITTED","4",true);
             assert!(current_relationship(db,"projectA","sideA").unwrap().is_none());
             db.execute("INSERT INTO main.gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('instanceB','codex','refB','identityB','sha256:fixture','fixture','INSTALLED','LOGGED_OUT',1)").unwrap();
-            db.execute("UPDATE main.gogoke_v37_seats SET instance_id='instanceB' WHERE seat_id='seatA'").unwrap();
             let binding=SessionBinding {domain_id:"projectA".into(),session_id:"sideA".into(),
                 seat_id:"seatA".into(),seat_incarnation:"incA".into(),
                 seat_authorization_generation:1,selected_instance_id:"instanceA".into(),
                 provenance:Provenance::NativeV2};
             db.execute("BEGIN IMMEDIATE").unwrap();
+            select_native_in_transaction(db,&binding).unwrap();
             insert_native_in_transaction(db,&binding).unwrap();
             db.execute("COMMIT").unwrap();
             let current=current_relationship(db,"projectA","sideA").unwrap().unwrap();
@@ -484,6 +659,9 @@ mod tests {
             assert_eq!(current.instance_id,"instanceA");
             // Neither metadata reading nor the V2 record creates A purpose.
             assert!(crate::store::ledger::read_registered_session(db,"sideA").unwrap().is_none());
+            db.execute("UPDATE main.gogoke_v37_seats SET instance_id='instanceB' WHERE seat_id='seatA'").unwrap();
+            assert!(current_relationship(db,"projectA","sideA").unwrap().is_none());
+            db.execute("UPDATE main.gogoke_v37_seats SET instance_id='instanceA' WHERE seat_id='seatA'").unwrap();
             db.execute("UPDATE main.gogoke_v37_seats SET generation=2 WHERE seat_id='seatA'").unwrap();
             assert!(current_relationship(db,"projectA","sideA").unwrap().is_none());
             db.execute("UPDATE main.gogoke_v37_seats SET generation=1 WHERE seat_id='seatA'").unwrap();

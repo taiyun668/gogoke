@@ -312,7 +312,7 @@ pub(crate) fn observe_codex_host_health(db:&VerifiedDatabaseConnection<'_>,owner
     let source=ledger::read_captured_raw_source(db,&key.operation_id,&key.source_epoch,&key.source_cursor)?
         .ok_or(HostHealthError::Denied)?;
     let Some((thread,turn,cause))=typed_terminal(&source.raw_bytes)? else {return Ok(None)};
-    let generation=custody.binding.generation.parse::<i64>().ok().filter(|value|*value>0
+    let physical_generation=custody.binding.generation.parse::<i64>().ok().filter(|value|*value>0
         && value.to_string()==custody.binding.generation).ok_or(HostHealthError::Denied)?;
     if source.key!=*key || source.key.source_epoch!=custody.custodian_nonce
         || source.domain_id!=custody.binding.domain_id || source.generation!=custody.binding.generation
@@ -323,6 +323,10 @@ pub(crate) fn observe_codex_host_health(db:&VerifiedDatabaseConnection<'_>,owner
     }
     let (operation,open_request_id,seat_id,incarnation)=rpc_journal::current_codex_model_binding(
         db,custody,&source.domain_id,&source.session_id)?;
+    let generation=super::session_binding::authorization_generation(db,
+        &source.domain_id,&source.session_id)
+        .map_err(|error|HostHealthError::Store(AtomicError::DurabilityContractFailed(
+            format!("host health relationship: {error:?}"))))?;
     if operation!=source.key.operation_id || generation_change::active_for_session(db,
         &source.domain_id,&source.session_id)?.is_some() {return Err(HostHealthError::Denied)}
     let registration=ledger::read_registered_session(db,&source.session_id)?.ok_or(HostHealthError::Denied)?;
@@ -337,7 +341,8 @@ pub(crate) fn observe_codex_host_health(db:&VerifiedDatabaseConnection<'_>,owner
     let source_event_id=resolved_event(db,&source,&seat_id,&thread,&turn)?;
     let work=ordinary_work_turn(db,custody,&source,&open_request_id,&thread,&turn)?;
     let seat=seat::get(db,&source.domain_id,&seat_id)?.ok_or(HostHealthError::Denied)?;
-    if seat.state!=State::Busy || seat.incarnation!=incarnation || seat.generation!=generation
+    if physical_generation<generation || seat.state!=State::Busy
+        || seat.incarnation!=incarnation || seat.generation!=generation
         || seat.instance_id.is_empty() {return Err(HostHealthError::Denied)}
     Ok(Some(HostHealthProof {custody:custody.clone(),source:key.clone(),source_event_id,
         raw_sha256:sha256_hex(&source.raw_bytes),raw:source.raw_bytes,
