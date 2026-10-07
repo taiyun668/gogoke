@@ -99,6 +99,7 @@ fn with_source(extra: &[&str], action: impl FnOnce(&mut VerifiedDatabaseConnecti
     instance::initialize_schema(&mut db).unwrap();
     seat::initialize_schema(&mut db).unwrap();
     admission::initialize_admission_schema(&mut db).unwrap();
+    super::super::session_binding::initialize_schema(&mut db).unwrap();
     authority::initialize_process_custody_schema(&mut db).unwrap();
     rpc_journal::initialize_schema(&mut db).unwrap();
     db.execute("CREATE TABLE orchestration_events(sequence INTEGER PRIMARY KEY,event_id TEXT UNIQUE,stream_id TEXT,occurred_at TEXT,event_type TEXT,payload_json TEXT)").unwrap();
