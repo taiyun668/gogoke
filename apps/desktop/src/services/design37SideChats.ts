@@ -23,7 +23,8 @@ export type SideHostView = {
 };
 export type LeadSourceView = {
   seatId:string; seatIncarnation:string; sessionId:string; generation:string;
-  claimRevision:string; sourceEpoch:string; sourceCursor:string;
+  claimRevision:string; repositoryId:string; worktreeId:string;
+  sourceEpoch:string; sourceCursor:string;
 };
 export type SideChatView = {
   id: string; title: string; state: "ACTIVE" | "ARCHIVED";
@@ -85,7 +86,8 @@ function list(value: unknown, domainId: string): Design37SideChatPage {
     const row=record(page.lead);
     return {seatId:string(row,"seatId"),seatIncarnation:string(row,"seatIncarnation"),
       sessionId:string(row,"sessionId"),generation:string(row,"generation"),
-      claimRevision:string(row,"claimRevision"),sourceEpoch:string(row,"sourceEpoch"),
+      claimRevision:string(row,"claimRevision"),repositoryId:string(row,"repositoryId"),
+      worktreeId:string(row,"worktreeId"),sourceEpoch:string(row,"sourceEpoch"),
       sourceCursor:string(row,"sourceCursor")};
   })();
   const chats=rows(page,"chats").map(value => {

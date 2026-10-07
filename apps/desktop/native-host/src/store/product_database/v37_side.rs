@@ -157,7 +157,7 @@ impl<'root> ProductDatabase<'root> {
     /// position, never a claimed count of lead rounds.
     fn side_current_lead(&self,domain:&str,head:&ledger::LedgerPosition)->Result<Json> {
         let q=Statement::prepare(self.connection.as_ptr(),
-            "SELECT p.seat_id,p.incarnation,h.session_id,h.generation,h.revision,h.process_operation_id
+            "SELECT p.seat_id,p.incarnation,h.session_id,h.generation,h.revision,h.process_operation_id,h.instance_id
              FROM main.gogoke_v37_seat_project_lead p
              JOIN main.gogoke_v37_seats e ON e.domain_id=p.domain_id AND e.seat_id=p.seat_id AND e.incarnation=p.incarnation AND e.layer='USER' AND e.state IN ('IDLE','BUSY')
              JOIN main.gogoke_v37_h_seat_binding sb ON sb.domain_id=e.domain_id AND sb.seat_id=e.seat_id AND sb.seat_incarnation=e.incarnation
@@ -171,15 +171,41 @@ impl<'root> ProductDatabase<'root> {
             let seat=q.column_text(0)?;let inc=q.column_text(1)?;
             let session=q.column_text(2)?;let generation=q.column_text(3)?;
             let revision=q.column_text(4)?;let operation=q.column_text(5)?;
+            let instance=q.column_text(6)?;
             let Some(run)=self.native_sessions.get(&(domain.to_owned(),session.clone())) else {continue};
             if run.operation_id!=operation || run.custody.binding.generation!=generation || !run.allows_input() {
                 continue;
             }
+            let original=decode(&run.open_request_bytes)?;
+            if original.family!="K-SESSION" || original.operation!="open" ||
+                original.domain_id!=domain || original.target_id!=session ||
+                original.request_id!=run.open_request_id ||
+                user_payload_string(&original,"seatId")?!=seat ||
+                user_payload_string(&original,"generation")?!=generation {continue;}
+            let repository=user_payload_string(&original,"repositoryId")?;
+            let worktree=user_payload_string(&original,"worktreeId")?;
+            let original_row=Statement::prepare(self.connection.as_ptr(),
+                "SELECT raw_hex FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND request_id=?2 AND session_id=?3 AND operation='open' AND status='APPLIED'")?;
+            original_row.bind_text(1,domain)?;original_row.bind_text(2,&run.open_request_id)?;
+            original_row.bind_text(3,&session)?;
+            let raw_hex:String=run.open_request_bytes.iter().map(|byte|format!("{byte:02x}")).collect();
+            if !original_row.step_row()? || original_row.column_text(0)?!=raw_hex || original_row.step_row()? {
+                continue;
+            }
+            drop(original_row);
+            let graph=crate::store::worktree::graph_query(&self.connection,&worktree)
+                .map_err(|error|OrchestrationError::V37StoreFailure(format!("side lead F graph: {error:?}")))?;
+            let Some(graph)=graph else {continue};
+            if !matches!(graph.state.as_str(),"REGISTERED"|"ACTIVE") ||
+                !graph.members.iter().any(|member|member.worktree_id==worktree &&
+                    member.repository_id==repository && member.domain_id==domain &&
+                    member.seat_id==seat && member.instance_id==instance) {continue;}
             if found.is_some() {return Ok(Json::Null);}
             found=Some(Json::Object(BTreeMap::from([
                 (key("seatId"),text(&seat)),(key("seatIncarnation"),text(&inc)),
                 (key("sessionId"),text(&session)),(key("generation"),text(&generation)),
                 (key("claimRevision"),text(&revision)),
+                (key("repositoryId"),text(&repository)),(key("worktreeId"),text(&worktree)),
                 (key("sourceEpoch"),text(&head.epoch)),
                 (key("sourceCursor"),text(&head.cursor.to_string())),
             ])));
