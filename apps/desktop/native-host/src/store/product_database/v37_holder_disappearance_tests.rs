@@ -299,11 +299,16 @@ fn actual_two_disappeared_holders_recover_in_one_call_replay_without_acl_effect_
             let Some(Json::Array(profiles)) = page.get(&JsonString::from_str("profiles")) else { panic!("instance profiles"); };
             profiles.iter().find_map(|profile| {
                 let Json::Object(fields) = profile else { return None; };
-                if fields.get(&JsonString::from_str("instanceId")) != Some(&Json::String(JsonString::from_str(INSTANCE))) { return None; }
-                fields.get(&JsonString::from_str("runningSessions")).cloned()
+                let Some(Json::String(instance)) = fields.get(&JsonString::from_str("instanceId")) else { return None; };
+                if instance.to_well_formed_string().as_deref() != Some(INSTANCE) { return None; }
+                match fields.get(&JsonString::from_str("runningSessions"))? {
+                    Json::Null => Some(None),
+                    Json::Number(value) => Some(Some(value.parse::<usize>().expect("native integer session count"))),
+                    _ => panic!("native nullable integer session count"),
+                }
             }).expect("original registered instance count")
         };
-        assert_eq!(occupancy(&mut product),Json::Null,"disappearance without a completion receipt stays unknown");
+        assert_eq!(occupancy(&mut product),None,"disappearance without a completion receipt stays unknown");
         let before_acl = source_acl_digest(&product, root, cold);
         let writes = holder_gone_acl_write_count_for_test();
         // Do not retry an Err: this call must itself finish both original rows.
@@ -348,7 +353,7 @@ fn actual_two_disappeared_holders_recover_in_one_call_replay_without_acl_effect_
             assert_eq!(release, vec![vec![record.input.snapshot_hex.clone(), "holder-gone-release".into(),
                 generation.session_id, "APPLIED".into(), old[7].clone(), expected[7].clone()]]);
         }
-        assert_eq!(occupancy(&mut product),Json::Number("0".into()),"exact completed recovery does not poison the current count");
+        assert_eq!(occupancy(&mut product),Some(0),"exact completed recovery does not poison the current count");
         // Negative metadata instrument, not an observed stop or a new effect.
         // Roll back the exact old row before continuing the real recovery case.
         product.connection.execute("BEGIN IMMEDIATE").unwrap();
@@ -356,7 +361,7 @@ fn actual_two_disappeared_holders_recover_in_one_call_replay_without_acl_effect_
             "UPDATE main.gogoke_v37_h_claim SET stop_fact_id='' WHERE domain_id=?1 AND session_id=?2 AND stop_fact_id IS NULL").unwrap();
         changed.bind_text(1,&cold.claims[0][0]).unwrap();changed.bind_text(2,&cold.claims[0][1]).unwrap();
         changed.step_done().unwrap();drop(changed);
-        assert_eq!(occupancy(&mut product),Json::Null,"an empty string is not the original NULL evidence");
+        assert_eq!(occupancy(&mut product),None,"an empty string is not the original NULL evidence");
         product.connection.execute("ROLLBACK").unwrap();
         assert_ne!(source_acl_digest(&product, root, cold), before_acl);
         assert_eq!(CredentialBinding::observe_source_metadata(root, &cold.home.join("auth.json"),
@@ -373,7 +378,7 @@ fn actual_two_disappeared_holders_recover_in_one_call_replay_without_acl_effect_
         assert_eq!(holder_gone_acl_write_count_for_test(), replay_writes, "cold replay never calls actual ACL writer");
         assert_eq!(resource_snapshot(&product), after);
         assert_eq!(source_acl_digest(&product, root, cold), after_acl);
-        assert_eq!(occupancy(&mut product),Json::Number("0".into()),"cold read consumes the original recovery receipts");
+        assert_eq!(occupancy(&mut product),Some(0),"cold read consumes the original recovery receipts");
         let generation = seat::get(&product.connection, "projectA", "seatA").unwrap().unwrap().generation + 1;
         for (verb, revision) in [("admission-reserve", 0), ("admission-commit", 1)] {
             applied(&mut product, &operation("projectA", "K-SESSION", verb, &format!("holder-cold-{verb}"),
@@ -382,7 +387,7 @@ fn actual_two_disappeared_holders_recover_in_one_call_replay_without_acl_effect_
         applied(&mut product, &operation("projectA", "K-SESSION", "open", "holder-cold-open", "sessionC", 2,
             &format!(r#"{{"seatId":"seatA","generation":"{generation}","repositoryId":"fixtureRepo","worktreeId":"treeA"}}"#)));
         assert!(product.native_sessions.get(&("projectA".into(), "sessionC".into())).unwrap().evidence.file_credentials_bound());
-        assert_eq!(occupancy(&mut product),Json::Number("1".into()),"only the new actual holder is counted");
+        assert_eq!(occupancy(&mut product),Some(1),"only the new actual holder is counted");
         assert!(instance::read_credential_profiles(&product.connection, INSTANCE).unwrap().iter()
             .any(|p| p.state == "ACTIVE" && p.source_file_identity == cold.source && p.generation == generation.to_string()));
         for old in &cold.custody {
@@ -410,7 +415,7 @@ fn actual_two_disappeared_holders_recover_in_one_call_replay_without_acl_effect_
         applied(&mut product, &operation("projectA", "K-SESSION", "admission-release", "holder-cold-release", "sessionC", 5,
             &format!(r#"{{"seatId":"seatA","generation":"{generation}"}}"#)));
         assert_eq!(journal_rows(&product), journals);
-        assert_eq!(occupancy(&mut product),Json::Number("0".into()),"all actual current holders released");
+        assert_eq!(occupancy(&mut product),Some(0),"all actual current holders released");
         // A metadata-only instrument checks the historical/current distinction.
         // The registry test separately exercises its authorized source-rebind
         // transition. This is not a fixed-CLI auth refresh observation.
@@ -419,7 +424,7 @@ fn actual_two_disappeared_holders_recover_in_one_call_replay_without_acl_effect_
             "UPDATE main.gogoke_v37_credential_objects SET file_identity=?1 WHERE instance_id=?2").unwrap();
         changed.bind_text(1,&cold.home_identity.opaque()).unwrap();changed.bind_text(2,INSTANCE).unwrap();
         changed.step_done().unwrap();drop(changed);
-        assert_eq!(occupancy(&mut product),Json::Number("0".into()),"historical release is not tied to the current object FileID");
+        assert_eq!(occupancy(&mut product),Some(0),"historical release is not tied to the current object FileID");
         product.connection.execute("ROLLBACK").unwrap();
         assert_eq!(journal_rows(&product), journals);
         product.close_checked().unwrap();
