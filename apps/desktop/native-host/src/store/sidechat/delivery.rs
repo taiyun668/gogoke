@@ -2,7 +2,7 @@
 //! C owns queueing and H owns physical sends. A timeout never grants a retry.
 use super::*;
 use crate::store::inbox;
-use crate::store::session_transport::decode_request;
+use crate::store::session_transport::{decode_request,read_stdin_journal,JournalState,StdinJournalKey};
 
 #[derive(Clone,Copy,Debug,Eq,PartialEq)]
 pub(crate) enum Direction { SideToLead, LeadToSide }
@@ -31,6 +31,16 @@ pub(crate) struct DeliveryIntent {
     pub(crate) dispatch_error:String,
     /// Only the transaction inserting this intent grants one C dispatch.
     pub(crate) may_dispatch:bool,
+}
+impl DeliveryIntent {
+    pub(crate) fn send_request_id(&self)->String {
+        self.delivery_request_id.replacen("sidedeliver-","sidesend-",1)
+    }
+    /// The actual H input is labelled without letting model text choose its
+    /// own sender. The visible D body remains the original message.
+    pub(crate) fn send_body(&self)->String {
+        format!("[gogoke side {} from seat {}]\n{}",self.side_id,self.source_seat_id,self.body)
+    }
 }
 
 #[derive(Clone,Debug,Eq,PartialEq)]
@@ -170,9 +180,61 @@ fn observed(db:&VerifiedDatabaseConnection<'_>,intent:DeliveryIntent)->Result<De
     if !operation.reason.is_empty() {record.reason=operation.reason;}
     match (operation.phase.as_str(),message.state.as_str()) {
         ("APPLIED","DELIVERED") if !operation.native_receipt_id.is_empty()=>{
-            record.state=if request.operation=="steer" {DeliveryState::Steered} else {DeliveryState::NewTurn};
-            record.native_receipt_id=operation.native_receipt_id;
-            record.reason.clear();
+            if request.operation=="steer" {
+                record.state=DeliveryState::Steered;
+                record.native_receipt_id=operation.native_receipt_id.clone();
+                record.reason.clear();
+            } else {
+                // K-INBOX/deliver is append-without-turn in the current C/H
+                // adapter. An ordinary H send and its original createdTurn
+                // receipt must exist before this can be called a new turn.
+                let send_id=i.send_request_id();
+                let ticket=Statement::prepare(db.as_ptr(),"SELECT ticket FROM main.gogoke_v37_h_stdin_journal WHERE domain_id=?1 AND request_id=?2")?;
+                ticket.bind_text(1,&i.domain_id)?;ticket.bind_text(2,&send_id)?;
+                if !ticket.step_row()? {
+                    record.reason="C deliver is not an H new-turn receipt".into();return Ok(record);
+                }
+                let original=ticket.column_text(0)?;
+                if ticket.step_row()? {return Err(SideError::Conflict);}
+                drop(ticket);
+                let Some(journal)=read_stdin_journal(db,&StdinJournalKey {domain_id:&i.domain_id,
+                    request_id:&send_id,session_id:&i.target_session_id,ticket:&original,
+                    generation:&i.target_generation})
+                    .map_err(|error|SideError::Corrupt(format!("side original H send: {error:?}")))? else {
+                        record.reason="H new turn has no original journal result".into();return Ok(record);
+                    };
+                let sent=decode_request(&journal.request_bytes)
+                    .map_err(|error|SideError::Corrupt(format!("side original H request: {error:?}")))?;
+                if sent.family!="K-SESSION"||sent.operation!="send"||sent.request_id!=send_id||
+                    sent.domain_id!=i.domain_id||sent.target_id!=i.target_session_id||
+                    field(&sent,"generation")?!=i.target_generation||field(&sent,"body")?!=i.send_body() {
+                    return Err(SideError::Conflict);
+                }
+                if journal.state!=JournalState::Receipted {
+                    record.reason="H new turn remains unconfirmed".into();return Ok(record);
+                }
+                let receipt=decode_receipt(journal.receipt_bytes.as_deref().ok_or(SideError::Unknown)?)
+                    .map_err(|error|SideError::Corrupt(format!("side original H receipt: {error:?}")))?;
+                if receipt.family!="K-SESSION"||receipt.operation!="send"||
+                    receipt.request_id!=send_id||receipt.target_id!=i.target_session_id||
+                    !matches!(receipt.status,V37Status::Applied|V37Status::Replayed) {
+                    return Err(SideError::Conflict);
+                }
+                let result=receipt.into_result();
+                let native_id=match result.get(&JsonString::from_str("receiptId")) {
+                    Some(Json::String(value))=>value.to_well_formed_string().filter(|value|!value.is_empty()),
+                    _=>None,
+                };
+                if !matches!(result.get(&JsonString::from_str("createdTurn")),Some(Json::Bool(value)) if *value)||
+                    !matches!(result.get(&JsonString::from_str("generation")),Some(Json::String(value))
+                        if value==&JsonString::from_str(&i.target_generation))||
+                    native_id.as_deref()!=Some(operation.native_receipt_id.as_str()) {
+                    return Err(SideError::Conflict);
+                }
+                record.state=DeliveryState::NewTurn;
+                record.native_receipt_id=operation.native_receipt_id.clone();
+                record.reason.clear();
+            }
         },
         ("FAILED","FAILED") | ("DENIED",_) | ("CONFLICT",_)=>{
             record.state=DeliveryState::Failed;
