@@ -2,7 +2,9 @@
 //! per-generation SID. No credential contents, path supplied by wire, or CLI
 //! command is stored here. An ACL effect is never made before its intent.
 use crate::root::RootIdentity;
+use crate::process::AppContainerProfile;
 use crate::store::atomic::Statement;
+use crate::store::digest::sha256_hex;
 use crate::store::same_open::VerifiedDatabaseConnection;
 
 const SCHEMA: [(&str, &str); 3] = [
@@ -10,6 +12,18 @@ const SCHEMA: [(&str, &str); 3] = [
     ("gogoke_v37_grok_home_grants", "CREATE TABLE gogoke_v37_grok_home_grants(binding_id TEXT PRIMARY KEY,instance_id TEXT NOT NULL REFERENCES gogoke_v37_grok_home_domains(instance_id),domain_id TEXT NOT NULL,session_id TEXT NOT NULL,seat_id TEXT NOT NULL,seat_incarnation TEXT NOT NULL,generation TEXT NOT NULL,request_id TEXT NOT NULL UNIQUE,profile_name TEXT NOT NULL,profile_sid TEXT NOT NULL UNIQUE,program_digest TEXT NOT NULL,home_identity TEXT NOT NULL,auth_identity TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('GRANT_PENDING','GRANTED_UNCREATED','ACTIVE','REVOKE_PENDING','RETIRED_CLEANUP_PENDING','REVOKED','UNKNOWN')),process_operation_id TEXT,ticket TEXT,custodian_nonce TEXT,pid INTEGER,creation_time_100ns INTEGER,image_path TEXT,stop_fact_id TEXT,revision INTEGER NOT NULL CHECK(revision>=1)) STRICT"),
     ("gogoke_v37_grok_home_effects", "CREATE TABLE gogoke_v37_grok_home_effects(effect_id TEXT PRIMARY KEY,binding_id TEXT NOT NULL REFERENCES gogoke_v37_grok_home_grants(binding_id),action TEXT NOT NULL CHECK(action IN ('GRANT_ROOT','GRANT_AUTH','REVOKE_ROOT','REVOKE_AUTH','REVOKE_RESIDUE')),object_identity TEXT NOT NULL,relative_name TEXT NOT NULL,rights INTEGER NOT NULL CHECK(rights=1245631),flags INTEGER NOT NULL CHECK(flags IN (0,3)),before_aces TEXT NOT NULL,after_aces TEXT NOT NULL,before_control INTEGER NOT NULL,after_control INTEGER NOT NULL,other_aces_sha256 TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('INTENT','APPLIED','UNKNOWN')),revision INTEGER NOT NULL CHECK(revision>=1)) STRICT"),
 ];
+const ROOT_ANCHOR_SQL: &str = "CREATE TABLE gogoke_v37_grok_home_root_anchor(instance_id TEXT PRIMARY KEY REFERENCES gogoke_v37_grok_home_domains(instance_id),root_identity TEXT NOT NULL,home_identity TEXT NOT NULL,program_digest TEXT NOT NULL,version TEXT NOT NULL,registration_revision INTEGER NOT NULL,baseline_acl_hex TEXT NOT NULL,baseline_control INTEGER NOT NULL,baseline_effect_id TEXT NOT NULL,acl_hex TEXT NOT NULL,acl_control INTEGER NOT NULL,source_effect_id TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>=1)) STRICT";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GrokRootAnchor {
+    pub(crate) instance_id:String, pub(crate) root_identity:RootIdentity,
+    pub(crate) home_identity:RootIdentity, pub(crate) program_digest:String,
+    pub(crate) version:String, pub(crate) registration_revision:i64,
+    pub(crate) baseline_acl_hex:String, pub(crate) baseline_control:u16,
+    pub(crate) baseline_effect_id:String,
+    pub(crate) acl_hex:String, pub(crate) acl_control:u16,
+    pub(crate) source_effect_id:String, pub(crate) revision:i64,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct GrokDomain {
@@ -102,14 +116,44 @@ pub(crate) fn initialize_grok_home_grant_schema(db:&mut VerifiedDatabaseConnecti
     let query=stmt(db,"SELECT name,sql FROM main.sqlite_schema WHERE name LIKE 'gogoke_v37_grok_home_%' ORDER BY name")?;
     let mut observed=Vec::new();
     while next(&query)? {observed.push((text(&query,0)?,text(&query,1)?));}
-    let mut expected=SCHEMA.iter().map(|(n,s)|(n.to_string(),s.to_string())).collect::<Vec<_>>();
+    let mut old=SCHEMA.iter().map(|(n,s)|(n.to_string(),s.to_string())).collect::<Vec<_>>();
+    old.sort();
+    let mut expected=old.clone();
+    expected.push(("gogoke_v37_grok_home_root_anchor".into(),ROOT_ANCHOR_SQL.into()));
     expected.sort();
     if observed==expected {return Ok(());}
+    // A pre-anchor database is allowed to acquire the empty table. Its old
+    // effects do not become an ordered baseline by this schema transition.
+    if observed==old {
+        return tx(db,|db|db.execute(ROOT_ANCHOR_SQL).map_err(db_error));
+    }
     if !observed.is_empty(){return Err("grok F journal: changed or partial schema".into());}
     tx(db,|db|{
         for (_,sql) in SCHEMA {db.execute(sql).map_err(db_error)?;}
+        db.execute(ROOT_ANCHOR_SQL).map_err(db_error)?;
         Ok(())
     })
+}
+
+pub(crate) fn read_grok_root_anchor(db:&VerifiedDatabaseConnection<'_>,
+    instance:&str)->Result<Option<GrokRootAnchor>,String>{
+    let row=stmt(db,"SELECT root_identity,home_identity,program_digest,version,registration_revision,baseline_acl_hex,baseline_control,baseline_effect_id,acl_hex,acl_control,source_effect_id,revision FROM main.gogoke_v37_grok_home_root_anchor WHERE instance_id=?1")?;
+    bind(&row,&[instance])?;
+    if !next(&row)? {return Ok(None);}
+    let anchor=GrokRootAnchor{instance_id:instance.into(),
+        root_identity:parse_identity(text(&row,0)?)?,
+        home_identity:parse_identity(text(&row,1)?)?,
+        program_digest:text(&row,2)?,version:text(&row,3)?,
+        registration_revision:text(&row,4)?.parse().map_err(db_error)?,
+        baseline_acl_hex:text(&row,5)?,
+        baseline_control:text(&row,6)?.parse().map_err(db_error)?,
+        baseline_effect_id:text(&row,7)?,
+        acl_hex:text(&row,8)?,
+        acl_control:text(&row,9)?.parse().map_err(db_error)?,
+        source_effect_id:text(&row,10)?,
+        revision:text(&row,11)?.parse().map_err(db_error)?};
+    if next(&row)? {return Err("grok F journal: duplicate root anchor".into());}
+    Ok(Some(anchor))
 }
 
 pub(crate) fn current_domain(db:&VerifiedDatabaseConnection<'_>, instance_id:&str)->Result<GrokDomain,String> {
@@ -151,12 +195,195 @@ fn existing_domain(db:&VerifiedDatabaseConnection<'_>,instance:&str)->Result<Opt
 
 pub(crate) fn begin_grok_grant(db:&mut VerifiedDatabaseConnection<'_>,
     domain:&GrokDomain,grant:&GrokGrant)->Result<GrokGrant,String>{
-    begin_grok_grant_with_catalog(db,domain,grant,&current_domain)
+    begin_grok_grant_with_catalog_and_anchor(db,domain,grant,&current_domain,None)
+}
+
+pub(crate) fn begin_grok_grant_with_root_anchor(db:&mut VerifiedDatabaseConnection<'_>,
+    domain:&GrokDomain,grant:&GrokGrant,acl_hex:&str,acl_control:u16,
+    other_aces_sha256:&str)
+    ->Result<GrokGrant,String>{
+    begin_grok_grant_with_catalog_and_anchor(db,domain,grant,&current_domain,
+        Some((acl_hex,acl_control,other_aces_sha256)))
+}
+
+fn settled_grok_holder_gone_release(db:&VerifiedDatabaseConnection<'_>,
+    grant:&GrokGrant)->Result<bool,String>{
+    if grant.stop_fact_id.is_some() {return Ok(false);}
+    let suffix=sha256_hex(format!("{}\n{}\n{}\n{}\n{}",
+        db.root_identity().opaque(),grant.domain_id,grant.session_id,
+        grant.seat_incarnation,grant.generation).as_bytes());
+    if grant.profile_name!=format!("Gogoke37.Session.{}",&suffix[..40]) {
+        return Ok(false);
+    }
+    let profile=AppContainerProfile::derive_for_revocation(&grant.profile_name)
+        .map_err(db_error)?;
+    if profile.sid_identity().map_err(db_error)?!=grant.profile_sid {
+        return Ok(false);
+    }
+    let operation=grant.process_operation_id.as_deref().ok_or("grok F journal: old operation absent")?;
+    let pid=grant.pid.ok_or("grok F journal: old PID absent")?.to_string();
+    let creation=grant.creation_time_100ns
+        .ok_or("grok F journal: old creation absent")?.to_string();
+    let row=stmt(db,"SELECT h.revision FROM main.gogoke_v37_h_claim h JOIN main.gogoke_v37_h_process_episode e ON e.process_operation_id=h.process_operation_id AND e.instance_id=h.instance_id AND e.domain_id=h.domain_id AND e.session_id=h.session_id AND e.generation=h.generation AND e.binding_id=h.binding_id JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id AND c.profile_id=h.instance_id AND c.domain_id=h.domain_id AND c.generation=h.generation JOIN main.gogoke_v37_effective_seat s ON s.domain_id=h.domain_id AND s.session_id=h.session_id AND s.generation=h.generation AND s.seat_id=e.seat_id AND s.seat_incarnation=e.seat_incarnation AND s.selected_instance_id=h.instance_id WHERE h.instance_id=?1 AND h.domain_id=?2 AND h.session_id=?3 AND h.generation=?4 AND h.binding_id=?5 AND e.request_id=?6 AND s.seat_id=?7 AND s.seat_incarnation=?8 AND c.operation_id=?9 AND c.ticket=?10 AND c.custodian_nonce=?11 AND c.pid=?12 AND c.creation_time_100ns=?13 AND c.image_path=?14 AND c.binary_digest_sha256=?15 AND h.state='RELEASED' AND h.stop_fact_id IS NULL AND e.stop_fact_id IS NULL AND c.stop_proof_hash IS NULL AND c.state IN ('PREPARED','ACTIVE','UNKNOWN') AND e.phase IN ('PREPARED','ACTIVE','UNKNOWN')")?;
+    bind(&row,&[&grant.instance_id,&grant.domain_id,&grant.session_id,
+        &grant.generation,&grant.binding_id,&grant.request_id,&grant.seat_id,
+        &grant.seat_incarnation,operation,
+        grant.ticket.as_deref().ok_or("grok F journal: old ticket absent")?,
+        grant.custodian_nonce.as_deref().ok_or("grok F journal: old nonce absent")?,
+        &pid,&creation,
+        grant.image_path.as_deref().ok_or("grok F journal: old image absent")?,
+        &grant.program_digest])?;
+    if !next(&row)? {return Ok(false);}
+    let revision:i64=text(&row,0)?.parse().map_err(db_error)?;
+    if next(&row)? {return Err("grok F journal: duplicate holder-gone H tuple".into());}
+    let previous=revision.checked_sub(1)
+        .ok_or("grok F journal: invalid holder-gone H revision")?;
+    let raw=format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        grant.binding_id,grant.instance_id,grant.domain_id,grant.session_id,
+        grant.seat_id,grant.seat_incarnation,grant.generation,grant.request_id,
+        pid,creation,previous);
+    let raw_hex:String=raw.as_bytes().iter().map(|byte|format!("{byte:02x}")).collect();
+    let request_id=format!("grok-gone-{}",&sha256_hex(raw.as_bytes())[..40]);
+    let journal=stmt(db,"SELECT 1 FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND session_id=?2 AND operation='holder-gone-release' AND status='APPLIED' AND request_id=?3 AND raw_hex=?4 AND previous_revision=?5 AND revision=?6")?;
+    bind(&journal,&[&grant.domain_id,&grant.session_id,&request_id,&raw_hex,
+        &previous.to_string(),&revision.to_string()])?;
+    let found=next(&journal)?;
+    if found &&next(&journal)? {
+        return Err("grok F journal: duplicate holder-gone release".into());
+    }
+    Ok(found)
+}
+
+/// A completed old journal has no ordered ACE bytes. It may authorize a NEW
+/// baseline only after every old writer is durably quiescent and the current
+/// canonical root matches a settled original ROOT effect's complete
+/// non-package multiset/control. This does not recover the old ACE order.
+fn settled_legacy_root_baseline(db:&VerifiedDatabaseConnection<'_>,
+    domain:&GrokDomain,old_grants:&[GrokGrant],control:u16,
+    other_hash:&str)->Result<String,String>{
+    let blocked=|sql:&str,value:&str|->Result<(),String>{
+        let row=stmt(db,sql)?;
+        bind(&row,&[value])?;
+        if next(&row)? {return Err("grok F journal: old H/credential writer not quiescent".into());}
+        Ok(())
+    };
+    for sql in [
+        "SELECT 1 FROM main.gogoke_v37_h_generation_change g JOIN main.gogoke_v37_h_process_episode e ON e.process_operation_id=g.old_process_operation_id WHERE e.instance_id=?1 AND g.stage NOT IN ('APPLIED','CANCELLED','UNSUPPORTED') LIMIT 1",
+        "SELECT 1 FROM main.gogoke_v37_credential_aliases WHERE instance_id=?1 AND state<>'REMOVED' LIMIT 1",
+        "SELECT 1 FROM main.gogoke_v37_credential_profiles WHERE instance_id=?1 AND state<>'REVOKED' LIMIT 1",
+    ] {blocked(sql,&domain.instance_id)?;}
+    let credential_target=format!("credential-instance-{}",sha256_hex(domain.instance_id.as_bytes()));
+    blocked("SELECT 1 FROM main.gogoke_v37_instance_operations WHERE target_id=?1 AND phase IN ('PREPARING','UNKNOWN') LIMIT 1",
+        &credential_target)?;
+    let mut source=None;
+    let mut released_gone=Vec::new();
+    for old in old_grants {
+        if old.phase!="REVOKED" ||old.home_identity!=domain.home_identity ||
+            old.program_digest!=domain.program_digest {
+            return Err("grok F journal: old grant has unresolved authority".into());
+        }
+        let effects=read_grok_effects(db,&old.binding_id)?;
+        if effects.iter().any(|effect|effect.phase!="APPLIED") {
+            return Err("grok F journal: old physical effect unresolved".into());
+        }
+        let root_grants=effects.iter().filter(|e|e.action=="GRANT_ROOT" &&
+            e.object_identity==domain.home_identity &&
+            e.after_aces=="1:1245631:3").count();
+        let root_revokes=effects.iter().filter(|e|e.action=="REVOKE_ROOT" &&
+            e.object_identity==domain.home_identity &&e.after_aces.is_empty()).count();
+        if root_grants!=1 ||root_revokes!=1 ||
+            !effects.iter().any(|e|e.action=="GRANT_AUTH" &&
+                e.object_identity==old.auth_identity) {
+            return Err("grok F journal: old root/auth provenance incomplete".into());
+        }
+        for auth in effects.iter().filter(|e|e.action=="GRANT_AUTH") {
+            if !effects.iter().any(|e|e.action=="REVOKE_AUTH" &&
+                e.object_identity==auth.object_identity) {
+                return Err("grok F journal: old auth FileID not revoked".into());
+            }
+        }
+        if let Some(operation)=old.process_operation_id.as_deref() {
+            let row=stmt(db,"SELECT 1 FROM main.gogoke_coordination_process_custody c JOIN main.gogoke_v37_h_claim h ON h.process_operation_id=c.operation_id AND h.instance_id=c.profile_id AND h.domain_id=c.domain_id AND h.generation=c.generation JOIN main.gogoke_v37_h_process_episode e ON e.process_operation_id=c.operation_id AND e.instance_id=c.profile_id AND e.domain_id=c.domain_id AND e.generation=c.generation AND e.session_id=h.session_id AND e.binding_id=h.binding_id WHERE c.operation_id=?1 AND c.profile_id=?2 AND c.domain_id=?3 AND c.generation=?4 AND c.ticket=?5 AND c.custodian_nonce=?6 AND c.pid=?7 AND c.creation_time_100ns=?8 AND c.image_path=?9 AND c.binary_digest_sha256=?10 AND c.state='STOPPED' AND c.stop_proof_hash=?11 AND h.binding_id=?12 AND h.session_id=?13 AND h.state IN ('STOPPED','RELEASED') AND h.stop_fact_id=?11 AND e.request_id=?14 AND e.phase='STOPPED' AND e.stop_fact_id=?11")?;
+            let pid=old.pid.ok_or("grok F journal: old original pid absent")?.to_string();
+            let creation=old.creation_time_100ns
+                .ok_or("grok F journal: old original creation absent")?.to_string();
+            let stop=old.stop_fact_id.as_deref().unwrap_or("");
+            bind(&row,&[operation,&old.instance_id,&old.domain_id,&old.generation,
+                old.ticket.as_deref().ok_or("grok F journal: old original ticket absent")?,
+                old.custodian_nonce.as_deref().ok_or("grok F journal: old original nonce absent")?,
+                &pid,&creation,
+                old.image_path.as_deref().ok_or("grok F journal: old original image absent")?,
+                &old.program_digest,stop,&old.binding_id,&old.session_id,&old.request_id])?;
+            let stopped=!stop.is_empty() &&next(&row)?;
+            if stopped &&next(&row)? {
+                return Err("grok F journal: duplicate old stopped F/H tuple".into());
+            }
+            if !stopped {
+                if old.stop_fact_id.is_some() ||
+                    !settled_grok_holder_gone_release(db,old)? {
+                    return Err("grok F journal: old writer lacks exact StopFact or holder-gone release".into());
+                }
+                released_gone.push(operation.to_owned());
+            }
+        } else if old.stop_fact_id.is_some() {
+            return Err("grok F journal: old no-attempt StopFact fabricated".into());
+        }
+        if source.is_none() {
+            source=effects.iter().find(|e|e.action=="REVOKE_ROOT" &&
+                e.after_control==control &&e.other_aces_sha256==other_hash)
+                .map(|e|e.effect_id.clone());
+        }
+    }
+    let custody=stmt(db,"SELECT operation_id,state,COALESCE(stop_proof_hash,'') FROM main.gogoke_coordination_process_custody WHERE profile_id=?1")?;
+    bind(&custody,&[&domain.instance_id])?;
+    while next(&custody)? {
+        let operation=text(&custody,0)?;
+        let state=text(&custody,1)?;
+        let stop=text(&custody,2)?;
+        if !(state=="STOPPED" && !stop.is_empty()) &&
+            !released_gone.contains(&operation) {
+            return Err("grok F journal: unqualified old process writer".into());
+        }
+    }
+    let episode=stmt(db,"SELECT COALESCE(process_operation_id,''),phase,COALESCE(stop_fact_id,'') FROM main.gogoke_v37_h_process_episode WHERE instance_id=?1")?;
+    bind(&episode,&[&domain.instance_id])?;
+    while next(&episode)? {
+        let operation=text(&episode,0)?;
+        let phase=text(&episode,1)?;
+        let stop=text(&episode,2)?;
+        if !(phase=="STOPPED" && !stop.is_empty()) &&
+            !(phase=="FAILED" && operation.is_empty()) &&
+            !(released_gone.contains(&operation) &&stop.is_empty() &&
+                matches!(phase.as_str(),"PREPARED"|"ACTIVE"|"UNKNOWN")) {
+            return Err("grok F journal: unqualified old H episode".into());
+        }
+    }
+    let claim=stmt(db,"SELECT COALESCE(process_operation_id,''),state,COALESCE(stop_fact_id,'') FROM main.gogoke_v37_h_claim WHERE instance_id=?1")?;
+    bind(&claim,&[&domain.instance_id])?;
+    while next(&claim)? {
+        let operation=text(&claim,0)?;
+        let state=text(&claim,1)?;
+        let stop=text(&claim,2)?;
+        if !(matches!(state.as_str(),"STOPPED"|"RELEASED") &&
+            ((operation.is_empty() &&stop.is_empty()) ||
+             (!stop.is_empty()) ||
+             (state=="RELEASED" &&released_gone.contains(&operation)))) {
+            return Err("grok F journal: unqualified old H claim".into());
+        }
+    }
+    source.ok_or_else(||"grok F journal: old settled ROOT effect does not conserve current ACL".into())
 }
 
 fn begin_grok_grant_with_catalog(db:&mut VerifiedDatabaseConnection<'_>,
     domain:&GrokDomain,grant:&GrokGrant,
     observe:&impl Fn(&VerifiedDatabaseConnection<'_>,&str)->Result<GrokDomain,String>)->Result<GrokGrant,String>{
+    begin_grok_grant_with_catalog_and_anchor(db,domain,grant,observe,None)
+}
+
+fn begin_grok_grant_with_catalog_and_anchor(db:&mut VerifiedDatabaseConnection<'_>,
+    domain:&GrokDomain,grant:&GrokGrant,
+    observe:&impl Fn(&VerifiedDatabaseConnection<'_>,&str)->Result<GrokDomain,String>,
+    root_acl:Option<(&str,u16,&str)>)->Result<GrokGrant,String>{
     tx(db,|db|{
         if observe(db,&domain.instance_id)?!=*domain {return Err("grok F journal: current F pin/revision changed".into());}
         if let Some((old,revision))=existing_domain(db,&domain.instance_id)? {
@@ -179,7 +406,8 @@ fn begin_grok_grant_with_catalog(db:&mut VerifiedDatabaseConnection<'_>,
                 &domain.program_digest,&domain.version,&domain.registration_revision.to_string()])?;
             next(&row)?; changed(db)?;
         }
-        for old in read_grok_grants(db,&domain.instance_id)? {
+        let prior_grants=read_grok_grants(db,&domain.instance_id)?;
+        for old in &prior_grants {
             if old.binding_id==grant.binding_id {
                 if old.request_id==grant.request_id && old.instance_id==grant.instance_id &&
                     old.domain_id==grant.domain_id &&old.session_id==grant.session_id &&
@@ -187,7 +415,7 @@ fn begin_grok_grant_with_catalog(db:&mut VerifiedDatabaseConnection<'_>,
                     old.seat_incarnation==grant.seat_incarnation &&
                     old.program_digest==grant.program_digest &&old.profile_name==grant.profile_name && old.profile_sid==grant.profile_sid &&
                     old.home_identity==grant.home_identity && old.auth_identity==grant.auth_identity {
-                    return Ok(old);
+                    return Ok(old.clone());
                 }
                 return Err("grok F journal: binding replay mismatch".into());
             }
@@ -205,6 +433,35 @@ fn begin_grok_grant_with_catalog(db:&mut VerifiedDatabaseConnection<'_>,
             grant.creation_time_100ns.is_some() || grant.image_path.is_some() ||
             grant.stop_fact_id.is_some() {
             return Err("grok F journal: invalid grant intent".into());
+        }
+        if let Some((acl_hex,acl_control,other_aces_sha256))=root_acl {
+            if acl_hex.is_empty() ||acl_hex.len()%2!=0 ||
+                !acl_hex.bytes().all(|b|b.is_ascii_hexdigit()) ||
+                other_aces_sha256.len()!=64 ||
+                !other_aces_sha256.bytes().all(|b|b.is_ascii_hexdigit()) {
+                return Err("grok F journal: invalid ordered root ACL".into());
+            }
+            if let Some(anchor)=read_grok_root_anchor(db,&domain.instance_id)? {
+                if anchor.root_identity!=domain.root_identity ||
+                    anchor.home_identity!=domain.home_identity ||
+                    anchor.program_digest!=domain.program_digest ||
+                    anchor.version!=domain.version ||
+                    anchor.registration_revision!=domain.registration_revision ||
+                    anchor.acl_hex!=acl_hex ||anchor.acl_control!=acl_control {
+                    return Err("grok F journal: ordered root ACL anchor changed".into());
+                }
+            } else {
+                let baseline_effect_id=if prior_grants.is_empty() {String::new()} else {
+                    settled_legacy_root_baseline(db,domain,&prior_grants,
+                        acl_control,other_aces_sha256)?
+                };
+                let row=stmt(db,"INSERT INTO main.gogoke_v37_grok_home_root_anchor VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'',1)")?;
+                bind(&row,&[&domain.instance_id,&domain.root_identity.opaque(),
+                    &domain.home_identity.opaque(),&domain.program_digest,&domain.version,
+                    &domain.registration_revision.to_string(),acl_hex,&acl_control.to_string(),
+                    &baseline_effect_id,acl_hex,&acl_control.to_string()])?;
+                next(&row)?;changed(db)?;
+            }
         }
         let row=stmt(db,"INSERT INTO main.gogoke_v37_grok_home_grants VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,NULL,NULL,NULL,NULL,NULL,NULL,NULL,1)")?;
         bind(&row,&[&grant.binding_id,&grant.instance_id,&grant.domain_id,&grant.session_id,
@@ -268,7 +525,11 @@ pub(crate) fn begin_grok_effect(db:&mut VerifiedDatabaseConnection<'_>,effect:&G
 }
 
 pub(crate) fn finish_grok_effect(db:&mut VerifiedDatabaseConnection<'_>,effect:&GrokEffect)->Result<(),String>{
-    tx(db,|db|{
+    tx(db,|db|finish_grok_effect_in_tx(db,effect))
+}
+
+fn finish_grok_effect_in_tx(db:&mut VerifiedDatabaseConnection<'_>,
+    effect:&GrokEffect)->Result<(),String>{
         let row=stmt(db,"UPDATE main.gogoke_v37_grok_home_effects SET phase='APPLIED',revision=revision+1 WHERE effect_id=?1 AND binding_id=?2 AND action=?3 AND object_identity=?4 AND relative_name=?5 AND rights=?6 AND flags=?7 AND before_aces=?8 AND after_aces=?9 AND before_control=?10 AND after_control=?11 AND other_aces_sha256=?12 AND phase='INTENT' AND revision=?13")?;
         bind(&row,&[&effect.effect_id,&effect.binding_id,&effect.action,
             &effect.object_identity.opaque(),&effect.relative_name,&effect.rights.to_string(),
@@ -276,6 +537,31 @@ pub(crate) fn finish_grok_effect(db:&mut VerifiedDatabaseConnection<'_>,effect:&
             &effect.before_control.to_string(),&effect.after_control.to_string(),
             &effect.other_aces_sha256,
             &effect.revision.to_string()])?;
+        next(&row)?;changed(db)
+}
+
+pub(crate) fn finish_grok_root_effect_with_anchor(db:&mut VerifiedDatabaseConnection<'_>,
+    effect:&GrokEffect,previous:&GrokRootAnchor,after_acl_hex:&str,
+    after_control:u16)->Result<(),String>{
+    if !matches!(effect.action.as_str(),"GRANT_ROOT"|"REVOKE_ROOT") ||
+        effect.object_identity!=previous.home_identity ||effect.phase!="INTENT" ||
+        after_control!=effect.after_control ||after_acl_hex.is_empty() ||
+        after_acl_hex.len()%2!=0 ||
+        !after_acl_hex.bytes().all(|b|b.is_ascii_hexdigit()) {
+        return Err("grok F journal: invalid root effect anchor".into());
+    }
+    tx(db,|db|{
+        if read_grok_root_anchor(db,&previous.instance_id)?.as_ref()!=Some(previous) {
+            return Err("grok F journal: root anchor CAS changed".into());
+        }
+        finish_grok_effect_in_tx(db,effect)?;
+        let row=stmt(db,"UPDATE main.gogoke_v37_grok_home_root_anchor SET acl_hex=?1,acl_control=?2,source_effect_id=?3,revision=revision+1 WHERE instance_id=?4 AND root_identity=?5 AND home_identity=?6 AND program_digest=?7 AND version=?8 AND registration_revision=?9 AND acl_hex=?10 AND acl_control=?11 AND source_effect_id=?12 AND revision=?13")?;
+        bind(&row,&[after_acl_hex,&after_control.to_string(),&effect.effect_id,
+            &previous.instance_id,&previous.root_identity.opaque(),
+            &previous.home_identity.opaque(),&previous.program_digest,
+            &previous.version,&previous.registration_revision.to_string(),
+            &previous.acl_hex,&previous.acl_control.to_string(),
+            &previous.source_effect_id,&previous.revision.to_string()])?;
         next(&row)?;changed(db)
     })
 }

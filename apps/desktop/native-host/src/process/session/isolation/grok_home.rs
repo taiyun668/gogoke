@@ -46,6 +46,8 @@ pub(crate) struct GrokAclSnapshot {
     pub(crate) dacl_control: u16,
     other_aces: Vec<Vec<u8>>,
     other_aces_in_order: Vec<Vec<u8>>,
+    ordered_aces: Vec<Vec<u8>>,
+    package_sid_aces: Vec<String>,
 }
 
 fn snapshot(handle: Handle, profile: &AppContainerProfile) -> Result<GrokAclSnapshot, IsolationError> {
@@ -64,17 +66,38 @@ fn snapshot(handle: Handle, profile: &AppContainerProfile) -> Result<GrokAclSnap
         return Err(IsolationError::Acl(io::Error::last_os_error()));
     }
     let mut other_aces=Vec::new();
+    let mut ordered_aces=Vec::new();
+    let mut package_sid_aces=Vec::new();
     for index in 0..size.ace_count {
         let mut ace=ptr::null_mut();
         if unsafe {GetAce(acl,index,&mut ace)}==0 || ace.is_null(){
             return Err(IsolationError::AclWitnessMismatch);
         }
         let header=unsafe{&*ace.cast::<AceHeader>()};
-        if header.ace_size<16 {return Err(IsolationError::AclWitnessMismatch);}
+        if header.ace_size<16 ||
+            !matches!(header.ace_type,ACCESS_ALLOWED_ACE_TYPE|ACCESS_DENIED_ACE_TYPE) {
+            return Err(IsolationError::AclWitnessMismatch);
+        }
+        let raw=unsafe{std::slice::from_raw_parts(ace.cast::<u8>(),
+            header.ace_size as usize)}.to_vec();
+        ordered_aces.push(raw.clone());
         let sid=unsafe{ace.cast::<u8>().add(8).cast()};
+        let mut sid_text=ptr::null_mut();
+        if unsafe{ConvertSidToStringSidW(sid,&mut sid_text)}==0 ||sid_text.is_null(){
+            return Err(IsolationError::AclWitnessMismatch);
+        }
+        let sid_allocation=LocalAllocation(sid_text.cast());
+        let mut sid_len=0usize;
+        while unsafe{*sid_text.add(sid_len)}!=0 {
+            if sid_len>=180 {return Err(IsolationError::AclWitnessMismatch);}
+            sid_len+=1;
+        }
+        let sid_value=String::from_utf16_lossy(unsafe{
+            std::slice::from_raw_parts(sid_text,sid_len)});
+        drop(sid_allocation);
+        if sid_value.starts_with("S-1-15-2-") {package_sid_aces.push(sid_value);}
         if unsafe{EqualSid(sid,profile.sid)}==0 {
-            other_aces.push(unsafe{std::slice::from_raw_parts(ace.cast::<u8>(),
-                header.ace_size as usize)}.to_vec());
+            other_aces.push(raw);
         }
     }
     let other_aces_in_order=other_aces.clone();
@@ -86,7 +109,8 @@ fn snapshot(handle: Handle, profile: &AppContainerProfile) -> Result<GrokAclSnap
     }
     Ok(GrokAclSnapshot {identity,target_aces:target.iter().map(|(mode,mask,flags)|
         format!("{mode}:{mask}:{flags}")).collect::<Vec<_>>().join(","),
-        dacl_protected:control & SE_DACL_PROTECTED !=0,dacl_control:control,other_aces,other_aces_in_order})
+        dacl_protected:control & SE_DACL_PROTECTED !=0,dacl_control:control,
+        other_aces,other_aces_in_order,ordered_aces,package_sid_aces})
 }
 
 impl GrokAclSnapshot {
@@ -100,6 +124,28 @@ impl GrokAclSnapshot {
             bytes.extend_from_slice(ace);
         }
         bytes
+    }
+    /// Length-delimited raw ACE bytes in Windows DACL order. Root authority
+    /// uses this exact sequence, rather than the sorted non-target effect hash.
+    pub(crate) fn ordered_aces_bytes(&self)->Vec<u8>{
+        let mut bytes=Vec::new();
+        for ace in &self.ordered_aces {
+            bytes.extend_from_slice(&(ace.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(ace);
+        }
+        bytes
+    }
+    pub(crate) fn package_sid_aces(&self)->&[String]{&self.package_sid_aces}
+    pub(crate) fn canonical_dacl(&self)->bool{
+        let mut previous=0u8;
+        for (index,ace) in self.ordered_aces.iter().enumerate() {
+            let inherited=ace[1] & (INHERITED_ACE as u8) !=0;
+            let class=(if inherited{2}else{0})+
+                (if ace[0]==ACCESS_ALLOWED_ACE_TYPE{1}else{0});
+            if index>0 && class<previous {return false;}
+            previous=class;
+        }
+        true
     }
 }
 

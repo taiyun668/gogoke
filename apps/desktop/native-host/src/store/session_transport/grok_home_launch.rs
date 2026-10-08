@@ -87,6 +87,53 @@ fn applied_readback(intent:&GrokEffect,current:&GrokAclSnapshot)->Result<(),Stri
     Ok(())
 }
 
+fn ordered_root_acl(snapshot:&GrokAclSnapshot)->String {
+    snapshot.ordered_aces_bytes().iter().map(|byte|format!("{byte:02x}")).collect()
+}
+
+/// The ordered root anchor and the original ACL effect advance in one F
+/// transaction. A crash after the OS write leaves INTENT and fails closed;
+/// it cannot synthesize an APPLIED receipt from a later observation.
+fn apply_root(db:&mut VerifiedDatabaseConnection<'_>,grant:&GrokGrant,expected:GrokEffect,
+    observe:impl Fn()->Result<GrokAclSnapshot,String>,
+    mutate:impl FnOnce()->Result<(),String>)->Result<(),String>{
+    if expected.binding_id!=grant.binding_id ||
+        expected.object_identity!=grant.home_identity {
+        return Err("Grok private HOME: root effect grant changed".into());
+    }
+    let anchor=instance::read_grok_root_anchor(db,&grant.instance_id)?;
+    let anchor=anchor.ok_or("Grok private HOME: ordered root anchor absent")?;
+    let before=observe()?;
+    if before.identity!=anchor.home_identity ||
+        ordered_root_acl(&before)!=anchor.acl_hex ||
+        before.dacl_control!=anchor.acl_control ||!before.canonical_dacl() {
+        return Err("Grok private HOME: ordered root ACL differs from F anchor".into());
+    }
+    let intent=instance::begin_grok_effect(db,&expected)?;
+    if intent.phase=="APPLIED" {
+        if anchor.source_effect_id!=intent.effect_id {
+            return Err("Grok private HOME: APPLIED root effect has no atomic anchor".into());
+        }
+        return applied_readback(&intent,&before);
+    }
+    if before.identity!=intent.object_identity ||
+        sha256_hex(&before.other_aces_bytes())!=intent.other_aces_sha256 ||
+        before.target_aces!=intent.before_aces ||
+        before.dacl_control!=intent.before_control {
+        return Err("Grok private HOME: original root ACL effect diverged".into());
+    }
+    mutate()?;
+    let after=observe()?;
+    if after.identity!=intent.object_identity ||
+        after.target_aces!=intent.after_aces ||
+        after.dacl_control!=intent.after_control ||
+        !before.preserves_other_aces(&after) ||!after.canonical_dacl() {
+        return Err("Grok private HOME: ordered root ACL effect readback diverged".into());
+    }
+    instance::finish_grok_root_effect_with_anchor(db,&intent,&anchor,
+        &ordered_root_acl(&after),after.dacl_control)
+}
+
 fn one(db:&VerifiedDatabaseConnection<'_>,instance_id:&str,binding_id:&str)->Result<GrokGrant,String>{
     instance::read_grok_grants(db,instance_id)?.into_iter().find(|r|r.binding_id==binding_id)
         .ok_or_else(||"Grok private HOME: original F grant absent".into())
@@ -233,6 +280,95 @@ fn recorded_auth(db:&VerifiedDatabaseConnection<'_>,grant:&GrokGrant)->Result<Ve
     Ok(ids)
 }
 
+fn verify_active_root_authority(db:&VerifiedDatabaseConnection<'_>,grant:&GrokGrant,
+    profile:&AppContainerProfile,home:&ResolvedDirectory)->Result<(),String>{
+    let domain=instance::current_grok_home_domain(db,&grant.instance_id)?;
+    let anchor=instance::read_grok_root_anchor(db,&grant.instance_id)?
+        .ok_or("Grok private HOME: active ordered root anchor absent")?;
+    if domain.root_identity!=*db.root_identity() ||domain.home_identity!=home.identity ||
+        domain.program_digest!=grant.program_digest ||domain.version!="1.0.41" ||
+        anchor.root_identity!=domain.root_identity ||anchor.home_identity!=domain.home_identity ||
+        anchor.program_digest!=domain.program_digest ||anchor.version!=domain.version ||
+        anchor.registration_revision!=domain.registration_revision ||
+        anchor.source_effect_id.is_empty() {
+        return Err("Grok private HOME: active F root anchor provenance changed".into());
+    }
+    let current=evidence("active-root-ACL",grok_root_acl(profile,&home.path,&home.identity))?;
+    if ordered_root_acl(&current)!=anchor.acl_hex ||
+        current.dacl_control!=anchor.acl_control ||!current.canonical_dacl() {
+        return Err("Grok private HOME: complete ordered root ACL changed".into());
+    }
+    let grants=instance::read_grok_grants(db,&grant.instance_id)?;
+    let mut expected_sids=Vec::new();
+    let mut source_count=0usize;
+    for peer in grants {
+        if peer.home_identity!=home.identity ||
+            peer.program_digest!=grant.program_digest ||
+            peer.profile_name.is_empty() {
+            return Err("Grok private HOME: F peer registration changed".into());
+        }
+        let sid=evidence("peer-SID",AppContainerProfile::derive_for_revocation(
+            &peer.profile_name))?;
+        let sid_text=evidence("peer-SID-readback",sid.sid_identity())?;
+        if sid_text!=peer.profile_sid {
+            return Err("Grok private HOME: F peer SID changed".into());
+        }
+        let effects=instance::read_grok_effects(db,&peer.binding_id)?;
+        source_count+=effects.iter().filter(|effect|
+            effect.effect_id==anchor.source_effect_id &&
+            effect.phase=="APPLIED" &&
+            matches!(effect.action.as_str(),"GRANT_ROOT"|"REVOKE_ROOT") &&
+            effect.object_identity==home.identity &&
+            effect.after_control==anchor.acl_control).count();
+        let peer_root=evidence("peer-root-ACL",grok_root_acl(&sid,&home.path,&home.identity))?;
+        if ordered_root_acl(&peer_root)!=anchor.acl_hex ||
+            peer_root.dacl_control!=anchor.acl_control {
+            return Err("Grok private HOME: F peer sees different root ACL".into());
+        }
+        match peer.phase.as_str() {
+            "GRANTED_UNCREATED" => {
+                if !exact_exists(db,"uncreated peer H/E guard",
+                    "SELECT 1 FROM main.gogoke_v37_h_claim h JOIN main.gogoke_v37_effective_seat b ON b.domain_id=h.domain_id AND b.session_id=h.session_id AND b.generation=h.generation JOIN main.gogoke_v37_seats s ON s.domain_id=b.domain_id AND s.seat_id=b.seat_id JOIN main.gogoke_v37_instance_homes f ON f.home_id=h.home_id AND f.instance_id=h.instance_id WHERE h.domain_id=?1 AND h.session_id=?2 AND h.instance_id=?3 AND h.binding_id=?4 AND h.generation=?5 AND h.state='COMMITTED' AND h.process_operation_id IS NULL AND b.seat_id=?6 AND b.seat_incarnation=?7 AND b.selected_instance_id=h.instance_id AND s.incarnation=b.seat_incarnation AND s.generation=b.seat_authorization_generation AND s.instance_id=h.instance_id AND s.state='BUSY' AND f.directory_identity=?8",
+                    &[&peer.domain_id,&peer.session_id,&peer.instance_id,&peer.binding_id,
+                        &peer.generation,&peer.seat_id,&peer.seat_incarnation,
+                        &home.identity.opaque()])? {
+                    return Err("Grok private HOME: uncreated peer H/E authority absent".into());
+                }
+                expected_sids.push(peer.profile_sid.clone());
+            },
+            "ACTIVE" => {
+                let h=original_h(db,&peer)?.ok_or("Grok private HOME: active peer H absent")?;
+                if !matches_bound_original(&peer,&h) ||
+                    !matches!(h.custody_state.as_str(),"PREPARED"|"ACTIVE") ||
+                    !matches!(h.episode_state.as_str(),"INTENT"|"PREPARED"|"ACTIVE") ||
+                    h.claim_state!="COMMITTED" ||h.custody_stop.is_some() ||
+                    h.claim_stop.is_some() ||h.episode_stop.is_some() {
+                    return Err("Grok private HOME: active peer H custody changed".into());
+                }
+                expected_sids.push(peer.profile_sid.clone());
+            },
+            "RETIRED_CLEANUP_PENDING"|"REVOKED" => {},
+            _ => return Err("Grok private HOME: F peer ACL transition unresolved".into()),
+        }
+        let expected=if matches!(peer.phase.as_str(),"GRANTED_UNCREATED"|"ACTIVE") {
+            format!("1:{RIGHTS}:3")
+        } else {String::new()};
+        if peer_root.target_aces!=expected {
+            return Err("Grok private HOME: F peer root ACE differs from authority".into());
+        }
+    }
+    if source_count!=1 {
+        return Err("Grok private HOME: root anchor lacks one APPLIED source effect".into());
+    }
+    expected_sids.sort();
+    let mut actual=current.package_sid_aces().to_vec();
+    actual.sort();
+    if actual!=expected_sids {
+        return Err("Grok private HOME: root ACL has unknown or missing package SID".into());
+    }
+    Ok(())
+}
+
 pub(crate) struct GrokHomeLaunch {
     instance_id:String, binding_id:String, home:ResolvedDirectory,
     /// Includes deleted/replaced old objects. Every handle shares DELETE.
@@ -258,6 +394,15 @@ impl GrokHomeLaunch {
         }
         let auth=evidence("observe-original-auth-metadata",
             observe_grok_auth_candidate(&home.path,&home.identity))?;
+        let original_root=evidence("root-ACL-original",
+            grok_root_acl(profile,&home.path,&home.identity))?;
+        if !original_root.canonical_dacl() {
+            return Err("Grok private HOME: original root DACL is not canonical".into());
+        }
+        if instance::read_grok_root_anchor(db,&claim.instance_id)?.is_none() &&
+            !original_root.package_sid_aces().is_empty() {
+            return Err("Grok private HOME: first ordered root baseline has unknown package SID".into());
+        }
         let grant=GrokGrant{binding_id:claim.binding_id.clone(),instance_id:claim.instance_id.clone(),
             domain_id:claim.domain_id.clone(),session_id:claim.session_id.clone(),seat_id:seat_id.into(),
             seat_incarnation:seat_incarnation.into(),generation:claim.generation.clone(),request_id:request_id.into(),
@@ -267,7 +412,9 @@ impl GrokHomeLaunch {
             phase:"GRANT_PENDING".into(),process_operation_id:None,ticket:None,
             custodian_nonce:None,pid:None,creation_time_100ns:None,image_path:None,
             stop_fact_id:None,revision:1};
-        let grant=instance::begin_grok_grant(db,&domain,&grant)?;
+        let grant=instance::begin_grok_grant_with_root_anchor(db,&domain,&grant,
+            &ordered_root_acl(&original_root),original_root.dacl_control,
+            &sha256_hex(&original_root.other_aces_bytes()))?;
         if grant.phase!="GRANT_PENDING" {
             return Err("Grok private HOME: original grant already advanced".into());
         }
@@ -275,7 +422,7 @@ impl GrokHomeLaunch {
             home:home.clone(),auth:Mutex::new(vec![auth])};
         let prepared=(||{
             let root_before=evidence("root-ACL-before",grok_root_acl(profile,&home.path,&home.identity))?;
-            apply(db,effect(&grant,"GRANT_ROOT",&home.identity,".",&root_before),
+            apply_root(db,&grant,effect(&grant,"GRANT_ROOT",&home.identity,".",&root_before),
                 ||evidence("root-ACL-readback",grok_root_acl(profile,&home.path,&home.identity)),||
                 evidence("grant-root",grant_grok_home_root(profile,&home.path,&home.identity)))?;
             let held=result.auth.lock().map_err(|_|"Grok private HOME: auth custody poisoned")?;
@@ -312,6 +459,25 @@ impl GrokHomeLaunch {
             return Err("Grok private HOME: current F grant unavailable".into());
         }
         let held=self.auth.lock().map_err(|_|"Grok private HOME: auth custody poisoned")?;
+        if held.is_empty() {return Err("Grok private HOME: metadata custody absent".into());}
+        if grant.phase=="ACTIVE" {
+            let effects=instance::read_grok_effects(db,&grant.binding_id)?;
+            for auth in held.iter() {
+                let acl=evidence("held-auth-ACL",auth.acl(profile))?;
+                if !effects.iter().any(|effect|effect.action=="GRANT_AUTH" &&
+                    effect.phase=="APPLIED" &&effect.object_identity==auth.identity &&
+                    effect.after_aces==acl.target_aces &&
+                    effect.after_control==acl.dacl_control &&
+                    effect.other_aces_sha256==sha256_hex(&acl.other_aces_bytes())) {
+                    return Err("Grok private HOME: held auth FileID differs from original grant".into());
+                }
+            }
+            // The fixed Grok CLI atomically replaces auth.json without H/F
+            // coordination. The stable original HOME and complete ordered
+            // root ACL remain the active authority. Old held auth FileIDs
+            // retain exact retirement custody; no replacement is granted.
+            return verify_active_root_authority(db,&grant,profile,&self.home);
+        }
         let current=evidence("observe-current-auth",observe_grok_auth(&self.home.path,&self.home.identity))?;
         let ids=recorded_auth(db,&grant)?;
         if !ids.contains(&current.identity) {
@@ -326,7 +492,6 @@ impl GrokHomeLaunch {
                 &self.home.identity,true))?;
         }
         // Old held objects keep exact custody; they may have been deleted.
-        if held.is_empty() {return Err("Grok private HOME: metadata custody absent".into());}
         Ok(())
     }
 
@@ -389,6 +554,7 @@ impl GrokHomeLaunch {
                     &grant.generation,&pid,&creation,&image,&grant.program_digest])? {
                 return Err("Grok private HOME: original active custody changed".into());
             }
+            return verify_active_root_authority(db,&grant,profile,&self.home);
         }
         let auth=evidence("observe-successor-metadata",observe_grok_auth_candidate(&self.home.path,&self.home.identity))?;
         let ids=recorded_auth(db,&grant)?;
@@ -523,9 +689,18 @@ impl GrokHomeLaunch {
         }
         let root_before=evidence("root-ACL-before-revoke",grok_root_acl(profile,&self.home.path,&self.home.identity))?;
         validate_gone()?;
-        apply(db,effect(&pending,"REVOKE_ROOT",&self.home.identity,".",&root_before),
-            ||evidence("root-ACL-after-revoke",grok_root_acl(profile,&self.home.path,&self.home.identity)),||
-            evidence("revoke-root",revoke_grok_home_root(profile,&self.home.path,&self.home.identity)))?;
+        let root_effect=effect(&pending,"REVOKE_ROOT",&self.home.identity,".",&root_before);
+        if instance::read_grok_root_anchor(db,&pending.instance_id)?.is_some() {
+            apply_root(db,&pending,root_effect,
+                ||evidence("root-ACL-after-revoke",grok_root_acl(profile,&self.home.path,&self.home.identity)),||
+                evidence("revoke-root",revoke_grok_home_root(profile,&self.home.path,&self.home.identity)))?;
+        } else {
+            // Old journals lack an ordered baseline. Keep their original exact
+            // stopped/no-attempt retirement path; never use it for active use.
+            apply(db,root_effect,
+                ||evidence("legacy-root-ACL-after-revoke",grok_root_acl(profile,&self.home.path,&self.home.identity)),||
+                evidence("legacy-revoke-root",revoke_grok_home_root(profile,&self.home.path,&self.home.identity)))?;
+        }
         let held=self.auth.lock().map_err(|_|"Grok private HOME: auth custody poisoned")?;
         for auth in held.iter() {
             let before=evidence("auth-ACL-before-revoke",auth.acl(profile))?;
@@ -892,12 +1067,9 @@ mod tests {
         let mut db=open_existing(&root,&database).unwrap();
         let home=instance::resolve_grok_original_home(&db,&root,"grokA").unwrap();
         let profile=AppContainerProfile::derived_for_test("Gogoke37.OriginalInheritedAuth").unwrap();
-        let peer=AppContainerProfile::derived_for_test("Gogoke37.OriginalInheritedPeer").unwrap();
-        grant_grok_home_root(&peer,&home.path,&home.identity).unwrap();
         std::fs::write(home.path.join("auth.json"),b"synthetic non-secret fixture").unwrap();
         let candidate=observe_grok_auth_candidate(&home.path,&home.identity).unwrap();
         let before=candidate.candidate_acl(&profile).unwrap();
-        let peer_before=candidate.candidate_acl(&peer).unwrap();
         assert!(!before.dacl_protected);
         assert!(observe_grok_auth(&home.path,&home.identity).is_err());
         let pin=super::super::runtime::current_instance_pin(&db,"grokA").unwrap();
@@ -915,7 +1087,6 @@ mod tests {
         let granted=observe_grok_auth(&home.path,&home.identity).unwrap();
         assert_eq!(granted.identity,candidate.identity);
         assert!(before.preserves_other_aces(&granted.acl(&profile).unwrap()));
-        assert_eq!(granted.candidate_acl(&peer).unwrap().target_aces,peer_before.target_aces);
         let effects=instance::read_grok_effects(&db,"bindingA").unwrap();
         let auth_effect=effects.iter().find(|e|e.action=="GRANT_AUTH").unwrap();
         assert_eq!(auth_effect.before_control,before.dacl_control);
@@ -925,9 +1096,65 @@ mod tests {
         assert_eq!(one(&db,"grokA","bindingA").unwrap().phase,"REVOKED");
         assert!(grok_root_acl(&profile,&home.path,&home.identity).unwrap().target_aces.is_empty());
         assert!(granted.candidate_acl(&profile).unwrap().target_aces.is_empty());
-        assert_eq!(granted.candidate_acl(&peer).unwrap().target_aces,peer_before.target_aces);
-        drop(granted);drop(candidate);drop(launch);drop(peer);drop(profile);
+        drop(granted);drop(candidate);drop(launch);drop(profile);
         db.close_checked().unwrap();drop(root);std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn active_original_root_authority_survives_two_auth_file_replacements(){
+        let _guard=route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("grok-active-root-{}-{nonce}",std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let database=path.join("state.sqlite");
+        crate::store::product_database::prepare_managed_grok_acl_fixture(&root,&database,"grokA");
+        let mut db=open_existing(&root,&database).unwrap();
+        let home=instance::resolve_grok_original_home(&db,&root,"grokA").unwrap();
+        let profile=AppContainerProfile::derived_for_test("Gogoke37.ActiveRootRotation").unwrap();
+        std::fs::write(home.path.join("auth.json"),b"synthetic non-secret initial fixture").unwrap();
+        let pin=super::super::runtime::current_instance_pin(&db,"grokA").unwrap();
+        let claim=ClaimObservation{domain_id:"domainA".into(),session_id:"sessionA".into(),
+            instance_id:"grokA".into(),home_id:"sessionHomeA".into(),
+            binding_id:"bindingA".into(),generation:"1".into(),revision:2,
+            phase:super::super::runtime::SessionPhase::Committed,process_operation_id:None};
+        db.execute("INSERT INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('domainA','seatA','incA','USER','LONG','grokA','BUSY',1,1)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_owner_binding VALUES('bindingA','grokA','domainA','SESSION','sessionA','1','ACTIVE')").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision) VALUES('domainA','sessionA','grokA','sessionHomeA','bindingA','1','COMMITTED',2)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_seat_binding VALUES('domainA','sessionA','seatA','incA','1')").unwrap();
+        let launch=GrokHomeLaunch::prepare(&mut db,&root,&profile,
+            "Gogoke37.ActiveRootRotation",&claim,&pin,&home,"seatA","incA","openA").unwrap();
+        let anchor=instance::read_grok_root_anchor(&db,"grokA").unwrap().unwrap();
+        assert!(!anchor.source_effect_id.is_empty());
+        let grant=one(&db,"grokA","bindingA").unwrap();
+        db.execute(&format!("INSERT INTO main.gogoke_coordination_process_custody VALUES('oldOp','ticket','nonce','100','1000','image','{}','grokA','domainA','1','ACTIVE',NULL)",pin.digest)).unwrap();
+        db.execute("UPDATE main.gogoke_v37_h_claim SET process_operation_id='oldOp' WHERE binding_id='bindingA'").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase) VALUES('domainA','openA','sessionA','1','00',1,'oldOp','grokA','sessionHomeA','bindingA','seatA','incA','ACTIVE')").unwrap();
+        instance::bind_grok_original_process(&mut db,&grant,"oldOp","ticket","nonce",100,1000,"image").unwrap();
+        launch.verify(&db,&profile,false).unwrap();
+        for index in 0..2 {
+            std::fs::rename(home.path.join("auth.json"),
+                home.path.join(format!("auth-old-{index}.json"))).unwrap();
+            std::fs::write(home.path.join("auth.json"),
+                b"replacement synthetic non-secret fixture").unwrap();
+            launch.verify(&db,&profile,false).unwrap();
+        }
+        assert_eq!(instance::read_grok_effects(&db,"bindingA").unwrap().iter()
+            .filter(|effect|effect.action=="GRANT_AUTH").count(),1);
+        let rogue=AppContainerProfile::derived_for_test("Gogoke37.ActiveRootUnknownPeer").unwrap();
+        grant_grok_home_root(&rogue,&home.path,&home.identity).unwrap();
+        assert!(launch.verify(&db,&profile,false).is_err());
+        revoke_grok_home_root(&rogue,&home.path,&home.identity).unwrap();
+        launch.verify(&db,&profile,false).unwrap();
+        db.execute("UPDATE main.gogoke_coordination_process_custody SET custodian_nonce='wrong' WHERE operation_id='oldOp'").unwrap();
+        assert!(launch.verify(&db,&profile,false).is_err());
+        db.execute("UPDATE main.gogoke_coordination_process_custody SET custodian_nonce='nonce' WHERE operation_id='oldOp'").unwrap();
+        let mut wrong_home=home.clone();
+        wrong_home.identity=root.canonical_root().identity.clone();
+        assert!(verify_active_root_authority(&db,&one(&db,"grokA","bindingA").unwrap(),
+            &profile,&wrong_home).is_err());
+        launch.verify(&db,&profile,false).unwrap();
+        drop(launch);db.close_checked().unwrap();drop(root);std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
