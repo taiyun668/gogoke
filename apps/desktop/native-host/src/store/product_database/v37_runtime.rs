@@ -2619,6 +2619,48 @@ impl<'root> ProductDatabase<'root> {
             thread_id:expected_thread.to_owned(),expected_turn_id:expected_turn.to_owned(),text})
     }
 
+    /// Called during the original USER translation transaction. These are
+    /// observed native turn/custody facts, never E BUSY or a terminal guess.
+    pub(super) fn verify_visible_runtime_target(&mut self,
+        association:&super::v37_visible_conversation::Association,thread:&str,turn:Option<&str>,idle:bool)->Result<()> {
+        let key=(association.domain.clone(),association.session.clone());
+        let run=self.native_sessions.get(&key).ok_or(OrchestrationError::Invalid("selected native runtime has no live custody"))?;
+        if run.evidence.driver_id()!="codex"||!run.allows_input()
+            ||run.evidence.seat_id()!=association.seat||run.evidence.seat_incarnation()!=association.incarnation
+            ||run.custody.binding.generation!=association.generation||run.thread_id.as_deref()!=Some(thread)
+            ||(idle&&run.turn_id.is_some())||(!idle&&run.turn_id.as_deref()!=turn) {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let process=self.process_custodian.active(&run.custody.ticket).ok_or(OrchestrationError::AccessDenied)?;
+        if process.identity()!=&run.custody.identity||process.exit_code().map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("original visible runtime exit observation: {error:?}")))?.is_some() {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        failure(run.evidence.verify_active_in_transaction(&mut self.connection,self.root,&self.owner,Some(&run.operation_id)))?;
+        Ok(())
+    }
+    /// The finite USER producer has committed its original request before
+    /// reaching this one writer. No ModelCallProof or ordinary process exists.
+    pub(super) fn native_visible_interrupt_rpc(&mut self,
+        association:&super::v37_visible_conversation::Association,thread:&str,turn:&str,step_id:&str,
+        permit:&super::v37_visible_effect::VisibleInterruptPermission<'_,'_>)->Result<()> {
+        self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
+        let verified=(||->Result<()> {
+            authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
+            permit.verify_in_transaction(&self.connection,association,thread,turn,step_id)?;
+            self.verify_visible_runtime_target(association,thread,Some(turn),false)
+        })();
+        self.finish_native_transaction(verified)?;
+        let key=(association.domain.clone(),association.session.clone());
+        let run=self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?;
+        let number=run.next_rpc_id;
+        run.next_rpc_id=number.checked_add(1).ok_or(OrchestrationError::Invalid("visible interrupt RPC ordinal overflow"))?;
+        match self.native_rpc(&key,step_id,Some(number),&Command::TurnInterrupt {thread_id:thread.into(),turn_id:turn.into()})? {
+            Some(Reply::Ack {..})=>Ok(()),
+            _=>Err(OrchestrationError::Invalid("original interrupt ACK absent; no physical stop fact")),
+        }
+    }
+
     /// Inbox delivery uses the same bound native writer without starting a
     /// model turn. Its C owner settles only from the original observed ACK.
     pub(super) fn native_append_rpc(&mut self,key:&(String,String),step_id:&str,

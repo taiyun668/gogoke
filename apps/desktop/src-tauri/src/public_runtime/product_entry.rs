@@ -1314,7 +1314,7 @@ impl Design37RegisterCodexRequest {
 }
 
 /// Read-only instance-page startup. No instance home or login is created here.
-pub(super) async fn ensure_design37_user_host(app: &tauri::AppHandle) -> Result<(), String> {
+pub(crate) async fn ensure_design37_user_host(app: &tauri::AppHandle) -> Result<(), String> {
     let _product_guard = PRODUCT_RUNTIME_GATE.lock().await;
     let service_guard = PRODUCT_SERVICE_GATE.lock().await;
     let paths = resolve_runtime_paths(app)?;

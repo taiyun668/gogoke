@@ -397,6 +397,65 @@ pub(super) struct ClaudeAnswerWrite {
 }
 
 impl<'root> ProductDatabase<'root> {
+    /// Read a completed original USER answer after H generation or E instance
+    /// changes. This cannot create a card, settle UNKNOWN or acquire a writer.
+    pub(super) fn visible_original_answer_receipt(&self,
+        association:&super::v37_visible_conversation::Association,request:&V37Request,
+        thread:&str)->Result<Option<Json>> {
+        use super::v37_visible_conversation::{k,s,object,decimal};
+        let row=Statement::prepare(self.connection.as_ptr(),
+            "SELECT o.request_hex,o.state,o.answer_kind,o.answer,o.native_receipt_id,q.vendor_request_id,q.turn_id,q.generation,q.seat_id,q.vendor_thread_id FROM main.gogoke_v37_qcard_native_operations o JOIN main.gogoke_v37_qcard_native q ON q.domain_id=o.domain_id AND q.card_id=o.card_id WHERE o.domain_id=?1 AND o.request_id=?2 AND o.card_id=?3")?;
+        row.bind_text(1,&association.domain)?;row.bind_text(2,&request.request_id)?;row.bind_text(3,&request.target_id)?;
+        if !row.step_row()? {return Ok(None);}
+        if unhex(&row.column_text(0)?)?!=request.raw_bytes||row.column_text(2)?!="WIRE"
+            ||row.column_text(7)?!=association.generation||row.column_text(8)?!=association.seat||row.column_text(9)?!=thread {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let state=row.column_text(1)?;let answer=row.column_text(3)?;let receipt=row.column_text(4)?;
+        let vendor=row.column_text(5)?;let turn=row.column_text(6)?;
+        if row.step_row()? {return Err(OrchestrationError::OperationConflict);}drop(row);
+        if state!="ANSWERED" {return Ok(None);}
+        let (source_key,digest)=read_source_descriptor(&self.connection,&association.domain,&request.target_id)?;
+        let source=ledger::read_captured_raw_source(&self.connection,&source_key.operation_id,&source_key.source_epoch,&source_key.source_cursor)?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        if source.domain_id!=association.domain||source.session_id!=association.session||source.generation!=association.generation
+            ||sha256_hex(&source.raw_bytes)!=digest||card_identity(&association.domain,&association.session,&source.key).0!=request.target_id {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let Reply::Question(question)=codex_rpc::decode(&source.raw_bytes,None).map_err(|error|store_error("original visible question",error))?
+            else {return Err(OrchestrationError::AccessDenied);};
+        if request_id_wire(&question.request_id)!=vendor||question.thread_id!=thread||question.turn_id!=turn {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let mut answers=BTreeMap::new();
+        let values=object(request.payload.get(&k("answers")).ok_or(OrchestrationError::OperationConflict)?)?;
+        for (id,value) in values {
+            let Json::Array(values)=value else {return Err(OrchestrationError::OperationConflict);};
+            let values=values.iter().map(|value|match value {Json::String(value)=>value.to_well_formed_string()
+                .ok_or(OrchestrationError::OperationConflict),_=>Err(OrchestrationError::OperationConflict)}).collect::<Result<Vec<_>>>()?;
+            answers.insert(id.to_well_formed_string().ok_or(OrchestrationError::OperationConflict)?,values);
+        }
+        let command=question.answer(answers).map_err(|error|store_error("original visible answer",error))?;
+        let wire=command.encode(None).map_err(|error|store_error("original visible answer wire",error))?;
+        if std::str::from_utf8(wire.strip_suffix(b"\n").ok_or(OrchestrationError::OperationConflict)?)
+            .map_err(|error|store_error("original visible answer UTF-8",error))?!=answer {return Err(OrchestrationError::AccessDenied);}
+        let step=format!("qanswer{}",sha256_hex(format!("{}\n{}\n{}",association.domain,association.session,request.request_id).as_bytes()));
+        let writer=Statement::prepare(self.connection.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_rpc_steps s JOIN main.gogoke_v37_h_process_episode e ON e.domain_id=s.domain_id AND e.session_id=s.session_id AND e.generation=s.generation AND e.process_operation_id=s.process_operation_id JOIN main.gogoke_v37_h_generation g ON g.domain_id=e.domain_id AND g.session_id=e.session_id AND g.generation=e.generation AND g.process_operation_id=e.process_operation_id JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id AND c.generation=e.generation AND c.ticket=s.ticket AND c.custodian_nonce=s.custodian_nonce JOIN main.gogoke_v37_session_binding_v2 b ON b.domain_id=e.domain_id AND b.session_id=e.session_id AND b.seat_id=e.seat_id AND b.seat_incarnation=e.seat_incarnation AND b.selected_instance_id=e.instance_id WHERE s.domain_id=?1 AND s.session_id=?2 AND s.generation=?3 AND s.step_id=?4 AND s.process_operation_id=?5 AND s.ticket=?6 AND s.custodian_nonce=?7 AND s.command_hex=?8 AND s.phase='WRITTEN' AND s.requires_response=0 AND e.seat_id=?9 AND e.seat_incarnation=?10 AND e.instance_id=?11 AND b.seat_authorization_generation=?12")?;
+        let encoded=super::v37_visible_conversation::encode_hex(&wire);
+        for (index,value) in [association.domain.as_str(),association.session.as_str(),association.generation.as_str(),step.as_str(),
+            source.key.operation_id.as_str(),source.process_ticket.as_str(),source.custodian_nonce.as_str(),encoded.as_str(),
+            association.seat.as_str(),association.incarnation.as_str(),association.instance.as_str(),association.authorization.as_str()].iter().enumerate() {writer.bind_text((index+1) as i32,value)?;}
+        if !writer.step_row()?||writer.step_row()? {return Err(OrchestrationError::AccessDenied);}
+        decimal(&association.authorization)?;
+        if receipt.is_empty() {return Err(OrchestrationError::OperationConflict);}
+        Ok(Some(Json::Object(BTreeMap::from([(k("id"),Parser::parse(&vendor)?),(k("result"),Json::Object(BTreeMap::from([
+            (k("state"),s("ANSWERED")),(k("nativeReceiptId"),s(&receipt)),
+            (k("vendorConsumptionConfirmed"),Json::Bool(false)),
+            (k("source"),Json::Object(BTreeMap::from([(k("operationId"),s(&source.key.operation_id)),
+                (k("sourceEpoch"),s(&source.key.source_epoch)),(k("sourceCursor"),s(&source.key.source_cursor))]))),
+        ])))]))))
+    }
     // Claude's fixed stream has a real session_id but no vendor turn_id.
     // The card's turn_id is the original H User send request ID, kept under
     // the same physical custody; it is never presented as a vendor turn.

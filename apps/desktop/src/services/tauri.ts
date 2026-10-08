@@ -1448,8 +1448,304 @@ export async function setWorkspaceRuntimeCodexArgs(
   });
 }
 
-export async function startThread(workspaceId: string) {
-  return invoke<any>("start_thread", { workspaceId });
+export type NativeConversationAssociation = {
+  domainId: string;
+  sessionId: string;
+  seatId: string;
+  incarnation: string;
+  authorizationGeneration: string;
+  bindingGeneration: string;
+  instanceId: string;
+};
+
+type NativeVisibleIntent = {
+  nativeRequestId: string;
+  workspaceId: string;
+  expectedAssociation: NativeConversationAssociation;
+  command: string;
+  payload: Record<string, unknown>;
+  error: string | null;
+};
+
+type NativeVisibleJournal = {
+  version: 1;
+  pending: NativeVisibleIntent | null;
+  acceptedRequestIds: string[];
+  lastAccepted: (NativeVisibleIntent & { response: unknown }) | null;
+  rejectedRequestIds: string[];
+  lastRejected: (NativeVisibleIntent & { reason: string }) | null;
+  notDispatchedRequestIds: string[];
+  lastNotDispatched: (NativeVisibleIntent & { reason: string }) | null;
+};
+
+const nativeVisibleKey = (workspaceId: string) =>
+  `gogoke.native-visible-original.${encodeURIComponent(workspaceId)}`;
+const emptyNativeVisibleJournal = (): NativeVisibleJournal =>
+  ({ version: 1, pending: null, acceptedRequestIds: [], lastAccepted: null,
+    rejectedRequestIds: [], lastRejected: null,
+    notDispatchedRequestIds: [], lastNotDispatched: null });
+
+function sameNativeAssociation(left: NativeConversationAssociation, right: NativeConversationAssociation) {
+  return (Object.keys(left) as Array<keyof NativeConversationAssociation>).every(
+    (key) => left[key] === right[key],
+  );
+}
+
+function exactNativeAssociation(value: unknown): NativeConversationAssociation {
+  const keys = ["domainId", "sessionId", "seatId", "incarnation",
+    "authorizationGeneration", "bindingGeneration", "instanceId"] as const;
+  if (!record(value) || Object.keys(value).length !== keys.length ||
+      keys.some((key) => !nonempty(value[key]))) {
+    throw new Error("Native visible conversation association is incomplete.");
+  }
+  return value as NativeConversationAssociation;
+}
+
+function nativeVisibleJournal(workspaceId: string): NativeVisibleJournal {
+  const raw = window.localStorage.getItem(nativeVisibleKey(workspaceId));
+  if (raw === null) return emptyNativeVisibleJournal();
+  const parsed: unknown = JSON.parse(raw);
+  if (!record(parsed) || parsed.version !== 1 ||
+      !Array.isArray(parsed.acceptedRequestIds) ||
+      !parsed.acceptedRequestIds.every(nonempty) ||
+      !Array.isArray(parsed.rejectedRequestIds) ||
+      !parsed.rejectedRequestIds.every(nonempty) ||
+      !Array.isArray(parsed.notDispatchedRequestIds) ||
+      !parsed.notDispatchedRequestIds.every(nonempty) ||
+      (parsed.lastAccepted !== null && !record(parsed.lastAccepted)) ||
+      (parsed.lastRejected !== null && !record(parsed.lastRejected)) ||
+      (parsed.lastNotDispatched !== null && !record(parsed.lastNotDispatched)) ||
+      (parsed.pending !== null && !record(parsed.pending))) {
+    throw new Error("The original native visible request journal is invalid.");
+  }
+  if (parsed.pending) {
+    const pending = parsed.pending;
+    if (pending.workspaceId !== workspaceId || !nonempty(pending.nativeRequestId) ||
+        !nonempty(pending.command) || !record(pending.payload)) {
+      throw new Error("The pending native visible request identity is invalid.");
+    }
+    exactNativeAssociation(pending.expectedAssociation);
+  }
+  return parsed as NativeVisibleJournal;
+}
+
+function saveNativeVisibleJournal(workspaceId: string, journal: NativeVisibleJournal) {
+  const serialized = JSON.stringify(journal);
+  window.localStorage.setItem(nativeVisibleKey(workspaceId), serialized);
+  if (window.localStorage.getItem(nativeVisibleKey(workspaceId)) !== serialized) {
+    throw new Error("The original native visible request was not retained before dispatch.");
+  }
+}
+
+function hostTerminalVisibleRejection(cause: unknown, nativeRequestId: string): string | null {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  return message.startsWith(`GOGOKE_VISIBLE_DENIED:${nativeRequestId}:`) ||
+    message.startsWith(`GOGOKE_VISIBLE_UNSUPPORTED:${nativeRequestId}:`)
+    ? message : null;
+}
+
+function nativeVisibleNotDispatched(cause: unknown, nativeRequestId: string): string | null {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  return message.startsWith(`GOGOKE_VISIBLE_NOT_DISPATCHED:${nativeRequestId}:`)
+    ? message : null;
+}
+
+function settleNativeVisibleRejection(
+  workspaceId: string, journal: NativeVisibleJournal,
+  intent: NativeVisibleIntent, reason: string,
+) {
+  journal.rejectedRequestIds.push(intent.nativeRequestId);
+  journal.lastRejected = { ...intent, error: reason, reason };
+  journal.pending = null;
+  saveNativeVisibleJournal(workspaceId, journal);
+}
+
+async function withNativeVisibleLock<T>(workspaceId: string, work: () => Promise<T>): Promise<T> {
+  if (!navigator.locks?.request) {
+    throw new Error("Native visible request serialization is unavailable.");
+  }
+  return navigator.locks.request(`gogoke-native-visible-${workspaceId}`, { mode: "exclusive" }, work);
+}
+
+export function pendingNativeVisibleIntent(workspaceId: string): NativeVisibleIntent | null {
+  return nativeVisibleJournal(workspaceId).pending;
+}
+
+export function lastRejectedNativeVisibleIntent(workspaceId: string) {
+  return nativeVisibleJournal(workspaceId).lastRejected;
+}
+
+export function lastNotDispatchedNativeVisibleIntent(workspaceId: string) {
+  return nativeVisibleJournal(workspaceId).lastNotDispatched;
+}
+
+async function nativeVisibleTransport(workspaceId: string, observe = false): Promise<{
+  state: "NATIVE" | "LEGACY" | "DISCONNECTED" | "REMOTE";
+  association: NativeConversationAssociation | null;
+  eventReadError?: string;
+  stopConfirmed?: boolean;
+}> {
+  const value: unknown = await invoke("native_visible_transport", { workspaceId, observe });
+  if (!record(value) || value.schema !== "gogoke.37.visible-conversation.v1" ||
+      value.workspaceId !== workspaceId ||
+      !["NATIVE", "LEGACY", "DISCONNECTED", "REMOTE"].includes(String(value.state))) {
+    throw new Error("Actual native visible transport could not be identified.");
+  }
+  if (value.state === "NATIVE") {
+    if (value.nativeEventReadError !== null && value.nativeEventReadError !== undefined &&
+        (typeof value.nativeEventReadError !== "string" || !value.nativeEventReadError)) {
+      throw new Error("Native event read failure has no original reason.");
+    }
+    if (value.nativeStopConfirmed !== undefined && typeof value.nativeStopConfirmed !== "boolean") {
+      throw new Error("Native stop observation is malformed.");
+    }
+    return { state: "NATIVE", association: exactNativeAssociation(value.association),
+      eventReadError: typeof value.nativeEventReadError === "string" ? value.nativeEventReadError : undefined,
+      stopConfirmed: value.nativeStopConfirmed === true };
+  }
+  if (value.association !== null) {
+    throw new Error("Non-native visible transport reported a native association.");
+  }
+  return { state: value.state as "LEGACY" | "DISCONNECTED" | "REMOTE", association: null };
+}
+
+async function confirmedNativeVisibleAssociation(
+  workspaceId: string, actual: NativeConversationAssociation,
+): Promise<NativeConversationAssociation> {
+  const route = await design37UserFrame({ schema: "gogoke.37.owner-configuration.v1",
+    command: "visible-conversation-route", workspaceId });
+  if (!record(route) || route.schema !== "gogoke.37.visible-conversation.v1" ||
+      route.workspaceId !== workspaceId || route.state !== "NATIVE" ||
+      !sameNativeAssociation(actual, exactNativeAssociation(route.association))) {
+    throw new Error(`Native visible conversation route is unresolved: ${JSON.stringify(route)}`);
+  }
+  return actual;
+}
+
+async function invokeVisibleWrite<T>(
+  command: string, payload: Record<string, unknown>, nativeRequestId?: string,
+): Promise<T> {
+  const workspaceId = payload.workspaceId;
+  if (typeof workspaceId !== "string" || !workspaceId) {
+    throw new Error("Visible write requires a workspace ID.");
+  }
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+    return invoke<T>(command, nativeRequestId === undefined ? payload : { ...payload, nativeRequestId });
+  }
+  const initialTransport = await nativeVisibleTransport(workspaceId);
+  if (initialTransport.state === "LEGACY" || initialTransport.state === "REMOTE") {
+    return invoke<T>(command, nativeRequestId === undefined ? payload : { ...payload, nativeRequestId });
+  }
+  if (initialTransport.state !== "NATIVE") {
+    throw new Error("Native visible conversation transport is disconnected.");
+  }
+  return withNativeVisibleLock(workspaceId, async () => {
+    const physicalStop = command === "stop_native_visible_session";
+    const current = await nativeVisibleTransport(workspaceId);
+    // A stopped attachment cannot restart its old observer. The host's original
+    // StopFact permits resume while retaining the error; H/A still verifies it.
+    const stoppedResume = command === "resume_thread" && current.stopConfirmed === true;
+    const transport = physicalStop || stoppedResume
+      ? current : await nativeVisibleTransport(workspaceId, true);
+    if (transport.state !== "NATIVE" || !transport.association) {
+      throw new Error("Native visible conversation transport changed before dispatch.");
+    }
+    if (!physicalStop && !stoppedResume && transport.eventReadError) {
+      throw new Error(`GOGOKE_NATIVE_EVENT_READ_UNKNOWN:${transport.eventReadError}`);
+    }
+    const association = await confirmedNativeVisibleAssociation(workspaceId, transport.association);
+    const journal = nativeVisibleJournal(workspaceId);
+    if (journal.pending) {
+      throw new Error(`Original native visible request ${journal.pending.nativeRequestId} is unresolved: ${journal.pending.error ?? "read its original host result before another write"}`);
+    }
+    const id = nativeRequestId ?? `visible_${crypto.randomUUID()}`;
+    if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(id) ||
+        journal.acceptedRequestIds.includes(id) || journal.rejectedRequestIds.includes(id) ||
+        journal.notDispatchedRequestIds.includes(id)) {
+      throw new Error("Native visible request ID is invalid or already used.");
+    }
+    const intent: NativeVisibleIntent = { nativeRequestId: id, workspaceId,
+      expectedAssociation: association, command, payload: structuredClone(payload), error: null };
+    journal.pending = intent;
+    saveNativeVisibleJournal(workspaceId, journal);
+    let response: T;
+    try {
+      response = await invoke<T>(command, { ...payload,
+        nativeRequestId: id, expectedAssociation: association });
+    } catch (cause) {
+      intent.error = cause instanceof Error ? cause.message : String(cause);
+      const notDispatched = nativeVisibleNotDispatched(cause, id);
+      if (notDispatched) {
+        journal.notDispatchedRequestIds.push(id);
+        journal.lastNotDispatched = { ...intent, reason: notDispatched };
+        journal.pending = null;
+        saveNativeVisibleJournal(workspaceId, journal);
+        throw cause;
+      }
+      const rejection = hostTerminalVisibleRejection(cause, id);
+      if (rejection) {
+        settleNativeVisibleRejection(workspaceId, journal, intent, rejection);
+        throw cause;
+      }
+      journal.pending = intent;
+      saveNativeVisibleJournal(workspaceId, journal);
+      throw cause;
+    }
+    journal.acceptedRequestIds.push(id);
+    journal.lastAccepted = { ...intent, response };
+    journal.pending = null;
+    saveNativeVisibleJournal(workspaceId, journal);
+    return response;
+  });
+}
+
+export async function recoverNativeVisibleRequest(
+  workspaceId: string,
+  nativeRequestId: string,
+  expectedAssociation: NativeConversationAssociation,
+) {
+  return withNativeVisibleLock(workspaceId, async () => {
+    const journal = nativeVisibleJournal(workspaceId);
+    const pending = journal.pending;
+    if (!pending || pending.nativeRequestId !== nativeRequestId ||
+        !sameNativeAssociation(pending.expectedAssociation, exactNativeAssociation(expectedAssociation))) {
+      throw new Error("No matching original native visible request is retained for recovery.");
+    }
+    let response: unknown;
+    try {
+      response = await invoke<unknown>("recover_native_visible_request", {
+        workspaceId, nativeRequestId, expectedAssociation: pending.expectedAssociation,
+      });
+    } catch (cause) {
+      pending.error = cause instanceof Error ? cause.message : String(cause);
+      const rejection = hostTerminalVisibleRejection(cause, nativeRequestId);
+      if (rejection) {
+        settleNativeVisibleRejection(workspaceId, journal, pending, rejection);
+        throw cause;
+      }
+      saveNativeVisibleJournal(workspaceId, journal);
+      throw cause;
+    }
+    journal.acceptedRequestIds.push(nativeRequestId);
+    journal.lastAccepted = { ...pending, response };
+    journal.pending = null;
+    saveNativeVisibleJournal(workspaceId, journal);
+    return response;
+  });
+}
+
+export async function recoverPendingNativeVisibleIntent(workspaceId: string) {
+  const pending = pendingNativeVisibleIntent(workspaceId);
+  if (!pending) return null;
+  return recoverNativeVisibleRequest(workspaceId, pending.nativeRequestId, pending.expectedAssociation);
+}
+
+export async function startThread(workspaceId: string, nativeRequestId?: string) {
+  return invokeVisibleWrite<any>("start_thread", { workspaceId }, nativeRequestId);
+}
+
+export async function stopNativeVisibleSession(workspaceId: string, nativeRequestId?: string) {
+  return invokeVisibleWrite<unknown>("stop_native_visible_session", { workspaceId }, nativeRequestId);
 }
 
 export async function forkThread(workspaceId: string, threadId: string) {
@@ -1518,6 +1814,7 @@ export async function sendUserMessage(
     images?: string[];
     collaborationMode?: Record<string, unknown> | null;
     appMentions?: AppMention[];
+    nativeRequestId?: string;
   },
 ) {
   const images = await normalizeImagesForRpc(options?.images);
@@ -1539,15 +1836,16 @@ export async function sendUserMessage(
   if (options?.appMentions && options.appMentions.length > 0) {
     payload.appMentions = options.appMentions;
   }
-  return invoke("send_user_message", payload);
+  return invokeVisibleWrite("send_user_message", payload, options?.nativeRequestId);
 }
 
 export async function interruptTurn(
   workspaceId: string,
   threadId: string,
   turnId: string,
+  nativeRequestId?: string,
 ) {
-  return invoke("turn_interrupt", { workspaceId, threadId, turnId });
+  return invokeVisibleWrite("turn_interrupt", { workspaceId, threadId, turnId }, nativeRequestId);
 }
 
 export async function steerTurn(
@@ -1557,6 +1855,7 @@ export async function steerTurn(
   text: string,
   images?: string[],
   appMentions?: AppMention[],
+  nativeRequestId?: string,
 ) {
   const normalizedImages = await normalizeImagesForRpc(images);
   const payload: Record<string, unknown> = {
@@ -1569,7 +1868,7 @@ export async function steerTurn(
   if (appMentions && appMentions.length > 0) {
     payload.appMentions = appMentions;
   }
-  return invoke("turn_steer", payload);
+  return invokeVisibleWrite("turn_steer", payload, nativeRequestId);
 }
 
 export async function startReview(
@@ -1589,24 +1888,26 @@ export async function respondToServerRequest(
   workspaceId: string,
   requestId: number | string,
   decision: "accept" | "decline",
+  nativeRequestId?: string,
 ) {
-  return invoke("respond_to_server_request", {
+  return invokeVisibleWrite("respond_to_server_request", {
     workspaceId,
     requestId,
     result: { decision },
-  });
+  }, nativeRequestId);
 }
 
 export async function respondToUserInputRequest(
   workspaceId: string,
   requestId: number | string,
   answers: Record<string, { answers: string[] }>,
+  nativeRequestId?: string,
 ) {
-  return invoke("respond_to_server_request", {
+  return invokeVisibleWrite("respond_to_server_request", {
     workspaceId,
     requestId,
     result: { answers },
-  });
+  }, nativeRequestId);
 }
 
 export async function rememberApprovalRule(
@@ -2121,8 +2422,8 @@ export async function listMcpServerStatus(
   return invoke<any>("list_mcp_server_status", { workspaceId, cursor, limit });
 }
 
-export async function resumeThread(workspaceId: string, threadId: string) {
-  return invoke<any>("resume_thread", { workspaceId, threadId });
+export async function resumeThread(workspaceId: string, threadId: string, nativeRequestId?: string) {
+  return invokeVisibleWrite<any>("resume_thread", { workspaceId, threadId }, nativeRequestId);
 }
 
 export async function readThread(workspaceId: string, threadId: string) {

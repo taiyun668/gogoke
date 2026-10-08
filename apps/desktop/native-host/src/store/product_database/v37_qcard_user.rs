@@ -15,6 +15,79 @@ fn claude_card(card:&NativeQuestionCard)->Result<bool> {
 }
 
 impl<'root> ProductDatabase<'root> {
+    /// Native USER answer translation retains the vendor ID's JSON type and
+    /// selects C only through its original A frame and exact H association.
+    pub(super) fn visible_question_translation(&self,
+        association:&super::v37_visible_conversation::Association,thread:&str,
+        params:&BTreeMap<JsonString,Json>)->Result<(String,u64,String,Json)> {
+        use super::v37_visible_conversation::{k,object,exact,copy_json,decimal};
+        let vendor=params.get(&k("requestId")).ok_or(OrchestrationError::Invalid("original vendor request ID"))?;
+        match vendor {Json::Number(value)=>{let parsed=value.parse::<i64>().map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("typed C vendor request ID: {error}")))?;
+            if parsed.to_string()!=*value||!(-9_007_199_254_740_991..=9_007_199_254_740_991).contains(&parsed) {return Err(OrchestrationError::Invalid("typed C vendor request ID"));}},
+            Json::String(value) if value.to_well_formed_string().is_some_and(|value|!value.is_empty()&&!value.contains('\0'))=>{},
+            _=>return Err(OrchestrationError::Invalid("typed C vendor request ID")),
+        }
+        let row=Statement::prepare(self.connection.as_ptr(),
+            "SELECT q.card_id,q.revision,q.turn_id FROM main.gogoke_v37_qcard_native q JOIN main.gogoke_v37_h_process_episode e ON e.domain_id=q.domain_id AND e.seat_id=q.seat_id AND e.generation=q.generation JOIN main.gogoke_v37_session_binding_v2 b ON b.domain_id=e.domain_id AND b.session_id=e.session_id AND b.seat_id=e.seat_id AND b.seat_incarnation=e.seat_incarnation AND b.selected_instance_id=e.instance_id WHERE q.domain_id=?1 AND q.vendor_request_id=?2 AND q.vendor_thread_id=?3 AND q.seat_id=?4 AND q.generation=?5 AND e.session_id=?6 AND e.seat_incarnation=?7 AND e.instance_id=?8 AND b.seat_authorization_generation=?9 AND q.state='OPEN'")?;
+        let vendor_wire=vendor.canonical();
+        for (index,value) in [association.domain.as_str(),vendor_wire.as_str(),thread,association.seat.as_str(),
+            association.generation.as_str(),association.session.as_str(),association.incarnation.as_str(),association.instance.as_str(),
+            association.authorization.as_str()].iter().enumerate() {row.bind_text((index+1) as i32,value)?;}
+        if !row.step_row()? {return Err(OrchestrationError::Invalid("original open C question is unavailable for this association and typed vendor ID"));}
+        let card=row.column_text(0)?;let revision=decimal(&row.column_text(1)?)? as u64;let turn=row.column_text(2)?;
+        if row.step_row()? {return Err(OrchestrationError::OperationConflict);}drop(row);
+        let (key,digest)=super::v37_qcard::read_source_descriptor(&self.connection,&association.domain,&card)?;
+        let raw=crate::store::ledger::read_captured_raw_source(&self.connection,&key.operation_id,&key.source_epoch,&key.source_cursor)?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        if raw.domain_id!=association.domain||raw.session_id!=association.session||raw.generation!=association.generation
+            ||crate::store::digest::sha256_hex(&raw.raw_bytes)!=digest {return Err(OrchestrationError::AccessDenied);}
+        let crate::store::session_transport::codex_rpc::Reply::Question(question)=
+            crate::store::session_transport::codex_rpc::decode(&raw.raw_bytes,None).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("original typed C question: {error:?}")))? else {return Err(OrchestrationError::AccessDenied);};
+        let actual_id=match &question.request_id {crate::store::session_transport::codex_rpc::RpcId::Number(id)=>Json::Number(id.to_string()),
+            crate::store::session_transport::codex_rpc::RpcId::String(id)=>text(id)};
+        if actual_id.canonical()!=vendor_wire||question.thread_id!=thread||question.turn_id!=turn {return Err(OrchestrationError::AccessDenied);}
+        let result=object(params.get(&k("result")).ok_or(OrchestrationError::Invalid("original C answer result"))?)?;
+        exact(result,&["answers"],&[])?;
+        let answers=object(result.get(&k("answers")).ok_or(OrchestrationError::Invalid("original C answers"))?)?;
+        let mut native=BTreeMap::new();let mut checked=BTreeMap::new();
+        for (id,value) in answers {
+            let fields=object(value)?;exact(fields,&["answers"],&[])?;
+            let Some(Json::Array(values))=fields.get(&k("answers")) else {return Err(OrchestrationError::Invalid("original C answer strings"));};
+            let values=values.iter().map(|value|match value {Json::String(value)=>value.to_well_formed_string()
+                .ok_or(OrchestrationError::Invalid("original C answer text")),_=>Err(OrchestrationError::Invalid("original C answer text"))}).collect::<Result<Vec<_>>>()?;
+            checked.insert(id.to_well_formed_string().ok_or(OrchestrationError::Invalid("original C question ID"))?,values);
+            native.insert(id.clone(),copy_json(fields.get(&k("answers")).ok_or(OrchestrationError::OperationConflict)?));
+        }
+        question.answer(checked).map_err(|error|OrchestrationError::V37StoreFailure(format!("original typed C answer shape: {error:?}")))?;
+        Ok((card,revision,turn,Json::Object(native)))
+    }
+
+    /// Original raised requests for USER presentation. Availability remains
+    /// subject to current_card_binding at the actual new-answer boundary.
+    pub(super) fn visible_pending_questions(&self,
+        association:&super::v37_visible_conversation::Association,thread:&str)->Result<Json> {
+        use super::v37_visible_conversation::{k,source_json};
+        let rows=Statement::prepare(self.connection.as_ptr(),
+            "SELECT card_id FROM main.gogoke_v37_qcard_native WHERE domain_id=?1 AND seat_id=?2 AND generation=?3 AND vendor_thread_id=?4 AND state='OPEN' ORDER BY card_id")?;
+        for (index,value) in [association.domain.as_str(),association.seat.as_str(),association.generation.as_str(),thread].iter().enumerate() {rows.bind_text((index+1) as i32,value)?;}
+        let mut questions=Vec::new();
+        while rows.step_row()? {
+            let card=rows.column_text(0)?;
+            let (key,digest)=super::v37_qcard::read_source_descriptor(&self.connection,&association.domain,&card)?;
+            let raw=crate::store::ledger::read_captured_raw_source(&self.connection,&key.operation_id,&key.source_epoch,&key.source_cursor)?
+                .ok_or(OrchestrationError::OperationConflict)?;
+            if raw.domain_id!=association.domain||raw.session_id!=association.session||raw.generation!=association.generation
+                ||crate::store::digest::sha256_hex(&raw.raw_bytes)!=digest {return Err(OrchestrationError::AccessDenied);}
+            let original=source_json(&raw.raw_bytes.iter().map(|byte|format!("{byte:02x}")).collect::<String>())?;
+            questions.push(Json::Object(BTreeMap::from([(k("cardId"),text(&card)),(k("originalRequest"),original),
+                (k("source"),Json::Object(BTreeMap::from([(k("operationId"),text(&key.operation_id)),
+                    (k("sourceEpoch"),text(&key.source_epoch)),(k("sourceCursor"),text(&key.source_cursor))])))])));
+        }
+        Ok(Json::Array(questions))
+    }
+
     pub(super) fn dispatch_user_qcard(&mut self,request:&V37Request)->Result<Vec<u8>> {
         authority::read_product_identity(&mut self.connection,&self.owner)?;
         if !matches!(request.operation.as_str(),"answer"|"recover") {

@@ -36,6 +36,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 type Result<T> = std::result::Result<T, OrchestrationError>;
 
 mod v37_seat;
+mod v37_visible_conversation;
+mod v37_visible_effect;
 mod v37_managed_cli;
 mod v37_policy;
 mod v37_session;
@@ -72,6 +74,7 @@ pub(crate) struct VerifiedDirectUserInput<'a> {
     origin: &'a UserOriginProof,
     frame: &'a [u8],
     observed_at_ms: Option<i64>,
+    visible_translation: Option<(&'a str, &'a str)>,
 }
 
 impl VerifiedDirectUserInput<'_> {
@@ -81,6 +84,16 @@ impl VerifiedDirectUserInput<'_> {
     }
 
     pub(crate) fn observed_at_ms(&self) -> Option<i64> { self.observed_at_ms }
+
+    pub(crate) fn matches_original_in_transaction(&self, db: &VerifiedDatabaseConnection<'_>,
+        frame: &[u8]) -> std::result::Result<bool, String> {
+        self.origin.verify_live_origin().map_err(|error|format!("original USER process proof: {error:?}"))?;
+        match self.visible_translation {
+            None=>Ok(self.frame==frame),
+            Some((workspace,request))=>v37_visible_effect::verify_user_translation(db,
+                self.frame,frame,workspace,request).map_err(|error|format!("original USER visible translation: {error:?}")),
+        }
+    }
 }
 
 /// The Grok ACL regression uses the same fixed official image, managed
@@ -246,6 +259,8 @@ impl<'root> ProductDatabase<'root> {
         let process_custodian = ProcessCustodian::new()?;
         super::session_transport::rpc_journal::initialize_schema(&mut connection)
             .map_err(|error| OrchestrationError::V37StoreFailure(format!("native RPC schema: {error:?}")))?;
+        v37_visible_conversation::initialize_schema(&mut connection)?;
+        v37_visible_effect::initialize_schema(&mut connection)?;
         // F owns the private Grok HOME ACL journal in this same verified DB.
         // Opening the DB initializes records only; it is not holder retirement.
         instance::initialize_grok_home_grant_schema(&mut connection)
@@ -306,7 +321,10 @@ impl<'root> ProductDatabase<'root> {
             return self.dispatch_owner_login_frame(frame);
         }
         if v37_seat::is_user_v37_configuration_frame(frame) {
-            return self.configure_user_v37(frame);
+            let observed_at_ms=SystemTime::now().duration_since(UNIX_EPOCH).ok()
+                .and_then(|elapsed|i64::try_from(elapsed.as_millis()).ok()).filter(|at|*at>0);
+            let input=VerifiedDirectUserInput {origin,frame,observed_at_ms,visible_translation:None};
+            return self.configure_user_v37_with_input(frame,Some(&input));
         }
         let request = decode_request(frame).map_err(|error|
             OrchestrationError::V37StoreFailure(format!("v37 user frame: {error:?}")))?;
@@ -317,7 +335,7 @@ impl<'root> ProductDatabase<'root> {
             let observed_at_ms = SystemTime::now().duration_since(UNIX_EPOCH)
                 .ok().and_then(|elapsed|i64::try_from(elapsed.as_millis()).ok())
                 .filter(|value|*value>0);
-            let input = VerifiedDirectUserInput {origin, frame, observed_at_ms};
+            let input = VerifiedDirectUserInput {origin, frame, observed_at_ms, visible_translation:None};
             return self.dispatch_verified_user_session(&request, &input);
         }
         self.dispatch_user_request(&request)
@@ -1319,7 +1337,7 @@ mod secretary_user_input_tests {
         let mut pipe=listener.accept_user().unwrap();
         let proof=pipe.take_user_origin_proof().unwrap();
         let raw=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send","requestId":"sendA","targetId":"sessionA","domainId":"global","expectedRevision":"1","payload":{"generation":"1","body":"Owner original"}}"#;
-        let source=VerifiedDirectUserInput {origin:&proof,frame:raw,observed_at_ms:Some(100)};
+        let source=VerifiedDirectUserInput {origin:&proof,frame:raw,observed_at_ms:Some(100),visible_translation:None};
         let input=StdinRequest {domain_id:"global",session_id:"sessionA",ticket:"pct1_ticketA",
             generation:"1",request_bytes:raw};
         let changed=raw.windows(5).position(|window|window==b"Owner").unwrap();
@@ -1356,7 +1374,7 @@ mod secretary_user_input_tests {
         assert_eq!((row.column_text(0).unwrap(),row.column_text(1).unwrap(),row.column_text(2).unwrap(),row.column_text(3).unwrap()),
             ("processA".into(),"nonceA".into(),"sendA".into(),"100".into()));
         drop(row);
-        let later=VerifiedDirectUserInput {origin:&proof,frame:raw,observed_at_ms:Some(200)};
+        let later=VerifiedDirectUserInput {origin:&proof,frame:raw,observed_at_ms:Some(200),visible_translation:None};
         assert_eq!(h::prepare_codex_request_with_user_input(&mut product.connection,
             &product.owner,&input,&later).unwrap().disposition,PrepareDisposition::Replayed);
         assert_eq!(count(&product.connection,"gogoke_v37_seat_secretary_presence"),"1");
@@ -1369,7 +1387,7 @@ mod secretary_user_input_tests {
         let raw_d=String::from_utf8(raw.to_vec()).unwrap().replace("sendA","sendD").replace("sessionA","sessionD");
         let input_d=StdinRequest {domain_id:"global",session_id:"sessionD",ticket:"pct1_ticketD",
             generation:"1",request_bytes:raw_d.as_bytes()};
-        let clock_backwards=VerifiedDirectUserInput {origin:&proof,frame:raw_d.as_bytes(),observed_at_ms:Some(99)};
+        let clock_backwards=VerifiedDirectUserInput {origin:&proof,frame:raw_d.as_bytes(),observed_at_ms:Some(99),visible_translation:None};
         assert_eq!(h::prepare_codex_request_with_user_input(&mut product.connection,&product.owner,
             &input_d,&clock_backwards).unwrap().disposition,PrepareDisposition::Prepared);
         assert_eq!(count(&product.connection,"gogoke_v37_seat_secretary_presence"),"2",
@@ -1388,7 +1406,7 @@ mod secretary_user_input_tests {
             generation:"1",request_bytes:raw_b.as_bytes()};
         assert_eq!(h::prepare_codex_request(&mut product.connection,&input_b).unwrap().disposition,
             PrepareDisposition::Prepared);
-        let historical=VerifiedDirectUserInput {origin:&proof,frame:raw_b.as_bytes(),observed_at_ms:Some(300)};
+        let historical=VerifiedDirectUserInput {origin:&proof,frame:raw_b.as_bytes(),observed_at_ms:Some(300),visible_translation:None};
         assert_eq!(h::prepare_codex_request_with_user_input(&mut product.connection,&product.owner,
             &input_b,&historical).unwrap().disposition,PrepareDisposition::Replayed);
         assert_eq!(count(&product.connection,"gogoke_v37_seat_secretary_presence"),"2");
@@ -1402,7 +1420,7 @@ mod secretary_user_input_tests {
         let raw_c=String::from_utf8(raw.to_vec()).unwrap().replace("sendA","sendC").replace("sessionA","sessionC");
         let input_c=StdinRequest {domain_id:"global",session_id:"sessionC",ticket:"pct1_ticketC",
             generation:"1",request_bytes:raw_c.as_bytes()};
-        let no_clock=VerifiedDirectUserInput {origin:&proof,frame:raw_c.as_bytes(),observed_at_ms:None};
+        let no_clock=VerifiedDirectUserInput {origin:&proof,frame:raw_c.as_bytes(),observed_at_ms:None,visible_translation:None};
         assert_eq!(h::prepare_codex_request_with_user_input(&mut product.connection,&product.owner,
             &input_c,&no_clock).unwrap().disposition,PrepareDisposition::Prepared);
         assert_eq!(count(&product.connection,"gogoke_v37_h_stdin_journal"),"4");
