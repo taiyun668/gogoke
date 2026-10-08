@@ -1559,6 +1559,10 @@ export function pendingNativeVisibleIntent(workspaceId: string): NativeVisibleIn
   return nativeVisibleJournal(workspaceId).pending;
 }
 
+export function lastRejectedNativeVisibleIntent(workspaceId: string) {
+  return nativeVisibleJournal(workspaceId).lastRejected;
+}
+
 async function nativeVisibleTransport(workspaceId: string): Promise<{
   state: "NATIVE" | "LEGACY" | "DISCONNECTED" | "REMOTE";
   association: NativeConversationAssociation | null;
