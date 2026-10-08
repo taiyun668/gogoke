@@ -1448,8 +1448,35 @@ export async function setWorkspaceRuntimeCodexArgs(
   });
 }
 
-export async function startThread(workspaceId: string) {
-  return invoke<any>("start_thread", { workspaceId });
+// Native callers retain this ID and the exact association before dispatch.
+// An unknown result is recovered by reading that original ID, never by making
+// another request with a replacement ID.
+function withNativeIntent<T extends Record<string, unknown>>(payload: T, nativeRequestId?: string) {
+  return nativeRequestId === undefined ? payload : { ...payload, nativeRequestId };
+}
+
+export type NativeConversationAssociation = {
+  domainId: string;
+  sessionId: string;
+  seatId: string;
+  incarnation: string;
+  authorizationGeneration: string;
+  bindingGeneration: string;
+  instanceId: string;
+};
+
+export async function recoverNativeVisibleRequest(
+  workspaceId: string,
+  nativeRequestId: string,
+  expectedAssociation: NativeConversationAssociation,
+) {
+  return invoke<unknown>("recover_native_visible_request", {
+    workspaceId, nativeRequestId, expectedAssociation,
+  });
+}
+
+export async function startThread(workspaceId: string, nativeRequestId?: string) {
+  return invoke<any>("start_thread", withNativeIntent({ workspaceId }, nativeRequestId));
 }
 
 export async function forkThread(workspaceId: string, threadId: string) {
@@ -1518,6 +1545,7 @@ export async function sendUserMessage(
     images?: string[];
     collaborationMode?: Record<string, unknown> | null;
     appMentions?: AppMention[];
+    nativeRequestId?: string;
   },
 ) {
   const images = await normalizeImagesForRpc(options?.images);
@@ -1539,15 +1567,16 @@ export async function sendUserMessage(
   if (options?.appMentions && options.appMentions.length > 0) {
     payload.appMentions = options.appMentions;
   }
-  return invoke("send_user_message", payload);
+  return invoke("send_user_message", withNativeIntent(payload, options?.nativeRequestId));
 }
 
 export async function interruptTurn(
   workspaceId: string,
   threadId: string,
   turnId: string,
+  nativeRequestId?: string,
 ) {
-  return invoke("turn_interrupt", { workspaceId, threadId, turnId });
+  return invoke("turn_interrupt", withNativeIntent({ workspaceId, threadId, turnId }, nativeRequestId));
 }
 
 export async function steerTurn(
@@ -1557,6 +1586,7 @@ export async function steerTurn(
   text: string,
   images?: string[],
   appMentions?: AppMention[],
+  nativeRequestId?: string,
 ) {
   const normalizedImages = await normalizeImagesForRpc(images);
   const payload: Record<string, unknown> = {
@@ -1569,7 +1599,7 @@ export async function steerTurn(
   if (appMentions && appMentions.length > 0) {
     payload.appMentions = appMentions;
   }
-  return invoke("turn_steer", payload);
+  return invoke("turn_steer", withNativeIntent(payload, nativeRequestId));
 }
 
 export async function startReview(
@@ -1589,24 +1619,26 @@ export async function respondToServerRequest(
   workspaceId: string,
   requestId: number | string,
   decision: "accept" | "decline",
+  nativeRequestId?: string,
 ) {
-  return invoke("respond_to_server_request", {
+  return invoke("respond_to_server_request", withNativeIntent({
     workspaceId,
     requestId,
     result: { decision },
-  });
+  }, nativeRequestId));
 }
 
 export async function respondToUserInputRequest(
   workspaceId: string,
   requestId: number | string,
   answers: Record<string, { answers: string[] }>,
+  nativeRequestId?: string,
 ) {
-  return invoke("respond_to_server_request", {
+  return invoke("respond_to_server_request", withNativeIntent({
     workspaceId,
     requestId,
     result: { answers },
-  });
+  }, nativeRequestId));
 }
 
 export async function rememberApprovalRule(
@@ -2121,8 +2153,8 @@ export async function listMcpServerStatus(
   return invoke<any>("list_mcp_server_status", { workspaceId, cursor, limit });
 }
 
-export async function resumeThread(workspaceId: string, threadId: string) {
-  return invoke<any>("resume_thread", { workspaceId, threadId });
+export async function resumeThread(workspaceId: string, threadId: string, nativeRequestId?: string) {
+  return invoke<any>("resume_thread", withNativeIntent({ workspaceId, threadId }, nativeRequestId));
 }
 
 export async function readThread(workspaceId: string, threadId: string) {
