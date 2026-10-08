@@ -1297,6 +1297,172 @@ mod tests {
     }
 
     #[test]
+    fn old_stopped_grok_grant_rebases_after_h_claim_resume_promotion(){
+        let _guard=route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("grok-promoted-rebase-{}-{nonce}",std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let database=path.join("state.sqlite");
+        crate::store::product_database::prepare_managed_grok_acl_fixture(&root,&database,"grokA");
+        let mut db=open_existing(&root,&database).unwrap();
+        let home=instance::resolve_grok_original_home(&db,&root,"grokA").unwrap();
+        std::fs::write(home.path.join("auth.json"),b"synthetic non-secret original fixture").unwrap();
+        let pin=super::super::runtime::current_instance_pin(&db,"grokA").unwrap();
+        let program=instance::locate_bound_instance_program(&db,"grokA","grok",
+            &pin.digest,&pin.version).unwrap();
+        let session_home=path.join("old-session-home");
+        std::fs::create_dir(&session_home).unwrap();
+        let session_lock=RootLock::acquire(&session_home).unwrap();
+        let session_identity=session_lock.canonical_root().identity.opaque();
+        drop(session_lock);
+        db.execute("INSERT INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('domainA','seatA','incA','USER','LONG','grokA','BUSY',1,1)").unwrap();
+        db.execute(&format!("INSERT INTO main.gogoke_v37_instance_homes(home_id,instance_id,domain_id,kind,owner_id,generation,directory_identity,state,revision) VALUES('oldHome','grokA','domainA','SESSION','sessionA','1','{session_identity}','ACTIVE',1)")).unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_owner_binding VALUES('oldBinding','grokA','domainA','SESSION','sessionA','1','ACTIVE')").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision) VALUES('domainA','sessionA','grokA','oldHome','oldBinding','1','COMMITTED',2)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_seat_binding VALUES('domainA','sessionA','seatA','incA','1')").unwrap();
+        let old_claim=ClaimObservation{domain_id:"domainA".into(),session_id:"sessionA".into(),
+            instance_id:"grokA".into(),home_id:"oldHome".into(),binding_id:"oldBinding".into(),
+            generation:"1".into(),revision:2,
+            phase:super::super::runtime::SessionPhase::Committed,process_operation_id:None};
+        let old_profile=AppContainerProfile::derived_for_test("Gogoke37.PromotedRebaseOld").unwrap();
+        let old=GrokHomeLaunch::prepare(&mut db,&root,&old_profile,
+            "Gogoke37.PromotedRebaseOld",&old_claim,&pin,&home,"seatA","incA","openOld").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_operation VALUES('domainA','openOld','6f70656e','open','sessionA','APPLIED',1,2)").unwrap();
+        let mut custodian=ProcessCustodian::new().unwrap();
+        let mut old_process=ProcessLaunch::new(program.clone());
+        old_process.arguments=vec!["--version".into()];
+        let old_binding=NativeBinding{binary_digest_sha256:pin.digest.clone(),
+            profile_id:"grokA".into(),domain_id:"domainA".into(),generation:"1".into()};
+        let old_custody=custodian.prepare(&PrepareRequest{
+            launch:old_process,binding:old_binding}).unwrap();
+        crate::store::authority::record_prepared_process(&mut db,"oldOp",&old_custody).unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        admission::bind_process_operation_in_transaction(&mut db,"domainA","sessionA","oldOp").unwrap();
+        db.execute("COMMIT").unwrap();
+        super::super::episodes::record_initial(&db,"domainA","sessionA","openOld","oldOp").unwrap();
+        old.bind_process(&mut db,"oldOp",&old_custody).unwrap();
+        custodian.activate(&old_custody).unwrap();
+        crate::store::authority::mark_process_active(&mut db,"oldOp",&old_custody).unwrap();
+        super::super::episodes::mark_active(&db,"oldOp").unwrap();
+        let old_stop=custodian.stop(&old_custody.ticket,StopBudgets::production(),||Ok(())).unwrap();
+        assert!(old_stop.errors.is_empty() &&old_stop.parent_exited &&
+            old_stop.active_job_processes==Some(0));
+        crate::store::authority::mark_process_stopped(&mut db,"oldOp",&old_stop).unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        let old_stop_fact=admission::record_session_stop_in_transaction(
+            &mut db,"domainA","sessionA","oldOp").unwrap();
+        db.execute("COMMIT").unwrap();
+        assert_eq!(old_stop_fact,old_stop.proof_hash());
+        old.revoke_stopped(&mut db,&root,&old_profile,"oldOp",&old_custody).unwrap();
+        assert_eq!(one(&db,"grokA","oldBinding").unwrap().phase,"REVOKED");
+        let old_effects=instance::read_grok_effects(&db,"oldBinding").unwrap();
+        let old_episode=Statement::prepare(db.as_ptr(),"SELECT phase,stop_fact_id FROM main.gogoke_v37_h_process_episode WHERE process_operation_id='oldOp'").unwrap();
+        assert!(old_episode.step_row().unwrap());
+        assert_eq!(old_episode.column_text(0).unwrap(),"STOPPED");
+        assert_eq!(old_episode.column_text(1).unwrap(),old_stop_fact);
+        drop(old_episode);
+        drop(old);
+        let resume_home=path.join("resume-session-home");
+        std::fs::create_dir(&resume_home).unwrap();
+        let resume_lock=RootLock::acquire(&resume_home).unwrap();
+        let resume_identity=resume_lock.canonical_root().identity.opaque();
+        drop(resume_lock);
+        db.execute(&format!("INSERT INTO main.gogoke_v37_instance_homes(home_id,instance_id,domain_id,kind,owner_id,generation,directory_identity,state,revision) VALUES('resumeHome','grokA','domainA','SESSION','sessionA','2','{resume_identity}','ACTIVE',1)")).unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_owner_binding VALUES('resumeBinding','grokA','domainA','SESSION','sessionA','2','ACTIVE')").unwrap();
+        super::super::episodes::begin_resume(&db,"domainA","sessionA","resumeA",
+            b"fixture original resume","1","2",3,"resumeHome","resumeBinding").unwrap();
+        let resume_claim=ClaimObservation{domain_id:"domainA".into(),session_id:"sessionA".into(),
+            instance_id:"grokA".into(),home_id:"resumeHome".into(),binding_id:"resumeBinding".into(),
+            generation:"2".into(),revision:3,
+            phase:super::super::runtime::SessionPhase::Committed,process_operation_id:None};
+        let resume_profile=AppContainerProfile::derived_for_test("Gogoke37.PromotedRebaseResume").unwrap();
+        let resume=GrokHomeLaunch::prepare(&mut db,&root,&resume_profile,
+            "Gogoke37.PromotedRebaseResume",&resume_claim,&pin,&home,
+            "seatA","incA","resumeA").unwrap();
+        let mut resume_process=ProcessLaunch::new(program);
+        resume_process.arguments=vec!["--version".into()];
+        let resume_binding=NativeBinding{binary_digest_sha256:pin.digest.clone(),
+            profile_id:"grokA".into(),domain_id:"domainA".into(),generation:"2".into()};
+        let resume_custody=custodian.prepare(&PrepareRequest{
+            launch:resume_process,binding:resume_binding}).unwrap();
+        crate::store::authority::record_prepared_process(&mut db,"resumeOp",&resume_custody).unwrap();
+        super::super::episodes::attach_resume_process(&db,"domainA","resumeA","resumeOp").unwrap();
+        resume.bind_process(&mut db,"resumeOp",&resume_custody).unwrap();
+        custodian.activate(&resume_custody).unwrap();
+        crate::store::authority::mark_process_active(&mut db,"resumeOp",&resume_custody).unwrap();
+        // The production promotion requires the vendor's original ACP resume
+        // ACK; this fixture retains the same already-proven H row/episode
+        // transition after two real kernel custodians and a real old StopFact.
+        db.execute("UPDATE main.gogoke_v37_seats SET generation=2,revision=revision+1 WHERE domain_id='domainA' AND seat_id='seatA' AND incarnation='incA' AND generation=1 AND state='BUSY'").unwrap();
+        db.execute("UPDATE main.gogoke_v37_h_seat_binding SET generation='2' WHERE domain_id='domainA' AND session_id='sessionA' AND generation='1'").unwrap();
+        db.execute(&format!("UPDATE main.gogoke_v37_h_claim SET generation='2',home_id='resumeHome',binding_id='resumeBinding',process_operation_id='resumeOp',stop_fact_id=NULL,state='COMMITTED',revision=revision+1 WHERE domain_id='domainA' AND session_id='sessionA' AND generation='1' AND binding_id='oldBinding' AND process_operation_id='oldOp' AND state='STOPPED' AND revision=3 AND stop_fact_id='{old_stop_fact}'")).unwrap();
+        let changed=Statement::prepare(db.as_ptr(),"SELECT changes()").unwrap();
+        assert!(changed.step_row().unwrap());
+        assert_eq!(changed.column_text(0).unwrap(),"1");
+        drop(changed);
+        db.execute("UPDATE main.gogoke_v37_h_process_episode SET phase='ACTIVE',result_revision=4 WHERE process_operation_id='resumeOp' AND phase='PREPARED' AND old_generation='1'").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_generation VALUES('domainA','sessionA','2','resumeA','resumeOp')").unwrap();
+        let promoted=Statement::prepare(db.as_ptr(),"SELECT binding_id,generation,stop_fact_id FROM main.gogoke_v37_h_claim WHERE domain_id='domainA' AND session_id='sessionA'").unwrap();
+        assert!(promoted.step_row().unwrap());
+        assert_eq!(promoted.column_text(0).unwrap(),"resumeBinding");
+        assert_eq!(promoted.column_text(1).unwrap(),"2");
+        assert!(promoted.column_text(2).unwrap().is_empty());
+        drop(promoted);
+        let stopped_old=Statement::prepare(db.as_ptr(),"SELECT e.stop_fact_id,c.stop_proof_hash FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id WHERE e.process_operation_id='oldOp'").unwrap();
+        assert!(stopped_old.step_row().unwrap());
+        assert_eq!(stopped_old.column_text(0).unwrap(),old_stop_fact);
+        assert_eq!(stopped_old.column_text(1).unwrap(),old_stop_fact);
+        drop(stopped_old);
+        let resume_stop=custodian.stop(&resume_custody.ticket,StopBudgets::production(),||Ok(())).unwrap();
+        assert!(resume_stop.errors.is_empty() &&resume_stop.parent_exited &&
+            resume_stop.active_job_processes==Some(0));
+        crate::store::authority::mark_process_stopped(&mut db,"resumeOp",&resume_stop).unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        let resume_stop_fact=admission::record_session_stop_in_transaction(
+            &mut db,"domainA","sessionA","resumeOp").unwrap();
+        db.execute("COMMIT").unwrap();
+        assert_eq!(resume_stop_fact,resume_stop.proof_hash());
+        resume.revoke_stopped(&mut db,&root,&resume_profile,"resumeOp",&resume_custody).unwrap();
+        assert_eq!(one(&db,"grokA","resumeBinding").unwrap().phase,"REVOKED");
+        drop(resume);
+        let final_home=path.join("final-session-home");
+        std::fs::create_dir(&final_home).unwrap();
+        let final_lock=RootLock::acquire(&final_home).unwrap();
+        let final_identity=final_lock.canonical_root().identity.opaque();
+        drop(final_lock);
+        db.execute(&format!("INSERT INTO main.gogoke_v37_instance_homes(home_id,instance_id,domain_id,kind,owner_id,generation,directory_identity,state,revision) VALUES('finalHome','grokA','domainA','SESSION','sessionA','3','{final_identity}','ACTIVE',1)")).unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_owner_binding VALUES('finalBinding','grokA','domainA','SESSION','sessionA','3','ACTIVE')").unwrap();
+        super::super::episodes::begin_resume(&db,"domainA","sessionA","resumeFinal",
+            b"fixture final resume","2","3",5,"finalHome","finalBinding").unwrap();
+        let final_claim=ClaimObservation{domain_id:"domainA".into(),session_id:"sessionA".into(),
+            instance_id:"grokA".into(),home_id:"finalHome".into(),binding_id:"finalBinding".into(),
+            generation:"3".into(),revision:5,
+            phase:super::super::runtime::SessionPhase::Committed,process_operation_id:None};
+        let final_profile=AppContainerProfile::derived_for_test("Gogoke37.PromotedRebaseFinal").unwrap();
+        db.execute("DELETE FROM main.gogoke_v37_grok_home_root_anchor WHERE instance_id='grokA'").unwrap();
+        let acl_before=grok_root_acl(&final_profile,&home.path,&home.identity).unwrap();
+        db.execute("UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash='wrong' WHERE operation_id='oldOp'").unwrap();
+        assert!(GrokHomeLaunch::prepare(&mut db,&root,&final_profile,
+            "Gogoke37.PromotedRebaseFinal",&final_claim,&pin,&home,
+            "seatA","incA","resumeFinal").is_err());
+        assert!(instance::read_grok_root_anchor(&db,"grokA").unwrap().is_none());
+        assert!(instance::read_grok_grants(&db,"grokA").unwrap().iter()
+            .all(|grant|grant.binding_id!="finalBinding"));
+        assert_eq!(grok_root_acl(&final_profile,&home.path,&home.identity).unwrap(),acl_before);
+        db.execute(&format!("UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash='{}' WHERE operation_id='oldOp'",old_stop_fact)).unwrap();
+        let final_launch=GrokHomeLaunch::prepare(&mut db,&root,&final_profile,
+            "Gogoke37.PromotedRebaseFinal",&final_claim,&pin,&home,
+            "seatA","incA","resumeFinal").unwrap();
+        assert!(!instance::read_grok_root_anchor(&db,"grokA").unwrap().unwrap()
+            .baseline_effect_id.is_empty());
+        assert_eq!(instance::read_grok_effects(&db,"oldBinding").unwrap(),old_effects);
+        final_launch.revoke_uncreated(&mut db,&root,&final_profile).unwrap();
+        drop(final_launch);
+        db.close_checked().unwrap();drop(root);std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn inherited_successor_intent_recovers_after_acl_write_before_finish(){
         let _guard=route_b_test_guard();
         let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();

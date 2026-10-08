@@ -408,14 +408,15 @@ jobs:
               @{ id = 'grok-deleted-unrevoked'; filter = 'deleted_unrevoked_old_auth_cold_recovery_rejects_without_acl_or_journal_write' }
               @{ id = 'grok-initial-auth'; filter = 'original_inherited_auth_is_journaled_protected_and_revoked_without_process' }
               @{ id = 'grok-active-rotation'; filter = 'active_original_root_authority_survives_two_auth_file_replacements' }
+              @{ id = 'grok-promoted-rebase'; filter = 'old_stopped_grok_grant_rebases_after_h_claim_resume_promotion' }
             )
             Write-Host 'F private-history/credential and Grok exact HOME ACL/journal boundaries only; full library, compiled mutations and server suites NOT_RUN.'
           }
           if ('${{ inputs.grok_home_fixture_only }}' -eq 'true') {
             if ('${{ inputs.private_history_fixture_only }}' -ne 'true') { throw 'Grok HOME subset requires the existing private-history directed scope' }
-            $probes = @($probes | Where-Object { $_.id -in @('grok-inherited-directory', 'grok-inherited-auth-residue', 'grok-inherited-successor', 'grok-protected-peer', 'grok-link-refusal', 'grok-cold-original', 'grok-home-refusal', 'grok-intent-recovery', 'grok-applied-peer', 'grok-resume-original', 'grok-deleted-revoked', 'grok-deleted-unrevoked', 'grok-initial-auth', 'grok-active-rotation') })
-            if ($probes.Count -ne 14) { throw 'Grok HOME boundary selection is incomplete' }
-            Write-Host 'Fourteen Grok HOME boundaries including active original rotation; other F, full library and server suites NOT_RUN.'
+            $probes = @($probes | Where-Object { $_.id -in @('grok-inherited-directory', 'grok-inherited-auth-residue', 'grok-protected-peer', 'grok-link-refusal', 'grok-cold-original', 'grok-home-refusal', 'grok-intent-recovery', 'grok-applied-peer', 'grok-resume-original', 'grok-deleted-revoked', 'grok-deleted-unrevoked', 'grok-initial-auth', 'grok-active-rotation', 'grok-promoted-rebase', 'grok-inherited-successor') })
+            if ($probes.Count -ne 15) { throw 'Grok HOME boundary selection is incomplete' }
+            Write-Host 'Fifteen Grok HOME boundaries including promoted old StopFact rebase; other F, full library and server suites NOT_RUN.'
           }
           if ('${{ inputs.trace_canonicalize }}' -eq 'true') {
             $debugger = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'
