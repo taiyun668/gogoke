@@ -3004,13 +3004,14 @@ mod tests {
             V37Status::Applied);
         let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity, .. } =
             product.prepare_owner_codex_login("instanceA").unwrap();
-        let powershell = Path::new(&std::env::var("SystemRoot").unwrap())
-            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        // This is a mixed-pipe byte boundary, not a PowerShell startup test.
+        let byte_peer = std::path::PathBuf::from(std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
+            .expect("controlled cloud Node byte peer"));
         login.binding.binary_digest_sha256 = format!("sha256:{}",
-            crate::store::digest::sha256_hex(&fs::read(&powershell).unwrap()));
-        login.launch.application = powershell;
-        login.launch.arguments = vec!["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(),
-            r#"[Console]::Error.WriteLine('x' * 64000); [Console]::Error.Flush(); [Console]::Out.WriteLine('{"id":1,"result":{"padding":"' + ('y' * 3000) + '"}}'); exit 0"#.into()];
+            crate::store::digest::sha256_hex(&fs::read(&byte_peer).unwrap()));
+        login.launch.application = byte_peer;
+        login.launch.arguments = vec!["-e".into(),
+            r#"process.stderr.write('x'.repeat(64000)+'\r\n'); process.stdout.write(JSON.stringify({id:1,result:{padding:'y'.repeat(3000)}})+'\r\n'); process.exitCode=0;"#.into()];
         login.launch.app_container_profile = None;
         login.launch.app_container_internet_client = false;
         login.launch.app_container_cli_identity_services = false;
@@ -3025,7 +3026,8 @@ mod tests {
         product.process_custodian.activate(&prepared).unwrap();
         authority::mark_process_active(&mut product.connection, &operation_id, &prepared).unwrap();
         let child = product.process_custodian.active(&prepared.ticket).unwrap();
-        assert!(child.wait(Duration::from_secs(15)).unwrap());
+        assert!(child.wait(Duration::from_secs(15)).unwrap(),
+            "mixed byte peer did not exit; original stderr: {}", child.stderr_tail());
         assert_eq!(child.exit_code().unwrap(), Some(0));
         let _tail = child.stderr_tail(); // drain the exact child's written stderr before status
         product.owner_login = Some(OwnerLoginSession::Active(ActiveOwnerLogin {
