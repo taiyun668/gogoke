@@ -457,6 +457,11 @@ impl LaunchEvidence {
         let (module, directory_roots) = if pin.driver_id == "codex" {
             verify_host_guard(db,owner,host_guard)?;
             (Some(evidence(CompatModule::prepare_with_roots(root, &roots, &profile, &profile_name))?), None)
+        } else if pin.driver_id == "claude" && pin.digest == format!("sha256:{}", gogoke_lpac_path_compat::OBSERVED_CLAUDE_SHA256) {
+            verify_host_guard(db,owner,host_guard)?;
+            let directories = Arc::new(evidence_at("prepare-compat-directory-roots", DirectoryRoots::prepare(root, &roots))?);
+            let module = evidence(CompatModule::prepare_claude_observation(root, &profile, &profile_name))?;
+            (Some(module), Some(directories))
         } else {
             verify_host_guard(db,owner,host_guard)?;
             (None, Some(Arc::new(evidence_at("prepare-compat-directory-roots", DirectoryRoots::prepare(root, &roots))?)))
@@ -699,7 +704,9 @@ impl LaunchEvidence {
         if let Some(module) = &self.module {
             let mut mapping = Vec::new();
             module.extend_environment(&mut mapping);
-            evidence(module.validate_launch(Some(&self.profile_name), Some(&mapping)))
+            evidence(module.validate_launch(Some(&self.profile_name), Some(&mapping)))?;
+            if let Some(roots) = &self.directory_roots { evidence(roots.verify())?; }
+            Ok(())
         } else {
             evidence(self.directory_roots.as_ref()
                 .ok_or("native session launch: physical directory custody absent")?.verify())

@@ -1109,7 +1109,7 @@ impl ProcessCustodian {
             )), &mut self.failed_launches));
         }
         if let Some(module) = &prepared.path_compat {
-            if actual_digest != format!("sha256:{}", gogoke_lpac_path_compat::OBSERVED_CLI_SHA256) {
+            if actual_digest != format!("sha256:{}", module.expected_cli_sha256()) {
                 return Err(prepared.reject(ProcessCustodyError::BindingMismatch(
                     "compatibilitySupportedCliSha256"), &mut self.failed_launches));
             }

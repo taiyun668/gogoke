@@ -1,4 +1,4 @@
-// Fixed Codex 0.149.0 x64 LPAC path compatibility. No process-wide code detour.
+// Fixed x64 LPAC main-image IAT compatibility and Claude pipe failure observation.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winnt.h>
@@ -13,9 +13,88 @@ constexpr wchar_t kNtEnv1[] = L"GOGOKE_LPAC_PATH_NT_ROOT_1";
 constexpr wchar_t kDosEnv1[] = L"GOGOKE_LPAC_PATH_DOS_ROOT_1";
 constexpr wchar_t kNtEnv2[] = L"GOGOKE_LPAC_PATH_NT_ROOT_2";
 constexpr wchar_t kDosEnv2[] = L"GOGOKE_LPAC_PATH_DOS_ROOT_2";
+constexpr wchar_t kModeEnv[] = L"GOGOKE_LPAC_COMPAT_MODE";
+constexpr wchar_t kClaudeMode[] = L"CLAUDE_PIPE_V1";
 constexpr DWORD kMaxRoots = 3;
 using FinalPath = DWORD (WINAPI *)(HANDLE, LPWSTR, DWORD, DWORD);
 FinalPath g_original = nullptr;
+using NamedPipeA = HANDLE (WINAPI *)(LPCSTR, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, LPSECURITY_ATTRIBUTES);
+using NamedPipeW = HANDLE (WINAPI *)(LPCWSTR, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, LPSECURITY_ATTRIBUTES);
+NamedPipeA g_pipe_a = nullptr;
+NamedPipeW g_pipe_w = nullptr;
+volatile LONG g_pipe_capture = 0;
+
+bool uv_pipe_prefix(const char* name) {
+    constexpr char prefix[] = "\\\\?\\pipe\\uv\\";
+    if (!name) return false;
+    for (size_t i = 0; i < sizeof(prefix) - 1; ++i) {
+        if (!name[i] || name[i] != prefix[i]) return false;
+    }
+    return true;
+}
+
+bool uv_pipe_prefix(const wchar_t* name) {
+    constexpr wchar_t prefix[] = L"\\\\?\\pipe\\uv\\";
+    if (!name) return false;
+    for (size_t i = 0; i < sizeof(prefix) / sizeof(wchar_t) - 1; ++i) {
+        if (!name[i] || name[i] != prefix[i]) return false;
+    }
+    return true;
+}
+
+#ifdef GOGOKE_LPAC_PATH_TEST
+bool (*g_test_stderr)(const char*, DWORD) = nullptr;
+#endif
+
+void report_pipe_failure(const char* api, DWORD error) {
+    // Fixed text and decimal Win32 code only: never disclose a generated pipe
+    // name, request, credential, or private path. Stderr is already host-held.
+    char line[112] = {};
+    DWORD len = 0;
+    const char* lead = "gogoke Claude ";
+    while (*lead) line[len++] = *lead++;
+    while (*api) line[len++] = *api++;
+    const char* middle = " failed win32=";
+    while (*middle) line[len++] = *middle++;
+    char digits[10];
+    DWORD count = 0;
+    do { digits[count++] = static_cast<char>('0' + error % 10); error /= 10; } while (error);
+    while (count) line[len++] = digits[--count];
+    const char* tail = " prefix=uv\n";
+    while (*tail) line[len++] = *tail++;
+#ifdef GOGOKE_LPAC_PATH_TEST
+    if (g_test_stderr) { g_test_stderr(line, len); return; }
+#endif
+    const HANDLE stderr_handle = GetStdHandle(STD_ERROR_HANDLE);
+    if (stderr_handle && stderr_handle != INVALID_HANDLE_VALUE) {
+        DWORD written = 0;
+        WriteFile(stderr_handle, line, len, &written, nullptr);
+    }
+}
+
+HANDLE WINAPI observed_pipe_a(LPCSTR name, DWORD open_mode, DWORD pipe_mode,
+    DWORD instances, DWORD out_size, DWORD in_size, DWORD timeout, LPSECURITY_ATTRIBUTES security) {
+    const HANDLE result = g_pipe_a(name, open_mode, pipe_mode, instances,
+        out_size, in_size, timeout, security);
+    const DWORD error = GetLastError();
+    if (result == INVALID_HANDLE_VALUE && uv_pipe_prefix(name) &&
+        InterlockedCompareExchange(&g_pipe_capture, 1, 0) == 0)
+        report_pipe_failure("CreateNamedPipeA", error);
+    SetLastError(error);
+    return result;
+}
+
+HANDLE WINAPI observed_pipe_w(LPCWSTR name, DWORD open_mode, DWORD pipe_mode,
+    DWORD instances, DWORD out_size, DWORD in_size, DWORD timeout, LPSECURITY_ATTRIBUTES security) {
+    const HANDLE result = g_pipe_w(name, open_mode, pipe_mode, instances,
+        out_size, in_size, timeout, security);
+    const DWORD error = GetLastError();
+    if (result == INVALID_HANDLE_VALUE && uv_pipe_prefix(name) &&
+        InterlockedCompareExchange(&g_pipe_capture, 1, 0) == 0)
+        report_pipe_failure("CreateNamedPipeW", error);
+    SetLastError(error);
+    return result;
+}
 
 bool ascii_exact(const char* a, const char* b, size_t bound) {
     for (size_t i = 0; i < bound; ++i) {
@@ -161,29 +240,31 @@ DWORD WINAPI compatible_final_path(HANDLE file, LPWSTR output,
     return translated_len;
 }
 
-// The exact installed Codex 0.149.0 x64 image imports this name once from
-// kernel32.dll. Root independently pins its bytes before suspended launch.
-// Kept separate from the write so cloud tests exercise this same PE parser.
-void** exact_main_import_slot(BYTE* image) {
-    if (!image) return nullptr;
+// The host independently pins image bytes before suspended launch. Resolve
+// only exact named imports from the main image, never a DLL-wide code patch.
+struct ImportSlots { void** first; void** second; };
+bool exact_main_import_slots(BYTE* image, const char* first, const char* second,
+                             ImportSlots* slots) {
+    slots->first = nullptr;
+    slots->second = nullptr;
+    if (!image) return false;
     auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(image);
     if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0 ||
-        dos->e_lfanew > 4096) return nullptr;
+        dos->e_lfanew > 4096) return false;
     auto* pe = reinterpret_cast<IMAGE_NT_HEADERS64*>(image + dos->e_lfanew);
     if (pe->Signature != IMAGE_NT_SIGNATURE ||
         pe->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
         pe->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
         pe->OptionalHeader.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_IMPORT)
-        return nullptr;
+        return false;
     const DWORD image_size = pe->OptionalHeader.SizeOfImage;
     const auto imports = pe->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
     if (!range_ok(imports.VirtualAddress, imports.Size, image_size) ||
-        imports.Size < sizeof(IMAGE_IMPORT_DESCRIPTOR)) return nullptr;
+        imports.Size < sizeof(IMAGE_IMPORT_DESCRIPTOR)) return false;
     auto* descriptors = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(
         image + imports.VirtualAddress);
     const size_t count = imports.Size / sizeof(IMAGE_IMPORT_DESCRIPTOR);
-    if (count > 64) return nullptr;
-    void** slot = nullptr;
+    if (count > 64) return false;
     bool descriptor_end = false;
     for (size_t d = 0; d < count; ++d) {
         const auto& desc = descriptors[d];
@@ -194,7 +275,7 @@ void** exact_main_import_slot(BYTE* image) {
         }
         if (!range_ok(desc.Name, 13, image_size) ||
             !range_ok(desc.OriginalFirstThunk, sizeof(IMAGE_THUNK_DATA64), image_size) ||
-            !range_ok(desc.FirstThunk, sizeof(IMAGE_THUNK_DATA64), image_size)) return nullptr;
+            !range_ok(desc.FirstThunk, sizeof(IMAGE_THUNK_DATA64), image_size)) return false;
         const char* dll = reinterpret_cast<const char*>(image + desc.Name);
         const bool kernel32 = ascii_name(dll, image_size - desc.Name, "kernel32.dll");
         auto* names = reinterpret_cast<IMAGE_THUNK_DATA64*>(image + desc.OriginalFirstThunk);
@@ -209,17 +290,37 @@ void** exact_main_import_slot(BYTE* image) {
             if (IMAGE_SNAP_BY_ORDINAL64(names[i].u1.Ordinal)) continue;
             const DWORD rva = static_cast<DWORD>(names[i].u1.AddressOfData);
             if (names[i].u1.AddressOfData != rva ||
-                !range_ok(rva, sizeof(WORD) + 1, image_size)) return nullptr;
+                !range_ok(rva, sizeof(WORD) + 1, image_size)) return false;
             const char* name = reinterpret_cast<const char*>(image + rva + sizeof(WORD));
-            if (ascii_exact(name, "GetFinalPathNameByHandleW", image_size - rva - sizeof(WORD))) {
-                if (!kernel32) return nullptr;
-                if (slot) return nullptr;
-                slot = reinterpret_cast<void**>(&values[i].u1.Function);
+            if (ascii_exact(name, first, image_size - rva - sizeof(WORD))) {
+                if (!kernel32 || slots->first) return false;
+                slots->first = reinterpret_cast<void**>(&values[i].u1.Function);
+            }
+            if (second && ascii_exact(name, second, image_size - rva - sizeof(WORD))) {
+                if (!kernel32 || slots->second) return false;
+                slots->second = reinterpret_cast<void**>(&values[i].u1.Function);
             }
         }
-        if (!ended) return nullptr;
+        if (!ended) return false;
     }
-    return descriptor_end && slot && *slot ? slot : nullptr;
+    return descriptor_end && slots->first && *slots->first &&
+        (!second || (slots->second && *slots->second));
+}
+
+void** exact_main_import_slot(BYTE* image) {
+    ImportSlots slots = {};
+    return exact_main_import_slots(image, "GetFinalPathNameByHandleW", nullptr, &slots)
+        ? slots.first : nullptr;
+}
+
+bool patch_slot(void** slot, void* original, void* replacement) {
+    DWORD old_protection = 0;
+    if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &old_protection)) return false;
+    const void* observed = InterlockedCompareExchangePointer(
+        reinterpret_cast<PVOID volatile*>(slot), replacement, original);
+    DWORD ignored = 0;
+    const BOOL restored = VirtualProtect(slot, sizeof(void*), old_protection, &ignored);
+    return observed == original && restored;
 }
 
 bool patch_exact_main_import() {
@@ -227,17 +328,39 @@ bool patch_exact_main_import() {
     void** slot = exact_main_import_slot(image);
     if (!slot) return false;
     auto original = reinterpret_cast<FinalPath>(*slot);
-    DWORD old_protection = 0;
-    if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &old_protection)) return false;
-    const void* observed = InterlockedCompareExchangePointer(
-        reinterpret_cast<PVOID volatile*>(slot),
-        reinterpret_cast<void*>(&compatible_final_path),
-        reinterpret_cast<void*>(original));
-    DWORD ignored = 0;
-    const BOOL restored = VirtualProtect(slot, sizeof(void*), old_protection, &ignored);
-    if (observed != reinterpret_cast<void*>(original) || !restored) return false;
+    if (!patch_slot(slot, reinterpret_cast<void*>(original),
+                    reinterpret_cast<void*>(&compatible_final_path))) return false;
     g_original = original;
     return true;
+}
+
+bool patch_exact_claude_imports() {
+    auto* image = static_cast<BYTE*>(static_cast<void*>(GetModuleHandleW(nullptr)));
+    ImportSlots slots = {};
+    if (!exact_main_import_slots(image, "CreateNamedPipeA", "CreateNamedPipeW", &slots))
+        return false;
+    const auto original_a = reinterpret_cast<NamedPipeA>(*slots.first);
+    const auto original_w = reinterpret_cast<NamedPipeW>(*slots.second);
+    g_pipe_a = original_a;
+    g_pipe_w = original_w;
+    // A failed second patch prevents DLL initialization and child activation.
+    if (!patch_slot(slots.first, reinterpret_cast<void*>(original_a),
+                    reinterpret_cast<void*>(&observed_pipe_a)) ||
+        !patch_slot(slots.second, reinterpret_cast<void*>(original_w),
+                    reinterpret_cast<void*>(&observed_pipe_w))) return false;
+    return true;
+}
+
+enum class CompatMode { Invalid, CodexPath, ClaudePipe };
+CompatMode select_mode() {
+    wchar_t mode[32] = {};
+    SetLastError(ERROR_SUCCESS);
+    const DWORD length = GetEnvironmentVariableW(kModeEnv, mode, 32);
+    if (!length && GetLastError() == ERROR_ENVVAR_NOT_FOUND)
+        return CompatMode::CodexPath;
+    if (length == sizeof(kClaudeMode) / sizeof(wchar_t) - 1 &&
+        lstrcmpW(mode, kClaudeMode) == 0) return CompatMode::ClaudePipe;
+    return CompatMode::Invalid;
 }
 } // namespace
 
@@ -254,6 +377,10 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID) {
     // Detours' import edit must be restored before reading the target IAT.
     // No LoadLibrary, thread creation, or waits occur under loader lock.
     if (!DetourRestoreAfterWith()) return FALSE;
-    return patch_exact_main_import() ? TRUE : FALSE;
+    switch (select_mode()) {
+        case CompatMode::CodexPath: return patch_exact_main_import() ? TRUE : FALSE;
+        case CompatMode::ClaudePipe: return patch_exact_claude_imports() ? TRUE : FALSE;
+        default: return FALSE;
+    }
 }
 #endif
