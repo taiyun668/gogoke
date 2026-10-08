@@ -160,7 +160,8 @@ impl<'a> ProductDatabase<'a> {
     }
 
     fn migrate_managed_cli(&mut self,driver:&str,stage:&str)->Result<usize> {
-        self.connection.execute("BEGIN IMMEDIATE")?;
+        self.connection.execute("BEGIN IMMEDIATE")
+            .map_err(|error|failure("migration begin",error))?;
         let result=(||{
             authority::check_owner_in_current_transaction(&self.connection,&self.owner)
                 .map_err(|error|failure("migration owner",error))?;
