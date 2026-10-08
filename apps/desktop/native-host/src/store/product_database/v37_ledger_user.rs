@@ -36,6 +36,16 @@ mod tests {
             value.to_well_formed_string().unwrap()
         }).collect()
     }
+    fn original_ids_and_cursor(result:BTreeMap<JsonString,Json>)->(Vec<String>,u64) {
+        let Some(Json::Array(rows))=result.get(&JsonString::from_str("events")) else {panic!("ledger events");};
+        let ids=rows.iter().map(|row| {
+            let Json::Object(row)=row else {panic!("ledger event");};
+            let Some(Json::String(id))=row.get(&JsonString::from_str("sourceEventId")) else {panic!("original source id");};
+            id.to_well_formed_string().unwrap()
+        }).collect();
+        let Some(Json::String(cursor))=result.get(&JsonString::from_str("cursor")) else {panic!("durable cursor");};
+        (ids,number(&cursor.to_well_formed_string().unwrap()).unwrap())
+    }
     fn append(product:&mut ProductDatabase<'_>,cursor:u64,tier:ledger::Tier,marker:&str) {
         let update=Json::Object(BTreeMap::from([
             (JsonString::from_str("content"),Json::Object(BTreeMap::from([
@@ -103,11 +113,77 @@ mod tests {
         assert_eq!(reply(&mut product,&query).status,V37Status::Replayed);
         let subscription=global_request("subscribe","globalSubscribe","globalSub",0,&payload);
         assert_eq!(reply(&mut product,&subscription).status,V37Status::Applied);
+        // Each normalized update is legal on its own, but 32 together exceed
+        // the actual IPC frame. The final small event must remain reachable.
+        for source_cursor in 2..=34 {
+            let marker=format!("LARGE_{source_cursor}_{}界","x".repeat(140075));
+            let update=Json::Object(BTreeMap::from([
+                (JsonString::from_str("content"),Json::Object(BTreeMap::from([
+                    (JsonString::from_str("text"),text(&marker)),(JsonString::from_str("type"),text("text"))]))),
+                (JsonString::from_str("sessionUpdate"),text("agent_message_chunk")),
+            ])).canonical();
+            ledger::record(&mut product.connection,&ledger::EventInput {event_id:format!("large{source_cursor}"),
+                source_epoch:"synthetic-source".into(),source_cursor:source_cursor.to_string(),domain_id:"global".into(),
+                seat_id:"secretarySeat".into(),session_id:"secretarySession".into(),tier:ledger::Tier::Global,
+                side_id:None,occurred_at:"synthetic-time".into(),update_json:update}).unwrap();
+        }
+        let update=Json::Object(BTreeMap::from([
+            (JsonString::from_str("content"),Json::Object(BTreeMap::from([
+                (JsonString::from_str("text"),text("SMALL_TAIL")),(JsonString::from_str("type"),text("text"))]))),
+            (JsonString::from_str("sessionUpdate"),text("agent_message_chunk")),
+        ])).canonical();
+        ledger::record(&mut product.connection,&ledger::EventInput {event_id:"smallTail".into(),
+            source_epoch:"synthetic-source".into(),source_cursor:"35".into(),domain_id:"global".into(),
+            seat_id:"secretarySeat".into(),session_id:"secretarySession".into(),tier:ledger::Tier::Global,
+            side_id:None,occurred_at:"synthetic-time".into(),update_json:update}).unwrap();
+        let large_head=ledger::recover(&product.connection).unwrap();
+        let expected_ids=(1..=3).map(|id|format!("secretaryEvent{id}"))
+            .chain((2..=34).map(|id|format!("large{id}")))
+            .chain(std::iter::once("smallTail".to_owned())).collect::<Vec<_>>();
+        let mut queried=Vec::new();let mut query_cursor=0;let mut query_page=0;
+        while query_cursor<large_head.cursor {
+            query_page+=1;assert!(query_page<10,"global query must progress");
+            let payload=format!(r#"{{"readerSessionId":"secretarySession","scope":"GLOBAL","epoch":{},"afterCursor":"{query_cursor}"}}"#,text(&large_head.epoch).canonical());
+            let next=global_request("scoped-query",&format!("largeQuery{query_page}"),"ledger",large_head.cursor,&payload);
+            let bytes=product.dispatch_user_request(&next).unwrap();
+            assert!(bytes.len()<=crate::ipc::MAX_FRAME_BYTES);
+            let receipt=crate::store::session_transport::decode_receipt(&bytes).unwrap();
+            let (ids,cursor)=original_ids_and_cursor(receipt.into_result());
+            assert!(cursor>query_cursor,"query must advance without an omitted event");
+            queried.extend(ids);query_cursor=cursor;
+        }
+        assert_eq!(queried,expected_ids,"global query retains exact original order and tail");
+        let large_subscription=global_request("subscribe","largeSubscribe","largeSub",0,
+            &format!(r#"{{"readerSessionId":"secretarySession","scope":"GLOBAL","epoch":{},"afterCursor":"0"}}"#,text(&large_head.epoch).canonical()));
+        let first_bytes=product.dispatch_user_request(&large_subscription).unwrap();
+        assert!(first_bytes.len()<=crate::ipc::MAX_FRAME_BYTES);
+        let first=crate::store::session_transport::decode_receipt(&first_bytes).unwrap();
+        assert_eq!(first.status,V37Status::Applied);
+        let (mut subscribed,mut subscribed_cursor)=original_ids_and_cursor(first.into_result());
+        assert!(subscribed_cursor<large_head.cursor,"fixture must exercise a bounded subscription page");
+        let replay=reply(&mut product,&large_subscription);
+        assert_eq!(replay.status,V37Status::Replayed);
+        let (replayed_ids,replayed_cursor)=original_ids_and_cursor(replay.into_result());
+        assert_eq!((replayed_ids,replayed_cursor),(subscribed.clone(),subscribed_cursor));
         product.connection.execute("UPDATE gogoke_v37_h_claim SET state='RELEASED' WHERE session_id='secretarySession'").unwrap();
         product.connection.execute("UPDATE gogoke_v37_h_owner_binding SET state='REVOKED' WHERE binding_id='secretaryBinding'").unwrap();
         product.connection.execute("UPDATE gogoke_v37_seats SET state='IDLE',generation=generation+1 WHERE domain_id='global' AND seat_id='secretarySeat'").unwrap();
         product.close_checked().unwrap();let mut product=ProductDatabase::open(&root,&database).unwrap();
-        assert_eq!(reply(&mut product,&query).status,V37Status::Replayed);
+        assert_eq!(reply(&mut product,&query).status,V37Status::Stale);
+        let mut large_revision=1;
+        while subscribed_cursor<large_head.cursor {
+            let resume=global_request("resume-subscription",&format!("largeResume{large_revision}"),"largeSub",large_revision,
+                &format!(r#"{{"epoch":{},"afterCursor":"{subscribed_cursor}"}}"#,text(&large_head.epoch).canonical()));
+            let bytes=product.dispatch_user_request(&resume).unwrap();
+            assert!(bytes.len()<=crate::ipc::MAX_FRAME_BYTES);
+            let receipt=crate::store::session_transport::decode_receipt(&bytes).unwrap();
+            assert_eq!(receipt.status,V37Status::Applied);
+            large_revision=receipt.revision;
+            let (ids,cursor)=original_ids_and_cursor(receipt.into_result());
+            assert!(cursor>subscribed_cursor,"cold resume must advance");
+            subscribed.extend(ids);subscribed_cursor=cursor;
+        }
+        assert_eq!(subscribed,expected_ids,"durable subscription retains exact original order and tail");
         let resume=global_request("resume-subscription","globalResume","globalSub",1,
             &format!(r#"{{"epoch":{},"afterCursor":"{}"}}"#,text(&position.epoch).canonical(),position.cursor));
         assert_eq!(reply(&mut product,&resume).status,V37Status::Applied);
@@ -255,6 +331,50 @@ fn committed_receipt(request:&V37Request,previous:u64,revision:u64,result:BTreeM
         .ok_or(OrchestrationError::Invalid("ledger receipt length overflow"))?;
     if replay_length>crate::ipc::MAX_FRAME_BYTES {return Err(OrchestrationError::Invalid("ledger receipt replay bound"));}
     Ok(bytes)
+}
+
+/// Size the actual encoded replay envelope before a durable subscription can
+/// acknowledge a cursor. While eligible events remain, storage receives the
+/// delivered prefix as its LIMIT and cannot advance across an omitted event.
+fn bounded_event_count(
+    request:&V37Request,previous:u64,revision:u64,page:&ledger::EventPage,
+    mut result:impl FnMut(&[LedgerEvent],u64)->Result<BTreeMap<JsonString,Json>>,
+)->Result<(usize,bool)> {
+    let mut fitted=0;
+    let candidates=page.events.len();
+    if candidates==0 {
+        let bytes=encode_receipt(request,V37Status::Replayed,previous,revision,
+            result(&[],page.position.cursor)?);
+        if bytes.len()>crate::ipc::MAX_FRAME_BYTES {
+            return Err(OrchestrationError::Invalid("ledger empty receipt transport bound"));
+        }
+        return Ok((0,true));
+    }
+    let mut lower=1;
+    let mut upper=candidates;
+    while lower<=upper {
+        let count=lower+(upper-lower)/2;
+        let cursor=page.events[count-1].cursor;
+        let bytes=encode_receipt(request,V37Status::Replayed,previous,revision,
+            result(&page.events[..count],cursor)?);
+        if bytes.len()>crate::ipc::MAX_FRAME_BYTES {
+            upper=count-1;
+        } else {
+            fitted=count;
+            lower=count+1;
+        }
+    }
+    if fitted==0 {return Err(OrchestrationError::Invalid("ledger single event receipt transport bound"));}
+    if fitted==candidates && candidates<32 {
+        let bytes=encode_receipt(request,V37Status::Replayed,previous,revision,
+            result(&page.events,page.position.cursor)?);
+        if bytes.len()<=crate::ipc::MAX_FRAME_BYTES {return Ok((fitted,true));}
+    }
+    Ok((fitted,false))
+}
+
+fn selected_page_limit(count:usize,highwater:bool)->u32 {
+    if highwater {32} else {count as u32}
 }
 
 impl<'root> ProductDatabase<'root> {
@@ -411,13 +531,20 @@ impl<'root> ProductDatabase<'root> {
             }
             let page=if global {ledger::query_global(&self.connection,&after,32)?}
                 else {ledger::query(&self.connection,&reader,&after,32)?};
-            let next_cursor=if page.events.len()==32 {page.events.last().map_or(after.cursor,|event|event.cursor)}
-                else {page.position.cursor};
+            let (count,highwater)=bounded_event_count(request,page.position.cursor,page.position.cursor,&page,|selected,cursor| {
+                Ok(BTreeMap::from([
+                    (JsonString::from_str("epoch"),text(&page.position.epoch)),
+                    (JsonString::from_str("cursor"),text(&cursor.to_string())),
+                    (JsonString::from_str("highWaterCursor"),text(&page.position.cursor.to_string())),
+                    (JsonString::from_str("events"),events(selected)?),
+                ]))
+            })?;
+            let next_cursor=if highwater {page.position.cursor} else {page.events[count-1].cursor};
             (page.position.cursor,page.position.cursor,BTreeMap::from([
                 (JsonString::from_str("epoch"),text(&page.position.epoch)),
                 (JsonString::from_str("cursor"),text(&next_cursor.to_string())),
                 (JsonString::from_str("highWaterCursor"),text(&page.position.cursor.to_string())),
-                (JsonString::from_str("events"),events(&page.events)?),
+                (JsonString::from_str("events"),events(&page.events[..count])?),
             ]))
         } else {
             let (before,page)=if request.operation=="subscribe" {
@@ -441,8 +568,15 @@ impl<'root> ProductDatabase<'root> {
                 if after.epoch!=position.epoch {return Ok(encode_receipt(request,V37Status::Stale,0,0,Default::default()));}
                 if after.cursor>position.cursor {return Ok(encode_receipt(request,V37Status::Conflict,0,0,
                     BTreeMap::from([(JsonString::from_str("reason"),text("CURSOR_AHEAD"))])));}
-                (0,if global {ledger::subscribe_global(&mut self.connection,&reader,&request.target_id,&after,32)?}
-                    else {ledger::subscribe(&mut self.connection,&reader,&request.target_id,&after,32)?})
+                let preview=if global {ledger::query_global(&self.connection,&after,32)?}
+                    else {ledger::query(&self.connection,&reader,&after,32)?};
+                let (count,highwater)=bounded_event_count(request,0,1,&preview,|selected,cursor| {
+                    subscription_result(&Subscription {id:request.target_id.clone(),reader_session_id:reader.session_id.clone(),
+                        epoch:preview.position.epoch.clone(),cursor,revision:1,active:true},selected)
+                })?;
+                let limit=selected_page_limit(count,highwater);
+                (0,if global {ledger::subscribe_global(&mut self.connection,&reader,&request.target_id,&after,limit)?}
+                    else {ledger::subscribe(&mut self.connection,&reader,&request.target_id,&after,limit)?})
             } else {
                 let row=Statement::prepare(self.connection.as_ptr(),"SELECT revision,epoch,cursor,state FROM main.v37_ledger_subscription WHERE subscription_id=?1 AND reader_id=?2")?;
                 row.bind_text(1,&request.target_id)?;row.bind_text(2,&reader.session_id)?;
@@ -465,8 +599,16 @@ impl<'root> ProductDatabase<'root> {
                         return Ok(encode_receipt(request,V37Status::Conflict,current,current,BTreeMap::from([
                             (JsonString::from_str("reason"),text(if after.cursor<cursor {"CURSOR_REWIND"} else {"CURSOR_GAP"}))])));
                     }
-                    (current,if global {ledger::resume_global_subscription(&mut self.connection,&reader,&request.target_id,&after,32)?}
-                        else {ledger::resume_subscription(&mut self.connection,&reader,&request.target_id,&after,32)?})
+                    let preview=if global {ledger::query_global(&self.connection,&after,32)?}
+                        else {ledger::query(&self.connection,&reader,&after,32)?};
+                    let next_revision=current.checked_add(1).ok_or(OrchestrationError::Invalid("ledger subscription revision overflow"))?;
+                    let (count,highwater)=bounded_event_count(request,current,next_revision,&preview,|selected,next_cursor| {
+                        subscription_result(&Subscription {id:request.target_id.clone(),reader_session_id:reader.session_id.clone(),
+                            epoch:preview.position.epoch.clone(),cursor:next_cursor,revision:next_revision,active:true},selected)
+                    })?;
+                    let limit=selected_page_limit(count,highwater);
+                    (current,if global {ledger::resume_global_subscription(&mut self.connection,&reader,&request.target_id,&after,limit)?}
+                        else {ledger::resume_subscription(&mut self.connection,&reader,&request.target_id,&after,limit)?})
                 }
             };
             (before,page.subscription.revision,subscription_result(&page.subscription,&page.events)?)
