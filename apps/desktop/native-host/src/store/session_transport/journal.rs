@@ -1724,15 +1724,17 @@ fn prepare_decoded_in_transaction(connection: &mut VerifiedDatabaseConnection<'_
             .ok_or(JournalError::Unknown)?;
         binding_matches(&record, &binding)?;
         if let Some((owner,source))=user_input {
-            if matches!(seat::read_secretary_configuration_in_transaction(connection,owner)?,
-                seat::SecretaryConfiguration::Designated {..}) {
+            if let Some(observed_at_ms)=source.observed_at_ms() {
+              if matches!(seat::read_secretary_configuration_in_transaction(connection,owner)?,
+                  seat::SecretaryConfiguration::Designated {..}) {
                 // E's cursor is opaque in this H namespace: the exact H
                 // request_id, not A's numeric output event cursor.
                 let source_id=format!("H-USER:{}:{}:{}",record.domain_id,
                     record.session_id,record.request_id);
                 seat::record_user_presence_in_transaction(connection,owner,&source_id,
                     UserPresenceKind::Input,&record.process_operation_id,&record.custodian_nonce,
-                    &record.request_id,source.observed_at_ms(),source.observed_at_ms())?;
+                    &record.request_id,observed_at_ms,observed_at_ms)?;
+              }
             }
         }
         Ok(JournalDecision {

@@ -332,15 +332,6 @@ pub(crate) fn record_user_presence_in_transaction(db:&VerifiedDatabaseConnection
             if q.step_row()? {return Err(SeatError::SchemaDrift);}
             return if same {Ok(true)} else {Err(SeatError::Conflict)};
         }
-        let latest=Statement::prepare(db.as_ptr(),"SELECT CAST(occurred_at_ms AS TEXT),CAST(observed_at_ms AS TEXT) FROM main.gogoke_v37_seat_secretary_presence ORDER BY occurred_at_ms DESC,observed_at_ms DESC LIMIT 1")?;
-        if latest.step_row()? {
-            let last_occurred=latest.column_text(0)?.parse::<i64>().map_err(|_|SeatError::SchemaDrift)?;
-            let last_observed=latest.column_text(1)?.parse::<i64>().map_err(|_|SeatError::SchemaDrift)?;
-            if latest.step_row()? {return Err(SeatError::SchemaDrift);}
-            if occurred_at_ms<last_occurred||observed_at_ms<last_observed {
-                return Err(SeatError::Invalid("presence_clock"));
-            }
-        }
         let q=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_seat_secretary_presence(source_id,kind,source_operation_id,source_epoch,source_cursor,occurred_at_ms,observed_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)")?;
         for (index,value) in [source_id,kind.sql(),source_operation_id,source_epoch,source_cursor].iter().enumerate() {q.bind_text((index+1) as i32,value)?;}
         q.bind_i64(6,occurred_at_ms)?;q.bind_i64(7,observed_at_ms)?;q.step_done()?;Ok(false)

@@ -367,6 +367,13 @@ fn secretary_routines_replay_absence_and_unknown_are_fail_closed() {
         db.execute("COMMIT").unwrap();
         assert_eq!(presence.unwrap().occurred_at_ms,90);
         assert_eq!(policy.unwrap().max_absent_ms,20);
+        db.execute("SAVEPOINT future_user_clock").unwrap();
+        record_user_presence_in_transaction(db,owner,"futureClock",UserPresenceKind::Input,
+            "futureInput","futureEpoch","1",120,120).unwrap();
+        assert_eq!(take_due_secretary_routine_in_transaction(db,owner,"routineA",1,111).unwrap(),
+            SecretaryRoutineDecision::MissingFacts);
+        db.execute("ROLLBACK TO future_user_clock").unwrap();
+        db.execute("RELEASE future_user_clock").unwrap();
         db.execute("BEGIN IMMEDIATE").unwrap();
         assert_eq!(take_due_secretary_routine_in_transaction(db,owner,"routineA",1,111).unwrap(),
             SecretaryRoutineDecision::PausedForAbsence {revision:2,elapsed_ms:21});
