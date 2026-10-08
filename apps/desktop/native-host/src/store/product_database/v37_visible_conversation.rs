@@ -587,6 +587,20 @@ impl<'root> ProductDatabase<'root> {
         let scope=format!("native-events\n{workspace}\n{}\n{}\n{}\n{}",selected.row,
             selected.thread,association.json().canonical(),operation);
         let (high,after)=visible_native_event_position(params,maximum,&scope)?;
+        let predecessor=Statement::prepare(self.connection.as_ptr(),
+            "SELECT source_cursor,operation_id,process_ticket,custodian_nonce,source_epoch FROM main.v37_ledger_raw_source WHERE domain_id=?1 AND session_id=?2 AND generation=?3 AND rowid<=?4 ORDER BY rowid DESC LIMIT 1")?;
+        predecessor.bind_text(1,&association.domain)?;predecessor.bind_text(2,&association.session)?;
+        predecessor.bind_text(3,&association.generation)?;predecessor.bind_i64(4,after)?;
+        let mut ordinal=if predecessor.step_row()? {
+            let ordinal=decimal(&predecessor.column_text(0)?)?;
+            if predecessor.column_text(1)?!=operation || predecessor.column_text(2)?!=ticket
+                || predecessor.column_text(3)?!=nonce || predecessor.column_text(4)?!=nonce {
+                return Err(OrchestrationError::V37StoreFailure(
+                    "Original native event cursor predecessor differs from H episode/custody.".into()));
+            }
+            ordinal
+        } else {0};
+        drop(predecessor);
         let query=Statement::prepare(self.connection.as_ptr(),
             "SELECT rowid,operation_id,process_ticket,custodian_nonce,source_epoch,source_cursor FROM main.v37_ledger_raw_source WHERE domain_id=?1 AND session_id=?2 AND generation=?3 AND rowid>?4 AND rowid<=?5 ORDER BY rowid")?;
         query.bind_text(1,&association.domain)?;query.bind_text(2,&association.session)?;
@@ -602,6 +616,12 @@ impl<'root> ProductDatabase<'root> {
             let row_nonce=query.column_text(3)?;
             let epoch=query.column_text(4)?;
             let cursor=query.column_text(5)?;
+            let next=ordinal.checked_add(1).ok_or(OrchestrationError::Invalid("native raw cursor overflow"))?;
+            if decimal(&cursor)?!=next {
+                return Err(OrchestrationError::V37StoreFailure(format!(
+                    "Original native source {id} has a missing or repeated frame ordinal after {ordinal}.")));
+            }
+            ordinal=next;
             if row_operation!=operation || row_ticket!=ticket || row_nonce!=nonce || epoch!=nonce {
                 return Err(OrchestrationError::V37StoreFailure(format!(
                     "Original native source {id} disagrees with selected H generation/episode/custody.")));
