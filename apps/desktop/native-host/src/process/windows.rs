@@ -1739,12 +1739,17 @@ impl ManagedProcess {
         match receiver.recv_timeout(Duration::from_secs(5)) {
             Ok(result) => { let _ = worker.join(); result }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                unsafe { CancelSynchronousIo(worker.as_raw_handle().cast()); }
-                let _ = terminate_job(self.job.raw(), STOP_TIMEOUT_EXIT_CODE);
+                let cancel = if unsafe { CancelSynchronousIo(worker.as_raw_handle().cast()) } == 0 {
+                    Err(io::Error::last_os_error())
+                } else { Ok(()) };
+                let terminate = terminate_job(self.job.raw(), STOP_TIMEOUT_EXIT_CODE);
                 // The worker owns its duplicate handle and payload until it
                 // finishes. Never join without a bounded completion signal.
-                if receiver.recv_timeout(Duration::from_secs(2)).is_ok() { let _ = worker.join(); }
-                Err(io::Error::new(io::ErrorKind::TimedOut, "protocol write deadline"))
+                let completion = receiver.recv_timeout(Duration::from_secs(2));
+                let writer = format!("{completion:?}");
+                let joined = if completion.is_ok() { Some(format!("{:?}", worker.join())) } else { None };
+                Err(io::Error::new(io::ErrorKind::TimedOut,
+                    format!("protocol write deadline; CancelSynchronousIo={cancel:?}; TerminateJobObject={terminate:?}; writer={writer}; joined={joined:?}")))
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 let _ = worker.join();
@@ -3470,7 +3475,10 @@ mod tests {
         let error = managed.write_protocol(&frame).expect_err("non-reader must not complete write");
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert!(started.elapsed() < Duration::from_secs(10), "write deadline was not bounded");
-        assert!(managed.wait(Duration::from_secs(2)).expect("exact process stopped"));
+        let stopped = managed.wait(Duration::from_secs(2));
+        assert!(matches!(stopped, Ok(true)),
+            "exact process not confirmed stopped: wait={stopped:?}; write={error}; identity={:?}; exit={:?}; active_job={:?}; members={}",
+            managed.identity(), managed.exit_code(), managed.active_job_processes(), job_member_snapshot(managed.job.raw()));
         assert_eq!(managed.exit_code().expect("exit code"), Some(STOP_TIMEOUT_EXIT_CODE));
         assert_eq!(managed.write_protocol(b"second\n").expect_err("single attempt").kind(),
             io::ErrorKind::AlreadyExists);

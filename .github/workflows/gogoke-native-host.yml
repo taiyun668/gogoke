@@ -20,7 +20,7 @@ on:
         type: boolean
         default: false
       job_descendant_fixture_only:
-        description: Verify the changed real Job descendant fixture only; full library and mutation gates are NOT_RUN
+        description: Verify real Job descendant and protocol-write deadline fixtures; full library and mutation gates are NOT_RUN
         type: boolean
         default: false
       stop_124_fixture_only:
@@ -373,7 +373,7 @@ jobs:
             run_attempt = '${{ github.run_attempt }}'
             runner_os = '${{ runner.os }}'
             runner_image = $env:ImageOS
-            evidence_scope = if ('${{ inputs.grok_home_fixture_only }}' -eq 'true') { 'FOCUSED_GROK_HOME_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.private_history_fixture_only }}' -eq 'true') { 'FOCUSED_F_PRIVATE_HISTORY_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.code_mode_fixture_only }}' -eq 'true') { 'FOCUSED_CODE_MODE_MEMBER_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.job_descendant_fixture_only }}' -eq 'true') { 'FOCUSED_JOB_DESCENDANT_FIXTURE_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.stop_124_fixture_only }}' -eq 'true') { 'FOCUSED_STOP_124_FIXTURE_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.ordinary_oauth_fixture_only }}' -eq 'true') { 'FOCUSED_ORDINARY_OAUTH_REPAIRS_ONLY_NOT_FULL_LIBRARY_GATE' } else { 'WINDOWS_SERVER_REAL_RUN_NOT_WINDOWS_11_DESKTOP' }
+            evidence_scope = if ('${{ inputs.grok_home_fixture_only }}' -eq 'true') { 'FOCUSED_GROK_HOME_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.private_history_fixture_only }}' -eq 'true') { 'FOCUSED_F_PRIVATE_HISTORY_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.code_mode_fixture_only }}' -eq 'true') { 'FOCUSED_CODE_MODE_MEMBER_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.job_descendant_fixture_only }}' -eq 'true') { 'FOCUSED_JOB_DESCENDANT_AND_WRITE_DEADLINE_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.stop_124_fixture_only }}' -eq 'true') { 'FOCUSED_STOP_124_FIXTURE_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.ordinary_oauth_fixture_only }}' -eq 'true') { 'FOCUSED_ORDINARY_OAUTH_REPAIRS_ONLY_NOT_FULL_LIBRARY_GATE' } else { 'WINDOWS_SERVER_REAL_RUN_NOT_WINDOWS_11_DESKTOP' }
             release_build = $releaseResult
             axes = $results
           } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $machineResult -Encoding utf8NoBOM
@@ -438,7 +438,7 @@ jobs:
             @{ id = 'root-poison-after-precheck'; filter = 'poison_published_after_precheck_blocks_same_physical_root_before_lock_publication' }
           )
           if ('${{ inputs.job_descendant_fixture_only }}' -eq 'true') {
-            $probes = @($probes | Where-Object { $_.id -in @('job-descendant', 'job-second-stop', 'holder-gone-job-close') })
+            $probes = @($probes | Where-Object { $_.id -in @('job-descendant', 'job-second-stop', 'holder-gone-job-close', 'protocol-deadline') })
             Write-Host 'Focused changed Job fixture only; full library and mutation suites NOT_RUN.'
           } elseif ('${{ inputs.stop_124_fixture_only }}' -eq 'true') {
             $probes = @($probes | Where-Object { $_.id -eq 'stop-124-negative' })
