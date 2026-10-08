@@ -13,6 +13,8 @@ use crate::store::atomic::{AtomicError, Json, JsonString, Parser, Statement};
 use crate::store::authority::OwnerIssuer;
 use crate::store::ledger::{self, RawSourceKey, RawSourceState};
 use crate::store::same_open::{SameOpenError, VerifiedDatabaseConnection};
+use crate::store::product_database::VerifiedDirectUserInput;
+use crate::store::seat::{self, SeatError, UserPresenceKind};
 
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_PROVIDER_FAILURE_BYTES: usize = 16 * 1024;
@@ -37,6 +39,8 @@ pub(crate) enum JournalError {
     Codec(codex_rpc::RpcError),
     Rpc(super::rpc_journal::RpcJournalError),
     RemoteError(Vec<u8>),
+    UserOrigin(crate::ipc::PrivateIpcError),
+    Seat(SeatError),
 }
 
 impl From<AtomicError> for JournalError {
@@ -49,6 +53,9 @@ impl From<SameOpenError> for JournalError {
     fn from(error: SameOpenError) -> Self {
         Self::Sqlite(error)
     }
+}
+impl From<SeatError> for JournalError {
+    fn from(error: SeatError) -> Self { Self::Seat(error) }
 }
 
 impl From<codex_rpc::RpcError> for JournalError {
@@ -713,7 +720,7 @@ pub(crate) fn prepare_stdin_request(
     input: &StdinRequest<'_>,
 ) -> Result<JournalDecision, JournalError> {
     let request = parse_request(input)?;
-    prepare_decoded(connection, input, &request)
+    prepare_decoded(connection, input, &request, None)
 }
 
 /// A native User operation is retained byte for byte. It is not the provider
@@ -723,7 +730,18 @@ pub(crate) fn prepare_codex_request(
 ) -> Result<JournalDecision, JournalError> {
     let request = parse_operation(input, false)?;
     if !matches!(request.operation.as_str(),"send"|"append-without-turn") { return Err(JournalError::Invalid("Codex send operation")); }
-    prepare_decoded(connection, input, &request)
+    prepare_decoded(connection, input, &request, None)
+}
+
+/// Only the authenticated User pipe can supply this borrowed proof. It is
+/// checked against the exact H request again inside the prepare transaction.
+pub(crate) fn prepare_codex_request_with_user_input(
+    connection: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+    input: &StdinRequest<'_>, user_input: &VerifiedDirectUserInput<'_>,
+) -> Result<JournalDecision, JournalError> {
+    let request = parse_operation(input, false)?;
+    if request.operation != "send" { return Err(JournalError::Denied); }
+    prepare_decoded(connection, input, &request, Some((owner, user_input)))
 }
 
 fn acp_send_request(input: &StdinRequest<'_>)
@@ -785,7 +803,7 @@ fn claude_initialize_observed_in_transaction(
 /// PREPARED/UNKNOWN/RECEIPTED readback never grants a second physical write.
 pub(crate) fn prepare_claude_send_request(
     connection: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
-    input: &ClaudeSendInput<'_>,
+    input: &ClaudeSendInput<'_>, user_input: Option<&VerifiedDirectUserInput<'_>>,
 ) -> Result<ClaudeSendPrepared, JournalError> {
     let (request, text, identity) = claude_send_request(&input.user)?;
     in_transaction(connection, |connection| {
@@ -807,7 +825,8 @@ pub(crate) fn prepare_claude_send_request(
             if !claim.step_row()? || claim.step_row()? { return Err(JournalError::Conflict); }
             drop(claim);
         }
-        let user = prepare_decoded_in_transaction(connection, &input.user, &request)?;
+        let user = prepare_decoded_in_transaction(connection, &input.user, &request,
+            user_input.map(|input|(owner,input)))?;
         if user.disposition != PrepareDisposition::Prepared {
             return Ok(ClaudeSendPrepared { user, identity: identity.clone(),
                 bytes: Vec::new(), write_permitted: false });
@@ -836,7 +855,7 @@ pub(crate) fn prepare_claude_send_request(
 /// returned bytes only when write_permitted; replay never changes the RPC ID.
 pub(crate) fn prepare_acp_send_request(
     connection: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
-    input: &AcpSendInput<'_>,
+    input: &AcpSendInput<'_>, user_input: Option<&VerifiedDirectUserInput<'_>>,
 ) -> Result<AcpSendPrepared, JournalError> {
     let (request, text, identity) = acp_send_request(&input.user)?;
     in_transaction(connection, |connection| {
@@ -857,7 +876,8 @@ pub(crate) fn prepare_acp_send_request(
         if !claim.step_row()? || claim.step_row()? { return Err(JournalError::Conflict); }
         drop(claim);
       }
-        let user = prepare_decoded_in_transaction(connection, &input.user, &request)?;
+        let user = prepare_decoded_in_transaction(connection, &input.user, &request,
+            user_input.map(|input|(owner,input)))?;
         if user.disposition != PrepareDisposition::Prepared {
             return Ok(AcpSendPrepared { user, identity: identity.clone(),
                 bytes: Vec::new(), write_permitted: false });
@@ -1622,12 +1642,18 @@ pub(crate) fn read_original_claude_send_completed(
 }
 
 fn prepare_decoded(connection: &mut VerifiedDatabaseConnection<'_>, input: &StdinRequest<'_>,
-    request: &super::V37Request) -> Result<JournalDecision, JournalError> {
-    in_transaction(connection, |connection| prepare_decoded_in_transaction(connection, input, request))
+    request: &super::V37Request,
+    user_input: Option<(&OwnerIssuer,&VerifiedDirectUserInput<'_>)>) -> Result<JournalDecision, JournalError> {
+    in_transaction(connection, |connection| prepare_decoded_in_transaction(connection, input, request,user_input))
 }
 
 fn prepare_decoded_in_transaction(connection: &mut VerifiedDatabaseConnection<'_>,
-    input: &StdinRequest<'_>, request: &super::V37Request) -> Result<JournalDecision, JournalError> {
+    input: &StdinRequest<'_>, request: &super::V37Request,
+    user_input: Option<(&OwnerIssuer,&VerifiedDirectUserInput<'_>)>) -> Result<JournalDecision, JournalError> {
+        if let Some((_,source))=user_input {
+            if request.operation!="send" || !source.matches_live_frame(input.request_bytes)
+                .map_err(JournalError::UserOrigin)? {return Err(JournalError::Conflict);}
+        }
         if let Some(record) = read_row(connection, input.domain_id, &request.request_id)? {
             input_matches(input, &request, &record)?;
             let binding = h_binding(
@@ -1697,6 +1723,18 @@ fn prepare_decoded_in_transaction(connection: &mut VerifiedDatabaseConnection<'_
         let record = read_row(connection, input.domain_id, &request.request_id)?
             .ok_or(JournalError::Unknown)?;
         binding_matches(&record, &binding)?;
+        if let Some((owner,source))=user_input {
+            if matches!(seat::read_secretary_configuration_in_transaction(connection,owner)?,
+                seat::SecretaryConfiguration::Designated {..}) {
+                // E's cursor is opaque in this H namespace: the exact H
+                // request_id, not A's numeric output event cursor.
+                let source_id=format!("H-USER:{}:{}:{}",record.domain_id,
+                    record.session_id,record.request_id);
+                seat::record_user_presence_in_transaction(connection,owner,&source_id,
+                    UserPresenceKind::Input,&record.process_operation_id,&record.custodian_nonce,
+                    &record.request_id,source.observed_at_ms(),source.observed_at_ms())?;
+            }
+        }
         Ok(JournalDecision {
             disposition: PrepareDisposition::Prepared,
             record,

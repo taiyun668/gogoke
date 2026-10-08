@@ -2319,11 +2319,16 @@ impl<'root> ProductDatabase<'root> {
     }
 
     pub(super) fn dispatch_native_send(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        self.dispatch_native_send_with_input(request, None)
+    }
+
+    pub(super) fn dispatch_native_send_with_input(&mut self, request: &V37Request,
+        user_input: Option<&VerifiedDirectUserInput<'_>>) -> Result<Vec<u8>> {
         if request.request_id.starts_with("hostsend-") || request.request_id.starts_with("sidesend-") {
             return Ok(encode_receipt(request,V37Status::Denied,request.expected_revision,
                 request.expected_revision,Default::default()));
         }
-        self.dispatch_native_send_inner(request)
+        self.dispatch_native_send_inner(request, user_input)
     }
 
     pub(super) fn dispatch_host_rule_send(&mut self,request:&V37Request,
@@ -2333,7 +2338,7 @@ impl<'root> ProductDatabase<'root> {
         if !self.host_rule_recipient_idle(&key)? {return Err(OrchestrationError::AccessDenied);}
         self.check_host_rule_send(request,proof)?;
         if !self.host_rule_recipient_idle(&key)? {return Err(OrchestrationError::AccessDenied);}
-        self.dispatch_native_send_inner(request)
+        self.dispatch_native_send_inner(request, None)
     }
 
     pub(super) fn dispatch_side_send(&mut self,request:&V37Request,
@@ -2347,10 +2352,11 @@ impl<'root> ProductDatabase<'root> {
             return Err(OrchestrationError::AccessDenied);
         }
         self.check_side_send(request,intent,caller)?;
-        self.dispatch_native_send_inner(request)
+        self.dispatch_native_send_inner(request, None)
     }
 
-    fn dispatch_native_send_inner(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+    fn dispatch_native_send_inner(&mut self, request: &V37Request,
+        user_input: Option<&VerifiedDirectUserInput<'_>>) -> Result<Vec<u8>> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
         if request.payload.len() != 2 {
             return Ok(encode_receipt(request, V37Status::Denied, request.expected_revision,
@@ -2454,7 +2460,7 @@ impl<'root> ProductDatabase<'root> {
                     request.expected_revision,BTreeMap::from([(JsonString::from_str("reason"),
                         Json::String(JsonString::from_str("This fixed ACP transport has no append-without-turn operation")))])));
             }
-            return self.dispatch_native_acp_send(request,&key);
+            return self.dispatch_native_acp_send(request,&key,user_input);
         }
         if run.evidence.driver_id()=="claude" {
             if request.operation!="send" {
@@ -2462,7 +2468,7 @@ impl<'root> ProductDatabase<'root> {
                     request.expected_revision,BTreeMap::from([(JsonString::from_str("reason"),
                         Json::String(JsonString::from_str("The fixed Claude transport has no verified append-without-turn operation")))])));
             }
-            return self.dispatch_native_claude_send(request,&key);
+            return self.dispatch_native_claude_send(request,&key,user_input);
         }
         let thread_id = run.thread_id.clone().ok_or(OrchestrationError::Invalid("native send thread absent"))?;
         let command = if request.operation=="append-without-turn" {Command::AppendWithoutTurn {thread_id:thread_id.clone(),text}} else {Command::TurnStart { thread_id: thread_id.clone(),
@@ -2474,7 +2480,10 @@ impl<'root> ProductDatabase<'root> {
         let custody = run.custody.clone();
         let input = h::StdinRequest { domain_id: &request.domain_id, session_id: &request.target_id,
             ticket: custody.ticket.opaque(), generation: &generation, request_bytes: &request.raw_bytes };
-        let intention = failure(h::prepare_codex_request(&mut self.connection, &input))?;
+        let intention = if let Some(user_input) = user_input {
+            failure(h::prepare_codex_request_with_user_input(&mut self.connection,
+                &self.owner, &input, user_input))?
+        } else { failure(h::prepare_codex_request(&mut self.connection, &input))? };
         if intention.disposition != h::PrepareDisposition::Prepared {
             return Ok(encode_receipt(request, V37Status::Unknown, request.expected_revision,
                 request.expected_revision, Default::default()));
@@ -2692,14 +2701,15 @@ impl<'root> ProductDatabase<'root> {
         }
     }
 
-    fn dispatch_native_claude_send(&mut self,request:&V37Request,key:&(String,String)) -> Result<Vec<u8>> {
+    fn dispatch_native_claude_send(&mut self,request:&V37Request,key:&(String,String),
+        user_input:Option<&VerifiedDirectUserInput<'_>>) -> Result<Vec<u8>> {
         let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
         if !run.allows_input() || run.pending_claude.is_some() {return Err(OrchestrationError::OperationConflict);}
         let custody=run.custody.clone();let open_id=run.open_request_id.clone();let open_bytes=run.open_request_bytes.clone();
         let input=h::ClaudeSendInput {user:h::StdinRequest {domain_id:&request.domain_id,
             session_id:&request.target_id,ticket:custody.ticket.opaque(),generation:&custody.binding.generation,
             request_bytes:&request.raw_bytes},custody:&custody,open_request_id:&open_id,open_request_bytes:&open_bytes};
-        let prepared=failure(h::prepare_claude_send_request(&mut self.connection,&self.owner,&input))?;
+        let prepared=failure(h::prepare_claude_send_request(&mut self.connection,&self.owner,&input,user_input))?;
         if !prepared.write_permitted {return Ok(encode_receipt(request,V37Status::Unknown,
             request.expected_revision,request.expected_revision,Default::default()));}
         self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?
@@ -2847,7 +2857,8 @@ impl<'root> ProductDatabase<'root> {
         Ok(())
     }
 
-    fn dispatch_native_acp_send(&mut self,request:&V37Request,key:&(String,String)) -> Result<Vec<u8>> {
+    fn dispatch_native_acp_send(&mut self,request:&V37Request,key:&(String,String),
+        user_input:Option<&VerifiedDirectUserInput<'_>>) -> Result<Vec<u8>> {
         let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
         if !run.allows_input() || run.pending_acp.is_some() {return Err(OrchestrationError::OperationConflict);}
         let custody=run.custody.clone();let open_id=run.open_request_id.clone();
@@ -2856,7 +2867,7 @@ impl<'root> ProductDatabase<'root> {
             ticket:custody.ticket.opaque(),generation:&custody.binding.generation,
             request_bytes:&request.raw_bytes},custody:&custody,
             open_request_id:&open_id,open_request_bytes:&open_bytes};
-        let prepared=failure(h::prepare_acp_send_request(&mut self.connection,&self.owner,&input))?;
+        let prepared=failure(h::prepare_acp_send_request(&mut self.connection,&self.owner,&input,user_input))?;
         if !prepared.write_permitted {
             return Ok(encode_receipt(request,V37Status::Unknown,request.expected_revision,
                 request.expected_revision,Default::default()));

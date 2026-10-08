@@ -31,6 +31,7 @@ use crate::process::ProcessCustodian;
 use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 type Result<T> = std::result::Result<T, OrchestrationError>;
 
@@ -61,6 +62,23 @@ mod v37_holder_disappearance_tests;
 #[cfg(all(test, windows))]
 mod managed_cli_test_setup;
 mod v37_side;
+
+/// Constructed only after the dedicated User pipe's live process proof.
+/// H compares this borrowed exact frame with its original stdin request.
+pub(crate) struct VerifiedDirectUserInput<'a> {
+    origin: &'a UserOriginProof,
+    frame: &'a [u8],
+    observed_at_ms: i64,
+}
+
+impl VerifiedDirectUserInput<'_> {
+    pub(crate) fn matches_live_frame(&self, frame: &[u8]) -> std::result::Result<bool, crate::ipc::PrivateIpcError> {
+        self.origin.verify_live_origin()?;
+        Ok(self.frame == frame)
+    }
+
+    pub(crate) fn observed_at_ms(&self) -> i64 { self.observed_at_ms }
+}
 
 fn user_payload_string(request: &V37Request, field: &'static str) -> Result<String> {
     match request.payload.get(&JsonString::from_str(field)) {
@@ -266,6 +284,16 @@ impl<'root> ProductDatabase<'root> {
         }
         let request = decode_request(frame).map_err(|error|
             OrchestrationError::V37StoreFailure(format!("v37 user frame: {error:?}")))?;
+        if request.family == "K-SESSION" && request.operation == "send" {
+            let observed_at_ms = SystemTime::now().duration_since(UNIX_EPOCH)
+                .map_err(|error| OrchestrationError::V37StoreFailure(format!("User input clock: {error}")))?
+                .as_millis();
+            let observed_at_ms = i64::try_from(observed_at_ms)
+                .map_err(|error| OrchestrationError::V37StoreFailure(format!("User input clock range: {error}")))?;
+            if observed_at_ms <= 0 { return Err(OrchestrationError::Invalid("User input clock")); }
+            let input = VerifiedDirectUserInput {origin, frame, observed_at_ms};
+            return self.dispatch_verified_user_session(&request, &input);
+        }
         self.dispatch_user_request(&request)
     }
 
@@ -1168,3 +1196,120 @@ mod execution_recipe_tests;
 #[cfg(test)]
 #[path = "product_database_tests.rs"]
 mod tests;
+
+#[cfg(all(test, windows))]
+mod secretary_user_input_tests {
+    use super::*;
+    use crate::ipc::PrivatePipeListener;
+    use crate::store::same_open::route_b_test_guard;
+    use crate::store::seat::{self, CreateSeat, Kind, NativeOrigin, StoreTemplate};
+    use crate::store::session_transport::{self as h, StdinRequest, PrepareDisposition};
+    use std::fs::OpenOptions;
+
+    fn count(db: &VerifiedDatabaseConnection<'_>, table: &str) -> String {
+        let sql = format!("SELECT COUNT(*) FROM main.{table}");
+        let row = Statement::prepare(db.as_ptr(), &sql).unwrap();
+        assert!(row.step_row().unwrap());
+        row.column_text(0).unwrap()
+    }
+
+    #[test]
+    fn only_exact_live_user_input_adds_an_atomic_fixed_presence_witness() {
+        let _guard=route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let folder=std::env::temp_dir().join(format!("gogoke-user-presence-{}-{nonce}",std::process::id()));
+        std::fs::create_dir(&folder).unwrap();
+        let root=RootLock::acquire(&folder).unwrap();
+        let mut product=ProductDatabase::open(&root,&folder.join("state.sqlite")).unwrap();
+        seat::store_template(&mut product.connection,NativeOrigin::user(&product.owner),
+            StoreTemplate {domain_id:"global",template_id:"secretaryBase",settings_json:br#"{}"#}).unwrap();
+        let seat=seat::create(&mut product.connection,NativeOrigin::user(&product.owner),
+            CreateSeat {domain_id:"global",seat_id:"secretaryA",template_id:"secretaryBase",
+                instance_id:None,kind:Kind::Long,request_id:"createSecretaryA",
+                request_bytes:b"create secretary A"}).unwrap().seat;
+        seat::designate_secretary(&mut product.connection,&product.owner,&seat.seat_id,
+            &seat.incarnation,"designateSecretaryA",b"designate secretary A").unwrap();
+        product.connection.execute("INSERT INTO main.gogoke_v37_h_owner_binding VALUES('bindingA','instanceA','global','SESSION','sessionA','1','ACTIVE')").unwrap();
+        product.connection.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id) VALUES('global','sessionA','instanceA','homeA','bindingA','1','COMMITTED',1,'processA')").unwrap();
+        product.connection.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state) VALUES('processA','pct1_ticketA','nonceA','11','1','fixture','sha256:fixture','profileA','global','1','ACTIVE')").unwrap();
+
+        let endpoint=format!("presence-{}-{nonce}",std::process::id());
+        let listener=PrivatePipeListener::bind_user(&endpoint,std::process::id()).unwrap();
+        let path=listener.path().to_owned();
+        let (release,held)=std::sync::mpsc::channel::<()>();
+        let client=std::thread::spawn(move|| {
+            let _pipe=OpenOptions::new().read(true).write(true).open(path).unwrap();
+            held.recv().unwrap();
+        });
+        let mut pipe=listener.accept_user().unwrap();
+        let proof=pipe.take_user_origin_proof().unwrap();
+        let raw=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send","requestId":"sendA","targetId":"sessionA","domainId":"global","expectedRevision":"1","payload":{"generation":"1","body":"Owner original"}}"#;
+        let source=VerifiedDirectUserInput {origin:&proof,frame:raw,observed_at_ms:100};
+        let input=StdinRequest {domain_id:"global",session_id:"sessionA",ticket:"pct1_ticketA",
+            generation:"1",request_bytes:raw};
+        let changed=raw.windows(5).position(|window|window==b"Owner").unwrap();
+        let mut other=raw.to_vec();other[changed..changed+5].copy_from_slice(b"model");
+        let wrong=StdinRequest {request_bytes:&other,..input};
+        assert!(matches!(h::prepare_codex_request_with_user_input(&mut product.connection,
+            &product.owner,&wrong,&source),Err(h::JournalError::Conflict)));
+        assert_eq!(count(&product.connection,"gogoke_v37_h_stdin_journal"),"0");
+        assert_eq!(count(&product.connection,"gogoke_v37_seat_secretary_presence"),"0");
+
+        product.connection.execute("UPDATE main.gogoke_v37_h_owner_binding SET state='REVOKED' WHERE binding_id='bindingA'").unwrap();
+        assert!(matches!(h::prepare_codex_request_with_user_input(&mut product.connection,
+            &product.owner,&input,&source),Err(h::JournalError::Denied)));
+        assert_eq!(count(&product.connection,"gogoke_v37_seat_secretary_presence"),"0");
+        product.connection.execute("UPDATE main.gogoke_v37_h_owner_binding SET state='ACTIVE' WHERE binding_id='bindingA'").unwrap();
+
+        product.connection.execute("CREATE TRIGGER fail_presence BEFORE INSERT ON gogoke_v37_seat_secretary_presence BEGIN SELECT RAISE(ABORT,'presence fixture failure'); END").unwrap();
+        assert!(matches!(h::prepare_codex_request_with_user_input(&mut product.connection,
+            &product.owner,&input,&source),Err(h::JournalError::Seat(_))));
+        assert_eq!(count(&product.connection,"gogoke_v37_h_stdin_journal"),"0",
+            "E write failure rolls back the H intent before any child write");
+        product.connection.execute("DROP TRIGGER fail_presence").unwrap();
+
+        assert_eq!(h::prepare_codex_request_with_user_input(&mut product.connection,
+            &product.owner,&input,&source).unwrap().disposition,PrepareDisposition::Prepared);
+        assert_eq!(count(&product.connection,"gogoke_v37_h_stdin_journal"),"1");
+        assert_eq!(count(&product.connection,"gogoke_v37_seat_secretary_presence"),"1");
+        let original=Statement::prepare(product.connection.as_ptr(),"SELECT request_hex FROM main.gogoke_v37_h_stdin_journal WHERE domain_id='global' AND request_id='sendA'").unwrap();
+        assert!(original.step_row().unwrap());
+        assert_eq!(original.column_text(0).unwrap(),raw.iter().map(|byte|format!("{byte:02x}")).collect::<String>());
+        drop(original);
+        let row=Statement::prepare(product.connection.as_ptr(),"SELECT source_operation_id,source_epoch,source_cursor,CAST(occurred_at_ms AS TEXT) FROM main.gogoke_v37_seat_secretary_presence").unwrap();
+        assert!(row.step_row().unwrap());
+        assert_eq!((row.column_text(0).unwrap(),row.column_text(1).unwrap(),row.column_text(2).unwrap(),row.column_text(3).unwrap()),
+            ("processA".into(),"nonceA".into(),"sendA".into(),"100".into()));
+        drop(row);
+        let later=VerifiedDirectUserInput {origin:&proof,frame:raw,observed_at_ms:200};
+        assert_eq!(h::prepare_codex_request_with_user_input(&mut product.connection,
+            &product.owner,&input,&later).unwrap().disposition,PrepareDisposition::Replayed);
+        assert_eq!(count(&product.connection,"gogoke_v37_seat_secretary_presence"),"1");
+        let time=Statement::prepare(product.connection.as_ptr(),"SELECT CAST(observed_at_ms AS TEXT) FROM main.gogoke_v37_seat_secretary_presence").unwrap();
+        assert!(time.step_row().unwrap());assert_eq!(time.column_text(0).unwrap(),"100");drop(time);
+        product.connection.execute("BEGIN IMMEDIATE").unwrap();
+        assert!(matches!(seat::record_user_presence_in_transaction(&product.connection,&product.owner,
+            "clockBackwards",seat::UserPresenceKind::Input,"processB","nonceB","sendB",99,99),
+            Err(seat::SeatError::Invalid("presence_clock"))));
+        product.connection.execute("ROLLBACK").unwrap();
+
+        // A historical H row without this E witness cannot acquire one from
+        // a later authenticated replay of its original bytes.
+        product.connection.execute("INSERT INTO main.gogoke_v37_h_owner_binding VALUES('bindingB','instanceA','global','SESSION','sessionB','1','ACTIVE')").unwrap();
+        product.connection.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id) VALUES('global','sessionB','instanceA','homeB','bindingB','1','COMMITTED',1,'processB')").unwrap();
+        product.connection.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state) VALUES('processB','pct1_ticketB','nonceB','12','1','fixture','sha256:fixture','profileB','global','1','ACTIVE')").unwrap();
+        let raw_b=String::from_utf8(raw.to_vec()).unwrap().replace("sendA","sendB").replace("sessionA","sessionB");
+        let input_b=StdinRequest {domain_id:"global",session_id:"sessionB",ticket:"pct1_ticketB",
+            generation:"1",request_bytes:raw_b.as_bytes()};
+        assert_eq!(h::prepare_codex_request(&mut product.connection,&input_b).unwrap().disposition,
+            PrepareDisposition::Prepared);
+        let historical=VerifiedDirectUserInput {origin:&proof,frame:raw_b.as_bytes(),observed_at_ms:300};
+        assert_eq!(h::prepare_codex_request_with_user_input(&mut product.connection,&product.owner,
+            &input_b,&historical).unwrap().disposition,PrepareDisposition::Replayed);
+        assert_eq!(count(&product.connection,"gogoke_v37_seat_secretary_presence"),"1");
+        release.send(()).unwrap();client.join().unwrap();
+        drop(proof);drop(pipe);
+        product.close_checked().unwrap();drop(root);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+}

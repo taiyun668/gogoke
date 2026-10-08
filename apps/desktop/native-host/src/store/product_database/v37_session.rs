@@ -671,6 +671,17 @@ impl<'root> ProductDatabase<'root> {
     }
 
     pub(super) fn dispatch_user_session(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        self.dispatch_user_session_with_input(request, None)
+    }
+
+    pub(super) fn dispatch_verified_user_session(&mut self, request: &V37Request,
+        input: &VerifiedDirectUserInput<'_>) -> Result<Vec<u8>> {
+        if request.operation != "send" { return Err(OrchestrationError::AccessDenied); }
+        self.dispatch_user_session_with_input(request, Some(input))
+    }
+
+    fn dispatch_user_session_with_input(&mut self, request: &V37Request,
+        input: Option<&VerifiedDirectUserInput<'_>>) -> Result<Vec<u8>> {
         if request.request_id.starts_with("hostrecipient-")
             || (request.target_id.starts_with("hostsession-")
                 && !matches!(request.operation.as_str(),
@@ -692,7 +703,7 @@ impl<'root> ProductDatabase<'root> {
             return self.dispatch_native_generation_change(request);
         }
         if request.operation == "stop" { return self.dispatch_native_stop(request); }
-        if request.operation == "send" { return self.dispatch_native_send(request); }
+        if request.operation == "send" { return self.dispatch_native_send_with_input(request, input); }
         if request.operation == "append-without-turn" { return self.dispatch_native_send(request); }
         if request.operation == "output-stream" { return self.dispatch_native_output(request); }
         if request.operation == "capability-probe" { return self.dispatch_native_capability(request); }
