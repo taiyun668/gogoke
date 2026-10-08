@@ -1247,18 +1247,21 @@ mod tests {
         assert!(decode_stored_thread_start(changed.as_bytes(),response).is_err());
     }
     #[test]
-    fn secretary_thread_registers_only_global_read_and_rejects_tool_substitution() {
+    fn secretary_thread_registers_only_global_read_and_user_routine_and_rejects_tool_substitution() {
         let id=RpcId::Number(2);
         let command=Command::ThreadStartSecretaryTools {cwd:"D:/sealed-tree".into(),model:"m".into()};
         let original=command.encode(Some(&id)).unwrap();
         let Json::Object(frame)=Parser::parse(std::str::from_utf8(&original[..original.len()-1]).unwrap()).unwrap() else {panic!("frame");};
         let params=object(field(&frame,"params").unwrap(),"params").unwrap();
         let Json::Array(tools)=field(params,"dynamicTools").unwrap() else {panic!("tools");};
-        assert_eq!(tools.len(),1);
+        assert_eq!(tools.len(),2);
         assert_eq!(string(field(object(&tools[0],"tool").unwrap(),"name").unwrap(),"name").unwrap(),"gogoke_ledger");
+        assert_eq!(string(field(object(&tools[1],"tool").unwrap(),"name").unwrap(),"name").unwrap(),"gogoke_routine");
         let response=b"{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-a\",\"cwd\":\"D:/sealed-tree\"}}}\n";
         assert_eq!(decode_stored_thread_start(&original,response).unwrap(),"thread-a");
         let changed=std::str::from_utf8(&original).unwrap().replace("gogoke_ledger","gogoke_seat");
+        assert!(decode_stored_thread_start(changed.as_bytes(),response).is_err());
+        let changed=std::str::from_utf8(&original).unwrap().replace("gogoke_routine","gogoke_worktree");
         assert!(decode_stored_thread_start(changed.as_bytes(),response).is_err());
     }
     #[test]

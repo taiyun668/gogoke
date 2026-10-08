@@ -3,6 +3,10 @@ name: gogoke native-host CI
 on:
   workflow_dispatch:
     inputs:
+      secretary_routine_fixture_only:
+        description: Build and test original USER secretary routine boundaries with production mutation; full library and other formal gates are NOT_RUN
+        type: boolean
+        default: false
       dependency_lock_only:
         description: Generate the pinned native dependency lock as data only; build, library, mutation and server gates are NOT_RUN
         type: boolean
@@ -92,8 +96,55 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  native-secretary-routine-boundaries:
+    if: ${{ inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only }}
+    name: Native Secretary original USER routine boundaries
+    timeout-minutes: 20
+    runs-on: windows-latest
+    env:
+      RUSTUP_TOOLCHAIN: 1.85.1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.13.1
+      - uses: dtolnay/rust-toolchain@1.85.1
+      - name: Build and verify Secretary source and transaction boundaries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (@('${{ inputs.full_library_only }}','${{ inputs.private_history_fixture_only }}','${{ inputs.code_mode_fixture_only }}','${{ inputs.catalog_program_fixture_only }}') -contains 'true' -or '${{ inputs.security_remainder_source }}' -ne '') { throw 'Secretary scope cannot be combined with a different evidence scope' }
+          $env:GOGOKE_CONTROLLED_NODE_PATH = (Get-Command node.exe -CommandType Application | Select-Object -First 1 -ExpandProperty Source)
+          $evidence = Join-Path $env:RUNNER_TEMP 'gogoke-secretary-routine-evidence'
+          New-Item -ItemType Directory -Path $evidence | Out-Null
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cargo build --release --locked --manifest-path apps/desktop/native-host/Cargo.toml 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'release-build.log') | Write-Host
+          if ($LASTEXITCODE -ne 0) { throw "Secretary release build failed: $LASTEXITCODE" }
+          $results = @()
+          foreach ($filter in @('v37_secretary_routine_model_tests','secretary_schedule::tests','secretary_routines_replay_absence_and_unknown_are_fail_closed','secretary_thread_registers_only_global_read_and_user_routine_and_rejects_tool_substitution')) {
+            $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib $filter -- --nocapture --show-output 2>&1
+            $exitCode = $LASTEXITCODE
+            $label = $filter.Replace('::','-')
+            $output | Tee-Object -FilePath (Join-Path $evidence "$label.log") | Write-Host
+            $joined = $output -join "`n"
+            $summary = [regex]::Matches($joined,'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;')
+            if ($summary.Count -ne 1 -or $exitCode -ne 0 -or [int]$summary[0].Groups[2].Value -le 0 -or [int]$summary[0].Groups[3].Value -ne 0 -or [int]$summary[0].Groups[4].Value -ne 0) { throw "Secretary directed boundary failed or did not execute: $filter exit=$exitCode" }
+            $results += [ordered]@{ filter=$filter; exitCode=$exitCode; passed=[int]$summary[0].Groups[2].Value; failed=0; ignored=0 }
+          }
+          [ordered]@{ schema='gogoke.secretary-routine-boundaries.v1'; sourceCommit=(git rev-parse HEAD).Trim(); state='PASS_DIRECTED_BOUNDARIES_ONLY'; library='NOT_RUN'; product='NOT_RUN'; results=$results } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidence 'boundary-results.json') -Encoding utf8NoBOM
+          & ./tools/ci/gogoke37-secretary-routine-mutation.ps1 -EvidenceDirectory $evidence
+          if ($LASTEXITCODE -ne 0) { throw "Secretary production mutation failed: $LASTEXITCODE" }
+          'Only actual directed boundary cases and compile-valid production mutation ran. Full library, other native/security/server gates and Win11 product: NOT_RUN.' >> $env:GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: secretary-routine-boundaries-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/gogoke-secretary-routine-evidence/*
+          if-no-files-found: error
+          retention-days: 30
+
   native-host-windows-real-axes:
-    if: ${{ !inputs.dependency_lock_only && !inputs.catalog_program_fixture_only && !inputs.security_remainder_source }}
+    if: ${{ !inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only && !inputs.catalog_program_fixture_only && !inputs.security_remainder_source }}
     name: ${{ matrix.shard == 'all' && 'Native host Windows real process axes' || format('Native host Windows library {0}', matrix.shard) }}
     # Full-library shards use independent runners so their fixed native fixtures
     # never execute in separate test processes on the same Windows host.
@@ -674,7 +725,7 @@ jobs:
           retention-days: 30
 
   native-host-library-partitions:
-    if: ${{ always() && !inputs.dependency_lock_only && inputs.full_library_only && !inputs.security_remainder_source }}
+    if: ${{ always() && !inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only && inputs.full_library_only && !inputs.security_remainder_source }}
     needs: native-host-windows-real-axes
     name: Verify complete native-host library partitions
     timeout-minutes: 15
@@ -792,7 +843,7 @@ jobs:
           retention-days: 30
 
   native-host-windows-security-mutations:
-    if: ${{ !inputs.dependency_lock_only && (!inputs.full_library_only || inputs.security_remainder_source) }}
+    if: ${{ !inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only && (!inputs.full_library_only || inputs.security_remainder_source) }}
     name: Native host Windows security mutations (${{ matrix.group }})
     # Keep unchanged mutation commands, but separate compile-heavy groups.
     # A remainder run tests the explicitly checked-out ancestor, not workflow SHA.
@@ -1302,7 +1353,7 @@ jobs:
           retention-days: 30
 
   gogoke-server-tests:
-    if: ${{ !inputs.dependency_lock_only && !inputs.security_remainder_source && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.full_library_only && !inputs.catalog_program_fixture_only }}
+    if: ${{ !inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only && !inputs.security_remainder_source && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.full_library_only && !inputs.catalog_program_fixture_only }}
     name: Gogoke server cloud tests
     timeout-minutes: 45
     runs-on: windows-latest

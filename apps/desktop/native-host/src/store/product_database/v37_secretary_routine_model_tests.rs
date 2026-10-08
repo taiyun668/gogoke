@@ -15,12 +15,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const BODY: &str = "Please remind me every weekday at 09:00 to review the queue.";
-const SPAN: &str = "every weekday at 09:00";
+const BODY: &str = "Please remind me in 10 minutes to review the queue.";
+const SPAN: &str = "in 10 minutes";
 const THREAD: &str = r#"{"id":3,"result":{"thread":{"id":"threadS","cwd":"fixture-directory"}}}"#;
 const TURN: &str = r#"{"id":4,"result":{"turn":{"id":"turnS","status":"inProgress"}}}"#;
 const STARTED: &str = r#"{"method":"turn/started","params":{"threadId":"threadS","turn":{"id":"turnS","status":"inProgress"}}}"#;
-const CALL: &str = r#"{"id":91,"method":"item/tool/call","params":{"callId":"callS","threadId":"threadS","turnId":"turnS","tool":"gogoke_routine","arguments":{"operation":"create","scheduleSpan":"every weekday at 09:00","timezone":"HOST_DEFAULT"}}}"#;
+const CALL: &str = r#"{"id":91,"method":"item/tool/call","params":{"callId":"callS","threadId":"threadS","turnId":"turnS","tool":"gogoke_routine","arguments":{"operation":"create","scheduleSpan":"in 10 minutes","timezone":"HOST_DEFAULT"}}}"#;
 
 fn hex(bytes: &[u8]) -> String { bytes.iter().map(|byte| format!("{byte:02x}")).collect() }
 
@@ -177,8 +177,13 @@ fn future(original: &str, span: &str, zone: &str, input_ms: i64, now: i64)
     -> Result<ResolvedRoutineSchedule> {
     assert_eq!((original, span, zone), (BODY, SPAN, "HOST_DEFAULT"));
     assert!(input_ms > 0 && input_ms <= now);
-    Ok(ResolvedRoutineSchedule {schedule_raw:span.into(), timezone:"UTC".into(),
-        next_due_ms:now + 86_400_000})
+    // Exercise the same production parser as the shared model dispatcher;
+    // this fixture's observed host zone is explicit, not proposed by a model.
+    let parsed=seat::secretary_schedule::resolve_user_schedule(original,span,zone,input_ms,"UTC")
+        .expect("real host parser must accept the original fixture USER rule");
+    assert_eq!(parsed.next_due_ms,input_ms+600_000);
+    Ok(ResolvedRoutineSchedule {schedule_raw:span.into(), timezone:parsed.timezone,
+        next_due_ms:parsed.next_due_ms})
 }
 
 #[test]

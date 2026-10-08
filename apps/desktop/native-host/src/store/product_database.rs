@@ -52,6 +52,8 @@ mod v37_qcard_user;
 mod v37_ledger_user;
 mod v37_secretary_routine_user;
 mod v37_secretary_routine_model;
+#[cfg(all(test, windows))]
+mod v37_secretary_routine_model_tests;
 mod v37_inbox;
 mod v37_capability;
 mod v37_models;
