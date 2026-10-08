@@ -473,6 +473,13 @@ jobs:
               @($instanceLogin | Where-Object { $_ -match 'test result: ok\. 7 passed; 0 failed; 0 ignored' }).Count -ne 1) {
             throw "Host-owned instance login tests failed, skipped, or did not execute all seven tests: $LASTEXITCODE"
           }
+          $visibleBoundary = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml native_visible_boundary_tests --lib -- --nocapture 2>&1
+          $visibleExit = $LASTEXITCODE
+          $visibleBoundary | Out-Host
+          if ($visibleExit -ne 0 -or
+              @($visibleBoundary | Where-Object { $_ -match 'test result: ok\. 4 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+            throw "Native visible caller boundary tests failed, skipped, or did not execute all four tests: $visibleExit"
+          }
           cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_uninstall --lib
           if ($LASTEXITCODE -ne 0) { throw "gogoke uninstall tests failed: $LASTEXITCODE" }
       - name: Preserve failed native test loader evidence
