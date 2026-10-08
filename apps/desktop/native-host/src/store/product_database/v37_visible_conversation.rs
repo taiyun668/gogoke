@@ -957,32 +957,55 @@ mod tests {
             open_rpc.bind_text(1,&encode_hex(&opened)).unwrap();open_rpc.step_done().unwrap();drop(open_rpc);
             let input=|id:&str,cursor:&str,text:&str| {
                 let request=format!(r#"{{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send","requestId":"{id}","targetId":"sessionA","domainId":"projectA","expectedRevision":"2","payload":{{"generation":"1","body":"{text}"}}}}"#);
+                assert!(request.len()<=1024*1024,"original H request must fit the fixed 1 MiB bound");
                 let journal=Statement::prepare(product.connection.as_ptr(),
                     "INSERT INTO main.gogoke_v37_h_stdin_journal(domain_id,request_id,operation,ticket,process_operation_id,custodian_nonce,session_id,generation,request_hex,phase,receipt_hex,receipt_status,expected_revision,receipt_previous_revision,receipt_revision) VALUES('projectA',?1,'send','pct1_ticketA','processA','nonceA','sessionA','1',?2,'RECEIPTED','00','APPLIED','2','2','3')").unwrap();
                 journal.bind_text(1,id).unwrap();journal.bind_text(2,&encode_hex(request.as_bytes())).unwrap();journal.step_done().unwrap();drop(journal);
                 let command=Command::TurnStart {thread_id:"threadA".into(),cwd:"fixture".into(),model:"fixture".into(),
                     effort:"low".into(),text:text.into(),network_access:None}.encode(Some(&RpcId::String(id.into()))).unwrap();
+                assert!(command.len()<=1024*1024,"original Codex command must fit the fixed 1 MiB bound");
                 let step=format!("send-{}",&crate::store::digest::sha256_hex(request.as_bytes())[..40]);
                 let rpc=Statement::prepare(product.connection.as_ptr(),
                     "INSERT INTO main.gogoke_v37_rpc_steps(domain_id,session_id,open_request_id,step_id,process_operation_id,ticket,custodian_nonce,pid,creation_time,image_path,binary_digest,profile_id,generation,command_hex,requires_response,phase,source_epoch,source_cursor) VALUES('projectA','sessionA','openA',?1,'processA','pct1_ticketA','nonceA','11','1','fixture','sha256:fixture','profileA','1',?2,1,'OBSERVED','nonceA',?3)").unwrap();
                 rpc.bind_text(1,&step).unwrap();rpc.bind_text(2,&encode_hex(&command)).unwrap();rpc.bind_text(3,cursor).unwrap();rpc.step_done().unwrap();
             };
-            input("sendA","3","first body");
-            raw("3",b"{\"id\":\"sendA\",\"result\":{\"turn\":{\"id\":\"turnA\",\"items\":[{\"id\":\"messageA\",\"type\":\"userMessage\"}]}}}\n");
+            // Seven separately admissible original frames cross the 4 MiB
+            // USER page bound. The fixed Codex RPC/line bound is 1 MiB per
+            // frame; no original command or response exceeds that bound.
+            let large="x".repeat(700_000);
+            for number in 0..7 {
+                let id=format!("send{number}");let cursor=(number+3).to_string();
+                input(&id,&cursor,&large);
+                let ack=format!("{{\"id\":\"{id}\",\"result\":{{\"turn\":{{\"id\":\"turn{number}\",\"items\":[{{\"id\":\"message{number}\",\"type\":\"userMessage\",\"text\":\"{large}\"}}]}}}}}}\n");
+                assert!(ack.len()<=1024*1024,"original provider frame must fit the fixed 1 MiB bound");
+                raw(&cursor,ack.as_bytes());
+            }
             let mut first=product.visible_reply("workspaceA","UNKNOWN",selected.association.as_ref(),None);
             product.visible_thread_page("workspaceA",&selected,&BTreeMap::new(),&mut first).unwrap();
-            assert!(is_text(first.get(&k("state")),"APPLIED"));
-            let scope=format!("thread/read\nworkspaceA\n1\nthreadA\n{}",selected.association.as_ref().unwrap().json().canonical());
-            let fixed=BTreeMap::from([(k("cursor"),s(&visible_page_token(3,0,&scope)))]);
-            input("sendLater","4","later body");
-            raw("4",b"{\"id\":\"sendLater\",\"result\":{\"turn\":{\"id\":\"turnLater\",\"items\":[{\"id\":\"messageLater\",\"type\":\"userMessage\"}]}}}\n");
+            assert!(is_text(first.get(&k("state")),"PARTIAL"));
+            let response=object(first.get(&k("response")).unwrap()).unwrap();
+            let result=object(response.get(&k("result")).unwrap()).unwrap();
+            let history=object(result.get(&k("nativeHistory")).unwrap()).unwrap();
+            let cursor=string_field(history,"nextCursor").unwrap();
+            let fixed=BTreeMap::from([(k("cursor"),s(&cursor))]);
+            let mut baseline=product.visible_reply("workspaceA","UNKNOWN",selected.association.as_ref(),None);
+            product.visible_thread_page("workspaceA",&selected,&fixed,&mut baseline).unwrap();
+            assert!(is_text(baseline.get(&k("state")),"APPLIED"));
+            input("sendLater","10","later body");
+            raw("10",b"{\"id\":\"sendLater\",\"result\":{\"turn\":{\"id\":\"turnLater\",\"items\":[{\"id\":\"messageLater\",\"type\":\"userMessage\"}]}}}\n");
             let mut repeated=product.visible_reply("workspaceA","UNKNOWN",selected.association.as_ref(),None);
             product.visible_thread_page("workspaceA",&selected,&fixed,&mut repeated).unwrap();
-            assert_eq!(Json::Object(first).canonical(),Json::Object(repeated).canonical(),"later real H input/ACK cannot change an earlier raw-source snapshot");
+            assert_eq!(Json::Object(baseline).canonical(),Json::Object(repeated).canonical(),"later real H input/ACK cannot change a page from its original high-water cursor");
             let mut fresh=product.visible_reply("workspaceA","UNKNOWN",selected.association.as_ref(),None);
             product.visible_thread_page("workspaceA",&selected,&BTreeMap::new(),&mut fresh).unwrap();
-            assert!(is_text(fresh.get(&k("state")),"APPLIED"));
-            assert!(Json::Object(fresh).canonical().contains("turnLater"),"fresh high-water must retain the later input's actual ACK");
+            assert!(is_text(fresh.get(&k("state")),"PARTIAL"));
+            let response=object(fresh.get(&k("response")).unwrap()).unwrap();
+            let result=object(response.get(&k("result")).unwrap()).unwrap();
+            let history=object(result.get(&k("nativeHistory")).unwrap()).unwrap();
+            let fresh_cursor=string_field(history,"nextCursor").unwrap();
+            let mut fresh_continuation=product.visible_reply("workspaceA","UNKNOWN",selected.association.as_ref(),None);
+            product.visible_thread_page("workspaceA",&selected,&BTreeMap::from([(k("cursor"),s(&fresh_cursor))]),&mut fresh_continuation).unwrap();
+            assert!(Json::Object(fresh_continuation).canonical().contains("turnLater"),"fresh high-water must retain the later input's actual ACK");
         });
     }
     #[test]
