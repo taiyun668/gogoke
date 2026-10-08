@@ -1,0 +1,8 @@
+{
+  "schema": "gogoke.37.light-checkpoint.v1",
+  "changed": "Owner prioritized finding 1 of Claude PR54 comment 6055508554. Removed the unconditional missing-Now notice and its unused hooks from the shared Messages consumer. Absence of a host association no longer renders an error on every ordinary conversation; explicit anchored NowBlock facts and their existing frozen/read failure behavior remain.",
+  "result": "Signed Node full project TypeScript and diff whitespace checks PASS. Cloud browser check is next; installed UI for this source is NOT_RUN. The installed 0.1.38 remains the previously signed frozen 41cf5403 bytes, with no local rebuild, signing, repack or install for this UI iteration.",
+  "remaining": "Claude findings 2-6 and output-anchor confirmation remain in the current integration batch. G NowContext remains Claude-owned. The separate Secretary real producer is under full independent review; its defects are not claimed resolved by this notice removal.",
+  "next": "Push this small priority correction and run browser-only cloud CI; continue the other mount corrections and real provider startup fixes in parallel. Record exact installed provider failure and real H stop/release preservation separately.",
+  "reference": "Claude's exact integration review against 41cf5403 and 0.1.37, existing G rule that absent facts stay hidden, existing NowOutputSlot/NowBlock and PR73 shared Messages scope. This changes the consumer only; no G directory, scope digest or authorization receipt change."
+}

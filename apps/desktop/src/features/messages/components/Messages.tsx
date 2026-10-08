@@ -1,5 +1,5 @@
 import { Fragment, memo, useCallback, type ReactNode } from "react";
-import { NowOutputSlot, useNowConversation, useNowReadError } from "@/features/now/NowContext";
+import { NowOutputSlot } from "@/features/now/NowContext";
 import { useI18n } from "@/i18n";
 import ChevronDown from "lucide-react/dist/esm/icons/chevron-down";
 import ChevronUp from "lucide-react/dist/esm/icons/chevron-up";
@@ -75,8 +75,6 @@ export const Messages = memo(function Messages({
   onQuoteMessage,
   afterItem,
 }: MessagesProps) {
-  const now = useNowConversation(workspaceId, threadId);
-  const nowReadError = useNowReadError();
   const { tx } = useI18n();
   const activeUserInputRequestId =
     threadId && userInputRequests.length
@@ -306,11 +304,6 @@ export const Messages = memo(function Messages({
           return renderItem(entry.item);
         })}
         {planFollowupNode}
-        {threadId && !now && !isLoadingMessages ? (
-          <div className="empty" role="status">
-            正在进行的数据还没接上{nowReadError ? `：${nowReadError}` : ""}
-          </div>
-        ) : null}
         {userInputNode}
         <WorkingIndicator
           isThinking={isThinking}
