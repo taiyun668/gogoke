@@ -6,6 +6,40 @@ use crate::store::seat::{self, CreateSeat, Kind, NativeOrigin, Seat, SeatChange,
 
 fn key(name: &str) -> JsonString { JsonString::from_str(name) }
 
+struct SecretaryInputHistoryRead {
+    seat_id:String,
+    incarnation:String,
+    authorization_generation:String,
+    session_id:String,
+    h_generation:String,
+    continuation:Option<String>,
+}
+
+fn secretary_input_history_read(fields:&BTreeMap<JsonString,Json>)
+    ->Result<SecretaryInputHistoryRead> {
+    let Some(Json::Object(read))=fields.get(&key("inputHistory")) else {
+        return Err(OrchestrationError::Invalid("inputHistory"));
+    };
+    if read.len()!=5 && read.len()!=6 {
+        return Err(OrchestrationError::Invalid("inputHistory fields"));
+    }
+    let continuation=if read.contains_key(&key("continuation")) {
+        let value=string_field(read,"continuation")?;
+        if value.len()!=64 || !value.bytes().all(|byte|byte.is_ascii_hexdigit()) {
+            return Err(OrchestrationError::Invalid("inputHistory continuation"));
+        }
+        Some(value)
+    } else {None};
+    Ok(SecretaryInputHistoryRead {
+        seat_id:string_field(read,"seatId")?,
+        incarnation:string_field(read,"incarnation")?,
+        authorization_generation:string_field(read,"authorizationGeneration")?,
+        session_id:string_field(read,"sessionId")?,
+        h_generation:string_field(read,"hGeneration")?,
+        continuation,
+    })
+}
+
 pub(super) fn configuration_depth_ok(frame: &[u8]) -> bool {
     let mut depth = 0usize;
     let mut quoted = false;
@@ -314,6 +348,177 @@ impl<'root> ProductDatabase<'root> {
             (key("ledgerEpoch"),text(&position.epoch)),
             (key("ledgerCursor"),text(&position.cursor.to_string())),
         ])))
+    }
+
+    /// Page original H requests only after the direct USER configuration
+    /// path has selected this exact E/H/A Secretary conversation. A missing E
+    /// INPUT marker is an explicit provenance gap, never a reason to silently
+    /// drop an H request or expose its body.
+    fn read_secretary_input_history_in_transaction(&self,
+        read:&SecretaryInputHistoryRead,conversation:&Json,
+        response:&mut BTreeMap<JsonString,Json>)->Result<()> {
+        use crate::store::session_transport::{decode_request,read_stdin_journal,
+            JournalState,StdinJournalKey};
+        let text=|value:&str| Json::String(JsonString::from_str(value));
+        let Json::Object(conversation_fields)=conversation else {
+            return Err(OrchestrationError::AccessDenied);
+        };
+        let is=|name:&str,value:&str| matches!(conversation_fields.get(&key(name)),
+            Some(Json::String(found)) if found.to_well_formed_string().as_deref()==Some(value));
+        if !is("state","FOUND") {
+            if read.continuation.is_some() {return Err(OrchestrationError::AccessDenied);}
+            response.insert(key("inputHistory"),Json::Object(BTreeMap::from([
+                (key("state"),text("UNKNOWN")),
+                (key("items"),Json::Array(Vec::new())),
+                (key("nextContinuation"),Json::Null),
+            ])));
+            return Ok(());
+        }
+        if !is("sessionId",&read.session_id) || !is("generation",&read.h_generation) {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let scope=format!("gogoke.37.secretary-original-user.v1\n{}\n{}\n{}\n{}\n{}",
+            read.seat_id,read.incarnation,read.authorization_generation,
+            read.session_id,read.h_generation);
+        let base_len=2+response.iter().map(|(name,value)|
+            Json::String(name.clone()).canonical().len()+1+value.canonical().len())
+            .sum::<usize>()+response.len().saturating_sub(1)
+            +1+Json::String(key("conversation")).canonical().len()+1
+            +conversation.canonical().len()
+            +1+Json::String(key("inputHistory")).canonical().len()+1;
+        let query=Statement::prepare(self.connection.as_ptr(),
+            "SELECT request_id,ticket,generation,expected_revision \
+             FROM main.gogoke_v37_h_stdin_journal \
+             WHERE domain_id='global' AND session_id=?1 \
+               AND operation IN ('send','append-without-turn') \
+             ORDER BY CAST(generation AS INTEGER),CAST(expected_revision AS INTEGER),request_id")?;
+        query.bind_text(1,&read.session_id)?;
+        let mut past_cursor=read.continuation.is_none();
+        let mut matched_cursor=false;
+        let mut last_token=None;
+        let mut items=Vec::new();
+        let mut items_wire_len=0usize;
+        let mut more=false;
+        while query.step_row()? {
+            let request_id=query.column_text(0)?;
+            let ticket=query.column_text(1)?;
+            let generation=query.column_text(2)?;
+            let revision=query.column_text(3)?;
+            let token=crate::store::digest::sha256_hex(format!(
+                "{scope}\n{generation}\n{revision}\n{request_id}").as_bytes());
+            if !past_cursor {
+                if read.continuation.as_deref()==Some(token.as_str()) {
+                    past_cursor=true;
+                    matched_cursor=true;
+                }
+                continue;
+            }
+            let record=read_stdin_journal(&self.connection,&StdinJournalKey {
+                domain_id:"global",request_id:&request_id,session_id:&read.session_id,
+                ticket:&ticket,generation:&generation,
+            }).map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                "secretary original H input: {error:?}")))?
+                .ok_or(OrchestrationError::OperationConflict)?;
+            if record.expected_revision.to_string()!=revision {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            let request=decode_request(&record.request_bytes).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!(
+                    "secretary original USER request: {error:?}")))?;
+            if request.family!="K-SESSION" || request.operation!=record.operation
+                || request.payload.len()!=2 || request.domain_id!="global"
+                || request.target_id!=read.session_id || request.request_id!=request_id
+                || !matches!(request.operation.as_str(),"send"|"append-without-turn")
+                || !matches!(request.payload.get(&key("generation")),
+                    Some(Json::String(value)) if value.to_well_formed_string().as_deref()==Some(generation.as_str())) {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            let body=string_field(&request.payload,"body")?;
+            let marker_id=format!("H-USER:global:{}:{}",read.session_id,request_id);
+            let marker=Statement::prepare(self.connection.as_ptr(),
+                "SELECT CAST(occurred_at_ms AS TEXT),CAST(observed_at_ms AS TEXT) \
+                 FROM main.gogoke_v37_seat_secretary_presence \
+                 WHERE source_id=?1 AND kind='INPUT' AND source_operation_id=?2 \
+                   AND source_epoch=?3 AND source_cursor=?4")?;
+            for (index,value) in [marker_id.as_str(),record.process_operation_id.as_str(),
+                record.custodian_nonce.as_str(),request_id.as_str()].iter().enumerate() {
+                marker.bind_text((index+1) as i32,value)?;
+            }
+            let occurred=if marker.step_row()? {
+                let occurred=marker.column_text(0)?.parse::<i64>().map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!(
+                        "secretary original USER time: {error}")))?;
+                let observed=marker.column_text(1)?.parse::<i64>().map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!(
+                        "secretary original USER observation: {error}")))?;
+                if occurred<=0 || observed<occurred || marker.step_row()? {
+                    return Err(OrchestrationError::OperationConflict);
+                }
+                Some(occurred)
+            } else {None};
+            let phase=match record.state {JournalState::Prepared=>"PREPARED",
+                JournalState::Unknown=>"UNKNOWN",JournalState::Receipted=>"RECEIPTED"};
+            let receipt=record.receipt_bytes.as_ref().map(|bytes| {
+                std::str::from_utf8(bytes).map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!(
+                        "secretary original receipt UTF-8: {error}")))
+                    .and_then(|text|Parser::parse(text).map_err(OrchestrationError::Atomic))
+            }).transpose()?.unwrap_or(Json::Null);
+            let item=BTreeMap::from([
+                (key("requestId"),text(&request_id)),
+                (key("generation"),text(&generation)),
+                (key("operation"),text(&record.operation)),
+                (key("expectedRevision"),text(&revision)),
+                (key("body"),occurred.map(|_|text(&body)).unwrap_or(Json::Null)),
+                (key("bodyState"),text(if occurred.is_some() {"VERIFIED"} else {"UNKNOWN"})),
+                (key("occurredAtMs"),occurred.map(|at|text(&at.to_string())).unwrap_or(Json::Null)),
+                (key("phase"),text(phase)),
+                (key("receiptStatus"),record.receipt_status.map(|status|text(status.wire())).unwrap_or(Json::Null)),
+                (key("receipt"),receipt),
+            ]);
+            let mut item=Json::Object(item);
+            let page_shell_len=Json::Object(BTreeMap::from([
+                    (key("state"),text("FOUND")),
+                    (key("sessionId"),text(&read.session_id)),
+                    (key("items"),Json::Array(Vec::new())),
+                    (key("nextContinuation"),text(&token)),
+                ])).canonical().len();
+            let fits=|item:&Json| {
+                base_len+page_shell_len+items_wire_len
+                    +usize::from(!items.is_empty())+item.canonical().len()
+                    <=crate::ipc::MAX_FRAME_BYTES
+            };
+            if !fits(&item) && items.is_empty() {
+                // One admitted original may itself fill the ingress frame.
+                // Preserve its position and receipt status without pretending
+                // its absent body/receipt is a delivered conversation message.
+                if let Json::Object(ref mut fields)=item {
+                    fields.insert(key("body"),Json::Null);
+                    if occurred.is_some() {fields.insert(key("bodyState"),text("TOO_LARGE"));}
+                    fields.insert(key("receipt"),Json::Null);
+                    fields.insert(key("receiptState"),text("OMITTED_FOR_FRAME"));
+                }
+            }
+            if !fits(&item) {
+                if items.is_empty() {return Err(OrchestrationError::Invalid("inputHistory frame bound"));}
+                more=true;
+                break;
+            }
+            items_wire_len+=usize::from(!items.is_empty())+item.canonical().len();
+            items.push(item);
+            last_token=Some(token);
+        }
+        if read.continuation.is_some() && !matched_cursor {
+            return Err(OrchestrationError::Invalid("inputHistory continuation"));
+        }
+        response.insert(key("inputHistory"),Json::Object(BTreeMap::from([
+            (key("state"),text("FOUND")),
+            (key("sessionId"),text(&read.session_id)),
+            (key("items"),Json::Array(items)),
+            (key("nextContinuation"),if more {text(last_token.as_deref().ok_or(
+                OrchestrationError::OperationConflict)?)} else {Json::Null}),
+        ])));
+        Ok(())
     }
     fn read_instance_seat_occupancy(&self, instance_id: &str) -> Result<(Vec<Json>, Option<usize>)> {
         // E owns assignment across every domain. Names are joined by the exact
@@ -1053,7 +1258,10 @@ impl<'root> ProductDatabase<'root> {
             | "secretary-routine-resume" | "secretary-routine-delete") {
             return self.dispatch_user_secretary_routine_configuration(&command, &fields, frame);
         }
-        if command == "secretary-configuration-read" && fields.len() == 2 {
+        if command == "secretary-configuration-read" && (fields.len() == 2
+            || (fields.len()==3 && fields.contains_key(&key("inputHistory")))) {
+            let history=if fields.len()==3 {Some(secretary_input_history_read(&fields)?)}
+                else {None};
             self.connection.execute("BEGIN").map_err(OrchestrationError::CommitUnknownWithCause)?;
             let observed=(|| -> Result<_> {
                 let configuration=seat::read_secretary_configuration_in_transaction(
@@ -1064,52 +1272,66 @@ impl<'root> ProductDatabase<'root> {
                     _=>Json::Object(BTreeMap::from([(key("state"),
                         Json::String(JsonString::from_str("NONE")))])),
                 };
-                Ok((configuration,conversation))
+                let text=|value:&str| Json::String(JsonString::from_str(value));
+                let optional=|value:Option<String>| value.map(|value|text(&value)).unwrap_or(Json::Null);
+                let mut result=BTreeMap::from([
+                    (key("schema"),text("gogoke.37.secretary-configuration.v1")),
+                ]);
+                match configuration {
+                    seat::SecretaryConfiguration::Unset=>{result.insert(key("state"),text("UNSET"));},
+                    seat::SecretaryConfiguration::Revoked=>{result.insert(key("state"),text("REVOKED"));},
+                    seat::SecretaryConfiguration::Designated {seat_id,incarnation,generation,revision,
+                        instance_id,model,effort,permission,state}=>{
+                        if let Some(read)=&history {
+                            if read.seat_id!=seat_id || read.incarnation!=incarnation
+                                || read.authorization_generation!=generation.to_string() {
+                                return Err(OrchestrationError::AccessDenied);
+                            }
+                        }
+                        result.insert(key("state"),text("DESIGNATED"));
+                        result.insert(key("seatId"),text(&seat_id));
+                        result.insert(key("incarnation"),text(&incarnation));
+                        result.insert(key("generation"),text(&generation.to_string()));
+                        result.insert(key("revision"),text(&revision.to_string()));
+                        result.insert(key("instanceId"),optional(instance_id));
+                        result.insert(key("model"),optional(model));
+                        result.insert(key("effort"),optional(effort));
+                        let permission=permission.map(|tier|match tier {
+                            seat::PermissionTier::ReadOnly=>"READ_ONLY",
+                            seat::PermissionTier::NoNetwork=>"NO_NETWORK",
+                            seat::PermissionTier::IsolatedWrite=>"ISOLATED_WRITE",
+                            seat::PermissionTier::NetworkedWrite=>"NETWORKED_WRITE",
+                        }.to_owned());
+                        result.insert(key("permissionTier"),optional(permission));
+                        result.insert(key("seatState"),text(match state {
+                            State::Idle=>"IDLE",State::Busy=>"BUSY",State::Reclaimed=>"RECLAIMED",
+                        }));
+                    },
+                }
+                if let Some(read)=&history {
+                    if !matches!(result.get(&key("state")),Some(Json::String(value))
+                        if value.to_well_formed_string().as_deref()==Some("DESIGNATED")) {
+                        return Err(OrchestrationError::AccessDenied);
+                    }
+                    self.read_secretary_input_history_in_transaction(read,&conversation,&mut result)?;
+                }
+                result.insert(key("conversation"),conversation);
+                let bytes=Json::Object(result).canonical().into_bytes();
+                if bytes.len()>crate::ipc::MAX_FRAME_BYTES {
+                    return Err(OrchestrationError::Invalid("secretary configuration frame bound"));
+                }
+                Ok(bytes)
             })();
-            let (observed,conversation)=match observed {
-                Ok(observed)=>{
+            return match observed {
+                Ok(bytes)=>{
                     self.connection.execute("COMMIT").map_err(OrchestrationError::CommitUnknownWithCause)?;
-                    observed
+                    Ok(bytes)
                 },
                 Err(error)=>{
                     self.connection.execute("ROLLBACK").map_err(OrchestrationError::CommitUnknownWithCause)?;
-                    return Err(error.into());
+                    Err(error)
                 },
             };
-            let text=|value:&str| Json::String(JsonString::from_str(value));
-            let optional=|value:Option<String>| value.map(|value|text(&value)).unwrap_or(Json::Null);
-            let mut result=BTreeMap::from([
-                (key("schema"),text("gogoke.37.secretary-configuration.v1")),
-                (key("conversation"),conversation),
-            ]);
-            match observed {
-                seat::SecretaryConfiguration::Unset=>{result.insert(key("state"),text("UNSET"));},
-                seat::SecretaryConfiguration::Revoked=>{result.insert(key("state"),text("REVOKED"));},
-                seat::SecretaryConfiguration::Designated {seat_id,incarnation,generation,revision,
-                    instance_id,model,effort,permission,state}=>{
-                    result.insert(key("state"),text("DESIGNATED"));
-                    result.insert(key("seatId"),text(&seat_id));
-                    result.insert(key("incarnation"),text(&incarnation));
-                    result.insert(key("generation"),text(&generation.to_string()));
-                    result.insert(key("revision"),text(&revision.to_string()));
-                    result.insert(key("instanceId"),optional(instance_id));
-                    result.insert(key("model"),optional(model));
-                    result.insert(key("effort"),optional(effort));
-                    let permission=permission.map(|tier|match tier {
-                        seat::PermissionTier::ReadOnly=>"READ_ONLY",
-                        seat::PermissionTier::NoNetwork=>"NO_NETWORK",
-                        seat::PermissionTier::IsolatedWrite=>"ISOLATED_WRITE",
-                        seat::PermissionTier::NetworkedWrite=>"NETWORKED_WRITE",
-                    }.to_owned());
-                    result.insert(key("permissionTier"),optional(permission));
-                    result.insert(key("seatState"),text(match state {
-                        State::Idle=>"IDLE",State::Busy=>"BUSY",State::Reclaimed=>"RECLAIMED",
-                    }));
-                },
-            }
-            // Configuration facts do not claim that H/A can run this seat,
-            // subscribe globally, dispatch work, or schedule model calls.
-            return Ok(Json::Object(result).canonical().into_bytes());
         }
         if command == "seats-page-read" && fields.len() == 3 {
             let domain = string_field(&fields, "domainId")?;
@@ -1474,6 +1696,13 @@ mod tests {
             }
             let current=seat::get(&product.connection,"global",&created.seat_id).unwrap().unwrap();
             assert!(current.generation>created.generation,"configuration advances E authorization generation");
+            let history_read=format!(r#"{{"schema":"gogoke.37.owner-configuration.v1","command":"secretary-configuration-read","inputHistory":{{"seatId":"{}","incarnation":"{}","authorizationGeneration":"{}","sessionId":"foreignSession","hGeneration":"1"}}}}"#,
+                created.seat_id,created.incarnation,current.generation);
+            assert!(String::from_utf8(product.configure_user_v37(history_read.as_bytes()).unwrap()).unwrap()
+                .contains("\"inputHistory\":{\"items\":[],\"nextContinuation\":null,\"state\":\"UNKNOWN\"}"),
+                "an unproven H/A conversation cannot disclose input history");
+            assert!(product.configure_user_v37(history_read.replace(&created.seat_id,"otherSeat")
+                .as_bytes()).is_err(),"the read is bound to the current E designation");
             // A foreign project cannot masquerade as the singleton's global
             // conversation. An old native selection alone has no H/A proof.
             product.connection.execute("INSERT INTO main.gogoke_v37_native_selection(domain_id,session_id,seat_id,seat_incarnation,seat_authorization_generation,selected_instance_id) VALUES('projectA','foreignSession','globalSeatA','foreignIncarnation',1,'configuredInstance')").unwrap();
@@ -1516,6 +1745,136 @@ mod tests {
             assert!(String::from_utf8(product.configure_user_v37(read).unwrap()).unwrap()
                 .contains("\"state\":\"REVOKED\""));
             assert!(product.configure_user_v37(designate.as_bytes()).is_err(),"old designation cannot undo revocation");
+        });
+    }
+
+    #[test]
+    fn secretary_original_user_pages_preserve_historical_provenance_and_gaps() {
+        fixture(|product| {
+            let hex=|bytes:&[u8]| bytes.iter().map(|byte|format!("{byte:02x}")).collect::<String>();
+            for (generation,operation,ticket,nonce,phase,custody,stop) in [
+                ("1","oldProcess","oldTicket","oldNonce","STOPPED","STOPPED",Some("oldProof")),
+                ("2","newProcess","newTicket","newNonce","ACTIVE","ACTIVE",None),
+            ] {
+                let episode=Statement::prepare(product.connection.as_ptr(),
+                    "INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,
+                     generation,raw_hex,previous_revision,result_revision,process_operation_id,
+                     instance_id,home_id,binding_id,phase,stop_fact_id)
+                     VALUES('global',?1,'secretarySession',?2,'6f70656e',0,1,?3,
+                     'instanceS','homeS','bindingS',?4,?5)").unwrap();
+                let open=format!("open{generation}");
+                for (index,value) in [open.as_str(),generation,operation,phase].iter().enumerate() {
+                    episode.bind_text((index+1) as i32,value).unwrap();
+                }
+                if let Some(stop)=stop {episode.bind_text(5,stop).unwrap();}
+                episode.step_done().unwrap();drop(episode);
+                let generation_row=Statement::prepare(product.connection.as_ptr(),
+                    "INSERT INTO main.gogoke_v37_h_generation VALUES('global','secretarySession',?1,?2,?3)").unwrap();
+                for (index,value) in [generation,open.as_str(),operation].iter().enumerate() {
+                    generation_row.bind_text((index+1) as i32,value).unwrap();
+                }
+                generation_row.step_done().unwrap();drop(generation_row);
+                let process=Statement::prepare(product.connection.as_ptr(),
+                    "INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,
+                     custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,
+                     profile_id,domain_id,generation,state,stop_proof_hash)
+                     VALUES(?1,?2,?3,'11','1','fixture','sha256:fixture','profileS','global',?4,?5,?6)").unwrap();
+                for (index,value) in [operation,ticket,nonce,generation,custody].iter().enumerate() {
+                    process.bind_text((index+1) as i32,value).unwrap();
+                }
+                if let Some(stop)=stop {process.bind_text(6,stop).unwrap();}
+                process.step_done().unwrap();drop(process);
+            }
+            let long="a".repeat(2_200_000);
+            let empty=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send","requestId":"oversizeUser","targetId":"secretarySession","domainId":"global","expectedRevision":"3","payload":{"body":"","generation":"2"}}"#;
+            let oversized="a".repeat(crate::ipc::MAX_FRAME_BYTES-empty.len());
+            for (id,generation,operation,ticket,nonce,revision,body,phase,marked) in [
+                ("oldUser","1","oldProcess","oldTicket","oldNonce",1,&long,"RECEIPTED",true),
+                ("unmarkedUser","2","newProcess","newTicket","newNonce",1,&long,"UNKNOWN",false),
+                ("newUser","2","newProcess","newTicket","newNonce",2,&long,"RECEIPTED",true),
+                ("oversizeUser","2","newProcess","newTicket","newNonce",3,&oversized,"RECEIPTED",true),
+            ] {
+                let original=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"send\",\"requestId\":\"{id}\",\"targetId\":\"secretarySession\",\"domainId\":\"global\",\"expectedRevision\":\"{revision}\",\"payload\":{{\"body\":\"{body}\",\"generation\":\"{generation}\"}}}}");
+                let request=decode_request(original.as_bytes()).unwrap();
+                let original_hex=hex(original.as_bytes());
+                let receipt=if phase=="RECEIPTED" {Some(encode_receipt(&request,
+                    V37Status::Applied,revision,revision+1,BTreeMap::new()))} else {None};
+                let row=Statement::prepare(product.connection.as_ptr(),
+                    "INSERT INTO main.gogoke_v37_h_stdin_journal(domain_id,request_id,operation,
+                     ticket,process_operation_id,custodian_nonce,session_id,generation,request_hex,
+                     phase,receipt_hex,receipt_status,expected_revision,
+                     receipt_previous_revision,receipt_revision)
+                     VALUES('global',?1,'send',?2,?3,?4,'secretarySession',?5,?6,?7,?8,?9,?10,?11,?12)").unwrap();
+                for (index,value) in [id,ticket,operation,nonce,generation,
+                    original_hex.as_str(),phase].iter().enumerate() {
+                    row.bind_text((index+1) as i32,value).unwrap();
+                }
+                if let Some(receipt)=receipt {
+                    row.bind_text(8,&hex(&receipt)).unwrap();
+                    row.bind_text(9,"APPLIED").unwrap();
+                    row.bind_text(11,&revision.to_string()).unwrap();
+                    row.bind_text(12,&(revision+1).to_string()).unwrap();
+                }
+                row.bind_text(10,&revision.to_string()).unwrap();
+                row.step_done().unwrap();drop(row);
+                if marked {
+                    let marker=Statement::prepare(product.connection.as_ptr(),
+                        "INSERT INTO main.gogoke_v37_seat_secretary_presence
+                         (source_id,kind,source_operation_id,source_epoch,source_cursor,
+                          occurred_at_ms,observed_at_ms)
+                         VALUES(?1,'INPUT',?2,?3,?4,100,100)").unwrap();
+                    marker.bind_text(1,&format!("H-USER:global:secretarySession:{id}")).unwrap();
+                    marker.bind_text(2,operation).unwrap();
+                    marker.bind_text(3,nonce).unwrap();
+                    marker.bind_text(4,id).unwrap();
+                    marker.step_done().unwrap();
+                }
+            }
+            let conversation=Json::Object(BTreeMap::from([
+                (key("state"),Json::String(key("FOUND"))),
+                (key("sessionId"),Json::String(key("secretarySession"))),
+                (key("generation"),Json::String(key("2"))),
+            ]));
+            let mut read=SecretaryInputHistoryRead {seat_id:"seatS".into(),
+                incarnation:"incarnationS".into(),authorization_generation:"3".into(),
+                session_id:"secretarySession".into(),h_generation:"2".into(),continuation:None};
+            let mut result=BTreeMap::from([(key("schema"),Json::String(key("test")))]);
+            product.read_secretary_input_history_in_transaction(&read,&conversation,&mut result).unwrap();
+            let Json::Object(first)=result.remove(&key("inputHistory")).unwrap() else {panic!("page");};
+            let Json::Array(first_rows)=first.get(&key("items")).unwrap() else {panic!("items");};
+            assert_eq!(first_rows.len(),2,"page stops before the next original body exceeds the frame");
+            let Json::Object(old)=&first_rows[0] else {panic!("old");};
+            assert_eq!(old.get(&key("bodyState")).unwrap().canonical(),"\"VERIFIED\"");
+            assert_eq!(old.get(&key("generation")).unwrap().canonical(),"\"1\"");
+            assert_eq!(old.get(&key("receiptStatus")).unwrap().canonical(),"\"APPLIED\"");
+            let Json::Object(gap)=&first_rows[1] else {panic!("gap");};
+            assert_eq!(gap.get(&key("bodyState")).unwrap().canonical(),"\"UNKNOWN\"");
+            assert_eq!(gap.get(&key("body")).unwrap().canonical(),"null");
+            assert_eq!(gap.get(&key("phase")).unwrap().canonical(),"\"UNKNOWN\"");
+            let Json::String(cursor)=first.get(&key("nextContinuation")).unwrap() else {panic!("cursor");};
+            read.continuation=Some(cursor.to_well_formed_string().unwrap());
+            read.session_id="otherSession".into();
+            assert!(product.read_secretary_input_history_in_transaction(&read,&conversation,&mut result).is_err(),
+                "continuation cannot switch the selected session");
+            read.session_id="secretarySession".into();
+            read.authorization_generation="4".into();
+            assert!(product.read_secretary_input_history_in_transaction(&read,&conversation,&mut result).is_err(),
+                "continuation remains bound to the original E generation");
+            read.authorization_generation="3".into();
+            product.read_secretary_input_history_in_transaction(&read,&conversation,&mut result).unwrap();
+            let Json::Object(second)=result.remove(&key("inputHistory")).unwrap() else {panic!("second");};
+            let Json::Array(second_rows)=second.get(&key("items")).unwrap() else {panic!("items");};
+            assert_eq!(second_rows.len(),1);
+            let Json::String(cursor)=second.get(&key("nextContinuation")).unwrap() else {panic!("cursor");};
+            read.continuation=Some(cursor.to_well_formed_string().unwrap());
+            product.read_secretary_input_history_in_transaction(&read,&conversation,&mut result).unwrap();
+            let Json::Object(third)=result.remove(&key("inputHistory")).unwrap() else {panic!("third");};
+            let Json::Array(third_rows)=third.get(&key("items")).unwrap() else {panic!("items");};
+            assert_eq!(third_rows.len(),1);
+            let Json::Object(too_large)=&third_rows[0] else {panic!("oversized");};
+            assert_eq!(too_large.get(&key("bodyState")).unwrap().canonical(),"\"TOO_LARGE\"");
+            assert_eq!(too_large.get(&key("body")).unwrap().canonical(),"null");
+            assert_eq!(third.get(&key("nextContinuation")).unwrap().canonical(),"null");
         });
     }
 
