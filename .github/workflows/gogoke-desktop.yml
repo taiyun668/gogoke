@@ -388,6 +388,28 @@ jobs:
         env:
           GOGOKE_BUILD_LANE: ${{ matrix.lane }}
         run: |
+          # tauri-build's existing Common-Controls v6 resource is linked into
+          # bins, not cargo test --lib. rfd imports TaskDialogIndirect, so the
+          # library test host needs the same pinned manifest at loader startup.
+          # Keep the compiled executable bytes unchanged; no product sidecar is
+          # added to the package and no system configuration is changed.
+          cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_update --lib --no-run
+          if ($LASTEXITCODE -ne 0) { throw "Library test host compilation failed: $LASTEXITCODE" }
+          $testExecutables = @(Get-ChildItem -LiteralPath 'src-tauri/target/debug/deps' -Filter 'gogoke_desktop_lib-*.exe' -File)
+          if ($testExecutables.Count -ne 1) { throw 'The exact compiled library test host is ambiguous or absent' }
+          $metadataText = & cargo +1.89.0 metadata --locked --manifest-path src-tauri/Cargo.toml --format-version 1
+          if ($LASTEXITCODE -ne 0) { throw "Pinned test manifest source resolution failed: $LASTEXITCODE" }
+          $metadata = ($metadataText -join "`n") | ConvertFrom-Json
+          $manifestPackages = @($metadata.packages | Where-Object { $_.name -ceq 'tauri-build' -and $_.version -ceq '2.5.6' })
+          if ($manifestPackages.Count -ne 1) { throw 'Pinned tauri-build test manifest source is ambiguous or absent' }
+          $manifestSource = Join-Path (Split-Path $manifestPackages[0].manifest_path -Parent) 'src/windows-app-manifest.xml'
+          $manifestBytes = [IO.File]::ReadAllBytes($manifestSource)
+          $testExecutable = $testExecutables[0].FullName
+          $testHashBefore = (Get-FileHash -LiteralPath $testExecutable -Algorithm SHA256).Hash
+          [IO.File]::WriteAllBytes(($testExecutable + '.manifest'), $manifestBytes)
+          if ((Get-FileHash -LiteralPath $testExecutable -Algorithm SHA256).Hash -cne $testHashBefore) { throw 'Applying the original loader manifest changed executable bytes' }
+          if ((Get-FileHash -LiteralPath ($testExecutable + '.manifest') -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $manifestSource -Algorithm SHA256).Hash) { throw 'Library test host manifest differs from the pinned original' }
+          Write-Host "Library test host unchanged SHA256=$($testHashBefore.ToLowerInvariant()); original tauri-build 2.5.6 manifest SHA256=$((Get-FileHash -LiteralPath $manifestSource -Algorithm SHA256).Hash.ToLowerInvariant())"
           cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_update --lib
           if ($LASTEXITCODE -ne 0) { throw "gogoke update tests failed: $LASTEXITCODE" }
           cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml resource_trust --lib
