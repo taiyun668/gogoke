@@ -430,6 +430,16 @@ fn command_rule(original: &str) -> Result<&str, ScheduleError> {
         .find(|name| following.starts_with(**name))
         .map(|name| name.len())
         .or_else(|| {
+            // The task starts here; a later explicit zone declaration is
+            // checked against the complete USER text by explicit_zones.
+            if following.starts_with("提醒")
+                || following.starts_with("通知")
+                || following.starts_with("叫我")
+                || strip_ascii_prefix(following, "remind me").is_some()
+                || strip_ascii_prefix(following, "notify me").is_some()
+            {
+                return None;
+            }
             let word = following
                 .split(|c: char| c.is_whitespace() || matches!(c, ',' | '，' | '。' | '；' | ';'))
                 .next()?;
