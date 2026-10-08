@@ -1474,13 +1474,16 @@ type NativeVisibleJournal = {
   lastAccepted: (NativeVisibleIntent & { response: unknown }) | null;
   rejectedRequestIds: string[];
   lastRejected: (NativeVisibleIntent & { reason: string }) | null;
+  notDispatchedRequestIds: string[];
+  lastNotDispatched: (NativeVisibleIntent & { reason: string }) | null;
 };
 
 const nativeVisibleKey = (workspaceId: string) =>
   `gogoke.native-visible-original.${encodeURIComponent(workspaceId)}`;
 const emptyNativeVisibleJournal = (): NativeVisibleJournal =>
   ({ version: 1, pending: null, acceptedRequestIds: [], lastAccepted: null,
-    rejectedRequestIds: [], lastRejected: null });
+    rejectedRequestIds: [], lastRejected: null,
+    notDispatchedRequestIds: [], lastNotDispatched: null });
 
 function sameNativeAssociation(left: NativeConversationAssociation, right: NativeConversationAssociation) {
   return (Object.keys(left) as Array<keyof NativeConversationAssociation>).every(
@@ -1507,8 +1510,11 @@ function nativeVisibleJournal(workspaceId: string): NativeVisibleJournal {
       !parsed.acceptedRequestIds.every(nonempty) ||
       !Array.isArray(parsed.rejectedRequestIds) ||
       !parsed.rejectedRequestIds.every(nonempty) ||
+      !Array.isArray(parsed.notDispatchedRequestIds) ||
+      !parsed.notDispatchedRequestIds.every(nonempty) ||
       (parsed.lastAccepted !== null && !record(parsed.lastAccepted)) ||
       (parsed.lastRejected !== null && !record(parsed.lastRejected)) ||
+      (parsed.lastNotDispatched !== null && !record(parsed.lastNotDispatched)) ||
       (parsed.pending !== null && !record(parsed.pending))) {
     throw new Error("The original native visible request journal is invalid.");
   }
@@ -1538,6 +1544,12 @@ function hostTerminalVisibleRejection(cause: unknown, nativeRequestId: string): 
     ? message : null;
 }
 
+function nativeVisibleNotDispatched(cause: unknown, nativeRequestId: string): string | null {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  return message.startsWith(`GOGOKE_VISIBLE_NOT_DISPATCHED:${nativeRequestId}:`)
+    ? message : null;
+}
+
 function settleNativeVisibleRejection(
   workspaceId: string, journal: NativeVisibleJournal,
   intent: NativeVisibleIntent, reason: string,
@@ -1561,6 +1573,10 @@ export function pendingNativeVisibleIntent(workspaceId: string): NativeVisibleIn
 
 export function lastRejectedNativeVisibleIntent(workspaceId: string) {
   return nativeVisibleJournal(workspaceId).lastRejected;
+}
+
+export function lastNotDispatchedNativeVisibleIntent(workspaceId: string) {
+  return nativeVisibleJournal(workspaceId).lastNotDispatched;
 }
 
 async function nativeVisibleTransport(workspaceId: string): Promise<{
@@ -1624,7 +1640,8 @@ async function invokeVisibleWrite<T>(
     }
     const id = nativeRequestId ?? `visible_${crypto.randomUUID()}`;
     if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(id) ||
-        journal.acceptedRequestIds.includes(id) || journal.rejectedRequestIds.includes(id)) {
+        journal.acceptedRequestIds.includes(id) || journal.rejectedRequestIds.includes(id) ||
+        journal.notDispatchedRequestIds.includes(id)) {
       throw new Error("Native visible request ID is invalid or already used.");
     }
     const intent: NativeVisibleIntent = { nativeRequestId: id, workspaceId,
@@ -1637,6 +1654,14 @@ async function invokeVisibleWrite<T>(
         nativeRequestId: id, expectedAssociation: association });
     } catch (cause) {
       intent.error = cause instanceof Error ? cause.message : String(cause);
+      const notDispatched = nativeVisibleNotDispatched(cause, id);
+      if (notDispatched) {
+        journal.notDispatchedRequestIds.push(id);
+        journal.lastNotDispatched = { ...intent, reason: notDispatched };
+        journal.pending = null;
+        saveNativeVisibleJournal(workspaceId, journal);
+        throw cause;
+      }
       const rejection = hostTerminalVisibleRejection(cause, id);
       if (rejection) {
         settleNativeVisibleRejection(workspaceId, journal, intent, rejection);
