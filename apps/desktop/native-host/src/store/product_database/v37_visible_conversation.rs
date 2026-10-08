@@ -361,6 +361,11 @@ impl<'root> ProductDatabase<'root> {
         if process.identity()!=&run.custody.identity {
             return Ok(("UNKNOWN",Some("Original H process handle identity differs from PID and creation time custody.".into())));
         }
+        match process.wait(std::time::Duration::ZERO) {
+            Ok(false)=>{},
+            Ok(true)=>return Ok(("UNKNOWN",Some("Original H process handle is signaled; no physical StopFact is recorded.".into()))),
+            Err(error)=>return Ok(("UNKNOWN",Some(format!("Original H process handle wait observation: {error}")))),
+        }
         match process.exit_code() {
             Ok(None)=>{},
             Ok(Some(code))=>return Ok(("UNKNOWN",Some(format!("Original H process exited with code {code}; no physical StopFact is recorded.")))),
