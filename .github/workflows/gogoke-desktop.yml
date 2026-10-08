@@ -384,12 +384,38 @@ jobs:
           node ../../tools/ci/gogoke-package-service.mjs verify src-tauri/resources generated/gogoke-package-hashes.json
           if ($LASTEXITCODE -ne 0) { throw "staged resources failed byte check: $LASTEXITCODE" }
       - name: Test native release and resource trust paths
+        id: native_trust
         shell: pwsh
         env:
           GOGOKE_BUILD_LANE: ${{ matrix.lane }}
         run: |
-          cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_update --lib
-          if ($LASTEXITCODE -ne 0) { throw "gogoke update tests failed: $LASTEXITCODE" }
+          $nativeOriginal = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_update --lib 2>&1
+          $nativeExit = $LASTEXITCODE
+          $nativeOriginal | Out-Host
+          if ($nativeExit -ne 0) {
+            # Preserve the actual failed executable and loader facts. This does
+            # not retry the tests or turn a loader failure into a test result.
+            $evidence = Join-Path $env:RUNNER_TEMP "gogoke-test-loader-${{ matrix.lane }}"
+            New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+            $nativeOriginal | Set-Content -LiteralPath (Join-Path $evidence 'original-cargo-output.log') -Encoding utf8NoBOM
+            $executables = @(Get-ChildItem -LiteralPath 'src-tauri/target/debug/deps' -Filter 'gogoke_desktop_lib-*.exe' -File)
+            foreach ($executable in $executables) {
+              Copy-Item -LiteralPath $executable.FullName -Destination $evidence
+              & (Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x64/dumpbin.exe') /imports $executable.FullName > (Join-Path $evidence ($executable.Name + '.imports.txt'))
+            }
+            [ordered]@{
+              sourceCommit = (git rev-parse HEAD).Trim(); lane = '${{ matrix.lane }}';
+              originalExit = $nativeExit; testExecution = 'READ_ORIGINAL_CARGO_OUTPUT';
+              executables = @($executables | ForEach-Object { @{ name = $_.Name; sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() } });
+              systemDirectory = [Environment]::SystemDirectory;
+              processPath = $env:PATH
+            } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidence 'loader-facts.json') -Encoding utf8NoBOM
+            Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = [DateTime]::Now.AddMinutes(-10) } -ErrorAction SilentlyContinue |
+              Where-Object { $_.Message -match 'gogoke_desktop_lib|0xc0000139' } |
+              Select-Object TimeCreated, Id, ProviderName, Message |
+              ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $evidence 'original-loader-events.json') -Encoding utf8NoBOM
+            throw "gogoke update tests failed: $nativeExit"
+          }
           cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml resource_trust --lib
           if ($LASTEXITCODE -ne 0) { throw "resource trust tests failed: $LASTEXITCODE" }
           $custody = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml cancelled_reply_retains_job_and_lease_until_accounted_settlement --lib 2>&1
@@ -426,6 +452,14 @@ jobs:
           }
           cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_uninstall --lib
           if ($LASTEXITCODE -ne 0) { throw "gogoke uninstall tests failed: $LASTEXITCODE" }
+      - name: Preserve failed native test loader evidence
+        if: ${{ failure() && steps.native_trust.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: gogoke-test-loader-${{ matrix.lane }}-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/gogoke-test-loader-${{ matrix.lane }}/*
+          if-no-files-found: error
+          retention-days: 14
       - name: Verify login cancel result with a compiled failing mutation
         shell: pwsh
         run: |

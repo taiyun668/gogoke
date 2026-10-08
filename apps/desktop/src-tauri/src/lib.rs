@@ -389,6 +389,7 @@ pub fn run() {
             codex::turn_interrupt,
             codex::start_review,
             codex::respond_to_server_request,
+            codex::recover_native_visible_request,
             codex::remember_approval_rule,
             codex::generate_commit_message,
             codex::generate_run_metadata,
