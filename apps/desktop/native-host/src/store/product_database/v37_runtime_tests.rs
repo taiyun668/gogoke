@@ -1015,7 +1015,14 @@ fn qualify_synthetic_file_backend(product: &mut ProductDatabase<'_>, root: &Root
 
 fn actual_saved_thread_files(home: &std::path::Path, thread: &str) -> Vec<std::path::PathBuf> {
     use std::os::windows::fs::MetadataExt;
-    let mut pending = vec![home.to_path_buf()];
+    // Observe Codex's persisted rollout tree, not the whole CODEX_HOME.
+    // Its unrelated .tmp plugin clones may disappear during this read.
+    // An absent/unreadable sessions tree still fails with the original error.
+    let sessions = home.join("sessions");
+    let metadata = std::fs::symlink_metadata(&sessions).unwrap();
+    assert_eq!(metadata.file_attributes() & 0x400, 0, "native history reparse: {sessions:?}");
+    assert!(metadata.is_dir(), "original native history sessions directory: {sessions:?}");
+    let mut pending = vec![sessions];
     let mut matches = Vec::new();
     let suffix = format!("{thread}.jsonl");
     while let Some(parent) = pending.pop() {

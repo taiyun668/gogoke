@@ -509,7 +509,9 @@ jobs:
             if ($selected.Count -eq 0) { throw "Original native library shard has zero tests: $shard" }
             if ($shard -ne 'remainder') { $arguments += $prefixes[$shard] }
           }
-          $arguments += @('--','--nocapture')
+          # Preserve all test output after completion so concurrent fixture
+          # println! calls cannot split libtest's original status lines.
+          $arguments += @('--','--show-output')
           if ($shard -eq 'remainder') {
             foreach ($prefix in $prefixes.Values) { $arguments += @('--skip',$prefix) }
           }
@@ -577,7 +579,7 @@ jobs:
             }
           }
           $machine['lib_tests'] = [ordered]@{
-            command = 'cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib -- --nocapture'
+            command = 'cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib -- --show-output'
             exit_code = $exitCode
             discovered = $discovered
             executed = $executed
