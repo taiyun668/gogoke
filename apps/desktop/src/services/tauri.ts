@@ -132,6 +132,7 @@ type SecretaryConversation = {
   statuses: string[];
   inputs: SecretaryOriginalInput[];
   inputRowsEnded: boolean;
+  vendorUserFacts: SecretaryVendorUserFact[];
   verifiedSend: { requestId: string; body: string; hGeneration: string } | null;
   writer: { binding: SecretaryBinding; instanceId: string; model: string; effort: string; permissionTier: string;
     canSend: boolean; canStop: boolean } | null;
@@ -140,10 +141,11 @@ type SecretaryConversation = {
 export type SecretaryBinding = {
   seatId: string; incarnation: string; eGeneration: string; eRevision: string;
   instanceId: string; model: string; effort: string; permissionTier: string;
-  sessionId: string; threadId: string; hGeneration: string;
+  sessionId: string; threadId: string; hGeneration: string; hRevision: string;
 };
 
 export type SecretaryWriteFact = { operation: "send" | "stop"; requestId: string;
+  binding: SecretaryBinding;
   sessionId: string; seatId: string; hGeneration: string;
   body: string | null; status: "UNKNOWN" | "ACCEPTED"; receipt: unknown | null;
   reason: string | null; inputVerified: boolean };
@@ -155,7 +157,15 @@ export type SecretaryOriginalInput = { requestId: string; generation: string;
   receiptStatus: string | null; receipt: Record<string, unknown> | null;
   receiptState: string | null; turnId: string | null };
 
-const sameSecretaryBinding = (left: SecretaryBinding, right: SecretaryBinding) =>
+export type SecretaryVendorUserFact = { sourceEventId: string; turnId: string | null;
+  text: string; matchedOriginal: boolean };
+
+export const sameSecretaryBinding = (left: SecretaryBinding, right: SecretaryBinding) =>
+  (["seatId", "incarnation", "eGeneration", "eRevision", "instanceId", "model",
+    "effort", "permissionTier", "sessionId", "threadId", "hGeneration", "hRevision"] as const)
+    .every((key) => nonempty(left[key]) && left[key] === right[key]);
+
+export const sameSecretaryWriter = (left: SecretaryBinding, right: SecretaryBinding) =>
   (["seatId", "incarnation", "eGeneration", "eRevision", "instanceId", "model",
     "effort", "permissionTier", "sessionId", "threadId", "hGeneration"] as const)
     .every((key) => nonempty(left[key]) && left[key] === right[key]);
@@ -164,12 +174,14 @@ function bindingOf(configuration: Extract<SecretaryConfiguration, { state: "DESI
   fact: NonNullable<Extract<SecretaryConfiguration, { state: "DESIGNATED" }>["conversation"]>): SecretaryBinding | null {
   if (!nonempty(configuration.instanceId) || !nonempty(configuration.model) ||
       !nonempty(configuration.effort) || !nonempty(configuration.permissionTier) ||
-      !nonempty(fact.sessionId) || !nonempty(fact.threadId) || !decimal(fact.generation)) return null;
+      !nonempty(fact.sessionId) || !nonempty(fact.threadId) ||
+      !decimal(fact.generation) || !decimal(fact.revision)) return null;
   return { seatId: configuration.seatId, incarnation: configuration.incarnation,
     eGeneration: configuration.generation, eRevision: configuration.revision,
     instanceId: configuration.instanceId, model: configuration.model,
     effort: configuration.effort, permissionTier: configuration.permissionTier,
-    sessionId: fact.sessionId, threadId: fact.threadId, hGeneration: fact.generation };
+    sessionId: fact.sessionId, threadId: fact.threadId,
+    hGeneration: fact.generation, hRevision: fact.revision! };
 }
 
 function secretaryReceipt(value: unknown, family: "K-SESSION" | "K-LEDGER",
@@ -345,7 +357,8 @@ async function readSecretaryInputHistory(configuration: Extract<SecretaryConfigu
 type SecretaryTranscript = { sessionId: string; seatId: string; epoch: string;
   cursor: string; target: string; headHint: string; complete: boolean; messages: ConversationItem[];
   ids: Set<string>; groups: Map<string, number>; statuses: string[];
-  turnFirstMessage: Map<string, number>; turnHasAUser: Set<string> };
+  turnFirstMessage: Map<string, number>;
+  vendorUserFacts: SecretaryVendorUserFact[]; vendorGroups: Map<string, number> };
 
 function secretaryEvent(state: SecretaryTranscript, value: unknown, threadId: string): void {
   if (!record(value) || !decimal(value.cursor) || !nonempty(value.sourceEventId) ||
@@ -374,8 +387,20 @@ function secretaryEvent(state: SecretaryTranscript, value: unknown, threadId: st
     if (!record(update.content) || update.content.type !== "text" || typeof update.content.text !== "string") {
       throw new Error(`Native Secretary text update is malformed: ${JSON.stringify(value)}`);
     }
-    const role = update.sessionUpdate === "user_message_chunk" ? "user" : "assistant";
-    if (role === "user" && meta && nonempty(meta.turnId)) state.turnHasAUser.add(meta.turnId);
+    if (update.sessionUpdate === "user_message_chunk") {
+      const index = group ? state.vendorGroups.get(group) : undefined;
+      if (index !== undefined) {
+        const prior = state.vendorUserFacts[index];
+        state.vendorUserFacts[index] = { ...prior, text: prior.text + update.content.text };
+      } else {
+        if (group) state.vendorGroups.set(group, state.vendorUserFacts.length);
+        state.vendorUserFacts.push({ sourceEventId: value.sourceEventId,
+          turnId: meta && nonempty(meta.turnId) ? meta.turnId : null,
+          text: update.content.text, matchedOriginal: false });
+      }
+      return;
+    }
+    const role = "assistant";
     const index = group ? state.groups.get(group) : undefined;
     const old = index === undefined ? null : state.messages[index];
     if (old && old.kind === "message" && old.role === role) {
@@ -447,6 +472,7 @@ export function createDesign37SecretarySource(): {
   invalidateTranscript: () => void;
   writeFacts: () => SecretaryWriteFact[];
   send: (binding: SecretaryBinding, body: string) => Promise<SecretaryWriteFact>;
+  retrySend: (requestId: string) => Promise<SecretaryWriteFact>;
   stop: (binding: SecretaryBinding) => Promise<SecretaryWriteFact>;
   retryStop: () => Promise<SecretaryWriteFact>;
 } {
@@ -569,35 +595,39 @@ export function createDesign37SecretarySource(): {
     expectedRevision: string; operation: "send" | "stop"; body: string | null;
     status: "UNKNOWN" | "ACCEPTED"; receipt: unknown | null; reason: string | null;
     inputVerified: boolean };
-  let lastSend: OriginalWrite | null = null;
+  const sends: OriginalWrite[] = [];
   let lastStop: OriginalWrite | null = null;
   const factOf = (write: OriginalWrite): SecretaryWriteFact => ({
-    operation: write.operation, requestId: write.requestId,
+    operation: write.operation, requestId: write.requestId, binding: write.binding,
     sessionId: write.binding.sessionId, seatId: write.binding.seatId,
     hGeneration: write.binding.hGeneration, body: write.body,
     status: write.status, receipt: write.receipt, reason: write.reason,
     inputVerified: write.inputVerified });
-  const writeFacts = () => [lastSend, lastStop].filter((write): write is OriginalWrite => write !== null)
+  const writeFacts = () => [...sends, lastStop].filter((write): write is OriginalWrite => write !== null)
     .map(factOf);
+  const removeSend = (write: OriginalWrite) => {
+    const index = sends.indexOf(write);
+    if (index >= 0) sends.splice(index, 1);
+  };
   const observeOriginalInputs = (values: unknown[]) => {
-    if (!lastSend || lastSend.status !== "UNKNOWN") return;
     for (const raw of values) {
-      if (!record(raw) || raw.requestId !== lastSend.requestId) continue;
-      if (raw.expectedRevision !== lastSend.expectedRevision || !nonempty(raw.phase) ||
+      if (!record(raw) || !nonempty(raw.requestId)) continue;
+      const send = sends.find((item) => item.requestId === raw.requestId && item.status === "UNKNOWN");
+      if (!send) continue;
+      if (raw.expectedRevision !== send.expectedRevision || !nonempty(raw.phase) ||
           (raw.receipt !== null && !record(raw.receipt))) {
         throw new Error(`Native Secretary original input fact is invalid: ${JSON.stringify(raw)}`);
       }
-      if (raw.receipt === null) return;
-      const result = originalWriteReceipt(raw.receipt, "send", lastSend.requestId,
-        lastSend.binding.sessionId, lastSend.expectedRevision);
+      if (raw.receipt === null) continue;
+      const result = originalWriteReceipt(raw.receipt, "send", send.requestId,
+        send.binding.sessionId, send.expectedRevision);
       if (result === "ACCEPTED") {
-        lastSend.status = "ACCEPTED";
-        lastSend.receipt = raw.receipt;
-        lastSend.reason = null;
+        send.status = "ACCEPTED";
+        send.receipt = raw.receipt;
+        send.reason = null;
       } else if (result === "REJECTED") {
-        lastSend = null;
+        removeSend(send);
       }
-      return;
     }
   };
   const invalidateTranscript = () => { transcript = null; };
@@ -652,12 +682,13 @@ export function createDesign37SecretarySource(): {
     const state: SecretaryTranscript = prior ? {
       ...prior, messages: [...prior.messages], ids: new Set(prior.ids),
       groups: new Map(prior.groups), statuses: [...prior.statuses],
-      turnFirstMessage: new Map(prior.turnFirstMessage), turnHasAUser: new Set(prior.turnHasAUser),
+      turnFirstMessage: new Map(prior.turnFirstMessage),
+      vendorUserFacts: [...prior.vendorUserFacts], vendorGroups: new Map(prior.vendorGroups),
       target: prior.complete ? head : prior.target, complete: false,
     } : { sessionId: fact.sessionId!, seatId: original.configuration.seatId,
       epoch: fact.ledgerEpoch!, cursor: "0", target: head, headHint: head, complete: false,
       messages: [], ids: new Set(), groups: new Map(), statuses: [],
-      turnFirstMessage: new Map(), turnHasAUser: new Set() };
+      turnFirstMessage: new Map(), vendorUserFacts: [], vendorGroups: new Map() };
     let pageGap: string | null = null;
     while (BigInt(state.cursor) < BigInt(state.target)) {
       const current = confirmedConversation(await readSecretaryConfiguration());
@@ -716,30 +747,32 @@ export function createDesign37SecretarySource(): {
       state.headHint = result.highWaterCursor;
       transcript = { ...state, messages: [...state.messages], ids: new Set(state.ids),
         groups: new Map(state.groups), statuses: [...state.statuses],
-        turnFirstMessage: new Map(state.turnFirstMessage), turnHasAUser: new Set(state.turnHasAUser) };
+        turnFirstMessage: new Map(state.turnFirstMessage),
+        vendorUserFacts: [...state.vendorUserFacts], vendorGroups: new Map(state.vendorGroups) };
     }
     state.complete = !pageGap && state.cursor === state.target;
     transcript = state;
     let verifiedSend: { requestId: string; body: string; hGeneration: string } | null = null;
-    if (lastSend) {
-      const matching = originalInputs.find((item) => item.requestId === lastSend!.requestId &&
-        item.generation === lastSend!.binding.hGeneration);
+    for (const send of sends) {
+      if (send.binding.sessionId !== fact.sessionId) continue;
+      const matching = originalInputs.find((item) => item.requestId === send.requestId &&
+        item.generation === send.binding.hGeneration);
       if (matching) {
-        if (matching.expectedRevision !== lastSend.expectedRevision ||
-            (matching.bodyState === "VERIFIED" && matching.body !== lastSend.body)) {
+        if (matching.expectedRevision !== send.expectedRevision ||
+            (matching.bodyState === "VERIFIED" && matching.body !== send.body)) {
           throw new Error("Native Secretary original USER input disagrees with the retained request.");
         }
         if (matching.receipt && matching.phase === "RECEIPTED" &&
             (matching.receiptStatus === "APPLIED" || matching.receiptStatus === "REPLAYED")) {
-          const outcome = originalWriteReceipt(matching.receipt, "send", lastSend.requestId,
-            lastSend.binding.sessionId, lastSend.expectedRevision);
+          const outcome = originalWriteReceipt(matching.receipt, "send", send.requestId,
+            send.binding.sessionId, send.expectedRevision);
           if (outcome === "ACCEPTED") {
-            lastSend.status = "ACCEPTED";
-            lastSend.receipt = matching.receipt;
-            lastSend.reason = null;
+            send.status = "ACCEPTED";
+            send.receipt = matching.receipt;
+            send.reason = null;
             if (matching.bodyState === "VERIFIED" && matching.body !== null) {
-              lastSend.inputVerified = true;
-              verifiedSend = { requestId: lastSend.requestId, body: matching.body,
+              send.inputVerified = true;
+              verifiedSend = { requestId: send.requestId, body: matching.body,
                 hGeneration: matching.generation };
             }
           }
@@ -751,7 +784,7 @@ export function createDesign37SecretarySource(): {
       if (input.operation !== "send" || input.bodyState !== "VERIFIED" || input.body === null ||
           input.phase !== "RECEIPTED" || !input.receipt ||
           !["APPLIED", "REPLAYED"].includes(input.receiptStatus ?? "") ||
-          !input.turnId || state.turnHasAUser.has(input.turnId)) continue;
+          !input.turnId) continue;
       const at = state.turnFirstMessage.get(input.turnId);
       if (at === undefined) continue;
       const entries = inserts.get(at) ?? [];
@@ -764,7 +797,15 @@ export function createDesign37SecretarySource(): {
       messages.push(...(inserts.get(index) ?? []));
       if (index < state.messages.length) messages.push(state.messages[index]);
     }
-    const historyGap = [pageGap, sourceGap, inputGap].filter((value): value is string => Boolean(value)).join("；") || null;
+    const verifiedInputs = originalInputs.filter((input) => input.operation === "send" &&
+      input.bodyState === "VERIFIED" && input.body !== null &&
+      input.phase === "RECEIPTED" && input.receipt &&
+      ["APPLIED", "REPLAYED"].includes(input.receiptStatus ?? ""));
+    const vendorUserFacts = state.vendorUserFacts.map((fact) => ({ ...fact,
+      matchedOriginal: fact.turnId !== null && verifiedInputs.some((input) =>
+        input.turnId === fact.turnId && input.body === fact.text) }));
+    const historyGap = [pageGap, sourceGap, inputGap]
+      .filter((value): value is string => Boolean(value)).join("；") || null;
     const binding = bindingOf(latest.configuration, latest.fact);
     const writer = !pageGap && state.complete && binding && latest.fact.historical === false &&
       latest.fact.claimState === "COMMITTED" && latest.fact.stoppedFact !== true &&
@@ -779,7 +820,7 @@ export function createDesign37SecretarySource(): {
       revision: latest.fact.revision!, turnState: latest.fact.turnState!,
       historical: latest.fact.historical!, runtimeAvailable: latest.fact.runtimeAvailable!,
       messages, statuses: state.statuses, historyGap, writer,
-      inputs: originalInputs, inputRowsEnded, verifiedSend };
+      inputs: originalInputs, inputRowsEnded, vendorUserFacts, verifiedSend };
   };
   const currentWriter = async (binding: SecretaryBinding, turnState: "IDLE" | "RUNNING") => {
     const selected = confirmedConversation(await readSecretaryConfiguration());
@@ -798,7 +839,7 @@ export function createDesign37SecretarySource(): {
       const outcome = originalWriteReceipt(reply, write.operation, write.requestId,
         write.binding.sessionId, write.expectedRevision);
       if (outcome === "REJECTED") {
-        if (write.operation === "send") lastSend = null;
+        if (write.operation === "send") removeSend(write);
         else lastStop = null;
         throw new Error(`Native Secretary ${write.operation} was refused without execution: ${JSON.stringify(reply)}`);
       }
@@ -830,14 +871,23 @@ export function createDesign37SecretarySource(): {
   };
   const send = async (binding: SecretaryBinding, body: string): Promise<SecretaryWriteFact> => {
     if (!body.trim()) throw new Error("Secretary message is empty.");
-    if (lastSend?.status === "UNKNOWN") throw new Error("Previous Secretary send outcome is unconfirmed.");
-    if (lastSend?.status === "ACCEPTED" && !lastSend.inputVerified && lastSend.body === body &&
-        sameSecretaryBinding(lastSend.binding, binding)) {
+    if (sends.some((item) => item.status === "UNKNOWN" &&
+        sameSecretaryWriter(item.binding, binding))) {
+      throw new Error("Previous Secretary send for this H writer is unconfirmed. Recheck its original request.");
+    }
+    if (sends.some((item) => item.status === "ACCEPTED" && !item.inputVerified &&
+        item.body === body && sameSecretaryWriter(item.binding, binding))) {
       throw new Error("This exact Secretary message has an accepted original send receipt; edit the draft before a new send.");
     }
-    const { fact } = await currentWriter(binding, "IDLE");
-    lastSend = newOriginalWrite(binding, "send", fact.revision!, body);
-    return runOriginalWrite(lastSend);
+    await currentWriter(binding, "IDLE");
+    const write = newOriginalWrite(binding, "send", binding.hRevision, body);
+    sends.push(write);
+    return runOriginalWrite(write);
+  };
+  const retrySend = async (requestId: string): Promise<SecretaryWriteFact> => {
+    const original = sends.find((item) => item.requestId === requestId && item.status === "UNKNOWN");
+    if (!original) throw new Error("There is no unconfirmed original Secretary send to recheck.");
+    return runOriginalWrite(original);
   };
   const stop = async (binding: SecretaryBinding): Promise<SecretaryWriteFact> => {
     if (lastStop?.status === "UNKNOWN") {
@@ -846,8 +896,8 @@ export function createDesign37SecretarySource(): {
       }
       return runOriginalWrite(lastStop);
     }
-    const { fact } = await currentWriter(binding, "RUNNING");
-    lastStop = newOriginalWrite(binding, "stop", fact.revision!, null);
+    await currentWriter(binding, "RUNNING");
+    lastStop = newOriginalWrite(binding, "stop", binding.hRevision, null);
     return runOriginalWrite(lastStop);
   };
   const retryStop = async (): Promise<SecretaryWriteFact> => {
@@ -856,7 +906,8 @@ export function createDesign37SecretarySource(): {
     }
     return runOriginalWrite(lastStop);
   };
-  return { readSnapshot, readConversation, invalidateTranscript, writeFacts, send, stop, retryStop,
+  return { readSnapshot, readConversation, invalidateTranscript, writeFacts,
+    send, retrySend, stop, retryStop,
     source: { read: async () => (await readSnapshot()).page,
     actions: { pauseRoutine: (id) => changeRoutine(id, "secretary-routine-pause"),
       deleteRoutine: (id) => changeRoutine(id, "secretary-routine-delete") } } };
