@@ -259,7 +259,7 @@ fn settled_grok_holder_gone_release(db:&VerifiedDatabaseConnection<'_>,
 /// canonical root matches a settled original ROOT effect's complete
 /// non-package multiset/control. This does not recover the old ACE order.
 fn settled_legacy_root_baseline(db:&VerifiedDatabaseConnection<'_>,
-    domain:&GrokDomain,old_grants:&[GrokGrant],control:u16,
+    domain:&GrokDomain,candidate:&GrokGrant,old_grants:&[GrokGrant],control:u16,
     other_hash:&str)->Result<String,String>{
     let blocked=|sql:&str,value:&str|->Result<(),String>{
         let row=stmt(db,sql)?;
@@ -345,8 +345,8 @@ fn settled_legacy_root_baseline(db:&VerifiedDatabaseConnection<'_>,
             return Err("grok F journal: unqualified old process writer".into());
         }
     }
-    let episode=stmt(db,"SELECT COALESCE(process_operation_id,''),phase,COALESCE(stop_fact_id,'') FROM main.gogoke_v37_h_process_episode WHERE instance_id=?1")?;
-    bind(&episode,&[&domain.instance_id])?;
+    let episode=stmt(db,"SELECT COALESCE(process_operation_id,''),phase,COALESCE(stop_fact_id,'') FROM main.gogoke_v37_h_process_episode WHERE instance_id=?1 AND binding_id<>?2")?;
+    bind(&episode,&[&domain.instance_id,&candidate.binding_id])?;
     while next(&episode)? {
         let operation=text(&episode,0)?;
         let phase=text(&episode,1)?;
@@ -358,8 +358,8 @@ fn settled_legacy_root_baseline(db:&VerifiedDatabaseConnection<'_>,
             return Err("grok F journal: unqualified old H episode".into());
         }
     }
-    let claim=stmt(db,"SELECT COALESCE(process_operation_id,''),state,COALESCE(stop_fact_id,'') FROM main.gogoke_v37_h_claim WHERE instance_id=?1")?;
-    bind(&claim,&[&domain.instance_id])?;
+    let claim=stmt(db,"SELECT COALESCE(process_operation_id,''),state,COALESCE(stop_fact_id,'') FROM main.gogoke_v37_h_claim WHERE instance_id=?1 AND binding_id<>?2")?;
+    bind(&claim,&[&domain.instance_id,&candidate.binding_id])?;
     while next(&claim)? {
         let operation=text(&claim,0)?;
         let state=text(&claim,1)?;
@@ -452,7 +452,7 @@ fn begin_grok_grant_with_catalog_and_anchor(db:&mut VerifiedDatabaseConnection<'
                 }
             } else {
                 let baseline_effect_id=if prior_grants.is_empty() {String::new()} else {
-                    settled_legacy_root_baseline(db,domain,&prior_grants,
+                    settled_legacy_root_baseline(db,domain,grant,&prior_grants,
                         acl_control,other_aces_sha256)?
                 };
                 let row=stmt(db,"INSERT INTO main.gogoke_v37_grok_home_root_anchor VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'',1)")?;
