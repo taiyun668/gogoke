@@ -1038,6 +1038,39 @@
     "serves": [
      "G"
     ]
+   },
+   {
+    "path": "apps/desktop/src/features/threads/hooks/useThreads.ts",
+    "extension": "Choose the verified native conversation path before runtime-args setup and new-thread actions; keep fresh native attachment distinct from a loaded UI snapshot. Preserve legacy behavior; do not infer native instance/model/authorization from UI labels.",
+    "serves": [
+     "H",
+     "A",
+     "B1",
+     "C",
+     "G"
+    ]
+   },
+   {
+    "path": "apps/desktop/src/features/threads/hooks/useThreadMessaging.ts",
+    "extension": "For the verified native transport, bypass legacy runtime-args setup and forward only fields accepted by the host-backed operation. Instance/model/effort/permission come from original native configuration and admission, never legacy composer defaults; preserve legacy behavior.",
+    "serves": [
+     "H",
+     "A",
+     "B1",
+     "C",
+     "G"
+    ]
+   },
+   {
+    "path": "apps/desktop/src/features/threads/hooks/useThreadActions.ts",
+    "extension": "Hydrate verified native conversations with the complete read-only native thread/read path on attachment change and reconnect; do not use thread/resume as a read or let a loaded-thread shortcut skip full reconciliation. Preserve original failures and legacy behavior.",
+    "serves": [
+     "H",
+     "A",
+     "B1",
+     "C",
+     "G"
+    ]
    }
   ],
   "conditional_rule": "A conditional file is recorded in T00 or L0 as either MODIFIED, with the change, or VERIFIED_UNCHANGED, with the reason; no line widens its own scope to reach it."
