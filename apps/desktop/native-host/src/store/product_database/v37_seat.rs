@@ -1613,6 +1613,8 @@ impl<'root> ProductDatabase<'root> {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+    use crate::store::ledger;
+    use crate::store::session_transport::codex_rpc;
     use crate::store::session_transport::decode_receipt;
     use crate::store::same_open::route_b_test_guard;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1752,21 +1754,59 @@ mod tests {
     fn secretary_original_user_pages_preserve_historical_provenance_and_gaps() {
         fixture(|product| {
             let hex=|bytes:&[u8]| bytes.iter().map(|byte|format!("{byte:02x}")).collect::<String>();
+            // Qualify the public read with the same E designation, NATIVE_V2
+            // H binding, A Secretary registration and original H/A thread
+            // evidence that production requires. No model is launched here.
+            product.connection.execute("INSERT INTO main.gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('instanceS','codex','fixtureHome','fixtureIdentity','sha256:fixture','0.160.0','INSTALLED','LOGGED_OUT',1)").unwrap();
+            seat::store_template(&mut product.connection,NativeOrigin::user(&product.owner),
+                seat::StoreTemplate {domain_id:"global",template_id:"secretaryHistory",
+                    settings_json:br#"{}"#}).unwrap();
+            let designated=seat::create(&mut product.connection,NativeOrigin::user(&product.owner),
+                CreateSeat {domain_id:"global",seat_id:"seatS",template_id:"secretaryHistory",
+                    instance_id:None,kind:Kind::Long,request_id:"createHistorySeat",
+                    request_bytes:b"create history seat"}).unwrap().seat;
+            seat::designate_secretary(&mut product.connection,&product.owner,"seatS",
+                &designated.incarnation,"designateHistorySeat",b"designate history seat").unwrap();
+            product.connection.execute("UPDATE main.gogoke_v37_seats SET state='BUSY',instance_id='instanceS' WHERE domain_id='global' AND seat_id='seatS'").unwrap();
+            ledger::register_session(&mut product.connection,&ledger::SessionRegistration {
+                domain_id:"global".into(),seat_id:"seatS".into(),
+                session_id:"secretarySession".into(),purpose:ledger::SessionPurpose::Secretary,
+                side_id:None,
+            }).unwrap();
+            let selection=Statement::prepare(product.connection.as_ptr(),
+                "INSERT INTO main.gogoke_v37_native_selection VALUES('global','secretarySession','seatS',?1,?2,'instanceS')").unwrap();
+            selection.bind_text(1,&designated.incarnation).unwrap();
+            selection.bind_i64(2,designated.generation).unwrap();
+            selection.step_done().unwrap();drop(selection);
+            let binding=Statement::prepare(product.connection.as_ptr(),
+                "INSERT INTO main.gogoke_v37_session_binding_v2 VALUES('global','secretarySession','seatS',?1,?2,'instanceS','NATIVE_V2')").unwrap();
+            binding.bind_text(1,&designated.incarnation).unwrap();
+            binding.bind_i64(2,designated.generation).unwrap();
+            binding.step_done().unwrap();drop(binding);
+            product.connection.execute("INSERT INTO main.gogoke_v37_h_owner_binding VALUES('bindingS','instanceS','global','SESSION','secretarySession','2','ACTIVE')").unwrap();
+            product.connection.execute("INSERT INTO main.gogoke_v37_instance_homes(home_id,instance_id,domain_id,kind,owner_id,generation,state,revision) VALUES('homeS','instanceS','global','SESSION','secretarySession','2','ACTIVE',1)").unwrap();
+            product.connection.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id) VALUES('global','secretarySession','instanceS','homeS','bindingS','2','COMMITTED',4,'newProcess')").unwrap();
+            let original_open=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"open","requestId":"open1","targetId":"secretarySession","domainId":"global","expectedRevision":"0","payload":{}}"#;
             for (generation,operation,ticket,nonce,phase,custody,stop) in [
                 ("1","oldProcess","oldTicket","oldNonce","STOPPED","STOPPED",Some("oldProof")),
                 ("2","newProcess","newTicket","newNonce","ACTIVE","ACTIVE",None),
             ] {
                 let episode=Statement::prepare(product.connection.as_ptr(),
                     "INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,
-                     generation,raw_hex,previous_revision,result_revision,process_operation_id,
+                     generation,old_generation,raw_hex,previous_revision,result_revision,process_operation_id,
                      instance_id,home_id,binding_id,phase,stop_fact_id)
-                     VALUES('global',?1,'secretarySession',?2,'6f70656e',0,1,?3,
-                     'instanceS','homeS','bindingS',?4,?5)").unwrap();
+                     VALUES('global',?1,'secretarySession',?2,?3,?4,0,1,?5,
+                     'instanceS','homeS','bindingS',?6,?7)").unwrap();
                 let open=format!("open{generation}");
-                for (index,value) in [open.as_str(),generation,operation,phase].iter().enumerate() {
-                    episode.bind_text((index+1) as i32,value).unwrap();
-                }
-                if let Some(stop)=stop {episode.bind_text(5,stop).unwrap();}
+                let old_generation=if generation=="1" {None} else {Some("1")};
+                let raw=if generation=="1" {hex(original_open)} else {hex(br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"resume","requestId":"open2","targetId":"secretarySession","domainId":"global","expectedRevision":"1","payload":{"generation":"1"}}"#)};
+                episode.bind_text(1,&open).unwrap();
+                episode.bind_text(2,generation).unwrap();
+                if let Some(old)=old_generation {episode.bind_text(3,old).unwrap();}
+                episode.bind_text(4,&raw).unwrap();
+                episode.bind_text(5,operation).unwrap();
+                episode.bind_text(6,phase).unwrap();
+                if let Some(stop)=stop {episode.bind_text(7,stop).unwrap();}
                 episode.step_done().unwrap();drop(episode);
                 let generation_row=Statement::prepare(product.connection.as_ptr(),
                     "INSERT INTO main.gogoke_v37_h_generation VALUES('global','secretarySession',?1,?2,?3)").unwrap();
@@ -1785,6 +1825,25 @@ mod tests {
                 if let Some(stop)=stop {process.bind_text(6,stop).unwrap();}
                 process.step_done().unwrap();drop(process);
             }
+            let command=codex_rpc::Command::ThreadStart {
+                cwd:"fixture-directory".into(),model:"m".into(),
+            }.encode(Some(&codex_rpc::RpcId::Number(3))).unwrap();
+            let original_response=b"{\"id\":3,\"result\":{\"thread\":{\"id\":\"threadS\",\"cwd\":\"fixture-directory\"}}}\n";
+            let source=Statement::prepare(product.connection.as_ptr(),
+                "INSERT INTO main.v37_ledger_raw_source(operation_id,process_ticket,
+                 custodian_nonce,domain_id,session_id,generation,source_epoch,source_cursor,
+                 raw_bytes,state,no_event_reason) VALUES('oldProcess','oldTicket','oldNonce',
+                 'global','secretarySession','1','oldEpoch','1',?1,'NO_EVENT','CODEX_RPC_RESPONSE')").unwrap();
+            source.bind_blob(1,original_response).unwrap();
+            source.step_done().unwrap();drop(source);
+            let step=Statement::prepare(product.connection.as_ptr(),
+                "INSERT INTO main.gogoke_v37_rpc_steps(domain_id,session_id,open_request_id,
+                 step_id,process_operation_id,ticket,custodian_nonce,pid,creation_time,
+                 image_path,binary_digest,profile_id,generation,command_hex,requires_response,
+                 phase,source_epoch,source_cursor) VALUES('global','secretarySession','open1',
+                 'thread-start','oldProcess','oldTicket','oldNonce','11','1','fixture',
+                 'sha256:fixture','profileS','1',?1,1,'OBSERVED','oldEpoch','1')").unwrap();
+            step.bind_text(1,&hex(&command)).unwrap();step.step_done().unwrap();drop(step);
             let long="a".repeat(2_200_000);
             let empty=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send","requestId":"oversizeUser","targetId":"secretarySession","domainId":"global","expectedRevision":"3","payload":{"body":"","generation":"2"}}"#;
             let oversized="a".repeat(crate::ipc::MAX_FRAME_BYTES-empty.len());
@@ -1830,16 +1889,43 @@ mod tests {
                     marker.step_done().unwrap();
                 }
             }
-            let conversation=Json::Object(BTreeMap::from([
-                (key("state"),Json::String(key("FOUND"))),
-                (key("sessionId"),Json::String(key("secretarySession"))),
-                (key("generation"),Json::String(key("2"))),
-            ]));
-            let mut read=SecretaryInputHistoryRead {seat_id:"seatS".into(),
-                incarnation:"incarnationS".into(),authorization_generation:"3".into(),
-                session_id:"secretarySession".into(),h_generation:"2".into(),continuation:None};
-            let mut result=BTreeMap::from([(key("schema"),Json::String(key("test")))]);
-            product.read_secretary_input_history_in_transaction(&read,&conversation,&mut result).unwrap();
+            let foreign=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send","requestId":"foreignUser","targetId":"secretarySession","domainId":"projectA","expectedRevision":"1","payload":{"body":"foreign project secret","generation":"1"}}"#;
+            let foreign_row=Statement::prepare(product.connection.as_ptr(),
+                "INSERT INTO main.gogoke_v37_h_stdin_journal(domain_id,request_id,operation,
+                 ticket,process_operation_id,custodian_nonce,session_id,generation,request_hex,
+                 phase,expected_revision) VALUES('projectA','foreignUser','send','oldTicket',
+                 'oldProcess','oldNonce','secretarySession','1',?1,'PREPARED','1')").unwrap();
+            foreign_row.bind_text(1,&hex(foreign)).unwrap();
+            foreign_row.step_done().unwrap();drop(foreign_row);
+            let changes=|product:&ProductDatabase<'_>| {
+                let q=Statement::prepare(product.connection.as_ptr(),"SELECT CAST(total_changes() AS TEXT)").unwrap();
+                assert!(q.step_row().unwrap());q.column_text(0).unwrap()
+            };
+            let before_reads=changes(product);
+            let old_read=br#"{"schema":"gogoke.37.owner-configuration.v1","command":"secretary-configuration-read"}"#;
+            let original_configuration=product.configure_user_v37(old_read).unwrap();
+            assert!(String::from_utf8_lossy(&original_configuration).contains("\"state\":\"FOUND\""),
+                "the original E/H/A selection must qualify before testing its history");
+            let frame=|incarnation:&str,authorization:i64,session:&str,cursor:Option<&str>| {
+                let continuation=cursor.map(|cursor|format!(",\"continuation\":\"{cursor}\""))
+                    .unwrap_or_default();
+                format!(r#"{{"schema":"gogoke.37.owner-configuration.v1","command":"secretary-configuration-read","inputHistory":{{"seatId":"seatS","incarnation":"{incarnation}","authorizationGeneration":"{authorization}","sessionId":"{session}","hGeneration":"2"{continuation}}}}}"#)
+            };
+            let parse=|bytes:&[u8]| {
+                assert!(bytes.len()<=crate::ipc::MAX_FRAME_BYTES,"actual public response frame bound");
+                let Json::Object(fields)=Parser::parse(std::str::from_utf8(bytes).unwrap()).unwrap()
+                    else {panic!("configuration object");};
+                fields
+            };
+            let first_bytes=product.configure_user_v37(frame(&designated.incarnation,
+                designated.generation,"secretarySession",None).as_bytes()).unwrap();
+            assert!(!String::from_utf8_lossy(&first_bytes).contains("foreignUser"));
+            let mut result=parse(&first_bytes);
+            assert_eq!(result.get(&key("state")).unwrap().canonical(),"\"DESIGNATED\"");
+            let Json::Object(conversation)=result.get(&key("conversation")).unwrap() else {panic!("conversation");};
+            assert_eq!(conversation.get(&key("state")).unwrap().canonical(),"\"FOUND\"");
+            assert_eq!(conversation.get(&key("generation")).unwrap().canonical(),"\"2\"");
+            assert_eq!(conversation.get(&key("historical")).unwrap().canonical(),"false");
             let Json::Object(first)=result.remove(&key("inputHistory")).unwrap() else {panic!("page");};
             let Json::Array(first_rows)=first.get(&key("items")).unwrap() else {panic!("items");};
             assert_eq!(first_rows.len(),2,"page stops before the next original body exceeds the frame");
@@ -1852,22 +1938,29 @@ mod tests {
             assert_eq!(gap.get(&key("body")).unwrap().canonical(),"null");
             assert_eq!(gap.get(&key("phase")).unwrap().canonical(),"\"UNKNOWN\"");
             let Json::String(cursor)=first.get(&key("nextContinuation")).unwrap() else {panic!("cursor");};
-            read.continuation=Some(cursor.to_well_formed_string().unwrap());
-            read.session_id="otherSession".into();
-            assert!(product.read_secretary_input_history_in_transaction(&read,&conversation,&mut result).is_err(),
+            let cursor=cursor.to_well_formed_string().unwrap();
+            assert!(product.configure_user_v37(frame(&designated.incarnation,
+                designated.generation,"otherSession",Some(&cursor)).as_bytes()).is_err(),
                 "continuation cannot switch the selected session");
-            read.session_id="secretarySession".into();
-            read.authorization_generation="4".into();
-            assert!(product.read_secretary_input_history_in_transaction(&read,&conversation,&mut result).is_err(),
+            assert!(product.configure_user_v37(frame("otherIncarnation",
+                designated.generation,"secretarySession",Some(&cursor)).as_bytes()).is_err(),
+                "continuation cannot change the E incarnation");
+            assert!(product.configure_user_v37(frame(&designated.incarnation,
+                designated.generation+1,"secretarySession",Some(&cursor)).as_bytes()).is_err(),
                 "continuation remains bound to the original E generation");
-            read.authorization_generation="3".into();
-            product.read_secretary_input_history_in_transaction(&read,&conversation,&mut result).unwrap();
+            let second_bytes=product.configure_user_v37(frame(&designated.incarnation,
+                designated.generation,"secretarySession",Some(&cursor)).as_bytes()).unwrap();
+            assert!(!String::from_utf8_lossy(&second_bytes).contains("foreignUser"));
+            let mut result=parse(&second_bytes);
             let Json::Object(second)=result.remove(&key("inputHistory")).unwrap() else {panic!("second");};
             let Json::Array(second_rows)=second.get(&key("items")).unwrap() else {panic!("items");};
             assert_eq!(second_rows.len(),1);
             let Json::String(cursor)=second.get(&key("nextContinuation")).unwrap() else {panic!("cursor");};
-            read.continuation=Some(cursor.to_well_formed_string().unwrap());
-            product.read_secretary_input_history_in_transaction(&read,&conversation,&mut result).unwrap();
+            let cursor=cursor.to_well_formed_string().unwrap();
+            let third_bytes=product.configure_user_v37(frame(&designated.incarnation,
+                designated.generation,"secretarySession",Some(&cursor)).as_bytes()).unwrap();
+            assert!(!String::from_utf8_lossy(&third_bytes).contains("foreignUser"));
+            let mut result=parse(&third_bytes);
             let Json::Object(third)=result.remove(&key("inputHistory")).unwrap() else {panic!("third");};
             let Json::Array(third_rows)=third.get(&key("items")).unwrap() else {panic!("items");};
             assert_eq!(third_rows.len(),1);
@@ -1875,6 +1968,44 @@ mod tests {
             assert_eq!(too_large.get(&key("bodyState")).unwrap().canonical(),"\"TOO_LARGE\"");
             assert_eq!(too_large.get(&key("body")).unwrap().canonical(),"null");
             assert_eq!(third.get(&key("nextContinuation")).unwrap().canonical(),"null");
+            assert_eq!(product.configure_user_v37(old_read).unwrap(),original_configuration,
+                "scoped read never mutates the old two-field configuration response");
+            assert_eq!(changes(product),before_reads,"USER history reads never write product facts");
+            for (field,wrong,correct) in [
+                ("source_operation_id","otherProcess","oldProcess"),
+                ("source_epoch","otherNonce","oldNonce"),
+                ("source_cursor","otherCursor","oldUser"),
+            ] {
+                let change=format!("UPDATE main.gogoke_v37_seat_secretary_presence SET {field}='{wrong}' WHERE source_id='H-USER:global:secretarySession:oldUser'");
+                product.connection.execute(&change).unwrap();
+                let bytes=product.configure_user_v37(frame(&designated.incarnation,
+                    designated.generation,"secretarySession",None).as_bytes()).unwrap();
+                let mut result=parse(&bytes);
+                let Json::Object(page)=result.remove(&key("inputHistory")).unwrap() else {panic!("page");};
+                let Json::Array(rows)=page.get(&key("items")).unwrap() else {panic!("items");};
+                let Json::Object(old)=&rows[0] else {panic!("old row");};
+                assert_eq!(old.get(&key("requestId")).unwrap().canonical(),"\"oldUser\"");
+                assert_eq!(old.get(&key("bodyState")).unwrap().canonical(),"\"UNKNOWN\"");
+                assert_eq!(old.get(&key("body")).unwrap().canonical(),"null");
+                let restore=format!("UPDATE main.gogoke_v37_seat_secretary_presence SET {field}='{correct}' WHERE source_id='H-USER:global:secretarySession:oldUser'");
+                product.connection.execute(&restore).unwrap();
+            }
+            product.connection.execute("UPDATE main.gogoke_v37_h_process_episode SET phase='STOPPED',stop_fact_id='newProof' WHERE domain_id='global' AND request_id='open2'").unwrap();
+            product.connection.execute("UPDATE main.gogoke_coordination_process_custody SET state='STOPPED',stop_proof_hash='newProof' WHERE operation_id='newProcess'").unwrap();
+            product.connection.execute("UPDATE main.gogoke_v37_h_claim SET state='RELEASED',stop_fact_id='newProof' WHERE domain_id='global' AND session_id='secretarySession'").unwrap();
+            product.connection.execute("UPDATE main.gogoke_v37_h_owner_binding SET state='REVOKED' WHERE binding_id='bindingS'").unwrap();
+            product.connection.execute("UPDATE main.gogoke_v37_seats SET state='IDLE',generation=generation+1 WHERE domain_id='global' AND seat_id='seatS'").unwrap();
+            let released=product.configure_user_v37(frame(&designated.incarnation,
+                designated.generation+1,"secretarySession",None).as_bytes()).unwrap();
+            let mut result=parse(&released);
+            let Json::Object(conversation)=result.get(&key("conversation")).unwrap() else {panic!("conversation");};
+            assert_eq!(conversation.get(&key("historical")).unwrap().canonical(),"true");
+            assert_eq!(conversation.get(&key("claimState")).unwrap().canonical(),"\"RELEASED\"");
+            let Json::Object(page)=result.remove(&key("inputHistory")).unwrap() else {panic!("page");};
+            let Json::Array(rows)=page.get(&key("items")).unwrap() else {panic!("items");};
+            let Json::Object(old)=&rows[0] else {panic!("old row");};
+            assert_eq!(old.get(&key("bodyState")).unwrap().canonical(),"\"VERIFIED\"");
+            assert_eq!(old.get(&key("generation")).unwrap().canonical(),"\"1\"");
         });
     }
 
