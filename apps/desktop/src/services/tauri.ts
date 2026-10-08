@@ -1,4 +1,199 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { SecretarySource } from "@/features/secretary/Secretary";
+import type { SecretaryPage, Routine } from "@/features/secretary/secretaryModel";
+
+type SecretaryConfiguration =
+  | { schema: "gogoke.37.secretary-configuration.v1"; state: "UNSET" | "REVOKED" }
+  | { schema: "gogoke.37.secretary-configuration.v1"; state: "DESIGNATED";
+      seatId: string; incarnation: string; generation: string; revision: string;
+      instanceId: string | null; model: string | null; effort: string | null;
+      permissionTier: string | null; seatState: "IDLE" | "BUSY" | "RECLAIMED";
+      conversation?: { state: "NONE" | "UNKNOWN" | "CONFLICT" | "FOUND";
+        sessionId?: string; generation?: string; revision?: string;
+        claimState?: string; stoppedFact?: boolean; runtimeAvailable?: boolean;
+        turnState?: "IDLE" | "RUNNING" | "UNKNOWN";
+        threadId?: string; ledgerEpoch?: string; ledgerCursor?: string } };
+
+type SecretaryRoutineRow = { routineId: string; seatId: string; incarnation: string;
+  originalText: string; scheduleRaw: string; timezone: string; nextDueMs: string;
+  state: "ACTIVE" | "PAUSED" | "ABSENCE_PAUSED" | "WAITING_NEXT" | "DELETED";
+  revision: string; lastResult: "NONE" | "UNKNOWN" | "FAILED" | "DELIVERED";
+  lastReason: string };
+
+const record = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+const nonempty = (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0;
+const decimal = (value: unknown): value is string =>
+  typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value);
+const optionalText = (value: unknown): value is string | null =>
+  value === null || nonempty(value);
+
+function parseSecretaryConfiguration(value: unknown): SecretaryConfiguration {
+  if (!record(value) || value.schema !== "gogoke.37.secretary-configuration.v1") {
+    throw new Error("Native Secretary configuration schema is unavailable.");
+  }
+  if (value.state === "UNSET" || value.state === "REVOKED") {
+    return value as SecretaryConfiguration;
+  }
+  if (value.state !== "DESIGNATED" || !nonempty(value.seatId) ||
+      !nonempty(value.incarnation) || !decimal(value.generation) ||
+      !decimal(value.revision) || !optionalText(value.instanceId) ||
+      !optionalText(value.model) || !optionalText(value.effort) ||
+      !optionalText(value.permissionTier) ||
+      !["IDLE", "BUSY", "RECLAIMED"].includes(String(value.seatState))) {
+    throw new Error("Native Secretary designation is incomplete or invalid.");
+  }
+  if (value.conversation !== undefined) {
+    const conversation = value.conversation;
+    if (!record(conversation) ||
+        !["NONE", "UNKNOWN", "CONFLICT", "FOUND"].includes(String(conversation.state)) ||
+        ["sessionId", "generation", "revision", "claimState",
+          "threadId", "ledgerEpoch", "ledgerCursor"].some((key) =>
+            conversation[key] !== undefined && !nonempty(conversation[key])) ||
+        (conversation.stoppedFact !== undefined &&
+          typeof conversation.stoppedFact !== "boolean") ||
+        (conversation.runtimeAvailable !== undefined &&
+          typeof conversation.runtimeAvailable !== "boolean") ||
+        (conversation.turnState !== undefined &&
+          !["IDLE", "RUNNING", "UNKNOWN"].includes(String(conversation.turnState)))) {
+      throw new Error("Native Secretary conversation fact is invalid.");
+    }
+  }
+  return value as SecretaryConfiguration;
+}
+
+function parseSecretaryRoutines(value: unknown): SecretaryRoutineRow[] {
+  if (!record(value) || value.schema !== "gogoke.37.secretary-routines.v1" ||
+      value.command !== "secretary-routines-read" || value.status !== "READ" ||
+      !Array.isArray(value.routines)) {
+    throw new Error(`Native Secretary routines read is unavailable: ${JSON.stringify(value)}`);
+  }
+  const ids = new Set<string>();
+  return value.routines.map((item: unknown) => {
+    if (!record(item) || !nonempty(item.routineId) || ids.has(item.routineId) ||
+        !nonempty(item.seatId) || !nonempty(item.incarnation) ||
+        !nonempty(item.originalText) || !nonempty(item.scheduleRaw) ||
+        !nonempty(item.timezone) || !decimal(item.nextDueMs) ||
+        !["ACTIVE", "PAUSED", "ABSENCE_PAUSED", "WAITING_NEXT", "DELETED"].includes(String(item.state)) ||
+        !decimal(item.revision) || !["NONE", "UNKNOWN", "FAILED", "DELIVERED"].includes(String(item.lastResult)) ||
+        typeof item.lastReason !== "string") {
+      throw new Error("Native Secretary routine row is incomplete or invalid.");
+    }
+    ids.add(item.routineId);
+    return item as SecretaryRoutineRow;
+  });
+}
+
+async function readSecretaryConfiguration(): Promise<SecretaryConfiguration> {
+  return parseSecretaryConfiguration(await design37UserFrame({
+    schema: "gogoke.37.owner-configuration.v1", command: "secretary-configuration-read",
+  }));
+}
+
+async function readSecretaryRoutines(): Promise<SecretaryRoutineRow[]> {
+  return parseSecretaryRoutines(await design37UserFrame({
+    schema: "gogoke.37.owner-configuration.v1", command: "secretary-routines-read",
+  }));
+}
+
+function routinePageRow(row: SecretaryRoutineRow): Routine {
+  const ms = Number(row.nextDueMs);
+  if (!Number.isSafeInteger(ms) || !Number.isFinite(new Date(ms).getTime())) {
+    throw new Error("Native Secretary next due time is invalid.");
+  }
+  const nextRun = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: row.timezone, dateStyle: "medium", timeStyle: "short",
+  }).format(ms);
+  return { id: row.routineId, name: row.originalText,
+    schedule: `${row.scheduleRaw} · ${row.timezone}`,
+    ...(row.state === "ACTIVE" ? { nextRun } : {}),
+    paused: row.state === "PAUSED" || row.state === "ABSENCE_PAUSED" };
+}
+
+/** Actual E configuration and E routines; the optional conversation is H's fact only. */
+export function createDesign37SecretarySource(): {
+  source: SecretarySource;
+  readSnapshot: () => Promise<{ configuration: SecretaryConfiguration; page: SecretaryPage }>;
+} {
+  const readSnapshot = async () => {
+    const configuration = await readSecretaryConfiguration();
+    const settings: SecretaryPage["settings"] = { instances: [], efforts: [], permissions: [] };
+    if (configuration.state !== "DESIGNATED") {
+      return { configuration, page: {
+        entry: configuration.state === "UNSET" ? { kind: "unset" as const } :
+          { kind: "down" as const, reason: "宿主已撤销秘书长席位" },
+        routines: [], settings,
+      } };
+    }
+    settings.instanceId = configuration.instanceId ?? undefined;
+    settings.model = configuration.model ?? undefined;
+    settings.effort = configuration.effort ?? undefined;
+    settings.permission = configuration.permissionTier ?? undefined;
+    if (!configuration.instanceId || !configuration.model || !configuration.effort ||
+        !configuration.permissionTier || configuration.seatState === "RECLAIMED") {
+      return { configuration, page: { entry: { kind: "unset" as const }, routines: [], settings } };
+    }
+    const rows = await readSecretaryRoutines();
+    const routines = rows.filter((row) => {
+      if (row.seatId !== configuration.seatId || row.incarnation !== configuration.incarnation) {
+        throw new Error("Native Secretary routine belongs to a different designation.");
+      }
+      return row.state !== "DELETED";
+    }).map(routinePageRow);
+    const confirmed = await readSecretaryConfiguration();
+    if (confirmed.state !== "DESIGNATED" ||
+        confirmed.seatId !== configuration.seatId ||
+        confirmed.incarnation !== configuration.incarnation ||
+        confirmed.generation !== configuration.generation ||
+        confirmed.revision !== configuration.revision ||
+        JSON.stringify(confirmed.conversation) !== JSON.stringify(configuration.conversation)) {
+      throw new Error("Native Secretary snapshot changed while it was being read.");
+    }
+    const conversation = configuration.conversation;
+    const runnable = conversation?.state === "FOUND" &&
+      conversation.runtimeAvailable === true && conversation.stoppedFact === false;
+    const entry: SecretaryPage["entry"] = runnable && conversation.turnState === "IDLE"
+      ? { kind: "quiet" }
+      : runnable && conversation.turnState === "RUNNING" ? { kind: "working" } :
+        { kind: "down", reason: conversation?.state === "CONFLICT" ? "宿主报告秘书长会话冲突" :
+          conversation?.state === "UNKNOWN" ? "宿主无法确认秘书长会话" :
+          conversation?.state === "NONE" ? "宿主未找到秘书长会话" :
+          conversation?.stoppedFact === true ? "宿主报告秘书长会话已停止" :
+          "宿主未报告可用的秘书长会话轮次状态" };
+    return { configuration, page: { entry, routines, settings } };
+  };
+  const changeRoutine = async (id: string, command: "secretary-routine-pause" | "secretary-routine-delete") => {
+    const configuration = await readSecretaryConfiguration();
+    if (configuration.state !== "DESIGNATED") throw new Error("Secretary designation changed.");
+    const rows = await readSecretaryRoutines();
+    const confirmed = await readSecretaryConfiguration();
+    if (confirmed.state !== "DESIGNATED" || confirmed.seatId !== configuration.seatId ||
+        confirmed.incarnation !== configuration.incarnation ||
+        confirmed.generation !== configuration.generation ||
+        confirmed.revision !== configuration.revision) {
+      throw new Error("Secretary designation changed before routine change.");
+    }
+    const row = rows.find((item) => item.routineId === id);
+    if (!row || row.seatId !== configuration.seatId ||
+        row.incarnation !== configuration.incarnation || row.state === "DELETED" ||
+        (command === "secretary-routine-pause" &&
+          row.state !== "ACTIVE" && row.state !== "WAITING_NEXT")) {
+      throw new Error("Secretary routine is no longer eligible for this change.");
+    }
+    const reply = await design37UserFrame({ schema: "gogoke.37.owner-configuration.v1",
+      command, routineId: id, requestId: `ui-${crypto.randomUUID()}`,
+      expectedRevision: row.revision });
+    if (!record(reply) || reply.schema !== "gogoke.37.secretary-routines.v1" ||
+        reply.command !== command || reply.routineId !== id ||
+        !["APPLIED", "REPLAYED"].includes(String(reply.status)) || !decimal(reply.revision)) {
+      throw new Error(`Native Secretary routine change failed: ${JSON.stringify(reply)}`);
+    }
+  };
+  return { readSnapshot, source: { read: async () => (await readSnapshot()).page,
+    actions: { pauseRoutine: (id) => changeRoutine(id, "secretary-routine-pause"),
+      deleteRoutine: (id) => changeRoutine(id, "secretary-routine-delete") } } };
+}
 
 /** An existing USER frame; native ingress authenticates and validates its family. */
 export async function design37UserFrame(frame: object): Promise<unknown> {
