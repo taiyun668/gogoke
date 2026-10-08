@@ -43,6 +43,64 @@ fn relative_time_uses_original_user_input_not_tool_time() {
 fn model_cannot_supply_a_different_or_duplicate_rule() {
     assert_eq!(
         resolve(
+            "请在11分钟后提醒我",
+            "1分钟后",
+            "HOST_DEFAULT",
+            "2026-10-07T12:00:00Z",
+            "Asia/Shanghai"
+        ),
+        Err(ScheduleError::SourceMismatch)
+    );
+    assert_eq!(
+        resolve(
+            "请在11分钟后提醒我",
+            "11分钟后",
+            "HOST_DEFAULT",
+            "2026-10-07T12:00:00Z",
+            "Asia/Shanghai"
+        )
+        .unwrap()
+        .next_due_ms,
+        stamp("2026-10-07T12:11:00Z")
+    );
+    assert!(resolve(
+        "请在10分钟后提醒我读“计划”",
+        "10分钟后",
+        "HOST_DEFAULT",
+        "2026-10-07T12:00:00Z",
+        "Asia/Shanghai"
+    )
+    .is_ok());
+    assert!(resolve(
+        "请解释‘10分钟后提醒我’的含义",
+        "10分钟后",
+        "HOST_DEFAULT",
+        "2026-10-07T12:00:00Z",
+        "Asia/Shanghai"
+    )
+    .is_err());
+    assert_eq!(
+        resolve(
+            "10分钟后提醒我是什么意思",
+            "10分钟后",
+            "HOST_DEFAULT",
+            "2026-10-07T12:00:00Z",
+            "Asia/Shanghai"
+        ),
+        Err(ScheduleError::ConflictingRule)
+    );
+    assert_eq!(
+        resolve(
+            "明天 09:00",
+            "明天 09:00",
+            "HOST_DEFAULT",
+            "2026-10-07T12:00:00Z",
+            "Asia/Shanghai"
+        ),
+        Err(ScheduleError::ConflictingRule)
+    );
+    assert_eq!(
+        resolve(
             "明天 09:00 提醒",
             "每天 09:00",
             "HOST_DEFAULT",
@@ -93,7 +151,7 @@ fn model_cannot_supply_a_different_or_duplicate_rule() {
     );
     assert_eq!(
         resolve(
-            "每天 09:00 check tests in main",
+            "每天 09:00 提醒我 check tests in main",
             "每天 09:00",
             "HOST_DEFAULT",
             "2026-10-07T12:00:00Z",
@@ -142,7 +200,7 @@ fn timezone_must_come_from_user_or_real_host() {
     let source = "2026-10-07T12:00:00Z";
     assert_eq!(
         resolve(
-            "明天 09:00 北京时间",
+            "明天 09:00 北京时间 提醒我",
             "明天 09:00 北京时间",
             "HOST_DEFAULT",
             source,
@@ -151,12 +209,38 @@ fn timezone_must_come_from_user_or_real_host() {
         Err(ScheduleError::ConflictingTimezone)
     );
     assert_eq!(
-        resolve("明天 09:00", "明天 09:00", "HOST_DEFAULT", source, ""),
+        resolve(
+            "明天 09:00 日本时间提醒我",
+            "明天 09:00",
+            "HOST_DEFAULT",
+            source,
+            "America/Los_Angeles"
+        ),
+        Err(ScheduleError::InvalidTimezone("日本时间".to_owned()))
+    );
+    assert_eq!(
+        resolve(
+            "明天 09:00 JST 提醒我",
+            "明天 09:00",
+            "HOST_DEFAULT",
+            source,
+            "America/Los_Angeles"
+        ),
+        Err(ScheduleError::InvalidTimezone("JST".to_owned()))
+    );
+    assert_eq!(
+        resolve(
+            "明天 09:00 提醒我",
+            "明天 09:00",
+            "HOST_DEFAULT",
+            source,
+            ""
+        ),
         Err(ScheduleError::MissingTimezone)
     );
     assert_eq!(
         resolve(
-            "明天 09:00 北京时间",
+            "明天 09:00 北京时间 提醒我",
             "明天 09:00 北京时间",
             "Asia/Shanghai",
             source,
@@ -165,7 +249,7 @@ fn timezone_must_come_from_user_or_real_host() {
         Err(ScheduleError::SourceMismatch)
     );
     let row = resolve(
-        "明天 09:00 北京时间",
+        "明天 09:00 北京时间 提醒我",
         "明天 09:00 北京时间",
         "北京时间",
         source,
@@ -176,7 +260,7 @@ fn timezone_must_come_from_user_or_real_host() {
     assert_eq!(row.next_due_ms, stamp("2026-10-08T01:00:00Z"));
     assert_eq!(
         resolve(
-            "明天 09:00 CST",
+            "明天 09:00 CST 提醒我",
             "明天 09:00 CST",
             "HOST_DEFAULT",
             source,
@@ -186,7 +270,7 @@ fn timezone_must_come_from_user_or_real_host() {
     );
     assert_eq!(
         resolve(
-            "明天 09:00 Mars/Base",
+            "明天 09:00 Mars/Base 提醒我",
             "明天 09:00 Mars/Base",
             "Mars/Base",
             source,
@@ -195,7 +279,7 @@ fn timezone_must_come_from_user_or_real_host() {
         Err(ScheduleError::InvalidTimezone("Mars/Base".to_owned()))
     );
     assert!(resolve(
-        "每天 09:00 检查 docs/PLAN.md",
+        "每天 09:00 提醒我检查 docs/PLAN.md",
         "每天 09:00",
         "HOST_DEFAULT",
         source,
@@ -204,7 +288,7 @@ fn timezone_must_come_from_user_or_real_host() {
     .is_ok());
     assert_eq!(
         resolve(
-            "明天 09:00 Europe/Invalid",
+            "明天 09:00 Europe/Invalid 提醒我",
             "明天 09:00 Europe/Invalid",
             "HOST_DEFAULT",
             source,
@@ -218,7 +302,7 @@ fn timezone_must_come_from_user_or_real_host() {
 fn daily_weekly_and_one_shot_use_calendar() {
     let source = "2026-10-07T12:00:00Z";
     let daily = resolve(
-        "每天 09:00",
+        "每天 09:00 提醒我",
         "每天 09:00",
         "HOST_DEFAULT",
         source,
@@ -227,7 +311,7 @@ fn daily_weekly_and_one_shot_use_calendar() {
     .unwrap();
     assert_eq!(daily.next_due_ms, stamp("2026-10-07T16:00:00Z"));
     let weekly = resolve(
-        "weekly on Monday at 09:00",
+        "weekly on Monday at 09:00 提醒我",
         "weekly on Monday at 09:00",
         "HOST_DEFAULT",
         source,
@@ -236,7 +320,7 @@ fn daily_weekly_and_one_shot_use_calendar() {
     .unwrap();
     assert_eq!(weekly.next_due_ms, stamp("2026-10-12T16:00:00Z"));
     let weekly_zh = resolve(
-        "每周一09:00",
+        "每周一09:00 提醒我",
         "每周一09:00",
         "HOST_DEFAULT",
         source,
@@ -245,7 +329,7 @@ fn daily_weekly_and_one_shot_use_calendar() {
     .unwrap();
     assert_eq!(weekly_zh.next_due_ms, weekly.next_due_ms);
     let once = resolve(
-        "2026-10-08 09:00",
+        "2026-10-08 09:00 提醒我",
         "2026-10-08 09:00",
         "HOST_DEFAULT",
         source,
@@ -254,7 +338,7 @@ fn daily_weekly_and_one_shot_use_calendar() {
     .unwrap();
     assert_eq!(once.next_due_ms, stamp("2026-10-08T16:00:00Z"));
     let once_zh = resolve(
-        "2026年10月8日 09:00",
+        "2026年10月8日 09:00 提醒我",
         "2026年10月8日 09:00",
         "HOST_DEFAULT",
         source,
@@ -263,7 +347,7 @@ fn daily_weekly_and_one_shot_use_calendar() {
     .unwrap();
     assert_eq!(once_zh.next_due_ms, once.next_due_ms);
     let rfc = resolve(
-        "2026-10-08T09:00:00+08:00",
+        "2026-10-08T09:00:00+08:00 提醒我",
         "2026-10-08T09:00:00+08:00",
         "HOST_DEFAULT",
         source,
@@ -273,7 +357,7 @@ fn daily_weekly_and_one_shot_use_calendar() {
     assert_eq!(rfc.next_due_ms, stamp("2026-10-08T01:00:00Z"));
     assert_eq!(
         resolve(
-            "2026-10-08T09:00:00+08:00 America/Los_Angeles",
+            "2026-10-08T09:00:00+08:00 America/Los_Angeles 提醒我",
             "2026-10-08T09:00:00+08:00 America/Los_Angeles",
             "America/Los_Angeles",
             source,
@@ -288,7 +372,7 @@ fn invalid_or_ambiguous_clock_never_rolls_forward() {
     let source = "2026-01-01T00:00:00Z";
     assert_eq!(
         resolve(
-            "2026-03-08 02:30",
+            "2026-03-08 02:30 提醒我",
             "2026-03-08 02:30",
             "HOST_DEFAULT",
             source,
@@ -298,7 +382,7 @@ fn invalid_or_ambiguous_clock_never_rolls_forward() {
     );
     assert_eq!(
         resolve(
-            "2026-11-01 01:30",
+            "2026-11-01 01:30 提醒我",
             "2026-11-01 01:30",
             "HOST_DEFAULT",
             source,
@@ -308,7 +392,7 @@ fn invalid_or_ambiguous_clock_never_rolls_forward() {
     );
     assert_eq!(
         resolve(
-            "每天 25:00",
+            "每天 25:00 提醒我",
             "每天 25:00",
             "HOST_DEFAULT",
             source,
@@ -318,7 +402,7 @@ fn invalid_or_ambiguous_clock_never_rolls_forward() {
     );
     assert_eq!(
         resolve(
-            "2026-02-30 09:00",
+            "2026-02-30 09:00 提醒我",
             "2026-02-30 09:00",
             "HOST_DEFAULT",
             source,
@@ -328,7 +412,7 @@ fn invalid_or_ambiguous_clock_never_rolls_forward() {
     );
     assert_eq!(
         resolve(
-            "每天早上",
+            "每天早上 提醒我",
             "每天早上",
             "HOST_DEFAULT",
             source,

@@ -202,70 +202,234 @@ fn english_interval(input: &str, prefix: &str) -> Option<Result<i64, ScheduleErr
     )
 }
 
-fn has_clock(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    bytes.windows(5).any(|part| {
-        part[0].is_ascii_digit()
-            && part[1].is_ascii_digit()
-            && part[2] == b':'
-            && part[3].is_ascii_digit()
-            && part[4].is_ascii_digit()
-    })
+fn clock_prefix(input: &str) -> Option<usize> {
+    let bytes = input.as_bytes();
+    let digits = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
+    if !(1..=2).contains(&digits) || bytes.get(digits) != Some(&b':') {
+        return None;
+    }
+    if bytes
+        .get(digits + 1..digits + 3)?
+        .iter()
+        .all(u8::is_ascii_digit)
+    {
+        Some(digits + 3)
+    } else {
+        None
+    }
 }
 
-fn has_english_relative_rule(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    let words: Vec<_> = lower
-        .split(|c: char| {
-            c.is_whitespace()
-                || matches!(
-                    c,
-                    ',' | '，' | '.' | '。' | ';' | '；' | '!' | '?' | '(' | ')'
-                )
-        })
-        .filter(|word| !word.is_empty())
-        .collect();
-    words.windows(3).any(|parts| {
-        matches!(parts[0], "in" | "every")
-            && parts[1].bytes().all(|b| b.is_ascii_digit())
-            && matches!(
-                parts[2],
-                "second" | "seconds" | "minute" | "minutes" | "hour" | "hours"
-            )
-    })
+fn after_clock(input: &str, prefix: &str) -> Option<usize> {
+    let rest = input.strip_prefix(prefix)?;
+    let spaces = rest.len() - rest.trim_start().len();
+    Some(prefix.len() + spaces + clock_prefix(&rest[spaces..])?)
 }
 
-fn explicit_negative_request(text: &str) -> bool {
-    // These are bounded, explicit positive reminder idioms. Everything else
-    // containing a recognized negation remains unsupported as authorization.
-    let without_positive = text
-        .replace("不要忘了", "")
-        .replace("不要忘记", "")
-        .replace("别忘了", "")
-        .replace("别忘记", "");
-    let lower = without_positive
-        .to_ascii_lowercase()
-        .replace("don't forget to", "")
-        .replace("do not forget to", "");
-    [
-        "不要",
-        "不是",
-        "取消",
-        "不按",
-        "别在",
-        "别按",
-        "别把",
-        "别给",
-        "别提醒",
-        "别设",
+// Only the beginning of the authenticated USER command can designate a rule.
+// This grammar selects complete numeric and calendar tokens before examining
+// the model's proposal; a substring such as 1分钟后 inside 11分钟后 is never a rule.
+fn rule_prefix(input: &str) -> Option<usize> {
+    let bytes = input.as_bytes();
+    let digits = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
+    if digits > 0 {
+        for unit in ["秒后", "分钟后", "小时后"] {
+            if input[digits..].starts_with(unit) {
+                return Some(digits + unit.len());
+            }
+        }
+    }
+    if let Some(rest) = input.strip_prefix('每') {
+        let n = rest.bytes().take_while(u8::is_ascii_digit).count();
+        if n > 0 {
+            for unit in ["秒", "分钟", "小时"] {
+                if rest[n..].starts_with(unit) {
+                    return Some("每".len() + n + unit.len());
+                }
+            }
+        }
+    }
+    for prefix in ["每天", "明天", "daily at ", "tomorrow at "] {
+        if let Some(end) = after_clock(input, prefix) {
+            return Some(end);
+        }
+    }
+    if input.starts_with("每天") || input.starts_with("明天") {
+        return input.split_whitespace().next().map(str::len);
+    }
+    for prefix in ["每周", "每星期", "weekly on "] {
+        if let Some(rest) = input.strip_prefix(prefix) {
+            let day = if prefix == "weekly on " {
+                rest.split_once(" at ")?.0
+            } else {
+                let first = rest.chars().next()?;
+                if weekday(&first.to_string()).is_some() {
+                    &rest[..first.len_utf8()]
+                } else {
+                    rest.split_once(char::is_whitespace)?.0
+                }
+            };
+            if weekday(day).is_some() {
+                let tail = &rest[day.len()..];
+                let tail = if prefix == "weekly on " {
+                    tail.strip_prefix(" at ")?
+                } else {
+                    tail
+                };
+                let spaces = tail.len() - tail.trim_start().len();
+                return Some(
+                    prefix.len()
+                        + day.len()
+                        + if prefix == "weekly on " { 4 } else { 0 }
+                        + spaces
+                        + clock_prefix(&tail[spaces..])?,
+                );
+            }
+        }
+    }
+    for prefix in ["in ", "every "] {
+        if let Some(rest) = input.strip_prefix(prefix) {
+            let n = rest.bytes().take_while(u8::is_ascii_digit).count();
+            if n > 0 && rest[n..].starts_with(' ') {
+                let unit = rest[n + 1..]
+                    .split(|c: char| !c.is_ascii_alphabetic())
+                    .next()?;
+                if matches!(
+                    unit,
+                    "second" | "seconds" | "minute" | "minutes" | "hour" | "hours"
+                ) {
+                    return Some(prefix.len() + n + 1 + unit.len());
+                }
+            }
+        }
+    }
+    // RFC3339 is one token. The date forms then consume one complete clock.
+    let token = input.split_whitespace().next()?;
+    if DateTime::parse_from_rfc3339(token).is_ok() {
+        return Some(token.len());
+    }
+    let date_end = if input.len() >= 10 && input.as_bytes().get(4) == Some(&b'-') {
+        10
+    } else {
+        input.find('日')? + '日'.len_utf8()
+    };
+    let tail = input.get(date_end..)?;
+    let spaces = tail.len() - tail.trim_start().len();
+    Some(date_end + spaces + clock_prefix(&tail[spaces..])?)
+}
+
+fn command_rule(original: &str) -> Result<&str, ScheduleError> {
+    let text = original.trim();
+    if text.starts_with("不要") && !text.starts_with("不要忘了")
+        || text.starts_with("取消")
+        || text.starts_with("别提醒")
+    {
+        return Err(ScheduleError::ConflictingRule);
+    }
+    let (command, positive_idiom) = [
+        "请在",
+        "在",
+        "请帮我",
+        "帮我",
+        "请",
+        "不要忘了",
+        "别忘了",
+        "please ",
+        "don't forget to ",
     ]
     .iter()
-    .any(|word| lower.contains(word))
-        || lower.trim_end().ends_with('别')
-        || lower.contains("别 ")
-        || ["not ", "don't ", "do not ", "instead of "]
-            .iter()
-            .any(|word| lower.contains(word))
+    .find_map(|prefix| {
+        text.strip_prefix(prefix).map(|rest| {
+            (
+                rest.trim_start(),
+                matches!(*prefix, "不要忘了" | "别忘了" | "don't forget to "),
+            )
+        })
+    })
+    .unwrap_or((text, false));
+    let mut end = rule_prefix(command).ok_or(ScheduleError::UnsupportedRule)?;
+    let tail = &command[end..];
+    if tail
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_digit() || c == ':')
+    {
+        return Err(ScheduleError::ConflictingRule);
+    }
+    let spaces = tail.len() - tail.trim_start().len();
+    let following = &tail[spaces..];
+    let zone_len = ["北京时间", "中国标准时间", "UTC"]
+        .iter()
+        .find(|name| following.starts_with(**name))
+        .map(|name| name.len())
+        .or_else(|| {
+            let word = following
+                .split(|c: char| c.is_whitespace() || matches!(c, ',' | '，' | '。' | '；' | ';'))
+                .next()?;
+            if word.contains('/') && word.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                Some(
+                    word.bytes()
+                        .take_while(|b| {
+                            b.is_ascii_alphanumeric() || matches!(*b, b'/' | b'_' | b'-' | b'+')
+                        })
+                        .count(),
+                )
+            } else if word.starts_with("日本时间") || word.ends_with("时间") {
+                Some(
+                    word.find("时间")
+                        .map(|i| i + "时间".len())
+                        .unwrap_or(word.len()),
+                )
+            } else if word.len() >= 2
+                && word.len() <= 5
+                && word.bytes().all(|b| b.is_ascii_uppercase())
+            {
+                Some(word.len())
+            } else if following[word.len()..].starts_with(" time") {
+                Some(word.len() + " time".len())
+            } else {
+                None
+            }
+        });
+    if let Some(length) = zone_len {
+        zone(&following[..length])?;
+        end += spaces + length;
+    }
+    if command[end..]
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_digit() || matches!(c, ':' | '+' | '/'))
+    {
+        return Err(ScheduleError::ConflictingRule);
+    }
+    let rest = command[end..]
+        .trim()
+        .trim_matches(|c: char| matches!(c, ',' | '，' | '。' | '.'));
+    let positive = rest.starts_with("提醒")
+        || rest.starts_with("通知")
+        || rest.starts_with("叫我")
+        || rest.starts_with("remind me")
+        || rest.starts_with("notify me");
+    if !positive && !positive_idiom {
+        return Err(ScheduleError::ConflictingRule);
+    }
+    if rest.chars().any(|c| matches!(c, '?' | '？'))
+        || rest.contains("不要")
+        || rest.contains("取消")
+        || rest.contains("别提醒")
+        || rest.contains("是什么意思")
+        || rest.contains("的含义")
+        || rest.contains(" not ")
+        || rest.contains(" instead of ")
+    {
+        return Err(ScheduleError::ConflictingRule);
+    }
+    // A second supported rule anywhere in the task makes the command ambiguous.
+    for (i, _) in rest.char_indices() {
+        if rule_prefix(&rest[i..]).is_some() {
+            return Err(ScheduleError::ConflictingRule);
+        }
+    }
+    Ok(&command[..end])
 }
 
 fn weekday(value: &str) -> Option<chrono::Weekday> {
@@ -409,10 +573,8 @@ pub(crate) fn resolve_user_schedule(
     if exact_span.trim().is_empty() {
         return Err(ScheduleError::EmptyRule);
     }
-    let Some(position) = original_user.find(exact_span) else {
-        return Err(ScheduleError::SourceMismatch);
-    };
-    if original_user[position + exact_span.len()..].contains(exact_span) {
+    let authorized_span = command_rule(original_user)?;
+    if exact_span != authorized_span {
         return Err(ScheduleError::SourceMismatch);
     }
     let (tz, timezone) = selected_zone(original_user, proposed_zone, host_timezone)?;
@@ -421,7 +583,7 @@ pub(crate) fn resolve_user_schedule(
     }
     let source = DateTime::<Utc>::from_timestamp_millis(source_input_ms)
         .ok_or(ScheduleError::TimeOutOfRange)?;
-    let mut rule = exact_span
+    let mut rule = authorized_span
         .trim()
         .trim_matches(|c: char| matches!(c, '，' | ',' | '。' | '.'));
     if proposed_zone != "HOST_DEFAULT" {
@@ -429,33 +591,6 @@ pub(crate) fn resolve_user_schedule(
     }
     if rule.is_empty() {
         return Err(ScheduleError::EmptyRule);
-    }
-    let outside = format!(
-        "{} {}",
-        &original_user[..position],
-        &original_user[position + exact_span.len()..]
-    );
-    if explicit_negative_request(&outside) {
-        return Err(ScheduleError::ConflictingRule);
-    }
-    if [
-        "每天",
-        "每周",
-        "每星期",
-        "明天",
-        "daily at ",
-        "weekly on ",
-        "tomorrow at ",
-    ]
-    .iter()
-    .any(|token| outside.contains(token))
-        || outside.contains("分钟后")
-        || outside.contains("小时后")
-        || outside.contains("秒后")
-        || has_english_relative_rule(&outside)
-        || has_clock(&outside)
-    {
-        return Err(ScheduleError::ConflictingRule);
     }
     let due = if let Some(result) = interval(rule, "", "后")
         .or_else(|| interval(rule, "每", ""))
