@@ -361,15 +361,22 @@ impl<'root> ProductDatabase<'root> {
         // The original result is durable before optional current-choice CAS.
         // A later legitimate H/E transition cannot roll back historical ACKs.
         if action.method=="thread/resume"&&state=="APPLIED" {
-            self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
-            let outcome=(||->Result<()> {
-                authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
-                self.append_visible_resume_association(action,&reply)
-            })();
-            match outcome {Ok(())=>self.connection.execute("COMMIT").map_err(OrchestrationError::CommitUnknownWithCause)?,
-                Err(error)=>{self.connection.execute("ROLLBACK").map_err(OrchestrationError::CommitUnknownWithCause)?;return Err(error);}}
+            self.reconcile_visible_resume_association(action,&reply)?;
         }
         Ok(bytes)
+    }
+    /// The original APPLIED receipt commits first. A crash in that gap leaves
+    /// this optional selection projection pending; a repeat of the same USER
+    /// operation must retry only this CAS, never repeat the H resume.
+    fn reconcile_visible_resume_association(&mut self,action:&Action,reply:&Json)->Result<()> {
+        self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
+        let outcome=(||->Result<()> {
+            authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
+            self.verify_visible_action_history(action)?;
+            self.append_visible_resume_association(action,reply)
+        })();
+        match outcome {Ok(())=>self.connection.execute("COMMIT").map_err(OrchestrationError::CommitUnknownWithCause),
+            Err(error)=>{self.connection.execute("ROLLBACK").map_err(OrchestrationError::CommitUnknownWithCause)?;Err(error)}}
     }
     fn append_visible_resume_association(&self,action:&Action,reply:&Json)->Result<()> {
         let Some(latest)=self.visible_selection(&action.workspace,None)? else {return Ok(());};
@@ -561,6 +568,12 @@ impl<'root> ProductDatabase<'root> {
         if action.phase=="APPLIED" {
             // Revalidate the original receipt every time; never return a saved
             // success when its actual H/C/A source can no longer be proven.
+            // Reconcile a resume selection after the durable APPLIED/reselection
+            // crash gap. The exact old selection must still be latest; current
+            // E/H movement or another USER selection simply leaves history as is.
+            if action.method=="thread/resume" && is_text(object(&reply)?.get(&k("state")),"APPLIED") {
+                self.reconcile_visible_resume_association(action,&reply)?;
+            }
             return Ok(reply.canonical().into_bytes());
         }
         self.store_visible_reply(action,reply)
