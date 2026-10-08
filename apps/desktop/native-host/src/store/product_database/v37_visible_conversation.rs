@@ -518,6 +518,14 @@ impl<'root> ProductDatabase<'root> {
                             reply.insert(k("state"),s("UNKNOWN"));reply.insert(k("reason"),s(&format!("Original conversation read: {error:?}")));
                         }
                     },
+                    "native-events"=>{
+                        exact(params,&[],&["cursor","resumeCursor"])?;
+                        if let Err(error)=self.visible_native_events(workspace,&association,&selected,params,&mut reply) {
+                            reply.insert(k("state"),s("UNKNOWN"));
+                            reply.insert(k("reason"),s(&format!("Original native event read: {error:?}")));
+                            reply.insert(k("response"),visible_native_event_unknown());
+                        }
+                    },
                     "thread/list"=>{
                         exact(params,&[],&["cursor","limit"])?;
                         if let Err(error)=self.visible_thread_list(workspace,&association,params,&mut reply) {
@@ -525,7 +533,7 @@ impl<'root> ProductDatabase<'root> {
                         }
                     },
                     _=>{
-                        reply.insert(k("state"),s("UNSUPPORTED"));reply.insert(k("reason"),s("This producer only supports qualified thread/read, thread/list and live-state reads."));
+                        reply.insert(k("state"),s("UNSUPPORTED"));reply.insert(k("reason"),s("This producer only supports qualified thread/read, thread/list, native-events and live-state reads."));
                     },
                 }
                 Ok(Json::Object(reply))
@@ -541,6 +549,153 @@ impl<'root> ProductDatabase<'root> {
         query.bind_text(1,&association.domain)?;query.bind_text(2,&association.session)?;
         if !query.step_row()? {return Err(OrchestrationError::OperationConflict);}
         decimal(&query.column_text(0)?)
+    }
+    /// Read A's captured provider frames from the selected current H episode.
+    /// The page boundary is an original raw rowid, never a completed Turn or
+    /// a reconstruction from thread/read. A resume advances to a fresh upper
+    /// bound; a page cursor remains on the bound of its first page.
+    fn visible_native_events(&self, workspace: &str, association: &Association,
+        selected: &Selection, params: &BTreeMap<JsonString,Json>,
+        reply: &mut BTreeMap<JsonString,Json>) -> Result<()> {
+        if self.visible_selection(workspace,None)?.as_ref().map(|latest|latest.row)!=Some(selected.row) {
+            return Err(OrchestrationError::V37StoreFailure(
+                "Original USER workspace selection changed before native event read.".into()));
+        }
+        let current=self.visible_candidate(association,true)?;
+        if current.thread!=selected.thread || current.repository!=selected.repository
+            || current.worktree!=selected.worktree {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let episode=Statement::prepare(self.connection.as_ptr(),
+            "SELECT e.process_operation_id,c.ticket,c.custodian_nonce FROM main.gogoke_v37_h_generation g JOIN main.gogoke_v37_h_process_episode e ON e.domain_id=g.domain_id AND e.session_id=g.session_id AND e.generation=g.generation AND e.request_id=g.request_id AND e.process_operation_id=g.process_operation_id JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id AND c.generation=e.generation WHERE g.domain_id=?1 AND g.session_id=?2 AND g.generation=?3 AND e.instance_id=?4 AND e.seat_id=?5 AND e.seat_incarnation=?6")?;
+        for (index,value) in [association.domain.as_str(),association.session.as_str(),association.generation.as_str(),
+            association.instance.as_str(),association.seat.as_str(),association.incarnation.as_str()].iter().enumerate() {
+            episode.bind_text((index+1) as i32,value)?;
+        }
+        if !episode.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        let operation=episode.column_text(0)?;
+        let ticket=episode.column_text(1)?;
+        let nonce=episode.column_text(2)?;
+        if episode.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        drop(episode);
+        let maximum=Statement::prepare(self.connection.as_ptr(),
+            "SELECT COALESCE(MAX(rowid),0) FROM main.v37_ledger_raw_source WHERE domain_id=?1 AND session_id=?2 AND generation=?3")?;
+        maximum.bind_text(1,&association.domain)?;maximum.bind_text(2,&association.session)?;
+        maximum.bind_text(3,&association.generation)?;
+        if !maximum.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        let maximum=decimal(&maximum.column_text(0)?)?;
+        let scope=format!("native-events\n{workspace}\n{}\n{}\n{}\n{}",selected.row,
+            selected.thread,association.json().canonical(),operation);
+        let (high,after)=visible_native_event_position(params,maximum,&scope)?;
+        let predecessor=Statement::prepare(self.connection.as_ptr(),
+            "SELECT source_cursor,operation_id,process_ticket,custodian_nonce,source_epoch FROM main.v37_ledger_raw_source WHERE domain_id=?1 AND session_id=?2 AND generation=?3 AND rowid<=?4 ORDER BY rowid DESC LIMIT 1")?;
+        predecessor.bind_text(1,&association.domain)?;predecessor.bind_text(2,&association.session)?;
+        predecessor.bind_text(3,&association.generation)?;predecessor.bind_i64(4,after)?;
+        let mut ordinal=if predecessor.step_row()? {
+            let ordinal=decimal(&predecessor.column_text(0)?)?;
+            if predecessor.column_text(1)?!=operation || predecessor.column_text(2)?!=ticket
+                || predecessor.column_text(3)?!=nonce || predecessor.column_text(4)?!=nonce {
+                return Err(OrchestrationError::V37StoreFailure(
+                    "Original native event cursor predecessor differs from H episode/custody.".into()));
+            }
+            ordinal
+        } else {0};
+        drop(predecessor);
+        let query=Statement::prepare(self.connection.as_ptr(),
+            "SELECT rowid,operation_id,process_ticket,custodian_nonce,source_epoch,source_cursor FROM main.v37_ledger_raw_source WHERE domain_id=?1 AND session_id=?2 AND generation=?3 AND rowid>?4 AND rowid<=?5 ORDER BY rowid")?;
+        query.bind_text(1,&association.domain)?;query.bind_text(2,&association.session)?;
+        query.bind_text(3,&association.generation)?;query.bind_i64(4,after)?;query.bind_i64(5,high)?;
+        let mut notifications=Vec::new();
+        let mut refs=Vec::new();
+        let mut last=after;
+        let mut more=false;
+        while query.step_row()? {
+            let id=decimal(&query.column_text(0)?)?;
+            let row_operation=query.column_text(1)?;
+            let row_ticket=query.column_text(2)?;
+            let row_nonce=query.column_text(3)?;
+            let epoch=query.column_text(4)?;
+            let cursor=query.column_text(5)?;
+            let next=ordinal.checked_add(1).ok_or(OrchestrationError::Invalid("native raw cursor overflow"))?;
+            if decimal(&cursor)?!=next {
+                return Err(OrchestrationError::V37StoreFailure(format!(
+                    "Original native source {id} has a missing or repeated frame ordinal after {ordinal}.")));
+            }
+            ordinal=next;
+            if row_operation!=operation || row_ticket!=ticket || row_nonce!=nonce || epoch!=nonce {
+                return Err(OrchestrationError::V37StoreFailure(format!(
+                    "Original native source {id} disagrees with selected H generation/episode/custody.")));
+            }
+            let raw=crate::store::ledger::read_captured_raw_source(&self.connection,&row_operation,&epoch,&cursor)?
+                .ok_or_else(||OrchestrationError::V37StoreFailure(format!("Original native source {id} disappeared.")))?;
+            if raw.domain_id!=association.domain || raw.session_id!=association.session
+                || raw.generation!=association.generation || raw.process_ticket!=ticket
+                || raw.custodian_nonce!=nonce {
+                return Err(OrchestrationError::V37StoreFailure(format!(
+                    "Original native source {id} has inconsistent A/H identity.")));
+            }
+            let source=std::str::from_utf8(&raw.raw_bytes).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("Original native source {id} UTF-8: {error}")))?;
+            let notification=Parser::parse(source.trim_end_matches(['\r','\n']))
+                .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                    "Original native source {id} JSON: {error:?}")))?;
+            let envelope=object(&notification)?;
+            // A JSON-RPC method with an ID is a server request, not a
+            // notification for app-server-event. Its separate USER question
+            // and response path must retain ownership of that frame.
+            if envelope.contains_key(&k("id")) {last=id;continue;}
+            let method=match envelope.get(&k("method")) {
+                None=>{last=id;continue;},
+                Some(Json::String(value))=>value.to_well_formed_string()
+                    .ok_or(OrchestrationError::Invalid("native event method"))?,
+                _=>return Err(OrchestrationError::V37StoreFailure(format!(
+                    "Original native source {id} has a non-text method."))),
+            };
+            let relevant=method.starts_with("item/") || method.starts_with("turn/")
+                || method.starts_with("thread/") || method=="error";
+            let params=match envelope.get(&k("params")) {
+                Some(Json::Object(fields))=>fields,
+                _ if !relevant=>{last=id;continue;},
+                _=>return Err(OrchestrationError::V37StoreFailure(format!(
+                    "Original native notification {id} lacks params."))),
+            };
+            let thread=if method=="thread/started" {
+                let started=object(params.get(&k("thread")).ok_or_else(||
+                    OrchestrationError::V37StoreFailure(format!("Original thread/started source {id} lacks thread.")))?)?;
+                Some(string_field(started,"id")?)
+            } else {
+                match params.get(&k("threadId")) {
+                    Some(Json::String(value))=>Some(value.to_well_formed_string()
+                        .ok_or(OrchestrationError::Invalid("native event thread"))?),
+                    None if !relevant=>None,
+                    _=>return Err(OrchestrationError::V37StoreFailure(format!(
+                        "Original native notification {id} lacks exact threadId."))),
+                }
+            };
+            let Some(thread)=thread else {last=id;continue;};
+            if thread!=selected.thread {return Err(OrchestrationError::V37StoreFailure(format!(
+                "Original native notification {id} names another vendor thread.")));}
+            let source_ref=self.visible_source_ref(id,selected)?;
+            let mut trial=copy_array(&notifications);
+            trial.push(Json::Object(BTreeMap::from([(k("notification"),copy_json(&notification)),
+                (k("sourceRef"),copy_json(&source_ref))])));
+            let trial_refs={let mut values=copy_array(&refs);values.push(copy_json(&source_ref));values};
+            let shell=visible_native_event_envelope(copy_array(&trial),high,None,None,trial_refs,"PARTIAL",after);
+            let mut trial_reply=copy_fields(reply);trial_reply.insert(k("response"),shell);
+            if notifications.len()>=64 || Json::Object(trial_reply).canonical().len()+512>crate::ipc::MAX_FRAME_BYTES {
+                if notifications.is_empty() {return Err(OrchestrationError::V37StoreFailure(format!(
+                    "Original native notification {id} exceeds the USER response frame.")));}
+                more=true;break;
+            }
+            notifications=trial;refs.push(source_ref);last=id;
+        }
+        let state=if more {"PARTIAL"} else {"COMPLETE"};
+        let next=if more {Some(visible_native_event_page_token(high,last,&scope))} else {None};
+        let resume=if more {None} else {Some(visible_native_event_resume_token(high,&scope))};
+        reply.insert(k("state"),s(if more {"PARTIAL"} else {"APPLIED"}));
+        reply.insert(k("response"),visible_native_event_envelope(notifications,high,
+            next.as_deref(),resume.as_deref(),refs,state,after));
+        Ok(())
     }
     fn visible_original_thread(&self, selected: &Selection) -> Result<Json> {
         let query=Statement::prepare(self.connection.as_ptr(),
@@ -840,6 +995,66 @@ fn visible_read_envelope(thread: Json, high: i64, cursor: Option<&str>, refs: Ve
     Json::Object(BTreeMap::from([(k("result"),Json::Object(BTreeMap::from([(k("thread"),thread),
         (k("nativeHistory"),visible_history(high,cursor,refs,state))])))]))
 }
+fn visible_native_event_envelope(notifications: Vec<Json>, high: i64,
+    next: Option<&str>, resume: Option<&str>, refs: Vec<Json>, state: &str, after: i64) -> Json {
+    Json::Object(BTreeMap::from([(k("result"),Json::Object(BTreeMap::from([
+        (k("notifications"),Json::Array(notifications)),
+        (k("nativeEvents"),Json::Object(BTreeMap::from([
+            (k("state"),s(state)),(k("highWater"),s(&high.to_string())),
+            (k("afterSourceId"),s(&after.to_string())),
+            (k("nextCursor"),next.map(s).unwrap_or(Json::Null)),
+            (k("resumeCursor"),resume.map(s).unwrap_or(Json::Null)),
+            (k("sourceRefs"),Json::Array(refs)),
+        ]))),
+    ])))]))
+}
+fn visible_native_event_unknown() -> Json {
+    Json::Object(BTreeMap::from([(k("result"),Json::Object(BTreeMap::from([
+        (k("notifications"),Json::Array(Vec::new())),
+        (k("nativeEvents"),Json::Object(BTreeMap::from([
+            (k("state"),s("UNKNOWN")),(k("highWater"),Json::Null),
+            (k("afterSourceId"),Json::Null),(k("nextCursor"),Json::Null),
+            (k("resumeCursor"),Json::Null),(k("sourceRefs"),Json::Array(Vec::new())),
+        ]))),
+    ])))]))
+}
+fn visible_native_event_page_token(high: i64, after: i64, scope: &str) -> String {
+    let digest=crate::store::digest::sha256_hex(format!("native-page\n{scope}\n{high}\n{after}").as_bytes());
+    format!("page:{high}:{after}:{digest}")
+}
+fn visible_native_event_resume_token(high: i64, scope: &str) -> String {
+    let digest=crate::store::digest::sha256_hex(format!("native-resume\n{scope}\n{high}").as_bytes());
+    format!("resume:{high}:{digest}")
+}
+fn visible_native_event_position(params: &BTreeMap<JsonString,Json>, maximum: i64,
+    scope: &str) -> Result<(i64,i64)> {
+    if params.contains_key(&k("cursor")) && params.contains_key(&k("resumeCursor")) {
+        return Err(OrchestrationError::Invalid("native event cursors"));
+    }
+    if let Some(value)=params.get(&k("cursor")) {
+        let Json::String(value)=value else {return Err(OrchestrationError::Invalid("native event page cursor"));};
+        let token=value.to_well_formed_string().ok_or(OrchestrationError::Invalid("native event page cursor"))?;
+        let parts:Vec<_>=token.split(':').collect();
+        if parts.len()!=4 || parts[0]!="page" {return Err(OrchestrationError::Invalid("native event page cursor"));}
+        let high=decimal(parts[1])?;let after=decimal(parts[2])?;
+        if high>maximum || after==0 || after>=high || token!=visible_native_event_page_token(high,after,scope) {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        return Ok((high,after));
+    }
+    if let Some(value)=params.get(&k("resumeCursor")) {
+        let Json::String(value)=value else {return Err(OrchestrationError::Invalid("native event resume cursor"));};
+        let token=value.to_well_formed_string().ok_or(OrchestrationError::Invalid("native event resume cursor"))?;
+        let parts:Vec<_>=token.split(':').collect();
+        if parts.len()!=3 || parts[0]!="resume" {return Err(OrchestrationError::Invalid("native event resume cursor"));}
+        let after=decimal(parts[1])?;
+        if after>maximum || token!=visible_native_event_resume_token(after,scope) {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        return Ok((maximum,after));
+    }
+    Ok((maximum,0))
+}
 fn visible_page_token(high: i64, after: i64, scope: &str) -> String {
     let digest=crate::store::digest::sha256_hex(format!("{scope}\n{high}\n{after}").as_bytes());
     format!("{high}:{after}:{digest}")
@@ -928,6 +1143,15 @@ mod tests {
             assert!(product.configure_user_v37(malformed.as_bytes()).is_err(),"vendor/native identity fields do not coerce JSON number and string");
             let count=Statement::prepare(product.connection.as_ptr(),"SELECT COUNT(*) FROM main.gogoke_v37_visible_conversation_selection").unwrap();
             assert!(count.step_row().unwrap());assert_eq!(count.column_text(0).unwrap(),"1","denied recovery cannot create or resend an effect");
+            drop(count);
+            let old=product.visible_selection("workspaceA",Some(&association)).unwrap().unwrap();
+            let switched=Statement::prepare(product.connection.as_ptr(),
+                "INSERT INTO main.gogoke_v37_visible_conversation_selection VALUES('workspaceA','laterLegacy','LEGACY','00','null','','','','','','',0,0)").unwrap();
+            switched.step_done().unwrap();drop(switched);
+            let mut result=product.visible_reply("workspaceA","UNKNOWN",Some(&association),None);
+            let error=product.visible_native_events("workspaceA",&association,&old,&BTreeMap::new(),&mut result).unwrap_err();
+            assert!(format!("{error:?}").contains("selection changed"),
+                "an older matching association cannot append events after workspace selection changed");
         });
     }
     #[test]
@@ -1030,5 +1254,23 @@ mod tests {
         assert!(visible_page_position(&params,80,"workspaceB / exact association / threadA").is_err());
         assert!(visible_page_position(&params,54,"workspaceA / exact association / threadA").is_err());
         assert!(!same_json(Some(&Json::Number("7".into())),Some(&s("7"))));
+    }
+    #[test]
+    fn native_event_cursor_separates_snapshot_page_from_fresh_resume() {
+        let scope="workspaceA / selected USER association / current episode";
+        let other="workspaceA / changed USER association / current episode";
+        let page=visible_native_event_page_token(12,7,scope);
+        let params=BTreeMap::from([(k("cursor"),s(&page))]);
+        assert_eq!(visible_native_event_position(&params,14,scope).unwrap(),(12,7));
+        assert!(visible_native_event_position(&params,14,other).is_err());
+        let resume=visible_native_event_resume_token(12,scope);
+        let params=BTreeMap::from([(k("resumeCursor"),s(&resume))]);
+        assert_eq!(visible_native_event_position(&params,14,scope).unwrap(),(14,12));
+        assert!(visible_native_event_position(&params,14,other).is_err());
+        assert!(visible_native_event_position(&params,11,scope).is_err());
+        let empty=visible_native_event_resume_token(0,scope);
+        let params=BTreeMap::from([(k("resumeCursor"),s(&empty))]);
+        assert_eq!(visible_native_event_position(&params,0,scope).unwrap(),(0,0));
+        assert_eq!(visible_native_event_position(&params,5,scope).unwrap(),(5,0));
     }
 }
