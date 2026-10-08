@@ -1403,11 +1403,11 @@ mod tests {
         drop(changed);
         db.execute("UPDATE main.gogoke_v37_h_process_episode SET phase='ACTIVE',result_revision=4 WHERE process_operation_id='resumeOp' AND phase='PREPARED' AND old_generation='1'").unwrap();
         db.execute("INSERT INTO main.gogoke_v37_h_generation VALUES('domainA','sessionA','2','resumeA','resumeOp')").unwrap();
-        let promoted=Statement::prepare(db.as_ptr(),"SELECT binding_id,generation,stop_fact_id FROM main.gogoke_v37_h_claim WHERE domain_id='domainA' AND session_id='sessionA'").unwrap();
+        let promoted=Statement::prepare(db.as_ptr(),"SELECT binding_id,generation,CASE WHEN stop_fact_id IS NULL THEN '1' ELSE '0' END FROM main.gogoke_v37_h_claim WHERE domain_id='domainA' AND session_id='sessionA'").unwrap();
         assert!(promoted.step_row().unwrap());
         assert_eq!(promoted.column_text(0).unwrap(),"resumeBinding");
         assert_eq!(promoted.column_text(1).unwrap(),"2");
-        assert!(promoted.column_text(2).unwrap().is_empty());
+        assert_eq!(promoted.column_text(2).unwrap(),"1");
         drop(promoted);
         let stopped_old=Statement::prepare(db.as_ptr(),"SELECT e.stop_fact_id,c.stop_proof_hash FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id WHERE e.process_operation_id='oldOp'").unwrap();
         assert!(stopped_old.step_row().unwrap());
