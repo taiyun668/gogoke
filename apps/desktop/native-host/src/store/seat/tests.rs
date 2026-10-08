@@ -355,7 +355,13 @@ fn secretary_routines_replay_absence_and_unknown_are_fail_closed() {
         set_verified_models(db,"instanceA",r#"["modelA"]"#,"sha256:test");
         configure_secretary(db,owner,seat.generation,seat.revision,"configureRoutineSeat",
             b"configure routine seat","instanceA","modelA","high","\"READ_ONLY\"").unwrap();
-        configure_absence_policy(db,owner,None,20,"policyInputA").unwrap();
+        // Real designation records an explicit product default. The USER
+        // replaces only that observed revision; replay must not restore it.
+        assert_eq!(read_secretary_presence_in_transaction(db,owner).unwrap().1.unwrap().max_absent_ms,86400000);
+        configure_absence_policy(db,owner,Some(1),20,"policyInputA").unwrap();
+        designate_secretary(db,owner,&seat.seat_id,&seat.incarnation,
+            "designateRoutineSeat",b"designate routine seat").unwrap();
+        assert_eq!(read_secretary_presence_in_transaction(db,owner).unwrap().1.unwrap().max_absent_ms,20);
         record_user_presence(db,owner,"presenceA",UserPresenceKind::Input,
             "userInputA","epochA","2",90,90).unwrap();
         assert!(record_user_presence(db,owner,"presenceA",UserPresenceKind::Input,

@@ -72,6 +72,7 @@ pub(crate) fn designate_secretary(db:&mut VerifiedDatabaseConnection<'_>,
             if current.incarnation!=incarnation||current.state==State::Reclaimed {
                 return Err(SeatError::Denied);
             }
+            super::secretary_routines::ensure_product_absence_policy_in_transaction(db)?;
             return Ok(SecretaryDesignation {seat_id:seat_id.into(),
                 incarnation:incarnation.into(),replayed:true});
         }
@@ -95,6 +96,7 @@ pub(crate) fn designate_secretary(db:&mut VerifiedDatabaseConnection<'_>,
             "INSERT INTO main.gogoke_v37_seat_secretary(singleton,domain_id,seat_id,incarnation,request_id,fingerprint) VALUES(1,'global',?1,?2,?3,?4)")?;
         q.bind_text(1,seat_id)?;q.bind_text(2,incarnation)?;
         q.bind_text(3,request_id)?;q.bind_text(4,&fp)?;q.step_done()?;
+        super::secretary_routines::ensure_product_absence_policy_in_transaction(db)?;
         Ok(SecretaryDesignation {seat_id:seat_id.into(),incarnation:incarnation.into(),replayed:false})
     })
 }

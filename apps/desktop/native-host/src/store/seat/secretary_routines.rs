@@ -23,6 +23,31 @@ pub(super) fn create_tables(db:&mut VerifiedDatabaseConnection<'_>)->Result<(),S
     Ok(())
 }
 
+/// Product default recorded by the authenticated USER designation transaction.
+/// An existing USER policy is never replaced or extended by designation replay.
+/// This configures absence handling; it supplies no presence or launch evidence.
+pub(super) fn ensure_product_absence_policy_in_transaction(
+    db:&VerifiedDatabaseConnection<'_>,
+)->Result<(),SeatError> {
+    current_secretary(db)?;
+    let existing=Statement::prepare(db.as_ptr(),
+        "SELECT CAST(revision AS TEXT),CAST(max_absent_ms AS TEXT),source_id FROM main.gogoke_v37_seat_secretary_absence_policy WHERE singleton=1")?;
+    if existing.step_row()? {
+        let revision=existing.column_text(0)?.parse::<i64>().map_err(|_|SeatError::SchemaDrift)?;
+        let absent=existing.column_text(1)?.parse::<i64>().map_err(|_|SeatError::SchemaDrift)?;
+        let source=existing.column_text(2)?;
+        if revision<=0 || absent<=0 || source.is_empty() || existing.step_row()? {
+            return Err(SeatError::SchemaDrift);
+        }
+        return Ok(());
+    }
+    drop(existing);
+    // One day is an explicit initial product policy, not an inferred Owner
+    // presence, timing tolerance, upstream default or automatic resumption.
+    db.execute("INSERT INTO main.gogoke_v37_seat_secretary_absence_policy(singleton,revision,max_absent_ms,source_id) VALUES(1,1,86400000,'PRODUCT_DEFAULT_V1:ABSENCE_24_HOURS')")?;
+    Ok(())
+}
+
 #[derive(Clone,Debug,Eq,PartialEq)]
 pub(crate) struct SecretaryRoutine {
     pub(crate) routine_id:String,

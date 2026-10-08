@@ -70,7 +70,9 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          cargo generate-lockfile --manifest-path apps/desktop/native-host/Cargo.toml
+          # Keep every existing locked registry package; resolve only the
+          # workspace's new exact dependencies and their missing transitive set.
+          cargo update --workspace --manifest-path apps/desktop/native-host/Cargo.toml
           if ($LASTEXITCODE -ne 0) { throw "Pinned dependency resolution failed: $LASTEXITCODE" }
           $source = (git rev-parse HEAD).Trim()
           $lock = 'apps/desktop/native-host/Cargo.lock'
