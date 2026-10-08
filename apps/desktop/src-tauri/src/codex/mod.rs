@@ -495,6 +495,108 @@ fn stable_native_request_id(value: Option<String>) -> Result<String, String> {
     Ok(value)
 }
 
+fn canonical_binding_generation(value: &str) -> Result<u64, String> {
+    let parsed = value
+        .parse::<u64>()
+        .map_err(|error| format!("GOGOKE_NATIVE_BINDING_GENERATION_INVALID:{error}"))?;
+    if parsed.to_string() != value {
+        return Err("GOGOKE_NATIVE_BINDING_GENERATION_NONCANONICAL".into());
+    }
+    Ok(parsed)
+}
+
+fn validated_resume_association(
+    response: &Value,
+    old: &NativeAssociation,
+    requested_thread_id: &str,
+) -> Result<NativeAssociation, String> {
+    let rpc_id = response
+        .get("id")
+        .ok_or("GOGOKE_NATIVE_RESUME_RPC_ID_MISSING")?;
+    if !matches!(rpc_id, Value::String(id) if !id.is_empty())
+        && !matches!(rpc_id, Value::Number(id) if id.is_i64() || id.is_u64())
+    {
+        return Err("GOGOKE_NATIVE_RESUME_RPC_ID_INVALID".into());
+    }
+    let result = response
+        .get("result")
+        .and_then(Value::as_object)
+        .ok_or("GOGOKE_NATIVE_RESUME_RESULT_MISSING")?;
+    if result
+        .get("thread")
+        .and_then(|thread| thread.get("id"))
+        .and_then(Value::as_str)
+        != Some(requested_thread_id)
+    {
+        return Err("GOGOKE_NATIVE_RESUME_THREAD_ID_MISMATCH".into());
+    }
+    let next: NativeAssociation = serde_json::from_value(
+        result
+            .get("nativeAssociation")
+            .cloned()
+            .ok_or("GOGOKE_NATIVE_RESUME_ASSOCIATION_MISSING")?,
+    )
+    .map_err(|error| format!("GOGOKE_NATIVE_RESUME_ASSOCIATION_INVALID:{error}"))?;
+    let old_generation = canonical_binding_generation(&old.binding_generation)?;
+    let next_generation = canonical_binding_generation(&next.binding_generation)?;
+    if old_generation.checked_add(1) != Some(next_generation) {
+        return Err("GOGOKE_NATIVE_RESUME_GENERATION_NOT_NEXT".into());
+    }
+    let mut same_generation = next.clone();
+    same_generation.binding_generation = old.binding_generation.clone();
+    if &same_generation != old {
+        return Err("GOGOKE_NATIVE_RESUME_ASSOCIATION_CHANGED".into());
+    }
+    let sources = result
+        .get("sourceRefs")
+        .and_then(Value::as_array)
+        .ok_or("GOGOKE_NATIVE_RESUME_SOURCES_MISSING")?;
+    if sources.len() != 2 {
+        return Err("GOGOKE_NATIVE_RESUME_SOURCES_INCOMPLETE".into());
+    }
+    let mut kinds = HashSet::new();
+    let mut operation_id: Option<&str> = None;
+    for source in sources {
+        let fields = source
+            .as_object()
+            .ok_or("GOGOKE_NATIVE_RESUME_SOURCE_INVALID")?;
+        let kind = fields
+            .get("kind")
+            .and_then(Value::as_str)
+            .ok_or("GOGOKE_NATIVE_RESUME_SOURCE_KIND_MISSING")?;
+        if !matches!(kind, "RESUME_ACK" | "THREAD_STARTED") || !kinds.insert(kind) {
+            return Err("GOGOKE_NATIVE_RESUME_SOURCE_KIND_INVALID".into());
+        }
+        let operation = fields
+            .get("operationId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or("GOGOKE_NATIVE_RESUME_OPERATION_MISSING")?;
+        if let Some(first) = operation_id {
+            if first != operation {
+                return Err("GOGOKE_NATIVE_RESUME_OPERATION_MISMATCH".into());
+            }
+        } else {
+            operation_id = Some(operation);
+        }
+        if fields.get("generation").and_then(Value::as_str)
+            != Some(next.binding_generation.as_str())
+            || ["sourceEpoch", "sourceCursor"].iter().any(|key| {
+                fields
+                    .get(*key)
+                    .and_then(Value::as_str)
+                    .is_none_or(str::is_empty)
+            })
+        {
+            return Err("GOGOKE_NATIVE_RESUME_SOURCE_GENERATION_OR_CURSOR_INVALID".into());
+        }
+    }
+    if !kinds.contains("RESUME_ACK") || !kinds.contains("THREAD_STARTED") {
+        return Err("GOGOKE_NATIVE_RESUME_SOURCES_INCOMPLETE".into());
+    }
+    Ok(next)
+}
+
 async fn native_visible_effect(
     app: &AppHandle,
     state: &AppState,
@@ -505,7 +607,31 @@ async fn native_visible_effect(
 ) -> Result<Value, String> {
     native_visible_params(method, &params)?;
     let request_id = stable_native_request_id(native_request_id)?;
-    let association = native_association(state, workspace_id).await?;
+    let requested_thread_id = if method == "thread/resume" {
+        Some(
+            params
+                .get("threadId")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .ok_or("GOGOKE_NATIVE_RESUME_THREAD_ID_REQUIRED")?
+                .to_owned(),
+        )
+    } else {
+        None
+    };
+    let session = state
+        .sessions
+        .lock()
+        .await
+        .get(workspace_id)
+        .cloned()
+        .ok_or("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE")?;
+    if session.owner_workspace_id != workspace_id {
+        return Err("GOGOKE_NATIVE_WORKSPACE_OWNER_MISMATCH".into());
+    }
+    let association = session
+        .native_association()?
+        .ok_or("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE")?;
     let reply = visible_operation(
         app,
         workspace_id,
@@ -517,9 +643,25 @@ async fn native_visible_effect(
     )
     .await?;
     match reply.state.as_str() {
-        "APPLIED" => reply
-            .response
-            .ok_or("GOGOKE_VISIBLE_RESPONSE_MISSING".into()),
+        "APPLIED" => {
+            let response = reply.response.ok_or("GOGOKE_VISIBLE_RESPONSE_MISSING")?;
+            if let Some(requested_thread_id) = requested_thread_id {
+                let next =
+                    validated_resume_association(&response, &association, &requested_thread_id)?;
+                let current = state
+                    .sessions
+                    .lock()
+                    .await
+                    .get(workspace_id)
+                    .cloned()
+                    .ok_or("GOGOKE_NATIVE_SESSION_DISAPPEARED")?;
+                if !Arc::ptr_eq(&session, &current) {
+                    return Err("GOGOKE_NATIVE_SESSION_REPLACED_BEFORE_RESUME_COMMIT".into());
+                }
+                session.advance_native_association(&association, next)?;
+            }
+            Ok(response)
+        }
         "UNKNOWN" | "DENIED" | "UNSUPPORTED" => Err(visible_failure(
             &reply.state,
             reply.reason.as_deref(),
@@ -629,12 +771,15 @@ async fn native_association(
     state: &AppState,
     workspace_id: &str,
 ) -> Result<NativeAssociation, String> {
-    state
+    let session = state
         .sessions
         .lock()
         .await
         .get(workspace_id)
-        .and_then(|session| session.native_association())
+        .cloned()
+        .ok_or("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE".into())?;
+    session
+        .native_association()?
         .ok_or("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE".into())
 }
 
@@ -1807,6 +1952,44 @@ pub(crate) async fn generate_agent_description(
 #[cfg(test)]
 mod native_visible_boundary_tests {
     use super::*;
+
+    fn association(generation: &str) -> NativeAssociation {
+        NativeAssociation {
+            domain_id: "domainA".into(),
+            session_id: "sessionA".into(),
+            seat_id: "seatA".into(),
+            incarnation: "incA".into(),
+            authorization_generation: "4".into(),
+            binding_generation: generation.into(),
+            instance_id: "instanceA".into(),
+        }
+    }
+
+    #[test]
+    fn resume_cache_requires_original_two_sources_and_actual_next_generation() {
+        let old = association("2");
+        let mut reply = json!({"id":7,"result":{
+            "thread":{"id":"threadA"},"nativeAssociation":association("3"),
+            "sourceRefs":[
+                {"kind":"RESUME_ACK","operationId":"opA","generation":"3",
+                    "sourceEpoch":"epochA","sourceCursor":"cursor1"},
+                {"kind":"THREAD_STARTED","operationId":"opA","generation":"3",
+                    "sourceEpoch":"epochA","sourceCursor":"cursor2"}
+            ]
+        }});
+        assert_eq!(
+            validated_resume_association(&reply, &old, "threadA").unwrap(),
+            association("3")
+        );
+        reply["result"]["sourceRefs"][1]["operationId"] = json!("opB");
+        assert!(validated_resume_association(&reply, &old, "threadA").is_err());
+        reply["result"]["sourceRefs"][1]["operationId"] = json!("opA");
+        reply["result"]["nativeAssociation"]["bindingGeneration"] = json!("4");
+        assert!(validated_resume_association(&reply, &old, "threadA").is_err());
+        reply["result"]["nativeAssociation"]["bindingGeneration"] = json!("3");
+        reply["result"]["thread"]["id"] = json!("other");
+        assert!(validated_resume_association(&reply, &old, "threadA").is_err());
+    }
 
     #[test]
     fn caller_cannot_choose_native_runtime_fields_or_expand_methods() {
