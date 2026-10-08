@@ -874,7 +874,7 @@ pub(crate) fn finalize_quiescent(db:&mut VerifiedDatabaseConnection<'_>,root:&Ro
 mod tests {
     use super::*;
     use crate::root::RootLock;
-    use crate::store::same_open::{create_new,route_b_test_guard};
+    use crate::store::same_open::{create_new,open_existing,route_b_test_guard};
     use crate::process::{NativeBinding,ProcessCustodian,ProcessLaunch,PrepareRequest,StopBudgets};
     use crate::store::session_transport::admission::{self,AdmissionRequest,AdmissionResult};
     use std::path::Path;
@@ -887,21 +887,9 @@ mod tests {
         let path=std::env::temp_dir().join(format!("grok-original-auth-{}-{nonce}",std::process::id()));
         std::fs::create_dir(&path).unwrap();
         let root=RootLock::acquire(&path).unwrap();
-        let mut db=create_new(&root,&path.join("state.sqlite")).unwrap();
-        db.execute("PRAGMA foreign_keys=ON").unwrap();
-        crate::store::authority::initialize_profile(&mut db,&root).unwrap();
-        instance::initialize_schema(&mut db).unwrap();
-        instance::initialize_grok_home_grant_schema(&mut db).unwrap();
-        crate::store::seat::initialize_schema(&mut db).unwrap();
-        super::super::admission::initialize_admission_schema(&mut db).unwrap();
-        super::super::session_binding::initialize_schema(&mut db).unwrap();
-        let powershell=Path::new(&std::env::var("SystemRoot").unwrap())
-            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
-        let program=instance::ProgramObservation::observe(&powershell,"1.0.41").unwrap();
-        instance::register_instance(&mut db,&root,&instance::Registration{
-            request_id:"registerGrok",request_bytes:b"registered physical Grok HOME",
-            instance_id:"grokA",driver_id:"grok",program:&program}).unwrap();
-        db.execute("UPDATE main.gogoke_v37_instances SET login_state='LOGGED_IN' WHERE instance_id='grokA'").unwrap();
+        let database=path.join("state.sqlite");
+        crate::store::product_database::prepare_managed_grok_acl_fixture(&root,&database,"grokA");
+        let mut db=open_existing(&root,&database).unwrap();
         let home=instance::resolve_grok_original_home(&db,&root,"grokA").unwrap();
         let profile=AppContainerProfile::derived_for_test("Gogoke37.OriginalInheritedAuth").unwrap();
         let peer=AppContainerProfile::derived_for_test("Gogoke37.OriginalInheritedPeer").unwrap();
