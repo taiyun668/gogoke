@@ -384,6 +384,7 @@ pub fn run() {
             workspaces::update_workspace_settings,
             workspaces::set_workspace_runtime_codex_args,
             codex::start_thread,
+            codex::native_visible_transport,
             codex::send_user_message,
             codex::turn_steer,
             codex::turn_interrupt,

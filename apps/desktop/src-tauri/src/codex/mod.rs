@@ -647,6 +647,7 @@ async fn native_visible_effect(
     state: &AppState,
     workspace_id: &str,
     native_request_id: Option<String>,
+    expected_association: Option<NativeAssociation>,
     method: &str,
     params: Value,
 ) -> Result<Value, String> {
@@ -677,6 +678,7 @@ async fn native_visible_effect(
     let association = session
         .native_association()?
         .ok_or("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE")?;
+    require_original_association(expected_association.as_ref(), &association)?;
     let reply = visible_operation(
         app,
         workspace_id,
@@ -710,6 +712,17 @@ async fn native_visible_effect(
             Some(&request_id),
         )),
         _ => Err("GOGOKE_VISIBLE_OPERATION_STATE_INVALID".into()),
+    }
+}
+
+fn require_original_association(
+    expected: Option<&NativeAssociation>,
+    current: &NativeAssociation,
+) -> Result<(), String> {
+    match expected {
+        Some(expected) if expected == current => Ok(()),
+        Some(_) => Err("GOGOKE_NATIVE_CALLER_ASSOCIATION_CHANGED".into()),
+        None => Err("GOGOKE_NATIVE_ORIGINAL_ASSOCIATION_REQUIRED".into()),
     }
 }
 
@@ -898,6 +911,34 @@ async fn native_association(
         .ok_or("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE".into())
 }
 
+/// Read the actual transport attachment, never infer it from workspace labels
+/// or use an unavailable native route as permission to call the legacy writer.
+#[tauri::command]
+pub(crate) async fn native_visible_transport(
+    workspace_id: String,
+    state: State<'_, AppState>,
+) -> Result<Value, String> {
+    if remote_backend::is_remote_mode(&*state).await {
+        return Ok(json!({"schema": VISIBLE_SCHEMA, "workspaceId": workspace_id,
+            "state": "REMOTE", "association": null}));
+    }
+    let session = state.sessions.lock().await.get(&workspace_id).cloned();
+    let (kind, association) = match session {
+        Some(session) if session.is_native() => {
+            if session.owner_workspace_id != workspace_id {
+                return Err("GOGOKE_NATIVE_WORKSPACE_OWNER_MISMATCH".into());
+            }
+            let association = session.native_association()?
+                .ok_or("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE")?;
+            ("NATIVE", Some(association))
+        }
+        Some(_) => ("LEGACY", None),
+        None => ("DISCONNECTED", None),
+    };
+    Ok(json!({"schema": VISIBLE_SCHEMA, "workspaceId": workspace_id,
+        "state": kind, "association": association}))
+}
+
 pub(crate) async fn native_visible_live_state(
     app: &AppHandle,
     workspace_id: &str,
@@ -986,6 +1027,7 @@ pub(crate) async fn codex_update(
 pub(crate) async fn start_thread(
     workspace_id: String,
     native_request_id: Option<String>,
+    expected_association: Option<NativeAssociation>,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<Value, String> {
@@ -1005,6 +1047,7 @@ pub(crate) async fn start_thread(
             &state,
             &workspace_id,
             native_request_id,
+            expected_association,
             "thread/start",
             json!({}),
         )
@@ -1018,6 +1061,7 @@ pub(crate) async fn resume_thread(
     workspace_id: String,
     thread_id: String,
     native_request_id: Option<String>,
+    expected_association: Option<NativeAssociation>,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<Value, String> {
@@ -1037,6 +1081,7 @@ pub(crate) async fn resume_thread(
             &state,
             &workspace_id,
             native_request_id,
+            expected_association,
             "thread/resume",
             json!({"threadId": thread_id}),
         )
@@ -1310,6 +1355,7 @@ pub(crate) async fn send_user_message(
     app_mentions: Option<Vec<Value>>,
     collaboration_mode: Option<Value>,
     native_request_id: Option<String>,
+    expected_association: Option<NativeAssociation>,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<Value, String> {
@@ -1363,6 +1409,7 @@ pub(crate) async fn send_user_message(
             &state,
             &workspace_id,
             native_request_id,
+            expected_association,
             "turn/start",
             json!({"threadId": thread_id, "input": [{"type":"text", "text": text}]}),
         )
@@ -1394,6 +1441,7 @@ pub(crate) async fn turn_steer(
     images: Option<Vec<String>>,
     app_mentions: Option<Vec<Value>>,
     native_request_id: Option<String>,
+    expected_association: Option<NativeAssociation>,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<Value, String> {
@@ -1434,6 +1482,7 @@ pub(crate) async fn turn_steer(
             &state,
             &workspace_id,
             native_request_id,
+            expected_association,
             "turn/steer",
             json!({"threadId": thread_id, "expectedTurnId": turn_id,
                 "input": [{"type":"text", "text": text}]}),
@@ -1477,6 +1526,7 @@ pub(crate) async fn turn_interrupt(
     thread_id: String,
     turn_id: String,
     native_request_id: Option<String>,
+    expected_association: Option<NativeAssociation>,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<Value, String> {
@@ -1496,6 +1546,7 @@ pub(crate) async fn turn_interrupt(
             &state,
             &workspace_id,
             native_request_id,
+            expected_association,
             "turn/interrupt",
             json!({"threadId": thread_id, "turnId": turn_id}),
         )
@@ -1857,6 +1908,7 @@ pub(crate) async fn respond_to_server_request(
     request_id: Value,
     result: Value,
     native_request_id: Option<String>,
+    expected_association: Option<NativeAssociation>,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
@@ -1877,6 +1929,7 @@ pub(crate) async fn respond_to_server_request(
             &state,
             &workspace_id,
             native_request_id,
+            expected_association,
             "original-question-answer",
             json!({"requestId": request_id, "result": result}),
         )
@@ -2129,5 +2182,25 @@ mod native_visible_boundary_tests {
             stable_native_request_id(Some("intent_1".into())).unwrap(),
             "intent_1"
         );
+    }
+
+    #[test]
+    fn effect_requires_original_caller_association_before_dispatch() {
+        let current = association("2");
+        assert!(require_original_association(None, &current).is_err());
+        assert!(require_original_association(Some(&current), &current).is_ok());
+        for field in 0..7 {
+            let mut changed = current.clone();
+            match field {
+                0 => changed.domain_id.push('x'),
+                1 => changed.session_id.push('x'),
+                2 => changed.seat_id.push('x'),
+                3 => changed.incarnation.push('x'),
+                4 => changed.authorization_generation.push('x'),
+                5 => changed.binding_generation.push('x'),
+                _ => changed.instance_id.push('x'),
+            }
+            assert!(require_original_association(Some(&changed), &current).is_err());
+        }
     }
 }
