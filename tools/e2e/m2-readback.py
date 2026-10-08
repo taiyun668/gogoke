@@ -302,17 +302,18 @@ def verify_v12_lifecycle_and_ledger(db, journal, case, plan):
         raise RuntimeError("Original V12 D transcript differs across reopen and archive/restore")
 
     source_id = case["sourceSession"]["id"]
-    direct_events = [{"sourceEventId": event_id, "sourceEpoch": epoch,
+    # Match the installed 0.1.38/41cf5403 producer's complete event projection,
+    # whose BTreeMap serialization is key-sorted (it has no domainId field).
+    direct_events = [{"cursor": str(ledger_cursor), "sourceEventId": event_id, "sourceEpoch": epoch,
         "sourceCursor": cursor, "seatId": seat, "sessionId": session,
-        "update": json.loads(update)} for event_id, epoch, cursor, seat, session, update in rows(db,
-            "SELECT source_event_id,source_epoch,source_cursor,seat_id,session_id,update_json "
+        "update": json.loads(update)} for ledger_cursor, event_id, epoch, cursor, seat, session, update in rows(db,
+            "SELECT cursor,source_event_id,source_epoch,source_cursor,seat_id,session_id,update_json "
             "FROM v37_ledger_index WHERE source_kind='v37' AND domain_id=? AND session_id=? "
             "AND cursor>? ORDER BY cursor", (journal["domainId"], source_id, int(plan["sourceCursor"]))) ]
     for key in ("sourceLedgerBeforeDelete", "sourceLedgerAfterDelete"):
         measured = case[key]
         if canonical(measured.get("events")) != canonical(direct_events) or \
-                measured.get("sha256") != fingerprint(json.dumps(direct_events, ensure_ascii=False,
-                    separators=(",", ":")).encode()):
+                measured.get("sha256") != fingerprint(canonical(direct_events).encode()):
             raise RuntimeError("V12 source ledger deletion comparison differs from direct original A rows")
     if case.get("readbackRequirements", {}).get("sourceLedgerUnchangedBySideDelete") is not True:
         raise RuntimeError("V12 source ledger delete preservation is absent")

@@ -136,6 +136,9 @@ async function createRegisteredWorktree(prefix) {
 
 try {
   await snapshot('before');
+  const initialMemory = snapshotValue('memory', 'before');
+  check(initialMemory.memoryDataUnchangedByRead && initialMemory.stage1OutputCount === 0 &&
+    initialMemory.memoryJobCount === 0, 'Actual initial memory store is unchanged by measurement and has no memory jobs');
   const initialLedger = snapshotValue('ledger', 'before');
   check(initialLedger.epoch === side.ledgerEpoch && initialLedger.cursor === side.sourceCursor,
     'Root-provided V12 epoch and source cursor match the fresh native read-only ledger observation');
@@ -196,6 +199,9 @@ try {
     final.sideChatCases[0].result === 'DIRECT_A_H_F_AND_AUTHORIZED_TOOL_EXPORTED_REQUIRES_V12_REVIEW',
     'Existing immutable reader confirms actual V12 A/H/F and authorized tool evidence');
   await snapshot('after');
+  const finalMemory = snapshotValue('memory', 'after');
+  check(finalMemory.memoryDataUnchangedByRead && finalMemory.stage1OutputCount === 0 &&
+    finalMemory.memoryJobCount === 0, 'Actual final memory store is unchanged by measurement and has no memory jobs');
   for (const observer of config.observers) {
     const before = snapshotValue(observer.name, 'before');
     const after = snapshotValue(observer.name, 'after');
