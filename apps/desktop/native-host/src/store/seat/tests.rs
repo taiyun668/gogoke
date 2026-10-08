@@ -434,9 +434,15 @@ fn secretary_routines_replay_absence_and_unknown_are_fail_closed() {
         let history=read_secretary_routines_in_transaction(db,owner).unwrap();
         let occurrences=read_secretary_occurrences_in_transaction(db,owner,"routineA").unwrap();
         db.execute("COMMIT").unwrap();
-        assert_eq!(history.len(),1);
-        assert_eq!(history[0].state,"DELETED");
-        assert_eq!(history[0].last_reason,"vendor failure original");
+        // Both original routine identities were created above; the B replay
+        // control must not change A's deletion or original terminal reason.
+        assert_eq!(history.len(),2);
+        let history_a=history.iter().find(|row|row.routine_id=="routineA").unwrap();
+        let history_b=history.iter().find(|row|row.routine_id=="routineB").unwrap();
+        assert_eq!(history_a.state,"DELETED");
+        assert_eq!(history_a.last_reason,"vendor failure original");
+        assert_eq!(history_b.state,"ACTIVE");
+        assert_eq!(history_b.revision,3);
         assert_eq!(occurrences.len(),1);
         assert_eq!(occurrences[0].state,"FAILED");
         assert_eq!(occurrences[0].original_reason,"vendor failure original");
