@@ -37,9 +37,19 @@
     "grok": "Grok private HOME [observe-current-auth]: AclWitnessMismatch",
     "claude_actual_windows_error": "UNKNOWN; syscall instruction location and service number do not establish a returned error"
   },
-  "housekeeping": "The prior candidate was retired by its real uninstaller. The independently audited 1117 empty physical directories were removed bottom-up and each read back absent, without removing files, reparses, formal installation or retained candidate data. Completed ordinary tasks and original evidence remain retained pending their separate exact-object audit/export/cleanup.",
+  "housekeeping": "The real prior uninstaller and independently audited 1117 empty physical directory removals remain as recorded. This candidate38 batch of 22 completed ordinary tasks was independently audited: 20 definitions/results/custody records were archived then unregistered and read back absent; two already absent retained their original archive hashes. A separate Root exact-name enumeration found zero remaining targets. Six nonzero task results remain preserved as failures, never relabeled PASS. No product, formal data, ACL, credentials or unrelated task was changed.",
   "reference": "Original H RPC writer/reader, exact A initialize receipt, durable original F effect/FileID custody and actual held-child identity; fixed local PE metadata, upstream libuv pipe.c and Microsoft's AppContainer IPC naming contract. Grok's stable HOME/root/authorized-peer lifetime is the active authority, while old explicit FileIDs retain precise withdrawal custody. A recent focused source audit found lifecycle regressions and they are being corrected together; no retry/deadline extension or fresh login is used.",
   "next": "Continue the already active Grok lifecycle qualification, host-side preservation of original Claude API errors and Secretary authentic USER history source. Combine qualified product/UI changes at a new stable candidate; never replace installed 0.1.38 bytes or infer actual model success from cloud/installation. No Owner action is currently requested.",
   "public_release": false,
-  "acceptance": false
+  "acceptance": false,
+  "completed_task_cleanup": {
+    "audited": 22,
+    "removed_and_absent": 20,
+    "previously_absent": 2,
+    "retained": 0,
+    "original_nonzero_results_preserved": 6,
+    "audit_sha256": "38dbda1b7c83a62fc06ccda398d32ba177f9b524f9ac5d8d4a921978e30eb628",
+    "cleanup_manifest_sha256": "9bfab83e05d1192b9768272094bee42dac90fb03cd92bb7fe582ab3fe94e5ead",
+    "independent_exact_remaining": 0
+  }
 }
