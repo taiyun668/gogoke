@@ -36,6 +36,7 @@ pub(crate) struct GrokHomeObject {
     pub(crate) relative_name: PathBuf,
     pub(crate) identity: RootIdentity,
     pub(crate) directory: bool,
+    pub(crate) protected_inherited: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -532,7 +533,8 @@ fn revoke_protected_auth_exact(handle:Handle,profile:&AppContainerProfile,
 /// Called only after the caller's durable revoke intent. This readback catches
 /// an old auth FileID renamed within HOME and residual inherited SID ACEs.
 pub(crate) fn inspect_grok_home_residue(profile: &AppContainerProfile, home: &Path,
-    expected: &RootIdentity, recorded_auth: &[RootIdentity])
+    expected: &RootIdentity, recorded_auth: &[RootIdentity],
+    proven_inherited: &[RootIdentity])
     -> Result<Vec<GrokHomeObject>, IsolationError> {
     require_bound_path(home, expected, true)?;
     let mut touched = Vec::new();
@@ -541,7 +543,10 @@ pub(crate) fn inspect_grok_home_residue(profile: &AppContainerProfile, home: &Pa
         let entries = package_aces(object.0, profile.sid)?;
         if entries.is_empty() { continue; }
         let protected = dacl_protected(object.0)?;
-        let permitted = if protected && !directory && recorded_auth.contains(&identity) {
+        let inherited_protected=protected && !directory && proven_inherited.contains(&identity);
+        let permitted = if inherited_protected {
+            INHERITED_ACE
+        } else if protected && !directory && recorded_auth.contains(&identity) {
             NO_INHERITANCE
         } else if !protected { INHERITED_ACE } else {
             return Err(IsolationError::AclWitnessMismatch);
@@ -558,7 +563,7 @@ pub(crate) fn inspect_grok_home_residue(profile: &AppContainerProfile, home: &Pa
         }
         touched.push(GrokHomeObject { relative_name: path.strip_prefix(home).map_err(|error|
             IsolationError::Acl(io::Error::new(io::ErrorKind::InvalidData,error.to_string())))?.to_path_buf(),
-            identity,directory });
+            identity,directory,protected_inherited:inherited_protected });
     }
     require_bound_path(home, expected, true)?;
     Ok(touched)
@@ -573,7 +578,14 @@ pub(crate) fn revoke_grok_home_residue(profile: &AppContainerProfile, home: &Pat
     }
     let path = home.join(&object.relative_name);
     let held = open_bound_object(&path, &object.identity, object.directory)?;
-    if dacl_protected(held.0)? {
+    if object.protected_inherited {
+        if object.directory || !dacl_protected(held.0)? ||
+            package_aces(held.0,profile.sid)?.as_slice()!=
+                &[(GRANT_ACCESS,directory_rights(true),INHERITED_ACE)] {
+            return Err(IsolationError::AclWitnessMismatch);
+        }
+        rewrite_grok_target(held.0,profile,&object.identity,false,false,true)?;
+    } else if dacl_protected(held.0)? {
         revoke_protected_auth_exact(held.0,profile,&object.identity)?;
     }else{
         rewrite_grok_target(held.0,profile,&object.identity,object.directory,false,false)?;
@@ -628,7 +640,7 @@ mod tests {
         grant_grok_home_root(&peer,&home,&root).unwrap();
         let cache=home.join("cache");std::fs::create_dir(&cache).unwrap();
         let cache_id=crate::root::inspect_root(&cache).unwrap().identity;
-        let objects=inspect_grok_home_residue(&profile,&home,&root,&[]).unwrap();
+        let objects=inspect_grok_home_residue(&profile,&home,&root,&[],&[]).unwrap();
         let directory=objects.iter().find(|object|object.identity==cache_id).unwrap();
         assert!(directory.directory);
         let before=grok_residue_acl(&profile,&home,&root,directory).unwrap();
@@ -673,7 +685,7 @@ mod tests {
         let peer_before=auth.candidate_acl(&peer).unwrap();
         assert_eq!(peer_before.target_aces,format!("1:{}:{}",directory_rights(true),INHERITED_ACE));
         assert_eq!(peer_before.dacl_control,before.dacl_control);
-        let objects=inspect_grok_home_residue(&profile,&home,&root,&[]).unwrap();
+        let objects=inspect_grok_home_residue(&profile,&home,&root,&[],&[]).unwrap();
         let residue=objects.iter().find(|object|object.identity==auth.identity).unwrap();
         assert!(!residue.directory);
         assert_eq!(grok_residue_acl(&profile,&home,&root,residue).unwrap(),before);
@@ -696,11 +708,11 @@ mod tests {
             "the original profile still owns its HOME grant during file cleanup");
 
         revoke_grok_home_root(&profile,&home,&root).unwrap();
-        for leftover in inspect_grok_home_residue(&profile,&home,&root,&[]).unwrap() {
+        for leftover in inspect_grok_home_residue(&profile,&home,&root,&[],&[]).unwrap() {
             revoke_grok_home_residue(&profile,&home,&root,&leftover).unwrap();
         }
         revoke_grok_home_root(&peer,&home,&root).unwrap();
-        assert!(inspect_grok_home_residue(&profile,&home,&root,&[]).unwrap().is_empty());
+        assert!(inspect_grok_home_residue(&profile,&home,&root,&[],&[]).unwrap().is_empty());
         drop(auth);drop(old);drop(profile);drop(peer);std::fs::remove_dir_all(home).unwrap();
     }
 
@@ -742,7 +754,7 @@ mod tests {
         revoke_grok_home_root(&profile,&home,&root).unwrap();
         revoke_grok_auth(&profile,&auth).unwrap();revoke_grok_auth(&profile,&old).unwrap();
         verify_grok_auth(&peer,&auth).unwrap();
-        assert!(inspect_grok_home_residue(&profile,&home,&root,&[old.identity.clone(),auth.identity.clone()]).unwrap().is_empty());
+        assert!(inspect_grok_home_residue(&profile,&home,&root,&[old.identity.clone(),auth.identity.clone()],&[]).unwrap().is_empty());
         drop(auth);drop(old);drop(profile);drop(peer);std::fs::remove_dir_all(home).unwrap();
     }
 

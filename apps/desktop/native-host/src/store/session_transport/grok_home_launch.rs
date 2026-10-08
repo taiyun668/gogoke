@@ -279,6 +279,74 @@ fn recorded_auth(db:&VerifiedDatabaseConnection<'_>,grant:&GrokGrant)->Result<Ve
     Ok(ids)
 }
 
+fn has_original_root_source(effects:&[GrokEffect],home:&RootIdentity)->bool{
+    effects.iter().any(|effect|effect.action=="GRANT_ROOT" &&effect.phase=="APPLIED" &&
+        effect.object_identity==*home &&effect.rights==RIGHTS &&effect.flags==3 &&
+        effect.after_aces==format!("1:{RIGHTS}:3"))
+}
+
+/// A peer's durable auth grant can preserve this original SID's natural HOME
+/// inheritance on the same physical successor. Qualify that exact FileID and
+/// final peer ACL effect before permitting its separate residue revocation.
+fn proven_inherited_successors(db:&VerifiedDatabaseConnection<'_>,grant:&GrokGrant,
+    profile:&AppContainerProfile,home:&ResolvedDirectory)->Result<Vec<RootIdentity>,String>{
+    let own_effects=instance::read_grok_effects(db,&grant.binding_id)?;
+    if !has_original_root_source(&own_effects,&home.identity) {
+        return Err("Grok private HOME: original ROOT source absent for inherited successor".into());
+    }
+    let own_ids=recorded_auth(db,grant)?;
+    let mut ids=Vec::new();
+    for peer in instance::read_grok_grants(db,&grant.instance_id)? {
+        if peer.binding_id==grant.binding_id {continue;}
+        if peer.home_identity!=home.identity ||peer.program_digest!=grant.program_digest {
+            return Err("Grok private HOME: inherited successor peer domain changed".into());
+        }
+        let peer_profile=evidence("inherited-successor-peer-SID",
+            AppContainerProfile::derive_for_revocation(&peer.profile_name))?;
+        if evidence("inherited-successor-peer-SID-readback",peer_profile.sid_identity())?!=peer.profile_sid {
+            return Err("Grok private HOME: inherited successor peer SID changed".into());
+        }
+        let effects=instance::read_grok_effects(db,&peer.binding_id)?;
+        for source in effects.iter().filter(|effect|effect.action=="GRANT_AUTH" &&
+            effect.phase=="APPLIED" &&effect.relative_name=="auth.json" &&
+            effect.rights==RIGHTS &&effect.flags==0 &&
+            effect.after_aces==format!("1:{RIGHTS}:0") &&
+            !own_ids.contains(&effect.object_identity) &&!ids.contains(&effect.object_identity)) {
+            let Some(auth)=evidence("inherited-successor-FileID",observe_grok_recorded_auth(
+                &home.path,&home.identity,&source.object_identity))? else {continue;};
+            let acl=evidence("inherited-successor-ACL",auth.acl(profile))?;
+            if !acl.canonical_dacl() ||acl.target_aces!=format!("1:{RIGHTS}:16") {
+                continue;
+            }
+            let peer_acl=evidence("inherited-successor-peer-ACL",auth.acl(&peer_profile))?;
+            if peer_acl.identity!=acl.identity ||
+                peer_acl.ordered_aces_bytes()!=acl.ordered_aces_bytes() ||
+                peer_acl.dacl_control!=acl.dacl_control {
+                return Err("Grok private HOME: inherited successor ACL changed during proof".into());
+            }
+            let final_effect=if matches!(peer.phase.as_str(),"GRANTED_UNCREATED"|"ACTIVE") {
+                source
+            } else if matches!(peer.phase.as_str(),"RETIRED_CLEANUP_PENDING"|"REVOKED") {
+                effects.iter().find(|effect|effect.action=="REVOKE_AUTH" &&
+                    effect.phase=="APPLIED" &&effect.object_identity==acl.identity)
+                    .ok_or("Grok private HOME: inherited successor peer revoke absent")?
+            } else {
+                return Err("Grok private HOME: inherited successor peer lifecycle unresolved".into());
+            };
+            if peer_acl.target_aces!=final_effect.after_aces ||
+                peer_acl.dacl_control!=final_effect.after_control ||
+                sha256_hex(&peer_acl.other_aces_bytes())!=final_effect.other_aces_sha256 {
+                // A later authorized peer may have changed the other-ACE set.
+                // Only a final effect matching the current complete ACL proves
+                // this FileID; the domain scan rejects it if none matches.
+                continue;
+            }
+            ids.push(acl.identity);
+        }
+    }
+    Ok(ids)
+}
+
 fn verify_active_root_authority(db:&VerifiedDatabaseConnection<'_>,grant:&GrokGrant,
     profile:&AppContainerProfile,home:&ResolvedDirectory)->Result<(),String>{
     let domain=instance::current_grok_home_domain(db,&grant.instance_id)?;
@@ -405,6 +473,10 @@ fn verify_held_auth_authority(db:&VerifiedDatabaseConnection<'_>,grant:&GrokGran
                 effect.phase=="APPLIED" &&effect.object_identity==auth.identity);
             let final_effect=match (grant_effect,revoke_effect,peer.phase.as_str()) {
                 (None,None,_) if acl.target_aces.is_empty()=>None,
+                (None,None,_) if acl.target_aces==format!("1:{RIGHTS}:16") &&
+                    has_original_root_source(&effects,&grant.home_identity) => {
+                    expected_sids.push(peer.profile_sid.clone());None
+                },
                 (Some(effect),None,"GRANTED_UNCREATED"|"ACTIVE")
                     if acl.target_aces==effect.after_aces => {
                     expected_sids.push(peer.profile_sid.clone());Some(effect)
@@ -778,8 +850,9 @@ impl GrokHomeLaunch {
             instance::set_grok_grant_phase(db,&pending,"RETIRED_CLEANUP_PENDING",None)?;
             return Ok(());
         }
+        let inherited=proven_inherited_successors(db,&pending,profile,&self.home)?;
         for object in evidence("scan-residue",inspect_grok_home_residue(profile,&self.home.path,
-            &self.home.identity,&ids))? {
+            &self.home.identity,&ids,&inherited))? {
             let relative=object.relative_name.to_string_lossy().into_owned();
             let before=evidence("residue-ACL-before",grok_residue_acl(profile,&self.home.path,
                 &self.home.identity,&object))?;
@@ -791,7 +864,7 @@ impl GrokHomeLaunch {
                     &self.home.identity,&object)))?;
         }
         if !evidence("readback-residue",inspect_grok_home_residue(profile,&self.home.path,
-            &self.home.identity,&ids))?.is_empty() {
+            &self.home.identity,&ids,&inherited))?.is_empty() {
             return Err("Grok private HOME: residual original SID".into());
         }
         instance::set_grok_grant_phase(db,&pending,"REVOKED",None)
@@ -928,9 +1001,13 @@ pub(crate) fn verify_completed_holder_gone(db:&VerifiedDatabaseConnection<'_>,ro
         return Err("Grok private HOME: completed F ACL effects unproven".into());
     }
     let root_acl=evidence("root-readback",grok_root_acl(&profile,&home.path,&home.identity))?;
-    if !root_acl.target_aces.is_empty() ||
-        !evidence("domain-readback",inspect_grok_home_residue(&profile,&home.path,
-            &home.identity,&ids))?.is_empty() {
+    let inherited=if grant.phase=="RETIRED_CLEANUP_PENDING" {
+        proven_inherited_successors(db,&grant,&profile,&home)?
+    }else{Vec::new()};
+    let residue=evidence("domain-readback",inspect_grok_home_residue(&profile,&home.path,
+        &home.identity,&ids,&inherited))?;
+    if !root_acl.target_aces.is_empty() ||residue.iter().any(|object|
+        !object.protected_inherited ||!inherited.contains(&object.identity)) {
         return Err("Grok private HOME: completed F SID residue".into());
     }
     Ok(())
@@ -968,7 +1045,7 @@ pub(crate) fn verify_completed_no_attempt(db:&VerifiedDatabaseConnection<'_>,roo
     let root_acl=evidence("NoAttempt root readback",grok_root_acl(&profile,&home.path,&home.identity))?;
     if !root_acl.target_aces.is_empty() ||
         !evidence("NoAttempt domain readback",inspect_grok_home_residue(&profile,&home.path,
-            &home.identity,&ids))?.is_empty() {
+            &home.identity,&ids,&[]))?.is_empty() {
         return Err("Grok private HOME: NoAttempt SID residue".into());
     }
     Ok(())
@@ -1088,9 +1165,10 @@ pub(crate) fn finalize_quiescent(db:&mut VerifiedDatabaseConnection<'_>,root:&Ro
             return Err("Grok private HOME: retired original ACL effect unresolved".into());
         }
         let root_acl=evidence("retired-root-readback",grok_root_acl(&profile,&home.path,&home.identity))?;
+        let inherited=proven_inherited_successors(db,&grant,&profile,&home)?;
         if !root_acl.target_aces.is_empty() ||
             !evidence("retired-domain-readback",inspect_grok_home_residue(&profile,
-                &home.path,&home.identity,&ids))?.is_empty() {
+                &home.path,&home.identity,&ids,&inherited))?.is_empty() {
             return Err("Grok private HOME: retired SID residue".into());
         }
         instance::set_grok_grant_phase(db,&grant,"REVOKED",None)?;
@@ -1182,6 +1260,130 @@ mod tests {
     }
 
     #[test]
+    fn active_inherited_successor_peer_stop_and_original_final_cleanup(){
+        let _guard=route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("grok-inherited-peer-stop-{}-{nonce}",std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let database=path.join("state.sqlite");
+        crate::store::product_database::prepare_managed_grok_acl_fixture(&root,&database,"grokA");
+        let mut db=open_existing(&root,&database).unwrap();
+        let home=instance::resolve_grok_original_home(&db,&root,"grokA").unwrap();
+        std::fs::write(home.path.join("auth.json"),b"synthetic non-secret original fixture").unwrap();
+        let pin=super::super::runtime::current_instance_pin(&db,"grokA").unwrap();
+        let program=instance::locate_bound_instance_program(&db,"grokA","grok",
+            &pin.digest,&pin.version).unwrap();
+        let peer_home=path.join("peer-session-home");
+        std::fs::create_dir(&peer_home).unwrap();
+        let peer_lock=RootLock::acquire(&peer_home).unwrap();
+        let peer_home_id=peer_lock.canonical_root().identity.opaque();
+        drop(peer_lock);
+        db.execute(&format!("INSERT INTO main.gogoke_v37_instance_homes(home_id,instance_id,domain_id,kind,owner_id,generation,directory_identity,state,revision) VALUES('sessionHomeB','grokA','domainA','SESSION','sessionB','1','{peer_home_id}','ACTIVE',1)")).unwrap();
+        for (seat,inc,session,binding,home_id) in [
+            ("seatA","incA","sessionA","bindingA","sessionHomeA"),
+            ("seatB","incB","sessionB","bindingB","sessionHomeB")] {
+            db.execute(&format!("INSERT INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('domainA','{seat}','{inc}','USER','LONG','grokA','BUSY',1,1)")).unwrap();
+            db.execute(&format!("INSERT INTO main.gogoke_v37_h_owner_binding VALUES('{binding}','grokA','domainA','SESSION','{session}','1','ACTIVE')")).unwrap();
+            db.execute(&format!("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision) VALUES('domainA','{session}','grokA','{home_id}','{binding}','1','COMMITTED',2)")).unwrap();
+            db.execute(&format!("INSERT INTO main.gogoke_v37_h_seat_binding VALUES('domainA','{session}','{seat}','{inc}','1')")).unwrap();
+        }
+        let claim_a=ClaimObservation{domain_id:"domainA".into(),session_id:"sessionA".into(),
+            instance_id:"grokA".into(),home_id:"sessionHomeA".into(),binding_id:"bindingA".into(),
+            generation:"1".into(),revision:2,phase:super::super::runtime::SessionPhase::Committed,
+            process_operation_id:None};
+        let profile_a=AppContainerProfile::derived_for_test("Gogoke37.InheritedPeerStopA").unwrap();
+        let launch_a=GrokHomeLaunch::prepare(&mut db,&root,&profile_a,
+            "Gogoke37.InheritedPeerStopA",&claim_a,&pin,&home,"seatA","incA","openA").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_operation VALUES('domainA','openA','6f70656e','open','sessionA','APPLIED',1,2)").unwrap();
+        let mut custodian=ProcessCustodian::new().unwrap();
+        let mut process_a=ProcessLaunch::new(program.clone());
+        process_a.arguments=vec!["--version".into()];
+        let custody_a=custodian.prepare(&PrepareRequest{launch:process_a,binding:NativeBinding{
+            binary_digest_sha256:pin.digest.clone(),profile_id:"grokA".into(),
+            domain_id:"domainA".into(),generation:"1".into()}}).unwrap();
+        crate::store::authority::record_prepared_process(&mut db,"opA",&custody_a).unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        admission::bind_process_operation_in_transaction(&mut db,"domainA","sessionA","opA").unwrap();
+        db.execute("COMMIT").unwrap();
+        super::super::episodes::record_initial(&db,"domainA","sessionA","openA","opA").unwrap();
+        launch_a.bind_process(&mut db,"opA",&custody_a).unwrap();
+        custodian.activate(&custody_a).unwrap();
+        crate::store::authority::mark_process_active(&mut db,"opA",&custody_a).unwrap();
+        super::super::episodes::mark_active(&db,"opA").unwrap();
+        let successor_path=home.path.join("auth-next.json");
+        std::fs::write(&successor_path,b"synthetic non-secret successor fixture").unwrap();
+        std::fs::remove_file(home.path.join("auth.json")).unwrap();
+        std::fs::rename(&successor_path,home.path.join("auth.json")).unwrap();
+        let successor=observe_grok_auth_candidate(&home.path,&home.identity).unwrap();
+        assert_ne!(successor.identity,one(&db,"grokA","bindingA").unwrap().auth_identity);
+        let claim_b=ClaimObservation{domain_id:"domainA".into(),session_id:"sessionB".into(),
+            instance_id:"grokA".into(),home_id:"sessionHomeB".into(),binding_id:"bindingB".into(),
+            generation:"1".into(),revision:2,phase:super::super::runtime::SessionPhase::Committed,
+            process_operation_id:None};
+        let profile_b=AppContainerProfile::derived_for_test("Gogoke37.InheritedPeerStopB").unwrap();
+        let launch_b=GrokHomeLaunch::prepare(&mut db,&root,&profile_b,
+            "Gogoke37.InheritedPeerStopB",&claim_b,&pin,&home,"seatB","incB","openB").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_operation VALUES('domainA','openB','6f70656e','open','sessionB','APPLIED',1,2)").unwrap();
+        let mut process_b=ProcessLaunch::new(program);
+        process_b.arguments=vec!["--version".into()];
+        let custody_b=custodian.prepare(&PrepareRequest{launch:process_b,binding:NativeBinding{
+            binary_digest_sha256:pin.digest.clone(),profile_id:"grokA".into(),
+            domain_id:"domainA".into(),generation:"1".into()}}).unwrap();
+        crate::store::authority::record_prepared_process(&mut db,"opB",&custody_b).unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        admission::bind_process_operation_in_transaction(&mut db,"domainA","sessionB","opB").unwrap();
+        db.execute("COMMIT").unwrap();
+        super::super::episodes::record_initial(&db,"domainA","sessionB","openB","opB").unwrap();
+        launch_b.bind_process(&mut db,"opB",&custody_b).unwrap();
+        custodian.activate(&custody_b).unwrap();
+        crate::store::authority::mark_process_active(&mut db,"opB",&custody_b).unwrap();
+        super::super::episodes::mark_active(&db,"opB").unwrap();
+        launch_a.verify(&db,&profile_a,false).unwrap();
+        launch_b.verify(&db,&profile_b,false).unwrap();
+        let unrecorded=AppContainerProfile::derived_for_test("Gogoke37.InheritedPeerUnrecorded").unwrap();
+        grant_grok_auth_successor(&unrecorded,&successor).unwrap();
+        assert!(launch_b.verify(&db,&profile_b,false).is_err());
+        revoke_grok_auth(&unrecorded,&successor).unwrap();
+        launch_b.verify(&db,&profile_b,false).unwrap();
+        assert!(instance::read_grok_effects(&db,"bindingA").unwrap().iter().all(|effect|
+            effect.action!="GRANT_AUTH" ||effect.object_identity!=successor.identity));
+        let stop_a=custodian.stop(&custody_a.ticket,StopBudgets::production(),||Ok(())).unwrap();
+        assert!(stop_a.errors.is_empty() &&stop_a.parent_exited &&stop_a.active_job_processes==Some(0));
+        crate::store::authority::mark_process_stopped(&mut db,"opA",&stop_a).unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        let fact_a=admission::record_session_stop_in_transaction(&mut db,"domainA","sessionA","opA").unwrap();
+        db.execute("COMMIT").unwrap();
+        assert_eq!(fact_a,stop_a.proof_hash());
+        launch_a.revoke_stopped(&mut db,&root,&profile_a,"opA",&custody_a).unwrap();
+        let retired_a=one(&db,"grokA","bindingA").unwrap();
+        assert_eq!(retired_a.phase,"RETIRED_CLEANUP_PENDING");
+        verify_retired_stopped(&db,&root,&retired_a).unwrap();
+        launch_b.verify(&db,&profile_b,false).unwrap();
+        let stop_b=custodian.stop(&custody_b.ticket,StopBudgets::production(),||Ok(())).unwrap();
+        assert!(stop_b.errors.is_empty() &&stop_b.parent_exited &&stop_b.active_job_processes==Some(0));
+        crate::store::authority::mark_process_stopped(&mut db,"opB",&stop_b).unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        let fact_b=admission::record_session_stop_in_transaction(&mut db,"domainA","sessionB","opB").unwrap();
+        db.execute("COMMIT").unwrap();
+        assert_eq!(fact_b,stop_b.proof_hash());
+        launch_b.revoke_stopped(&mut db,&root,&profile_b,"opB",&custody_b).unwrap();
+        assert!(inspect_grok_home_residue(&profile_a,&home.path,&home.identity,
+            &[one(&db,"grokA","bindingA").unwrap().auth_identity],&[]).is_err());
+        let peer_before=successor.acl(&profile_b).unwrap();
+        finalize_quiescent(&mut db,&root,"grokA").unwrap();
+        assert_eq!(one(&db,"grokA","bindingA").unwrap().phase,"REVOKED");
+        assert!(successor.acl(&profile_a).unwrap().target_aces.is_empty());
+        let peer_after=successor.acl(&profile_b).unwrap();
+        assert_eq!(peer_before.target_aces,peer_after.target_aces);
+        assert_eq!(peer_before.dacl_control,peer_after.dacl_control);
+        assert!(inspect_grok_home_residue(&profile_a,&home.path,&home.identity,&[],&[])
+            .unwrap().is_empty());
+        drop(successor);drop(launch_a);drop(launch_b);drop(custodian);
+        db.close_checked().unwrap();drop(root);std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn active_original_root_authority_survives_two_auth_file_replacements(){
         let _guard=route_b_test_guard();
         let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
@@ -1243,12 +1445,40 @@ mod tests {
         let peer_launch=GrokHomeLaunch::prepare(&mut db,&root,&peer_profile,
             "Gogoke37.ActiveRootAuthorizedPeer",&peer_claim,&pin,&home,
             "seatB","incB","openB").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_operation VALUES('domainA','openB','6f70656e','open','sessionB','APPLIED',1,2)").unwrap();
+        let program=instance::locate_bound_instance_program(&db,"grokA","grok",
+            &pin.digest,&pin.version).unwrap();
+        let mut custodian=ProcessCustodian::new().unwrap();
+        let mut peer_process=ProcessLaunch::new(program);
+        peer_process.arguments=vec!["--version".into()];
+        let peer_custody=custodian.prepare(&PrepareRequest{launch:peer_process,binding:NativeBinding{
+            binary_digest_sha256:pin.digest.clone(),profile_id:"grokA".into(),
+            domain_id:"domainA".into(),generation:"1".into()}}).unwrap();
+        crate::store::authority::record_prepared_process(&mut db,"peerOp",&peer_custody).unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        admission::bind_process_operation_in_transaction(&mut db,"domainA","sessionB","peerOp").unwrap();
+        db.execute("COMMIT").unwrap();
+        super::super::episodes::record_initial(&db,"domainA","sessionB","openB","peerOp").unwrap();
+        peer_launch.bind_process(&mut db,"peerOp",&peer_custody).unwrap();
+        custodian.activate(&peer_custody).unwrap();
+        crate::store::authority::mark_process_active(&mut db,"peerOp",&peer_custody).unwrap();
+        super::super::episodes::mark_active(&db,"peerOp").unwrap();
+        peer_launch.verify(&db,&peer_profile,false).unwrap();
         launch.verify(&db,&profile,false).unwrap();
         let current_root=grok_root_acl(&profile,&home.path,&home.identity).unwrap();
         apply_root(&mut db,&grant,effect(&grant,"GRANT_ROOT",&home.identity,".",&current_root),
             ||evidence("historical root replay",grok_root_acl(&profile,&home.path,&home.identity)),
             ||panic!("historical APPLIED root effect must not write")).unwrap();
-        peer_launch.revoke_uncreated(&mut db,&root,&peer_profile).unwrap();
+        let peer_stop=custodian.stop(&peer_custody.ticket,StopBudgets::production(),||Ok(())).unwrap();
+        assert!(peer_stop.errors.is_empty() &&peer_stop.parent_exited &&
+            peer_stop.active_job_processes==Some(0));
+        crate::store::authority::mark_process_stopped(&mut db,"peerOp",&peer_stop).unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        let peer_stop_fact=admission::record_session_stop_in_transaction(
+            &mut db,"domainA","sessionB","peerOp").unwrap();
+        db.execute("COMMIT").unwrap();
+        assert_eq!(peer_stop_fact,peer_stop.proof_hash());
+        peer_launch.revoke_stopped(&mut db,&root,&peer_profile,"peerOp",&peer_custody).unwrap();
         launch.verify(&db,&profile,false).unwrap();
         drop(peer_launch);
         db.execute("INSERT INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('domainA','seatC','incC','USER','LONG','grokA','BUSY',1,1)").unwrap();
@@ -1650,7 +1880,7 @@ mod tests {
         let effects=instance::read_grok_effects(&db,"bindingA").unwrap();
         assert!(effects.iter().all(|effect|effect.phase=="APPLIED"));
         assert_eq!(effects.iter().filter(|effect|effect.action=="REVOKE_AUTH").count(),2);
-        assert!(inspect_grok_home_residue(&profile,&home.path,&home_id,&[]).unwrap().is_empty());
+        assert!(inspect_grok_home_residue(&profile,&home.path,&home_id,&[],&[]).unwrap().is_empty());
         drop(hclaim);drop(custody);drop(episode);
         db.close_checked().unwrap();drop(profile);drop(root);
         std::fs::remove_dir_all(path).unwrap();
@@ -1813,7 +2043,7 @@ mod tests {
             let has_residue_effect=effects.iter().any(|effect|effect.action=="REVOKE_RESIDUE" &&
                 effect.object_identity==successor_acl_before.identity &&effect.phase=="APPLIED");
             assert_eq!(has_residue_effect,!successor_acl_before.target_aces.is_empty());
-            assert!(inspect_grok_home_residue(&profile,&home.path,&home_id,&[]).unwrap().is_empty());
+            assert!(inspect_grok_home_residue(&profile,&home.path,&home_id,&[],&[]).unwrap().is_empty());
             let successor_after=observe_grok_auth_candidate(&home.path,&home_id).unwrap().candidate_acl(&profile).unwrap();
             assert!(successor_after.target_aces.is_empty());
             assert_eq!(successor_after.identity,successor_acl_before.identity);
