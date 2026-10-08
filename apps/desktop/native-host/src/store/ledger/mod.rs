@@ -638,7 +638,7 @@ fn session_schema_state(
 ) -> Result<Option<String>, AtomicError> {
     let statement = Statement::prepare(
         connection.as_ptr(),
-        "SELECT type, sql FROM main.sqlite_schema WHERE name = 'v37_ledger_session'",
+        "SELECT type, sql FROM main.sqlite_schema WHERE name = 'v37_ledger_session' COLLATE NOCASE",
     )?;
     if !statement.step_row()? {
         return Ok(None);
@@ -2672,22 +2672,24 @@ pub(crate) mod tests {
             &position, 1).is_err());
         connection.close_checked().expect("close migrated");
 
-        let unknown_path = scratch_root();
-        let unknown_root = RootLock::acquire(&unknown_path).expect("unknown root");
-        let unknown_db = unknown_path.join("ledger.db");
-        let mut unknown = create_new(&unknown_root, &unknown_db).expect("unknown open");
-        unknown.execute("CREATE TABLE main.v37_ledger_session (
-            session_id TEXT PRIMARY KEY, domain_id TEXT NOT NULL,
-            seat_id TEXT NOT NULL, purpose TEXT NOT NULL, side_id TEXT
-        ) STRICT;
-        INSERT INTO main.v37_ledger_session VALUES
-            ('unknown-session', 'project-a', 'lead', 'WORK', NULL)")
-            .expect("unknown schema fixture");
-        let unknown_ddl = session_schema_state(&unknown).unwrap().unwrap();
-        assert!(initialize_schema(&mut unknown).is_err());
-        assert_eq!(session_schema_state(&unknown).unwrap(), Some(unknown_ddl));
-        assert_eq!(scalar(&unknown, "SELECT COUNT(*) FROM main.v37_ledger_session").unwrap(), "1");
-        unknown.close_checked().expect("close unknown");
+        for table_name in ["v37_ledger_session", "V37_LEDGER_SESSION"] {
+            let unknown_path = scratch_root();
+            let unknown_root = RootLock::acquire(&unknown_path).expect("unknown root");
+            let unknown_db = unknown_path.join("ledger.db");
+            let mut unknown = create_new(&unknown_root, &unknown_db).expect("unknown open");
+            unknown.execute(&format!("CREATE TABLE main.{table_name} (
+                session_id TEXT PRIMARY KEY, domain_id TEXT NOT NULL,
+                seat_id TEXT NOT NULL, purpose TEXT NOT NULL, side_id TEXT
+            ) STRICT;
+            INSERT INTO main.v37_ledger_session VALUES
+                ('unknown-session', 'project-a', 'lead', 'WORK', NULL)"))
+                .expect("unknown schema fixture");
+            let unknown_ddl = session_schema_state(&unknown).unwrap().unwrap();
+            assert!(initialize_schema(&mut unknown).is_err());
+            assert_eq!(session_schema_state(&unknown).unwrap(), Some(unknown_ddl));
+            assert_eq!(scalar(&unknown, "SELECT COUNT(*) FROM main.v37_ledger_session").unwrap(), "1");
+            unknown.close_checked().expect("close unknown");
+        }
 
         let fresh_path = scratch_root();
         let fresh_root = RootLock::acquire(&fresh_path).expect("fresh root");
