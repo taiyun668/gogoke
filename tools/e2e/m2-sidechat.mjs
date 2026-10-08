@@ -255,6 +255,26 @@ export async function runSideChatCase(product, config, journal) {
     const opened = await sessionOp(record.sourceSession, 'open', { seatId: c.sourceSeatId,
       repositoryId: config.repositoryId, worktreeId: c.sourceWorktreeId });
     record.sourceSession.threadId = opened.result.threadId;
+    const readVerifiedModels = async (session, settings) => {
+      const rpc = await sessionOp(session, 'model-list-read');
+      check(rpc.result.instanceId === session.instanceId &&
+        rpc.result.modelsSource?.startsWith('codex-model/list:OBSERVED:'),
+        'V12 models come from this actual H model/list receipt');
+      const page = await composition('gogoke.37.owner-configuration.v1', {
+        command: 'instance-management-read',
+      }, 'VERIFIED_MODELS_READ');
+      const profile = page.profiles?.find(row => row.instanceId === session.instanceId);
+      check(page.schema === 'gogoke.37.instance-management.v1' &&
+        profile?.modelsSource === rpc.result.modelsSource &&
+        profile.modelsObservedAt === rpc.result.modelsObservedAt &&
+        Array.isArray(profile.models) && profile.models.includes(settings.model),
+        'V12 selected model is in the original verified instance catalog');
+      record.verifiedModels ??= [];
+      record.verifiedModels.push({ sessionId: session.id, instanceId: session.instanceId,
+        model: settings.model, rpc, modelsSource: profile.modelsSource,
+        modelsObservedAt: profile.modelsObservedAt, models: profile.models }); product.save();
+    };
+    await readVerifiedModels(record.sourceSession, sourceSeat.result.settings);
     await sessionOp(record.sideSession, 'admission-reserve', { seatId: c.sideSeatId });
     await sessionOp(record.sideSession, 'admission-commit', { seatId: c.sideSeatId });
     const open = request('K-SESSION', 'open', record.sideSession.id, {
@@ -270,6 +290,12 @@ export async function runSideChatCase(product, config, journal) {
       'Actual side open and create committed once');
     check(created.result.sourceEpoch === c.ledgerEpoch, 'D creation uses the actual existing A ledger epoch');
     record.sideRevision = created.revision;
+    if (c.sideInstanceId !== c.sourceInstanceId) {
+      await readVerifiedModels(record.sideSession, sideSeat.result.settings);
+    } else {
+      check(record.verifiedModels[0].models.includes(sideSeat.result.settings.model),
+        'V12 side model uses the same original verified instance catalog');
+    }
     await drain(record.sideSession);
     check(!record.sideSession.events.some(event => toolEvent(event) || turnEvent(event)), 'No normalized model turn or tool on side open');
     record.injection = { marker: id('V12_UNTRUSTED_REFERENCE'),
