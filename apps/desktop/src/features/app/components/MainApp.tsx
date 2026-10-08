@@ -86,7 +86,7 @@ import { subscribeTrayOpenThread } from "@services/events";
 import { I18nProvider } from "@/i18n";
 import { hasNativeBackendTransport } from "@/platform/runtime";
 import { createDesign37SecretarySource, signalGogokeUpdateReady,
-  type SecretaryBinding, type SecretaryWriteFact } from "@/services/tauri";
+  type SecretaryBinding, type SecretaryOriginalInput, type SecretaryWriteFact } from "@/services/tauri";
 import { NowProvider, NowPinSlot, type NowSource } from "@/features/now/NowContext";
 import { SecretaryEntry, SecretaryPanel, SecretaryActionLine, type SecretarySource } from "@/features/secretary/Secretary";
 import { entryLine, type EntryState, type ActionLine } from "@/features/secretary/secretaryModel";
@@ -121,6 +121,9 @@ export type SecretaryView = {
   outbound?: SecretaryWriteFact[];
   historyGap?: string | null;
   statuses?: string[];
+  originalInputs?: SecretaryOriginalInput[];
+  inputRowsEnded?: boolean;
+  verifiedSend?: { requestId: string; body: string; hGeneration: string } | null;
   retryStop?: () => Promise<SecretaryWriteFact>;
   openConversation?: () => Promise<void>;
   openAction?: (id: string) => void;
@@ -173,6 +176,9 @@ function useNativeSecretaryView(enabled: boolean): SecretaryView | null {
             outbound: producer.writeFacts(),
             historyGap: conversation?.historyGap ?? null,
             statuses: conversation?.statuses ?? [],
+            originalInputs: conversation?.inputs ?? [],
+            inputRowsEnded: conversation?.inputRowsEnded ?? false,
+            verifiedSend: conversation?.verifiedSend ?? null,
             retryStop: producer.retryStop,
             openConversation: refresh,
           });
@@ -231,8 +237,24 @@ function MainAppContent({
 }) {
   const secretaryKey = secretaryAssociationKey(secretaryView);
   const secretaryToken = useMemo(() => ({}), [secretaryView?.source, secretaryKey]);
-  const [secretaryDraftState, setSecretaryDraftState] = useState<{ token: object; text: string } | null>(null);
+  const [secretaryDraftState, setSecretaryDraftState] = useState<{
+    token: object; text: string; revision: number } | null>(null);
   const secretaryDraft = secretaryDraftState?.token === secretaryToken ? secretaryDraftState.text : "";
+  const secretarySubmittedDraft = useRef<{ token: object; text: string; revision: number } | null>(null);
+  useEffect(() => {
+    const verified = secretaryView?.verifiedSend;
+    if (!verified) return;
+    const submitted = secretarySubmittedDraft.current;
+    const original = secretaryView?.outbound?.find((fact) => fact.operation === "send" &&
+      fact.requestId === verified.requestId && fact.hGeneration === verified.hGeneration &&
+      fact.inputVerified && fact.status === "ACCEPTED");
+    if (!submitted || !original || submitted.token !== secretaryToken ||
+        submitted.text !== verified.body) return;
+    setSecretaryDraftState((previous) => previous?.token === secretaryToken &&
+      previous.revision === submitted.revision && previous.text === verified.body
+      ? { token: secretaryToken, text: "", revision: previous.revision } : previous);
+  }, [secretaryToken, secretaryView?.verifiedSend?.requestId,
+    secretaryView?.verifiedSend?.body, secretaryView?.verifiedSend?.hGeneration]);
   const [secretaryWritePending, setSecretaryWritePending] = useState(false);
   const secretaryWritePendingRef = useRef(false);
   const [secretaryWriteFailure, setSecretaryWriteFailure] = useState<{
@@ -240,7 +262,8 @@ function MainAppContent({
     body: string | null; text: string } | null>(null);
   const lastSecretarySend = secretaryView?.outbound?.find((fact) => fact.operation === "send");
   const secretarySendBlocked = lastSecretarySend?.status === "UNKNOWN" ||
-    (lastSecretarySend?.status === "ACCEPTED" && lastSecretarySend.body === secretaryDraft &&
+    (lastSecretarySend?.status === "ACCEPTED" && !lastSecretarySend.inputVerified &&
+      lastSecretarySend.body === secretaryDraft &&
       lastSecretarySend.sessionId === secretaryView?.nativeInput?.binding.sessionId &&
       lastSecretarySend.hGeneration === secretaryView.nativeInput.binding.hGeneration);
   const secretaryTextareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -2088,6 +2111,8 @@ function MainAppContent({
     if (!nativeInput?.canSend || secretarySendBlocked || secretaryWritePendingRef.current ||
         !secretaryDraft.trim()) return;
     const token = secretaryToken;
+    secretarySubmittedDraft.current = { token, text: secretaryDraft,
+      revision: secretaryDraftState?.token === token ? secretaryDraftState.revision : 0 };
     secretaryWritePendingRef.current = true;
     setSecretaryWritePending(true);
     try {
@@ -2161,11 +2186,25 @@ function MainAppContent({
       <summary>宿主原始轮次状态</summary>
       <pre>{secretaryView.statuses.join("\n")}</pre>
     </details> : null}
+    {secretaryView?.inputRowsEnded ? <details>
+      <summary>H 原始用户输入记录（{secretaryView.originalInputs?.length ?? 0}）</summary>
+      <div>本次已读完 H 存储行；这不表示轮次或回复已完成。</div>
+      <ol>{secretaryView.originalInputs?.map((input) => <li key={`${input.generation}:${input.requestId}`}>
+        <div>请求 {input.requestId} · H 代 {input.generation} · {input.operation}</div>
+        <div>原文 {input.bodyState} · H 阶段 {input.phase} · 回执 {input.receiptStatus ?? "未取得"}
+          {input.occurredAtMs ? ` · 原始用户时间 ${input.occurredAtMs} ms` : ""}</div>
+        {input.bodyState === "VERIFIED" && input.body !== null ? <pre>{input.body}</pre> : null}
+        {input.receiptState ? <div>回执正文 {input.receiptState}</div> : null}
+        {input.turnId ? <div>原始轮次 {input.turnId}</div> : null}
+      </li>)}</ol>
+    </details> : null}
     {secretaryView?.outbound?.map((fact) => <div role="status" key={fact.requestId}>
       <div>原始会话 {fact.sessionId} · 席位 {fact.seatId} · H 代 {fact.hGeneration}</div>
       {fact.operation === "send"
         ? fact.status === "ACCEPTED"
-          ? "原始 H 发送回执已接受；A 尚未提供用户原文历史，草稿仍保留。"
+          ? fact.inputVerified
+            ? "原始 H 用户正文与发送回执已核实。"
+            : "原始 H 发送回执已接受；用户正文尚未从持久来源核实，草稿仍保留。"
           : "原始 H 发送结果未确认；未创建第二个发送请求。"
         : fact.status === "ACCEPTED"
           ? "原始 H 停止事实已确认。"
@@ -2192,7 +2231,10 @@ function MainAppContent({
         canSend={nativeInput.canSend && !secretarySendBlocked && !secretaryWritePending && Boolean(secretaryDraft.trim())}
         isProcessing={nativeInput.canStop} onStop={() => void stopSecretary()}
         onSend={() => void sendSecretary()}
-        onTextChange={(text) => setSecretaryDraftState({ token: secretaryToken, text })}
+        onTextChange={(text) => setSecretaryDraftState((previous) => ({
+          token: secretaryToken, text,
+          revision: previous?.token === secretaryToken ? previous.revision + 1 : 1,
+        }))}
         onSelectionChange={() => {}}
         onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {

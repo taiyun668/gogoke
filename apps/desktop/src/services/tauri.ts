@@ -130,6 +130,9 @@ type SecretaryConversation = {
   messages: ConversationItem[];
   historyGap: string | null;
   statuses: string[];
+  inputs: SecretaryOriginalInput[];
+  inputRowsEnded: boolean;
+  verifiedSend: { requestId: string; body: string; hGeneration: string } | null;
   writer: { binding: SecretaryBinding; instanceId: string; model: string; effort: string; permissionTier: string;
     canSend: boolean; canStop: boolean } | null;
 };
@@ -143,7 +146,14 @@ export type SecretaryBinding = {
 export type SecretaryWriteFact = { operation: "send" | "stop"; requestId: string;
   sessionId: string; seatId: string; hGeneration: string;
   body: string | null; status: "UNKNOWN" | "ACCEPTED"; receipt: unknown | null;
-  reason: string | null };
+  reason: string | null; inputVerified: boolean };
+
+export type SecretaryOriginalInput = { requestId: string; generation: string;
+  operation: "send" | "append-without-turn"; expectedRevision: string;
+  body: string | null; bodyState: "VERIFIED" | "UNKNOWN" | "TOO_LARGE";
+  occurredAtMs: string | null; phase: "PREPARED" | "UNKNOWN" | "RECEIPTED";
+  receiptStatus: string | null; receipt: Record<string, unknown> | null;
+  receiptState: string | null; turnId: string | null };
 
 const sameSecretaryBinding = (left: SecretaryBinding, right: SecretaryBinding) =>
   (["seatId", "incarnation", "eGeneration", "eRevision", "instanceId", "model",
@@ -223,9 +233,119 @@ function confirmedConversation(configuration: SecretaryConfiguration):
   return { configuration, fact };
 }
 
+function parseSecretaryInput(value: unknown, sessionId: string, threadId: string): SecretaryOriginalInput {
+  if (!record(value) || !nonempty(value.requestId) || !decimal(value.generation) ||
+      !["send", "append-without-turn"].includes(String(value.operation)) ||
+      !decimal(value.expectedRevision) ||
+      !["VERIFIED", "UNKNOWN", "TOO_LARGE"].includes(String(value.bodyState)) ||
+      (value.bodyState === "VERIFIED" ? typeof value.body !== "string" : value.body !== null) ||
+      (value.occurredAtMs !== null && !decimal(value.occurredAtMs)) ||
+      (value.bodyState === "VERIFIED" && !decimal(value.occurredAtMs)) ||
+      !["PREPARED", "UNKNOWN", "RECEIPTED"].includes(String(value.phase)) ||
+      (value.receiptStatus !== null && !nonempty(value.receiptStatus)) ||
+      (value.receipt !== null && !record(value.receipt)) ||
+      (value.receiptState !== undefined &&
+        value.receiptState !== "OMITTED_FOR_FRAME" && value.receiptState !== "TOO_LARGE")) {
+    throw new Error(`Native Secretary original input is malformed: ${JSON.stringify(value)}`);
+  }
+  const receipt = value.receipt as Record<string, unknown> | null;
+  if (receipt && (receipt.schema !== "gogoke.37.operations.v1" ||
+      receipt.family !== "K-SESSION" || receipt.operation !== value.operation ||
+      receipt.requestId !== value.requestId || receipt.targetId !== sessionId ||
+      !decimal(receipt.previousRevision) || !decimal(receipt.revision) ||
+      ((receipt.status === "APPLIED" || receipt.status === "REPLAYED") &&
+        receipt.previousRevision !== value.expectedRevision) ||
+      receipt.status !== value.receiptStatus || !record(receipt.result))) {
+    throw new Error(`Native Secretary original input receipt identity is invalid: ${JSON.stringify(value)}`);
+  }
+  if (receipt && record(receipt.result) && nonempty(receipt.result.threadId) &&
+      receipt.result.threadId !== threadId) {
+    throw new Error(`Native Secretary original input receipt has a different thread: ${JSON.stringify(value)}`);
+  }
+  const turnId = receipt && record(receipt.result) && nonempty(receipt.result.turnId)
+    ? receipt.result.turnId : null;
+  return { requestId: value.requestId as string, generation: value.generation as string,
+    operation: value.operation as "send" | "append-without-turn",
+    expectedRevision: value.expectedRevision as string, body: value.body as string | null,
+    bodyState: value.bodyState as "VERIFIED" | "UNKNOWN" | "TOO_LARGE",
+    occurredAtMs: value.occurredAtMs as string | null,
+    phase: value.phase as "PREPARED" | "UNKNOWN" | "RECEIPTED",
+    receiptStatus: value.receiptStatus as string | null,
+    receipt, receiptState: (value.receiptState as string | undefined) ?? null, turnId };
+}
+
+async function readSecretaryInputHistory(configuration: Extract<SecretaryConfiguration, { state: "DESIGNATED" }>,
+  fact: NonNullable<Extract<SecretaryConfiguration, { state: "DESIGNATED" }>["conversation"]>):
+  Promise<{ items: SecretaryOriginalInput[]; gap: string | null; rowsEnded: boolean }> {
+  const items: SecretaryOriginalInput[] = [];
+  const seen = new Set<string>();
+  const tokens = new Set<string>();
+  let continuation: string | null = null;
+  for (;;) {
+    const reply = await design37UserFrame({ schema: "gogoke.37.owner-configuration.v1",
+      command: "secretary-configuration-read", inputHistory: {
+        seatId: configuration.seatId, incarnation: configuration.incarnation,
+        authorizationGeneration: configuration.generation, sessionId: fact.sessionId,
+        hGeneration: fact.generation,
+        ...(continuation ? { continuation } : {}),
+      } });
+    const parsed = parseSecretaryConfiguration(reply);
+    if (record(reply) && record(reply.inputHistory) && reply.inputHistory.state === "UNKNOWN" &&
+        Array.isArray(reply.inputHistory.items) && reply.inputHistory.items.length === 0 &&
+        reply.inputHistory.nextContinuation === null && continuation === null &&
+        parsed.state === "DESIGNATED" && parsed.seatId === configuration.seatId &&
+        parsed.incarnation === configuration.incarnation &&
+        parsed.generation === configuration.generation && parsed.revision === configuration.revision) {
+      return { items: [], gap: "宿主无法证明原始用户输入的 E/H/A 来源", rowsEnded: false };
+    }
+    const returned = confirmedConversation(parsed);
+    if (!returned || returned.configuration.seatId !== configuration.seatId ||
+        returned.configuration.incarnation !== configuration.incarnation ||
+        returned.configuration.generation !== configuration.generation ||
+        returned.configuration.revision !== configuration.revision ||
+        returned.configuration.instanceId !== configuration.instanceId ||
+        returned.configuration.model !== configuration.model ||
+        returned.configuration.effort !== configuration.effort ||
+        returned.configuration.permissionTier !== configuration.permissionTier ||
+        returned.fact.sessionId !== fact.sessionId || returned.fact.generation !== fact.generation ||
+        returned.fact.threadId !== fact.threadId || returned.fact.ledgerEpoch !== fact.ledgerEpoch ||
+        !record(reply) || !record(reply.inputHistory)) {
+      throw new Error(`Native Secretary original input read changed E/H identity: ${JSON.stringify(reply)}`);
+    }
+    const page = reply.inputHistory;
+    if (page.state !== "FOUND" || page.sessionId !== fact.sessionId ||
+        !Array.isArray(page.items) ||
+        (page.nextContinuation !== null &&
+          (typeof page.nextContinuation !== "string" || !/^[0-9a-fA-F]{64}$/.test(page.nextContinuation)))) {
+      throw new Error(`Native Secretary original input page is malformed: ${JSON.stringify(page)}`);
+    }
+    for (const raw of page.items) {
+      const item = parseSecretaryInput(raw, fact.sessionId!, fact.threadId!);
+      const key = JSON.stringify([item.generation, item.requestId]);
+      if (seen.has(key)) throw new Error(`Native Secretary original input repeated: ${key}`);
+      seen.add(key);
+      items.push(item);
+    }
+    if (page.nextContinuation === null) break;
+    if (page.items.length === 0 || tokens.has(page.nextContinuation)) {
+      throw new Error(`Native Secretary original input continuation did not advance: ${page.nextContinuation}`);
+    }
+    tokens.add(page.nextContinuation);
+    continuation = page.nextContinuation;
+  }
+  const gap = items.some((item) => item.bodyState !== "VERIFIED" ||
+      item.phase !== "RECEIPTED" ||
+      !["APPLIED", "REPLAYED", "STALE", "DENIED", "CONFLICT", "UNSUPPORTED"]
+        .includes(item.receiptStatus ?? "") ||
+      item.receipt === null)
+    ? "原始用户输入含未验证正文或未结算的 H 记录" : null;
+  return { items, gap, rowsEnded: true };
+}
+
 type SecretaryTranscript = { sessionId: string; seatId: string; epoch: string;
   cursor: string; target: string; headHint: string; complete: boolean; messages: ConversationItem[];
-  ids: Set<string>; groups: Map<string, number>; statuses: string[] };
+  ids: Set<string>; groups: Map<string, number>; statuses: string[];
+  turnFirstMessage: Map<string, number>; turnHasAUser: Set<string> };
 
 function secretaryEvent(state: SecretaryTranscript, value: unknown, threadId: string): void {
   if (!record(value) || !decimal(value.cursor) || !nonempty(value.sourceEventId) ||
@@ -245,6 +365,9 @@ function secretaryEvent(state: SecretaryTranscript, value: unknown, threadId: st
   if (meta && nonempty(meta.threadId) && meta.threadId !== threadId) {
     throw new Error(`Native Secretary original thread changed: ${JSON.stringify(value)}`);
   }
+  if (meta && nonempty(meta.turnId) && !state.turnFirstMessage.has(meta.turnId)) {
+    state.turnFirstMessage.set(meta.turnId, state.messages.length);
+  }
   const group = meta && nonempty(meta.turnId) && nonempty(meta.itemId)
     ? JSON.stringify([update.sessionUpdate, meta.turnId, meta.itemId]) : null;
   if (update.sessionUpdate === "user_message_chunk" || update.sessionUpdate === "agent_message_chunk") {
@@ -252,6 +375,7 @@ function secretaryEvent(state: SecretaryTranscript, value: unknown, threadId: st
       throw new Error(`Native Secretary text update is malformed: ${JSON.stringify(value)}`);
     }
     const role = update.sessionUpdate === "user_message_chunk" ? "user" : "assistant";
+    if (role === "user" && meta && nonempty(meta.turnId)) state.turnHasAUser.add(meta.turnId);
     const index = group ? state.groups.get(group) : undefined;
     const old = index === undefined ? null : state.messages[index];
     if (old && old.kind === "message" && old.role === role) {
@@ -443,14 +567,16 @@ export function createDesign37SecretarySource(): {
   let transcript: SecretaryTranscript | null = null;
   type OriginalWrite = { binding: SecretaryBinding; frame: string; requestId: string;
     expectedRevision: string; operation: "send" | "stop"; body: string | null;
-    status: "UNKNOWN" | "ACCEPTED"; receipt: unknown | null; reason: string | null };
+    status: "UNKNOWN" | "ACCEPTED"; receipt: unknown | null; reason: string | null;
+    inputVerified: boolean };
   let lastSend: OriginalWrite | null = null;
   let lastStop: OriginalWrite | null = null;
   const factOf = (write: OriginalWrite): SecretaryWriteFact => ({
     operation: write.operation, requestId: write.requestId,
     sessionId: write.binding.sessionId, seatId: write.binding.seatId,
     hGeneration: write.binding.hGeneration, body: write.body,
-    status: write.status, receipt: write.receipt, reason: write.reason });
+    status: write.status, receipt: write.receipt, reason: write.reason,
+    inputVerified: write.inputVerified });
   const writeFacts = () => [lastSend, lastStop].filter((write): write is OriginalWrite => write !== null)
     .map(factOf);
   const observeOriginalInputs = (values: unknown[]) => {
@@ -508,6 +634,17 @@ export function createDesign37SecretarySource(): {
       throw new Error("Native Secretary conversation identity changed during transcript read.");
     }
     const head = latest.fact.ledgerCursor!;
+    let originalInputs: SecretaryOriginalInput[] = [];
+    let inputGap: string | null = null;
+    let inputRowsEnded = false;
+    try {
+      const read = await readSecretaryInputHistory(latest.configuration, latest.fact);
+      originalInputs = read.items;
+      inputGap = read.gap;
+      inputRowsEnded = read.rowsEnded;
+    } catch (cause) {
+      inputGap = `宿主原始用户输入读取不可用或无法核实：${cause instanceof Error ? cause.message : String(cause)}`;
+    }
     const prior = transcript && transcript.sessionId === fact.sessionId &&
       transcript.seatId === original.configuration.seatId &&
       transcript.epoch === fact.ledgerEpoch && BigInt(transcript.cursor) <= BigInt(head)
@@ -515,10 +652,12 @@ export function createDesign37SecretarySource(): {
     const state: SecretaryTranscript = prior ? {
       ...prior, messages: [...prior.messages], ids: new Set(prior.ids),
       groups: new Map(prior.groups), statuses: [...prior.statuses],
+      turnFirstMessage: new Map(prior.turnFirstMessage), turnHasAUser: new Set(prior.turnHasAUser),
       target: prior.complete ? head : prior.target, complete: false,
     } : { sessionId: fact.sessionId!, seatId: original.configuration.seatId,
       epoch: fact.ledgerEpoch!, cursor: "0", target: head, headHint: head, complete: false,
-      messages: [], ids: new Set(), groups: new Map(), statuses: [] };
+      messages: [], ids: new Set(), groups: new Map(), statuses: [],
+      turnFirstMessage: new Map(), turnHasAUser: new Set() };
     let pageGap: string | null = null;
     while (BigInt(state.cursor) < BigInt(state.target)) {
       const current = confirmedConversation(await readSecretaryConfiguration());
@@ -576,11 +715,56 @@ export function createDesign37SecretarySource(): {
       state.cursor = BigInt(result.cursor) > BigInt(state.target) ? state.target : result.cursor;
       state.headHint = result.highWaterCursor;
       transcript = { ...state, messages: [...state.messages], ids: new Set(state.ids),
-        groups: new Map(state.groups), statuses: [...state.statuses] };
+        groups: new Map(state.groups), statuses: [...state.statuses],
+        turnFirstMessage: new Map(state.turnFirstMessage), turnHasAUser: new Set(state.turnHasAUser) };
     }
     state.complete = !pageGap && state.cursor === state.target;
     transcript = state;
-    const historyGap = pageGap ?? sourceGap;
+    let verifiedSend: { requestId: string; body: string; hGeneration: string } | null = null;
+    if (lastSend) {
+      const matching = originalInputs.find((item) => item.requestId === lastSend!.requestId &&
+        item.generation === lastSend!.binding.hGeneration);
+      if (matching) {
+        if (matching.expectedRevision !== lastSend.expectedRevision ||
+            (matching.bodyState === "VERIFIED" && matching.body !== lastSend.body)) {
+          throw new Error("Native Secretary original USER input disagrees with the retained request.");
+        }
+        if (matching.receipt && matching.phase === "RECEIPTED" &&
+            (matching.receiptStatus === "APPLIED" || matching.receiptStatus === "REPLAYED")) {
+          const outcome = originalWriteReceipt(matching.receipt, "send", lastSend.requestId,
+            lastSend.binding.sessionId, lastSend.expectedRevision);
+          if (outcome === "ACCEPTED") {
+            lastSend.status = "ACCEPTED";
+            lastSend.receipt = matching.receipt;
+            lastSend.reason = null;
+            if (matching.bodyState === "VERIFIED" && matching.body !== null) {
+              lastSend.inputVerified = true;
+              verifiedSend = { requestId: lastSend.requestId, body: matching.body,
+                hGeneration: matching.generation };
+            }
+          }
+        }
+      }
+    }
+    const inserts = new Map<number, ConversationItem[]>();
+    for (const input of originalInputs) {
+      if (input.operation !== "send" || input.bodyState !== "VERIFIED" || input.body === null ||
+          input.phase !== "RECEIPTED" || !input.receipt ||
+          !["APPLIED", "REPLAYED"].includes(input.receiptStatus ?? "") ||
+          !input.turnId || state.turnHasAUser.has(input.turnId)) continue;
+      const at = state.turnFirstMessage.get(input.turnId);
+      if (at === undefined) continue;
+      const entries = inserts.get(at) ?? [];
+      entries.push({ id: `h-user-${input.generation}-${input.requestId}`,
+        kind: "message", role: "user", text: input.body });
+      inserts.set(at, entries);
+    }
+    const messages: ConversationItem[] = [];
+    for (let index = 0; index <= state.messages.length; index += 1) {
+      messages.push(...(inserts.get(index) ?? []));
+      if (index < state.messages.length) messages.push(state.messages[index]);
+    }
+    const historyGap = [pageGap, sourceGap, inputGap].filter((value): value is string => Boolean(value)).join("；") || null;
     const binding = bindingOf(latest.configuration, latest.fact);
     const writer = !pageGap && state.complete && binding && latest.fact.historical === false &&
       latest.fact.claimState === "COMMITTED" && latest.fact.stoppedFact !== true &&
@@ -588,13 +772,14 @@ export function createDesign37SecretarySource(): {
       (latest.fact.turnState === "IDLE" || latest.fact.turnState === "RUNNING")
       ? { binding, instanceId: binding.instanceId, model: binding.model,
           effort: binding.effort, permissionTier: binding.permissionTier,
-          canSend: !sourceGap && latest.fact.turnState === "IDLE",
+          canSend: !sourceGap && !inputGap && latest.fact.turnState === "IDLE",
           canStop: latest.fact.turnState === "RUNNING" } : null;
     return { sessionId: fact.sessionId!, threadId: fact.threadId!,
       seatId: original.configuration.seatId, generation: latest.fact.generation!,
       revision: latest.fact.revision!, turnState: latest.fact.turnState!,
       historical: latest.fact.historical!, runtimeAvailable: latest.fact.runtimeAvailable!,
-      messages: state.messages, statuses: state.statuses, historyGap, writer };
+      messages, statuses: state.statuses, historyGap, writer,
+      inputs: originalInputs, inputRowsEnded, verifiedSend };
   };
   const currentWriter = async (binding: SecretaryBinding, turnState: "IDLE" | "RUNNING") => {
     const selected = confirmedConversation(await readSecretaryConfiguration());
@@ -641,12 +826,12 @@ export function createDesign37SecretarySource(): {
       operation, requestId, targetId: binding.sessionId, domainId: "global",
       expectedRevision, payload });
     return { binding, operation, requestId, expectedRevision, body,
-      frame, status: "UNKNOWN", receipt: null, reason: null };
+    frame, status: "UNKNOWN", receipt: null, reason: null, inputVerified: false };
   };
   const send = async (binding: SecretaryBinding, body: string): Promise<SecretaryWriteFact> => {
     if (!body.trim()) throw new Error("Secretary message is empty.");
     if (lastSend?.status === "UNKNOWN") throw new Error("Previous Secretary send outcome is unconfirmed.");
-    if (lastSend?.status === "ACCEPTED" && lastSend.body === body &&
+    if (lastSend?.status === "ACCEPTED" && !lastSend.inputVerified && lastSend.body === body &&
         sameSecretaryBinding(lastSend.binding, binding)) {
       throw new Error("This exact Secretary message has an accepted original send receipt; edit the draft before a new send.");
     }
