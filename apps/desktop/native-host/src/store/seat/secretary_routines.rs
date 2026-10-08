@@ -173,18 +173,78 @@ fn has_unresolved_occurrence(db:&VerifiedDatabaseConnection<'_>,routine_id:&str)
 /// there. This API cannot grant a model tool or infer a schedule itself.
 pub(crate) fn create_secretary_routine(db:&mut VerifiedDatabaseConnection<'_>,issuer:&OwnerIssuer,
     input:SecretaryRoutineCreate<'_>)->Result<(SecretaryRoutine,bool),SeatError> {
+    validate_create(&input)?;
+    transact(db,|db| {
+        check_current_owner(db,issuer)?;
+        let seat=current_secretary(db)?;
+        create_secretary_routine_core(db,&seat,&input)
+    })
+}
+
+/// H-only model path. The caller, original USER source and this E write must
+/// all be checked in one existing BEGIN IMMEDIATE owned by ProductDatabase.
+/// This deliberately accepts no OwnerIssuer and starts no nested transaction.
+pub(crate) fn create_secretary_routine_from_model_in_transaction(
+    db:&VerifiedDatabaseConnection<'_>,caller:&NativeSeatCall,input:SecretaryRoutineCreate<'_>,
+)->Result<(SecretaryRoutine,bool),SeatError> {
+    if caller.tool()!=Some("gogoke_routine") || caller.domain_id()!="global" {
+        return Err(SeatError::Denied);
+    }
+    let actual=super::policy::current_caller(db,caller)?;
+    let seat=current_secretary(db)?;
+    if actual.seat_id!=seat.seat_id || actual.incarnation!=seat.incarnation
+        || actual.generation!=seat.generation || actual.state!=State::Busy {
+        return Err(SeatError::Denied);
+    }
+    create_secretary_routine_core(db,&seat,&input)
+}
+
+/// A replay reads the already committed E result. Re-resolving a relative
+/// time against a later clock would change its fingerprint and must not occur.
+pub(crate) fn replay_secretary_routine_from_model_in_transaction(
+    db:&VerifiedDatabaseConnection<'_>,caller:&NativeSeatCall,routine_id:&str,request_id:&str,
+    request_bytes:&[u8],original_text:&str,source_operation_id:&str,
+    source_epoch:&str,source_cursor:&str,
+)->Result<Option<SecretaryRoutine>,SeatError> {
+    validate("global",routine_id,request_id,request_bytes)?;
+    if caller.tool()!=Some("gogoke_routine") || caller.domain_id()!="global" {
+        return Err(SeatError::Denied);
+    }
+    let actual=super::policy::current_caller(db,caller)?;
+    let seat=current_secretary(db)?;
+    if actual.seat_id!=seat.seat_id || actual.incarnation!=seat.incarnation
+        || actual.generation!=seat.generation || actual.state!=State::Busy {
+        return Err(SeatError::Denied);
+    }
+    let Some(row)=routine(db,routine_id)? else {return Ok(None)};
+    if row.incarnation!=seat.incarnation || row.original_text!=original_text
+        || row.source_operation_id!=source_operation_id || row.source_epoch!=source_epoch
+        || row.source_cursor!=source_cursor {return Err(SeatError::Conflict);}
+    let fp=fingerprint(&["secretary-routine-create",routine_id,original_text,
+        source_operation_id,source_epoch,source_cursor,&row.schedule_raw,
+        &row.timezone,&row.next_due_ms.to_string()],request_bytes);
+    let Some(revision)=operation(db,request_id,&fp,routine_id,"CREATE")? else {
+        return Err(SeatError::Conflict);
+    };
+    if row.revision!=revision {return Err(SeatError::Conflict);}
+    Ok(Some(row))
+}
+
+fn validate_create(input:&SecretaryRoutineCreate<'_>)->Result<(),SeatError> {
     validate("global",input.routine_id,input.request_id,input.request_bytes)?;
     for (value,name) in [(input.original_text,"original_text"),(input.source_operation_id,"source_operation_id"),
         (input.source_epoch,"source_epoch"),(input.source_cursor,"source_cursor"),
         (input.schedule_raw,"schedule_raw"),(input.timezone,"timezone")] {original(value,name)?;}
     positive(input.next_due_ms,"next_due_ms")?;
     positive(input.now_ms,"now_ms")?;
+    Ok(())
+}
+fn create_secretary_routine_core(db:&VerifiedDatabaseConnection<'_>,seat:&Seat,
+    input:&SecretaryRoutineCreate<'_>)->Result<(SecretaryRoutine,bool),SeatError> {
+    validate_create(input)?;
     let fp=fingerprint(&["secretary-routine-create",input.routine_id,input.original_text,
         input.source_operation_id,input.source_epoch,input.source_cursor,input.schedule_raw,
         input.timezone,&input.next_due_ms.to_string()],input.request_bytes);
-    transact(db,|db| {
-        check_current_owner(db,issuer)?;
-        let seat=current_secretary(db)?;
         if let Some(recorded_revision) = operation(db,input.request_id,&fp,input.routine_id,"CREATE")? {
             let row=routine(db,input.routine_id)?.ok_or(SeatError::SchemaDrift)?;
             if row.incarnation!=seat.incarnation {return Err(SeatError::Denied);}
@@ -201,7 +261,6 @@ pub(crate) fn create_secretary_routine(db:&mut VerifiedDatabaseConnection<'_>,is
         q.bind_i64(10,input.next_due_ms)?;q.step_done()?;
         record_operation(db,input.request_id,&fp,input.routine_id,"CREATE",1)?;
         Ok((routine(db,input.routine_id)?.ok_or(SeatError::SchemaDrift)?,false))
-    })
 }
 
 pub(crate) fn change_secretary_routine(db:&mut VerifiedDatabaseConnection<'_>,issuer:&OwnerIssuer,
