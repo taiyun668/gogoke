@@ -4,7 +4,7 @@ use super::runtime::{ClaimObservation, InstancePin};
 use crate::process::{AppContainerProfile, GrokAuthMetadata, GrokAclSnapshot, PreparedCustody,
     NativeProcessHoldersGone,
     grok_root_acl, grok_residue_acl,
-    observe_grok_auth, observe_grok_auth_candidate, grant_grok_home_root, grant_grok_auth,
+    observe_grok_auth, observe_grok_auth_candidate, grant_grok_home_root,
     grant_grok_auth_successor,
     observe_grok_recorded_auth, verify_grok_home_tree, verify_grok_auth, revoke_grok_home_root,
     revoke_grok_auth, inspect_grok_home_residue, revoke_grok_home_residue};
@@ -102,6 +102,28 @@ fn exact_exists(db:&VerifiedDatabaseConnection<'_>,stage:&str,sql:&str,
         return Err(format!("Grok private HOME {stage}: duplicate original witness"));
     }
     Ok(found)
+}
+
+/// The first ACL transition belongs to the exact unused H reservation and
+/// current E seat. A resume candidate still has the old STOPPED H claim, so
+/// its new generation is witnessed by the existing process-episode intent.
+fn original_grant_admitted(db:&VerifiedDatabaseConnection<'_>,claim:&ClaimObservation,
+    seat_id:&str,seat_incarnation:&str,request_id:&str)->Result<bool,String>{
+    if claim.phase!=super::runtime::SessionPhase::Committed ||
+        claim.process_operation_id.is_some() {return Ok(false);}
+    let seat=exact_exists(db,"initial E seat",
+        "SELECT 1 FROM main.gogoke_v37_effective_seat b JOIN main.gogoke_v37_seats s ON s.domain_id=b.domain_id AND s.seat_id=b.seat_id WHERE b.domain_id=?1 AND b.session_id=?2 AND b.seat_id=?3 AND b.seat_incarnation=?4 AND b.selected_instance_id=?5 AND s.incarnation=b.seat_incarnation AND s.generation=b.seat_authorization_generation AND s.instance_id=b.selected_instance_id AND s.state='BUSY'",
+        &[&claim.domain_id,&claim.session_id,seat_id,seat_incarnation,&claim.instance_id])?;
+    if !seat {return Ok(false);}
+    if exact_exists(db,"initial H claim",
+        "SELECT 1 FROM main.gogoke_v37_h_claim h JOIN main.gogoke_v37_effective_seat b ON b.domain_id=h.domain_id AND b.session_id=h.session_id AND b.generation=h.generation WHERE h.domain_id=?1 AND h.session_id=?2 AND h.instance_id=?3 AND h.binding_id=?4 AND h.generation=?5 AND h.home_id=?6 AND h.state='COMMITTED' AND h.process_operation_id IS NULL",
+        &[&claim.domain_id,&claim.session_id,&claim.instance_id,&claim.binding_id,&claim.generation,&claim.home_id])? {
+        return Ok(true);
+    }
+    exact_exists(db,"resume H candidate",
+        "SELECT 1 FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_v37_h_claim h ON h.domain_id=e.domain_id AND h.session_id=e.session_id AND h.generation=e.old_generation AND h.instance_id=e.instance_id JOIN main.gogoke_coordination_process_custody c ON c.operation_id=h.process_operation_id AND c.profile_id=h.instance_id AND c.domain_id=h.domain_id AND c.generation=h.generation JOIN main.gogoke_v37_h_process_episode olde ON olde.process_operation_id=h.process_operation_id AND olde.instance_id=h.instance_id AND olde.domain_id=h.domain_id AND olde.session_id=h.session_id AND olde.generation=h.generation AND olde.binding_id=h.binding_id JOIN main.gogoke_v37_effective_seat b ON b.domain_id=h.domain_id AND b.session_id=h.session_id AND b.generation=h.generation WHERE e.domain_id=?1 AND e.session_id=?2 AND e.instance_id=?3 AND e.binding_id=?4 AND e.generation=?5 AND e.request_id=?6 AND e.seat_id=?7 AND e.seat_incarnation=?8 AND e.home_id=?9 AND e.old_generation IS NOT NULL AND e.phase='INTENT' AND e.process_operation_id IS NULL AND h.state='STOPPED' AND h.stop_fact_id IS NOT NULL AND h.stop_fact_id<>'' AND c.state='STOPPED' AND c.stop_proof_hash=h.stop_fact_id AND olde.phase='STOPPED' AND olde.stop_fact_id=h.stop_fact_id AND olde.seat_id=b.seat_id AND olde.seat_incarnation=b.seat_incarnation AND b.seat_id=e.seat_id AND b.seat_incarnation=e.seat_incarnation",
+        &[&claim.domain_id,&claim.session_id,&claim.instance_id,&claim.binding_id,&claim.generation,
+            request_id,seat_id,seat_incarnation,&claim.home_id])
 }
 
 struct OriginalH {
@@ -231,7 +253,11 @@ impl GrokHomeLaunch {
             domain.program_digest!=pin.digest ||domain.version!=pin.version {
             return Err("Grok private HOME: F domain/pin differs from H".into());
         }
-        let auth=evidence("observe-original-auth",observe_grok_auth(&home.path,&home.identity))?;
+        if !original_grant_admitted(db,claim,seat_id,seat_incarnation,request_id)? {
+            return Err("Grok private HOME: original H/E grant authority changed".into());
+        }
+        let auth=evidence("observe-original-auth-metadata",
+            observe_grok_auth_candidate(&home.path,&home.identity))?;
         let grant=GrokGrant{binding_id:claim.binding_id.clone(),instance_id:claim.instance_id.clone(),
             domain_id:claim.domain_id.clone(),session_id:claim.session_id.clone(),seat_id:seat_id.into(),
             seat_incarnation:seat_incarnation.into(),generation:claim.generation.clone(),request_id:request_id.into(),
@@ -253,10 +279,12 @@ impl GrokHomeLaunch {
                 ||evidence("root-ACL-readback",grok_root_acl(profile,&home.path,&home.identity)),||
                 evidence("grant-root",grant_grok_home_root(profile,&home.path,&home.identity)))?;
             let held=result.auth.lock().map_err(|_|"Grok private HOME: auth custody poisoned")?;
-            let auth_before=evidence("auth-ACL-before",held[0].acl(profile))?;
-            apply(db,effect(&grant,"GRANT_AUTH",&held[0].identity,"auth.json",&auth_before),
-                ||evidence("auth-ACL-readback",held[0].acl(profile)),||
-                evidence("grant-auth",grant_grok_auth(profile,&held[0])))?;
+            let auth_before=evidence("auth-ACL-before",held[0].candidate_acl(profile))?;
+            let mut intent=effect(&grant,"GRANT_AUTH",&held[0].identity,"auth.json",&auth_before);
+            intent.after_control=auth_before.dacl_control|0x1000;
+            apply(db,intent,
+                ||evidence("auth-ACL-readback",held[0].candidate_acl(profile)),||
+                evidence("grant-auth",grant_grok_auth_successor(profile,&held[0])))?;
             evidence("verify-preactivation",verify_grok_home_tree(profile,&home.path,
                 &home.identity,&held[0],&[held[0].identity.clone()]))?;
             drop(held);
@@ -853,6 +881,68 @@ mod tests {
     use std::time::{SystemTime,UNIX_EPOCH};
 
     #[test]
+    fn original_inherited_auth_is_journaled_protected_and_revoked_without_process(){
+        let _guard=route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("grok-original-auth-{}-{nonce}",std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let mut db=create_new(&root,&path.join("state.sqlite")).unwrap();
+        db.execute("PRAGMA foreign_keys=ON").unwrap();
+        crate::store::authority::initialize_profile(&mut db,&root).unwrap();
+        instance::initialize_schema(&mut db).unwrap();
+        instance::initialize_grok_home_grant_schema(&mut db).unwrap();
+        crate::store::seat::initialize_schema(&mut db).unwrap();
+        super::super::admission::initialize_admission_schema(&mut db).unwrap();
+        super::super::session_binding::initialize_schema(&mut db).unwrap();
+        let powershell=Path::new(&std::env::var("SystemRoot").unwrap())
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let program=instance::ProgramObservation::observe(&powershell,"1.0.41").unwrap();
+        instance::register_instance(&mut db,&root,&instance::Registration{
+            request_id:"registerGrok",request_bytes:b"registered physical Grok HOME",
+            instance_id:"grokA",driver_id:"grok",program:&program}).unwrap();
+        db.execute("UPDATE main.gogoke_v37_instances SET login_state='LOGGED_IN' WHERE instance_id='grokA'").unwrap();
+        let home=instance::resolve_grok_original_home(&db,&root,"grokA").unwrap();
+        let profile=AppContainerProfile::derived_for_test("Gogoke37.OriginalInheritedAuth").unwrap();
+        let peer=AppContainerProfile::derived_for_test("Gogoke37.OriginalInheritedPeer").unwrap();
+        grant_grok_home_root(&peer,&home.path,&home.identity).unwrap();
+        std::fs::write(home.path.join("auth.json"),b"synthetic non-secret fixture").unwrap();
+        let candidate=observe_grok_auth_candidate(&home.path,&home.identity).unwrap();
+        let before=candidate.candidate_acl(&profile).unwrap();
+        let peer_before=candidate.candidate_acl(&peer).unwrap();
+        assert!(!before.dacl_protected);
+        assert!(observe_grok_auth(&home.path,&home.identity).is_err());
+        let pin=super::super::runtime::current_instance_pin(&db,"grokA").unwrap();
+        let claim=ClaimObservation{domain_id:"domainA".into(),session_id:"sessionA".into(),
+            instance_id:"grokA".into(),home_id:"sessionHomeA".into(),
+            binding_id:"bindingA".into(),generation:"1".into(),revision:2,
+            phase:super::super::runtime::SessionPhase::Committed,process_operation_id:None};
+        db.execute("INSERT INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('domainA','seatA','incA','USER','LONG','grokA','BUSY',1,1)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_owner_binding VALUES('bindingA','grokA','domainA','SESSION','sessionA','1','ACTIVE')").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision) VALUES('domainA','sessionA','grokA','sessionHomeA','bindingA','1','COMMITTED',2)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_seat_binding VALUES('domainA','sessionA','seatA','incA','1')").unwrap();
+        assert!(!original_grant_admitted(&db,&claim,"seatA","wrong-incarnation","openA").unwrap());
+        let launch=GrokHomeLaunch::prepare(&mut db,&root,&profile,
+            "Gogoke37.OriginalInheritedAuth",&claim,&pin,&home,"seatA","incA","openA").unwrap();
+        let granted=observe_grok_auth(&home.path,&home.identity).unwrap();
+        assert_eq!(granted.identity,candidate.identity);
+        assert!(before.preserves_other_aces(&granted.acl(&profile).unwrap()));
+        assert_eq!(granted.candidate_acl(&peer).unwrap().target_aces,peer_before.target_aces);
+        let effects=instance::read_grok_effects(&db,"bindingA").unwrap();
+        let auth_effect=effects.iter().find(|e|e.action=="GRANT_AUTH").unwrap();
+        assert_eq!(auth_effect.before_control,before.dacl_control);
+        assert_eq!(auth_effect.after_control,before.dacl_control|0x1000);
+        assert_eq!(auth_effect.phase,"APPLIED");
+        launch.revoke_uncreated(&mut db,&root,&profile).unwrap();
+        assert_eq!(one(&db,"grokA","bindingA").unwrap().phase,"REVOKED");
+        assert!(grok_root_acl(&profile,&home.path,&home.identity).unwrap().target_aces.is_empty());
+        assert!(granted.candidate_acl(&profile).unwrap().target_aces.is_empty());
+        assert_eq!(granted.candidate_acl(&peer).unwrap().target_aces,peer_before.target_aces);
+        drop(granted);drop(candidate);drop(launch);drop(peer);drop(profile);
+        db.close_checked().unwrap();drop(root);std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn inherited_successor_intent_recovers_after_acl_write_before_finish(){
         let _guard=route_b_test_guard();
         let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
@@ -1291,6 +1381,16 @@ mod tests {
         db.execute("INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase,stop_fact_id) VALUES('domainA','openOld','sessionA','1','00',1,'oldOp','grokA','oldHome','oldBinding','seatA','incA','STOPPED','realStop')").unwrap();
         db.execute("INSERT INTO main.gogoke_coordination_process_custody VALUES('newOp','newTicket','newNonce','101','1001','newImage','sha256:fixture','grokA','domainA','2','PREPARED',NULL)").unwrap();
         db.execute("INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,old_generation,raw_hex,previous_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase) VALUES('domainA','resumeA','sessionA','2','1','00',3,'newOp','grokA','newHome','newBinding','seatA','incA','PREPARED')").unwrap();
+        let candidate_claim=ClaimObservation{domain_id:"domainA".into(),session_id:"sessionA".into(),
+            instance_id:"grokA".into(),home_id:"newHome".into(),binding_id:"newBinding".into(),
+            generation:"2".into(),revision:3,phase:super::super::runtime::SessionPhase::Committed,
+            process_operation_id:None};
+        db.execute("UPDATE main.gogoke_v37_h_process_episode SET process_operation_id=NULL,phase='INTENT' WHERE request_id='resumeA'").unwrap();
+        assert!(original_grant_admitted(&db,&candidate_claim,"seatA","incA","resumeA").unwrap());
+        db.execute("UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash='wrong' WHERE operation_id='oldOp'").unwrap();
+        assert!(!original_grant_admitted(&db,&candidate_claim,"seatA","incA","resumeA").unwrap());
+        db.execute("UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash='realStop' WHERE operation_id='oldOp'").unwrap();
+        db.execute("UPDATE main.gogoke_v37_h_process_episode SET process_operation_id='newOp',phase='PREPARED' WHERE request_id='resumeA'").unwrap();
         let values:[&str;12]=["domainA","sessionA","grokA","oldBinding","1","oldOp",
             "seatA","incA","resumeA","2","newBinding","newOp"];
         assert!(exact_exists(&db,"test-resume",RESUME_CANDIDATE_GUARD_SQL,&values).unwrap());

@@ -1,0 +1,9 @@
+{
+  "schema": "gogoke.37.checkpoint.v1",
+  "change": "Admit the original Grok auth.json through its physical single-link metadata handle under the current H/E/F authority, then persist the original F GRANT_AUTH effect before protecting its DACL and installing only the authorized current SID ACE. Reuse the existing successor writer and strict post-write verification.",
+  "result": "SOURCE_READY_FOR_INDEPENDENT_AUDIT",
+  "evidence": "The installed fixed Grok 1.0.41 original open stopped at observe-original-auth with AclWitnessMismatch before H open intent or process episode. The observed auth.json FileID is new, single-link, non-reparse and has an inherited unprotected DACL; its registered F HOME identity is unchanged. The previous generation's F grant is REVOKED, and the original NoAttempt H release is RELEASED revision 3 with no open intent or episode. No credential content was read.",
+  "reference": "Compared the existing Grok successor ACL writer, F effect replay and cold recovery, original H resume and StopFact joins, provider login references, and the gogo-party isolated account HOME implementation. The current fixed Grok HOME and auth.json contract differs from the historical Room login file observation; the existing F/H physical authority is retained.",
+  "validation": "Source diff and git diff --check only. Native compile, security tests, cloud directed cases, installed Windows 11 behavior, model call, and final acceptance are NOT_RUN.",
+  "next": "Controller assigns a fresh Astra full-axis source and test audit on this exact commit, then controls one cloud directed run with original twelve cases plus new security regression and effective mutation. No push or dispatch by this construction task."
+}
