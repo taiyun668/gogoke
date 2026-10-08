@@ -11,7 +11,7 @@ pub(crate) mod args;
 pub(crate) mod config;
 pub(crate) mod home;
 
-use crate::backend::app_server::NativeAssociation;
+use crate::backend::app_server::{NativeAssociation, NativeEventPosition};
 pub(crate) use crate::backend::app_server::WorkspaceSession;
 use crate::backend::events::AppServerEvent;
 use crate::remote_backend;
@@ -283,18 +283,6 @@ fn visible_failure(state: &str, reason: Option<&str>, request_id: Option<&str>) 
     }
 }
 
-#[derive(Clone, Default)]
-struct NativeEventPosition {
-    params: Value,
-    last_source: u64,
-    last_ordinal: u64,
-    operation: Option<String>,
-    epoch: Option<String>,
-    thread: Option<String>,
-    page_high: Option<String>,
-    seen_pages: HashSet<String>,
-}
-
 fn native_event_text<'a>(value: &'a Value, field: &str) -> Result<&'a str, String> {
     value.get(field).and_then(Value::as_str).filter(|text| !text.is_empty())
         .ok_or_else(|| format!("GOGOKE_NATIVE_EVENT_FIELD_INVALID:{field}"))
@@ -384,12 +372,13 @@ fn native_event_page(reply: &VisibleReadReply, association: &NativeAssociation,
 }
 
 pub(crate) async fn start_native_visible_events(session: &Arc<WorkspaceSession>) -> Result<(), String> {
-    let Some(app) = session.begin_native_events()? else { return Ok(()); };
-    // Establish the attachment watermark before connect resolves. Existing
+    let Some((app, reader_id, retained_position)) = session.begin_native_events()? else { return Ok(()); };
+    // Establish the attachment watermark before the observing call resolves. Existing
     // content is restored by the full original thread/read path, never by
     // replaying historical text deltas into an already rendered conversation.
     let seeded: Result<(NativeAssociation, NativeEventPosition), String> = async {
         let association = session.native_association()?.ok_or("GOGOKE_NATIVE_EVENT_ASSOCIATION_MISSING")?;
+        if let Some(position) = retained_position { return Ok((association, position)); }
         let mut position = NativeEventPosition::default();
         loop {
             let params = if position.params.is_null() { json!({}) } else { position.params.clone() };
@@ -398,17 +387,22 @@ pub(crate) async fn start_native_visible_events(session: &Arc<WorkspaceSession>)
             let app_state = app.state::<AppState>();
             let sessions = app_state.sessions.lock().await;
             if !sessions.get(&session.owner_workspace_id).is_some_and(|value| Arc::ptr_eq(value, session))
-                || session.native_association()?.as_ref() != Some(&association) {
+                || !session.native_event_reader_current(reader_id, &association)? {
                 return Err("GOGOKE_NATIVE_EVENT_ATTACHMENT_CHANGED_DURING_READ".into());
             }
             position = native_event_page(&reply, &association, &position)?.0;
-            if reply.state == "APPLIED" { return Ok((association, position)); }
+            if reply.state == "APPLIED" {
+                if !session.commit_native_events(reader_id, &association, position.clone(), || Ok(()))? {
+                    return Err("GOGOKE_NATIVE_EVENT_ATTACHMENT_CHANGED_BEFORE_COMMIT".into());
+                }
+                return Ok((association, position));
+            }
         }
     }.await;
     let (seed_association, seed_position) = match seeded {
         Ok(seed) => seed,
         Err(error) => {
-            if let Err(finish) = session.finish_native_events(Some(error.clone())) {
+            if let Err(finish) = session.finish_native_events(reader_id, Some(error.clone())) {
                 return Err(format!("{error}; reader state: {finish}"));
             }
             return Err(error);
@@ -416,17 +410,14 @@ pub(crate) async fn start_native_visible_events(session: &Arc<WorkspaceSession>)
     };
     let weak = Arc::downgrade(session);
     tauri::async_runtime::spawn(async move {
-        let mut association: Option<NativeAssociation> = Some(seed_association);
+        let association = seed_association;
         let mut position = seed_position;
         let result: Result<(), String> = async {
             loop {
                 let Some(session) = weak.upgrade() else { return Ok(()); };
                 let workspace = &session.owner_workspace_id;
-                let current = session.native_association()?.ok_or("GOGOKE_NATIVE_EVENT_ASSOCIATION_MISSING")?;
-                if association.as_ref() != Some(&current) {
-                    association = Some(current.clone());
-                    position = NativeEventPosition::default();
-                }
+                let current = &association;
+                if !session.native_event_reader_current(reader_id, current)? { return Ok(()); }
                 let params = if position.params.is_null() { json!({}) } else { position.params.clone() };
                 let reply = visible_read(&app, workspace, &current, "native-events", Some(params)).await;
                 // Both cache replacement and resume can happen while the USER
@@ -434,10 +425,10 @@ pub(crate) async fn start_native_visible_events(session: &Arc<WorkspaceSession>)
                 let app_state = app.state::<AppState>();
                 let sessions = app_state.sessions.lock().await;
                 if !sessions.get(workspace).is_some_and(|value| Arc::ptr_eq(value, &session)) { return Ok(()); }
-                if session.native_association()?.as_ref() != Some(&current) { continue; }
+                if !session.native_event_reader_current(reader_id, current)? { return Ok(()); }
                 let reply = reply?;
                 let (next_position, notifications) = native_event_page(&reply, &current, &position)?;
-                let delivered = session.with_native_event_route(&current, || {
+                let delivered = session.commit_native_events(reader_id, current, next_position.clone(), || {
                     for item in &notifications {
                         app.emit("app-server-event", json!({
                             "workspace_id": workspace, "message": item["notification"],
@@ -447,7 +438,7 @@ pub(crate) async fn start_native_visible_events(session: &Arc<WorkspaceSession>)
                     Ok(())
                 })?;
                 drop(sessions);
-                if delivered.is_none() { return Ok(()); }
+                if !delivered { return Ok(()); }
                 position = next_position;
                 if reply.state == "APPLIED" {
                     // Observation cadence only; never a timeout, stop proof,
@@ -458,7 +449,7 @@ pub(crate) async fn start_native_visible_events(session: &Arc<WorkspaceSession>)
         }.await;
         if let Some(session) = weak.upgrade() {
             if let Err(error) = &result { eprintln!("GOGOKE_NATIVE_EVENT_READER_FAILED:{error}"); }
-            if let Err(error) = session.finish_native_events(result.err()) {
+            if let Err(error) = session.finish_native_events(reader_id, result.err()) {
                 eprintln!("GOGOKE_NATIVE_EVENT_READER_FINISH_FAILED:{error}");
             }
         }
@@ -886,6 +877,12 @@ async fn native_visible_effect(
                     return Err("GOGOKE_NATIVE_SESSION_REPLACED_BEFORE_RESUME_COMMIT".into());
                 }
                 session.advance_native_association(&association, next)?;
+                drop(sessions);
+                // The original resume remains APPLIED even if its read-only
+                // observer fails; that original read reason is retained apart.
+                if let Err(error) = start_native_visible_events(&session).await {
+                    eprintln!("GOGOKE_NATIVE_RESUME_EVENT_READER_FAILED:{error}");
+                }
             }
             Ok(response)
         }
@@ -1082,16 +1079,14 @@ pub(crate) async fn recover_native_visible_request(
                     });
                 if current_route_matches {
                     let sessions = state.sessions.lock().await;
+                    let mut reader_session = None;
                     if let Some(session) = sessions.get(&workspace_id) {
                         if session.owner_workspace_id == workspace_id {
                             match session.native_association() {
                                 Ok(Some(cached)) if cached == association => {
-                                    if let Err(error) =
-                                        session.advance_native_association(&association, next)
-                                    {
-                                        eprintln!(
-                                            "GOGOKE_NATIVE_RECOVER_CACHE_SYNC_FAILED:{error}"
-                                        );
+                                    match session.advance_native_association(&association, next) {
+                                        Ok(()) => reader_session = Some(session.clone()),
+                                        Err(error) => eprintln!("GOGOKE_NATIVE_RECOVER_CACHE_SYNC_FAILED:{error}"),
                                     }
                                 }
                                 Err(error) => {
@@ -1099,6 +1094,12 @@ pub(crate) async fn recover_native_visible_request(
                                 }
                                 _ => {}
                             }
+                        }
+                    }
+                    drop(sessions);
+                    if let Some(session) = reader_session {
+                        if let Err(error) = start_native_visible_events(&session).await {
+                            eprintln!("GOGOKE_NATIVE_RECOVER_EVENT_READER_FAILED:{error}");
                         }
                     }
                 }
@@ -1164,6 +1165,7 @@ async fn native_association(
 #[tauri::command]
 pub(crate) async fn native_visible_transport(
     workspace_id: String,
+    observe: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
     if remote_backend::is_remote_mode(&*state).await {
@@ -1171,13 +1173,20 @@ pub(crate) async fn native_visible_transport(
             "state": "REMOTE", "association": null}));
     }
     let session = state.sessions.lock().await.get(&workspace_id).cloned();
+    let mut event_error = None;
     let (kind, association) = match session {
         Some(session) if session.is_native() => {
             if session.owner_workspace_id != workspace_id {
                 return Err("GOGOKE_NATIVE_WORKSPACE_OWNER_MISMATCH".into());
             }
-            if let Some(error) = session.native_event_error()? {
-                return Err(format!("GOGOKE_NATIVE_EVENT_READ_UNKNOWN:{error}"));
+            if observe == Some(true) {
+                if let Err(error) = start_native_visible_events(&session).await {
+                    event_error = Some(error);
+                }
+            }
+            event_error = event_error.or(session.native_event_error()?);
+            if !state.sessions.lock().await.get(&workspace_id).is_some_and(|current| Arc::ptr_eq(current, &session)) {
+                return Err("GOGOKE_NATIVE_SESSION_REPLACED_DURING_TRANSPORT_READ".into());
             }
             let association = session.native_association()?
                 .ok_or("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE")?;
@@ -1187,7 +1196,7 @@ pub(crate) async fn native_visible_transport(
         None => ("DISCONNECTED", None),
     };
     Ok(json!({"schema": VISIBLE_SCHEMA, "workspaceId": workspace_id,
-        "state": kind, "association": association}))
+        "state": kind, "association": association, "nativeEventReadError": event_error}))
 }
 
 pub(crate) async fn native_visible_live_state(
@@ -2401,7 +2410,6 @@ mod native_visible_boundary_tests {
             }})) }
     }
 
-    #[test]
     fn native_notifications_preserve_original_envelope_and_scope() {
         let reply = event_reply();
         let (position, events) = native_event_page(&reply, &association("2"), &NativeEventPosition::default()).unwrap();
@@ -2419,7 +2427,6 @@ mod native_visible_boundary_tests {
         assert!(native_event_page(&reply, &association("2"), &prior_thread).is_err());
     }
 
-    #[test]
     fn native_event_partial_page_cannot_change_water_or_repeat_cursor() {
         let mut reply = event_reply();
         reply.state = "PARTIAL".into();
@@ -2502,6 +2509,8 @@ mod native_visible_boundary_tests {
 
     #[test]
     fn effect_requires_original_caller_association_before_dispatch() {
+        native_notifications_preserve_original_envelope_and_scope();
+        native_event_partial_page_cannot_change_water_or_repeat_cursor();
         let current = association("2");
         assert!(require_original_association(None, &current).is_err());
         assert!(require_original_association(Some(&current), &current).is_ok());

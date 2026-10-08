@@ -466,6 +466,20 @@ pub(crate) struct NativeSessionState {
     confirmed_stop_fact: Option<String>,
     event_reader_running: bool,
     event_reader_error: Option<String>,
+    event_reader_id: u64,
+    event_position: Option<NativeEventPosition>,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct NativeEventPosition {
+    pub(crate) params: Value,
+    pub(crate) last_source: u64,
+    pub(crate) last_ordinal: u64,
+    pub(crate) operation: Option<String>,
+    pub(crate) epoch: Option<String>,
+    pub(crate) thread: Option<String>,
+    pub(crate) page_high: Option<String>,
+    pub(crate) seen_pages: HashSet<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -495,6 +509,8 @@ impl WorkspaceSession {
                     confirmed_stop_fact: None,
                     event_reader_running: false,
                     event_reader_error: None,
+                    event_reader_id: 0,
+                    event_position: None,
                 }),
             },
             pending: Mutex::new(HashMap::new()),
@@ -528,14 +544,22 @@ impl WorkspaceSession {
 
     /// This observer owns no process or H permission. A deliberate reconnect
     /// may restart a failed observer; transport queries never silently retry it.
-    pub(crate) fn begin_native_events(&self) -> Result<Option<AppHandle>, String> {
+    pub(crate) fn begin_native_events(&self) -> Result<Option<(AppHandle, u64, Option<NativeEventPosition>)>, String> {
         let SessionTransport::Native { app, state } = &self.transport else { return Ok(None); };
         let mut current = state.write()
             .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?;
         if current.event_reader_running || current.confirmed_stop_fact.is_some() { return Ok(None); }
+        // A failed synchronous emission has an unknown delivered prefix.
+        // Retain its original error instead of replaying that prefix on reconnect.
+        if let Some(error) = current.event_reader_error.as_ref()
+            .filter(|error| error.starts_with("GOGOKE_NATIVE_EVENT_DELIVERY_FAILED:")) {
+            return Err(error.clone());
+        }
+        current.event_reader_id = current.event_reader_id.checked_add(1)
+            .ok_or("GOGOKE_NATIVE_EVENT_READER_ID_OVERFLOW")?;
         current.event_reader_running = true;
         current.event_reader_error = None;
-        Ok(Some(app.clone()))
+        Ok(Some((app.clone(), current.event_reader_id, current.event_position.clone())))
     }
 
     pub(crate) fn native_event_error(&self) -> Result<Option<String>, String> {
@@ -547,26 +571,40 @@ impl WorkspaceSession {
         }
     }
 
-    pub(crate) fn finish_native_events(&self, error: Option<String>) -> Result<(), String> {
+    pub(crate) fn finish_native_events(&self, reader_id: u64, error: Option<String>) -> Result<(), String> {
         let SessionTransport::Native { state, .. } = &self.transport else { return Ok(()); };
         let mut current = state.write()
             .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?;
-        current.event_reader_running = false;
-        current.event_reader_error = error;
+        if current.event_reader_id == reader_id {
+            current.event_reader_running = false;
+            current.event_reader_error = error;
+        }
         Ok(())
     }
 
-    /// Hold the association read lock through synchronous emission. A resume
-    /// cannot commit a new generation between the final check and the event.
-    pub(crate) fn with_native_event_route<T>(&self, expected: &NativeAssociation,
-        emit: impl FnOnce() -> Result<T, String>) -> Result<Option<T>, String> {
+    pub(crate) fn native_event_reader_current(&self, reader_id: u64,
+        expected: &NativeAssociation) -> Result<bool, String> {
+        let SessionTransport::Native { state, .. } = &self.transport else { return Ok(false); };
+        let current = state.read()
+            .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?;
+        Ok(current.event_reader_id == reader_id && &current.association == expected
+            && current.confirmed_stop_fact.is_none())
+    }
+
+    /// Emission and the successful read position share the association lock.
+    /// Failed reads retain the last delivered position for same-view recovery.
+    pub(crate) fn commit_native_events(&self, reader_id: u64, expected: &NativeAssociation,
+        position: NativeEventPosition, emit: impl FnOnce() -> Result<(), String>) -> Result<bool, String> {
         let SessionTransport::Native { state, .. } = &self.transport else {
             return Err("GOGOKE_NATIVE_EVENT_TRANSPORT_MISMATCH".into());
         };
-        let current = state.read()
+        let mut current = state.write()
             .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?;
-        if &current.association != expected || current.confirmed_stop_fact.is_some() { return Ok(None); }
-        emit().map(Some)
+        if current.event_reader_id != reader_id || &current.association != expected
+            || current.confirmed_stop_fact.is_some() { return Ok(false); }
+        emit()?;
+        current.event_position = Some(position);
+        Ok(true)
     }
 
     pub(crate) fn advance_native_association(
@@ -583,8 +621,14 @@ impl WorkspaceSession {
         if &current.association != expected {
             return Err("GOGOKE_NATIVE_ASSOCIATION_CHANGED_BEFORE_COMMIT".into());
         }
+        let next_reader_id = current.event_reader_id.checked_add(1)
+            .ok_or("GOGOKE_NATIVE_EVENT_READER_ID_OVERFLOW")?;
         current.association = next;
         current.confirmed_stop_fact = None;
+        current.event_reader_id = next_reader_id;
+        current.event_reader_running = false;
+        current.event_reader_error = None;
+        current.event_position = None;
         Ok(())
     }
 
@@ -604,7 +648,11 @@ impl WorkspaceSession {
                 if stop_fact.is_empty() {
                     return Err("GOGOKE_NATIVE_STOP_FACT_MISSING".into());
                 }
+                let next_reader_id = current.event_reader_id.checked_add(1)
+                    .ok_or("GOGOKE_NATIVE_EVENT_READER_ID_OVERFLOW")?;
                 current.confirmed_stop_fact = Some(stop_fact);
+                current.event_reader_id = next_reader_id;
+                current.event_reader_running = false;
                 Ok(())
             }
             SessionTransport::Legacy { .. } => Err("GOGOKE_LEGACY_STOP_FACT_MISMATCH".into()),

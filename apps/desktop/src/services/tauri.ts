@@ -1579,18 +1579,24 @@ export function lastNotDispatchedNativeVisibleIntent(workspaceId: string) {
   return nativeVisibleJournal(workspaceId).lastNotDispatched;
 }
 
-async function nativeVisibleTransport(workspaceId: string): Promise<{
+async function nativeVisibleTransport(workspaceId: string, observe = false): Promise<{
   state: "NATIVE" | "LEGACY" | "DISCONNECTED" | "REMOTE";
   association: NativeConversationAssociation | null;
+  eventReadError?: string;
 }> {
-  const value: unknown = await invoke("native_visible_transport", { workspaceId });
+  const value: unknown = await invoke("native_visible_transport", { workspaceId, observe });
   if (!record(value) || value.schema !== "gogoke.37.visible-conversation.v1" ||
       value.workspaceId !== workspaceId ||
       !["NATIVE", "LEGACY", "DISCONNECTED", "REMOTE"].includes(String(value.state))) {
     throw new Error("Actual native visible transport could not be identified.");
   }
   if (value.state === "NATIVE") {
-    return { state: "NATIVE", association: exactNativeAssociation(value.association) };
+    if (value.nativeEventReadError !== null && value.nativeEventReadError !== undefined &&
+        (typeof value.nativeEventReadError !== "string" || !value.nativeEventReadError)) {
+      throw new Error("Native event read failure has no original reason.");
+    }
+    return { state: "NATIVE", association: exactNativeAssociation(value.association),
+      eventReadError: typeof value.nativeEventReadError === "string" ? value.nativeEventReadError : undefined };
   }
   if (value.association !== null) {
     throw new Error("Non-native visible transport reported a native association.");
@@ -1629,9 +1635,13 @@ async function invokeVisibleWrite<T>(
     throw new Error("Native visible conversation transport is disconnected.");
   }
   return withNativeVisibleLock(workspaceId, async () => {
-    const transport = await nativeVisibleTransport(workspaceId);
+    const physicalStop = command === "stop_native_visible_session";
+    const transport = await nativeVisibleTransport(workspaceId, !physicalStop);
     if (transport.state !== "NATIVE" || !transport.association) {
       throw new Error("Native visible conversation transport changed before dispatch.");
+    }
+    if (!physicalStop && transport.eventReadError) {
+      throw new Error(`GOGOKE_NATIVE_EVENT_READ_UNKNOWN:${transport.eventReadError}`);
     }
     const association = await confirmedNativeVisibleAssociation(workspaceId, transport.association);
     const journal = nativeVisibleJournal(workspaceId);
