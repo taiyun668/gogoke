@@ -517,10 +517,34 @@ export function useThreadActions({
         sortKey?: ThreadListSortKey;
         maxPages?: number;
       },
-    ) => {
+    ): Promise<void> => {
       const targets = workspaces.filter((workspace) => workspace.id);
       if (targets.length === 0) {
         return;
+      }
+      // Native lists are scoped to their original workspace, unlike the old
+      // shared CLI index. Never clear another workspace from an unread list.
+      if ("__TAURI_INTERNALS__" in window && targets.length > 1) {
+        const scoped: WorkspaceInfo[] = [];
+        const shared: WorkspaceInfo[] = [];
+        for (const workspace of targets) {
+          try {
+            (await nativeConversationAssociation(workspace.id) ? scoped : shared).push(workspace);
+          } catch (error) {
+            // Keep unresolved transports isolated. The singleton call retains
+            // its actual original error and cannot clear another workspace.
+            onDebug?.({ id: `${Date.now()}-thread-list-transport-error`, timestamp: Date.now(),
+              source: "error", label: "thread/list transport qualification",
+              payload: { workspaceId: workspace.id,
+                reason: error instanceof Error ? error.message : String(error) } });
+            scoped.push(workspace);
+          }
+        }
+        if (scoped.length > 0) {
+          for (const workspace of scoped) await listThreadsForWorkspaces([workspace], options);
+          if (shared.length > 0) await listThreadsForWorkspaces(shared, options);
+          return;
+        }
       }
       const preserveState = options?.preserveState ?? false;
       const requestedSortKey = options?.sortKey ?? threadSortKey;
