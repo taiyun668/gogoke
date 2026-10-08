@@ -53,6 +53,7 @@ if (side.lifecycleOwnership !== 'EXCLUSIVE_V12_SOURCE_AND_SIDE' ||
     side.sourceInstanceId !== side.sideInstanceId ||
     selections.some(key => !atom(side[key])) ||
     !atom(side.sourceTemplateId) || !atom(side.sideTemplateId) ||
+    !atom(side.sourceIncarnation) ||
     !unique([side.sourceSeatId, side.sideSeatId]) ||
     !unique([side.sourceWorktreeId, side.sideWorktreeId]) ||
     !/^[A-Za-z0-9._:-]{1,256}$/.test(side.ledgerEpoch ?? '') ||
@@ -169,7 +170,14 @@ try {
     lifecycleOwnership: side.lifecycleOwnership, ledgerEpoch: side.ledgerEpoch,
     sourceCursor: side.sourceCursor, sourceSeatSettings: side.sourceSeatSettings,
     sideSeatSettings: side.sideSeatSettings, sourceTemplateId: side.sourceTemplateId,
-    sideTemplateId: side.sideTemplateId }; product.save();
+    sideTemplateId: side.sideTemplateId, sourceIncarnation: side.sourceIncarnation }; product.save();
+  const leadFrame = { schema: 'gogoke.37.owner-configuration.v1', command: 'seat-designate-lead',
+    domainId: config.domainId, seatId: side.sourceSeatId, incarnation: side.sourceIncarnation };
+  const designation = { kind: 'V12_SOURCE_LEAD_DESIGNATION', request: leadFrame,
+    rawFrame: JSON.stringify(leadFrame), receipt: null };
+  journal.operations.push(designation); product.save();
+  const leadReply = await product.evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_design37_user_operation',{frame:${JSON.stringify(designation.rawFrame)}})`);
+  designation.receipt = JSON.parse(leadReply); product.save();
   await createRegisteredWorktree('source');
   await createRegisteredWorktree('side');
   await product.closeNormally();

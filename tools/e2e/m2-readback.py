@@ -1325,6 +1325,13 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                     (domain, plan["sourceSeatId"], plan["sideSeatId"])):
                 raise RuntimeError("Fresh V12 seats already have private model history")
             result["freshModelHistoriesAbsentBeforeOpen"] = True
+            lead = one(db, "SELECT seat_id,incarnation FROM gogoke_v37_seat_project_lead WHERE domain_id=?",
+                (domain,))
+            incarnation = one(db, "SELECT incarnation FROM gogoke_v37_seats WHERE domain_id=? AND seat_id=?",
+                (domain, plan["sourceSeatId"]))[0]
+            if lead != (plan["sourceSeatId"], incarnation) or incarnation != plan.get("sourceIncarnation"):
+                raise RuntimeError("V12 source is not its actual designated project lead")
+            result["sourceLeadDesignation"] = {"seatId": lead[0], "incarnation": lead[1]}
         else:
             case = journal["sideChatCases"][0]
             verify_v12_selected_models(db, journal, case, journal["sideChatPlan"], result)
