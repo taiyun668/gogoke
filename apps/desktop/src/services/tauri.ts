@@ -128,9 +128,39 @@ type SecretaryConversation = {
   turnState: "IDLE" | "RUNNING" | "UNKNOWN";
   historical: boolean; runtimeAvailable: boolean;
   messages: ConversationItem[];
-  writer: { instanceId: string; model: string; effort: string; permissionTier: string;
+  historyGap: string | null;
+  statuses: string[];
+  writer: { binding: SecretaryBinding; instanceId: string; model: string; effort: string; permissionTier: string;
     canSend: boolean; canStop: boolean } | null;
 };
+
+export type SecretaryBinding = {
+  seatId: string; incarnation: string; eGeneration: string; eRevision: string;
+  instanceId: string; model: string; effort: string; permissionTier: string;
+  sessionId: string; threadId: string; hGeneration: string;
+};
+
+export type SecretaryWriteFact = { operation: "send" | "stop"; requestId: string;
+  sessionId: string; seatId: string; hGeneration: string;
+  body: string | null; status: "UNKNOWN" | "ACCEPTED"; receipt: unknown | null;
+  reason: string | null };
+
+const sameSecretaryBinding = (left: SecretaryBinding, right: SecretaryBinding) =>
+  (["seatId", "incarnation", "eGeneration", "eRevision", "instanceId", "model",
+    "effort", "permissionTier", "sessionId", "threadId", "hGeneration"] as const)
+    .every((key) => nonempty(left[key]) && left[key] === right[key]);
+
+function bindingOf(configuration: Extract<SecretaryConfiguration, { state: "DESIGNATED" }>,
+  fact: NonNullable<Extract<SecretaryConfiguration, { state: "DESIGNATED" }>["conversation"]>): SecretaryBinding | null {
+  if (!nonempty(configuration.instanceId) || !nonempty(configuration.model) ||
+      !nonempty(configuration.effort) || !nonempty(configuration.permissionTier) ||
+      !nonempty(fact.sessionId) || !nonempty(fact.threadId) || !decimal(fact.generation)) return null;
+  return { seatId: configuration.seatId, incarnation: configuration.incarnation,
+    eGeneration: configuration.generation, eRevision: configuration.revision,
+    instanceId: configuration.instanceId, model: configuration.model,
+    effort: configuration.effort, permissionTier: configuration.permissionTier,
+    sessionId: fact.sessionId, threadId: fact.threadId, hGeneration: fact.generation };
+}
 
 function secretaryReceipt(value: unknown, family: "K-SESSION" | "K-LEDGER",
   operation: string, requestId: string, targetId: string): Record<string, unknown> {
@@ -152,6 +182,33 @@ async function secretaryOperation(family: "K-SESSION" | "K-LEDGER", operation: s
   return { result: secretaryReceipt(reply, family, operation, requestId, targetId), reply };
 }
 
+async function secretaryRawFrame(frame: string): Promise<unknown> {
+  const raw = await invoke<string>("gogoke_design37_user_operation", { frame });
+  if (typeof raw !== "string") throw new Error("Native Secretary USER reply is not a JSON frame.");
+  return JSON.parse(raw) as unknown;
+}
+
+function originalWriteReceipt(value: unknown, operation: "send" | "stop",
+  requestId: string, targetId: string, expectedRevision: string): "ACCEPTED" | "REJECTED" | "UNKNOWN" {
+  if (!record(value) || value.schema !== "gogoke.37.operations.v1" ||
+      value.family !== "K-SESSION" || value.operation !== operation ||
+      value.requestId !== requestId || value.targetId !== targetId ||
+      !decimal(value.previousRevision) || !decimal(value.revision) ||
+      !record(value.result)) {
+    throw new Error(`Native Secretary original ${operation} reply has the wrong identity: ${JSON.stringify(value)}`);
+  }
+  if (value.status === "STALE" || value.status === "DENIED" ||
+      value.status === "CONFLICT" || value.status === "UNSUPPORTED") return "REJECTED";
+  if (value.status !== "APPLIED" && value.status !== "REPLAYED") return "UNKNOWN";
+  if (value.previousRevision !== expectedRevision) {
+    throw new Error(`Native Secretary accepted ${operation} has a different original revision: ${JSON.stringify(value)}`);
+  }
+  if (operation === "stop" && (!record(value.result) || !nonempty(value.result.stopFact))) {
+    throw new Error(`Native Secretary stop has no original H fact: ${JSON.stringify(value)}`);
+  }
+  return "ACCEPTED";
+}
+
 function confirmedConversation(configuration: SecretaryConfiguration):
   { configuration: Extract<SecretaryConfiguration, { state: "DESIGNATED" }>;
     fact: NonNullable<Extract<SecretaryConfiguration, { state: "DESIGNATED" }>["conversation"]> } | null {
@@ -166,28 +223,96 @@ function confirmedConversation(configuration: SecretaryConfiguration):
   return { configuration, fact };
 }
 
-function secretaryEvent(value: unknown, sessionId: string, seatId: string): ConversationItem | null {
+type SecretaryTranscript = { sessionId: string; seatId: string; epoch: string;
+  cursor: string; target: string; headHint: string; complete: boolean; messages: ConversationItem[];
+  ids: Set<string>; groups: Map<string, number>; statuses: string[] };
+
+function secretaryEvent(state: SecretaryTranscript, value: unknown, threadId: string): void {
   if (!record(value) || !decimal(value.cursor) || !nonempty(value.sourceEventId) ||
       !nonempty(value.sourceEpoch) || !nonempty(value.sourceCursor) ||
       !nonempty(value.domainId) || !nonempty(value.seatId) || !nonempty(value.sessionId) ||
       !record(value.update)) {
     throw new Error(`Native Secretary ledger event is malformed: ${JSON.stringify(value)}`);
   }
-  if (value.sessionId !== sessionId || value.seatId !== seatId || value.domainId !== "global") return null;
+  if (value.sessionId !== state.sessionId || value.seatId !== state.seatId || value.domainId !== "global") return;
+  if (state.ids.has(value.sourceEventId)) throw new Error(`Native Secretary source event repeated: ${value.sourceEventId}`);
+  state.ids.add(value.sourceEventId);
   const update = value.update;
   if (!nonempty(update.sessionUpdate)) {
     throw new Error(`Native Secretary original update has no kind: ${JSON.stringify(value)}`);
   }
+  const meta = record(update._meta) ? update._meta : null;
+  if (meta && nonempty(meta.threadId) && meta.threadId !== threadId) {
+    throw new Error(`Native Secretary original thread changed: ${JSON.stringify(value)}`);
+  }
+  const group = meta && nonempty(meta.turnId) && nonempty(meta.itemId)
+    ? JSON.stringify([update.sessionUpdate, meta.turnId, meta.itemId]) : null;
   if (update.sessionUpdate === "user_message_chunk" || update.sessionUpdate === "agent_message_chunk") {
     if (!record(update.content) || update.content.type !== "text" || typeof update.content.text !== "string") {
       throw new Error(`Native Secretary text update is malformed: ${JSON.stringify(value)}`);
     }
-    return { id: value.sourceEventId, kind: "message",
-      role: update.sessionUpdate === "user_message_chunk" ? "user" : "assistant",
-      text: update.content.text };
+    const role = update.sessionUpdate === "user_message_chunk" ? "user" : "assistant";
+    const index = group ? state.groups.get(group) : undefined;
+    const old = index === undefined ? null : state.messages[index];
+    if (old && old.kind === "message" && old.role === role) {
+      state.messages[index!] = { ...old, text: old.text + update.content.text };
+    } else {
+      if (group) state.groups.set(group, state.messages.length);
+      state.messages.push({ id: value.sourceEventId, kind: "message", role, text: update.content.text });
+    }
+    return;
   }
-  return { id: value.sourceEventId, kind: "tool", toolType: update.sessionUpdate,
-    title: update.sessionUpdate, detail: JSON.stringify(update) };
+  if (update.sessionUpdate === "agent_thought_chunk") {
+    if (!record(update.content) || update.content.type !== "text" || typeof update.content.text !== "string") {
+      throw new Error(`Native Secretary thought update is malformed: ${JSON.stringify(value)}`);
+    }
+    const index = group ? state.groups.get(group) : undefined;
+    const old = index === undefined ? null : state.messages[index];
+    const summary = meta?.codexMethod === "item/reasoning/summaryTextDelta";
+    if (old && old.kind === "reasoning") {
+      state.messages[index!] = summary
+        ? { ...old, summary: old.summary + update.content.text }
+        : { ...old, content: old.content + update.content.text };
+    } else {
+      if (group) state.groups.set(group, state.messages.length);
+      state.messages.push({ id: value.sourceEventId, kind: "reasoning",
+        summary: summary ? update.content.text : "", content: summary ? "" : update.content.text });
+    }
+    return;
+  }
+  if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
+    const toolKey = meta && nonempty(meta.turnId) && nonempty(meta.itemId)
+      ? JSON.stringify(["tool", meta.turnId, meta.itemId]) : null;
+    const index = toolKey ? state.groups.get(toolKey) : undefined;
+    const old = index === undefined ? null : state.messages[index];
+    const detail = update.rawOutput === undefined ? JSON.stringify(update) :
+      typeof update.rawOutput === "string" ? update.rawOutput : JSON.stringify(update.rawOutput);
+    const status = typeof update.status === "string" ? update.status : undefined;
+    if (old && old.kind === "tool") {
+      state.messages[index!] = { ...old, detail: old.detail + (detail ? `\n${detail}` : ""),
+        ...(status ? { status } : {}) };
+    } else {
+      if (toolKey) state.groups.set(toolKey, state.messages.length);
+      state.messages.push({ id: value.sourceEventId, kind: "tool",
+        toolType: typeof update.kind === "string" ? update.kind : "native",
+        title: typeof update.title === "string" ? update.title : update.sessionUpdate,
+        detail, ...(status ? { status } : {}) });
+    }
+    return;
+  }
+  if (update.sessionUpdate === "session_info_update") {
+    const source = meta ? { sourceEventId: value.sourceEventId,
+      provider: meta.provider, method: meta.codexMethod ?? meta.providerMethod,
+      threadId: meta.threadId, turnId: meta.turnId, turnStatus: meta.turnStatus,
+      threadStatus: meta.threadStatus, codexError: meta.codexError,
+      codexWillRetry: meta.codexWillRetry } : null;
+    if (source && [meta?.turnStatus, meta?.threadStatus, meta?.codexError,
+      meta?.codexWillRetry].some((part) => part !== undefined)) {
+      state.statuses.push(JSON.stringify(source));
+    }
+    return;
+  }
+  // Configuration and usage updates are source metadata, not conversation tools.
 }
 
 /** Actual E configuration and E routines; the optional conversation is H's fact only. */
@@ -195,8 +320,11 @@ export function createDesign37SecretarySource(): {
   source: SecretarySource;
   readSnapshot: () => Promise<{ configuration: SecretaryConfiguration; page: SecretaryPage }>;
   readConversation: (configuration: SecretaryConfiguration) => Promise<SecretaryConversation | null>;
-  send: (body: string) => Promise<void>;
-  stop: () => Promise<void>;
+  invalidateTranscript: () => void;
+  writeFacts: () => SecretaryWriteFact[];
+  send: (binding: SecretaryBinding, body: string) => Promise<SecretaryWriteFact>;
+  stop: (binding: SecretaryBinding) => Promise<SecretaryWriteFact>;
+  retryStop: () => Promise<SecretaryWriteFact>;
 } {
   const readSnapshot = async () => {
     const configuration = await readSecretaryConfiguration();
@@ -312,12 +440,46 @@ export function createDesign37SecretarySource(): {
       throw new Error(`Native Secretary routine change failed: ${JSON.stringify(reply)}`);
     }
   };
-  let transcript: { sessionId: string; seatId: string; epoch: string; cursor: string;
-    messages: ConversationItem[]; ids: Set<string> } | null = null;
+  let transcript: SecretaryTranscript | null = null;
+  type OriginalWrite = { binding: SecretaryBinding; frame: string; requestId: string;
+    expectedRevision: string; operation: "send" | "stop"; body: string | null;
+    status: "UNKNOWN" | "ACCEPTED"; receipt: unknown | null; reason: string | null };
+  let lastSend: OriginalWrite | null = null;
+  let lastStop: OriginalWrite | null = null;
+  const factOf = (write: OriginalWrite): SecretaryWriteFact => ({
+    operation: write.operation, requestId: write.requestId,
+    sessionId: write.binding.sessionId, seatId: write.binding.seatId,
+    hGeneration: write.binding.hGeneration, body: write.body,
+    status: write.status, receipt: write.receipt, reason: write.reason });
+  const writeFacts = () => [lastSend, lastStop].filter((write): write is OriginalWrite => write !== null)
+    .map(factOf);
+  const observeOriginalInputs = (values: unknown[]) => {
+    if (!lastSend || lastSend.status !== "UNKNOWN") return;
+    for (const raw of values) {
+      if (!record(raw) || raw.requestId !== lastSend.requestId) continue;
+      if (raw.expectedRevision !== lastSend.expectedRevision || !nonempty(raw.phase) ||
+          (raw.receipt !== null && !record(raw.receipt))) {
+        throw new Error(`Native Secretary original input fact is invalid: ${JSON.stringify(raw)}`);
+      }
+      if (raw.receipt === null) return;
+      const result = originalWriteReceipt(raw.receipt, "send", lastSend.requestId,
+        lastSend.binding.sessionId, lastSend.expectedRevision);
+      if (result === "ACCEPTED") {
+        lastSend.status = "ACCEPTED";
+        lastSend.receipt = raw.receipt;
+        lastSend.reason = null;
+      } else if (result === "REJECTED") {
+        lastSend = null;
+      }
+      return;
+    }
+  };
+  const invalidateTranscript = () => { transcript = null; };
   const readConversation = async (configuration: SecretaryConfiguration): Promise<SecretaryConversation | null> => {
     const original = confirmedConversation(configuration);
     if (!original) { transcript = null; return null; }
     const { fact } = original;
+    let sourceGap: string | null = "原始输出和待处理问题未由当前运行实例复核";
     if (fact.historical === false && fact.runtimeAvailable === true && fact.claimState === "COMMITTED") {
       const output = (await secretaryOperation("K-SESSION", "output-stream", fact.sessionId!, fact.revision!,
         { generation: fact.generation, afterCursor: fact.ledgerCursor })).result;
@@ -325,6 +487,16 @@ export function createDesign37SecretarySource(): {
           (output.sourceError !== null && output.sourceError !== undefined)) {
         throw new Error(`Native Secretary output source is unresolved: ${JSON.stringify(output)}`);
       }
+      if (!decimal(output.unresolvedRawFrames) || !Array.isArray(output.nativeCardRefs) ||
+          typeof output.nativeCardRefsIncomplete !== "boolean" ||
+          !Array.isArray(output.nativeInputReceipts)) {
+        throw new Error(`Native Secretary output completeness facts are malformed: ${JSON.stringify(output)}`);
+      }
+      observeOriginalInputs(output.nativeInputReceipts);
+      sourceGap = output.unresolvedRawFrames !== "0" ?
+        `宿主仍有 ${output.unresolvedRawFrames} 个未归档原始输出帧` :
+        output.nativeCardRefsIncomplete || output.nativeCardRefs.length > 0 ?
+          `宿主仍有 ${output.nativeCardRefs.length} 个待处理问题引用${output.nativeCardRefsIncomplete ? "，列表未完整" : ""}` : null;
     }
     const latest = confirmedConversation(await readSecretaryConfiguration());
     if (!latest || latest.configuration.seatId !== original.configuration.seatId ||
@@ -340,82 +512,167 @@ export function createDesign37SecretarySource(): {
       transcript.seatId === original.configuration.seatId &&
       transcript.epoch === fact.ledgerEpoch && BigInt(transcript.cursor) <= BigInt(head)
       ? transcript : null;
-    let after = prior?.cursor ?? "0";
-    const messages: ConversationItem[] = prior ? [...prior.messages] : [];
-    const ids = prior ? new Set(prior.ids) : new Set<string>();
-    while (BigInt(after) < BigInt(head)) {
-      const result = (await secretaryOperation("K-LEDGER", "scoped-query", "ledger", head,
-        { readerSessionId: fact.sessionId, scope: "GLOBAL", epoch: fact.ledgerEpoch,
-          afterCursor: after })).result;
-      if (result.epoch !== fact.ledgerEpoch || !decimal(result.cursor) ||
-          !decimal(result.highWaterCursor) || !Array.isArray(result.events) ||
-          result.highWaterCursor !== head || BigInt(result.cursor) <= BigInt(after) ||
-          BigInt(result.cursor) > BigInt(head)) {
-        throw new Error(`Native Secretary ledger page is incomplete: ${JSON.stringify(result)}`);
+    const state: SecretaryTranscript = prior ? {
+      ...prior, messages: [...prior.messages], ids: new Set(prior.ids),
+      groups: new Map(prior.groups), statuses: [...prior.statuses],
+      target: prior.complete ? head : prior.target, complete: false,
+    } : { sessionId: fact.sessionId!, seatId: original.configuration.seatId,
+      epoch: fact.ledgerEpoch!, cursor: "0", target: head, headHint: head, complete: false,
+      messages: [], ids: new Set(), groups: new Map(), statuses: [] };
+    let pageGap: string | null = null;
+    while (BigInt(state.cursor) < BigInt(state.target)) {
+      const current = confirmedConversation(await readSecretaryConfiguration());
+      if (!current || current.configuration.seatId !== original.configuration.seatId ||
+          current.configuration.incarnation !== original.configuration.incarnation ||
+          current.configuration.generation !== original.configuration.generation ||
+          current.configuration.revision !== original.configuration.revision ||
+          current.fact.sessionId !== fact.sessionId || current.fact.threadId !== fact.threadId ||
+          current.fact.ledgerEpoch !== fact.ledgerEpoch) {
+        throw new Error("Native Secretary identity changed before ledger page read.");
       }
-      for (const event of result.events) {
-        const item = secretaryEvent(event, fact.sessionId!, original.configuration.seatId);
-        if (item) {
-          if (ids.has(item.id)) throw new Error(`Native Secretary source event repeated: ${item.id}`);
-          ids.add(item.id);
-          messages.push(item);
+      const currentHead = current.fact.ledgerCursor!;
+      if (BigInt(currentHead) < BigInt(state.headHint)) {
+        throw new Error("Native Secretary ledger head regressed below the original reply.");
+      }
+      const requestId = `secretary_${crypto.randomUUID()}`;
+      const reply = await design37UserFrame({ schema: "gogoke.37.operations.v1",
+        family: "K-LEDGER", operation: "scoped-query", requestId, targetId: "ledger",
+        domainId: "global", expectedRevision: currentHead,
+        payload: { readerSessionId: fact.sessionId, scope: "GLOBAL", epoch: fact.ledgerEpoch,
+          afterCursor: state.cursor } });
+      if (!record(reply) || reply.schema !== "gogoke.37.operations.v1" ||
+          reply.family !== "K-LEDGER" || reply.operation !== "scoped-query" ||
+          reply.requestId !== requestId || reply.targetId !== "ledger") {
+        throw new Error(`Native Secretary ledger reply identity is invalid: ${JSON.stringify(reply)}`);
+      }
+      if (reply.status === "STALE") {
+        if (!decimal(reply.revision) || BigInt(reply.revision) < BigInt(currentHead)) {
+          throw new Error(`Native Secretary STALE ledger head is invalid: ${JSON.stringify(reply)}`);
         }
+        state.headHint = reply.revision;
+        pageGap = `全局账本在读取时前进至 ${reply.revision}；已保留至 ${state.cursor}，下次继续`;
+        break;
       }
-      after = result.cursor;
+      if (reply.status !== "APPLIED" && reply.status !== "REPLAYED") {
+        throw new Error(`Native Secretary ledger read was refused: ${JSON.stringify(reply)}`);
+      }
+      const result = reply.result;
+      if (!record(result) || result.epoch !== fact.ledgerEpoch || !decimal(result.cursor) ||
+          !decimal(result.highWaterCursor) || !Array.isArray(result.events) ||
+          result.highWaterCursor !== currentHead || BigInt(result.cursor) <= BigInt(state.cursor) ||
+          BigInt(result.cursor) > BigInt(currentHead)) {
+        throw new Error(`Native Secretary ledger page is incomplete: ${JSON.stringify(reply)}`);
+      }
+      const before = BigInt(state.cursor);
+      let eventCursor = before;
+      for (const event of result.events) {
+        if (!record(event) || !decimal(event.cursor) || BigInt(event.cursor) <= eventCursor ||
+            BigInt(event.cursor) > BigInt(result.cursor)) {
+          throw new Error(`Native Secretary ledger event order is invalid: ${JSON.stringify(event)}`);
+        }
+        eventCursor = BigInt(event.cursor);
+        if (eventCursor <= BigInt(state.target)) secretaryEvent(state, event, fact.threadId!);
+      }
+      state.cursor = BigInt(result.cursor) > BigInt(state.target) ? state.target : result.cursor;
+      state.headHint = result.highWaterCursor;
+      transcript = { ...state, messages: [...state.messages], ids: new Set(state.ids),
+        groups: new Map(state.groups), statuses: [...state.statuses] };
     }
-    transcript = { sessionId: fact.sessionId!, seatId: original.configuration.seatId,
-      epoch: fact.ledgerEpoch!, cursor: head, messages, ids };
-    const writer = latest.fact.historical === false &&
+    state.complete = !pageGap && state.cursor === state.target;
+    transcript = state;
+    const historyGap = pageGap ?? sourceGap;
+    const binding = bindingOf(latest.configuration, latest.fact);
+    const writer = !pageGap && state.complete && binding && latest.fact.historical === false &&
       latest.fact.claimState === "COMMITTED" && latest.fact.stoppedFact !== true &&
       latest.fact.runtimeAvailable === true &&
-      (latest.fact.turnState === "IDLE" || latest.fact.turnState === "RUNNING") &&
-      nonempty(latest.configuration.instanceId) && nonempty(latest.configuration.model) &&
-      nonempty(latest.configuration.effort) && nonempty(latest.configuration.permissionTier)
-      ? { instanceId: latest.configuration.instanceId, model: latest.configuration.model,
-          effort: latest.configuration.effort,
-          permissionTier: latest.configuration.permissionTier,
-          canSend: latest.fact.turnState === "IDLE",
+      (latest.fact.turnState === "IDLE" || latest.fact.turnState === "RUNNING")
+      ? { binding, instanceId: binding.instanceId, model: binding.model,
+          effort: binding.effort, permissionTier: binding.permissionTier,
+          canSend: !sourceGap && latest.fact.turnState === "IDLE",
           canStop: latest.fact.turnState === "RUNNING" } : null;
     return { sessionId: fact.sessionId!, threadId: fact.threadId!,
       seatId: original.configuration.seatId, generation: latest.fact.generation!,
       revision: latest.fact.revision!, turnState: latest.fact.turnState!,
       historical: latest.fact.historical!, runtimeAvailable: latest.fact.runtimeAvailable!,
-      messages, writer };
+      messages: state.messages, statuses: state.statuses, historyGap, writer };
   };
-  const currentWriter = async (turnState: "IDLE" | "RUNNING") => {
+  const currentWriter = async (binding: SecretaryBinding, turnState: "IDLE" | "RUNNING") => {
     const selected = confirmedConversation(await readSecretaryConfiguration());
-    if (!selected || !selected.configuration.instanceId || !selected.configuration.model ||
-        !selected.configuration.effort || !selected.configuration.permissionTier ||
+    const actual = selected && bindingOf(selected.configuration, selected.fact);
+    if (!selected || !actual || !sameSecretaryBinding(binding, actual) ||
         selected.fact.historical !== false || selected.fact.claimState !== "COMMITTED" ||
         selected.fact.stoppedFact === true || selected.fact.runtimeAvailable !== true ||
         selected.fact.turnState !== turnState) {
-      throw new Error("Native Secretary has no confirmed current writer for this operation.");
+      throw new Error("Native Secretary writer differs from the conversation the User saw.");
     }
     return selected;
   };
-  let sendUnconfirmed = false;
-  const send = async (body: string) => {
-    if (!body.trim()) throw new Error("Secretary message is empty.");
-    if (sendUnconfirmed) throw new Error("Previous Secretary send outcome is unconfirmed.");
-    const { fact } = await currentWriter("IDLE");
-    sendUnconfirmed = true;
-    await secretaryOperation("K-SESSION", "send", fact.sessionId!, fact.revision!,
-      { body, generation: fact.generation });
-    sendUnconfirmed = false;
-  };
-  let stopUnconfirmed = false;
-  const stop = async () => {
-    if (stopUnconfirmed) throw new Error("Previous Secretary stop outcome is unconfirmed.");
-    const { fact, configuration } = await currentWriter("RUNNING");
-    stopUnconfirmed = true;
-    const stopped = await secretaryOperation("K-SESSION", "stop", fact.sessionId!, fact.revision!,
-      { seatId: configuration.seatId, generation: fact.generation });
-    if (!nonempty(stopped.result.stopFact)) {
-      throw new Error(`Native Secretary stop lacks original H stop fact: ${JSON.stringify(stopped.reply)}`);
+  const runOriginalWrite = async (write: OriginalWrite): Promise<SecretaryWriteFact> => {
+    try {
+      const reply = await secretaryRawFrame(write.frame);
+      const outcome = originalWriteReceipt(reply, write.operation, write.requestId,
+        write.binding.sessionId, write.expectedRevision);
+      if (outcome === "REJECTED") {
+        if (write.operation === "send") lastSend = null;
+        else lastStop = null;
+        throw new Error(`Native Secretary ${write.operation} was refused without execution: ${JSON.stringify(reply)}`);
+      }
+      if (outcome === "ACCEPTED") {
+        write.status = "ACCEPTED";
+        write.receipt = reply;
+        write.reason = null;
+        return factOf(write);
+      }
+      write.reason = `Native Secretary ${write.operation} outcome is UNKNOWN: ${JSON.stringify(reply)}`;
+      throw new Error(write.reason);
+    } catch (cause) {
+      if (write.status !== "ACCEPTED" && !write.reason) {
+        write.reason = cause instanceof Error ? cause.message : String(cause);
+      }
+      throw cause;
     }
-    stopUnconfirmed = false;
   };
-  return { readSnapshot, readConversation, send, stop, source: { read: async () => (await readSnapshot()).page,
+  const newOriginalWrite = (binding: SecretaryBinding, operation: "send" | "stop",
+    expectedRevision: string, body: string | null): OriginalWrite => {
+    const requestId = `secretary_${crypto.randomUUID()}`;
+    const payload = operation === "send" ? { body, generation: binding.hGeneration }
+      : { seatId: binding.seatId, generation: binding.hGeneration };
+    const frame = JSON.stringify({ schema: "gogoke.37.operations.v1", family: "K-SESSION",
+      operation, requestId, targetId: binding.sessionId, domainId: "global",
+      expectedRevision, payload });
+    return { binding, operation, requestId, expectedRevision, body,
+      frame, status: "UNKNOWN", receipt: null, reason: null };
+  };
+  const send = async (binding: SecretaryBinding, body: string): Promise<SecretaryWriteFact> => {
+    if (!body.trim()) throw new Error("Secretary message is empty.");
+    if (lastSend?.status === "UNKNOWN") throw new Error("Previous Secretary send outcome is unconfirmed.");
+    if (lastSend?.status === "ACCEPTED" && lastSend.body === body &&
+        sameSecretaryBinding(lastSend.binding, binding)) {
+      throw new Error("This exact Secretary message has an accepted original send receipt; edit the draft before a new send.");
+    }
+    const { fact } = await currentWriter(binding, "IDLE");
+    lastSend = newOriginalWrite(binding, "send", fact.revision!, body);
+    return runOriginalWrite(lastSend);
+  };
+  const stop = async (binding: SecretaryBinding): Promise<SecretaryWriteFact> => {
+    if (lastStop?.status === "UNKNOWN") {
+      if (!sameSecretaryBinding(lastStop.binding, binding)) {
+        throw new Error("Previous Secretary stop belongs to a different H binding.");
+      }
+      return runOriginalWrite(lastStop);
+    }
+    const { fact } = await currentWriter(binding, "RUNNING");
+    lastStop = newOriginalWrite(binding, "stop", fact.revision!, null);
+    return runOriginalWrite(lastStop);
+  };
+  const retryStop = async (): Promise<SecretaryWriteFact> => {
+    if (!lastStop || lastStop.status !== "UNKNOWN") {
+      throw new Error("There is no unconfirmed original Secretary stop to recheck.");
+    }
+    return runOriginalWrite(lastStop);
+  };
+  return { readSnapshot, readConversation, invalidateTranscript, writeFacts, send, stop, retryStop,
+    source: { read: async () => (await readSnapshot()).page,
     actions: { pauseRoutine: (id) => changeRoutine(id, "secretary-routine-pause"),
       deleteRoutine: (id) => changeRoutine(id, "secretary-routine-delete") } } };
 }
