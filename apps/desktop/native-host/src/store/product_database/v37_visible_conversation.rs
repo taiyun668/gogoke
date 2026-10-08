@@ -932,7 +932,7 @@ mod tests {
     }
     #[test]
     fn visible_history_snapshot_uses_original_send_ack_not_later_applied_inputs() {
-        use crate::store::session_transport::codex_rpc::{Command,RpcId};
+        use crate::store::session_transport::codex_rpc::{self,Command,RpcId,Reply,TurnStatus};
         fixture(|product| {
             let association=Association {domain:"projectA".into(),session:"sessionA".into(),seat:"leadA".into(),
                 incarnation:"incarnationA".into(),authorization:"1".into(),generation:"1".into(),instance:"instanceA".into()};
@@ -949,25 +949,35 @@ mod tests {
             };
             // Synthetic protocol frames exercise the real producer without a
             // CLI process, ModelCallProof or inferred provider/stop fact.
-            raw("1",b"{\"id\":1,\"result\":{\"thread\":{\"id\":\"threadA\",\"turns\":[]}}}\n");
-            raw("2",b"{\"method\":\"thread/started\",\"params\":{\"thread\":{\"id\":\"threadA\",\"turns\":[]}}}\n");
+            let open_ack=b"{\"id\":1,\"result\":{\"thread\":{\"id\":\"threadA\",\"cwd\":\"fixture\",\"turns\":[]}}}\n";
+            let started=b"{\"method\":\"thread/started\",\"params\":{\"thread\":{\"id\":\"threadA\",\"cwd\":\"fixture\",\"turns\":[]}}}\n";
             let opened=Command::ThreadStart {cwd:"fixture".into(),model:"fixture".into()}.encode(Some(&RpcId::Number(1))).unwrap();
+            assert_eq!(codex_rpc::decode_stored_thread_start(&opened,open_ack).unwrap(),"threadA");
+            assert!(matches!(codex_rpc::decode(started,None).unwrap(),Reply::Event {method,..} if method=="thread/started"));
+            raw("1",open_ack);raw("2",started);
             let open_rpc=Statement::prepare(product.connection.as_ptr(),
                 "INSERT INTO main.gogoke_v37_rpc_steps(domain_id,session_id,open_request_id,step_id,process_operation_id,ticket,custodian_nonce,pid,creation_time,image_path,binary_digest,profile_id,generation,command_hex,requires_response,phase,source_epoch,source_cursor) VALUES('projectA','sessionA','openA','thread-start','processA','pct1_ticketA','nonceA','11','1','fixture','sha256:fixture','profileA','1',?1,1,'OBSERVED','nonceA','1')").unwrap();
             open_rpc.bind_text(1,&encode_hex(&opened)).unwrap();open_rpc.step_done().unwrap();drop(open_rpc);
-            let input=|id:&str,cursor:&str,text:&str| {
+            let input=|id:&str,cursor:&str,text:&str,turn:&str,ack:&[u8]| {
                 let request=format!(r#"{{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send","requestId":"{id}","targetId":"sessionA","domainId":"projectA","expectedRevision":"2","payload":{{"generation":"1","body":"{text}"}}}}"#);
                 assert!(request.len()<=1024*1024,"original H request must fit the fixed 1 MiB bound");
+                let rpc_id=RpcId::String(id.into());
+                let command=Command::TurnStart {thread_id:"threadA".into(),cwd:"fixture".into(),model:"fixture".into(),
+                    effort:"low".into(),text:text.into(),network_access:None};
+                let encoded=command.encode(Some(&rpc_id)).unwrap();
+                assert!(encoded.len()<=1024*1024,"original Codex command must fit the fixed 1 MiB bound");
+                assert!(ack.len()<=1024*1024,"original Codex response must fit the fixed 1 MiB bound");
+                let (stored_id,stored_command)=codex_rpc::decode_stored_turn_start(&encoded).unwrap();
+                assert_eq!(stored_id,rpc_id);
+                assert!(matches!(codex_rpc::decode(ack,Some((&stored_id,&stored_command))).unwrap(),
+                    Reply::Turn {id,turn_id,status:TurnStatus::InProgress} if id==stored_id && turn_id==turn));
                 let journal=Statement::prepare(product.connection.as_ptr(),
                     "INSERT INTO main.gogoke_v37_h_stdin_journal(domain_id,request_id,operation,ticket,process_operation_id,custodian_nonce,session_id,generation,request_hex,phase,receipt_hex,receipt_status,expected_revision,receipt_previous_revision,receipt_revision) VALUES('projectA',?1,'send','pct1_ticketA','processA','nonceA','sessionA','1',?2,'RECEIPTED','00','APPLIED','2','2','3')").unwrap();
                 journal.bind_text(1,id).unwrap();journal.bind_text(2,&encode_hex(request.as_bytes())).unwrap();journal.step_done().unwrap();drop(journal);
-                let command=Command::TurnStart {thread_id:"threadA".into(),cwd:"fixture".into(),model:"fixture".into(),
-                    effort:"low".into(),text:text.into(),network_access:None}.encode(Some(&RpcId::String(id.into()))).unwrap();
-                assert!(command.len()<=1024*1024,"original Codex command must fit the fixed 1 MiB bound");
                 let step=format!("send-{}",&crate::store::digest::sha256_hex(request.as_bytes())[..40]);
                 let rpc=Statement::prepare(product.connection.as_ptr(),
                     "INSERT INTO main.gogoke_v37_rpc_steps(domain_id,session_id,open_request_id,step_id,process_operation_id,ticket,custodian_nonce,pid,creation_time,image_path,binary_digest,profile_id,generation,command_hex,requires_response,phase,source_epoch,source_cursor) VALUES('projectA','sessionA','openA',?1,'processA','pct1_ticketA','nonceA','11','1','fixture','sha256:fixture','profileA','1',?2,1,'OBSERVED','nonceA',?3)").unwrap();
-                rpc.bind_text(1,&step).unwrap();rpc.bind_text(2,&encode_hex(&command)).unwrap();rpc.bind_text(3,cursor).unwrap();rpc.step_done().unwrap();
+                rpc.bind_text(1,&step).unwrap();rpc.bind_text(2,&encode_hex(&encoded)).unwrap();rpc.bind_text(3,cursor).unwrap();rpc.step_done().unwrap();
             };
             // Seven separately admissible original frames cross the 4 MiB
             // USER page bound. The fixed Codex RPC/line bound is 1 MiB per
@@ -975,9 +985,9 @@ mod tests {
             let large="x".repeat(700_000);
             for number in 0..7 {
                 let id=format!("send{number}");let cursor=(number+3).to_string();
-                input(&id,&cursor,&large);
-                let ack=format!("{{\"id\":\"{id}\",\"result\":{{\"turn\":{{\"id\":\"turn{number}\",\"items\":[{{\"id\":\"message{number}\",\"type\":\"userMessage\",\"text\":\"{large}\"}}]}}}}}}\n");
-                assert!(ack.len()<=1024*1024,"original provider frame must fit the fixed 1 MiB bound");
+                let turn=format!("turn{number}");
+                let ack=format!("{{\"id\":\"{id}\",\"result\":{{\"turn\":{{\"id\":\"{turn}\",\"status\":\"inProgress\",\"items\":[{{\"id\":\"message{number}\",\"type\":\"userMessage\",\"text\":\"{large}\"}}]}}}}}}\n");
+                input(&id,&cursor,&large,&turn,ack.as_bytes());
                 raw(&cursor,ack.as_bytes());
             }
             let mut first=product.visible_reply("workspaceA","UNKNOWN",selected.association.as_ref(),None);
@@ -991,8 +1001,9 @@ mod tests {
             let mut baseline=product.visible_reply("workspaceA","UNKNOWN",selected.association.as_ref(),None);
             product.visible_thread_page("workspaceA",&selected,&fixed,&mut baseline).unwrap();
             assert!(is_text(baseline.get(&k("state")),"APPLIED"));
-            input("sendLater","10","later body");
-            raw("10",b"{\"id\":\"sendLater\",\"result\":{\"turn\":{\"id\":\"turnLater\",\"items\":[{\"id\":\"messageLater\",\"type\":\"userMessage\"}]}}}\n");
+            let later=b"{\"id\":\"sendLater\",\"result\":{\"turn\":{\"id\":\"turnLater\",\"status\":\"inProgress\",\"items\":[{\"id\":\"messageLater\",\"type\":\"userMessage\"}]}}}\n";
+            input("sendLater","10","later body","turnLater",later);
+            raw("10",later);
             let mut repeated=product.visible_reply("workspaceA","UNKNOWN",selected.association.as_ref(),None);
             product.visible_thread_page("workspaceA",&selected,&fixed,&mut repeated).unwrap();
             assert_eq!(Json::Object(baseline).canonical(),Json::Object(repeated).canonical(),"later real H input/ACK cannot change a page from its original high-water cursor");
