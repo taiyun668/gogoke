@@ -474,7 +474,7 @@ export function createDesign37SecretarySource(): {
   send: (binding: SecretaryBinding, body: string) => Promise<SecretaryWriteFact>;
   retrySend: (requestId: string) => Promise<SecretaryWriteFact>;
   stop: (binding: SecretaryBinding) => Promise<SecretaryWriteFact>;
-  retryStop: () => Promise<SecretaryWriteFact>;
+  retryStop: (requestId: string) => Promise<SecretaryWriteFact>;
 } {
   const readSnapshot = async () => {
     const configuration = await readSecretaryConfiguration();
@@ -596,14 +596,14 @@ export function createDesign37SecretarySource(): {
     status: "UNKNOWN" | "ACCEPTED"; receipt: unknown | null; reason: string | null;
     inputVerified: boolean };
   const sends: OriginalWrite[] = [];
-  let lastStop: OriginalWrite | null = null;
+  const stops: OriginalWrite[] = [];
   const factOf = (write: OriginalWrite): SecretaryWriteFact => ({
     operation: write.operation, requestId: write.requestId, binding: write.binding,
     sessionId: write.binding.sessionId, seatId: write.binding.seatId,
     hGeneration: write.binding.hGeneration, body: write.body,
     status: write.status, receipt: write.receipt, reason: write.reason,
     inputVerified: write.inputVerified });
-  const writeFacts = () => [...sends, lastStop].filter((write): write is OriginalWrite => write !== null)
+  const writeFacts = () => [...sends, ...stops]
     .map(factOf);
   const removeSend = (write: OriginalWrite) => {
     const index = sends.indexOf(write);
@@ -840,7 +840,10 @@ export function createDesign37SecretarySource(): {
         write.binding.sessionId, write.expectedRevision);
       if (outcome === "REJECTED") {
         if (write.operation === "send") removeSend(write);
-        else lastStop = null;
+        else {
+          const index = stops.indexOf(write);
+          if (index >= 0) stops.splice(index, 1);
+        }
         throw new Error(`Native Secretary ${write.operation} was refused without execution: ${JSON.stringify(reply)}`);
       }
       if (outcome === "ACCEPTED") {
@@ -890,21 +893,20 @@ export function createDesign37SecretarySource(): {
     return runOriginalWrite(original);
   };
   const stop = async (binding: SecretaryBinding): Promise<SecretaryWriteFact> => {
-    if (lastStop?.status === "UNKNOWN") {
-      if (!sameSecretaryBinding(lastStop.binding, binding)) {
-        throw new Error("Previous Secretary stop belongs to a different H binding.");
-      }
-      return runOriginalWrite(lastStop);
-    }
+    const original = stops.find((item) => item.status === "UNKNOWN" &&
+      sameSecretaryWriter(item.binding, binding));
+    if (original) return runOriginalWrite(original);
     await currentWriter(binding, "RUNNING");
-    lastStop = newOriginalWrite(binding, "stop", binding.hRevision, null);
-    return runOriginalWrite(lastStop);
+    const write = newOriginalWrite(binding, "stop", binding.hRevision, null);
+    stops.push(write);
+    return runOriginalWrite(write);
   };
-  const retryStop = async (): Promise<SecretaryWriteFact> => {
-    if (!lastStop || lastStop.status !== "UNKNOWN") {
+  const retryStop = async (requestId: string): Promise<SecretaryWriteFact> => {
+    const original = stops.find((item) => item.requestId === requestId && item.status === "UNKNOWN");
+    if (!original) {
       throw new Error("There is no unconfirmed original Secretary stop to recheck.");
     }
-    return runOriginalWrite(lastStop);
+    return runOriginalWrite(original);
   };
   return { readSnapshot, readConversation, invalidateTranscript, writeFacts,
     send, retrySend, stop, retryStop,

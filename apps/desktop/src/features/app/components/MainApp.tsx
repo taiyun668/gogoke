@@ -126,7 +126,7 @@ export type SecretaryView = {
   vendorUserFacts?: SecretaryVendorUserFact[];
   inputRowsEnded?: boolean;
   verifiedSend?: { requestId: string; body: string; hGeneration: string } | null;
-  retryStop?: () => Promise<SecretaryWriteFact>;
+  retryStop?: (requestId: string) => Promise<SecretaryWriteFact>;
   retrySend?: (requestId: string) => Promise<SecretaryWriteFact>;
   openConversation?: () => Promise<void>;
   openAction?: (id: string) => void;
@@ -246,24 +246,28 @@ function MainAppContent({
     text: string; revision: number }>>({});
   const secretaryDraftState = secretaryKey ? secretaryDrafts[secretaryKey] : undefined;
   const secretaryDraft = secretaryDraftState?.text ?? "";
-  const secretarySubmittedDraft = useRef<{ key: string; text: string; revision: number } | null>(null);
+  const secretarySubmittedDrafts = useRef(new Map<string, {
+    text: string; revision: number; binding: SecretaryBinding;
+    requestId: string | null; earlierRequestIds: Set<string>;
+  }>());
   useEffect(() => {
     const verified = secretaryView?.verifiedSend;
     if (!verified) return;
-    const submitted = secretarySubmittedDraft.current;
-    const sends = secretaryView?.outbound?.filter((fact) => fact.operation === "send") ?? [];
-    if (sends[sends.length - 1]?.requestId !== verified.requestId) return;
+    const submitted = secretaryKey ? secretarySubmittedDrafts.current.get(secretaryKey) : undefined;
     const original = secretaryView?.outbound?.find((fact) => fact.operation === "send" &&
       fact.requestId === verified.requestId && fact.hGeneration === verified.hGeneration &&
       fact.inputVerified && fact.status === "ACCEPTED");
-    if (!submitted || !original || submitted.key !== secretaryKey ||
-        submitted.text !== verified.body) return;
+    if (!submitted || !original || submitted.text !== verified.body ||
+        original.body !== verified.body || !sameSecretaryWriter(submitted.binding, original.binding) ||
+        (submitted.requestId !== null ? submitted.requestId !== verified.requestId
+          : submitted.earlierRequestIds.has(verified.requestId))) return;
     setSecretaryDrafts((previous) => {
       if (!secretaryKey) return previous;
       const draft = previous[secretaryKey];
       return draft?.revision === submitted.revision && draft.text === verified.body
         ? { ...previous, [secretaryKey]: { ...draft, text: "" } } : previous;
     });
+    if (secretaryKey) secretarySubmittedDrafts.current.delete(secretaryKey);
   }, [secretaryKey, secretaryView?.verifiedSend?.requestId,
     secretaryView?.verifiedSend?.body, secretaryView?.verifiedSend?.hGeneration]);
   const [secretaryWritePending, setSecretaryWritePending] = useState(false);
@@ -2122,12 +2126,17 @@ function MainAppContent({
     if (!secretaryKey || !nativeInput?.canSend || secretarySendBlocked || secretaryWritePendingRef.current ||
         !secretaryDraft.trim()) return;
     const token = secretaryToken;
-    secretarySubmittedDraft.current = { key: secretaryKey, text: secretaryDraft,
-      revision: secretaryDraftState?.revision ?? 0 };
+    const submitted = { text: secretaryDraft, revision: secretaryDraftState?.revision ?? 0,
+      binding: nativeInput.binding, requestId: null as string | null,
+      earlierRequestIds: new Set(secretaryView?.outbound?.map((fact) => fact.requestId)) };
+    secretarySubmittedDrafts.current.set(secretaryKey, submitted);
     secretaryWritePendingRef.current = true;
     setSecretaryWritePending(true);
     try {
-      await nativeInput.send(nativeInput.binding, secretaryDraft);
+      const fact = await nativeInput.send(nativeInput.binding, secretaryDraft);
+      if (secretarySubmittedDrafts.current.get(secretaryKey) === submitted) {
+        submitted.requestId = fact.requestId;
+      }
       if (currentSecretary.current.token === token) {
         setSecretaryWriteFailure(null);
         void currentSecretary.current.view?.openConversation?.();
@@ -2167,13 +2176,13 @@ function MainAppContent({
       setSecretaryWritePending(false);
     }
   };
-  const retrySecretaryStop = async () => {
+  const retrySecretaryStop = async (requestId: string) => {
     if (!secretaryView?.retryStop || secretaryWritePendingRef.current) return;
     const token = secretaryToken;
     secretaryWritePendingRef.current = true;
     setSecretaryWritePending(true);
     try {
-      await secretaryView.retryStop();
+      await secretaryView.retryStop(requestId);
       if (currentSecretary.current.token === token) {
         setSecretaryWriteFailure(null);
         void currentSecretary.current.view?.openConversation?.();
@@ -2264,7 +2273,7 @@ function MainAppContent({
           onClick={() => void retrySecretarySend(fact.requestId)}>核对原始发送请求</button> : null}
       {fact.operation === "stop" && fact.status === "UNKNOWN"
         && secretaryView.retryStop ? <button type="button" disabled={secretaryWritePending}
-          onClick={() => void retrySecretaryStop()}>核对原始停止请求</button> : null}
+          onClick={() => void retrySecretaryStop(fact.requestId)}>核对原始停止请求</button> : null}
     </div>)}
     {secretaryWriteFailure ? <div role="alert">
       {secretaryWriteFailure.sessionId ? `会话 ${secretaryWriteFailure.sessionId}：` : ""}{secretaryWriteFailure.text}
