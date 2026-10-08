@@ -1254,6 +1254,11 @@ impl<'root> ProductDatabase<'root> {
             return Err(OrchestrationError::Invalid("configuration schema"));
         }
         let command = string_field(&fields, "command")?;
+        if matches!(command.as_str(), "visible-conversation-route" | "visible-conversation-choices"
+            | "visible-conversation-select" | "visible-conversation-read"
+            | "visible-conversation-operate" | "visible-conversation-recover") {
+            return self.dispatch_visible_conversation_configuration(&command, &fields, frame);
+        }
         if matches!(command.as_str(), "secretary-routines-read" | "secretary-routine-pause"
             | "secretary-routine-resume" | "secretary-routine-delete") {
             return self.dispatch_user_secretary_routine_configuration(&command, &fields, frame);

@@ -1,0 +1,802 @@
+//! USER-only projections of existing E/F/H/A facts. The selection journal is
+//! an explicit UI association, never a session, process, grant or history store.
+use super::*;
+use super::v37_seat::string_field;
+use crate::store::atomic::Parser;
+
+const TABLE: &str = "gogoke_v37_visible_conversation_selection";
+const SCHEMA: &str = "CREATE TABLE gogoke_v37_visible_conversation_selection(workspace_id TEXT NOT NULL,request_id TEXT NOT NULL,route TEXT NOT NULL CHECK(route IN ('LEGACY','NATIVE')),selection_hex TEXT NOT NULL,association_json TEXT NOT NULL,repository_id TEXT NOT NULL,worktree_id TEXT NOT NULL,thread_id TEXT NOT NULL,open_request_id TEXT NOT NULL,open_generation TEXT NOT NULL,open_operation_id TEXT NOT NULL,ack_source_id INTEGER NOT NULL,started_source_id INTEGER NOT NULL,CHECK((route='LEGACY' AND association_json='null' AND repository_id='' AND worktree_id='' AND thread_id='' AND open_request_id='' AND open_generation='' AND open_operation_id='' AND ack_source_id=0 AND started_source_id=0) OR (route='NATIVE' AND association_json<>'null' AND repository_id<>'' AND worktree_id<>'' AND thread_id<>'' AND open_request_id<>'' AND open_generation<>'' AND open_operation_id<>'' AND ack_source_id>0 AND started_source_id>0)),PRIMARY KEY(workspace_id,request_id)) STRICT";
+
+fn k(name: &str) -> JsonString { JsonString::from_str(name) }
+fn s(value: &str) -> Json { Json::String(k(value)) }
+fn is_text(value: Option<&Json>, expected: &str) -> bool {
+    matches!(value,Some(Json::String(value)) if value.to_well_formed_string().as_deref()==Some(expected))
+}
+fn same_json(left: Option<&Json>, right: Option<&Json>) -> bool {
+    match (left,right) {(Some(left),Some(right))=>left.canonical()==right.canonical(),_=>false}
+}
+fn copy_json(value: &Json) -> Json {
+    match value {
+        Json::Null=>Json::Null,Json::Bool(value)=>Json::Bool(*value),
+        Json::Number(value)=>Json::Number(value.clone()),Json::String(value)=>Json::String(value.clone()),
+        Json::Array(values)=>Json::Array(copy_array(values)),Json::Object(fields)=>Json::Object(copy_fields(fields)),
+    }
+}
+fn copy_array(values: &[Json]) -> Vec<Json> {values.iter().map(copy_json).collect()}
+fn copy_fields(fields: &BTreeMap<JsonString,Json>) -> BTreeMap<JsonString,Json> {
+    fields.iter().map(|(name,value)|(name.clone(),copy_json(value))).collect()
+}
+fn object(value: &Json) -> Result<&BTreeMap<JsonString,Json>> {
+    if let Json::Object(fields)=value {Ok(fields)} else {
+        Err(OrchestrationError::Invalid("visible conversation object"))
+    }
+}
+fn exact(fields: &BTreeMap<JsonString,Json>, required: &[&str], optional: &[&str]) -> Result<()> {
+    if required.iter().any(|name|!fields.contains_key(&k(name)))
+        || fields.keys().any(|name|!required.iter().chain(optional).any(|allowed|name==&k(allowed))) {
+        return Err(OrchestrationError::Invalid("visible conversation fields"));
+    }
+    Ok(())
+}
+fn decimal(value: &str) -> Result<i64> {
+    let number=value.parse::<i64>().map_err(|error|OrchestrationError::V37StoreFailure(
+        format!("visible conversation generation: {error}")))?;
+    if number<0 || number.to_string()!=value {return Err(OrchestrationError::Invalid("visible generation"));}
+    Ok(number)
+}
+fn encode_hex(bytes: &[u8]) -> String {bytes.iter().map(|byte|format!("{byte:02x}")).collect()}
+fn decode_hex(value: &str) -> Result<Vec<u8>> {
+    if value.len()%2!=0 {return Err(OrchestrationError::Invalid("visible source hex"));}
+    value.as_bytes().chunks_exact(2).map(|pair| {
+        let high=hex_nibble(pair[0]).ok_or(OrchestrationError::Invalid("visible source hex"))?;
+        let low=hex_nibble(pair[1]).ok_or(OrchestrationError::Invalid("visible source hex"))?;
+        Ok(high*16+low)
+    }).collect()
+}
+fn source_json(value: &str) -> Result<Json> {
+    let bytes=decode_hex(value)?;
+    let source=std::str::from_utf8(&bytes).map_err(|error|OrchestrationError::V37StoreFailure(
+        format!("visible original source UTF-8: {error}")))?;
+    Parser::parse(source.trim_end_matches(['\r','\n'])).map_err(OrchestrationError::Atomic)
+}
+
+#[derive(Clone,Debug,Eq,PartialEq)]
+struct Association {
+    domain: String, session: String, seat: String, incarnation: String,
+    authorization: String, generation: String, instance: String,
+}
+impl Association {
+    fn parse(value: &Json) -> Result<Self> {
+        let fields=object(value)?;
+        exact(fields,&["domainId","sessionId","seatId","incarnation",
+            "authorizationGeneration","bindingGeneration","instanceId"],&[])?;
+        let value=Self {domain:string_field(fields,"domainId")?,session:string_field(fields,"sessionId")?,
+            seat:string_field(fields,"seatId")?,incarnation:string_field(fields,"incarnation")?,
+            authorization:string_field(fields,"authorizationGeneration")?,
+            generation:string_field(fields,"bindingGeneration")?,instance:string_field(fields,"instanceId")?};
+        decimal(&value.authorization)?;decimal(&value.generation)?;
+        Ok(value)
+    }
+    fn json(&self) -> Json {Json::Object(BTreeMap::from([
+        (k("domainId"),s(&self.domain)),(k("sessionId"),s(&self.session)),
+        (k("seatId"),s(&self.seat)),(k("incarnation"),s(&self.incarnation)),
+        (k("authorizationGeneration"),s(&self.authorization)),
+        (k("bindingGeneration"),s(&self.generation)),(k("instanceId"),s(&self.instance)),
+    ]))}
+}
+#[derive(Clone)]
+struct Selection {
+    row: i64, route: String, association: Option<Association>, repository: String,
+    worktree: String, thread: String, open_request: String, open_generation: String,
+    open_operation: String, ack: i64, started: i64,
+}
+impl Selection {
+    fn from_row(row: &Statement) -> Result<Self> {
+        let association=Parser::parse(&row.column_text(2)?)?;
+        Ok(Self {row:decimal(&row.column_text(0)?)?,route:row.column_text(1)?,
+            association:if matches!(association,Json::Null) {None} else {Some(Association::parse(&association)?)},
+            repository:row.column_text(3)?,worktree:row.column_text(4)?,thread:row.column_text(5)?,
+            open_request:row.column_text(6)?,open_generation:row.column_text(7)?,
+            open_operation:row.column_text(8)?,ack:decimal(&row.column_text(9)?)?,
+            started:decimal(&row.column_text(10)?)?})
+    }
+}
+
+pub(super) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Result<()> {
+    if !schema_state(db)? {db.execute(SCHEMA)?;}
+    if !schema_state(db)? {return Err(OrchestrationError::Invalid("visible selection schema"));}
+    Ok(())
+}
+fn schema_state(db: &VerifiedDatabaseConnection<'_>) -> Result<bool> {
+    let effects=Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM temp.sqlite_schema WHERE lower(name)=?1 OR lower(tbl_name)=?1 UNION ALL SELECT 1 FROM main.sqlite_schema WHERE type IN ('trigger','index') AND sql IS NOT NULL AND lower(tbl_name)=?1")?;
+    effects.bind_text(1,TABLE)?;
+    if effects.step_row()? {return Err(OrchestrationError::Invalid("visible selection schema effects"));}
+    let row=Statement::prepare(db.as_ptr(),"SELECT type,sql FROM main.sqlite_schema WHERE lower(name)=?1")?;
+    row.bind_text(1,TABLE)?;
+    if !row.step_row()? {return Ok(false);}
+    if row.column_text(0)?!="table" || row.column_text(1)?!=SCHEMA || row.step_row()? {
+        return Err(OrchestrationError::Invalid("visible selection schema drift"));
+    }
+    Ok(true)
+}
+
+impl<'root> ProductDatabase<'root> {
+    pub(super) fn dispatch_visible_conversation_configuration(&mut self,
+        command: &str, fields: &BTreeMap<JsonString,Json>, frame: &[u8]) -> Result<Vec<u8>> {
+        let workspace=string_field(fields,"workspaceId")?;
+        if workspace.len()>128 {return Err(OrchestrationError::Invalid("visible workspace id"));}
+        let write=command=="visible-conversation-select";
+        self.connection.execute(if write {"BEGIN IMMEDIATE"} else {"BEGIN"})
+            .map_err(OrchestrationError::CommitUnknownWithCause)?;
+        let result=(|| {
+            if !schema_state(&self.connection)? {return Err(OrchestrationError::Invalid("visible selection schema"));}
+            authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
+            self.visible_configuration_in_transaction(command,fields,frame,&workspace)
+        })();
+        match result {
+            Ok(reply)=>{
+                let bytes=reply.canonical().into_bytes();
+                if bytes.len()>crate::ipc::MAX_FRAME_BYTES {
+                    self.connection.execute("ROLLBACK").map_err(OrchestrationError::CommitUnknownWithCause)?;
+                    return Err(OrchestrationError::Invalid("visible response frame bound"));
+                }
+                self.connection.execute("COMMIT").map_err(OrchestrationError::CommitUnknownWithCause)?;
+                Ok(bytes)
+            },
+            Err(error)=>{
+                self.connection.execute("ROLLBACK").map_err(OrchestrationError::CommitUnknownWithCause)?;
+                Err(error)
+            },
+        }
+    }
+    fn visible_reply(&self, workspace: &str, state: &str, association: Option<&Association>, reason: Option<&str>)
+        -> BTreeMap<JsonString,Json> {
+        let mut reply=BTreeMap::from([(k("schema"),s("gogoke.37.visible-conversation.v1")),
+            (k("workspaceId"),s(workspace)),(k("state"),s(state))]);
+        if let Some(association)=association {reply.insert(k("association"),association.json());}
+        if let Some(reason)=reason {reply.insert(k("reason"),s(reason));}
+        reply
+    }
+    fn visible_tables_available(&self) -> Result<bool> {
+        for name in ["gogoke_v37_session_binding_v2","gogoke_v37_native_selection",
+            "gogoke_v37_worktrees","gogoke_v37_worktree_sources","gogoke_v37_seats",
+            "gogoke_v37_h_claim","gogoke_v37_h_process_episode","gogoke_v37_h_generation",
+            "gogoke_v37_rpc_steps","v37_ledger_raw_source","v37_ledger_session"] {
+            let row=Statement::prepare(self.connection.as_ptr(),
+                "SELECT 1 FROM main.sqlite_schema WHERE type='table' AND name=?1")?;
+            row.bind_text(1,name)?;
+            if !row.step_row()? {return Ok(false);}
+        }
+        Ok(true)
+    }
+    fn visible_selection(&self, workspace: &str, association: Option<&Association>) -> Result<Option<Selection>> {
+        let row=Statement::prepare(self.connection.as_ptr(),
+            "SELECT rowid,route,association_json,repository_id,worktree_id,thread_id,open_request_id,open_generation,open_operation_id,ack_source_id,started_source_id FROM main.gogoke_v37_visible_conversation_selection WHERE workspace_id=?1 ORDER BY rowid DESC")?;
+        row.bind_text(1,workspace)?;
+        while row.step_row()? {
+            let selection=Selection::from_row(&row)?;
+            if association.is_none() || selection.association.as_ref()==association {return Ok(Some(selection));}
+        }
+        Ok(None)
+    }
+    /// Verify an explicit existing relationship; directory names and vendor IDs
+    /// never choose an E seat, F repository, H session or instance.
+    fn visible_candidate(&self, association: &Association, current: bool) -> Result<Selection> {
+        use crate::store::session_transport::session_binding::{self,Provenance};
+        if association.domain=="global" {return Err(OrchestrationError::AccessDenied);}
+        let binding=session_binding::read(&self.connection,&association.domain,&association.session)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!("visible H binding: {error:?}")))?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        if binding.provenance!=Provenance::NativeV2 || binding.seat_id!=association.seat
+            || binding.seat_incarnation!=association.incarnation
+            || binding.seat_authorization_generation.to_string()!=association.authorization
+            || binding.selected_instance_id!=association.instance {return Err(OrchestrationError::AccessDenied);}
+        let seat=Statement::prepare(self.connection.as_ptr(),
+            "SELECT s.generation,s.state,i.driver_id,i.version FROM main.gogoke_v37_seats s JOIN main.gogoke_v37_instances i ON i.instance_id=?4 JOIN main.gogoke_v37_native_selection n ON n.domain_id=s.domain_id AND n.session_id=?5 AND n.seat_id=s.seat_id AND n.seat_incarnation=s.incarnation AND n.seat_authorization_generation=?6 AND n.selected_instance_id=i.instance_id WHERE s.domain_id=?1 AND s.seat_id=?2 AND s.incarnation=?3 AND s.layer='USER' AND s.parent_seat_id IS NULL")?;
+        for (index,value) in [association.domain.as_str(),association.seat.as_str(),
+            association.incarnation.as_str(),association.instance.as_str(),association.session.as_str(),
+            association.authorization.as_str()].iter().enumerate() {seat.bind_text((index+1) as i32,value)?;}
+        if !seat.step_row()? {return Err(OrchestrationError::AccessDenied);}
+        if decimal(&seat.column_text(0)?)?<decimal(&association.authorization)? || seat.column_text(1)?=="RECLAIMED"
+            || seat.column_text(2)?!="codex" || seat.column_text(3)?!="0.160.0" || seat.step_row()? {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        drop(seat);
+        if current {
+            let relationship=session_binding::current_relationship(&self.connection,&association.domain,&association.session)
+                .map_err(|error|OrchestrationError::V37StoreFailure(format!("visible current E/H: {error:?}")))?
+                .ok_or(OrchestrationError::OperationConflict)?;
+            if !relationship.native_v2 || relationship.seat_id!=association.seat
+                || relationship.seat_incarnation!=association.incarnation
+                || relationship.seat_authorization_generation.to_string()!=association.authorization
+                || relationship.session_generation!=association.generation || relationship.instance_id!=association.instance {
+                return Err(OrchestrationError::AccessDenied);
+            }
+        }
+        let registration=crate::store::ledger::read_registered_session(&self.connection,&association.session)?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        if registration.domain_id!=association.domain || registration.seat_id!=association.seat
+            || registration.purpose!=crate::store::ledger::SessionPurpose::Work || registration.side_id.is_some() {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let (repository,worktree,thread)=self.original_native_continuation(&association.domain,&association.session)?;
+        let wt=Statement::prepare(self.connection.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_worktrees w JOIN main.gogoke_v37_worktree_sources r ON r.repository_id=w.repository_id WHERE w.worktree_id=?1 AND w.repository_id=?2 AND w.domain_id=?3 AND w.seat_id=?4 AND w.seat_incarnation=?5 AND w.state='REGISTERED' AND w.revision=1")?;
+        // F records creation provenance. E/H record later authorized instance
+        // and generation changes; those need not equal the creation snapshot.
+        for (index,value) in [worktree.as_str(),repository.as_str(),association.domain.as_str(),
+            association.seat.as_str(),association.incarnation.as_str()].iter().enumerate() {wt.bind_text((index+1) as i32,value)?;}
+        if !wt.step_row()? || wt.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        let original=Statement::prepare(self.connection.as_ptr(),
+            "SELECT e.request_id,e.generation,e.process_operation_id,r.rowid,s.ticket,s.custodian_nonce FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_v37_rpc_steps s ON s.domain_id=e.domain_id AND s.session_id=e.session_id AND s.generation=e.generation AND s.process_operation_id=e.process_operation_id AND s.open_request_id=e.request_id AND s.step_id='thread-start' AND s.phase='OBSERVED' JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce AND r.domain_id=s.domain_id AND r.session_id=s.session_id AND r.generation=s.generation AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor WHERE e.domain_id=?1 AND e.session_id=?2 AND e.old_generation IS NULL")?;
+        original.bind_text(1,&association.domain)?;original.bind_text(2,&association.session)?;
+        if !original.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        let open_request=original.column_text(0)?;let open_generation=original.column_text(1)?;
+        let open_operation=original.column_text(2)?;let ack=decimal(&original.column_text(3)?)?;
+        let ticket=original.column_text(4)?;let nonce=original.column_text(5)?;
+        if original.step_row()? {return Err(OrchestrationError::OperationConflict);}drop(original);
+        // The original vendor thread notification is required as well as its
+        // correlated ACK. Neither one alone establishes the visible identity.
+        let started=Statement::prepare(self.connection.as_ptr(),
+            "SELECT rowid,hex(raw_bytes) FROM main.v37_ledger_raw_source WHERE domain_id=?1 AND session_id=?2 AND operation_id=?3 AND process_ticket=?4 AND custodian_nonce=?5 AND generation=?6 ORDER BY rowid")?;
+        for (index,value) in [association.domain.as_str(),association.session.as_str(),open_operation.as_str(),
+            ticket.as_str(),nonce.as_str(),open_generation.as_str()].iter().enumerate() {started.bind_text((index+1) as i32,value)?;}
+        let mut source_id=None;
+        while started.step_row()? {
+            let source=source_json(&started.column_text(1)?)?;
+            let envelope=object(&source)?;
+            if !is_text(envelope.get(&k("method")),"thread/started") {continue;}
+            let params=object(envelope.get(&k("params")).ok_or(OrchestrationError::OperationConflict)?)?;
+            let vendor=object(params.get(&k("thread")).ok_or(OrchestrationError::OperationConflict)?)?;
+            if string_field(vendor,"id")?!=thread || source_id.is_some() {return Err(OrchestrationError::OperationConflict);}
+            source_id=Some(decimal(&started.column_text(0)?)?);
+        }
+        let started=source_id.ok_or(OrchestrationError::OperationConflict)?;
+        // Historical association generations remain readable only through the
+        // actual H episode and its own correlated provider continuation ACK.
+        let episode=Statement::prepare(self.connection.as_ptr(),
+            "SELECT e.request_id,e.process_operation_id,c.ticket,c.custodian_nonce FROM main.gogoke_v37_h_generation g JOIN main.gogoke_v37_h_process_episode e ON e.domain_id=g.domain_id AND e.session_id=g.session_id AND e.generation=g.generation AND e.request_id=g.request_id AND e.process_operation_id=g.process_operation_id JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id AND c.generation=e.generation WHERE g.domain_id=?1 AND g.session_id=?2 AND g.generation=?3 AND e.instance_id=?4 AND e.seat_id=?5 AND e.seat_incarnation=?6")?;
+        for (index,value) in [association.domain.as_str(),association.session.as_str(),association.generation.as_str(),
+            association.instance.as_str(),association.seat.as_str(),association.incarnation.as_str()].iter().enumerate() {episode.bind_text((index+1) as i32,value)?;}
+        if !episode.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        let request=episode.column_text(0)?;let operation=episode.column_text(1)?;
+        let ticket=episode.column_text(2)?;let nonce=episode.column_text(3)?;
+        if episode.step_row()? {return Err(OrchestrationError::OperationConflict);}drop(episode);
+        let observed=crate::store::session_transport::rpc_journal::observed_thread_id(&self.connection,
+            &association.domain,&association.session,&operation,&association.generation,&request,&ticket,&nonce)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!("visible generation thread ACK: {error:?}")))?;
+        if observed!=thread {return Err(OrchestrationError::OperationConflict);}
+        Ok(Selection {row:0,route:"NATIVE".into(),association:Some(association.clone()),repository,
+            worktree,thread,open_request,open_generation,open_operation,ack,started})
+    }
+
+    fn visible_verify_saved(&self, saved: &Selection) -> Result<()> {
+        let association=saved.association.as_ref().ok_or(OrchestrationError::AccessDenied)?;
+        let actual=self.visible_candidate(association,false)?;
+        if actual.repository!=saved.repository || actual.worktree!=saved.worktree || actual.thread!=saved.thread
+            || actual.open_request!=saved.open_request || actual.open_generation!=saved.open_generation
+            || actual.open_operation!=saved.open_operation || actual.ack!=saved.ack || actual.started!=saved.started {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        Ok(())
+    }
+    fn visible_configuration_in_transaction(&mut self, command: &str,
+        fields: &BTreeMap<JsonString,Json>, frame: &[u8], workspace: &str) -> Result<Json> {
+        let base=["schema","command","workspaceId"];
+        match command {
+            "visible-conversation-route"=>{
+                exact(fields,&base,&[])?;
+                let Some(selected)=self.visible_selection(workspace,None)? else {
+                    return Ok(Json::Object(self.visible_reply(workspace,"NEEDS_SETUP",None,
+                        Some("No explicit USER visible-conversation selection is recorded."))));
+                };
+                if selected.route=="LEGACY" {return Ok(Json::Object(self.visible_reply(workspace,"LEGACY",None,None)));}
+                let association=selected.association.as_ref().ok_or(OrchestrationError::OperationConflict)?;
+                match self.visible_verify_saved(&selected) {
+                    Ok(())=>Ok(Json::Object(self.visible_reply(workspace,"NATIVE",Some(association),None))),
+                    Err(error)=>Ok(Json::Object(self.visible_reply(workspace,"UNKNOWN",Some(association),
+                        Some(&format!("Original selected E/F/H/A association is unresolved: {error:?}"))))),
+                }
+            },
+            "visible-conversation-choices"=>{
+                exact(fields,&base,&[])?;
+                if !self.visible_tables_available()? {return Ok(Json::Object(self.visible_reply(workspace,"UNKNOWN",None,
+                    Some("Existing E/F/H/A source tables are not available; no choices producer is complete."))));}
+                let query=Statement::prepare(self.connection.as_ptr(),
+                    "SELECT n.domain_id,n.session_id,n.seat_id,n.seat_incarnation,n.seat_authorization_generation,COALESCE(h.generation,''),n.selected_instance_id,i.driver_id FROM main.gogoke_v37_native_selection n JOIN main.gogoke_v37_seats e ON e.domain_id=n.domain_id AND e.seat_id=n.seat_id AND e.incarnation=n.seat_incarnation AND e.layer='USER' AND e.parent_seat_id IS NULL LEFT JOIN main.gogoke_v37_h_claim h ON h.domain_id=n.domain_id AND h.session_id=n.session_id JOIN main.gogoke_v37_instances i ON i.instance_id=n.selected_instance_id WHERE n.domain_id<>'global' ORDER BY n.domain_id,n.session_id")?;
+                let mut choices=Vec::new();
+                while query.step_row()? {
+                    let association=Association {domain:query.column_text(0)?,session:query.column_text(1)?,
+                        seat:query.column_text(2)?,incarnation:query.column_text(3)?,authorization:query.column_text(4)?,
+                        generation:query.column_text(5)?,instance:query.column_text(6)?};
+                    let mut choice=BTreeMap::from([(k("association"),association.json()),(k("provider"),s(&query.column_text(7)?))]);
+                    match self.visible_candidate(&association,true) {
+                        Ok(selected)=>{
+                            choice.insert(k("state"),s("NATIVE"));
+                            choice.insert(k("repositoryId"),s(&selected.repository));
+                            choice.insert(k("worktreeId"),s(&selected.worktree));
+                            choice.insert(k("threadId"),s(&selected.thread));
+                        },
+                        Err(error)=>{
+                            choice.insert(k("state"),s("UNKNOWN"));
+                            choice.insert(k("reason"),s(&format!("Original existing E/F/H/A choice: {error:?}")));
+                        },
+                    }
+                    choices.push(Json::Object(choice));
+                }
+                let mut reply=self.visible_reply(workspace,"APPLIED",None,None);
+                if choices.is_empty() {
+                    reply=self.visible_reply(workspace,"UNKNOWN",None,
+                        Some("No original existing lead session can be offered; no session was created."));
+                }
+                reply.insert(k("choices"),Json::Array(choices));
+                Ok(Json::Object(reply))
+            },
+            "visible-conversation-select"=>{
+                let route=string_field(fields,"route")?;
+                if route=="LEGACY" {exact(fields,&["schema","command","workspaceId","requestId","route"],&[])?;}
+                else if route=="NATIVE" {exact(fields,&["schema","command","workspaceId","requestId","route",
+                    "repositoryId","threadId","association"],&[])?;}
+                else {return Err(OrchestrationError::Invalid("visible route"));}
+                let request=string_field(fields,"requestId")?;
+                if request.len()>128 {return Err(OrchestrationError::Invalid("visible request id"));}
+                let prior=Statement::prepare(self.connection.as_ptr(),
+                    "SELECT selection_hex FROM main.gogoke_v37_visible_conversation_selection WHERE workspace_id=?1 AND request_id=?2")?;
+                prior.bind_text(1,workspace)?;prior.bind_text(2,&request)?;
+                let exists=prior.step_row()?;
+                if exists && (prior.column_text(0)?!=encode_hex(frame) || prior.step_row()?) {
+                    return Err(OrchestrationError::OperationConflict);
+                }
+                drop(prior);
+                let selected=if route=="NATIVE" {
+                    let association=Association::parse(fields.get(&k("association")).ok_or(OrchestrationError::AccessDenied)?)?;
+                    match self.visible_candidate(&association,!exists) {
+                        Ok(selected) if selected.repository==string_field(fields,"repositoryId")?
+                            && selected.thread==string_field(fields,"threadId")?=>selected,
+                        result=>{
+                            let reason=match result {Err(error)=>format!("Original selection verification: {error:?}"),
+                                Ok(_)=>"Explicit repository/thread differs from original H/A facts.".into()};
+                            let mut reply=self.visible_reply(workspace,"UNKNOWN",Some(&association),Some(&reason));
+                            reply.insert(k("requestId"),s(&request));return Ok(Json::Object(reply));
+                        },
+                    }
+                } else {Selection {row:0,route:route.clone(),association:None,repository:String::new(),
+                    worktree:String::new(),thread:String::new(),open_request:String::new(),open_generation:String::new(),
+                    open_operation:String::new(),ack:0,started:0}};
+                if !exists {
+                    let insert=Statement::prepare(self.connection.as_ptr(),
+                        "INSERT INTO main.gogoke_v37_visible_conversation_selection(workspace_id,request_id,route,selection_hex,association_json,repository_id,worktree_id,thread_id,open_request_id,open_generation,open_operation_id,ack_source_id,started_source_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)")?;
+                    let raw=encode_hex(frame);let association=selected.association.as_ref().map(Association::json).unwrap_or(Json::Null).canonical();
+                    for (index,value) in [workspace,request.as_str(),route.as_str(),raw.as_str(),association.as_str(),
+                        selected.repository.as_str(),selected.worktree.as_str(),selected.thread.as_str(),selected.open_request.as_str(),
+                        selected.open_generation.as_str(),selected.open_operation.as_str()].iter().enumerate() {insert.bind_text((index+1) as i32,value)?;}
+                    insert.bind_i64(12,selected.ack)?;insert.bind_i64(13,selected.started)?;
+                    insert.step_done()?;
+                }
+                let mut reply=self.visible_reply(workspace,&route,selected.association.as_ref(),None);
+                reply.insert(k("requestId"),s(&request));Ok(Json::Object(reply))
+            },
+            "visible-conversation-read" | "visible-conversation-operate" | "visible-conversation-recover"=>{
+                let operation=command!="visible-conversation-read";
+                let mut required=vec!["schema","command","workspaceId","expectedAssociation"];
+                if operation {required.push("requestId");}
+                if command!="visible-conversation-recover" {required.push("method");}
+                exact(fields,&required,if command=="visible-conversation-recover" {&[]} else {&["params"]})?;
+                let association=Association::parse(fields.get(&k("expectedAssociation")).ok_or(OrchestrationError::AccessDenied)?)?;
+                let selected=self.visible_selection(workspace,Some(&association))?;
+                let mut reply=self.visible_reply(workspace,"UNKNOWN",Some(&association),None);
+                if operation {reply.insert(k("requestId"),s(&string_field(fields,"requestId")?));}
+                let Some(selected)=selected else {
+                    reply.insert(k("state"),s("DENIED"));reply.insert(k("reason"),s("No exact USER selection in this workspace matches all expected association fields."));
+                    return Ok(Json::Object(reply));
+                };
+                if let Err(error)=self.visible_verify_saved(&selected) {
+                    reply.insert(k("reason"),s(&format!("Original selected E/F/H/A read verification: {error:?}")));
+                    return Ok(Json::Object(reply));
+                }
+                if operation {
+                    reply.insert(k("state"),s("UNSUPPORTED"));reply.insert(k("reason"),s(
+                        "Visible conversation effects and effect recovery are not implemented in this read-only producer phase. No provider request was sent."));
+                    return Ok(Json::Object(reply));
+                }
+                let method=string_field(fields,"method")?;
+                let empty=BTreeMap::new();
+                let params=match fields.get(&k("params")) {None=>&empty,Some(value)=>object(value)?};
+                match method.as_str() {
+                    "live-state"=>{
+                        exact(params,&[],&[])?;
+                        reply.insert(k("reason"),s("No qualified current thread readiness/closure observation is available from this producer."));
+                        reply.insert(k("live"),Json::Object(BTreeMap::from([(k("state"),s("UNKNOWN"))])));
+                    },
+                    "thread/read"=>{
+                        exact(params,&["threadId","includeTurns"],&["cursor"])?;
+                        if string_field(params,"threadId")?!=selected.thread || !matches!(params.get(&k("includeTurns")),Some(Json::Bool(true))) {
+                            reply.insert(k("state"),s("DENIED"));reply.insert(k("reason"),s("Thread read must name the exact selected vendor thread and include its original turns."));
+                        } else if let Err(error)=self.visible_thread_page(workspace,&selected,params,&mut reply) {
+                            reply.insert(k("state"),s("UNKNOWN"));reply.insert(k("reason"),s(&format!("Original conversation read: {error:?}")));
+                        }
+                    },
+                    "thread/list"=>{
+                        exact(params,&[],&["cursor","limit"])?;
+                        if let Err(error)=self.visible_thread_list(workspace,&association,params,&mut reply) {
+                            reply.insert(k("state"),s("UNKNOWN"));reply.insert(k("reason"),s(&format!("Original workspace thread list: {error:?}")));
+                        }
+                    },
+                    _=>{
+                        reply.insert(k("state"),s("UNSUPPORTED"));reply.insert(k("reason"),s("This producer only supports qualified thread/read, thread/list and live-state reads."));
+                    },
+                }
+                Ok(Json::Object(reply))
+            },
+            _=>Err(OrchestrationError::Invalid("visible configuration command")),
+        }
+    }
+
+    fn visible_high_water(&self, selected: &Selection) -> Result<i64> {
+        let association=selected.association.as_ref().ok_or(OrchestrationError::AccessDenied)?;
+        let query=Statement::prepare(self.connection.as_ptr(),
+            "SELECT COALESCE(MAX(rowid),0) FROM main.v37_ledger_raw_source WHERE domain_id=?1 AND session_id=?2")?;
+        query.bind_text(1,&association.domain)?;query.bind_text(2,&association.session)?;
+        if !query.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        decimal(&query.column_text(0)?)
+    }
+    fn visible_original_thread(&self, selected: &Selection) -> Result<Json> {
+        let query=Statement::prepare(self.connection.as_ptr(),
+            "SELECT hex(raw_bytes) FROM main.v37_ledger_raw_source WHERE rowid=?1 AND operation_id=?2")?;
+        query.bind_i64(1,selected.ack)?;query.bind_text(2,&selected.open_operation)?;
+        if !query.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        let source=source_json(&query.column_text(0)?)?;
+        let envelope=object(&source)?;
+        let result=object(envelope.get(&k("result")).ok_or(OrchestrationError::OperationConflict)?)?;
+        let thread=copy_json(result.get(&k("thread")).ok_or(OrchestrationError::OperationConflict)?);
+        if string_field(object(&thread)?,"id")?!=selected.thread {return Err(OrchestrationError::OperationConflict);}
+        Ok(thread)
+    }
+    fn visible_source_ref(&self, id: i64, selected: &Selection) -> Result<Json> {
+        let association=selected.association.as_ref().ok_or(OrchestrationError::AccessDenied)?;
+        let query=Statement::prepare(self.connection.as_ptr(),
+            "SELECT operation_id,generation,source_epoch,source_cursor FROM main.v37_ledger_raw_source WHERE rowid=?1 AND domain_id=?2 AND session_id=?3")?;
+        query.bind_i64(1,id)?;query.bind_text(2,&association.domain)?;query.bind_text(3,&association.session)?;
+        if !query.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        Ok(Json::Object(BTreeMap::from([(k("rawSourceId"),s(&id.to_string())),
+            (k("operationId"),s(&query.column_text(0)?)),(k("generation"),s(&query.column_text(1)?)),
+            (k("sourceEpoch"),s(&query.column_text(2)?)),(k("sourceCursor"),s(&query.column_text(3)?))])))
+    }
+    /// Each page is rebuilt against its first page's immutable raw-source
+    /// high-water. Complete original vendor Turn objects are the page unit;
+    /// partial notifications are never promoted to a complete empty history.
+    fn visible_thread_page(&self, workspace: &str, selected: &Selection,
+        params: &BTreeMap<JsonString,Json>, reply: &mut BTreeMap<JsonString,Json>) -> Result<()> {
+        let association=selected.association.as_ref().ok_or(OrchestrationError::AccessDenied)?;
+        let maximum=self.visible_high_water(selected)?;
+        let scope=format!("thread/read\n{workspace}\n{}\n{}\n{}",selected.row,selected.thread,association.json().canonical());
+        let (high,after)=visible_page_position(params,maximum,&scope)?;
+        if high<selected.ack.max(selected.started) {return Err(OrchestrationError::AccessDenied);}
+        let mut thread=self.visible_original_thread(selected)?;
+        let thread_fields=object(&thread)?;
+        let mut turns=match thread_fields.get(&k("turns")) {
+            Some(Json::Array(turns))=>copy_array(turns),
+            _=>{
+                reply.insert(k("state"),s("UNSUPPORTED"));reply.insert(k("reason"),s(
+                    "The original qualified thread/start ACK lacks a complete turns array; history cannot be inferred from it."));return Ok(());
+            },
+        };
+        let mut turn_refs:Vec<Vec<Json>>=turns.iter().map(|_|Vec::new()).collect();
+        let mut turn_ids=Vec::new();
+        for turn in &turns {turn_ids.push(string_field(object(turn)?,"id")?);}
+        let query=Statement::prepare(self.connection.as_ptr(),
+            "SELECT r.rowid,hex(r.raw_bytes),r.state,r.operation_id,r.generation,r.source_epoch,r.source_cursor,COALESCE(e.seat_id,''),COALESCE(e.seat_incarnation,''),COALESCE(e.instance_id,''),COALESCE(c.ticket,''),r.process_ticket,COALESCE(c.custodian_nonce,''),r.custodian_nonce FROM main.v37_ledger_raw_source r LEFT JOIN main.gogoke_v37_h_generation g ON g.domain_id=r.domain_id AND g.session_id=r.session_id AND g.generation=r.generation AND g.process_operation_id=r.operation_id LEFT JOIN main.gogoke_v37_h_process_episode e ON e.domain_id=g.domain_id AND e.request_id=g.request_id AND e.session_id=g.session_id AND e.generation=g.generation AND e.process_operation_id=g.process_operation_id LEFT JOIN main.gogoke_coordination_process_custody c ON c.operation_id=r.operation_id AND c.domain_id=r.domain_id AND c.generation=r.generation WHERE r.domain_id=?1 AND r.session_id=?2 AND r.rowid<=?3 ORDER BY r.rowid")?;
+        query.bind_text(1,&association.domain)?;query.bind_text(2,&association.session)?;query.bind_i64(3,high)?;
+        let mut complete=true;
+        let mut original_reason=None;
+        let mut observed_items:BTreeMap<String,Vec<(String,Option<Json>,Option<Json>)>>=BTreeMap::new();
+        let mut observed_turn_acks=Vec::new();
+        while query.step_row()? {
+            let row=decimal(&query.column_text(0)?)?;
+            if query.column_text(7)?!=association.seat || query.column_text(8)?!=association.incarnation
+                || query.column_text(9)?!=association.instance || query.column_text(10)?!=query.column_text(11)?
+                || query.column_text(12)?!=query.column_text(13)? {
+                complete=false;original_reason=Some(format!("Original raw source {row} has no matching H generation/episode/custody identity."));continue;
+            }
+            let source=source_json(&query.column_text(1)?)?;
+            let envelope=object(&source)?;
+            let Some(Json::String(method))=envelope.get(&k("method")) else {
+                // Correlate the original response to the exact retained command;
+                // string "7" and numeric 7 remain distinct JSON-RPC identities.
+                let step=Statement::prepare(self.connection.as_ptr(),
+                    "SELECT command_hex FROM main.gogoke_v37_rpc_steps WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3 AND generation=?4 AND source_epoch=?5 AND source_cursor=?6 AND phase='OBSERVED'")?;
+                for (index,value) in [association.domain.as_str(),association.session.as_str(),
+                    query.column_text(3)?.as_str(),query.column_text(4)?.as_str(),query.column_text(5)?.as_str(),
+                    query.column_text(6)?.as_str()].iter().enumerate() {step.bind_text((index+1) as i32,value)?;}
+                if step.step_row()? {
+                    let command=source_json(&step.column_text(0)?)?;let command=object(&command)?;
+                    if !same_json(command.get(&k("id")),envelope.get(&k("id"))) || step.step_row()? {
+                        complete=false;original_reason=Some(format!("Original RPC response {row} does not match its typed command ID."));continue;
+                    }
+                    if is_text(command.get(&k("method")),"turn/start") {
+                        let params=object(command.get(&k("params")).ok_or(OrchestrationError::OperationConflict)?)?;
+                        if !is_text(params.get(&k("threadId")),&selected.thread) {return Err(OrchestrationError::AccessDenied);}
+                        let result=object(envelope.get(&k("result")).ok_or_else(||OrchestrationError::V37StoreFailure(
+                            format!("Original turn/start response source {row}: {}",source.canonical())))?)?;
+                        let turn=result.get(&k("turn")).ok_or(OrchestrationError::OperationConflict)?;
+                        let id=string_field(object(turn)?,"id")?;
+                        if !observed_turn_acks.contains(&id) {observed_turn_acks.push(id.clone());}
+                        if !turn_ids.contains(&id) {
+                            turn_ids.push(id);turns.push(copy_json(turn));turn_refs.push(vec![self.visible_source_ref(row,selected)?]);
+                        }
+                    }
+                } else if query.column_text(2)?=="PENDING" {
+                    complete=false;original_reason=Some(format!("Original RPC response {row} has no correlated H command."));
+                }
+                continue;
+            };
+            let method=method.to_well_formed_string().ok_or(OrchestrationError::Invalid("visible source method"))?;
+            let Some(Json::Object(params))=envelope.get(&k("params")) else {continue;};
+            if let Some(thread_id)=params.get(&k("threadId")) {
+                if !is_text(Some(thread_id),&selected.thread) {
+                    complete=false;original_reason=Some(format!("Original A raw source {row} names another vendor thread."));continue;
+                }
+            }
+            if method=="turn/started" || method=="turn/completed" {
+                if !is_text(params.get(&k("threadId")),&selected.thread) {
+                    complete=false;original_reason=Some(format!("Original A turn source {row} has no exact vendor thread."));continue;
+                }
+                let Some(turn)=params.get(&k("turn")) else {return Err(OrchestrationError::OperationConflict);};
+                let fields=object(turn)?;let id=string_field(fields,"id")?;
+                let index=if let Some(index)=turn_ids.iter().position(|old|old==&id) {index}
+                    else {turn_ids.push(id.clone());turns.push(copy_json(turn));turn_refs.push(Vec::new());turns.len()-1};
+                turns[index]=copy_json(turn);
+                turn_refs[index]=vec![self.visible_source_ref(row,selected)?];
+            } else if method=="item/started" || method=="item/completed" {
+                if !is_text(params.get(&k("threadId")),&selected.thread) {return Err(OrchestrationError::AccessDenied);}
+                let turn=string_field(params,"turnId")?;
+                let item=params.get(&k("item")).ok_or(OrchestrationError::OperationConflict)?;
+                let id=string_field(object(item)?,"id")?;
+                let items=observed_items.entry(turn).or_default();
+                let index=if let Some(index)=items.iter().position(|(old,_,_)|old==&id) {index}
+                    else {items.push((id,None,None));items.len()-1};
+                if method=="item/completed" {items[index].1=Some(copy_json(item));items[index].2=Some(self.visible_source_ref(row,selected)?);}
+            } else if method.starts_with("item/") {
+                if let (Some(Json::String(turn)),Some(Json::String(item)))=(params.get(&k("turnId")),params.get(&k("itemId"))) {
+                    let turn=turn.to_well_formed_string().ok_or(OrchestrationError::Invalid("visible turn id"))?;
+                    let item=item.to_well_formed_string().ok_or(OrchestrationError::Invalid("visible item id"))?;
+                    let items=observed_items.entry(turn).or_default();
+                    if !items.iter().any(|(id,_,_)|id==&item) {items.push((item,None,None));}
+                }
+            }
+        }
+        for (turn,items) in observed_items {
+            let Some(index)=turn_ids.iter().position(|id|id==&turn) else {
+                complete=false;original_reason=Some(format!("Original item sources for turn {turn} have no matching original turn ID."));continue;
+            };
+            let fields=object(&turns[index])?;
+            let mut projection=copy_fields(fields);
+            let mut projected=match fields.get(&k("items")) {Some(Json::Array(items))=>copy_array(items),
+                _=>{complete=false;original_reason=Some(format!("Original turn {turn} has no vendor items field."));Vec::new()}};
+            for (id,snapshot,source) in items {
+                if let Some(snapshot)=snapshot {
+                    if let Some(index)=projected.iter().position(|item|matches!(item,Json::Object(fields)
+                        if is_text(fields.get(&k("id")),&id))) {projected[index]=snapshot;}
+                    else {projected.push(snapshot);}
+                    turn_refs[index].push(source.ok_or(OrchestrationError::OperationConflict)?);
+                } else if !projected.iter().any(|item|matches!(item,Json::Object(fields) if is_text(fields.get(&k("id")),&id))) {
+                    complete=false;original_reason=Some(format!("Original item {id} in turn {turn} has no final vendor item snapshot."));
+                }
+            }
+            projection.insert(k("items"),Json::Array(projected));turns[index]=Json::Object(projection);
+        }
+        for turn in &observed_turn_acks {
+            let index=turn_ids.iter().position(|id|id==turn).ok_or(OrchestrationError::OperationConflict)?;
+            let fields=object(&turns[index])?;
+            if !matches!(fields.get(&k("items")),Some(Json::Array(items)) if items.iter().any(|item|
+                matches!(item,Json::Object(fields) if is_text(fields.get(&k("type")),"userMessage")))) {
+                complete=false;original_reason=Some(format!("Original turn/start ACK for turn {turn} has no actual userMessage item source."));
+            }
+        }
+        let inputs=Statement::prepare(self.connection.as_ptr(),
+            "SELECT request_id,operation,phase,COALESCE(receipt_status,'') FROM main.gogoke_v37_h_stdin_journal WHERE domain_id=?1 AND session_id=?2 AND operation IN ('send','append-without-turn')")?;
+        inputs.bind_text(1,&association.domain)?;inputs.bind_text(2,&association.session)?;
+        let mut applied_sends=0usize;
+        while inputs.step_row()? {
+            let status=inputs.column_text(3)?;
+            if inputs.column_text(2)?!="RECEIPTED" || status=="UNKNOWN" {
+                complete=false;original_reason=Some(format!("Original H input {} has unresolved phase/status {} / {status}.",inputs.column_text(0)?,inputs.column_text(2)?));
+            } else if matches!(status.as_str(),"APPLIED"|"REPLAYED") {
+                if inputs.column_text(1)?=="send" {applied_sends+=1;}
+                else {complete=false;original_reason=Some(format!("Original append-without-turn input {} has no qualified vendor history projection.",inputs.column_text(0)?));}
+            }
+        }
+        if applied_sends>observed_turn_acks.len() {
+            complete=false;original_reason=Some("An original applied H send has no typed vendor turn/start ACK in this fixed raw-source snapshot.".into());
+        }
+        if after as usize>turns.len() {return Err(OrchestrationError::Invalid("visible page position"));}
+        let mut page=Vec::new();let mut refs=Vec::new();
+        if after==0 {refs.push(self.visible_source_ref(selected.ack,selected)?);refs.push(self.visible_source_ref(selected.started,selected)?);}
+        let mut index=after as usize;
+        let Json::Object(ref mut metadata)=thread else {return Err(OrchestrationError::OperationConflict);};
+        metadata.remove(&k("turns"));
+        while index<turns.len() {
+            let mut trial=copy_array(&page);trial.push(copy_json(&turns[index]));
+            let mut trial_refs=copy_array(&refs);trial_refs.extend(copy_array(&turn_refs[index]));
+            let mut trial_thread=copy_fields(metadata);trial_thread.insert(k("turns"),Json::Array(copy_array(&trial)));
+            let shell=visible_read_envelope(Json::Object(trial_thread),high,Some("reserved-continuation-token"),copy_array(&trial_refs),"PARTIAL");
+            let mut trial_reply=copy_fields(reply);trial_reply.insert(k("response"),shell);
+            // Reserve the full opaque continuation and possible original error.
+            if Json::Object(trial_reply).canonical().len()+512>crate::ipc::MAX_FRAME_BYTES {
+                if page.is_empty() {
+                    reply.insert(k("state"),s("UNKNOWN"));reply.insert(k("reason"),s(
+                        "An original vendor turn exceeds the USER response frame; this producer cannot provide complete history without splitting the original turn."));return Ok(());
+                }
+                break;
+            }
+            page=trial;refs=trial_refs;index+=1;
+        }
+        let more=index<turns.len();
+        let state=if !complete {"UNKNOWN"} else if more {"PARTIAL"} else {"APPLIED"};
+        let history_state=if !complete {"UNKNOWN"} else if more {"PARTIAL"} else {"COMPLETE"};
+        let cursor=if more && complete {Some(visible_page_token(high,index as i64,&scope))} else {None};
+        metadata.insert(k("turns"),Json::Array(page));
+        reply.insert(k("state"),s(state));
+        if !complete {reply.insert(k("reason"),s(original_reason.as_deref().unwrap_or(
+            "Original conversation sources cannot be completely projected.")));}
+        reply.insert(k("response"),visible_read_envelope(thread,high,cursor.as_deref(),refs,history_state));
+        Ok(())
+    }
+
+    fn visible_thread_list(&self, workspace: &str, association: &Association,
+        params: &BTreeMap<JsonString,Json>, reply: &mut BTreeMap<JsonString,Json>) -> Result<()> {
+        let limit=match params.get(&k("limit")) {
+            None|Some(Json::Null)=>100usize,
+            Some(Json::Number(value))=>{let count=decimal(value)?;
+                if !(1..=100).contains(&count) {return Err(OrchestrationError::Invalid("visible list limit"));}count as usize},
+            _=>return Err(OrchestrationError::Invalid("visible list limit")),
+        };
+        let query=Statement::prepare(self.connection.as_ptr(),
+            "SELECT COALESCE(MAX(rowid),0) FROM main.gogoke_v37_visible_conversation_selection WHERE workspace_id=?1")?;
+        query.bind_text(1,workspace)?;
+        if !query.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        let maximum=decimal(&query.column_text(0)?)?;
+        let scope=format!("thread/list\n{workspace}\n{}",association.json().canonical());
+        let (high,after)=visible_page_position(params,maximum,&scope)?;
+        let query=Statement::prepare(self.connection.as_ptr(),
+            "SELECT rowid,route,association_json,repository_id,worktree_id,thread_id,open_request_id,open_generation,open_operation_id,ack_source_id,started_source_id FROM main.gogoke_v37_visible_conversation_selection WHERE workspace_id=?1 AND route='NATIVE' AND rowid<=?2 ORDER BY rowid")?;
+        query.bind_text(1,workspace)?;query.bind_i64(2,high)?;
+        let mut all=Vec::new();let mut identities=Vec::new();
+        while query.step_row()? {
+            let selected=Selection::from_row(&query)?;
+            if let Err(error)=self.visible_verify_saved(&selected) {
+                reply.insert(k("state"),s("UNKNOWN"));reply.insert(k("reason"),s(&format!(
+                    "Original workspace historical selection {} is unresolved: {error:?}",selected.row)));return Ok(());
+            }
+            let bound=selected.association.as_ref().ok_or(OrchestrationError::AccessDenied)?;
+            let identity=(bound.domain.clone(),bound.session.clone(),selected.thread.clone());
+            if !identities.contains(&identity) {identities.push(identity);all.push(selected);}
+        }
+        if after as usize>all.len() {return Err(OrchestrationError::Invalid("visible list position"));}
+        let mut data=Vec::new();let mut refs=Vec::new();let mut index=after as usize;
+        while index<all.len() && data.len()<limit {
+            let selected=&all[index];let mut thread=self.visible_original_thread(selected)?;
+            if let Json::Object(ref mut fields)=thread {fields.insert(k("turns"),Json::Array(Vec::new()));}
+            let mut trial=copy_array(&data);trial.push(copy_json(&thread));
+            let mut trial_refs=copy_array(&refs);trial_refs.push(self.visible_source_ref(selected.ack,selected)?);
+            let shell=Json::Object(BTreeMap::from([(k("result"),Json::Object(BTreeMap::from([
+                (k("data"),Json::Array(trial)),(k("nextCursor"),s("reserved-continuation-token")),
+                (k("nativeHistory"),visible_history(high,Some("reserved-continuation-token"),trial_refs,"PARTIAL")),
+            ])))]));
+            let mut trial_reply=copy_fields(reply);trial_reply.insert(k("response"),shell);
+            if Json::Object(trial_reply).canonical().len()+512>crate::ipc::MAX_FRAME_BYTES {
+                if data.is_empty() {reply.insert(k("state"),s("UNKNOWN"));reply.insert(k("reason"),s("Original thread metadata exceeds the USER response frame."));return Ok(());}break;
+            }
+            data.push(thread);refs.push(self.visible_source_ref(selected.ack,selected)?);index+=1;
+        }
+        let more=index<all.len();let cursor=if more {Some(visible_page_token(high,index as i64,&scope))} else {None};
+        reply.insert(k("state"),s(if more {"PARTIAL"} else {"APPLIED"}));
+        reply.insert(k("response"),Json::Object(BTreeMap::from([(k("result"),Json::Object(BTreeMap::from([
+            (k("data"),Json::Array(data)),(k("nextCursor"),cursor.as_deref().map(s).unwrap_or(Json::Null)),
+            (k("nativeHistory"),visible_history(high,cursor.as_deref(),refs,if more {"PARTIAL"} else {"COMPLETE"})),
+        ])))])));
+        Ok(())
+    }
+}
+
+fn visible_history(high: i64, cursor: Option<&str>, refs: Vec<Json>, state: &str) -> Json {
+    Json::Object(BTreeMap::from([(k("state"),s(state)),(k("highWater"),s(&high.to_string())),
+        (k("nextCursor"),cursor.map(s).unwrap_or(Json::Null)),(k("sourceRefs"),Json::Array(refs))]))
+}
+fn visible_read_envelope(thread: Json, high: i64, cursor: Option<&str>, refs: Vec<Json>, state: &str) -> Json {
+    Json::Object(BTreeMap::from([(k("result"),Json::Object(BTreeMap::from([(k("thread"),thread),
+        (k("nativeHistory"),visible_history(high,cursor,refs,state))])))]))
+}
+fn visible_page_token(high: i64, after: i64, scope: &str) -> String {
+    let digest=crate::store::digest::sha256_hex(format!("{scope}\n{high}\n{after}").as_bytes());
+    format!("{high}:{after}:{digest}")
+}
+fn visible_page_position(params: &BTreeMap<JsonString,Json>, maximum: i64, scope: &str) -> Result<(i64,i64)> {
+    let cursor=match params.get(&k("cursor")) {None|Some(Json::Null)=>return Ok((maximum,0)),
+        Some(Json::String(value))=>value.to_well_formed_string().ok_or(OrchestrationError::Invalid("visible cursor"))?,
+        _=>return Err(OrchestrationError::Invalid("visible cursor")),
+    };
+    let parts:Vec<_>=cursor.split(':').collect();
+    if parts.len()!=3 {return Err(OrchestrationError::Invalid("visible cursor"));}
+    let high=decimal(parts[0])?;let after=decimal(parts[1])?;
+    if high>maximum || after==0 || cursor!=visible_page_token(high,after,scope) {
+        return Err(OrchestrationError::AccessDenied);
+    }
+    Ok((high,after))
+}
+
+#[cfg(all(test,windows))]
+mod tests {
+    use super::*;
+    use crate::store::same_open::route_b_test_guard;
+
+    fn fixture(run: impl FnOnce(&mut ProductDatabase<'_>)) {
+        let _guard=route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("gogoke-visible-user-{}-{nonce}",std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();let database=path.join("state.sqlite");
+        let mut product=ProductDatabase::open(&root,&database).unwrap();
+        run(&mut product);product.close_checked().unwrap();drop(root);
+        std::fs::remove_file(database).unwrap();
+        std::fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).unwrap();
+        if let Err(error)=std::fs::remove_dir(&path) {eprintln!("owned USER boundary fixture retained: {error}");}
+    }
+    fn reply(product: &mut ProductDatabase<'_>, frame: &str) -> Json {
+        let bytes=product.configure_user_v37(frame.as_bytes()).unwrap();
+        Parser::parse(std::str::from_utf8(&bytes).unwrap()).unwrap()
+    }
+    #[test]
+    fn visible_user_selection_requires_explicit_route_and_preserves_original_bytes() {
+        fixture(|product| {
+            let route=r#"{"schema":"gogoke.37.owner-configuration.v1","command":"visible-conversation-route","workspaceId":"workspaceA"}"#;
+            assert!(is_text(object(&reply(product,route)).unwrap().get(&k("state")),"NEEDS_SETUP"));
+            let select=r#"{"schema":"gogoke.37.owner-configuration.v1","command":"visible-conversation-select","workspaceId":"workspaceA","requestId":"explicitLegacy","route":"LEGACY"}"#;
+            assert!(is_text(object(&reply(product,select)).unwrap().get(&k("state")),"LEGACY"));
+            assert!(is_text(object(&reply(product,route)).unwrap().get(&k("state")),"LEGACY"));
+            assert!(product.configure_user_v37(format!("{select} ").as_bytes()).is_err(),"same request ID cannot rewrite original selection bytes");
+            assert!(product.configure_user_v37(route.replace("workspaceA\"}","workspaceA\",\"sql\":\"DROP TABLE\"}").as_bytes()).is_err(),"configuration is a closed set, not a SQL transport");
+            assert!(is_text(object(&reply(product,&route.replace("workspaceA","workspaceB"))).unwrap().get(&k("state")),"NEEDS_SETUP"),"workspace IDs never imply a shared route");
+            product.connection.execute("CREATE TEMP TRIGGER injected_visible_effect BEFORE INSERT ON main.gogoke_v37_visible_conversation_selection BEGIN SELECT RAISE(ABORT,'injected USER journal effect'); END").unwrap();
+            assert!(product.configure_user_v37(route.as_bytes()).is_err(),"the actual producer rejects extra schema effects");
+            product.connection.execute("DROP TRIGGER temp.injected_visible_effect").unwrap();
+            assert!(is_text(object(&reply(product,route)).unwrap().get(&k("state")),"LEGACY"));
+        });
+    }
+    #[test]
+    fn visible_user_read_checks_workspace_and_every_association_field_before_sources() {
+        fixture(|product| {
+            let association=Association {domain:"projectA".into(),session:"nativeSession".into(),seat:"leadA".into(),
+                incarnation:"incarnationA".into(),authorization:"1".into(),generation:"2".into(),instance:"instanceA".into()};
+            let insert=Statement::prepare(product.connection.as_ptr(),
+                "INSERT INTO main.gogoke_v37_visible_conversation_selection VALUES('workspaceA','selectionA','NATIVE','00',?1,'repositoryA','worktreeA','vendorThreadA','openA','1','processA',1,2)").unwrap();
+            insert.bind_text(1,&association.json().canonical()).unwrap();insert.step_done().unwrap();drop(insert);
+            let recover=|workspace: &str, association: &Json| format!(r#"{{"schema":"gogoke.37.owner-configuration.v1","command":"visible-conversation-recover","workspaceId":"{workspace}","requestId":"originalEffect","expectedAssociation":{}}}"#,association.canonical());
+            for field in ["domainId","sessionId","seatId","incarnation","authorizationGeneration","bindingGeneration","instanceId"] {
+                let mut changed=copy_fields(object(&association.json()).unwrap());
+                changed.insert(k(field),s(if field.ends_with("Generation") {"9"} else {"foreignIdentity"}));
+                let response=reply(product,&recover("workspaceA",&Json::Object(changed)));
+                let response=object(&response).unwrap();
+                assert!(is_text(response.get(&k("state")),"DENIED"),"association field {field} is an actual scope boundary");
+                assert!(is_text(response.get(&k("requestId")),"originalEffect"));
+                assert!(response.contains_key(&k("reason")));
+            }
+            let response=reply(product,&recover("workspaceB",&association.json()));
+            assert!(is_text(object(&response).unwrap().get(&k("state")),"DENIED"));
+            let malformed=recover("workspaceB",&association.json()).replace("\"bindingGeneration\":\"2\"","\"bindingGeneration\":2");
+            assert!(product.configure_user_v37(malformed.as_bytes()).is_err(),"vendor/native identity fields do not coerce JSON number and string");
+            let count=Statement::prepare(product.connection.as_ptr(),"SELECT COUNT(*) FROM main.gogoke_v37_visible_conversation_selection").unwrap();
+            assert!(count.step_row().unwrap());assert_eq!(count.column_text(0).unwrap(),"1","denied recovery cannot create or resend an effect");
+        });
+    }
+    #[test]
+    fn visible_history_cursor_is_bound_to_exact_scope_and_preserves_typed_rpc_ids() {
+        let cursor=visible_page_token(55,3,"workspaceA / exact association / threadA");
+        let params=BTreeMap::from([(k("cursor"),s(&cursor))]);
+        assert_eq!(visible_page_position(&params,80,"workspaceA / exact association / threadA").unwrap(),(55,3));
+        assert!(visible_page_position(&params,80,"workspaceB / exact association / threadA").is_err());
+        assert!(visible_page_position(&params,54,"workspaceA / exact association / threadA").is_err());
+        assert!(!same_json(Some(&Json::Number("7".into())),Some(&s("7"))));
+    }
+}

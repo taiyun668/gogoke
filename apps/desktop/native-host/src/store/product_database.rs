@@ -36,6 +36,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 type Result<T> = std::result::Result<T, OrchestrationError>;
 
 mod v37_seat;
+mod v37_visible_conversation;
 mod v37_managed_cli;
 mod v37_policy;
 mod v37_session;
@@ -246,6 +247,7 @@ impl<'root> ProductDatabase<'root> {
         let process_custodian = ProcessCustodian::new()?;
         super::session_transport::rpc_journal::initialize_schema(&mut connection)
             .map_err(|error| OrchestrationError::V37StoreFailure(format!("native RPC schema: {error:?}")))?;
+        v37_visible_conversation::initialize_schema(&mut connection)?;
         // F owns the private Grok HOME ACL journal in this same verified DB.
         // Opening the DB initializes records only; it is not holder retirement.
         instance::initialize_grok_home_grant_schema(&mut connection)
