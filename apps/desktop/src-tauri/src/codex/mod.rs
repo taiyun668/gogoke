@@ -651,15 +651,16 @@ async fn native_visible_effect(
     method: &str,
     params: Value,
 ) -> Result<Value, String> {
-    native_visible_params(method, &params)?;
     let request_id = stable_native_request_id(native_request_id)?;
+    let before_dispatch = |error: String| visible_not_dispatched(&request_id, error);
+    native_visible_params(method, &params).map_err(&before_dispatch)?;
     let requested_thread_id = if method == "thread/resume" {
         Some(
             params
                 .get("threadId")
                 .and_then(Value::as_str)
                 .filter(|id| !id.is_empty())
-                .ok_or("GOGOKE_NATIVE_RESUME_THREAD_ID_REQUIRED")?
+                .ok_or_else(|| before_dispatch("GOGOKE_NATIVE_RESUME_THREAD_ID_REQUIRED".into()))?
                 .to_owned(),
         )
     } else {
@@ -671,14 +672,14 @@ async fn native_visible_effect(
         .await
         .get(workspace_id)
         .cloned()
-        .ok_or("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE")?;
+        .ok_or_else(|| before_dispatch("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE".into()))?;
     if session.owner_workspace_id != workspace_id {
-        return Err("GOGOKE_NATIVE_WORKSPACE_OWNER_MISMATCH".into());
+        return Err(before_dispatch("GOGOKE_NATIVE_WORKSPACE_OWNER_MISMATCH".into()));
     }
     let association = session
-        .native_association()?
-        .ok_or("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE")?;
-    require_original_association(expected_association.as_ref(), &association)?;
+        .native_association().map_err(&before_dispatch)?
+        .ok_or_else(|| before_dispatch("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE".into()))?;
+    require_original_association(expected_association.as_ref(), &association).map_err(&before_dispatch)?;
     let reply = visible_operation(
         app,
         workspace_id,
@@ -712,6 +713,19 @@ async fn native_visible_effect(
             Some(&request_id),
         )),
         _ => Err("GOGOKE_VISIBLE_OPERATION_STATE_INVALID".into()),
+    }
+}
+
+// Emitted only before visible_operation is called; an IPC failure after the
+// dispatch boundary must retain UNKNOWN and cannot use this marker.
+fn visible_not_dispatched(request_id: &str, error: String) -> String {
+    format!("GOGOKE_VISIBLE_NOT_DISPATCHED:{request_id}:{error}")
+}
+
+fn caller_not_dispatched(request_id: Option<&str>, error: &str) -> String {
+    match stable_native_request_id(request_id.map(str::to_owned)) {
+        Ok(request_id) => visible_not_dispatched(&request_id, error.into()),
+        Err(_) => error.into(),
     }
 }
 
@@ -949,12 +963,20 @@ pub(crate) async fn native_visible_live_state(
         return Err(visible_failure(&reply.state, reply.reason.as_deref(), None));
     }
     let live = reply.live.ok_or("GOGOKE_NATIVE_LIVE_STATE_MISSING")?;
-    // The current host supplies UNKNOWN and question facts, not proof of a live
-    // process. Do not turn receipt of a read response into an alive/stop fact.
-    Err(format!(
-        "GOGOKE_NATIVE_LIVE_STATE_UNCONFIRMED:{}:pendingQuestions={}",
-        live.state, live.pending_questions.len()
-    ))
+    visible_live_observation(&live, reply.reason.as_deref())
+}
+
+fn visible_live_observation(live: &VisibleLiveReply, reason: Option<&str>) -> Result<bool, String> {
+    // The producer binds LIVE to the exact retained physical H holder, and
+    // STOPPED to the original complete H proof. A read receipt alone proves
+    // neither; UNKNOWN keeps the original observation error.
+    match live.state.as_str() {
+        "LIVE" => Ok(true),
+        "STOPPED" => Ok(false),
+        "UNKNOWN" => Err(format!("{}:pendingQuestions={}",
+            visible_failure("UNKNOWN", reason, None), live.pending_questions.len())),
+        _ => Err("GOGOKE_NATIVE_LIVE_STATE_INVALID".into()),
+    }
 }
 
 pub(crate) async fn native_visible_stop(
@@ -1399,10 +1421,11 @@ pub(crate) async fn send_user_message(
             || app_mentions.is_some_and(|items| !items.is_empty())
             || collaboration_mode.is_some_and(|value| !value.is_null())
         {
-            return Err("GOGOKE_NATIVE_CALLER_SELECTION_OR_ATTACHMENT_UNSUPPORTED".into());
+            return Err(caller_not_dispatched(native_request_id.as_deref(),
+                "GOGOKE_NATIVE_CALLER_SELECTION_OR_ATTACHMENT_UNSUPPORTED"));
         }
         if text.trim().is_empty() {
-            return Err("GOGOKE_NATIVE_TEXT_REQUIRED".into());
+            return Err(caller_not_dispatched(native_request_id.as_deref(), "GOGOKE_NATIVE_TEXT_REQUIRED"));
         }
         return native_visible_effect(
             &app,
@@ -1472,10 +1495,10 @@ pub(crate) async fn turn_steer(
         if images.is_some_and(|items| !items.is_empty())
             || app_mentions.is_some_and(|items| !items.is_empty())
         {
-            return Err("GOGOKE_NATIVE_ATTACHMENT_UNSUPPORTED".into());
+            return Err(caller_not_dispatched(native_request_id.as_deref(), "GOGOKE_NATIVE_ATTACHMENT_UNSUPPORTED"));
         }
         if text.trim().is_empty() || turn_id.trim().is_empty() {
-            return Err("GOGOKE_NATIVE_STEER_INPUT_INVALID".into());
+            return Err(caller_not_dispatched(native_request_id.as_deref(), "GOGOKE_NATIVE_STEER_INPUT_INVALID"));
         }
         return native_visible_effect(
             &app,
@@ -2202,5 +2225,18 @@ mod native_visible_boundary_tests {
             }
             assert!(require_original_association(Some(&changed), &current).is_err());
         }
+    }
+
+    #[test]
+    fn unknown_live_read_keeps_original_reason_without_alive_or_stop_claim() {
+        let mut live = VisibleLiveReply { state: "UNKNOWN".into(), pending_questions: vec![] };
+        let error = visible_live_observation(&live, Some("original H handle absent")).unwrap_err();
+        assert!(error.contains("original H handle absent"));
+        live.state = "LIVE".into();
+        assert_eq!(visible_live_observation(&live, None).unwrap(), true);
+        live.state = "STOPPED".into();
+        assert_eq!(visible_live_observation(&live, None).unwrap(), false);
+        live.state = "APPLIED".into();
+        assert!(visible_live_observation(&live, None).is_err());
     }
 }
