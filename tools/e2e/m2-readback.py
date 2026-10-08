@@ -6,6 +6,7 @@ No credential path is opened. Raw protocol remains in the private output.
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -90,6 +91,546 @@ result = {"schema": "gogoke.37.private-m2-readback.v1", "phase": phase,
           "rootIdentity": [root.stat().st_dev, root.stat().st_ino],
           "filesBefore": files(), "frames": [], "commands": [], "unknownFrames": [],
           "sessions": [], "worktree": None, "directCaseEvidence": False}
+
+def sidechat_entry_readback():
+    if journal.get("entry") != "m2-sidechat-win11" or phase not in ("side-worktrees", "final"):
+        raise RuntimeError("Independent V12 reader requires its exact entry and supported phase")
+    plan = journal.get("sideChatPlan")
+    if not isinstance(plan, dict) or plan.get("lifecycleOwnership") != "EXCLUSIVE_V12_SOURCE_AND_SIDE":
+        raise RuntimeError("Original exclusive V12 worktree plan is absent")
+    required = ("sourceSeatId", "sourceInstanceId", "sourceWorktreeId",
+                "sideSeatId", "sideInstanceId", "sideWorktreeId")
+    if any(not isinstance(plan.get(key), str) or not plan[key] for key in required) or \
+            plan["sourceSeatId"] == plan["sideSeatId"] or \
+            plan["sourceWorktreeId"] == plan["sideWorktreeId"] or \
+            not plan.get("sourceTemplateId") or not plan.get("sideTemplateId"):
+        raise RuntimeError("Original V12 worktree selections are not distinct")
+    pinned = journal.get("candidateInstalledSha256")
+    launches, closes = journal.get("launches"), journal.get("closes")
+    expected_count = 1 if phase == "side-worktrees" else 3
+    if not isinstance(pinned, dict) or not all(re.fullmatch(r"[a-f0-9]{64}", pinned.get(name, ""))
+            for name in ("gogoke.exe", "gogoke-native-host.exe", "resource-index.json")) or \
+            journal.get("candidateVersion") is None or not isinstance(launches, list) or len(launches) != expected_count or \
+            not isinstance(closes, list) or len(closes) != expected_count or \
+            any(row.get("sourceCommit") != journal["sourceCommit"] or
+                row.get("setId") != pinned["resource-index.json"] or
+                row.get("bootstrap", {}).get("version") != journal["candidateVersion"] for row in launches) or \
+            {row.get("pid") for row in launches} != {row.get("pid") for row in closes} or \
+            any(row.get("exitCode") != 0 or row.get("forceKill") is not False for row in closes):
+        raise RuntimeError("V12 installed candidate identity or normal-close chain is incomplete")
+
+    with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db:
+        db.execute("PRAGMA query_only=ON")
+        result["epoch"] = one(db, "SELECT epoch FROM v37_ledger_meta WHERE singleton=1")[0]
+        result["cursor"] = str(one(db, "SELECT COALESCE(MAX(cursor),0) FROM v37_ledger_index")[0])
+        result["entry"] = "m2-sidechat-win11"
+        if result["epoch"] != plan.get("ledgerEpoch") or \
+                not re.fullmatch(r"(0|[1-9][0-9]*)", str(plan.get("sourceCursor", ""))) or \
+                int(plan["sourceCursor"]) > int(result["cursor"]):
+            raise RuntimeError("Original V12 ledger epoch/cursor is not a measured value from this database")
+        source_path = one(db,
+            "SELECT source_path FROM gogoke_v37_worktree_sources WHERE repository_id=?",
+            (journal["repositoryId"],))[0]
+        if not same_local_path(Path(local_spelling(source_path)).resolve(strict=True),
+                               Path(local_spelling(journal["testbedSource"])).resolve(strict=True)):
+            raise RuntimeError("Original V12 F repository source differs from the configured testbed")
+        result["worktrees"] = []
+        for prefix in ("source", "side"):
+            worktree_id = plan[prefix + "WorktreeId"]
+            expected = (journal["domainId"], journal["repositoryId"],
+                        plan[prefix + "SeatId"], plan[prefix + "InstanceId"])
+            tree = one(db,
+                "SELECT w.domain_id,w.repository_id,w.seat_id,w.instance_id,w.worktree_path,"
+                "w.worktree_identity,w.state,l.state,o.phase "
+                "FROM gogoke_v37_worktrees w JOIN gogoke_v37_worktree_lifecycle l USING(worktree_id) "
+                "JOIN gogoke_v37_worktree_operations o USING(worktree_id) WHERE w.worktree_id=?",
+                (worktree_id,))
+            if tree[:4] != expected or tree[6:] != ("REGISTERED", "REGISTERED", "REGISTERED"):
+                raise RuntimeError("Original V12 F registration differs from its exact seat/instance")
+            seat = one(db,
+                "SELECT s.layer,t.template_id,s.instance_id,s.state FROM gogoke_v37_seats s "
+                "JOIN gogoke_v37_seat_settings t USING(domain_id,seat_id) "
+                "WHERE s.domain_id=? AND s.seat_id=?", (journal["domainId"], expected[2]))
+            if seat != ("USER", plan[prefix + "TemplateId"], expected[3], "IDLE"):
+                raise RuntimeError("Original V12 F root is not bound to its Root-selected IDLE USER template seat")
+            registered_path = Path(local_spelling(tree[4]))
+            if registered_path.is_symlink() or \
+                    (getattr(registered_path.lstat(), "st_file_attributes", 0) & 0x400):
+                raise RuntimeError("Original V12 F path is a link")
+            observed_path = registered_path.resolve(strict=True)
+            if not beneath(root, observed_path) or not same_local_path(registered_path, observed_path):
+                raise RuntimeError("Original V12 F path escaped state root or changed canonical identity")
+            stat = observed_path.stat()
+            result["worktrees"].append({"worktreeId": worktree_id, "domainId": tree[0],
+                "repositoryId": tree[1], "seatId": tree[2], "instanceId": tree[3],
+                "path": str(observed_path), "nativeOpaqueIdentity": tree[5],
+                "rootIdentity": {"observer": "python-stat", "device": str(stat.st_dev),
+                                 "inode": str(stat.st_ino)}})
+            matching = [entry for entry in journal["operations"]
+                        if entry.get("request", {}).get("family") == "K-WORKTREE" and
+                        entry["request"].get("operation") == "create" and
+                        entry["request"].get("targetId") == worktree_id]
+            registered = [entry for entry in journal["operations"]
+                          if entry.get("request", {}).get("family") == "K-WORKTREE" and
+                          entry["request"].get("operation") == "register" and
+                          entry["request"].get("targetId") == worktree_id]
+            if len(matching) != 1 or len(registered) != 1 or \
+                    matching[0].get("receipt", {}).get("status") != "APPLIED" or \
+                    registered[0].get("receipt", {}).get("status") != "APPLIED":
+                raise RuntimeError("Original V12 F create/register APPLIED receipts are absent")
+            for entry, operation in ((matching[0], "create"), (registered[0], "register")):
+                request, raw = entry["request"], entry["rawFrame"]
+                if json.loads(raw) != request:
+                    raise RuntimeError("Original V12 F request wire bytes differ")
+                stored = one(db,
+                    "SELECT request_hash FROM gogoke_v37_worktree_operations WHERE request_id=?"
+                    if operation == "create" else
+                    "SELECT request_hash FROM gogoke_v37_worktree_lifecycle_ops "
+                    "WHERE request_id=? AND operation='REGISTER'", (request["requestId"],))[0]
+                if stored != fingerprint(raw.encode()):
+                    raise RuntimeError("Original V12 F request hash differs from native storage")
+            if phase == "final":
+                graph = [entry for entry in journal["operations"]
+                         if entry.get("request", {}).get("family") == "K-WORKTREE" and
+                         entry["request"].get("operation") == "graph-query" and
+                         entry["request"].get("targetId") == worktree_id and
+                         entry.get("receipt", {}).get("status") in ("APPLIED", "REPLAYED")]
+                if not graph or not any(any(member.get("worktreeId") == worktree_id and
+                    member.get("domainId") == expected[0] and member.get("repositoryId") == expected[1] and
+                    member.get("seatId") == expected[2] and member.get("instanceId") == expected[3]
+                    for member in entry["receipt"].get("result", {}).get("members", [])) for entry in graph):
+                    raise RuntimeError("Original V12 F graph receipt does not bind its selected identities")
+        if len({os.path.normcase(row["path"]) for row in result["worktrees"]}) != 2:
+            raise RuntimeError("Original V12 source and side physical roots overlap")
+        source_root, side_root = (Path(row["path"]) for row in result["worktrees"])
+        if beneath(source_root, side_root) or beneath(side_root, source_root):
+            raise RuntimeError("Original V12 source and side F roots have a parent-child overlap")
+
+        if phase == "side-worktrees":
+            if journal.get("sideChatCases") or journal.get("sessions"):
+                raise RuntimeError("Initial V12 F readback must precede every H admission and side case")
+            result["sideChatCases"] = []
+            result["directCaseEvidence"] = True
+        else:
+            cases = journal.get("sideChatCases")
+            sessions = journal.get("sessions")
+            if not isinstance(cases, list) or len(cases) != 1 or not isinstance(sessions, list) or len(sessions) != 2:
+                raise RuntimeError("Final V12 readback requires one original case and exactly two H sessions")
+            case = cases[0]
+            if case.get("state") != "FLOW_COMPLETE_DIRECT_LEDGER_READBACK_REQUIRED" or \
+                    case.get("acceptance") is not False or case.get("worktrees") != result["worktrees"]:
+                raise RuntimeError("V12 original case state or physical F identity differs")
+            proof_ref = case.get("worktreeReadback", {})
+            if Path(proof_ref.get("file", "")).name != proof_ref.get("file"):
+                raise RuntimeError("Original V12 F artifact reference must be a private basename")
+            original_file = output.parent / proof_ref["file"]
+            original_bytes = original_file.read_bytes()
+            if fingerprint(original_bytes) != proof_ref.get("sha256"):
+                raise RuntimeError("Original closed V12 F artifact hash changed")
+            original_artifact = json.loads(original_bytes)
+            if original_artifact.get("entry") != "m2-sidechat-win11" or \
+                    original_artifact.get("phase") != "side-worktrees" or \
+                    original_artifact.get("caseId") != journal["caseId"] or \
+                    original_artifact.get("worktrees") != result["worktrees"] or \
+                    original_artifact.get("measurementPreservedDatabaseBytes") is not True:
+                raise RuntimeError("Original V12 F artifact and final physical identities differ")
+
+            expected_ids = {case["sourceSession"]["id"], case["sideSession"]["id"]}
+            if {row.get("id") for row in sessions} != expected_ids:
+                raise RuntimeError("Final V12 sessions differ from the original two sessions")
+            originals = {}
+            result["sideChatCases"] = []
+            for session in sessions:
+                sid = session["id"]
+                prefix = "source" if sid == case["sourceSession"]["id"] else "side"
+                expected_binding = (case["sourceSession"] if prefix == "source" else case["sideSession"])
+                if any(session.get(key) != expected_binding.get(key)
+                       for key in ("seatId", "instanceId", "worktreeId", "generation")):
+                    raise RuntimeError("Original V12 H session identity differs from its selected F binding")
+                settings = plan[prefix + "SeatSettings"]
+                seat = one(db,
+                    "SELECT s.incarnation,s.layer,t.template_id,s.instance_id,s.state,t.settings_json "
+                    "FROM gogoke_v37_seats s JOIN gogoke_v37_seat_settings t "
+                    "USING(domain_id,seat_id) WHERE s.domain_id=? AND s.seat_id=?",
+                    (journal["domainId"], session["seatId"]))
+                actual_settings = json.loads(seat[5])
+                if seat[1:5] != ("USER", plan[prefix + "TemplateId"], session["instanceId"], "IDLE") or \
+                        actual_settings.get("model") != settings.get("model") or \
+                        actual_settings.get("effort") != settings.get("effort"):
+                    raise RuntimeError("Final V12 seat model/effort differs from Root-provided actual settings")
+                episodes = rows(db,
+                    "SELECT generation,process_operation_id,phase,stop_fact_id,seat_id,seat_incarnation,instance_id,request_id "
+                    "FROM gogoke_v37_h_process_episode WHERE domain_id=? AND session_id=? ORDER BY rowid",
+                    (journal["domainId"], sid))
+                claim = one(db,
+                    "SELECT state,stop_fact_id,instance_id,generation FROM gogoke_v37_h_claim "
+                    "WHERE domain_id=? AND session_id=?", (journal["domainId"], sid))
+                stop = next((entry for entry in journal["operations"]
+                    if entry.get("request", {}).get("targetId") == sid and
+                    entry["request"].get("operation") == "stop"), None)
+                release = next((entry for entry in journal["operations"]
+                    if entry.get("request", {}).get("targetId") == sid and
+                    entry["request"].get("operation") == "admission-release"), None)
+                if not episodes or not stop or not release or claim[0] != "RELEASED" or \
+                        claim[1] != expected_binding.get("stopFact") or not claim[1] or \
+                        claim[2] != session["instanceId"] or claim[3] != session["generation"] or \
+                        stop.get("receipt", {}).get("status") != "APPLIED" or \
+                        stop["receipt"].get("result", {}).get("stopFact") != claim[1] or \
+                        release.get("receipt", {}).get("status") != "APPLIED" or \
+                        not all(row[0] == session["generation"] and row[2] == "STOPPED" and
+                                row[3] == claim[1] and row[4] == session["seatId"] and
+                                row[6] == session["instanceId"] for row in episodes):
+                    raise RuntimeError("Original V12 H stop, StopFact, release or episode binding is absent")
+                for operation in journal["operations"]:
+                    request = operation.get("request", {})
+                    action = request.get("operation")
+                    if request.get("family") != "K-SESSION" or request.get("targetId") != sid or \
+                            action not in ("admission-reserve", "admission-commit", "stop",
+                                           "admission-release", "send", "append-without-turn"):
+                        continue
+                    if action in ("send", "append-without-turn"):
+                        stored = one(db,
+                            "SELECT request_hex,receipt_status,session_id FROM gogoke_v37_h_stdin_journal "
+                            "WHERE domain_id=? AND request_id=? AND operation=?",
+                            (journal["domainId"], request["requestId"], action))
+                        if stored[0].lower() != operation["rawFrame"].encode().hex() or \
+                                stored[1] != "APPLIED" or stored[2] != sid:
+                            raise RuntimeError("Original V12 H input wire bytes or receipt differ")
+                    else:
+                        stored = one(db,
+                            "SELECT raw_hex,status FROM gogoke_v37_h_operation WHERE domain_id=? "
+                            "AND request_id=? AND operation=? AND session_id=?",
+                            (journal["domainId"], request["requestId"], action, sid))
+                        if stored[0].lower() != operation["rawFrame"].encode().hex() or stored[1] != "APPLIED":
+                            raise RuntimeError("Original V12 H admission/control wire bytes or receipt differ")
+                for entry, action in ((stop, "stop"), (release, "admission-release")):
+                    request = entry["request"]
+                    stored = one(db,
+                        "SELECT raw_hex,status FROM gogoke_v37_h_operation "
+                        "WHERE domain_id=? AND request_id=? AND operation=? AND session_id=?",
+                        (journal["domainId"], request["requestId"], action, sid))
+                    if stored[0].lower() != entry["rawFrame"].encode().hex() or stored[1] != "APPLIED":
+                        raise RuntimeError("Original V12 H stop/release wire bytes differ")
+                for episode in episodes:
+                    if episode[1] is None:
+                        continue
+                    custody = one(db,
+                        "SELECT domain_id,generation,state,stop_proof_hash FROM gogoke_coordination_process_custody "
+                        "WHERE operation_id=?", (episode[1],))
+                    if custody != (journal["domainId"], episode[0], "STOPPED", episode[3]) or \
+                            episode[3] != claim[1]:
+                        raise RuntimeError("Original V12 H StopFact lacks matching physical process custody")
+                incoming = rows(db,
+                    "SELECT generation,operation_id,source_epoch,source_cursor,raw_bytes,state,process_ticket,custodian_nonce,no_event_reason "
+                    "FROM v37_ledger_raw_source WHERE domain_id=? AND session_id=? ORDER BY rowid",
+                    (journal["domainId"], sid))
+                if not incoming or any(row[5] == "PENDING" for row in incoming):
+                    raise RuntimeError("Original V12 H raw A frames are absent or unresolved")
+                for row in incoming:
+                    custody = one(db,
+                        "SELECT domain_id,generation,ticket,custodian_nonce,state FROM "
+                        "gogoke_coordination_process_custody WHERE operation_id=?", (row[1],))
+                    if custody != (journal["domainId"], row[0], row[6], row[7], "STOPPED"):
+                        raise RuntimeError("Original V12 A raw frame lacks its stopped H process custody")
+                originals[sid] = []
+                for generation, operation, epoch, cursor, raw, state, ticket, nonce, reason in incoming:
+                    data = bytes(raw); frame = json.loads(data.decode("utf-8"))
+                    record = {"direction": "in", "sessionId": sid, "generation": generation,
+                        "operationId": operation, "sourceEpoch": epoch, "sourceCursor": cursor,
+                        "processTicket": ticket, "custodianNonce": nonce, "state": state,
+                        "noEventReason": reason, "originalFrame": data.decode("utf-8")}
+                    result["frames"].append(record); originals[sid].append((record, frame, data))
+                    if state == "PENDING": result["unknownFrames"].append({"sessionId": sid,
+                        "sourceEpoch": epoch, "sourceCursor": cursor, "method": frame.get("method"), "state": state})
+                for generation, operation, step, command, step_phase, epoch, cursor, ticket, nonce in rows(db,
+                    "SELECT generation,process_operation_id,step_id,command_hex,phase,source_epoch,source_cursor,ticket,custodian_nonce "
+                    "FROM gogoke_v37_rpc_steps WHERE domain_id=? AND session_id=? ORDER BY rowid",
+                    (journal["domainId"], sid)):
+                    result["commands"].append({"direction": "out", "sessionId": sid,
+                        "generation": generation, "operationId": operation, "stepId": step,
+                        "phase": step_phase, "sourceEpoch": epoch, "sourceCursor": cursor,
+                        "processTicket": ticket, "custodianNonce": nonce,
+                        "originalFrame": bytes.fromhex(command).decode("utf-8"),
+                        "confirmedWrite": step_phase in ("WRITTEN", "OBSERVED")})
+                normalized = rows(db,
+                    "SELECT i.cursor,i.source_epoch,i.source_cursor,i.update_json,r.operation_id,r.generation,"
+                    "r.process_ticket,r.custodian_nonce FROM v37_ledger_index i LEFT JOIN v37_ledger_raw_source r "
+                    "ON r.resolved_event_id=i.source_event_id AND r.domain_id=i.domain_id AND r.session_id=i.session_id "
+                    "WHERE i.source_kind='v37' AND i.domain_id=? AND i.session_id=? ORDER BY i.cursor",
+                    (journal["domainId"], sid))
+                pins = rows(db,
+                    "SELECT DISTINCT i.driver_id,i.version,i.program_digest,e.instance_id,c.binary_digest_sha256 "
+                    "FROM gogoke_v37_h_process_episode e JOIN gogoke_v37_instances i ON i.instance_id=e.instance_id "
+                    "LEFT JOIN gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id "
+                    "WHERE e.domain_id=? AND e.session_id=?", (journal["domainId"], sid))
+                if len(pins) != 1 or pins[0][3] != session["instanceId"] or pins[0][2] != pins[0][4] or \
+                        pins[0][0] != "codex" or pins[0][1] != "0.160.0" or not normalized or \
+                        any(row[4] is None or row[5] is None or row[6] is None or row[7] is None
+                            for row in normalized):
+                    raise RuntimeError("Original V12 H executable pin and process custody differ")
+                result["sessions"].append({"sessionId": sid, "seatId": session["seatId"],
+                    "instanceId": session["instanceId"], "episodes": episodes,
+                    "driverId": pins[0][0], "version": pins[0][1], "binarySha256": pins[0][2],
+                    "normalized": [{"cursor": str(cursor), "sourceEpoch": epoch,
+                        "ledgerSourceCursor": source_cursor, "operationId": operation,
+                        "generation": generation, "processTicket": ticket, "custodianNonce": nonce,
+                        "update": json.loads(update)} for cursor, epoch, source_cursor, update,
+                        operation, generation, ticket, nonce in normalized],
+                    "missingNormalized": len(normalized) == 0,
+                    "allEpisodesStopped": bool(episodes) and all(row[2] == "STOPPED" and row[3] for row in episodes),
+                    "rawFrameCount": len(incoming),
+                    "unknownFrameCount": sum(row[5] == "PENDING" for row in incoming)})
+            requirements = case["readbackRequirements"]
+            source_id, side_id = case["sourceSession"]["id"], case["sideSession"]["id"]
+            source_frames = [frame for _, frame, _ in originals[source_id]]
+            side_records = originals[side_id]
+            side_frames = [frame for _, frame, _ in side_records]
+            source_text = "".join(frame.get("params", {}).get("delta", "") for frame in source_frames
+                if frame.get("method") == "item/agentMessage/delta")
+            if not all(value in source_text for value in requirements["sourceRawContains"]):
+                raise RuntimeError("Original V12 source A output lacks its exact untrusted reference")
+            def completed_turn(frames, turn):
+                return any(frame.get("method") == "turn/completed" and
+                    frame.get("params", {}).get("threadId") == turn["threadId"] and
+                    frame.get("params", {}).get("turn", {}).get("id") == turn["turnId"] and
+                    frame.get("params", {}).get("turn", {}).get("status") == "completed" for frame in frames)
+            if not completed_turn(source_frames, requirements["sourceTurn"]) or \
+                    not completed_turn(side_frames, requirements["sideTurn"]):
+                raise RuntimeError("Original V12 A source and side turns are not both completed")
+            def tool(frame):
+                if frame.get("method") == "item/tool/call": return True
+                item = frame.get("params", {}).get("item", {})
+                return frame.get("method") in ("item/started", "item/completed") and \
+                    item.get("type") in ("commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall")
+            if any(tool(frame) for frame in source_frames):
+                raise RuntimeError("Original V12 source reference turn executed a tool")
+            passive_highwater = int(case["passiveBoundary"]["sideOutput"]["rawHighwater"])
+            if any(tool(frame) or frame.get("method") == "turn/started" for record, frame, _ in side_records
+                   if int(record["sourceCursor"]) <= passive_highwater) or \
+                    sum(frame.get("method") == "turn/started" for frame in side_frames) != 1:
+                raise RuntimeError("Original V12 side turn/tool boundaries differ around passive sync")
+            target = case["target"]
+            successful = [frame for frame in side_frames if frame.get("method") == "item/completed" and
+                frame.get("params", {}).get("turnId") == requirements["sideTurn"]["turnId"] and
+                frame.get("params", {}).get("threadId") == requirements["sideTurn"]["threadId"] and
+                frame.get("params", {}).get("item", {}).get("status") == "completed" and tool(frame)]
+            if not any(target["file"] in json.dumps(frame, ensure_ascii=False) and
+                    target["authorizedMarker"] in json.dumps(frame, ensure_ascii=False) for frame in successful):
+                raise RuntimeError("Original V12 completed A tool does not target the authorized marker")
+            side_root = next(row for row in result["worktrees"] if row["worktreeId"] ==
+                             case["sideSession"]["worktreeId"])
+            target_file = Path(side_root["path"]) / target["file"]
+            target_bytes = target_file.read_bytes()
+            if target_file.is_symlink() or not target_file.is_file() or \
+                    fingerprint(target_bytes) != target["finalSha256"] or \
+                    json.loads(target_bytes)["marker"] != target["authorizedMarker"] or \
+                    target["initialSha256"] != target["passiveSha256"] or \
+                    target["initialSha256"] == target["finalSha256"]:
+                raise RuntimeError("Actual V12 side file bytes differ from the original authorized write")
+            if case["sourceLedgerBeforeDelete"]["sha256"] != case["sourceLedgerAfterDelete"]["sha256"] or \
+                    case["state"] != "FLOW_COMPLETE_DIRECT_LEDGER_READBACK_REQUIRED":
+                raise RuntimeError("V12 source ledger changed on D deletion or module state differs")
+            source_request_id = case["sourceQuestionRequestId"]
+            side_request = case["questionRequest"]
+            source_send = one(db,
+                "SELECT phase,receipt_status,session_id,request_hex FROM gogoke_v37_h_stdin_journal "
+                "WHERE domain_id=? AND request_id=? AND operation='send'",
+                (journal["domainId"], source_request_id))
+            side_send = one(db,
+                "SELECT phase,receipt_status,request_hex,session_id FROM gogoke_v37_h_stdin_journal "
+                "WHERE domain_id=? AND request_id=? AND operation='send'",
+                (journal["domainId"], side_request["requestId"]))
+            assembled_bytes = bytes.fromhex(side_send[2])
+            assembled = json.loads(assembled_bytes.decode("utf-8"))
+            original_question = json.dumps(side_request, ensure_ascii=False,
+                separators=(",", ":")).encode()
+            sync = one(db,
+                "SELECT side_id,session_id,generation,mode,state,request_digest,origin_request_digest,native_receipt_id "
+                "FROM gogoke_v37_side_sync WHERE domain_id=? AND sync_id=?",
+                (journal["domainId"], side_request["requestId"]))
+            body = assembled.get("payload", {}).get("body")
+            delimiter = "\nExplicit user question:\n"
+            if not isinstance(body, str) or delimiter not in body:
+                raise RuntimeError("Original V12 D question boundary is absent from the H request")
+            reference_body, question_body = body.rsplit(delimiter, 1)
+            original_body = side_request["payload"]["body"]
+            assembled["payload"]["body"] = original_body
+            source_operation = next((entry for entry in journal["operations"]
+                if entry.get("request", {}).get("requestId") == source_request_id), None)
+            if source_operation is None or source_send[:2] != ("RECEIPTED", "APPLIED") or \
+                    source_send[2] != source_id or \
+                    source_send[3].lower() != source_operation["rawFrame"].encode().hex() or \
+                    side_send[:2] != ("RECEIPTED", "APPLIED") or side_send[3] != side_id or \
+                    assembled != side_request or \
+                    question_body != json.dumps(original_body, ensure_ascii=False, separators=(",", ":")) or \
+                    not reference_body.startswith("Source ledger history follows for reference only.") or \
+                    sync != (case["sideId"], side_id, case["sideSession"]["generation"], "QUESTION",
+                        "DELIVERED", fingerprint(assembled_bytes), fingerprint(original_question),
+                        case["sideQuestionReceipt"]["nativeReceiptId"]):
+                raise RuntimeError("Original V12 H source/side input receipts or D delivered request differ")
+            if rows(db, "SELECT request_id FROM gogoke_v37_h_stdin_journal "
+                    "WHERE domain_id=? AND session_id=? AND operation='append-without-turn'", (journal["domainId"], side_id)):
+                raise RuntimeError("V12 side has an original append-without-turn input")
+
+            side_open = case["openRequest"]
+            original_open = one(db,
+                "SELECT raw_hex,status FROM gogoke_v37_h_operation WHERE domain_id=? "
+                "AND request_id=? AND operation='open' AND session_id=?",
+                (journal["domainId"], side_open["requestId"], side_id))
+            if original_open[1] != "APPLIED" or original_open[0].lower() != \
+                    json.dumps(side_open, ensure_ascii=False, separators=(",", ":")).encode().hex():
+                raise RuntimeError("Original V12 H side open bytes differ")
+            source_open = next((entry for entry in journal["operations"]
+                if entry.get("request", {}).get("family") == "K-SESSION" and
+                entry["request"].get("operation") == "open" and
+                entry["request"].get("targetId") == source_id), None)
+            if source_open is None or source_open.get("receipt", {}).get("status") != "APPLIED":
+                raise RuntimeError("Original V12 source H open request/receipt is absent")
+            source_open_row = one(db,
+                "SELECT raw_hex,status FROM gogoke_v37_h_operation WHERE domain_id=? "
+                "AND request_id=? AND operation='open' AND session_id=?",
+                (journal["domainId"], source_open["request"]["requestId"], source_id))
+            if source_open_row[1] != "APPLIED" or \
+                    source_open_row[0].lower() != source_open["rawFrame"].encode().hex():
+                raise RuntimeError("Original V12 source H open bytes differ")
+            source_open_index = journal["operations"].index(source_open)
+            side_reserves = [index for index, entry in enumerate(journal["operations"])
+                if entry.get("request", {}).get("family") == "K-SESSION" and
+                entry["request"].get("operation") == "admission-reserve" and
+                entry["request"].get("targetId") == side_id]
+            if len(side_reserves) != 1 or source_open_index >= side_reserves[0]:
+                raise RuntimeError("V12 source H open did not precede the side H admission")
+            side_create = case["createRequest"]
+            original_create = one(db,
+                "SELECT request_hex FROM gogoke_v37_side_operations WHERE domain_id=? AND request_id=?",
+                (journal["domainId"], side_create["requestId"]))[0]
+            if original_create.lower() != json.dumps(side_create, ensure_ascii=False,
+                    separators=(",", ":")).encode().hex():
+                raise RuntimeError("Original V12 D create bytes differ")
+            life = [row.get("operation") for row in case.get("lifecycle", [])]
+            if life != ["resume", "archive", "restore", "delete"]:
+                raise RuntimeError("Original V12 D resume/archive/restore/delete sequence is incomplete")
+            expected_lifecycle = {"resume": "ACTIVE", "archive": "ARCHIVED",
+                                  "restore": "ACTIVE", "delete": "DELETED"}
+            for item in case["lifecycle"]:
+                request_id = item["requestId"]
+                stored = one(db,
+                    "SELECT request_hex FROM gogoke_v37_side_operations WHERE domain_id=? AND request_id=?",
+                    (journal["domainId"], request_id))[0]
+                operation = next((row for row in journal["operations"]
+                    if row.get("request", {}).get("requestId") == request_id), None)
+                if operation is None or operation.get("receipt", {}).get("status") != "APPLIED" or \
+                        operation["receipt"].get("result", {}).get("state") != expected_lifecycle[item["operation"]] or \
+                        operation["receipt"].get("result", {}).get("sessionId") != side_id or \
+                        stored.lower() != operation["rawFrame"].encode().hex():
+                    raise RuntimeError("Original V12 D lifecycle bytes or APPLIED receipt differ")
+            transcript_groups = []
+            group = None
+            for entry in journal["operations"]:
+                if entry.get("kind") == "SIDE_THREAD_READ":
+                    request = entry.get("request", {})
+                    page = entry.get("receipt", {})
+                    if request.get("schema") != "gogoke.37.owner-side-thread.v1" or \
+                            request.get("sideId") != case["sideId"] or \
+                            request.get("ledgerEpoch") != plan["ledgerEpoch"] or \
+                            page.get("schema") != "gogoke.37.side-thread.v1" or \
+                            page.get("sideId") != case["sideId"] or page.get("ledgerEpoch") != plan["ledgerEpoch"]:
+                        raise RuntimeError("Original V12 D own-thread read is not bound to the side epoch")
+                    if request.get("afterCursor") == "0":
+                        group = {"events": [], "cursor": "0", "closed": False}
+                        transcript_groups.append(group)
+                    if group is None or group["closed"] or request.get("afterCursor") != group["cursor"]:
+                        raise RuntimeError("Original V12 D own-thread cursor sequence is incomplete")
+                    for event in page.get("events", []):
+                        if event.get("sideId") != case["sideId"] or event.get("sessionId") != side_id:
+                            raise RuntimeError("Original V12 D transcript event identity differs")
+                        group["events"].append(event)
+                    if page.get("cursor") == request["afterCursor"]:
+                        group["closed"] = True
+                    group["cursor"] = page.get("cursor")
+            if len(transcript_groups) != 3 or not all(group["closed"] and group["events"]
+                    for group in transcript_groups) or \
+                    any(canonical(group["events"]) != canonical(transcript_groups[0]["events"])
+                        for group in transcript_groups[1:]) or \
+                    [event["sourceEventId"] for event in transcript_groups[0]["events"]] != \
+                        case.get("transcriptSourceEventIds") or \
+                    fingerprint(json.dumps(transcript_groups[0]["events"], ensure_ascii=False,
+                        separators=(",", ":")).encode()) != case.get("transcriptSha256"):
+                raise RuntimeError("Original V12 D transcript differs across open, archive/restore and readback")
+            side_state = one(db,
+                "SELECT state,source_session_id,session_id,source_epoch FROM gogoke_v37_side_registry "
+                "WHERE domain_id=? AND side_id=?", (journal["domainId"], case["sideId"]))
+            if side_state != ("DELETED", source_id, side_id,
+                    case["passiveBoundary"]["sideOutput"].get("sourceEpoch", result["epoch"])):
+                raise RuntimeError("Original V12 D final source/side registry state differs")
+            submitted = [json.loads(row[0]) for row in rows(db,
+                "SELECT command_hex FROM gogoke_v37_rpc_steps WHERE domain_id=? AND session_id=? "
+                "AND phase IN ('WRITTEN','OBSERVED') ORDER BY rowid", (journal["domainId"], side_id))]
+            if not any(command.get("method") == "turn/start" and
+                    command.get("params", {}).get("threadId") == requirements["sideTurn"]["threadId"] and
+                    any(item.get("type") == "text" and item.get("text") == body
+                        for item in command.get("params", {}).get("input", [])) for command in submitted):
+                raise RuntimeError("Original V12 H turn/start does not contain the exact assembled D input")
+
+            cursor_fence = one(db,
+                "SELECT epoch,after_cursor,through_cursor FROM gogoke_v37_side_sync "
+                "WHERE domain_id=? AND sync_id=?", (journal["domainId"], side_request["requestId"]))
+            reference_lines = reference_body.splitlines()
+            expected_header = '<side_reference epoch={} after={} through={}>'.format(
+                *(json.dumps(value, ensure_ascii=False) for value in cursor_fence))
+            if cursor_fence[0] != plan["ledgerEpoch"] or len(reference_lines) < 4 or reference_lines[1] != expected_header or \
+                    reference_lines[-2] != "</side_reference>" or reference_lines[0] != reference_lines[-1]:
+                raise RuntimeError("Original V12 D reference cursor fence differs")
+            references = [json.loads(line.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&"))
+                          for line in reference_lines[2:-2]]
+            source_rows = rows(db,
+                "SELECT source_event_id,source_epoch,source_cursor,seat_id,session_id,update_json "
+                "FROM v37_ledger_index WHERE source_kind='v37' AND domain_id=? AND seat_id=? "
+                "AND tier IN ('PROJECT','SEAT','SESSION') AND cursor>? AND cursor<=? ORDER BY cursor",
+                (journal["domainId"], case["sourceSession"]["seatId"],
+                 int(cursor_fence[1]), int(cursor_fence[2])))
+            expected_references = [{"sourceEventId": event_id, "sourceEpoch": epoch,
+                "sourceCursor": cursor, "seatId": seat, "sessionId": session,
+                "update": json.loads(update)} for event_id, epoch, cursor, seat, session, update in source_rows]
+            if canonical(references) != canonical(expected_references):
+                raise RuntimeError("Original V12 rendered source references differ from direct A ledger rows")
+            referenced_text = "".join(reference["update"].get("content", {}).get("text", "")
+                for reference in references
+                if reference["update"].get("_meta", {}).get("codexMethod") == "item/agentMessage/delta")
+            if not all(value in referenced_text + original_body for value in requirements["questionRawContains"]):
+                raise RuntimeError("Original V12 H question omits its pending source reference or explicit request")
+            source_events = [{"sourceEventId": event_id, "sourceEpoch": epoch,
+                "sourceCursor": cursor, "seatId": seat, "sessionId": session,
+                "update": json.loads(update)} for event_id, epoch, cursor, seat, session, update in rows(db,
+                    "SELECT source_event_id,source_epoch,source_cursor,seat_id,session_id,update_json "
+                    "FROM v37_ledger_index WHERE source_kind='v37' AND domain_id=? AND session_id=? "
+                    "AND cursor>? ORDER BY cursor",
+                    (journal["domainId"], source_id, int(plan["sourceCursor"])))]
+            for label in ("sourceLedgerBeforeDelete", "sourceLedgerAfterDelete"):
+                measured = case[label]
+                if canonical(measured.get("events")) != canonical(source_events) or \
+                        measured.get("sha256") != fingerprint(json.dumps(source_events,
+                            ensure_ascii=False, separators=(",", ":")).encode()):
+                    raise RuntimeError("Original V12 D deletion comparison differs from direct source ledger rows")
+            if case.get("readbackRequirements", {}).get("sourceLedgerUnchangedBySideDelete") is not True:
+                raise RuntimeError("Original V12 source ledger deletion comparison was not recorded")
+            result["sideChatCases"].append({"caseId": case["caseId"],
+                "sessionIds": [source_id, side_id],
+                "originalFrameCounts": [len(originals[source_id]), len(originals[side_id])],
+                "worktreeReadbackSha256": proof_ref["sha256"],
+                "successfulOriginalToolCount": len(successful),
+                "result": "DIRECT_A_H_F_AND_AUTHORIZED_TOOL_EXPORTED_REQUIRES_V12_REVIEW"})
+            result["directCaseEvidence"] = True
+
+if journal.get("entry") == "m2-sidechat-win11":
+    sidechat_entry_readback()
+    result["filesAfter"] = files()
+    result["measurementPreservedDatabaseBytes"] = result["filesBefore"] == result["filesAfter"]
+    output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if not result["measurementPreservedDatabaseBytes"] or not result["directCaseEvidence"]:
+        raise RuntimeError("Independent V12 direct evidence incomplete; preserve original private readback")
+    raise SystemExit(0)
+
 domain = journal["domainId"]
 lead = journal["sessions"][0]
 if lead["seatId"] != journal["leadSeatId"]:
