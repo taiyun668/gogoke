@@ -561,6 +561,19 @@ impl WorkspaceSession {
         Ok(Some((app.clone(), current.event_reader_id, current.event_position.clone())))
     }
 
+    /// These facts describe one locked attachment generation. A read failure
+    /// remains visible after stop; only the original H StopFact permits resume.
+    pub(crate) fn native_transport_snapshot(&self)
+        -> Result<Option<(NativeAssociation, Option<String>, bool)>, String> {
+        match &self.transport {
+            SessionTransport::Native { state, .. } => state.read()
+                .map(|current| Some((current.association.clone(),
+                    current.event_reader_error.clone(), current.confirmed_stop_fact.is_some())))
+                .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}")),
+            SessionTransport::Legacy { .. } => Ok(None),
+        }
+    }
+
     pub(crate) fn native_event_error(&self) -> Result<Option<String>, String> {
         match &self.transport {
             SessionTransport::Native { state, .. } => state.read()

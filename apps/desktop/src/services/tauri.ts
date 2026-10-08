@@ -1583,6 +1583,7 @@ async function nativeVisibleTransport(workspaceId: string, observe = false): Pro
   state: "NATIVE" | "LEGACY" | "DISCONNECTED" | "REMOTE";
   association: NativeConversationAssociation | null;
   eventReadError?: string;
+  stopConfirmed?: boolean;
 }> {
   const value: unknown = await invoke("native_visible_transport", { workspaceId, observe });
   if (!record(value) || value.schema !== "gogoke.37.visible-conversation.v1" ||
@@ -1595,8 +1596,12 @@ async function nativeVisibleTransport(workspaceId: string, observe = false): Pro
         (typeof value.nativeEventReadError !== "string" || !value.nativeEventReadError)) {
       throw new Error("Native event read failure has no original reason.");
     }
+    if (value.nativeStopConfirmed !== undefined && typeof value.nativeStopConfirmed !== "boolean") {
+      throw new Error("Native stop observation is malformed.");
+    }
     return { state: "NATIVE", association: exactNativeAssociation(value.association),
-      eventReadError: typeof value.nativeEventReadError === "string" ? value.nativeEventReadError : undefined };
+      eventReadError: typeof value.nativeEventReadError === "string" ? value.nativeEventReadError : undefined,
+      stopConfirmed: value.nativeStopConfirmed === true };
   }
   if (value.association !== null) {
     throw new Error("Non-native visible transport reported a native association.");
@@ -1636,11 +1641,16 @@ async function invokeVisibleWrite<T>(
   }
   return withNativeVisibleLock(workspaceId, async () => {
     const physicalStop = command === "stop_native_visible_session";
-    const transport = await nativeVisibleTransport(workspaceId, !physicalStop);
+    const current = await nativeVisibleTransport(workspaceId);
+    // A stopped attachment cannot restart its old observer. The host's original
+    // StopFact permits resume while retaining the error; H/A still verifies it.
+    const stoppedResume = command === "resume_thread" && current.stopConfirmed === true;
+    const transport = physicalStop || stoppedResume
+      ? current : await nativeVisibleTransport(workspaceId, true);
     if (transport.state !== "NATIVE" || !transport.association) {
       throw new Error("Native visible conversation transport changed before dispatch.");
     }
-    if (!physicalStop && transport.eventReadError) {
+    if (!physicalStop && !stoppedResume && transport.eventReadError) {
       throw new Error(`GOGOKE_NATIVE_EVENT_READ_UNKNOWN:${transport.eventReadError}`);
     }
     const association = await confirmedNativeVisibleAssociation(workspaceId, transport.association);

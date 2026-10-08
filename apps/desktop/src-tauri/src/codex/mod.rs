@@ -1187,6 +1187,7 @@ pub(crate) async fn native_visible_transport(
     }
     let session = state.sessions.lock().await.get(&workspace_id).cloned();
     let mut event_error = None;
+    let mut stop_confirmed = false;
     let (kind, association) = match session {
         Some(session) if session.is_native() => {
             if session.owner_workspace_id != workspace_id {
@@ -1197,19 +1198,21 @@ pub(crate) async fn native_visible_transport(
                     event_error = Some(error);
                 }
             }
-            event_error = event_error.or(session.native_event_error()?);
+            let (association, retained_error, stopped) = session.native_transport_snapshot()?
+                .ok_or("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE")?;
+            event_error = event_error.or(retained_error);
+            stop_confirmed = stopped;
             if !state.sessions.lock().await.get(&workspace_id).is_some_and(|current| Arc::ptr_eq(current, &session)) {
                 return Err("GOGOKE_NATIVE_SESSION_REPLACED_DURING_TRANSPORT_READ".into());
             }
-            let association = session.native_association()?
-                .ok_or("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE")?;
             ("NATIVE", Some(association))
         }
         Some(_) => ("LEGACY", None),
         None => ("DISCONNECTED", None),
     };
     Ok(json!({"schema": VISIBLE_SCHEMA, "workspaceId": workspace_id,
-        "state": kind, "association": association, "nativeEventReadError": event_error}))
+        "state": kind, "association": association, "nativeEventReadError": event_error,
+        "nativeStopConfirmed": stop_confirmed}))
 }
 
 pub(crate) async fn native_visible_live_state(
