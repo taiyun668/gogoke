@@ -612,6 +612,19 @@ async fn native_session_active(state: &AppState, workspace_id: &str) -> bool {
         .is_some_and(|session| session.is_native())
 }
 
+async fn reject_native_workspace(
+    app: &AppHandle,
+    workspace_id: &str,
+    surface: &str,
+) -> Result<(), String> {
+    crate::public_runtime::product_entry::ensure_design37_user_host(app).await?;
+    if visible_route(app, workspace_id).await?.state == "NATIVE" {
+        Err(format!("GOGOKE_NATIVE_{surface}_UNSUPPORTED"))
+    } else {
+        Ok(())
+    }
+}
+
 async fn native_association(
     state: &AppState,
     workspace_id: &str,
@@ -816,6 +829,7 @@ pub(crate) async fn thread_live_subscribe(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<Value, String> {
+    reject_native_workspace(&app, &workspace_id, "LIVE_SUBSCRIPTION").await?;
     if remote_backend::is_remote_mode(&*state).await {
         return remote_backend::call_remote(
             &*state,
@@ -856,6 +870,7 @@ pub(crate) async fn thread_live_unsubscribe(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<Value, String> {
+    reject_native_workspace(&app, &workspace_id, "LIVE_SUBSCRIPTION").await?;
     if remote_backend::is_remote_mode(&*state).await {
         return remote_backend::call_remote(
             &*state,
@@ -1481,6 +1496,7 @@ pub(crate) async fn account_read(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<Value, String> {
+    reject_native_workspace(&app, &workspace_id, "LEGACY_ACCOUNT_READ").await?;
     if remote_backend::is_remote_mode(&*state).await {
         return remote_backend::call_remote(
             &*state,
@@ -1500,6 +1516,7 @@ pub(crate) async fn codex_login(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<Value, String> {
+    reject_native_workspace(&app, &workspace_id, "LEGACY_LOGIN").await?;
     if remote_backend::is_remote_mode(&*state).await {
         return remote_backend::call_remote(
             &*state,
@@ -1519,6 +1536,7 @@ pub(crate) async fn codex_login_cancel(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<Value, String> {
+    reject_native_workspace(&app, &workspace_id, "LEGACY_LOGIN").await?;
     if remote_backend::is_remote_mode(&*state).await {
         return remote_backend::call_remote(
             &*state,
@@ -1620,7 +1638,9 @@ pub(crate) async fn remember_approval_rule(
     workspace_id: String,
     command: Vec<String>,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<Value, String> {
+    reject_native_workspace(&app, &workspace_id, "LEGACY_APPROVAL_RULE").await?;
     codex_core::remember_approval_rule_core(&state.workspaces, workspace_id, command).await
 }
 
@@ -1630,6 +1650,7 @@ pub(crate) async fn get_config_model(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<Value, String> {
+    reject_native_workspace(&app, &workspace_id, "LEGACY_CONFIG_READ").await?;
     if remote_backend::is_remote_mode(&*state).await {
         return remote_backend::call_remote(
             &*state,
@@ -1651,6 +1672,7 @@ pub(crate) async fn generate_commit_message(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<String, String> {
+    reject_native_workspace(&app, &workspace_id, "AUX_MODEL").await?;
     if remote_backend::is_remote_mode(&*state).await {
         let value = remote_backend::call_remote(
             &*state,
@@ -1704,6 +1726,7 @@ pub(crate) async fn generate_run_metadata(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<Value, String> {
+    reject_native_workspace(&app, &workspace_id, "AUX_MODEL").await?;
     if remote_backend::is_remote_mode(&*state).await {
         return remote_backend::call_remote(
             &*state,
@@ -1745,6 +1768,7 @@ pub(crate) async fn generate_agent_description(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<crate::shared::codex_aux_core::GeneratedAgentConfiguration, String> {
+    reject_native_workspace(&app, &workspace_id, "AUX_MODEL").await?;
     if remote_backend::is_remote_mode(&*state).await {
         let value = remote_backend::call_remote(
             &*state,
