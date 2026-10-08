@@ -80,12 +80,8 @@ fn clause_zone(clause: &str) -> Option<&str> {
 
 fn explicit_zones(text: &str) -> Result<Vec<String>, ScheduleError> {
     let mut found = Vec::new();
-    for clause in text.split(|c| matches!(c, ',' | '，' | ';' | '；' | '。')) {
-        if let Some(name) = clause_zone(clause) {
-            zone(name)?;
-            found.push(name.to_owned());
-        }
-    }
+    // Explicit prepositions identify the original zone phrase before a
+    // complete task clause can be mistaken for that phrase in diagnostics.
     for (index, _) in text.char_indices() {
         let tail = &text[index..];
         if let Some(after_preposition) = ["按照", "按", "使用", "用", "以"]
@@ -96,6 +92,12 @@ fn explicit_zones(text: &str) -> Result<Vec<String>, ScheduleError> {
                 zone(name)?;
                 found.push(name.to_owned());
             }
+        }
+    }
+    for clause in text.split(|c| matches!(c, ',' | '，' | ';' | '；' | '。')) {
+        if let Some(name) = clause_zone(clause) {
+            zone(name)?;
+            found.push(name.to_owned());
         }
     }
     for alias in ["北京时间", "中国标准时间"] {
@@ -634,6 +636,11 @@ pub(crate) fn resolve_user_schedule(
 ) -> Result<HostSchedule, ScheduleError> {
     if exact_span.trim().is_empty() {
         return Err(ScheduleError::EmptyRule);
+    }
+    // Literal-source uniqueness remains necessary, but is not authorization:
+    // the complete USER grammar below also determines the entire time rule.
+    if original_user.match_indices(exact_span).count() != 1 {
+        return Err(ScheduleError::SourceMismatch);
     }
     let authorized_span = command_rule(original_user)?;
     if exact_span != authorized_span {
