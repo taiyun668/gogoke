@@ -391,6 +391,7 @@ pub fn run() {
             codex::start_review,
             codex::respond_to_server_request,
             codex::recover_native_visible_request,
+            codex::stop_native_visible_session,
             codex::remember_approval_rule,
             codex::generate_commit_message,
             codex::generate_run_metadata,

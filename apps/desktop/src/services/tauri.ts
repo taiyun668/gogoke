@@ -1724,6 +1724,10 @@ export async function startThread(workspaceId: string, nativeRequestId?: string)
   return invokeVisibleWrite<any>("start_thread", { workspaceId }, nativeRequestId);
 }
 
+export async function stopNativeVisibleSession(workspaceId: string, nativeRequestId?: string) {
+  return invokeVisibleWrite<unknown>("stop_native_visible_session", { workspaceId }, nativeRequestId);
+}
+
 export async function forkThread(workspaceId: string, threadId: string) {
   return invoke<any>("fork_thread", { workspaceId, threadId });
 }

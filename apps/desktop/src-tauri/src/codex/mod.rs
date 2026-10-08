@@ -744,21 +744,25 @@ pub(crate) async fn native_visible_stop_with_intent(
     state: &AppState,
     workspace_id: &str,
     native_request_id: Option<String>,
-) -> Result<(), String> {
+    expected_association: Option<NativeAssociation>,
+) -> Result<Value, String> {
     let request_id = stable_native_request_id(native_request_id)?;
+    let before_dispatch = |error: String| visible_not_dispatched(&request_id, error);
     let session = state
         .sessions
         .lock()
         .await
         .get(workspace_id)
         .cloned()
-        .ok_or("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE")?;
+        .ok_or_else(|| before_dispatch("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE".into()))?;
     if session.owner_workspace_id != workspace_id {
-        return Err("GOGOKE_NATIVE_WORKSPACE_OWNER_MISMATCH".into());
+        return Err(before_dispatch("GOGOKE_NATIVE_WORKSPACE_OWNER_MISMATCH".into()));
     }
     let association = session
-        .native_association()?
-        .ok_or("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE")?;
+        .native_association().map_err(&before_dispatch)?
+        .ok_or_else(|| before_dispatch("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE".into()))?;
+    require_original_association(expected_association.as_ref(), &association)
+        .map_err(&before_dispatch)?;
     let reply = visible_operation(
         app,
         workspace_id,
@@ -782,11 +786,15 @@ pub(crate) async fn native_visible_stop_with_intent(
         {
             return Err("GOGOKE_NATIVE_SESSION_REPLACED_BEFORE_STOP_COMMIT".into());
         }
-        session.note_native_stop_fact(
-            &association,
-            reply.stop_fact.ok_or("GOGOKE_NATIVE_STOP_FACT_MISSING")?,
-        )?;
-        Ok(())
+        let fact = reply.stop_fact.ok_or("GOGOKE_NATIVE_STOP_FACT_MISSING")?;
+        let response = reply.response.ok_or("GOGOKE_NATIVE_STOP_RESPONSE_MISSING")?;
+        if response.get("result").and_then(|value| value.get("stopFact"))
+            .and_then(Value::as_str) != Some(fact.as_str())
+        {
+            return Err("GOGOKE_NATIVE_STOP_RESPONSE_FACT_MISMATCH".into());
+        }
+        session.note_native_stop_fact(&association, fact)?;
+        Ok(response)
     } else {
         Err(visible_failure(
             &reply.state,
@@ -794,6 +802,24 @@ pub(crate) async fn native_visible_stop_with_intent(
             Some(&request_id),
         ))
     }
+}
+
+/// The caller persists this original intent before dispatch. Cleanup may use
+/// only the resulting physical H proof, never an interrupt acknowledgement.
+#[tauri::command]
+pub(crate) async fn stop_native_visible_session(
+    workspace_id: String,
+    native_request_id: Option<String>,
+    expected_association: Option<NativeAssociation>,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<Value, String> {
+    if remote_backend::is_remote_mode(&*state).await {
+        return Err(caller_not_dispatched(native_request_id.as_deref(),
+            "GOGOKE_NATIVE_PHYSICAL_STOP_REMOTE_UNSUPPORTED"));
+    }
+    native_visible_stop_with_intent(&app, &state, &workspace_id,
+        native_request_id, expected_association).await
 }
 
 #[tauri::command]
@@ -820,6 +846,32 @@ pub(crate) async fn recover_native_visible_request(
     match reply.state.as_str() {
         "APPLIED" => {
             let response = reply.response.ok_or("GOGOKE_VISIBLE_RESPONSE_MISSING")?;
+            if reply.method.as_deref() == Some("physical-stop") {
+                let fact = reply.stop_fact.as_deref()
+                    .filter(|fact| !fact.is_empty())
+                    .ok_or("GOGOKE_NATIVE_STOP_FACT_MISSING")?;
+                if response.get("result").and_then(|value| value.get("stopFact"))
+                    .and_then(Value::as_str) != Some(fact)
+                {
+                    return Err("GOGOKE_NATIVE_STOP_RESPONSE_FACT_MISMATCH".into());
+                }
+                let sessions = state.sessions.lock().await;
+                if let Some(session) = sessions.get(&workspace_id) {
+                    // Original recovery is independent of a current attachment.
+                    // A replaced attachment must never receive the old proof.
+                    if session.owner_workspace_id == workspace_id {
+                        match session.native_association() {
+                            Ok(Some(cached)) if cached == association => {
+                                if let Err(error) = session.note_native_stop_fact(&association, fact.to_owned()) {
+                                    eprintln!("GOGOKE_NATIVE_RECOVER_STOP_CACHE_SYNC_FAILED:{error}");
+                                }
+                            }
+                            Err(error) => eprintln!("GOGOKE_NATIVE_RECOVER_STOP_CACHE_READ_FAILED:{error}"),
+                            _ => {}
+                        }
+                    }
+                }
+            }
             if reply.method.as_deref() == Some("thread/resume")
                 && reply
                     .original_request_ref
