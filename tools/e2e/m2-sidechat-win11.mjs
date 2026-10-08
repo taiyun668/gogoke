@@ -15,10 +15,10 @@ const inside = (child, parent) => child === parent || child.startsWith(parent + 
 const unique = values => new Set(values).size === values.length;
 const required = ['installed', 'version', 'sourceCommit', 'installedSha256', 'registryKey',
   'pwsh', 'python', 'evidenceDirectory', 'result', 'stateRoot', 'testbedSource',
-  'domainId', 'repositoryId', 'instanceId', 'seatId', 'observers', 'sideChat'];
+  'domainId', 'repositoryId', 'observers', 'sideChat'];
 if (process.platform !== 'win32' || required.some(key => config[key] === undefined) ||
-    config.repositoryId !== 'gogokeSeatTestbed' || !atom(config.domainId) || !atom(config.instanceId) ||
-    !atom(config.seatId) || !/^[a-f0-9]{40}$/.test(config.sourceCommit) ||
+    config.repositoryId !== 'gogokeSeatTestbed' || !atom(config.domainId) ||
+    !/^[a-f0-9]{40}$/.test(config.sourceCommit) ||
     !/^\d+\.\d+\.\d+$/.test(config.version) ||
     !['gogoke.exe', 'gogoke-native-host.exe', 'resource-index.json'].every(name =>
       /^[a-f0-9]{64}$/.test(config.installedSha256[name] ?? '')) ||
@@ -49,8 +49,6 @@ if (side.lifecycleOwnership !== 'EXCLUSIVE_V12_SOURCE_AND_SIDE' ||
     !atom(side.sourceTemplateId) || !atom(side.sideTemplateId) ||
     !unique([side.sourceSeatId, side.sideSeatId]) ||
     !unique([side.sourceWorktreeId, side.sideWorktreeId]) ||
-    [side.sourceSeatId, side.sideSeatId].includes(config.seatId) ||
-    [side.sourceWorktreeId, side.sideWorktreeId].includes(config.worktreeId) ||
     !/^[A-Za-z0-9._:-]{1,256}$/.test(side.ledgerEpoch ?? '') ||
     !/^(0|[1-9][0-9]*)$/.test(side.sourceCursor ?? '') ||
     !['sourceSeatSettings', 'sideSeatSettings'].every(key =>

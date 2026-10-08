@@ -110,8 +110,12 @@ def sidechat_entry_readback():
     expected_count = 1 if phase == "side-worktrees" else 3
     if not isinstance(pinned, dict) or not all(re.fullmatch(r"[a-f0-9]{64}", pinned.get(name, ""))
             for name in ("gogoke.exe", "gogoke-native-host.exe", "resource-index.json")) or \
-            journal.get("candidateVersion") is None or not isinstance(launches, list) or len(launches) != expected_count or \
+            not isinstance(journal.get("candidateVersion"), str) or \
+            not re.fullmatch(r"\d+\.\d+\.\d+", journal["candidateVersion"]) or \
+            not isinstance(launches, list) or len(launches) != expected_count or \
             not isinstance(closes, list) or len(closes) != expected_count or \
+            len({row.get("pid") for row in launches}) != expected_count or \
+            len({row.get("pid") for row in closes}) != expected_count or \
             any(row.get("sourceCommit") != journal["sourceCommit"] or
                 row.get("setId") != pinned["resource-index.json"] or
                 row.get("bootstrap", {}).get("version") != journal["candidateVersion"] for row in launches) or \
@@ -359,12 +363,14 @@ def sidechat_entry_readback():
                     "WHERE i.source_kind='v37' AND i.domain_id=? AND i.session_id=? ORDER BY i.cursor",
                     (journal["domainId"], sid))
                 pins = rows(db,
-                    "SELECT DISTINCT i.driver_id,i.version,i.program_digest,e.instance_id,c.binary_digest_sha256 "
+                    "SELECT DISTINCT i.driver_id,i.version,i.program_digest,e.instance_id,c.binary_digest_sha256,"
+                    "i.install_state,i.login_state "
                     "FROM gogoke_v37_h_process_episode e JOIN gogoke_v37_instances i ON i.instance_id=e.instance_id "
                     "LEFT JOIN gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id "
                     "WHERE e.domain_id=? AND e.session_id=?", (journal["domainId"], sid))
                 if len(pins) != 1 or pins[0][3] != session["instanceId"] or pins[0][2] != pins[0][4] or \
-                        pins[0][0] != "codex" or pins[0][1] != "0.160.0" or not normalized or \
+                        pins[0][0] != "codex" or pins[0][1] != "0.160.0" or \
+                        pins[0][5:] != ("INSTALLED", "LOGGED_IN") or not normalized or \
                         any(row[4] is None or row[5] is None or row[6] is None or row[7] is None
                             for row in normalized):
                     raise RuntimeError("Original V12 H executable pin and process custody differ")
@@ -410,6 +416,8 @@ def sidechat_entry_readback():
                     sum(frame.get("method") == "turn/started" for frame in side_frames) != 1:
                 raise RuntimeError("Original V12 side turn/tool boundaries differ around passive sync")
             target = case["target"]
+            if Path(target.get("file", "")).name != target.get("file"):
+                raise RuntimeError("Original V12 authorized side target is not a single worktree-relative file")
             successful = [frame for frame in side_frames if frame.get("method") == "item/completed" and
                 frame.get("params", {}).get("turnId") == requirements["sideTurn"]["turnId"] and
                 frame.get("params", {}).get("threadId") == requirements["sideTurn"]["threadId"] and
