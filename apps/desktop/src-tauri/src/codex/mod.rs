@@ -574,11 +574,12 @@ pub(crate) async fn native_visible_stop_with_intent(
 pub(crate) async fn recover_native_visible_request(
     workspace_id: String,
     native_request_id: String,
-    state: State<'_, AppState>,
+    expected_association: Option<NativeAssociation>,
     app: AppHandle,
 ) -> Result<Value, String> {
     let request_id = stable_native_request_id(Some(native_request_id))?;
-    let association = native_association(&state, &workspace_id).await?;
+    let association = expected_association.ok_or("GOGOKE_NATIVE_ORIGINAL_ASSOCIATION_REQUIRED")?;
+    crate::public_runtime::product_entry::ensure_design37_user_host(&app).await?;
     let reply = visible_operation(
         &app,
         &workspace_id,
