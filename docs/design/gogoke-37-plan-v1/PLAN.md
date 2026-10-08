@@ -353,3 +353,22 @@ K-UI 按 `secretaryModel.ts` 的 `SecretaryPage / SecretarySettings / Routine / 
 聚焦复核落实：旧“不承诺”里泛称决策登记册、长期记忆在第二批，现明确区分：秘书长隔离的全局记忆和全局决策册属于本次 M3，通用项目登记册、通用长期记忆自动化及额度仍不纳入。历史可搜要由 A 提供同一秘书长对话的原内容/账本位置搜索，不能拿现有线程标题搜索代替。投递必须核实际正文及来源材料：作用域标签本身不能证明任意模型文字没有混入别的项目；来源或目标资格不清楚就保留拒绝/unknown，不投递，V14 对实际材料做跨项目负例。
 
 USER 是产品授权层，不是要求 Owner 手工操作每项设置。Controller 按已有测试授权，在隔离候选/测试协调域中使用已授权、已登录测试实例和既有已验证模型/强度、边界内最低可保证权限，自动走真实 USER 配置，验证没设置、已配置和被拒绝并保全/读回/恢复测试记录；不改 Owner 真实全局设置或凭据。真实使用的偏好仍由 Owner 在产品里设置。只有新增凭据、提权或已有授权确实未覆盖时走原条件触点，不为本次测试再新增 Owner 触点，也不把 M3 秘书长测试变成 OT3 的 M1 前置条件。
+
+
+## 2026-10-08：普通对话原生接线的最小共享范围（提案，待 Owner 合并）
+
+本次给 INTEGRATOR 增补三个 hooks 和一个既有原生 effect helper 的确切范围；G 的写入范围、契约持久写方、H/LPAC/CLI/实例边界及既有 Owner 决定保持不变：
+
+- `apps/desktop/src/features/threads/hooks/useThreads.ts`：在新建/接入前采用宿主核实的原生路由；原有 runtime args 设置只留给 legacy。不能把已加载的 UI 快照当成原生关联重连已读完。
+- `apps/desktop/src/features/threads/hooks/useThreadMessaging.ts`：原生发送不再先写 legacy runtime args，也不带宿主不接受的 legacy model/effort/access override；实例、模型、强度和权限采用原配置/准入事实，不能猜。legacy 发送不变。
+- `apps/desktop/src/features/threads/hooks/useThreadActions.ts`：原生水合与重连走已有完整 `read_thread`；读取不借 `resume_thread` 改 H 会话，loaded shortcut 不能跳过原生全量对账；保留原错误。
+
+- `apps/desktop/native-host/src/store/product_database/v37_visible_effect.rs`：只在首次 effect 准备前、原 immediate transaction 内核 workspace 最新选择；不越过后来的选择去采用历史同 association。已有 requestId 的重放/恢复继续核原 action/selection row 和 H/A 回执，不受后来选择影响。该 helper 已存在于 shadow，但在映射快照及 main 尚不存在；T00 明确记录来源，不把历史施工提交当授权。
+
+现有 MainApp/tauri.ts 插槽能读 USER choices、显式选择其精确关联、再接同一个 H session；它们不能消除这三个 hooks 内部的 preflight、override 与 loaded shortcut。本次不新增普通模型子进程、编号别名、第二套渲染器或事件/type 文件；helper 修改仅为已有 USER 写请求的当前选择约束。不能自动采用候选列表第一项，也不能从 legacy workspace/thread、composer 偏好或事件顺序推导 native 身份与 Now 输出锚点。
+
+真实 USER 入口已优先分派到原 visible effect，finite 写操作不能按后面的只读分支误判为未实现；thread/start 因缺新会话身份仍为 UNSUPPORTED，因此本提案不是功能完成声明。真正新建按既有 H/USER 准入和原意图在已授权生产者范围内实施；如实际需要改变契约归属、安全边界或再加文件，保留未接上状态，另提最少修订。事件 seed 只建立原帧续读位置，不代替 UI 完整历史。
+
+参照：直接读现有三 hooks、MainApp、`codex/mod.rs` 原 native history、`v37_visible_conversation.rs` 的 choices/select、`v37_visible_effect.rs` 的原 USER effect，以及当前 shared_files 清单。采用已有完整 hydration 和原 H/A 来源；增加无法在外层包装替代的三处消费者，并将已有 effect helper 的当前选择修正纳入同一最小范围；不为方便扩大 G 或通用 types/events 范围。
+
+此修订改变范围摘要，同 PR 更新 v2 回执、MANIFEST 和三处固定回执 blob。Owner 合并一次、Controller 精确读回并用 main verifier 重算摘要后，才能修改这四个确切路径；不新增登录、重启、候选接受或公开发布触点。M2 既有授权范围内的云检继续推进。
