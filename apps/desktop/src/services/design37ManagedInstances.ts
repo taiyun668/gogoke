@@ -62,6 +62,7 @@ type Profile = {
   plan?: string; lastConfirmed?: string; checkFailed?: string;
   models?: string[]; modelsSource?: string; modelsObservedAt?: string;
   seats?: string[]; runningSessions?: number;
+  programSourceError?: string;
 };
 type Management = { profiles: Profile[]; cli: Map<Vendor, ManagedCliView> };
 const object = (value: unknown): value is Record<string, unknown> =>
@@ -130,6 +131,7 @@ function parseManagement(value: unknown): Management {
       plan: optionalString(item.plan, "account plan"),
       lastConfirmed: hostTime(item.lastConfirmed, "account confirmation time"),
       checkFailed: optionalString(item.checkFailed, "check failure"),
+      programSourceError: optionalString(item.programSourceError, "program source failure"),
       models: models as string[] | undefined,
       modelsSource: optionalString(item.modelsSource, "model source"),
       modelsObservedAt: hostTime(item.modelsObservedAt, "model observation time"),
@@ -166,6 +168,7 @@ function fromLogin(instance: Design37Instance, profile: Profile): ManagedInstanc
   if (login?.state === "PENDING" && !login.settled) return "LOGGING_IN";
   if (login?.state === "ERROR") return "LOGIN_FAILED";
   if (login?.state === "UNKNOWN") return "LOGIN_UNKNOWN";
+  if (profile.programSourceError) return "ERROR";
   if (instance.state === "ERROR") return "ERROR";
   if (instance.state === "LOGGED_IN") {
     return profile.enabled === true && profile.cap !== undefined ? "READY" : "CONFIG_UNKNOWN";
@@ -188,6 +191,7 @@ function joinedRow(instance: Design37Instance | undefined, profile: Profile, ord
     modelsSource: profile.modelsSource, modelsObservedAt: profile.modelsObservedAt,
     lastConfirmed: profile.lastConfirmed, checkFailed: profile.checkFailed,
     seats: profile.seats, runningSessions: profile.runningSessions,
+    raw: profile.programSourceError,
   };
   if (login?.state === "PENDING" && !login.settled) {
     row.login = {
@@ -197,7 +201,7 @@ function joinedRow(instance: Design37Instance | undefined, profile: Profile, ord
     };
     row.loginUnsettled = true;
   } else if (login?.state === "ERROR") {
-    row.raw = login.error || login.output || undefined;
+    row.raw = [profile.programSourceError, login.error || login.output].filter(Boolean).join("\n") || undefined;
     row.loginUnsettled = !login.settled;
   } else if (login?.state === "CANCELLED" && instance?.state !== "LOGGED_IN") {
     row.loginNote = "上次登录已取消，可以重新登录";
