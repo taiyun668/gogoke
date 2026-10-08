@@ -71,6 +71,7 @@ pub(crate) use credential_registry::{initialize_credential_schema, record_creden
 pub(crate) use grok_home_grants::{initialize_grok_home_grant_schema,
     current_domain as current_grok_home_domain, begin_grok_grant, read_grok_grants,
     begin_grok_grant_with_root_anchor, read_grok_root_anchor,
+    advance_grok_root_anchor_registration,
     begin_grok_effect, finish_grok_effect, finish_grok_root_effect_with_anchor,
     read_grok_effects, set_grok_grant_phase,
     bind_grok_original_process,

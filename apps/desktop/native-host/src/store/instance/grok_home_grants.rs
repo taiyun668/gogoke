@@ -193,6 +193,52 @@ fn existing_domain(db:&VerifiedDatabaseConnection<'_>,instance:&str)->Result<Opt
     Ok(Some((result,revision)))
 }
 
+fn advance_registration_in_tx(db:&mut VerifiedDatabaseConnection<'_>,
+    current:&GrokDomain,old:&GrokDomain,revision:i64)->Result<(),String>{
+    if old.instance_id!=current.instance_id ||old.root_identity!=current.root_identity ||
+        old.home_identity!=current.home_identity ||old.program_digest!=current.program_digest ||
+        old.version!=current.version ||old.registration_revision>current.registration_revision {
+        return Err("grok F journal: registered HOME or pin changed".into());
+    }
+    let anchor=read_grok_root_anchor(db,&current.instance_id)?;
+    if let Some(anchor)=&anchor {
+        if anchor.root_identity!=old.root_identity ||anchor.home_identity!=old.home_identity ||
+            anchor.program_digest!=old.program_digest ||anchor.version!=old.version ||
+            anchor.registration_revision!=old.registration_revision {
+            return Err("grok F journal: ordered root anchor registration drift".into());
+        }
+    }
+    if old.registration_revision==current.registration_revision {return Ok(());}
+    let update=stmt(db,"UPDATE main.gogoke_v37_grok_home_domains SET registration_revision=?1,revision=revision+1 WHERE instance_id=?2 AND root_identity=?3 AND home_identity=?4 AND program_digest=?5 AND version=?6 AND registration_revision=?7 AND revision=?8")?;
+    bind(&update,&[&current.registration_revision.to_string(),&current.instance_id,
+        &current.root_identity.opaque(),&current.home_identity.opaque(),
+        &current.program_digest,&current.version,&old.registration_revision.to_string(),
+        &revision.to_string()])?;
+    next(&update)?;changed(db)?;
+    if let Some(anchor)=anchor {
+        let update=stmt(db,"UPDATE main.gogoke_v37_grok_home_root_anchor SET registration_revision=?1,revision=revision+1 WHERE instance_id=?2 AND root_identity=?3 AND home_identity=?4 AND program_digest=?5 AND version=?6 AND registration_revision=?7 AND revision=?8")?;
+        bind(&update,&[&current.registration_revision.to_string(),&current.instance_id,
+            &current.root_identity.opaque(),&current.home_identity.opaque(),
+            &current.program_digest,&current.version,&anchor.registration_revision.to_string(),
+            &anchor.revision.to_string()])?;
+        next(&update)?;changed(db)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn advance_grok_root_anchor_registration(
+    db:&mut VerifiedDatabaseConnection<'_>,instance:&str)->Result<(),String>{
+    tx(db,|db|{
+        let current=current_domain(db,instance)?;
+        let (old,revision)=existing_domain(db,instance)?
+            .ok_or("grok F journal: established domain absent")?;
+        if read_grok_root_anchor(db,instance)?.is_none() {
+            return Err("grok F journal: active ordered root anchor absent".into());
+        }
+        advance_registration_in_tx(db,&current,&old,revision)
+    })
+}
+
 pub(crate) fn begin_grok_grant(db:&mut VerifiedDatabaseConnection<'_>,
     domain:&GrokDomain,grant:&GrokGrant)->Result<GrokGrant,String>{
     begin_grok_grant_with_catalog_and_anchor(db,domain,grant,&current_domain,None)
@@ -254,6 +300,47 @@ fn settled_grok_holder_gone_release(db:&VerifiedDatabaseConnection<'_>,
     Ok(found)
 }
 
+fn settled_stopped_h_release(db:&VerifiedDatabaseConnection<'_>,
+    old:&GrokGrant,candidate:&GrokGrant,stop:&str)->Result<bool,String>{
+    let operation=old.process_operation_id.as_deref()
+        .ok_or("grok F journal: old stopped operation absent")?;
+    let released=stmt(db,"SELECT 1 FROM main.gogoke_v37_h_claim h JOIN main.gogoke_v37_h_operation o ON o.domain_id=h.domain_id AND o.session_id=h.session_id AND o.operation='admission-release' AND o.status='APPLIED' AND o.revision=h.revision AND o.previous_revision=h.revision-1 WHERE h.instance_id=?1 AND h.domain_id=?2 AND h.session_id=?3 AND h.binding_id=?4 AND h.generation=?5 AND h.process_operation_id=?6 AND h.state='RELEASED' AND h.stop_fact_id=?7")?;
+    bind(&released,&[&old.instance_id,&old.domain_id,&old.session_id,
+        &old.binding_id,&old.generation,operation,stop])?;
+    if next(&released)? {
+        if next(&released)? {return Err("grok F journal: duplicate stopped release".into());}
+        return Ok(true);
+    }
+    // Resume consumes the STOPPED claim. Promotion rewrites that H row, but
+    // the new episode retains old_generation and the old stopped episode
+    // remains bound to the original operation/custody above.
+    let resume=stmt(db,"SELECT e.binding_id,e.request_id,e.phase,COALESCE(e.process_operation_id,''),COALESCE(e.stop_fact_id,''),e.generation FROM main.gogoke_v37_h_process_episode e WHERE e.instance_id=?1 AND e.domain_id=?2 AND e.session_id=?3 AND e.old_generation=?4 AND e.generation<>?4 AND e.binding_id<>?5")?;
+    bind(&resume,&[&old.instance_id,&old.domain_id,&old.session_id,
+        &old.generation,&old.binding_id])?;
+    let mut found=false;
+    while next(&resume)? {
+        let binding=text(&resume,0)?;
+        let request=text(&resume,1)?;
+        let phase=text(&resume,2)?;
+        let new_operation=text(&resume,3)?;
+        let new_stop=text(&resume,4)?;
+        let new_generation=text(&resume,5)?;
+        if binding==candidate.binding_id &&request==candidate.request_id &&
+            matches!(phase.as_str(),"INTENT"|"PREPARED"|"ACTIVE") {
+            found=true;
+        } else if phase=="STOPPED" &&!new_operation.is_empty() &&!new_stop.is_empty() {
+            let row=stmt(db,"SELECT 1 FROM main.gogoke_coordination_process_custody c WHERE c.operation_id=?1 AND c.profile_id=?2 AND c.domain_id=?3 AND c.generation=?4 AND c.state='STOPPED' AND c.stop_proof_hash=?5")?;
+            bind(&row,&[&new_operation,&old.instance_id,&old.domain_id,
+                &new_generation,&new_stop])?;
+            if next(&row)? {
+                if next(&row)? {return Err("grok F journal: duplicate historical resume custody".into());}
+                found=true;
+            }
+        }
+    }
+    Ok(found)
+}
+
 /// A completed old journal has no ordered ACE bytes. It may authorize a NEW
 /// baseline only after every old writer is durably quiescent and the current
 /// canonical root matches a settled original ROOT effect's complete
@@ -303,7 +390,9 @@ fn settled_legacy_root_baseline(db:&VerifiedDatabaseConnection<'_>,
             }
         }
         if let Some(operation)=old.process_operation_id.as_deref() {
-            let row=stmt(db,"SELECT 1 FROM main.gogoke_coordination_process_custody c JOIN main.gogoke_v37_h_claim h ON h.process_operation_id=c.operation_id AND h.instance_id=c.profile_id AND h.domain_id=c.domain_id AND h.generation=c.generation JOIN main.gogoke_v37_h_process_episode e ON e.process_operation_id=c.operation_id AND e.instance_id=c.profile_id AND e.domain_id=c.domain_id AND e.generation=c.generation AND e.session_id=h.session_id AND e.binding_id=h.binding_id WHERE c.operation_id=?1 AND c.profile_id=?2 AND c.domain_id=?3 AND c.generation=?4 AND c.ticket=?5 AND c.custodian_nonce=?6 AND c.pid=?7 AND c.creation_time_100ns=?8 AND c.image_path=?9 AND c.binary_digest_sha256=?10 AND c.state='STOPPED' AND c.stop_proof_hash=?11 AND h.binding_id=?12 AND h.session_id=?13 AND h.state IN ('STOPPED','RELEASED') AND h.stop_fact_id=?11 AND e.request_id=?14 AND e.phase='STOPPED' AND e.stop_fact_id=?11")?;
+            // The H claim is mutable across a legitimate resume promotion.
+            // The old generation's exact episode and custody are immutable.
+            let row=stmt(db,"SELECT 1 FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id AND c.profile_id=e.instance_id AND c.domain_id=e.domain_id AND c.generation=e.generation WHERE e.process_operation_id=?1 AND e.instance_id=?2 AND e.domain_id=?3 AND e.generation=?4 AND c.ticket=?5 AND c.custodian_nonce=?6 AND c.pid=?7 AND c.creation_time_100ns=?8 AND c.image_path=?9 AND c.binary_digest_sha256=?10 AND c.state='STOPPED' AND c.stop_proof_hash=?11 AND e.binding_id=?12 AND e.session_id=?13 AND e.request_id=?14 AND e.seat_id=?15 AND e.seat_incarnation=?16 AND e.phase='STOPPED' AND e.stop_fact_id=?11")?;
             let pid=old.pid.ok_or("grok F journal: old original pid absent")?.to_string();
             let creation=old.creation_time_100ns
                 .ok_or("grok F journal: old original creation absent")?.to_string();
@@ -313,10 +402,14 @@ fn settled_legacy_root_baseline(db:&VerifiedDatabaseConnection<'_>,
                 old.custodian_nonce.as_deref().ok_or("grok F journal: old original nonce absent")?,
                 &pid,&creation,
                 old.image_path.as_deref().ok_or("grok F journal: old original image absent")?,
-                &old.program_digest,stop,&old.binding_id,&old.session_id,&old.request_id])?;
+                &old.program_digest,stop,&old.binding_id,&old.session_id,&old.request_id,
+                &old.seat_id,&old.seat_incarnation])?;
             let stopped=!stop.is_empty() &&next(&row)?;
             if stopped &&next(&row)? {
                 return Err("grok F journal: duplicate old stopped F/H tuple".into());
+            }
+            if stopped &&!settled_stopped_h_release(db,old,candidate,stop)? {
+                return Err("grok F journal: original stopped H release or resume absent".into());
             }
             if !stopped {
                 if old.stop_fact_id.is_some() ||
@@ -395,19 +488,7 @@ fn begin_grok_grant_with_catalog_and_anchor(db:&mut VerifiedDatabaseConnection<'
     tx(db,|db|{
         if observe(db,&domain.instance_id)?!=*domain {return Err("grok F journal: current F pin/revision changed".into());}
         if let Some((old,revision))=existing_domain(db,&domain.instance_id)? {
-            if old.instance_id!=domain.instance_id ||old.root_identity!=domain.root_identity ||
-                old.home_identity!=domain.home_identity ||old.program_digest!=domain.program_digest ||
-                old.version!=domain.version ||old.registration_revision>domain.registration_revision {
-                return Err("grok F journal: established physical domain or pin changed".into());
-            }
-            if old.registration_revision<domain.registration_revision {
-                let update=stmt(db,"UPDATE main.gogoke_v37_grok_home_domains SET registration_revision=?1,revision=revision+1 WHERE instance_id=?2 AND root_identity=?3 AND home_identity=?4 AND program_digest=?5 AND version=?6 AND registration_revision=?7 AND revision=?8")?;
-                bind(&update,&[&domain.registration_revision.to_string(),&domain.instance_id,
-                    &domain.root_identity.opaque(),&domain.home_identity.opaque(),
-                    &domain.program_digest,&domain.version,&old.registration_revision.to_string(),
-                    &revision.to_string()])?;
-                next(&update)?;changed(db)?;
-            }
+            advance_registration_in_tx(db,domain,&old,revision)?;
         } else {
             let row=stmt(db,"INSERT INTO main.gogoke_v37_grok_home_domains VALUES(?1,?2,?3,?4,?5,?6,1)")?;
             bind(&row,&[&domain.instance_id,&domain.root_identity.opaque(),&domain.home_identity.opaque(),
