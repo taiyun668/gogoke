@@ -50,13 +50,13 @@ pub(crate) fn migrate_quiescent_legacy_instances(db:&VerifiedDatabaseConnection<
         let home=rows.column_text(3)?;
         let login=rows.column_text(4)?;
         let enabled=rows.column_text(5)?;
-        if enabled=="0" {continue}
-        if !matches!(enabled.as_str(),""|"1") {return Err(ProgramSourceError::Conflict)}
         if digest!=format!("sha256:{}",pin.image_sha256)||version!=pin.version||
             registry::observed_home(root,&id)?.is_none_or(|identity|identity.opaque()!=home){
             return Err(ProgramSourceError::Conflict);
         }
         let registration=registry::verified_creation_request(db,root,&id)?;
+        if enabled=="0" {continue}
+        if !matches!(enabled.as_str(),""|"1") {return Err(ProgramSourceError::Conflict)}
         let _credential=if driver=="codex"{
             let object=super::credential_registry::read_credential_object(db,&id)
                 .map_err(|error|ProgramSourceError::Credential(format!("credential object: {error:?}")))?;

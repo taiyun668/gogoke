@@ -160,7 +160,7 @@ impl<'a> ProductDatabase<'a> {
         Ok(())
     }
 
-    fn migrate_managed_cli(&mut self,driver:&str,stage:&str)->Result<usize> {
+    pub(super) fn migrate_managed_cli(&mut self,driver:&str,stage:&str)->Result<usize> {
         self.connection.execute("BEGIN IMMEDIATE")
             .map_err(|error|failure("migration begin",error))?;
         let result=(||{
@@ -174,8 +174,13 @@ impl<'a> ProductDatabase<'a> {
         match result {
             Ok(count)=>{self.connection.execute("COMMIT")
                 .map_err(OrchestrationError::CommitUnknownWithCause)?;Ok(count)},
-            Err(error)=>{self.connection.execute("ROLLBACK")
-                .map_err(OrchestrationError::CommitUnknownWithCause)?;Err(error)},
+            Err(primary)=>{
+                if let Err(rollback)=self.connection.execute("ROLLBACK") {
+                    return Err(OrchestrationError::V37StoreFailure(format!(
+                        "managed CLI migration: {primary:?}; rollback: {rollback:?}")));
+                }
+                Err(primary)
+            },
         }
     }
 

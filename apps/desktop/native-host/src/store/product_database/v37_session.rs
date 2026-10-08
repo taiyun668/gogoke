@@ -7,6 +7,9 @@ use crate::store::seat::{self, NativeOrigin, State, SecretaryConfiguration};
 use crate::store::session_transport::{self as h, runtime, AdmissionError,
     AdmissionRequest, AdmissionResult, OwnerBinding};
 
+const UNBOUND_MANAGED_SOURCE_CONFLICT: &str =
+    "managed CLI READY; original instance has no qualified managed program source";
+
 fn text(value: &str) -> Json { Json::String(JsonString::from_str(value)) }
 
 fn worktree_failure(request: &V37Request, error: crate::store::worktree::WorktreeError)
@@ -527,8 +530,17 @@ impl<'root> ProductDatabase<'root> {
         // again under BEGIN IMMEDIATE when it decides actual capacity.
         seat::read_project_parallel_cap(&self.connection, &request.domain_id)?;
         instance::read_instance_concurrency_cap(&self.connection, &selected_instance)?;
-        runtime::current_instance_pin(&self.connection, &selected_instance)
-            .map_err(|error| OrchestrationError::V37StoreFailure(format!("session pin: {error:?}")))?;
+        if let Err(error)=runtime::current_instance_pin(&self.connection, &selected_instance) {
+            if matches!(&error,AdmissionError::ProgramSource(instance::ProgramSourceError::Conflict)) {
+                let registered=self.read_registered_instance(&selected_instance)?
+                    .ok_or(OrchestrationError::OperationConflict)?;
+                if self.unbound_managed_source_reason(&selected_instance,&registered.driver_id)?.is_some() {
+                    return Err(OrchestrationError::V37StoreFailure(
+                        UNBOUND_MANAGED_SOURCE_CONFLICT.into()));
+                }
+            }
+            return Err(OrchestrationError::V37StoreFailure(format!("session pin: {error:?}")));
+        }
         let identity_bytes = format!("{}\n{}\n{}\n{}\n{}", self.root.canonical_root().identity.opaque(),
             request.domain_id, request.target_id, seat.incarnation, generation);
         let suffix = crate::store::digest::sha256_hex(identity_bytes.as_bytes());
@@ -754,6 +766,8 @@ impl<'root> ProductDatabase<'root> {
                     let status = match &error {
                         OrchestrationError::AccessDenied | OrchestrationError::Invalid(_) => V37Status::Denied,
                         OrchestrationError::OperationConflict => V37Status::Conflict,
+                        OrchestrationError::V37StoreFailure(reason)
+                            if reason==UNBOUND_MANAGED_SOURCE_CONFLICT => V37Status::Conflict,
                         _ => V37Status::Unknown,
                     };
                     return Ok(encode_receipt(request, status, 0, 0, BTreeMap::from([

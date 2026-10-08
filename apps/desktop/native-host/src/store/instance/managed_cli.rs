@@ -245,8 +245,16 @@ pub(crate) fn no_unsettled_instance_use(db: &VerifiedDatabaseConnection<'_>, dri
     if own_probe.step_row()? { return Err(ManagedCliError::Busy); }
     no_unsettled_global_cli_custody(db,driver)?;
     // Preparing a first managed copy cannot change an old instance's selected
-    // program. A genuine version change retains the original strict barrier.
+    // program. A missing copy row alone does not prove that old registrations
+    // have this pin; a genuine version change retains the strict barrier.
     let pin=read_fixed_official_cli(driver).ok_or(ManagedCliError::Unsupported)?;
+    let old=Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_instances i LEFT JOIN main.gogoke_v37_instance_profiles p ON p.instance_id=i.instance_id WHERE i.driver_id=?1 AND (p.tombstoned IS NULL OR p.tombstoned=0) AND (i.program_digest!=?2 OR i.version!=?3) LIMIT 1")?;
+    old.bind_text(1,driver)?;
+    old.bind_text(2,&format!("sha256:{}",pin.image_sha256))?;
+    old.bind_text(3,pin.version)?;
+    let mut version_change=old.step_row()?;
+    drop(old);
     let copy=Statement::prepare(db.as_ptr(),
         "SELECT COALESCE(version,''),COALESCE(previous_version,'') FROM main.gogoke_v37_instance_cli_copies WHERE driver_id=?1")?;
     copy.bind_text(1,driver)?;
@@ -256,9 +264,11 @@ pub(crate) fn no_unsettled_instance_use(db: &VerifiedDatabaseConnection<'_>, dri
         if copy.step_row()? {return Err(ManagedCliError::Busy)}
         if (!version.is_empty() && version!=pin.version) ||
             (!previous.is_empty() && previous!=pin.version) {
-            no_unsettled_version_change(db,driver)?;
+            version_change=true;
         }
     }
+    drop(copy);
+    if version_change {no_unsettled_version_change(db,driver)?;}
     Ok(())
 }
 
