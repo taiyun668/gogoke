@@ -225,6 +225,16 @@ impl<'root> ProductDatabase<'root> {
                 } else {false}
             } else {false}
         } else {false};
+        // Only Codex maintains turn_id from an observed turn/start ACK and
+        // clears it after the matching terminal source is recorded in A.
+        // Other providers have no equivalent live turn field in this host.
+        let turn_state=if runtime_available {
+            match self.native_sessions.get(&("global".to_owned(),session.clone())) {
+                Some(run) if run.evidence.driver_id()=="codex" =>
+                    if run.turn_id.is_some() {"RUNNING"} else {"IDLE"},
+                _=>"UNKNOWN",
+            }
+        } else {"UNKNOWN"};
         Ok(Json::Object(BTreeMap::from([
             (key("state"),text("FOUND")),
             (key("sessionId"),text(&session)),
@@ -233,6 +243,7 @@ impl<'root> ProductDatabase<'root> {
             (key("claimState"),text(&claim_state)),
             (key("stoppedFact"),Json::Bool(stopped)),
             (key("runtimeAvailable"),Json::Bool(runtime_available)),
+            (key("turnState"),text(turn_state)),
             (key("threadId"),text(&thread_id)),
             (key("ledgerEpoch"),text(&position.epoch)),
             (key("ledgerCursor"),text(&position.cursor.to_string())),
