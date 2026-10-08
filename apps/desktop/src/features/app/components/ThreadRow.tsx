@@ -110,11 +110,14 @@ export function ThreadRow({
     threadStatusById[thread.id],
     hasPendingUserInput,
   );
-  const statusClass = now
+  const statusClass = nowWord
     ? nowWord === "待处理" ? "unread" : nowWord === "在运行" ? "processing" : nowWord === "改动就绪" ? "ready" : ""
     : legacyStatusClass;
-  const statusLabel = now
-    ? now.status === "frozen" ? `${nowWord ?? "状态未确认"} · ${now.frozenAt} 最后读到` : nowWord
+  const frozenTime = now?.frozenAt ? new Date(now.frozenAt) : null;
+  const frozenTimeLabel = frozenTime && !Number.isNaN(frozenTime.getTime())
+    ? frozenTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }) : null;
+  const statusLabel = nowWord
+    ? now?.status === "frozen" ? `${nowWord} · ${frozenTimeLabel ?? "时间未知"} 最后读到` : nowWord
     : legacyStatusClass === "reviewing"
       ? tx("Reviewing")
       : hasPendingUserInput

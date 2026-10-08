@@ -126,8 +126,9 @@ impl GrokAuthMetadata {
         self.verify_retired_physical()?;
         snapshot(self.handle(),profile)
     }
-    /// Observation is metadata only. A newly rotated FileID may inherit HOME's
-    /// ACL; only F's separately journaled successor transition may normalize it.
+    /// Observation is metadata only. The first login FileID or a rotated one
+    /// may inherit HOME's ACL; only F's separately journaled transition may
+    /// normalize it.
     pub(crate) fn candidate_acl(&self,profile:&AppContainerProfile)->Result<GrokAclSnapshot,IsolationError>{
         self.verify_candidate_physical()?;
         snapshot(self.handle(),profile)
@@ -238,8 +239,8 @@ pub(crate) fn grant_grok_auth(profile: &AppContainerProfile,
     verify_grok_auth(profile, auth)
 }
 
-/// Called only for an unrecorded successor FileID after F/H intent. Replace
-/// this exact SID's inherited ACE with the already authorized explicit grant;
+/// Called for the first or a successor FileID only after F's exact ACL intent.
+/// Replace this SID's inherited ACE with the already authorized explicit grant;
 /// preserve every non-target ACE byte and do not request credential data.
 pub(crate) fn grant_grok_auth_successor(profile:&AppContainerProfile,
     auth:&GrokAuthMetadata)->Result<(),IsolationError>{

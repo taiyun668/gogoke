@@ -1,0 +1,45 @@
+{
+  "schema": "gogoke.37.stable-checkpoint.v1",
+  "changed": "Freeze and install candidate 0.1.38 from 41cf54033b11532af0b0432a4b0c36d3ab313f7e using the trusted-main signature and original uploaded bytes. Preserve the original registered test instances, homes, uncertain records and credentials. Subsequent UI fixes e53351a7/9e4094b3 are source-only and do not replace these installed bytes.",
+  "result": "The exact frozen desktop build, trusted-main signing, same-byte cloud smoke and ordinary Interactive/Limited installation passed. Formal five groups, retained native identities and setup bytes were preserved. Actual Claude failed at initialize with no complete stdout frames, unfinished bytes or stderr; three bounded original runs retained that failure, genuine H stop/release, normal product exit and read-only preservation. The original failed main-thread PCs repeatedly lie at the local named-pipe system-call stub; sampled RAX values match service IDs and are explicitly not Windows return errors. Fixed Claude executable imports and the uv pipe literal were read from its original unchanged binary. Grok initialize was OBSERVED, then active auth verification failed as a new inherited auth FileID replaced the earlier explicitly granted files. It was genuinely stopped/released; the original F grants were REVOKED and formal/memory/ledger observers remained unchanged. Actual successful Claude/Grok model turns and milestone acceptance remain NOT_RUN.",
+  "cloud": {
+    "main": "b8c5a902e00f900d98fddbe31c1764cfeb21dde7",
+    "scope_digest": "7abd79da58def8623ca9afa6b1ee6984ef49d5056fef64a9b67ef6aeeb3ef8ff",
+    "receipt_blob": "470e27951143b83d5230bfa3602fa6e21148a918",
+    "native_qualification_source": "8f76594fd4666fd43346c4d20d3ef38279497cde",
+    "native_tree_equal_in_qualification_and_frozen_source": "186af7ab5803c8c25270bbf010cf6cd941b054f4",
+    "native_full_run": 37732948922,
+    "native_full_result": "PASS: disjoint 762-case library aggregate, two shim cases, required process axes, focused cases, server tests and compiled security mutations; no installed model success inferred",
+    "desktop_run": 37729324910,
+    "frozen_artifact_id": 11530851068,
+    "frozen_archive_sha256": "ca973d145c74bb756ac20c90aeb4617d29874700e0d19299a5afe1028f0ce3ae",
+    "signing_run": 37733567120,
+    "signed_artifact_id": 11530947225,
+    "signed_archive_sha256": "6301969abb66833c01a620e1f808920799c8736717782e743206953375429294",
+    "same_byte_smoke_run": 37733793903
+  },
+  "installed_members_sha256": {
+    "setup": "21e40a99cde4d41d3b0859d3bd66b870a040bdf03e8b713001b6c82c9b4fe791",
+    "shell": "90b574aa28cf341bab0b7074de1f50bc063e2e6c9a87ae437b33b35f092a518d",
+    "native_host": "f985ada1777c3f54b96f40d86af7a9d0f017c3150c822d39daf08963b5b09471",
+    "resources": "9b9f85714426c88440f0d1ad2c183ea93524ed8e0f4e260107dbac82678835bc",
+    "resource_index": "f3f81c596897fdd14c507a1b80d9828baa00ac35dca2849d4b86edbb64f9a5ca"
+  },
+  "original_private_evidence_sha256": {
+    "claude_first_startup_readback": "7ee1fbe16e216985bb0d954ad9fd946903225dd631a4703647b6e291b0a7fe92",
+    "claude_second_startup_readback": "5d8ed867220eef8b7cc0d90dbbe6d126e0a03ee30db74ceecc8fc57fe88d7b7d",
+    "claude_third_startup_readback": "3c2ad7d4d463d5950f293284d078c02b9f713a75b8c3d01981b611fd1344b033",
+    "claude_third_real_stop_release": "82454dd2ffff1e7779cf438f293a297781f4f1525cc0f3129cb35b7a1e37ef8e",
+    "claude_third_preservation": "3da324ceec0d0ef0281c16e0069ff12030fff1c6e84b6034dff22c9cdd6cca1c"
+  },
+  "failure_original": {
+    "claude": "Claude initialize read: PROCESS_PROTOCOL_PIPE_FAILED: persistent frame deadline; PROCESS_STDERR_TAIL: ; original startup evidence recorded; UNKNOWN",
+    "grok": "Grok private HOME [observe-current-auth]: AclWitnessMismatch",
+    "claude_actual_windows_error": "UNKNOWN; syscall instruction location and service number do not establish a returned error"
+  },
+  "housekeeping": "The prior candidate was retired by its real uninstaller. The independently audited 1117 empty physical directories were removed bottom-up and each read back absent, without removing files, reparses, formal installation or retained candidate data. Completed ordinary tasks and original evidence remain retained pending their separate exact-object audit/export/cleanup.",
+  "reference": "Original H RPC writer/reader, exact A initialize receipt, durable original F effect/FileID custody and actual held-child identity; fixed local PE metadata, upstream libuv pipe.c and Microsoft's AppContainer IPC naming contract. Grok's stable HOME/root/authorized-peer lifetime is the active authority, while old explicit FileIDs retain precise withdrawal custody. A recent focused source audit found lifecycle regressions and they are being corrected together; no retry/deadline extension or fresh login is used.",
+  "next": "Continue the already active Grok lifecycle qualification, host-side preservation of original Claude API errors and Secretary authentic USER history source. Combine qualified product/UI changes at a new stable candidate; never replace installed 0.1.38 bytes or infer actual model success from cloud/installation. No Owner action is currently requested.",
+  "public_release": false,
+  "acceptance": false
+}

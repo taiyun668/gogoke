@@ -83,6 +83,29 @@ impl VerifiedDirectUserInput<'_> {
     pub(crate) fn observed_at_ms(&self) -> Option<i64> { self.observed_at_ms }
 }
 
+/// The Grok ACL regression uses the same fixed official image, managed
+/// program source and User registration as production. No login or model
+/// request is made; only the fixture's login-presence fact is arranged.
+#[cfg(all(test, windows))]
+pub(crate) fn prepare_managed_grok_acl_fixture(root: &RootLock, database: &Path,
+    instance_id: &str) {
+    assert!(!instance_id.is_empty() && instance_id.len() <= 64 &&
+        instance_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'));
+    let mut product = ProductDatabase::open(root, database).unwrap();
+    managed_cli_test_setup::ready(&mut product, root, "grok");
+    let frame = format!(r#"{{"schema":"gogoke.37.operations.v1","family":"K-INSTANCE","operation":"register","requestId":"fixtureGrokRegister","targetId":"{instance_id}","domainId":"global","expectedRevision":"0","payload":{{"driverId":"grok"}}}}"#);
+    let request = decode_request(frame.as_bytes()).unwrap();
+    let receipt = super::session_transport::decode_receipt(
+        &product.dispatch_user_request(&request).unwrap()).unwrap();
+    assert_eq!(receipt.status, V37Status::Applied);
+    instance::record_observation(&mut product.connection, root, &instance::ObservationRequest {
+        request_id: "fixtureGrokLoginPresence", request_bytes: b"synthetic login presence only",
+        instance_id, expected_revision: receipt.revision as i64,
+        observation: instance::InstanceObservation::LoggedIn,
+    }).unwrap();
+    product.close_checked().unwrap();
+}
+
 fn user_payload_string(request: &V37Request, field: &'static str) -> Result<String> {
     match request.payload.get(&JsonString::from_str(field)) {
         Some(Json::String(value)) => value.to_well_formed_string()
