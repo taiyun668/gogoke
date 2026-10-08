@@ -1019,7 +1019,9 @@ fn actual_saved_thread_files(home: &std::path::Path, thread: &str) -> Vec<std::p
     let mut matches = Vec::new();
     let suffix = format!("{thread}.jsonl");
     while let Some(parent) = pending.pop() {
-        for entry in std::fs::read_dir(&parent).unwrap() {
+        for entry in std::fs::read_dir(&parent).unwrap_or_else(|error| {
+            panic!("original native history directory observation failed: parent={parent:?}, win32={:?}, error={error}", error.raw_os_error())
+        }) {
             let path = entry.unwrap().path();
             let metadata = std::fs::symlink_metadata(&path).unwrap();
             assert_eq!(metadata.file_attributes() & 0x400, 0, "native history reparse: {path:?}");
