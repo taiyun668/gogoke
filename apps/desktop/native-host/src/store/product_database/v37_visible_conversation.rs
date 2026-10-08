@@ -284,6 +284,90 @@ impl<'root> ProductDatabase<'root> {
         }
         Ok(())
     }
+    /// Read the selected generation from H's original claim, episode and
+    /// custody. A retained status is insufficient to establish a live child;
+    /// only this holder's exact process handle can do that. Conversely, an
+    /// absent handle is not a physical StopFact.
+    fn visible_live_state(&self, association: &Association, selected: &Selection)
+        -> Result<(&'static str, Option<String>)> {
+        if let Err(error)=self.visible_candidate(association,true) {
+            return Ok(("UNKNOWN",Some(format!("Original current E/F/H/A association: {error:?}"))));
+        }
+        let row=Statement::prepare(self.connection.as_ptr(),
+            "SELECT a.state,COALESCE(a.stop_fact_id,''),e.phase,COALESCE(e.stop_fact_id,''),
+                    c.state,COALESCE(c.stop_proof_hash,''),c.operation_id,c.ticket,
+                    c.custodian_nonce,c.pid,c.creation_time_100ns,c.image_path,
+                    c.binary_digest_sha256,c.profile_id,e.request_id
+               FROM main.gogoke_v37_h_claim a
+               JOIN main.gogoke_v37_h_generation g ON g.domain_id=a.domain_id
+                    AND g.session_id=a.session_id AND g.generation=a.generation
+                    AND g.process_operation_id=a.process_operation_id
+               JOIN main.gogoke_v37_h_process_episode e ON e.domain_id=g.domain_id
+                    AND e.session_id=g.session_id AND e.generation=g.generation
+                    AND e.request_id=g.request_id AND e.process_operation_id=g.process_operation_id
+                    AND e.instance_id=a.instance_id AND e.home_id=a.home_id
+                    AND e.binding_id=a.binding_id
+               JOIN main.gogoke_coordination_process_custody c
+                    ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
+                    AND c.generation=e.generation
+              WHERE a.domain_id=?1 AND a.session_id=?2 AND a.generation=?3
+                    AND a.instance_id=?4 AND e.seat_id=?5 AND e.seat_incarnation=?6")?;
+        for (index,value) in [association.domain.as_str(),association.session.as_str(),
+            association.generation.as_str(),association.instance.as_str(),
+            association.seat.as_str(),association.incarnation.as_str()].iter().enumerate() {
+            row.bind_text((index+1) as i32,value)?;
+        }
+        if !row.step_row()? {
+            return Ok(("UNKNOWN",Some("Original current H claim/generation/episode/custody tuple is absent.".into())));
+        }
+        let facts=(0..15).map(|index|row.column_text(index)).collect::<std::result::Result<Vec<_>,_>>()?;
+        if row.step_row()? {
+            return Ok(("UNKNOWN",Some("Original current H process tuple is ambiguous.".into())));
+        }
+        drop(row);
+        let [claim,claim_stop,episode,episode_stop,custody,custody_stop,
+            operation,ticket,nonce,pid,creation,image,digest,profile,request]:[String;15]=
+            facts.try_into().map_err(|_|OrchestrationError::OperationConflict)?;
+        if claim=="STOPPED" && episode=="STOPPED" && custody=="STOPPED"
+            && !claim_stop.is_empty() && claim_stop==episode_stop && claim_stop==custody_stop {
+            return Ok(("STOPPED",None));
+        }
+        if claim!="COMMITTED" || episode!="ACTIVE" || custody!="ACTIVE"
+            || !claim_stop.is_empty() || !episode_stop.is_empty() || !custody_stop.is_empty() {
+            return Ok(("UNKNOWN",Some(format!("Original H process is not a proven live or stopped tuple: claim={claim}, episode={episode}, custody={custody}, stopProofPresent={}",
+                !claim_stop.is_empty() || !episode_stop.is_empty() || !custody_stop.is_empty()))));
+        }
+        let key=(association.domain.clone(),association.session.clone());
+        let Some(run)=self.native_sessions.get(&key) else {
+            return Ok(("UNKNOWN",Some("Original current H holder has no retained live process custody.".into())));
+        };
+        if run.operation_id!=operation || run.open_request_id!=request
+            || run.evidence.driver_id()!="codex" || run.evidence.seat_id()!=association.seat
+            || run.evidence.seat_incarnation()!=association.incarnation
+            || run.custody.binding.domain_id!=association.domain
+            || run.custody.binding.generation!=association.generation
+            || run.thread_id.as_deref()!=Some(selected.thread.as_str())
+            || run.custody.ticket.opaque()!=ticket || run.custody.custodian_nonce!=nonce
+            || run.custody.identity.pid.to_string()!=pid
+            || run.custody.identity.creation_time_100ns.to_string()!=creation
+            || run.custody.identity.image_path.to_string_lossy()!=image
+            || run.custody.binding.binary_digest_sha256!=digest
+            || run.custody.binding.profile_id!=profile {
+            return Ok(("UNKNOWN",Some("Original H process identity, generation, thread or custody differs from the retained holder.".into())));
+        }
+        let Some(process)=self.process_custodian.active(&run.custody.ticket) else {
+            return Ok(("UNKNOWN",Some("Original H process handle is absent; absence does not prove STOPPED.".into())));
+        };
+        if process.identity()!=&run.custody.identity {
+            return Ok(("UNKNOWN",Some("Original H process handle identity differs from PID and creation time custody.".into())));
+        }
+        match process.exit_code() {
+            Ok(None)=>{},
+            Ok(Some(code))=>return Ok(("UNKNOWN",Some(format!("Original H process exited with code {code}; no physical StopFact is recorded.")))),
+            Err(error)=>return Ok(("UNKNOWN",Some(format!("Original H process exit observation: {error}")))),
+        }
+        Ok(("LIVE",None))
+    }
     fn visible_configuration_in_transaction(&mut self, command: &str,
         fields: &BTreeMap<JsonString,Json>, frame: &[u8], workspace: &str) -> Result<Json> {
         let base=["schema","command","workspaceId"];
@@ -413,8 +497,12 @@ impl<'root> ProductDatabase<'root> {
                 match method.as_str() {
                     "live-state"=>{
                         exact(params,&[],&[])?;
-                        reply.insert(k("reason"),s("No qualified current thread readiness/closure observation is available from this producer."));
-                        reply.insert(k("live"),Json::Object(BTreeMap::from([(k("state"),s("UNKNOWN")),
+                        let (state,reason)=match self.visible_live_state(&association,&selected) {
+                            Ok(observed)=>observed,
+                            Err(error)=>("UNKNOWN",Some(format!("Original H live-state observation: {error:?}"))),
+                        };
+                        if let Some(reason)=reason {reply.insert(k("reason"),s(&reason));}
+                        reply.insert(k("live"),Json::Object(BTreeMap::from([(k("state"),s(state)),
                             (k("pendingQuestions"),self.visible_pending_questions(&association,&selected.thread)?)])));
                     },
                     "thread/read"=>{
