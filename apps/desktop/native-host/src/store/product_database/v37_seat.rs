@@ -131,20 +131,18 @@ impl<'root> ProductDatabase<'root> {
         let text=|value:&str| Json::String(JsonString::from_str(value));
         let state=|value:&str| Json::Object(BTreeMap::from([(key("state"),text(value))]));
         let candidates=Statement::prepare(self.connection.as_ptr(),
-            "SELECT session_id,seat_incarnation,seat_authorization_generation,selected_instance_id \
+            "SELECT session_id,selected_instance_id \
              FROM main.gogoke_v37_native_selection \
-             WHERE domain_id='global' AND seat_id=?1 ORDER BY session_id LIMIT 2")?;
+             WHERE domain_id='global' AND seat_id=?1 AND seat_incarnation=?2 \
+               AND seat_authorization_generation=?3 ORDER BY session_id LIMIT 2")?;
         candidates.bind_text(1,seat_id)?;
+        candidates.bind_text(2,incarnation)?;
+        candidates.bind_i64(3,generation)?;
         if !candidates.step_row()? {return Ok(state("NONE"));}
         let session=candidates.column_text(0)?;
-        let selected_incarnation=candidates.column_text(1)?;
-        let selected_generation=candidates.column_text(2)?;
-        let selected_instance=candidates.column_text(3)?;
+        let selected_instance=candidates.column_text(1)?;
         if candidates.step_row()? {return Ok(state("CONFLICT"));}
         drop(candidates);
-        if selected_incarnation!=incarnation || selected_generation!=generation.to_string() {
-            return Ok(state("UNKNOWN"));
-        }
         let Some(binding)=crate::store::session_transport::session_binding::read(
             &self.connection,"global",&session).map_err(|error|
                 OrchestrationError::V37StoreFailure(format!("secretary original binding: {error:?}")))?
@@ -209,17 +207,24 @@ impl<'root> ProductDatabase<'root> {
             Err(error)=>return Err(error),
         };
         let position=crate::store::ledger::recover(&self.connection)?;
-        let runtime_available=claim_state=="COMMITTED"
-            && self.native_sessions.get(&("global".to_owned(),session.clone()))
-                .is_some_and(|run|run.evidence.seat_id()==seat_id
+        let runtime_available=if claim_state=="COMMITTED" {
+            if let Some(run)=self.native_sessions.get(&("global".to_owned(),session.clone())) {
+                if run.evidence.seat_id()==seat_id
                     && run.evidence.seat_incarnation()==incarnation
                     && run.custody.binding.generation==claim_generation
                     && run.operation_id==process_operation
                     && run.thread_id.as_deref()==Some(thread_id.as_str())
-                    && run.allows_input()
-                    && self.process_custodian.active(&run.custody.ticket)
-                        .is_some_and(|process|process.identity()==&run.custody.identity
-                            && process.exit_code().ok()==Some(None)));
+                    && run.allows_input() {
+                    if let Some(process)=self.process_custodian.active(&run.custody.ticket) {
+                        if process.identity()==&run.custody.identity {
+                            process.exit_code().map_err(|error|
+                                OrchestrationError::V37StoreFailure(format!(
+                                    "secretary runtime exit observation: {error:?}")))?.is_none()
+                        } else {false}
+                    } else {false}
+                } else {false}
+            } else {false}
+        } else {false};
         Ok(Json::Object(BTreeMap::from([
             (key("state"),text("FOUND")),
             (key("sessionId"),text(&session)),
@@ -1390,25 +1395,43 @@ mod tests {
                 "\"effort\":\"high\"","\"permissionTier\":\"READ_ONLY\""] {
                 assert!(configured.contains(value),"Root readback matches original E selection: {configured}");
             }
+            let current=seat::get(&product.connection,"global",&created.seat_id).unwrap().unwrap();
+            assert!(current.generation>created.generation,"configuration advances E authorization generation");
             // A foreign project cannot masquerade as the singleton's global
-            // conversation; an incomplete native selection stays unknown.
+            // conversation. Historical authorization generations remain in H.
             product.connection.execute("INSERT INTO main.gogoke_v37_native_selection(domain_id,session_id,seat_id,seat_incarnation,seat_authorization_generation,selected_instance_id) VALUES('projectA','foreignSession','globalSeatA','foreignIncarnation',1,'configuredInstance')").unwrap();
             assert!(String::from_utf8(product.configure_user_v37(read).unwrap()).unwrap()
                 .contains("\"conversation\":{\"state\":\"NONE\"}"));
+            let old=Statement::prepare(product.connection.as_ptr(),
+                "INSERT INTO main.gogoke_v37_native_selection(domain_id,session_id,seat_id,seat_incarnation,seat_authorization_generation,selected_instance_id) VALUES('global',?1,?2,?3,?4,'configuredInstance')").unwrap();
+            old.bind_text(1,"oldSecretary").unwrap();
+            old.bind_text(2,&created.seat_id).unwrap();
+            old.bind_text(3,&created.incarnation).unwrap();
+            old.bind_i64(4,created.generation).unwrap();
+            old.step_done().unwrap();drop(old);
+            assert!(String::from_utf8(product.configure_user_v37(read).unwrap()).unwrap()
+                .contains("\"conversation\":{\"state\":\"NONE\"}"));
+            // One incomplete current selection is unknown, even when old
+            // history is retained. Two current selections are a conflict.
             let pending=Statement::prepare(product.connection.as_ptr(),
                 "INSERT INTO main.gogoke_v37_native_selection(domain_id,session_id,seat_id,seat_incarnation,seat_authorization_generation,selected_instance_id) VALUES('global',?1,?2,?3,?4,'configuredInstance')").unwrap();
             pending.bind_text(1,"pendingSecretaryA").unwrap();
             pending.bind_text(2,&created.seat_id).unwrap();
             pending.bind_text(3,&created.incarnation).unwrap();
-            pending.bind_i64(4,created.generation).unwrap();
-            pending.step_done().unwrap();
+            pending.bind_i64(4,current.generation).unwrap();
+            pending.step_done().unwrap();drop(pending);
             assert!(String::from_utf8(product.configure_user_v37(read).unwrap()).unwrap()
                 .contains("\"conversation\":{\"state\":\"UNKNOWN\"}"));
-            product.connection.execute("INSERT INTO main.gogoke_v37_native_selection(domain_id,session_id,seat_id,seat_incarnation,seat_authorization_generation,selected_instance_id) VALUES('global','pendingSecretaryB','globalSeatA','foreignIncarnation',1,'configuredInstance')").unwrap();
+            let second=Statement::prepare(product.connection.as_ptr(),
+                "INSERT INTO main.gogoke_v37_native_selection(domain_id,session_id,seat_id,seat_incarnation,seat_authorization_generation,selected_instance_id) VALUES('global',?1,?2,?3,?4,'configuredInstance')").unwrap();
+            second.bind_text(1,"pendingSecretaryB").unwrap();
+            second.bind_text(2,&created.seat_id).unwrap();
+            second.bind_text(3,&created.incarnation).unwrap();
+            second.bind_i64(4,current.generation).unwrap();
+            second.step_done().unwrap();drop(second);
             assert!(String::from_utf8(product.configure_user_v37(read).unwrap()).unwrap()
                 .contains("\"conversation\":{\"state\":\"CONFLICT\"}"));
             product.connection.execute("DELETE FROM main.gogoke_v37_native_selection").unwrap();
-            let current=seat::get(&product.connection,"global",&created.seat_id).unwrap().unwrap();
             seat::reclaim(&mut product.connection,NativeOrigin::user(&product.owner),SeatChange {
                 domain_id:"global",seat_id:&created.seat_id,expected_generation:current.generation,
                 expected_revision:current.revision,request_id:"revokeGlobalA",request_bytes:b"original revoke"}).unwrap();
