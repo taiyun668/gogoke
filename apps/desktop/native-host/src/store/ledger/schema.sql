@@ -171,7 +171,7 @@ CREATE TABLE IF NOT EXISTS v37_ledger_session (
     session_id TEXT PRIMARY KEY,
     domain_id TEXT NOT NULL,
     seat_id TEXT NOT NULL,
-    purpose TEXT NOT NULL CHECK (purpose IN ('WORK', 'HANDOFF', 'SIDE_CHAT', 'FORMAL_REVIEW')),
+    purpose TEXT NOT NULL CHECK (purpose IN ('WORK', 'HANDOFF', 'SIDE_CHAT', 'FORMAL_REVIEW', 'SECRETARY')),
     side_id TEXT,
     CHECK ((purpose = 'SIDE_CHAT') = (side_id IS NOT NULL))
 ) STRICT;
