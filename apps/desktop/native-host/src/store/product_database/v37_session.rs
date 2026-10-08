@@ -51,6 +51,16 @@ fn admission_status(error: &AdmissionError) -> V37Status {
 }
 
 impl<'root> ProductDatabase<'root> {
+    fn require_one_secretary_conversation(&self,session_id:&str)->Result<()> {
+        let q=Statement::prepare(self.connection.as_ptr(),
+            "SELECT session_id FROM main.v37_ledger_session WHERE domain_id='global' AND purpose='SECRETARY'")?;
+        if q.step_row()? {
+            if q.column_text(0)?!=session_id || q.step_row()? {
+                return Err(OrchestrationError::AccessDenied);
+            }
+        }
+        Ok(())
+    }
     fn secretary_current_seat(&self)->Result<seat::Seat> {
         let SecretaryConfiguration::Designated {seat_id,incarnation,
             instance_id:Some(_),model:Some(_),effort:Some(_),permission:Some(_),..}=
@@ -67,6 +77,7 @@ impl<'root> ProductDatabase<'root> {
         if request.domain_id!="global" || !request.payload.is_empty() {
             return Err(OrchestrationError::AccessDenied);
         }
+        self.require_one_secretary_conversation(&request.target_id)?;
         let seat=self.secretary_current_seat()?;
         let claim=runtime::observe_claim_bound(&self.connection,"global",
             &seat.seat_id,&request.target_id)
@@ -397,6 +408,7 @@ impl<'root> ProductDatabase<'root> {
         let seat = seat::get(&self.connection, &request.domain_id, seat_id)?
             .ok_or(OrchestrationError::AccessDenied)?;
         if request.domain_id=="global" {
+            self.require_one_secretary_conversation(&request.target_id)?;
             if caller.is_some() || host.is_some() ||
                 seat::require_secretary_session(&self.connection,&self.owner,
                     &seat.seat_id,&seat.incarnation)?!=seat {
@@ -459,6 +471,9 @@ impl<'root> ProductDatabase<'root> {
                 seat::require_secretary_session(&self.connection,&self.owner,
                     &now.seat_id,&now.incarnation)?!=now {
                 return Err(OrchestrationError::AccessDenied);
+            }
+            if request.domain_id=="global" {
+                self.require_one_secretary_conversation(&request.target_id)?;
             }
             if let Some(caller)=caller {self.check_native_child_home_caller(request,&now,caller)?;}
             if let Some((proof,choice))=host {
@@ -617,6 +632,7 @@ impl<'root> ProductDatabase<'root> {
                 request.expected_revision, request.expected_revision, Default::default()));
         }
         let (seat_id,generation)=if secretary {
+            self.require_one_secretary_conversation(&request.target_id)?;
             let seat=self.secretary_current_seat()?;
             let next=if request.operation=="admission-reserve" && seat.state==State::Idle {
                 seat.generation.checked_add(1).ok_or(OrchestrationError::OperationConflict)?
