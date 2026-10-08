@@ -1617,10 +1617,46 @@ impl<'root> ProductDatabase<'root> {
 
     /// Observe the original durable outcome before preparing another process.
     /// UNKNOWN cannot be converted into a launch by changing a request ID.
+    fn original_secretary_open(&self,request:&V37Request)->Result<Option<Vec<u8>>> {
+        let q=Statement::prepare(self.connection.as_ptr(),
+            "SELECT raw_hex,operation,session_id,status,revision
+               FROM main.gogoke_v37_h_operation WHERE domain_id='global' AND request_id=?1")?;
+        q.bind_text(1,&request.request_id)?;
+        if !q.step_row()? {return Ok(None);}
+        let same=q.column_text(0)?==hex(&request.raw_bytes)
+            && q.column_text(1)?=="open" && q.column_text(2)?==request.target_id;
+        let state=q.column_text(3)?;
+        let revision=q.column_text(4)?.parse::<u64>().map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("secretary original open revision: {error}")))?;
+        if q.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        drop(q);
+        if !same {return Ok(Some(encode_receipt(request,V37Status::Conflict,
+            request.expected_revision,request.expected_revision,Default::default())));}
+        if state!="APPLIED" {return Ok(Some(encode_receipt(request,V37Status::Unknown,
+            request.expected_revision,revision,Default::default())));}
+        let registration=ledger::read_registered_session(&self.connection,&request.target_id)?;
+        if !registration.is_some_and(|row|row.domain_id=="global"
+            && row.session_id==request.target_id && row.purpose==SessionPurpose::Secretary) {
+            return Ok(Some(encode_receipt(request,V37Status::Unknown,
+                request.expected_revision,revision,Default::default())));
+        }
+        let mut result=BTreeMap::new();
+        let status=if self.original_claude_open_ready(request)? {
+            result.insert(JsonString::from_str("readinessBasis"),text("ORIGINAL_CLAUDE_INITIALIZE_ACK"));
+            V37Status::Replayed
+        } else if let Some(thread)=self.observed_native_open_thread(
+            &request.domain_id,&request.target_id,&request.request_id)? {
+            result.insert(JsonString::from_str("threadId"),text(&thread));
+            V37Status::Replayed
+        } else {V37Status::Unknown};
+        Ok(Some(encode_receipt(request,status,request.expected_revision,revision,result)))
+    }
+
     pub(super) fn dispatch_native_open(&mut self, request: &V37Request) -> Result<Vec<u8>> {
         if request.domain_id=="global" {
             if !request.payload.is_empty() {return Ok(encode_receipt(request,V37Status::Denied,
                 request.expected_revision,request.expected_revision,Default::default()));}
+            if let Some(original)=self.original_secretary_open(request)? {return Ok(original);}
             return self.dispatch_native_open_registered(request,SessionPurpose::Secretary,None,None,None);
         }
         let purpose=match request.payload.get(&JsonString::from_str("purpose")) {

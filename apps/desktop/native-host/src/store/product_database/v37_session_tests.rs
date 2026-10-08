@@ -34,6 +34,86 @@ fn global_secretary_cannot_be_selected_by_wire_role_or_unset_e() {
 }
 
 #[test]
+fn secretary_pre_a_reservation_and_original_replay_use_h_identity() {
+    // These rows are synthetic qualification facts. No F home, H process,
+    // stopped custody, provider call or real resume is created by this test.
+    let _guard=route_b_test_guard();
+    let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path=std::env::temp_dir().join(format!("gogoke-v37-secretary-claim-{}-{nonce}",std::process::id()));
+    std::fs::create_dir(&path).unwrap();
+    let root=RootLock::acquire(&path).unwrap();
+    let mut product=ProductDatabase::open(&root,&path.join("state.sqlite")).unwrap();
+    seat::store_template(&mut product.connection,NativeOrigin::user(&product.owner),
+        StoreTemplate {domain_id:"global",template_id:"secretaryBase",settings_json:br#"{}"#}).unwrap();
+    let created=seat::create(&mut product.connection,NativeOrigin::user(&product.owner),
+        CreateSeat {domain_id:"global",seat_id:"globalSeatA",template_id:"secretaryBase",
+            instance_id:None,kind:Kind::Long,request_id:"createSecretary",
+            request_bytes:b"synthetic secretary qualification"}).unwrap().seat;
+    seat::designate_secretary(&mut product.connection,&product.owner,"globalSeatA",
+        &created.incarnation,"designateSecretary",b"synthetic designation").unwrap();
+    let generation=created.generation.to_string();
+    let binding=Statement::prepare(product.connection.as_ptr(),
+        "INSERT INTO main.gogoke_v37_h_owner_binding VALUES('bindingSecretary','instanceFixture','global','SESSION','sessionA',?1,'ACTIVE')").unwrap();
+    binding.bind_text(1,&generation).unwrap();binding.step_done().unwrap();drop(binding);
+    let claim=Statement::prepare(product.connection.as_ptr(),
+        "INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision) VALUES('global','sessionA','instanceFixture','homeFixture','bindingSecretary',?1,'RESERVED',1)").unwrap();
+    claim.bind_text(1,&generation).unwrap();claim.step_done().unwrap();drop(claim);
+    let selection=Statement::prepare(product.connection.as_ptr(),
+        "INSERT INTO main.gogoke_v37_native_selection VALUES('global','sessionA','globalSeatA',?1,?2,'instanceFixture')").unwrap();
+    selection.bind_text(1,&created.incarnation).unwrap();selection.bind_i64(2,created.generation).unwrap();
+    selection.step_done().unwrap();drop(selection);
+    let reserve=decode_request(br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"admission-reserve","requestId":"reserveSecretary","targetId":"sessionA","domainId":"global","expectedRevision":"0","payload":{}}"#).unwrap();
+    let raw:String=reserve.raw_bytes.iter().map(|byte|format!("{byte:02x}")).collect();
+    let operation=Statement::prepare(product.connection.as_ptr(),
+        "INSERT INTO main.gogoke_v37_h_operation VALUES('global','reserveSecretary',?1,'admission-reserve','sessionA','APPLIED',0,1)").unwrap();
+    operation.bind_text(1,&raw).unwrap();operation.step_done().unwrap();drop(operation);
+    assert!(product.require_one_active_secretary_claim("sessionA","globalSeatA",&created.incarnation).is_ok());
+    assert!(matches!(product.require_one_active_secretary_claim("sessionB","globalSeatA",&created.incarnation),
+        Err(OrchestrationError::AccessDenied)),"second reservation denied before A registration");
+    assert!(ledger::read_registered_session(&product.connection,"sessionA").unwrap().is_none());
+    let replay=h::decode_receipt(&product.original_secretary_admission(&reserve).unwrap().unwrap()).unwrap();
+    assert_eq!(replay.status,V37Status::Replayed);
+    assert_eq!(replay.into_result().get(&JsonString::from_str("generation")).map(Json::canonical),
+        Some(text(&generation).canonical()));
+    // A later physical generation and STOPPED state do not rewrite the
+    // original reserve generation. This is not an H stop confirmation.
+    product.connection.execute("UPDATE main.gogoke_v37_h_claim SET generation='2',state='STOPPED' WHERE session_id='sessionA'").unwrap();
+    assert_eq!(product.original_secretary_claim("sessionA").unwrap().1,"2");
+    let replay=h::decode_receipt(&product.original_secretary_admission(&reserve).unwrap().unwrap()).unwrap();
+    assert_eq!(replay.into_result().get(&JsonString::from_str("generation")).map(Json::canonical),
+        Some(text(&generation).canonical()));
+    let open=decode_request(br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"open","requestId":"openSecretary","targetId":"sessionA","domainId":"global","expectedRevision":"2","payload":{}}"#).unwrap();
+    let open_raw:String=open.raw_bytes.iter().map(|byte|format!("{byte:02x}")).collect();
+    let prior=Statement::prepare(product.connection.as_ptr(),
+        "INSERT INTO main.gogoke_v37_h_operation VALUES('global','openSecretary',?1,'open','sessionA','UNKNOWN',2,2)").unwrap();
+    prior.bind_text(1,&open_raw).unwrap();prior.step_done().unwrap();drop(prior);
+    assert_eq!(h::decode_receipt(&product.dispatch_native_open(&open).unwrap()).unwrap().status,V37Status::Unknown,
+        "original UNKNOWN open reads back before mutable E qualification or process launch");
+    ledger::register_session(&mut product.connection,&ledger::SessionRegistration {
+        domain_id:"global".into(),seat_id:"globalSeatA".into(),session_id:"sessionA".into(),
+        purpose:ledger::SessionPurpose::Secretary,side_id:None,
+    }).unwrap();
+    product.connection.execute("UPDATE main.gogoke_v37_h_operation SET status='APPLIED' WHERE request_id='openSecretary'").unwrap();
+    assert_eq!(h::decode_receipt(&product.dispatch_native_open(&open).unwrap()).unwrap().status,V37Status::Unknown,
+        "synthetic APPLIED row without original H provider ACK cannot claim a ready open");
+    product.connection.execute("UPDATE main.gogoke_v37_h_claim SET state='RELEASED' WHERE session_id='sessionA'").unwrap();
+    let release=decode_request(br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"admission-release","requestId":"releaseSecretary","targetId":"sessionA","domainId":"global","expectedRevision":"2","payload":{}}"#).unwrap();
+    let release_raw:String=release.raw_bytes.iter().map(|byte|format!("{byte:02x}")).collect();
+    let prior=Statement::prepare(product.connection.as_ptr(),
+        "INSERT INTO main.gogoke_v37_h_operation VALUES('global','releaseSecretary',?1,'admission-release','sessionA','APPLIED',2,3)").unwrap();
+    prior.bind_text(1,&release_raw).unwrap();prior.step_done().unwrap();drop(prior);
+    let replay=h::decode_receipt(&product.dispatch_user_session(&release).unwrap()).unwrap();
+    assert_eq!(replay.status,V37Status::Replayed,"released H original receipt remains readable");
+    assert_eq!(replay.into_result().get(&JsonString::from_str("generation")).map(Json::canonical),
+        Some(text("2").canonical()),"release uses H physical generation after synthetic resume");
+    assert!(matches!(product.require_one_active_secretary_claim("sessionA","globalSeatA",&created.incarnation),
+        Err(OrchestrationError::OperationConflict)),"released H identity cannot be reused");
+    assert!(product.require_one_active_secretary_claim("sessionB","globalSeatA",&created.incarnation).is_ok(),
+        "a released physical H session does not permanently monopolize the E singleton");
+    drop(product);drop(root);std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn product_merge_history_rechecks_current_grant_without_git_and_preserves_unknown_cause() {
     // This is the actual product dispatch and E permission reader. Trusted-turn
     // construction arranges ingress only; authenticated model ingress is NOT_RUN.

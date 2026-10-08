@@ -51,11 +51,22 @@ fn admission_status(error: &AdmissionError) -> V37Status {
 }
 
 impl<'root> ProductDatabase<'root> {
-    fn require_one_secretary_conversation(&self,session_id:&str)->Result<()> {
+    fn require_one_active_secretary_claim(&self,session_id:&str,
+        seat_id:&str,incarnation:&str)->Result<()> {
         let q=Statement::prepare(self.connection.as_ptr(),
-            "SELECT session_id FROM main.v37_ledger_session WHERE domain_id='global' AND purpose='SECRETARY'")?;
-        if q.step_row()? {
-            if q.column_text(0)?!=session_id || q.step_row()? {
+            "SELECT a.session_id,a.state FROM main.gogoke_v37_h_claim a
+               JOIN main.gogoke_v37_native_selection b ON b.domain_id=a.domain_id
+                 AND b.session_id=a.session_id
+              WHERE a.domain_id='global' AND b.seat_id=?1 AND b.seat_incarnation=?2
+            ")?;
+        q.bind_text(1,seat_id)?;q.bind_text(2,incarnation)?;
+        while q.step_row()? {
+            let existing=q.column_text(0)?;
+            let state=q.column_text(1)?;
+            if existing==session_id && state=="RELEASED" {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            if existing!=session_id && state!="RELEASED" {
                 return Err(OrchestrationError::AccessDenied);
             }
         }
@@ -71,14 +82,78 @@ impl<'root> ProductDatabase<'root> {
             .map_err(Into::into)
     }
 
+    /// An H journal replay precedes mutable E qualification. The original
+    /// H seat binding supplies the initial admission generation even when a
+    /// later physical resume has advanced the current claim generation.
+    fn original_secretary_admission(&self,request:&V37Request)->Result<Option<Vec<u8>>> {
+        let q=Statement::prepare(self.connection.as_ptr(),
+            "SELECT raw_hex,operation,session_id,status,previous_revision,revision
+               FROM main.gogoke_v37_h_operation WHERE domain_id='global' AND request_id=?1")?;
+        q.bind_text(1,&request.request_id)?;
+        if !q.step_row()? {return Ok(None);}
+        let raw:String=request.raw_bytes.iter().map(|byte|format!("{byte:02x}")).collect();
+        let same=q.column_text(0)?==raw
+            && q.column_text(1)?==request.operation && q.column_text(2)?==request.target_id;
+        let state=q.column_text(3)?;
+        let before=q.column_text(4)?.parse::<u64>().map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("secretary admission prior revision: {error}")))?;
+        let after=q.column_text(5)?.parse::<u64>().map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("secretary admission result revision: {error}")))?;
+        if q.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        drop(q);
+        if !same {return Ok(Some(encode_receipt(request,V37Status::Conflict,
+            request.expected_revision,request.expected_revision,Default::default())));}
+        let binding=Statement::prepare(self.connection.as_ptr(),
+            "SELECT CAST(b.seat_authorization_generation AS TEXT),a.generation FROM main.gogoke_v37_h_claim a
+               JOIN main.gogoke_v37_native_selection b ON b.domain_id=a.domain_id
+                 AND b.session_id=a.session_id
+               JOIN main.gogoke_v37_seat_secretary d ON d.domain_id=b.domain_id
+                 AND d.seat_id=b.seat_id AND d.incarnation=b.seat_incarnation
+              WHERE a.domain_id='global' AND a.session_id=?1")?;
+        binding.bind_text(1,&request.target_id)?;
+        let generation=if binding.step_row()? {
+            let value=if request.operation=="admission-release" {binding.column_text(1)?}
+                else {binding.column_text(0)?};
+            if binding.step_row()? {return Err(OrchestrationError::OperationConflict);}
+            Some(value)
+        } else {None};
+        let status=if state=="APPLIED" && generation.is_some() {V37Status::Replayed}
+            else {V37Status::Unknown};
+        let mut result=BTreeMap::new();
+        if let Some(generation)=generation {result.insert(JsonString::from_str("generation"),text(&generation));}
+        Ok(Some(encode_receipt(request,status,before,after,result)))
+    }
+
+    fn original_secretary_claim(&self,session_id:&str)->Result<(String,String,String,String)> {
+        let q=Statement::prepare(self.connection.as_ptr(),
+            "SELECT b.seat_id,a.generation,a.instance_id,a.home_id
+               FROM main.gogoke_v37_h_claim a
+               JOIN main.gogoke_v37_native_selection b ON b.domain_id=a.domain_id
+                 AND b.session_id=a.session_id
+               JOIN main.gogoke_v37_seat_secretary d ON d.domain_id=b.domain_id
+                 AND d.seat_id=b.seat_id AND d.incarnation=b.seat_incarnation
+              WHERE a.domain_id='global' AND a.session_id=?1")?;
+        q.bind_text(1,session_id)?;
+        if !q.step_row()? {return Err(OrchestrationError::AccessDenied);}
+        let result=(q.column_text(0)?,q.column_text(1)?,q.column_text(2)?,q.column_text(3)?);
+        if q.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        if let Some(registration)=ledger::read_registered_session(&self.connection,session_id)? {
+            if registration.domain_id!="global" || registration.seat_id!=result.0
+                || registration.purpose!=SessionPurpose::Secretary {
+                return Err(OrchestrationError::AccessDenied);
+            }
+        }
+        Ok(result)
+    }
+
     /// The USER supplies a session identity and request bytes only. H derives
     /// the sole configured E seat and the committed H generation itself.
     pub(super) fn secretary_committed_selection(&self,request:&V37Request)->Result<(String,String)> {
         if request.domain_id!="global" || !request.payload.is_empty() {
             return Err(OrchestrationError::AccessDenied);
         }
-        self.require_one_secretary_conversation(&request.target_id)?;
         let seat=self.secretary_current_seat()?;
+        self.require_one_active_secretary_claim(&request.target_id,&seat.seat_id,&seat.incarnation)?;
         let claim=runtime::observe_claim_bound(&self.connection,"global",
             &seat.seat_id,&request.target_id)
             .map_err(|error|OrchestrationError::V37StoreFailure(format!("secretary claim: {error:?}")))?
@@ -408,12 +483,12 @@ impl<'root> ProductDatabase<'root> {
         let seat = seat::get(&self.connection, &request.domain_id, seat_id)?
             .ok_or(OrchestrationError::AccessDenied)?;
         if request.domain_id=="global" {
-            self.require_one_secretary_conversation(&request.target_id)?;
             if caller.is_some() || host.is_some() ||
                 seat::require_secretary_session(&self.connection,&self.owner,
                     &seat.seat_id,&seat.incarnation)?!=seat {
                 return Err(OrchestrationError::AccessDenied);
             }
+            self.require_one_active_secretary_claim(&request.target_id,&seat.seat_id,&seat.incarnation)?;
             if resume && !ledger::read_registered_session(&self.connection,&request.target_id)?
                 .is_some_and(|row|row.domain_id=="global" && row.seat_id==seat.seat_id
                     && row.purpose==SessionPurpose::Secretary) {
@@ -473,7 +548,7 @@ impl<'root> ProductDatabase<'root> {
                 return Err(OrchestrationError::AccessDenied);
             }
             if request.domain_id=="global" {
-                self.require_one_secretary_conversation(&request.target_id)?;
+                self.require_one_active_secretary_claim(&request.target_id,&now.seat_id,&now.incarnation)?;
             }
             if let Some(caller)=caller {self.check_native_child_home_caller(request,&now,caller)?;}
             if let Some((proof,choice))=host {
@@ -631,13 +706,28 @@ impl<'root> ProductDatabase<'root> {
             return Ok(encode_receipt(request, V37Status::Denied,
                 request.expected_revision, request.expected_revision, Default::default()));
         }
+        if secretary {
+            if let Some(original)=self.original_secretary_admission(request)? {
+                return Ok(original);
+            }
+        }
         let (seat_id,generation)=if secretary {
-            self.require_one_secretary_conversation(&request.target_id)?;
-            let seat=self.secretary_current_seat()?;
-            let next=if request.operation=="admission-reserve" && seat.state==State::Idle {
-                seat.generation.checked_add(1).ok_or(OrchestrationError::OperationConflict)?
-            } else {seat.generation};
-            (seat.seat_id,next.to_string())
+            if request.operation=="admission-reserve" {
+                let seat=self.secretary_current_seat()?;
+                self.require_one_active_secretary_claim(&request.target_id,&seat.seat_id,&seat.incarnation)?;
+                let next=if seat.state==State::Idle {
+                    seat.generation.checked_add(1).ok_or(OrchestrationError::OperationConflict)?
+                } else {seat.generation};
+                (seat.seat_id,next.to_string())
+            } else {
+                let (seat_id,generation,_,_)=self.original_secretary_claim(&request.target_id)?;
+                if request.operation=="admission-commit" {
+                    let seat=self.secretary_current_seat()?;
+                    if seat.seat_id!=seat_id {return Err(OrchestrationError::AccessDenied);}
+                    self.require_one_active_secretary_claim(&request.target_id,&seat.seat_id,&seat.incarnation)?;
+                }
+                (seat_id,generation)
+            }
         } else {
             (user_payload_string(request,"seatId")?,user_payload_string(request,"generation")?)
         };
