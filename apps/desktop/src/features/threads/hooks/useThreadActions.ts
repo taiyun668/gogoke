@@ -576,8 +576,23 @@ export function useThreadActions({
       });
       try {
         const requester = targets.find((workspace) => workspace.connected) ?? targets[0];
-        const native = "__TAURI_INTERNALS__" in window &&
-          Boolean(await nativeConversationAssociation(requester.id));
+        const association = "__TAURI_INTERNALS__" in window
+          ? await nativeConversationAssociation(requester.id) : null;
+        const native = Boolean(association);
+        if (native && targets.length > 1) {
+          throw new Error("The workspace transport changed during shared list qualification; no lists were replaced.");
+        }
+        const assertCurrentAttachments = async () => {
+          if (!("__TAURI_INTERNALS__" in window)) return;
+          for (const workspace of targets) {
+            const expected = workspace.id === requester.id ? association : null;
+            if (JSON.stringify(await nativeConversationAssociation(workspace.id)) !== JSON.stringify(expected)) {
+              throw new Error("An original workspace attachment changed during thread/list; no lists were replaced.");
+            }
+          }
+        };
+        await assertCurrentAttachments();
+        const hiddenThreads: { workspaceId: string; threadId: string }[] = [];
         const matchingThreadsByWorkspace: Record<string, Record<string, unknown>[]> = {};
         let workspacePathLookup = buildWorkspacePathLookup(targets);
         const targetWorkspaceIds = new Set(targets.map((workspace) => workspace.id));
@@ -619,12 +634,16 @@ export function useThreadActions({
             payload: response,
           });
           const result = (response.result ?? response) as Record<string, unknown>;
+          await assertCurrentAttachments();
+          if (native && (!result.nativeHistory || typeof result.nativeHistory !== "object")) {
+            throw new Error("The native thread/list response has no original history provenance.");
+          }
           const data = Array.isArray(result?.data)
             ? (result.data as Record<string, unknown>[])
             : [];
           const nextCursor = getThreadListNextCursor(result);
           data.forEach((thread) => {
-            const workspaceId = resolveWorkspaceIdForThreadPath(
+            const workspaceId = native ? requester.id : resolveWorkspaceIdForThreadPath(
               String(thread?.cwd ?? ""),
               workspacePathLookup,
               targetWorkspaceIds,
@@ -634,7 +653,7 @@ export function useThreadActions({
             }
             const threadId = String(thread?.id ?? "");
             if (threadId && shouldHideSubagentThreadFromSidebar(thread.source)) {
-              dispatch({ type: "hideThread", workspaceId, threadId });
+              hiddenThreads.push({ workspaceId, threadId });
               return;
             }
             matchingThreadsByWorkspace[workspaceId]?.push(thread);
@@ -662,7 +681,17 @@ export function useThreadActions({
 
         const nextThreadActivity = { ...threadActivityRef.current };
         let didChangeAnyActivity = false;
-        targets.forEach((workspace) => {
+        for (const workspace of targets) {
+          // Finish this workspace's qualification immediately before its
+          // synchronous projection; checking another target cannot age it.
+          if ("__TAURI_INTERNALS__" in window) {
+            const expected = workspace.id === requester.id ? association : null;
+            if (JSON.stringify(await nativeConversationAssociation(workspace.id)) !== JSON.stringify(expected)) {
+              throw new Error("This workspace attachment changed before its thread/list projection; its previous list was retained.");
+            }
+          }
+          hiddenThreads.filter((row) => row.workspaceId === workspace.id)
+            .forEach(({ workspaceId, threadId }) => dispatch({ type: "hideThread", workspaceId, threadId }));
           const matchingThreads = matchingThreadsByWorkspace[workspace.id] ?? [];
           const activityByThread = nextThreadActivity[workspace.id] ?? {};
           const threadListState = buildWorkspaceThreadListState({
@@ -707,7 +736,7 @@ export function useThreadActions({
           threadListState.previewUpdates.forEach(({ threadId, text, timestamp }) => {
             dispatchPreviewMessage(threadId, text, timestamp);
           });
-        });
+        }
         if (didChangeAnyActivity) {
           threadActivityRef.current = nextThreadActivity;
           saveThreadActivity(nextThreadActivity);
@@ -786,8 +815,9 @@ export function useThreadActions({
         payload: { workspaceId: workspace.id, cursor: cursorValue },
       });
       try {
-        const native = "__TAURI_INTERNALS__" in window &&
-          Boolean(await nativeConversationAssociation(workspace.id));
+        const association = "__TAURI_INTERNALS__" in window
+          ? await nativeConversationAssociation(workspace.id) : null;
+        const native = Boolean(association);
         try {
           const knownWorkspaces = await listWorkspacesService();
           if (knownWorkspaces.length > 0) {
@@ -800,6 +830,7 @@ export function useThreadActions({
           workspacePathLookup = buildWorkspacePathLookup([workspace]);
         }
         const matchingThreads: Record<string, unknown>[] = [];
+        const hiddenThreads: { workspaceId: string; threadId: string }[] = [];
         const maxPagesWithoutMatch = THREAD_LIST_MAX_PAGES_OLDER;
         let pagesFetched = 0;
         let cursor: string | null = nextCursor;
@@ -820,6 +851,13 @@ export function useThreadActions({
             payload: response,
           });
           const result = (response.result ?? response) as Record<string, unknown>;
+          if ("__TAURI_INTERNALS__" in window &&
+              JSON.stringify(await nativeConversationAssociation(workspace.id)) !== JSON.stringify(association)) {
+            throw new Error("The original workspace attachment changed during older thread/list; no lists were replaced.");
+          }
+          if (native && (!result.nativeHistory || typeof result.nativeHistory !== "object")) {
+            throw new Error("The native older thread/list response has no original history provenance.");
+          }
           const data = Array.isArray(result?.data)
             ? (result.data as Record<string, unknown>[])
             : [];
@@ -827,7 +865,7 @@ export function useThreadActions({
           matchingThreads.push(
             ...data.filter(
               (thread) => {
-                const workspaceId = resolveWorkspaceIdForThreadPath(
+                const workspaceId = native ? workspace.id : resolveWorkspaceIdForThreadPath(
                   String(thread?.cwd ?? ""),
                   workspacePathLookup,
                   allowedWorkspaceIds,
@@ -837,7 +875,7 @@ export function useThreadActions({
                 }
                 const threadId = String(thread?.id ?? "");
                 if (threadId && shouldHideSubagentThreadFromSidebar(thread.source)) {
-                  dispatch({ type: "hideThread", workspaceId, threadId });
+                  hiddenThreads.push({ workspaceId, threadId });
                   return false;
                 }
                 return true;
@@ -853,6 +891,7 @@ export function useThreadActions({
           }
         } while (cursor && matchingThreads.length < THREAD_LIST_TARGET_COUNT);
 
+        hiddenThreads.forEach(({ workspaceId, threadId }) => dispatch({ type: "hideThread", workspaceId, threadId }));
         const existingIds = new Set(existing.map((thread) => thread.id));
         const additions: ThreadSummary[] = [];
         matchingThreads.forEach((thread) => {
