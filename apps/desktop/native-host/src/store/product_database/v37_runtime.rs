@@ -53,6 +53,18 @@ fn observed_unix_ns() -> String {
     }
 }
 
+fn bounded_original_error(source: &str, max_bytes: usize) -> String {
+    if source.len()<=max_bytes {return source.to_owned();}
+    // Error text, unlike the separate stdout hex field, can be abbreviated.
+    // Keep both producer ends and report the exact omitted middle byte count.
+    let budget=max_bytes.saturating_sub(80)/2;
+    let mut head=budget;
+    while !source.is_char_boundary(head) {head-=1;}
+    let mut tail=source.len()-budget;
+    while !source.is_char_boundary(tail) {tail+=1;}
+    format!("{}; [omitted_error_middle_bytes={}]; {}",&source[..head],tail-head,&source[tail..])
+}
+
 impl StartupObservationTimes {
     fn prepared_now() -> Self {
         Self { prepared_returned: observed_unix_ns(), activate_started: None,
@@ -90,9 +102,12 @@ impl<'root> ProductDatabase<'root> {
         })();
         let counts=match complete {
             Ok((frames,bytes))=>format!("captured_complete_stdout_frames={frames}; captured_complete_stdout_bytes={bytes}"),
-            Err(error)=>format!("captured_complete_stdout=unknown({error:?})"),
+            Err(error)=>format!("captured_complete_stdout=unknown({})",
+                bounded_original_error(&format!("{error:?}"),512)),
         };
-        format!("{cause}; {counts}; process_creation_100ns={}; prepared_returned_unix_ns={}; activate_started_unix_ns={}; activate_returned_unix_ns={}; rpc_write_started_unix_ns={write_started}; rpc_write_returned_unix_ns={write_returned}; rpc_mark_written_returned_unix_ns={written}; read_failure_unix_ns={}; rpc_read_elapsed_ms={}",
+        // Bounded observations precede cause/fragment details, so the existing
+        // Claude journal limit cannot silently discard these original facts.
+        format!("{counts}; process_creation_100ns={}; prepared_returned_unix_ns={}; activate_started_unix_ns={}; activate_returned_unix_ns={}; rpc_write_started_unix_ns={write_started}; rpc_write_returned_unix_ns={write_returned}; rpc_mark_written_returned_unix_ns={written}; read_failure_unix_ns={}; rpc_read_elapsed_ms={}; {cause}",
             run.custody.identity.creation_time_100ns,run.startup_observed.prepared_returned,
             run.startup_observed.activate_started.as_deref().unwrap_or("unknown"),
             run.startup_observed.activate_returned.as_deref().unwrap_or("unknown"),
@@ -2661,7 +2676,8 @@ impl<'root> ProductDatabase<'root> {
                     let detail=match fragment {
                         Ok(bytes)=>format!("incomplete_stdout_bytes={}; incomplete_stdout_tail_hex={}; tail_limit_bytes=512",
                             bytes.len(),hex(&bytes[bytes.len().saturating_sub(512)..])),
-                        Err(snapshot_error)=>format!("incomplete_stdout_snapshot_error={snapshot_error}"),
+                        Err(snapshot_error)=>format!("incomplete_stdout_bytes=unknown; incomplete_stdout_snapshot_error={}",
+                            bounded_original_error(&snapshot_error.to_string(),1024)),
                     };
                     let mut diagnostic=self.native_original_read_evidence(key,
                         format!("original_read_error={original}; {detail}"),
