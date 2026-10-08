@@ -230,7 +230,7 @@ impl<'root> ProductDatabase<'root> {
         self.finish_native_transaction(result)
     }
 
-    pub(super) fn recover_grok_home_resources(&mut self,instance_id:&str,
+    pub(crate) fn recover_grok_home_resources(&mut self,instance_id:&str,
         incoming:Option<&V37Request>)->Result<()>{
         let Some(registered)=self.read_registered_instance(instance_id)? else{return Ok(());};
         if registered.driver_id!="grok"{return Ok(());}
