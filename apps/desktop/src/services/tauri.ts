@@ -1472,12 +1472,15 @@ type NativeVisibleJournal = {
   pending: NativeVisibleIntent | null;
   acceptedRequestIds: string[];
   lastAccepted: (NativeVisibleIntent & { response: unknown }) | null;
+  rejectedRequestIds: string[];
+  lastRejected: (NativeVisibleIntent & { reason: string }) | null;
 };
 
 const nativeVisibleKey = (workspaceId: string) =>
   `gogoke.native-visible-original.${encodeURIComponent(workspaceId)}`;
 const emptyNativeVisibleJournal = (): NativeVisibleJournal =>
-  ({ version: 1, pending: null, acceptedRequestIds: [], lastAccepted: null });
+  ({ version: 1, pending: null, acceptedRequestIds: [], lastAccepted: null,
+    rejectedRequestIds: [], lastRejected: null });
 
 function sameNativeAssociation(left: NativeConversationAssociation, right: NativeConversationAssociation) {
   return (Object.keys(left) as Array<keyof NativeConversationAssociation>).every(
@@ -1502,7 +1505,10 @@ function nativeVisibleJournal(workspaceId: string): NativeVisibleJournal {
   if (!record(parsed) || parsed.version !== 1 ||
       !Array.isArray(parsed.acceptedRequestIds) ||
       !parsed.acceptedRequestIds.every(nonempty) ||
+      !Array.isArray(parsed.rejectedRequestIds) ||
+      !parsed.rejectedRequestIds.every(nonempty) ||
       (parsed.lastAccepted !== null && !record(parsed.lastAccepted)) ||
+      (parsed.lastRejected !== null && !record(parsed.lastRejected)) ||
       (parsed.pending !== null && !record(parsed.pending))) {
     throw new Error("The original native visible request journal is invalid.");
   }
@@ -1523,6 +1529,23 @@ function saveNativeVisibleJournal(workspaceId: string, journal: NativeVisibleJou
   if (window.localStorage.getItem(nativeVisibleKey(workspaceId)) !== serialized) {
     throw new Error("The original native visible request was not retained before dispatch.");
   }
+}
+
+function hostTerminalVisibleRejection(cause: unknown, nativeRequestId: string): string | null {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  return message.startsWith(`GOGOKE_VISIBLE_DENIED:${nativeRequestId}:`) ||
+    message.startsWith(`GOGOKE_VISIBLE_UNSUPPORTED:${nativeRequestId}:`)
+    ? message : null;
+}
+
+function settleNativeVisibleRejection(
+  workspaceId: string, journal: NativeVisibleJournal,
+  intent: NativeVisibleIntent, reason: string,
+) {
+  journal.rejectedRequestIds.push(intent.nativeRequestId);
+  journal.lastRejected = { ...intent, error: reason, reason };
+  journal.pending = null;
+  saveNativeVisibleJournal(workspaceId, journal);
 }
 
 async function withNativeVisibleLock<T>(workspaceId: string, work: () => Promise<T>): Promise<T> {
@@ -1597,7 +1620,7 @@ async function invokeVisibleWrite<T>(
     }
     const id = nativeRequestId ?? `visible_${crypto.randomUUID()}`;
     if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(id) ||
-        journal.acceptedRequestIds.includes(id)) {
+        journal.acceptedRequestIds.includes(id) || journal.rejectedRequestIds.includes(id)) {
       throw new Error("Native visible request ID is invalid or already used.");
     }
     const intent: NativeVisibleIntent = { nativeRequestId: id, workspaceId,
@@ -1610,6 +1633,11 @@ async function invokeVisibleWrite<T>(
         nativeRequestId: id, expectedAssociation: association });
     } catch (cause) {
       intent.error = cause instanceof Error ? cause.message : String(cause);
+      const rejection = hostTerminalVisibleRejection(cause, id);
+      if (rejection) {
+        settleNativeVisibleRejection(workspaceId, journal, intent, rejection);
+        throw cause;
+      }
       journal.pending = intent;
       saveNativeVisibleJournal(workspaceId, journal);
       throw cause;
@@ -1641,6 +1669,11 @@ export async function recoverNativeVisibleRequest(
       });
     } catch (cause) {
       pending.error = cause instanceof Error ? cause.message : String(cause);
+      const rejection = hostTerminalVisibleRejection(cause, nativeRequestId);
+      if (rejection) {
+        settleNativeVisibleRejection(workspaceId, journal, pending, rejection);
+        throw cause;
+      }
       saveNativeVisibleJournal(workspaceId, journal);
       throw cause;
     }
