@@ -76,6 +76,9 @@ where
         if existing_for_entry.is_alive().await? {
             return Ok(());
         }
+        if existing_for_entry.is_native() {
+            return Err("GOGOKE_NATIVE_SESSION_RECOVERY_REQUIRED".into());
+        }
         remove_session_references(sessions, &existing_for_entry).await;
     }
     if native_route != Some(true) {

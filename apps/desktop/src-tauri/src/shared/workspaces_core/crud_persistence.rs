@@ -86,7 +86,7 @@ where
             let mut workspaces = workspaces.lock().await;
             workspaces.remove(&entry.id);
         }
-        if spawned_new_session {
+        if spawned_new_session && !session.is_native() {
             session.stop().await?;
         }
         return Err(error);
@@ -244,7 +244,7 @@ where
             let mut workspaces = workspaces.lock().await;
             workspaces.remove(&entry.id);
         }
-        if spawned_new_session {
+        if spawned_new_session && !session.is_native() {
             session.stop().await?;
         }
         let _ = tokio::fs::remove_dir_all(&destination_path).await;
@@ -413,7 +413,7 @@ where
             let mut workspaces = workspaces.lock().await;
             workspaces.remove(&entry.id);
         }
-        if spawned_new_session {
+        if spawned_new_session && !session.is_native() {
             session.stop().await?;
         }
         let _ = tokio::fs::remove_dir_all(&clone_path).await;
