@@ -100,7 +100,7 @@ impl<'a> ProductDatabase<'a> {
         Ok(selected)
     }
 
-    fn qualified_managed_source_resources(&self,id:&str,driver:&str)->Result<()> {
+    pub(super) fn qualified_managed_source_resources(&self,id:&str,driver:&str)->Result<()> {
         let pending=|sql:&str|->Result<bool>{
             let row=Statement::prepare(self.connection.as_ptr(),sql)?;
             row.bind_text(1,id)?;
@@ -109,6 +109,7 @@ impl<'a> ProductDatabase<'a> {
         for sql in [
             "SELECT 1 FROM main.gogoke_v37_h_generation_change g JOIN main.gogoke_v37_h_process_episode e ON e.process_operation_id=g.old_process_operation_id WHERE e.instance_id=?1 AND g.stage NOT IN ('APPLIED','CANCELLED','UNSUPPORTED') LIMIT 1",
             "SELECT 1 FROM main.gogoke_v37_h_operation o JOIN main.gogoke_v37_h_claim c ON c.domain_id=o.domain_id AND c.session_id=o.session_id WHERE c.instance_id=?1 AND o.status!='APPLIED' LIMIT 1",
+            "SELECT 1 FROM main.gogoke_v37_h_stdin_journal j JOIN main.gogoke_v37_h_claim c ON c.domain_id=j.domain_id AND c.session_id=j.session_id WHERE c.instance_id=?1 AND j.phase IN ('PREPARED','UNKNOWN') LIMIT 1",
             "SELECT 1 FROM main.gogoke_v37_instance_homes WHERE instance_id=?1 AND state NOT IN ('ACTIVE','CLEANED','CLOSED') LIMIT 1",
             "SELECT 1 FROM main.gogoke_v37_instance_operations WHERE target_id=?1 AND phase!='APPLIED' LIMIT 1",
             "SELECT 1 FROM main.gogoke_v37_credential_objects WHERE instance_id=?1 AND phase!='ACTIVE' LIMIT 1",

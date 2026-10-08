@@ -356,6 +356,15 @@ fn actual_two_disappeared_holders_recover_in_one_call_replay_without_acl_effect_
         assert_eq!(occupancy(&mut product),Some(0),"exact completed recovery does not poison the current count");
         assert!(product.qualified_managed_source_resources(INSTANCE,"codex").is_ok(),
             "the original two APPLIED releases qualify only their own retained H resources");
+        product.connection.execute("BEGIN IMMEDIATE").unwrap();
+        let pending = Statement::prepare(product.connection.as_ptr(),
+            "INSERT INTO main.gogoke_v37_h_stdin_journal(domain_id,request_id,operation,ticket,process_operation_id,custodian_nonce,session_id,generation,request_hex,phase,expected_revision) VALUES(?1,'managed-pending','send','synthetic-ticket','synthetic-operation','synthetic-nonce',?2,'1','00','PREPARED','1')").unwrap();
+        pending.bind_text(1,&cold.claims[0][0]).unwrap();
+        pending.bind_text(2,&cold.claims[0][1]).unwrap();
+        pending.step_done().unwrap();drop(pending);
+        assert!(product.qualified_managed_source_resources(INSTANCE,"codex").is_err(),
+            "a new unresolved H input blocks source migration despite completed old releases");
+        product.connection.execute("ROLLBACK").unwrap();
         // Negative metadata instrument, not an observed stop or a new effect.
         // Roll back the exact old row before continuing the real recovery case.
         product.connection.execute("BEGIN IMMEDIATE").unwrap();
