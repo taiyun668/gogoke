@@ -283,6 +283,189 @@ fn visible_failure(state: &str, reason: Option<&str>, request_id: Option<&str>) 
     }
 }
 
+#[derive(Clone, Default)]
+struct NativeEventPosition {
+    params: Value,
+    last_source: u64,
+    last_ordinal: u64,
+    operation: Option<String>,
+    epoch: Option<String>,
+    thread: Option<String>,
+    page_high: Option<String>,
+    seen_pages: HashSet<String>,
+}
+
+fn native_event_text<'a>(value: &'a Value, field: &str) -> Result<&'a str, String> {
+    value.get(field).and_then(Value::as_str).filter(|text| !text.is_empty())
+        .ok_or_else(|| format!("GOGOKE_NATIVE_EVENT_FIELD_INVALID:{field}"))
+}
+
+/// Validate the complete page before any notification reaches the UI. The
+/// original envelope stays intact; this cursor never authorizes a model write.
+fn native_event_page(reply: &VisibleReadReply, association: &NativeAssociation,
+    position: &NativeEventPosition) -> Result<(NativeEventPosition, Vec<Value>), String> {
+    if !matches!(reply.state.as_str(), "PARTIAL" | "APPLIED") {
+        return Err(visible_failure(&reply.state, reply.reason.as_deref(), None));
+    }
+    let result = reply.response.as_ref().and_then(|response| response.get("result"))
+        .ok_or("GOGOKE_NATIVE_EVENT_RESULT_MISSING")?;
+    let marker = result.get("nativeEvents").ok_or("GOGOKE_NATIVE_EVENT_MARKER_MISSING")?;
+    let expected_state = if reply.state == "PARTIAL" { "PARTIAL" } else { "COMPLETE" };
+    if marker.get("state").and_then(Value::as_str) != Some(expected_state) {
+        return Err("GOGOKE_NATIVE_EVENT_STATE_MISMATCH".into());
+    }
+    let high = native_event_text(marker, "highWater")?;
+    let high_number = canonical_binding_generation(high)?;
+    let after = canonical_binding_generation(native_event_text(marker, "afterSourceId")?)?;
+    if after > high_number || after < position.last_source
+        || position.page_high.as_deref().is_some_and(|previous| previous != high) {
+        return Err("GOGOKE_NATIVE_EVENT_WATERMARK_MISMATCH".into());
+    }
+    let notifications = result.get("notifications").and_then(Value::as_array)
+        .ok_or("GOGOKE_NATIVE_EVENT_NOTIFICATIONS_INVALID")?;
+    let refs = marker.get("sourceRefs").and_then(Value::as_array)
+        .ok_or("GOGOKE_NATIVE_EVENT_REFS_INVALID")?;
+    if notifications.len() != refs.len() { return Err("GOGOKE_NATIVE_EVENT_REFS_COUNT_MISMATCH".into()); }
+    let mut next_position = position.clone();
+    let mut original = Vec::new();
+    for (item, source) in notifications.iter().zip(refs) {
+        if item.get("sourceRef") != Some(source) || source.as_object().is_none_or(|fields| fields.len() != 5) {
+            return Err("GOGOKE_NATIVE_EVENT_REF_MISMATCH".into());
+        }
+        let raw_id = canonical_binding_generation(native_event_text(source, "rawSourceId")?)?;
+        let ordinal = canonical_binding_generation(native_event_text(source, "sourceCursor")?)?;
+        let operation = native_event_text(source, "operationId")?;
+        let epoch = native_event_text(source, "sourceEpoch")?;
+        if native_event_text(source, "generation")? != association.binding_generation
+            || raw_id <= after || raw_id <= next_position.last_source || raw_id > high_number
+            || ordinal == 0 || ordinal <= next_position.last_ordinal
+            || next_position.operation.as_deref().is_some_and(|value| value != operation)
+            || next_position.epoch.as_deref().is_some_and(|value| value != epoch) {
+            return Err("GOGOKE_NATIVE_EVENT_SOURCE_CHANGED_OR_REPEATED".into());
+        }
+        let frame = item.get("notification").ok_or("GOGOKE_NATIVE_EVENT_NOTIFICATION_MISSING")?;
+        let method = native_event_text(frame, "method")?;
+        if frame.get("id").is_some() || frame.get("result").is_some() || frame.get("error").is_some() {
+            return Err("GOGOKE_NATIVE_EVENT_IS_NOT_NOTIFICATION".into());
+        }
+        let params = frame.get("params").ok_or("GOGOKE_NATIVE_EVENT_PARAMS_MISSING")?;
+        let thread = if method == "thread/started" {
+            native_event_text(params.get("thread").ok_or("GOGOKE_NATIVE_EVENT_THREAD_MISSING")?, "id")?
+        } else { native_event_text(params, "threadId")? };
+        if next_position.thread.as_deref().is_some_and(|value| value != thread) {
+            return Err("GOGOKE_NATIVE_EVENT_THREAD_CHANGED".into());
+        }
+        next_position.last_source = raw_id;
+        next_position.last_ordinal = ordinal;
+        next_position.operation = Some(operation.to_owned());
+        next_position.epoch = Some(epoch.to_owned());
+        next_position.thread = Some(thread.to_owned());
+        original.push(item.clone());
+    }
+    let next = marker.get("nextCursor").ok_or("GOGOKE_NATIVE_EVENT_NEXT_CURSOR_MISSING")?;
+    let resume = marker.get("resumeCursor").ok_or("GOGOKE_NATIVE_EVENT_RESUME_CURSOR_MISSING")?;
+    if reply.state == "PARTIAL" {
+        let cursor = next.as_str().filter(|value| !value.is_empty())
+            .ok_or("GOGOKE_NATIVE_EVENT_PARTIAL_CURSOR_INVALID")?;
+        if !resume.is_null() || !next_position.seen_pages.insert(cursor.to_owned()) {
+            return Err("GOGOKE_NATIVE_EVENT_PARTIAL_CURSOR_REPEATED".into());
+        }
+        next_position.params = json!({"cursor": cursor});
+        next_position.page_high = Some(high.to_owned());
+    } else {
+        let cursor = resume.as_str().filter(|value| !value.is_empty())
+            .ok_or("GOGOKE_NATIVE_EVENT_COMPLETE_CURSOR_INVALID")?;
+        if !next.is_null() { return Err("GOGOKE_NATIVE_EVENT_COMPLETE_HAS_PAGE_CURSOR".into()); }
+        next_position.params = json!({"resumeCursor": cursor});
+        next_position.page_high = None;
+        next_position.seen_pages.clear();
+    }
+    Ok((next_position, original))
+}
+
+pub(crate) async fn start_native_visible_events(session: &Arc<WorkspaceSession>) -> Result<(), String> {
+    let Some(app) = session.begin_native_events()? else { return Ok(()); };
+    // Establish the attachment watermark before connect resolves. Existing
+    // content is restored by the full original thread/read path, never by
+    // replaying historical text deltas into an already rendered conversation.
+    let seeded: Result<(NativeAssociation, NativeEventPosition), String> = async {
+        let association = session.native_association()?.ok_or("GOGOKE_NATIVE_EVENT_ASSOCIATION_MISSING")?;
+        let mut position = NativeEventPosition::default();
+        loop {
+            let params = if position.params.is_null() { json!({}) } else { position.params.clone() };
+            let reply = visible_read(&app, &session.owner_workspace_id, &association,
+                "native-events", Some(params)).await?;
+            let app_state = app.state::<AppState>();
+            let sessions = app_state.sessions.lock().await;
+            if !sessions.get(&session.owner_workspace_id).is_some_and(|value| Arc::ptr_eq(value, session))
+                || session.native_association()?.as_ref() != Some(&association) {
+                return Err("GOGOKE_NATIVE_EVENT_ATTACHMENT_CHANGED_DURING_READ".into());
+            }
+            position = native_event_page(&reply, &association, &position)?.0;
+            if reply.state == "APPLIED" { return Ok((association, position)); }
+        }
+    }.await;
+    let (seed_association, seed_position) = match seeded {
+        Ok(seed) => seed,
+        Err(error) => {
+            if let Err(finish) = session.finish_native_events(Some(error.clone())) {
+                return Err(format!("{error}; reader state: {finish}"));
+            }
+            return Err(error);
+        }
+    };
+    let weak = Arc::downgrade(session);
+    tauri::async_runtime::spawn(async move {
+        let mut association: Option<NativeAssociation> = Some(seed_association);
+        let mut position = seed_position;
+        let result: Result<(), String> = async {
+            loop {
+                let Some(session) = weak.upgrade() else { return Ok(()); };
+                let workspace = &session.owner_workspace_id;
+                let current = session.native_association()?.ok_or("GOGOKE_NATIVE_EVENT_ASSOCIATION_MISSING")?;
+                if association.as_ref() != Some(&current) {
+                    association = Some(current.clone());
+                    position = NativeEventPosition::default();
+                }
+                let params = if position.params.is_null() { json!({}) } else { position.params.clone() };
+                let reply = visible_read(&app, workspace, &current, "native-events", Some(params)).await;
+                // Both cache replacement and resume can happen while the USER
+                // read is in flight. Neither permits emitting its old result.
+                let app_state = app.state::<AppState>();
+                let sessions = app_state.sessions.lock().await;
+                if !sessions.get(workspace).is_some_and(|value| Arc::ptr_eq(value, &session)) { return Ok(()); }
+                if session.native_association()?.as_ref() != Some(&current) { continue; }
+                let reply = reply?;
+                let (next_position, notifications) = native_event_page(&reply, &current, &position)?;
+                let delivered = session.with_native_event_route(&current, || {
+                    for item in &notifications {
+                        app.emit("app-server-event", json!({
+                            "workspace_id": workspace, "message": item["notification"],
+                            "nativeAssociation": current, "nativeSourceRef": item["sourceRef"],
+                        })).map_err(|error| format!("GOGOKE_NATIVE_EVENT_DELIVERY_FAILED:{error}"))?;
+                    }
+                    Ok(())
+                })?;
+                drop(sessions);
+                if delivered.is_none() { return Ok(()); }
+                position = next_position;
+                if reply.state == "APPLIED" {
+                    // Observation cadence only; never a timeout, stop proof,
+                    // retry policy or source-completeness inference.
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+            }
+        }.await;
+        if let Some(session) = weak.upgrade() {
+            if let Err(error) = &result { eprintln!("GOGOKE_NATIVE_EVENT_READER_FAILED:{error}"); }
+            if let Err(error) = session.finish_native_events(result.err()) {
+                eprintln!("GOGOKE_NATIVE_EVENT_READER_FINISH_FAILED:{error}");
+            }
+        }
+    });
+    Ok(())
+}
+
 pub(crate) async fn native_visible_request(
     app: &AppHandle,
     workspace_id: &str,
@@ -992,6 +1175,9 @@ pub(crate) async fn native_visible_transport(
         Some(session) if session.is_native() => {
             if session.owner_workspace_id != workspace_id {
                 return Err("GOGOKE_NATIVE_WORKSPACE_OWNER_MISMATCH".into());
+            }
+            if let Some(error) = session.native_event_error()? {
+                return Err(format!("GOGOKE_NATIVE_EVENT_READ_UNKNOWN:{error}"));
             }
             let association = session.native_association()?
                 .ok_or("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE")?;
@@ -2199,6 +2385,62 @@ mod native_visible_boundary_tests {
             binding_generation: generation.into(),
             instance_id: "instanceA".into(),
         }
+    }
+
+    fn event_reply() -> VisibleReadReply {
+        let source = json!({"rawSourceId":"5","operationId":"opA","generation":"2",
+            "sourceEpoch":"nonceA","sourceCursor":"3"});
+        VisibleReadReply { schema: VISIBLE_SCHEMA.into(), workspace_id: "workspaceA".into(),
+            association: Some(association("2")), state: "APPLIED".into(), live: None, reason: None,
+            response: Some(json!({"result":{
+                "notifications":[{"notification":{"method":"item/agentMessage/delta",
+                    "params":{"threadId":"threadA","turnId":"turnA","itemId":"itemA","delta":"hello"}},
+                    "sourceRef":source}],
+                "nativeEvents":{"state":"COMPLETE","highWater":"7","afterSourceId":"0",
+                    "nextCursor":null,"resumeCursor":"resume:7:original","sourceRefs":[source]}
+            }})) }
+    }
+
+    #[test]
+    fn native_notifications_preserve_original_envelope_and_scope() {
+        let reply = event_reply();
+        let (position, events) = native_event_page(&reply, &association("2"), &NativeEventPosition::default()).unwrap();
+        assert_eq!(events[0]["notification"]["params"]["delta"], "hello");
+        assert_eq!(position.params, json!({"resumeCursor":"resume:7:original"}));
+        assert!(native_event_page(&reply, &association("3"), &NativeEventPosition::default()).is_err());
+        assert!(native_event_page(&reply, &association("2"), &position).is_err());
+        let mut wrong_ref = event_reply();
+        wrong_ref.response.as_mut().unwrap()["result"]["notifications"][0]["sourceRef"]["operationId"] = json!("other");
+        assert!(native_event_page(&wrong_ref, &association("2"), &NativeEventPosition::default()).is_err());
+        let mut server_request = event_reply();
+        server_request.response.as_mut().unwrap()["result"]["notifications"][0]["notification"]["id"] = json!(11);
+        assert!(native_event_page(&server_request, &association("2"), &NativeEventPosition::default()).is_err());
+        let prior_thread = NativeEventPosition { thread: Some("otherThread".into()), ..NativeEventPosition::default() };
+        assert!(native_event_page(&reply, &association("2"), &prior_thread).is_err());
+    }
+
+    #[test]
+    fn native_event_partial_page_cannot_change_water_or_repeat_cursor() {
+        let mut reply = event_reply();
+        reply.state = "PARTIAL".into();
+        let marker = &mut reply.response.as_mut().unwrap()["result"]["nativeEvents"];
+        marker["state"] = json!("PARTIAL");
+        marker["nextCursor"] = json!("page:7:5:original");
+        marker["resumeCursor"] = Value::Null;
+        let (position, _) = native_event_page(&reply, &association("2"), &NativeEventPosition::default()).unwrap();
+        let mut next = event_reply();
+        let result = &mut next.response.as_mut().unwrap()["result"];
+        result["notifications"] = json!([]);
+        result["nativeEvents"]["sourceRefs"] = json!([]);
+        result["nativeEvents"]["afterSourceId"] = json!("5");
+        result["nativeEvents"]["highWater"] = json!("8");
+        assert!(native_event_page(&next, &association("2"), &position).is_err());
+        let mut repeated = reply;
+        let result = &mut repeated.response.as_mut().unwrap()["result"];
+        result["notifications"] = json!([]);
+        result["nativeEvents"]["sourceRefs"] = json!([]);
+        result["nativeEvents"]["afterSourceId"] = json!("5");
+        assert!(native_event_page(&repeated, &association("2"), &position).is_err());
     }
 
     #[test]

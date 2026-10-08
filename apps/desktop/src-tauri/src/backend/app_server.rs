@@ -464,6 +464,8 @@ pub(crate) enum SessionTransport {
 pub(crate) struct NativeSessionState {
     association: NativeAssociation,
     confirmed_stop_fact: Option<String>,
+    event_reader_running: bool,
+    event_reader_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -491,6 +493,8 @@ impl WorkspaceSession {
                 state: RwLock::new(NativeSessionState {
                     association,
                     confirmed_stop_fact: None,
+                    event_reader_running: false,
+                    event_reader_error: None,
                 }),
             },
             pending: Mutex::new(HashMap::new()),
@@ -520,6 +524,49 @@ impl WorkspaceSession {
                 .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}")),
             SessionTransport::Legacy { .. } => Ok(None),
         }
+    }
+
+    /// This observer owns no process or H permission. A deliberate reconnect
+    /// may restart a failed observer; transport queries never silently retry it.
+    pub(crate) fn begin_native_events(&self) -> Result<Option<AppHandle>, String> {
+        let SessionTransport::Native { app, state } = &self.transport else { return Ok(None); };
+        let mut current = state.write()
+            .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?;
+        if current.event_reader_running || current.confirmed_stop_fact.is_some() { return Ok(None); }
+        current.event_reader_running = true;
+        current.event_reader_error = None;
+        Ok(Some(app.clone()))
+    }
+
+    pub(crate) fn native_event_error(&self) -> Result<Option<String>, String> {
+        match &self.transport {
+            SessionTransport::Native { state, .. } => state.read()
+                .map(|current| current.event_reader_error.clone())
+                .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}")),
+            SessionTransport::Legacy { .. } => Ok(None),
+        }
+    }
+
+    pub(crate) fn finish_native_events(&self, error: Option<String>) -> Result<(), String> {
+        let SessionTransport::Native { state, .. } = &self.transport else { return Ok(()); };
+        let mut current = state.write()
+            .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?;
+        current.event_reader_running = false;
+        current.event_reader_error = error;
+        Ok(())
+    }
+
+    /// Hold the association read lock through synchronous emission. A resume
+    /// cannot commit a new generation between the final check and the event.
+    pub(crate) fn with_native_event_route<T>(&self, expected: &NativeAssociation,
+        emit: impl FnOnce() -> Result<T, String>) -> Result<Option<T>, String> {
+        let SessionTransport::Native { state, .. } = &self.transport else {
+            return Err("GOGOKE_NATIVE_EVENT_TRANSPORT_MISMATCH".into());
+        };
+        let current = state.read()
+            .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?;
+        if &current.association != expected || current.confirmed_stop_fact.is_some() { return Ok(None); }
+        emit().map(Some)
     }
 
     pub(crate) fn advance_native_association(

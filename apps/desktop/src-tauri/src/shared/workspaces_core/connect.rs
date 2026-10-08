@@ -89,13 +89,16 @@ where
                 if !current.get(&entry.id).is_some_and(|actual| Arc::ptr_eq(actual, &existing_for_entry)) {
                     return Err("GOGOKE_WORKSPACE_SESSION_CHANGED_DURING_CONNECT".into());
                 }
-                current.insert(entry.id.clone(), replacement);
+                current.insert(entry.id.clone(), replacement.clone());
+                drop(current);
+                crate::codex::start_native_visible_events(&replacement).await?;
                 return Ok(());
             }
         } else if existing_for_entry.is_native() {
             return Err("GOGOKE_NATIVE_USER_ATTACHMENT_REQUIRED".into());
         }
         if existing_for_entry.is_alive().await? {
+            crate::codex::start_native_visible_events(&existing_for_entry).await?;
             return Ok(());
         }
         if existing_for_entry.is_native() {
@@ -127,7 +130,8 @@ where
     session
         .register_workspace_with_path(&entry.id, Some(&entry.path))
         .await;
-    sessions.lock().await.insert(entry.id, session);
+    sessions.lock().await.insert(entry.id, session.clone());
+    crate::codex::start_native_visible_events(&session).await?;
     Ok(())
 }
 
