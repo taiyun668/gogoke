@@ -1165,14 +1165,54 @@ pub(crate) fn finalize_quiescent(db:&mut VerifiedDatabaseConnection<'_>,root:&Ro
         let ids=recorded_auth(db,&grant)?;
         if !root_done || ids.iter().any(|id|!effects.iter().any(|e|
             e.action=="REVOKE_AUTH" &&e.phase=="APPLIED" && &e.object_identity==id)) ||
-            effects.iter().any(|e|e.phase!="APPLIED") {
+            effects.iter().any(|e|e.phase!="APPLIED" &&
+                !(e.action=="REVOKE_RESIDUE" &&e.phase=="INTENT")) {
             return Err("Grok private HOME: retired original ACL effect unresolved".into());
+        }
+        // A crash after the exact SID writer but before the F finish leaves an
+        // INTENT. Read its physical AFTER state before resuming the domain scan.
+        for intent in effects.iter().filter(|e|e.action=="REVOKE_RESIDUE" &&e.phase=="INTENT") {
+            if intent.rights!=RIGHTS ||intent.flags!=0 ||
+                intent.before_aces!=format!("1:{RIGHTS}:16") ||!intent.after_aces.is_empty() ||
+                intent.after_control & 0x1000==0 {
+                return Err("Grok private HOME: retired residue intent changed".into());
+            }
+            let auth=evidence("retired-intent-FileID",observe_grok_recorded_auth(
+                &home.path,&home.identity,&intent.object_identity))?
+                .ok_or("Grok private HOME: retired residue intent FileID absent")?;
+            let current=evidence("retired-intent-ACL",auth.acl(&profile))?;
+            if current.target_aces==intent.after_aces &&
+                current.dacl_control==intent.after_control &&
+                sha256_hex(&current.other_aces_bytes())==intent.other_aces_sha256 {
+                instance::finish_grok_effect(db,intent)?;
+            } else if current.target_aces!=intent.before_aces ||
+                current.dacl_control!=intent.before_control {
+                return Err("Grok private HOME: retired residue intent ACL changed".into());
+            }
         }
         let root_acl=evidence("retired-root-readback",grok_root_acl(&profile,&home.path,&home.identity))?;
         let inherited=proven_inherited_successors(db,&grant,&profile,&home)?;
-        if !root_acl.target_aces.is_empty() ||
-            !evidence("retired-domain-readback",inspect_grok_home_residue(&profile,
-                &home.path,&home.identity,&ids,&inherited))?.is_empty() {
+        if !root_acl.target_aces.is_empty() {
+            return Err("Grok private HOME: retired SID residue".into());
+        }
+        let residue=evidence("retired-domain-readback",inspect_grok_home_residue(&profile,
+            &home.path,&home.identity,&ids,&inherited))?;
+        if residue.iter().any(|object|!object.protected_inherited) {
+            return Err("Grok private HOME: retired SID residue".into());
+        }
+        for object in residue {
+            let relative=object.relative_name.to_string_lossy().into_owned();
+            let before=evidence("retired-residue-ACL-before",grok_residue_acl(&profile,
+                &home.path,&home.identity,&object))?;
+            apply(db,effect(&grant,"REVOKE_RESIDUE",&object.identity,&relative,&before),
+                ||evidence("retired-residue-ACL-after",grok_residue_acl(&profile,
+                    &home.path,&home.identity,&object)),||
+                evidence("retired-revoke-residue",revoke_grok_home_residue(&profile,
+                    &home.path,&home.identity,&object)))?;
+        }
+        if !evidence("retired-domain-final",inspect_grok_home_residue(&profile,
+            &home.path,&home.identity,&ids,&inherited))?.is_empty() ||
+            instance::read_grok_effects(db,&grant.binding_id)?.iter().any(|e|e.phase!="APPLIED") {
             return Err("Grok private HOME: retired SID residue".into());
         }
         instance::set_grok_grant_phase(db,&grant,"REVOKED",None)?;
