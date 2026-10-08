@@ -409,15 +409,19 @@ jobs:
               @{ id = 'grok-initial-auth'; filter = 'original_inherited_auth_is_journaled_protected_and_revoked_without_process' }
               @{ id = 'grok-active-rotation'; filter = 'active_original_root_authority_survives_two_auth_file_replacements' }
               @{ id = 'grok-inherited-peer-stop'; filter = 'active_inherited_successor_peer_stop_and_original_final_cleanup' }
+              @{ id = 'grok-three-retired-before'; filter = 'three_peer_retired_cold_residue_before_write' }
+              @{ id = 'grok-three-retired-after'; filter = 'three_peer_retired_cold_residue_after_write' }
+              @{ id = 'grok-three-revoke-before'; filter = 'three_peer_revoke_pending_cold_residue_before_write' }
+              @{ id = 'grok-three-revoke-after'; filter = 'three_peer_revoke_pending_cold_residue_after_write' }
               @{ id = 'grok-promoted-rebase'; filter = 'old_stopped_grok_grant_rebases_after_h_claim_resume_promotion' }
             )
             Write-Host 'F private-history/credential and Grok exact HOME ACL/journal boundaries only; full library, compiled mutations and server suites NOT_RUN.'
           }
           if ('${{ inputs.grok_home_fixture_only }}' -eq 'true') {
             if ('${{ inputs.private_history_fixture_only }}' -ne 'true') { throw 'Grok HOME subset requires the existing private-history directed scope' }
-            $probes = @($probes | Where-Object { $_.id -in @('grok-inherited-directory', 'grok-inherited-auth-residue', 'grok-protected-peer', 'grok-link-refusal', 'grok-cold-original', 'grok-home-refusal', 'grok-intent-recovery', 'grok-applied-peer', 'grok-resume-original', 'grok-deleted-revoked', 'grok-deleted-unrevoked', 'grok-initial-auth', 'grok-active-rotation', 'grok-inherited-peer-stop', 'grok-promoted-rebase', 'grok-inherited-successor') })
-            if ($probes.Count -ne 16) { throw 'Grok HOME boundary selection is incomplete' }
-            Write-Host 'Sixteen Grok HOME boundaries including active inherited successor peer stop; other F, full library and server suites NOT_RUN.'
+            $probes = @($probes | Where-Object { $_.id -in @('grok-inherited-directory', 'grok-inherited-auth-residue', 'grok-protected-peer', 'grok-link-refusal', 'grok-cold-original', 'grok-home-refusal', 'grok-intent-recovery', 'grok-applied-peer', 'grok-resume-original', 'grok-deleted-revoked', 'grok-deleted-unrevoked', 'grok-initial-auth', 'grok-active-rotation', 'grok-inherited-peer-stop', 'grok-three-retired-before', 'grok-three-retired-after', 'grok-three-revoke-before', 'grok-three-revoke-after', 'grok-promoted-rebase', 'grok-inherited-successor') })
+            if ($probes.Count -ne 20) { throw 'Grok HOME boundary selection is incomplete' }
+            Write-Host 'Twenty Grok HOME boundaries including three-peer cold retirement and pending-revoke states; other F, full library and server suites NOT_RUN.'
           }
           if ('${{ inputs.trace_canonicalize }}' -eq 'true') {
             $debugger = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'
@@ -475,6 +479,7 @@ jobs:
         run: |
           ./tools/ci/gogoke37-grok-initial-auth-mutation.ps1 -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence')
       - name: Verify active inherited Grok successor with a compiled production mutation
+        id: grok-successor-mutation
         if: ${{ !cancelled() && steps.grok-initial-mutation.outcome == 'success' && inputs.grok_home_fixture_only }}
         shell: pwsh
         run: |
@@ -528,6 +533,80 @@ jobs:
                 source_restored=$restored; records=$records } |
                 ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'grok-successor-mutation.json') -Encoding utf8NoBOM
           }
+      - name: Verify Grok peer chain and cold residue recovery with compiled production mutations
+        if: ${{ !cancelled() && steps.grok-successor-mutation.outcome == 'success' && inputs.grok_home_fixture_only }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
+          $sourcePath = 'apps/desktop/native-host/src/store/session_transport/grok_home_launch.rs'
+          $manifest = 'apps/desktop/native-host/Cargo.toml'
+          $original = [IO.File]::ReadAllBytes($sourcePath)
+          $source = [Text.Encoding]::UTF8.GetString($original)
+          $hash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash
+          $testStart = $source.IndexOf('#[cfg(test)]')
+          if ($testStart -lt 0) { throw 'Original Grok test region absent.' }
+          $newline = if ($source.Contains("`r`n")) { "`r`n" } else { "`n" }
+          $cases = @(
+            @{ id='peer-chain'; test='three_peer_retired_cold_residue_before_write';
+              needle='!applied_inherited_residue_witness(db,&peers,&auth,&acl,home)?';
+              replacement='true'; marker='Grok private HOME' },
+            @{ id='retired-intent'; test='three_peer_retired_cold_residue_after_write';
+              needle=('    if effects.iter().any(|e|e.phase!="APPLIED" &&' + $newline +
+                  '        !(e.action=="REVOKE_RESIDUE" &&e.phase=="INTENT")) ||');
+              replacement='    if effects.iter().any(|e|e.phase!="APPLIED") ||';
+              marker='retired stopped ACL effects incomplete' },
+            @{ id='pending-intent'; test='three_peer_revoke_pending_cold_residue_after_write';
+              needle=('            if pending_inherited_residue_after(db,&pending,profile,&self.home,intent)? {' + $newline +
+                  '                instance::finish_grok_effect(db,intent)?;' + $newline +
+                  '            }');
+              replacement='            let _=intent;'; marker='Grok private HOME' }
+          )
+          $records = @()
+          $restored = $false
+          function Invoke-PeerCase($case, [string]$phase, [bool]$expectFailure) {
+            $test = "store::session_transport::grok_home_launch::tests::$($case.test)"
+            $output = & cargo test --locked --manifest-path $manifest --lib $test -- --exact --nocapture 2>&1
+            $exitCode = $LASTEXITCODE
+            $output | Tee-Object -FilePath (Join-Path $evidenceRoot "grok-peer-mutations-$($case.id)-$phase.log") | Write-Host
+            $text = ($output | ForEach-Object { $_.ToString() }) -join "`n"
+            $compiled = [regex]::IsMatch($text, 'Finished.*test.*profile')
+            $one = [regex]::IsMatch($text, '(?m)^running 1 test\s*$')
+            $summary = if ($expectFailure) { 'test result: FAILED\. 0 passed; 1 failed; 0 ignored;' }
+                else { 'test result: ok\. 1 passed; 0 failed; 0 ignored;' }
+            $marker = $text.Contains($case.marker)
+            $valid = $compiled -and $one -and [regex]::IsMatch($text,$summary) -and
+                $(if ($expectFailure) { $exitCode -ne 0 -and $marker } else { $exitCode -eq 0 })
+            $script:records += [ordered]@{ id=$case.id; phase=$phase; exit_code=$exitCode;
+                compiled=$compiled; exact_one_test=$one; expected_summary=[regex]::IsMatch($text,$summary);
+                behavior_marker=$marker; state=$(if ($valid) {'PASS'} else {'FAIL'}) }
+            if (-not $valid) { throw "Grok peer mutation $($case.id) $phase did not show the required compiled behavior." }
+          }
+          try {
+            foreach ($case in $cases) {
+              if ([regex]::Matches($source,[regex]::Escape($case.needle)).Count -ne 1 -or
+                  $source.IndexOf($case.needle) -ge $testStart) { throw "Production mutation target not unique: $($case.id)" }
+              $mutated = $source.Replace($case.needle,$case.replacement)
+              if ($source.Substring($testStart) -cne $mutated.Substring($mutated.IndexOf('#[cfg(test)]'))) {
+                throw "Test region changed: $($case.id)"
+              }
+              Invoke-PeerCase $case 'baseline' $false
+              try {
+                [IO.File]::WriteAllText($sourcePath,$mutated,[Text.UTF8Encoding]::new($false))
+                Invoke-PeerCase $case 'production-branch-removed' $true
+              } finally {
+                [IO.File]::WriteAllBytes($sourcePath,$original)
+                $restored = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash -ceq $hash
+                if (-not $restored) { throw 'Exact Grok peer production source restoration failed.' }
+              }
+              Invoke-PeerCase $case 'restored' $false
+            }
+          } finally {
+            [ordered]@{ head_sha=(git rev-parse HEAD); production_source_sha256=$hash.ToLowerInvariant();
+                source_restored=$restored; records=$records } |
+                ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'grok-peer-mutations.json') -Encoding utf8NoBOM
+          }
       - name: Retain initial Grok auth mutation source and original transcripts
         if: ${{ always() && inputs.grok_home_fixture_only }}
         uses: actions/upload-artifact@v4
@@ -536,6 +615,8 @@ jobs:
           path: |
             ${{ runner.temp }}/gogoke-native-host-evidence/grok-initial-auth-*
             ${{ runner.temp }}/gogoke-native-host-evidence/grok-successor-*
+            ${{ runner.temp }}/gogoke-native-host-evidence/grok-peer-mutations-*
+            ${{ runner.temp }}/gogoke-native-host-evidence/grok-peer-mutations.json
           if-no-files-found: error
       - name: Retain original focused logs before the full library run
         if: ${{ !cancelled() && steps.release-build.outcome == 'success' && !inputs.trace_canonicalize && !inputs.full_library_only && !inputs.catalog_program_fixture_only }}
