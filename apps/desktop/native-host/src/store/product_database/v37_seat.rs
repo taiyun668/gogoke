@@ -1920,6 +1920,35 @@ mod tests {
                     else {panic!("configuration object");};
                 fields
             };
+            let assert_original=|product:&ProductDatabase<'_>,rows:&[Json]| {
+                let unhex=|value:&str| {
+                    assert_eq!(value.len()%2,0,"stored original hex");
+                    value.as_bytes().chunks_exact(2).map(|pair|
+                        u8::from_str_radix(std::str::from_utf8(pair).unwrap(),16).unwrap())
+                        .collect::<Vec<u8>>()
+                };
+                for row in rows {
+                    let Json::Object(row)=row else {panic!("history row");};
+                    if row.get(&key("bodyState")).unwrap().canonical()!="\"VERIFIED\"" {continue;}
+                    let Json::String(id)=row.get(&key("requestId")).unwrap() else {panic!("request ID");};
+                    let original=Statement::prepare(product.connection.as_ptr(),
+                        "SELECT request_hex,receipt_hex FROM main.gogoke_v37_h_stdin_journal
+                         WHERE domain_id='global' AND request_id=?1").unwrap();
+                    original.bind_text(1,&id.to_well_formed_string().unwrap()).unwrap();
+                    assert!(original.step_row().unwrap(),"original H request exists");
+                    let request=decode_request(&unhex(&original.column_text(0).unwrap())).unwrap();
+                    let receipt=unhex(&original.column_text(1).unwrap());
+                    assert!(!original.step_row().unwrap(),"one exact H original");
+                    assert_eq!(row.get(&key("body")).unwrap().canonical(),
+                        request.payload.get(&key("body")).unwrap().canonical(),
+                        "public body equals the stored original K-SESSION USER body");
+                    assert_ne!(row.get(&key("receipt")).unwrap().canonical(),"null",
+                        "verified delivered input retains its original H receipt");
+                    assert_eq!(row.get(&key("receipt")).unwrap().canonical(),
+                        Parser::parse(std::str::from_utf8(&receipt).unwrap()).unwrap().canonical(),
+                        "public receipt equals the original H receipt JSON");
+                }
+            };
             let first_bytes=product.configure_user_v37(frame(&designated.incarnation,
                 designated.generation,"secretarySession",None).as_bytes()).unwrap();
             assert!(!String::from_utf8_lossy(&first_bytes).contains("foreignUser"));
@@ -1932,6 +1961,7 @@ mod tests {
             let Json::Object(first)=result.remove(&key("inputHistory")).unwrap() else {panic!("page");};
             let Json::Array(first_rows)=first.get(&key("items")).unwrap() else {panic!("items");};
             assert_eq!(first_rows.len(),4,"page stops before the next valid H body exceeds the IPC frame");
+            assert_original(product,first_rows);
             let Json::Object(old)=&first_rows[0] else {panic!("old");};
             assert_eq!(old.get(&key("bodyState")).unwrap().canonical(),"\"VERIFIED\"");
             assert_eq!(old.get(&key("generation")).unwrap().canonical(),"\"1\"");
@@ -1954,6 +1984,7 @@ mod tests {
             let Json::Object(second)=result.remove(&key("inputHistory")).unwrap() else {panic!("second");};
             let Json::Array(second_rows)=second.get(&key("items")).unwrap() else {panic!("items");};
             assert_eq!(second_rows.len(),2);
+            assert_original(product,second_rows);
             let Json::Object(last)=&second_rows[0] else {panic!("last original");};
             assert_eq!(last.get(&key("requestId")).unwrap().canonical(),"\"lastUser\"");
             assert_eq!(last.get(&key("bodyState")).unwrap().canonical(),"\"VERIFIED\"");
