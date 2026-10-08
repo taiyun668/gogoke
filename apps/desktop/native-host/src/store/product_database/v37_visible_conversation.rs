@@ -680,7 +680,7 @@ impl<'root> ProductDatabase<'root> {
             trial.push(Json::Object(BTreeMap::from([(k("notification"),copy_json(&notification)),
                 (k("sourceRef"),copy_json(&source_ref))])));
             let trial_refs={let mut values=copy_array(&refs);values.push(copy_json(&source_ref));values};
-            let shell=visible_native_event_envelope(trial,high,None,None,trial_refs,"PARTIAL",after);
+            let shell=visible_native_event_envelope(copy_array(&trial),high,None,None,trial_refs,"PARTIAL",after);
             let mut trial_reply=copy_fields(reply);trial_reply.insert(k("response"),shell);
             if notifications.len()>=64 || Json::Object(trial_reply).canonical().len()+512>crate::ipc::MAX_FRAME_BYTES {
                 if notifications.is_empty() {return Err(OrchestrationError::V37StoreFailure(format!(
