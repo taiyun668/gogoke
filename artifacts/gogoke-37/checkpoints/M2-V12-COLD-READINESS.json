@@ -3,7 +3,8 @@
   "changes": "E2E readiness observes the same single installed-product launch for the existing 180-second operation bound, and retains fetch cause fields.",
   "result": "The first preparation failed at 60 seconds. The exact original bootstrap receipt was written at about 70 seconds. Root reattached to the original PID and exact product bytes and dispatched its caption close. The process is gone, five formal snapshot groups are unchanged, and neither fresh V12 seat exists. The separately acquired process observer did not expose an exit code; that close is NOT_OBSERVED, not exit-zero PASS.",
   "original_error": "Actual product readiness missing: TypeError: fetch failed; original stderr=",
-  "next": "Repeat the seat-only preparation with the corrected measurement bound, then use the minimized independent V12 entry against the real installed candidate. No login or credential read.",
+  "recheck": "The same frozen installed 0.1.38 prepared both fresh USER/template seats through the real ingress. The original child exit observer recorded caption-close exit 0; the task exit was 0 and all five formal snapshot groups were unchanged. No H or model process was opened. The initial failure and its unobserved exit code remain retained.",
+  "next": "Fresh independent review of the minimized installed V12 entry, then execute with the two actual prepared seats and original ledger observation. No login or credential read.",
   "reference": "Reused tools/e2e/product-cdp.mjs, candidate-custody.ps1 and the existing Interactive/Limited one-shot task helper. The original ready receipt supplies the cold-start duration; installed 0.1.38 bytes remain frozen.",
   "acceptance": false
 }
