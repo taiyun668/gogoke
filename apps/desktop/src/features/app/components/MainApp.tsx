@@ -86,6 +86,7 @@ import { subscribeTrayOpenThread } from "@services/events";
 import { I18nProvider } from "@/i18n";
 import { hasNativeBackendTransport } from "@/platform/runtime";
 import { createDesign37SecretarySource, sameSecretaryWriter, signalGogokeUpdateReady,
+  pendingNativeVisibleIntent, recoverPendingNativeVisibleIntent,
   type SecretaryBinding, type SecretaryOriginalInput, type SecretaryVendorUserFact,
   type SecretaryWriteFact } from "@/services/tauri";
 import { NowProvider, NowPinSlot, type NowSource } from "@/features/now/NowContext";
@@ -746,6 +747,37 @@ function MainAppContent({
       refreshThread,
       reconnectWorkspace: connectWorkspace,
     });
+
+  // Reopening or reconnecting reads the retained original request. It never
+  // repeats a write or creates a replacement intent after an unknown result.
+  useEffect(() => {
+    if (!activeWorkspaceId || !hasNativeBackendTransport()) return;
+    let active = true;
+    let reading = false;
+    const recoverOriginal = async () => {
+      if (!active || reading) return;
+      reading = true;
+      try {
+        const pending = pendingNativeVisibleIntent(activeWorkspaceId);
+        if (!pending) return;
+        await recoverPendingNativeVisibleIntent(activeWorkspaceId);
+      } catch (cause) {
+        if (active) addDebugEntry({ id: `${Date.now()}-native-original-recovery`,
+          timestamp: Date.now(), source: "error",
+          label: "Original native conversation request recovery",
+          payload: cause instanceof Error ? cause.message : String(cause) });
+      } finally { reading = false; }
+    };
+    void recoverOriginal();
+    window.addEventListener("focus", recoverOriginal);
+    window.addEventListener("online", recoverOriginal);
+    return () => {
+      active = false;
+      window.removeEventListener("focus", recoverOriginal);
+      window.removeEventListener("online", recoverOriginal);
+    };
+  }, [activeWorkspaceId, activeWorkspace?.connected,
+    remoteThreadConnectionState, addDebugEntry]);
 
   const { mobileThreadRefreshLoading, handleMobileThreadRefresh } =
     useMainAppMobileThreadRefresh({
