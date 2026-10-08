@@ -160,6 +160,38 @@ def v12_model_memory_homes(db, journal, case, result, originals):
             "configSourceEpoch": replies[0][0]["sourceEpoch"],
             "configSourceCursor": replies[0][0]["sourceCursor"]})
 
+def v12_exact_input_and_tool_range(db, journal, case, originals):
+    source, side = case["sourceSession"], case["sideSession"]
+    inputs = rows(db, "SELECT session_id,request_id,operation,generation,phase,receipt_status,request_hex "
+        "FROM gogoke_v37_h_stdin_journal WHERE domain_id=? AND session_id IN (?,?) ORDER BY request_id",
+        (journal["domainId"], source["id"], side["id"]))
+    expected = {(source["id"], case["sourceQuestionRequestId"], "send", source["generation"], "RECEIPTED", "APPLIED"),
+                (side["id"], case["questionRequest"]["requestId"], "send", side["generation"], "RECEIPTED", "APPLIED")}
+    if len(inputs) != 2 or {row[:6] for row in inputs} != expected:
+        raise RuntimeError("V12 original H input set has extra, missing or unsettled sends/appends")
+    source_requests = [entry for entry in journal["operations"] if
+        entry.get("request", {}).get("requestId") == case["sourceQuestionRequestId"]]
+    if len(source_requests) != 1 or next(row[6] for row in inputs if row[0] == source["id"]) != \
+            source_requests[0]["rawFrame"].encode().hex():
+        raise RuntimeError("V12 source original H input bytes differ")
+    # The shared V12 block already binds the side's D-assembled bytes to its
+    # original question and cursor-only reference; they are not the bare question.
+    turn = case["readbackRequirements"]["sideTurn"]
+    raw = originals[side["id"]]
+    start = [int(row["sourceCursor"]) for row, frame, _ in raw if
+        frame.get("method") == "turn/started" and frame.get("params", {}).get("threadId") == turn["threadId"] and
+        frame.get("params", {}).get("turn", {}).get("id") == turn["turnId"]]
+    end = [int(row["sourceCursor"]) for row, frame, _ in raw if
+        frame.get("method") == "turn/completed" and frame.get("params", {}).get("threadId") == turn["threadId"] and
+        frame.get("params", {}).get("turn", {}).get("id") == turn["turnId"]]
+    if len(start) != 1 or len(end) != 1 or start[0] >= end[0]:
+        raise RuntimeError("V12 original explicit tool turn range is incomplete")
+    for row, frame, _ in raw:
+        if tool(frame) and (frame.get("params", {}).get("threadId") != turn["threadId"] or
+                frame.get("params", {}).get("turnId") != turn["turnId"] or
+                not start[0] < int(row["sourceCursor"]) < end[0]):
+            raise RuntimeError("V12 original side tool is outside the explicitly authorized turn")
+
 def verified_model_evidence(db, instance_id, model, expected_domain=None, expected_session=None):
     evidence = one(db,
         "SELECT i.driver_id,i.version,i.program_digest,i.install_state,i.login_state,"
@@ -1293,6 +1325,7 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             verify_v12_selected_models(db, journal, case, journal["sideChatPlan"], result)
             verify_v12_stop_release(db, journal, case, result)
             verify_v12_lifecycle_and_ledger(db, journal, case, journal["sideChatPlan"])
+            v12_exact_input_and_tool_range(db, journal, case, originals)
             v12_model_memory_homes(db, journal, case, result, originals)
             if len(result["sideChatCases"]) != 1:
                 raise RuntimeError("Independent V12 common A/H/D/F checks did not produce one original case")
