@@ -1385,6 +1385,10 @@ impl<'root> ProductDatabase<'root> {
                         row.insert(key("models"), Json::Array(models));
                     }
                 }
+                if let Some(reason)=self.unbound_managed_source_reason(&profile.instance_id,&profile.driver_id)? {
+                    row.insert(key("programSourceError"),
+                        Json::String(JsonString::from_str(reason)));
+                }
                 let (seats, running) = self.read_instance_seat_occupancy(&profile.instance_id)?;
                 row.insert(key("seats"), Json::Array(seats));
                 row.insert(key("runningSessions"), running.map(|value|

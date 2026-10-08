@@ -354,6 +354,17 @@ fn actual_two_disappeared_holders_recover_in_one_call_replay_without_acl_effect_
                 generation.session_id, "APPLIED".into(), old[7].clone(), expected[7].clone()]]);
         }
         assert_eq!(occupancy(&mut product),Some(0),"exact completed recovery does not poison the current count");
+        assert!(product.qualified_managed_source_resources(INSTANCE,"codex").is_ok(),
+            "the original two APPLIED releases qualify only their own retained H resources");
+        product.connection.execute("BEGIN IMMEDIATE").unwrap();
+        let pending = Statement::prepare(product.connection.as_ptr(),
+            "INSERT INTO main.gogoke_v37_h_stdin_journal(domain_id,request_id,operation,ticket,process_operation_id,custodian_nonce,session_id,generation,request_hex,phase,expected_revision) VALUES(?1,'managed-pending','send','synthetic-ticket','synthetic-operation','synthetic-nonce',?2,'1','00','PREPARED','1')").unwrap();
+        pending.bind_text(1,&cold.claims[0][0]).unwrap();
+        pending.bind_text(2,&cold.claims[0][1]).unwrap();
+        pending.step_done().unwrap();drop(pending);
+        assert!(product.qualified_managed_source_resources(INSTANCE,"codex").is_err(),
+            "a new unresolved H input blocks source migration despite completed old releases");
+        product.connection.execute("ROLLBACK").unwrap();
         // Negative metadata instrument, not an observed stop or a new effect.
         // Roll back the exact old row before continuing the real recovery case.
         product.connection.execute("BEGIN IMMEDIATE").unwrap();
@@ -362,7 +373,80 @@ fn actual_two_disappeared_holders_recover_in_one_call_replay_without_acl_effect_
         changed.bind_text(1,&cold.claims[0][0]).unwrap();changed.bind_text(2,&cold.claims[0][1]).unwrap();
         changed.step_done().unwrap();drop(changed);
         assert_eq!(occupancy(&mut product),None,"an empty string is not the original NULL evidence");
+        assert!(product.qualified_managed_source_resources(INSTANCE,"codex").is_err(),
+            "changed stop metadata invalidates the original holder release for source migration");
         product.connection.execute("ROLLBACK").unwrap();
+        // Exercise the real READY transaction over the two original native
+        // holder releases, a profile-less old instance, and one explicitly
+        // disabled old reservation. Only the copy/source rows below arrange
+        // the pre-managed lifecycle; the real F/H receipts are not fabricated.
+        let copy=instance::read_managed_cli(&product.connection,root,"codex").unwrap().unwrap();
+        let stage=copy.stage_name.unwrap();
+        let image=instance::inspect_staged_official_cli(root,"codex",&stage).unwrap();
+        let program=instance::ProgramObservation::observe(&image,"0.160.0").unwrap();
+        for id in ["legacyFrozen","legacyFresh"] {
+            let request=operation("global","K-INSTANCE","register",&format!("register{id}"),id,0,
+                r#"{"driverId":"codex"}"#);
+            instance::register_instance(&mut product.connection,root,&instance::Registration {
+                request_id:&request.request_id,request_bytes:&request.raw_bytes,
+                instance_id:id,driver_id:"codex",program:&program,
+            }).unwrap();
+        }
+        instance::set_instance_profile(&mut product.connection,&product.owner,
+            "legacyFrozen","legacyFrozen",false,None,None).unwrap();
+        product.connection.execute("INSERT INTO main.gogoke_v37_h_owner_binding(binding_id,instance_id,domain_id,kind,owner_id,generation,state) VALUES('frozenOldBinding','legacyFrozen','frozenProject','SESSION','frozenSession','1','ACTIVE')").unwrap();
+        product.connection.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision) VALUES('frozenProject','frozenSession','legacyFrozen','frozenOldHome','frozenOldBinding','1','COMMITTED',1)").unwrap();
+        let old_claims=claim_rows(&product);
+        let old_episodes=episode_rows(&product);
+        let old_custody=custody_rows(&product);
+        let old_acl=source_acl_digest(&product,root,cold);
+        let old_acl_writes=holder_gone_acl_write_count_for_test();
+        product.connection.execute("DELETE FROM main.gogoke_v37_instance_program_sources WHERE instance_id='instanceA'").unwrap();
+        product.connection.execute("UPDATE main.gogoke_v37_instance_cli_copies SET state='PROBED' WHERE driver_id='codex'").unwrap();
+        let unknown=Statement::prepare(product.connection.as_ptr(),
+            "INSERT INTO main.gogoke_v37_h_stdin_journal(domain_id,request_id,operation,ticket,process_operation_id,custodian_nonce,session_id,generation,request_hex,phase,expected_revision) VALUES(?1,'managed-unknown-migrate','send','synthetic-ticket','synthetic-operation','synthetic-nonce',?2,'1','00','UNKNOWN','1')").unwrap();
+        unknown.bind_text(1,&cold.claims[0][0]).unwrap();
+        unknown.bind_text(2,&cold.claims[0][1]).unwrap();
+        unknown.step_done().unwrap();drop(unknown);
+        assert!(product.migrate_managed_cli("codex",&stage).is_err(),
+            "original UNKNOWN input is unresolved despite the old holder release");
+        assert_eq!(rows(&product,"SELECT state FROM main.gogoke_v37_instance_cli_copies WHERE driver_id='codex'",&[],1),
+            vec![vec![String::from("PROBED")]]);
+        assert!(rows(&product,"SELECT instance_id FROM main.gogoke_v37_instance_program_sources",&[],1).is_empty());
+        product.connection.execute("DELETE FROM main.gogoke_v37_h_stdin_journal WHERE request_id='managed-unknown-migrate'").unwrap();
+        let changed=Statement::prepare(product.connection.as_ptr(),
+            "UPDATE main.gogoke_v37_h_claim SET stop_fact_id='' WHERE domain_id=?1 AND session_id=?2 AND stop_fact_id IS NULL").unwrap();
+        changed.bind_text(1,&cold.claims[0][0]).unwrap();changed.bind_text(2,&cold.claims[0][1]).unwrap();
+        changed.step_done().unwrap();drop(changed);
+        assert!(product.migrate_managed_cli("codex",&stage).is_err(),
+            "changed original holder receipt cannot partially activate the copy");
+        assert_eq!(rows(&product,"SELECT state FROM main.gogoke_v37_instance_cli_copies WHERE driver_id='codex'",&[],1),
+            vec![vec![String::from("PROBED")]]);
+        assert!(rows(&product,"SELECT instance_id FROM main.gogoke_v37_instance_program_sources",&[],1).is_empty());
+        let restore=Statement::prepare(product.connection.as_ptr(),
+            "UPDATE main.gogoke_v37_h_claim SET stop_fact_id=NULL WHERE domain_id=?1 AND session_id=?2 AND stop_fact_id=''").unwrap();
+        restore.bind_text(1,&cold.claims[0][0]).unwrap();restore.bind_text(2,&cold.claims[0][1]).unwrap();
+        restore.step_done().unwrap();drop(restore);
+        product.connection.execute("CREATE TEMP TRIGGER managed_second_source_abort BEFORE INSERT ON main.gogoke_v37_instance_program_sources WHEN NEW.instance_id='legacyFresh' BEGIN SELECT RAISE(ABORT,'second source insert refused'); END").unwrap();
+        assert!(product.migrate_managed_cli("codex",&stage).is_err(),
+            "failure after the first exact source insert must roll back every binding and READY");
+        assert_eq!(rows(&product,"SELECT state FROM main.gogoke_v37_instance_cli_copies WHERE driver_id='codex'",&[],1),
+            vec![vec![String::from("PROBED")]]);
+        assert!(rows(&product,"SELECT instance_id FROM main.gogoke_v37_instance_program_sources",&[],1).is_empty());
+        assert_eq!(claim_rows(&product),old_claims);
+        assert_eq!(episode_rows(&product),old_episodes);
+        assert_eq!(custody_rows(&product),old_custody);
+        product.connection.execute("DROP TRIGGER temp.managed_second_source_abort").unwrap();
+        assert_eq!(product.migrate_managed_cli("codex",&stage).unwrap(),2,
+            "real completed holder releases and profile-less old instance migrate together");
+        assert_eq!(rows(&product,"SELECT instance_id FROM main.gogoke_v37_instance_program_sources ORDER BY instance_id",&[],1),
+            vec![vec![INSTANCE.to_owned()],vec![String::from("legacyFresh")]]);
+        assert_eq!(claim_rows(&product),old_claims,"source selection does not rewrite old claims");
+        assert_eq!(episode_rows(&product),old_episodes,"source selection does not invent STOPPED");
+        assert_eq!(custody_rows(&product),old_custody,"source selection does not rewrite custody");
+        assert_eq!(source_acl_digest(&product,root,cold),old_acl,"source selection does not write old ACL");
+        assert_eq!(holder_gone_acl_write_count_for_test(),old_acl_writes,
+            "source selection does not call the old ACL writer");
         assert_ne!(source_acl_digest(&product, root, cold), before_acl);
         assert_eq!(CredentialBinding::observe_source_metadata(root, &cold.home.join("auth.json"),
             &cold.home_identity).unwrap(), (cold.source.clone(), 3));

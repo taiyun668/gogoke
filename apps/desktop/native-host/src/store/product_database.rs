@@ -568,6 +568,27 @@ impl<'root> ProductDatabase<'root> {
         }
     }
 
+    /// READY is a copy-wide fact. An older instance without its own source
+    /// binding remains launch-blocked even if its login observation is intact.
+    fn unbound_managed_source_reason(&self, instance_id:&str, driver:&str)->Result<Option<&'static str>> {
+        let row=Statement::prepare(self.connection.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_instance_cli_copies c WHERE c.driver_id=?1 AND c.state='READY' AND NOT EXISTS(SELECT 1 FROM main.gogoke_v37_instance_program_sources s WHERE s.instance_id=?2) LIMIT 1")?;
+        row.bind_text(1,driver)?;row.bind_text(2,instance_id)?;
+        if !row.step_row()? {return Ok(None)}
+        drop(row);
+        let instance=self.read_registered_instance(instance_id)?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        if instance.driver_id!=driver {return Err(OrchestrationError::OperationConflict)}
+        match instance::locate_bound_instance_program(&self.connection,instance_id,driver,
+            &instance.program_digest,&instance.version) {
+            Err(instance::ProgramSourceError::Conflict)=>Ok(Some(
+                "managed CLI is ready; this original instance has no qualified managed program source and cannot launch")),
+            Ok(_) => Err(OrchestrationError::OperationConflict),
+            Err(error) => Err(OrchestrationError::V37StoreFailure(format!(
+                "unbound managed program observation: {error:?}"))),
+        }
+    }
+
     /// A persisted login value is a last trusted local observation only when
     /// the latest revision was produced by one APPLIED native login observation
     /// for this instance. It does not prove present credential validity.
@@ -731,9 +752,16 @@ impl<'root> ProductDatabase<'root> {
             InstallFact::Installed | InstallFact::Missing => V37Status::Applied,
             InstallFact::Unknown => V37Status::Unknown,
         };
-        Ok(receipt(status, BTreeMap::from([
+        let mut result=BTreeMap::from([
             (JsonString::from_str("installed"), Json::Bool(installed)),
-        ])))
+        ]);
+        if !installed {
+            if let Some(reason)=self.unbound_managed_source_reason(&request.target_id,&row.driver_id)? {
+                result.insert(JsonString::from_str("reason"),
+                    Json::String(JsonString::from_str(reason)));
+            }
+        }
+        Ok(receipt(status,result))
     }
 
     fn register_user_instance(&mut self, request: &V37Request) -> Result<Vec<u8>> {

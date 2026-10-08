@@ -22,11 +22,11 @@ pub(crate) enum ProgramSourceError {
     Credential(String),
 }
 
-/// After the real version probe, migrate every existing instance for this
-/// driver in one transaction with the CLI READY transition. The old instance
-/// homes, authentication objects, operations and StopFacts are never changed.
-pub(crate) fn migrate_quiescent_legacy_instances(db:&mut VerifiedDatabaseConnection<'_>,
-    root:&RootLock,owner:&OwnerIssuer,driver:&str,stage_name:&str)
+/// Called inside the Owner's immediate transaction after ProductDatabase has
+/// qualified every selected instance's original H resources. A deliberately
+/// disabled legacy instance remains unbound and cannot launch after READY.
+pub(crate) fn migrate_quiescent_legacy_instances(db:&VerifiedDatabaseConnection<'_>,
+    root:&RootLock,owner:&OwnerIssuer,driver:&str,stage_name:&str,qualified:&[String])
     ->Result<usize,ProgramSourceError>{
     let pin=managed_cli::read_fixed_official_cli(driver).ok_or(ProgramSourceError::Invalid)?;
     let copy=managed_cli::read_managed_cli(db,root,driver)?
@@ -40,7 +40,7 @@ pub(crate) fn migrate_quiescent_legacy_instances(db:&mut VerifiedDatabaseConnect
         _credential:Option<std::sync::Arc<CredentialBinding>>,
     }
     let rows=Statement::prepare(db.as_ptr(),
-        "SELECT i.instance_id,i.program_digest,i.version,i.home_identity,i.login_state FROM main.gogoke_v37_instances i LEFT JOIN main.gogoke_v37_instance_profiles p ON p.instance_id=i.instance_id WHERE i.driver_id=?1 AND (p.tombstoned IS NULL OR p.tombstoned=0) ORDER BY i.instance_id")?;
+        "SELECT i.instance_id,i.program_digest,i.version,i.home_identity,i.login_state,COALESCE(CAST(p.enabled AS TEXT),'') FROM main.gogoke_v37_instances i LEFT JOIN main.gogoke_v37_instance_profiles p ON p.instance_id=i.instance_id WHERE i.driver_id=?1 AND (p.tombstoned IS NULL OR p.tombstoned=0) ORDER BY i.instance_id")?;
     rows.bind_text(1,driver)?;
     let mut candidates=Vec::new();
     while rows.step_row()?{
@@ -49,11 +49,14 @@ pub(crate) fn migrate_quiescent_legacy_instances(db:&mut VerifiedDatabaseConnect
         let version=rows.column_text(2)?;
         let home=rows.column_text(3)?;
         let login=rows.column_text(4)?;
+        let enabled=rows.column_text(5)?;
         if digest!=format!("sha256:{}",pin.image_sha256)||version!=pin.version||
             registry::observed_home(root,&id)?.is_none_or(|identity|identity.opaque()!=home){
             return Err(ProgramSourceError::Conflict);
         }
         let registration=registry::verified_creation_request(db,root,&id)?;
+        if enabled=="0" {continue}
+        if !matches!(enabled.as_str(),""|"1") {return Err(ProgramSourceError::Conflict)}
         let _credential=if driver=="codex"{
             let object=super::credential_registry::read_credential_object(db,&id)
                 .map_err(|error|ProgramSourceError::Credential(format!("credential object: {error:?}")))?;
@@ -96,17 +99,13 @@ pub(crate) fn migrate_quiescent_legacy_instances(db:&mut VerifiedDatabaseConnect
         candidates.push(Candidate{id,digest,version,home,registration,_credential});
     }
     drop(rows);
-    db.execute("BEGIN IMMEDIATE")?;
-    let result=(||{
-        check_owner_in_current_transaction(db,owner)?;
-        managed_cli::no_unsettled_instance_use(db,driver)?;
-        managed_cli::inspect_staged_official_cli(root,driver,stage_name)?;
-        let active=Statement::prepare(db.as_ptr(),
-            "SELECT COUNT(*) FROM main.gogoke_v37_instances i LEFT JOIN main.gogoke_v37_instance_profiles p ON p.instance_id=i.instance_id WHERE i.driver_id=?1 AND (p.tombstoned IS NULL OR p.tombstoned=0)")?;
-        active.bind_text(1,driver)?;
-        if !active.step_row()?||active.column_text(0)?.parse::<usize>().ok()!=Some(candidates.len())||active.step_row()?{
-            return Err(ProgramSourceError::Conflict);
-        }
+    if candidates.iter().map(|candidate|&candidate.id).ne(qualified.iter()) {
+        return Err(ProgramSourceError::Conflict);
+    }
+    check_owner_in_current_transaction(db,owner)?;
+    managed_cli::no_unsettled_instance_use(db,driver)?;
+    managed_cli::inspect_staged_official_cli(root,driver,stage_name)?;
+    {
         for candidate in &candidates{
             let row=Statement::prepare(db.as_ptr(),
                 "SELECT 1 FROM main.gogoke_v37_instances WHERE instance_id=?1 AND driver_id=?2 AND program_digest=?3 AND version=?4 AND home_identity=?5")?;
@@ -142,10 +141,6 @@ pub(crate) fn migrate_quiescent_legacy_instances(db:&mut VerifiedDatabaseConnect
             return Err(ProgramSourceError::Conflict);
         }
         Ok(candidates.len())
-    })();
-    match result{
-        Ok(count)=>{db.execute("COMMIT").map_err(OrchestrationError::CommitUnknownWithCause)?;Ok(count)},
-        Err(error)=>{db.execute("ROLLBACK").map_err(OrchestrationError::CommitUnknownWithCause)?;Err(error)},
     }
 }
 impl From<crate::store::atomic::AtomicError> for ProgramSourceError {
