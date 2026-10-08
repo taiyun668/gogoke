@@ -365,7 +365,7 @@ USER 是产品授权层，不是要求 Owner 手工操作每项设置。Controll
 
 现有 MainApp/tauri.ts 插槽能读 USER choices、显式选择其精确关联、再接同一个 H session；它们不能消除这三个 hooks 内部的 preflight、override 与 loaded shortcut。本次不新增普通模型子进程、编号别名、第二套渲染器或事件/type 文件。不能自动采用候选列表第一项，也不能从 legacy workspace/thread、composer 偏好或事件顺序推导 native 身份与 Now 输出锚点。
 
-当前 shadow 的可见写入口/新建仍有 UNSUPPORTED，因此本提案不是功能完成声明。真正新建按既有 H/USER 准入和原意图在已授权生产者范围内实施；如实际需要改变契约归属、安全边界或再加文件，保留未接上状态，另提最少修订。事件 seed 只建立原帧续读位置，不代替 UI 完整历史。
+真实 USER 入口已优先分派到原 visible effect，finite 写操作不能按后面的只读分支误判为未实现；thread/start 因缺新会话身份仍为 UNSUPPORTED，因此本提案不是功能完成声明。真正新建按既有 H/USER 准入和原意图在已授权生产者范围内实施；如实际需要改变契约归属、安全边界或再加文件，保留未接上状态，另提最少修订。事件 seed 只建立原帧续读位置，不代替 UI 完整历史。
 
 参照：直接读现有三 hooks、MainApp、`codex/mod.rs` 原 native history、`v37_visible_conversation.rs` 的 choices/select、`v37_visible_effect.rs` 的原 USER effect，以及当前 shared_files 清单。采用已有完整 hydration 和原 H/A 来源；只增无法在外层包装替代的三处消费者，不为方便扩大 G 或通用 types/events 范围。
 
