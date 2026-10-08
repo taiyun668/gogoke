@@ -96,6 +96,7 @@ pub(crate) async fn set_workspace_runtime_codex_args(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<workspaces_core::WorkspaceRuntimeCodexArgsResult, String> {
+    crate::codex::reject_native_workspace(&app, &workspace_id, "LEGACY_RUNTIME_ARGS").await?;
     if remote_backend::is_remote_mode(&*state).await {
         let request = workspace_rpc::SetWorkspaceRuntimeCodexArgsRequest {
             workspace_id,
@@ -246,6 +247,7 @@ pub(crate) async fn add_worktree(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<WorkspaceInfo, String> {
+    crate::codex::reject_native_workspace(&app, &parent_id, "LEGACY_WORKTREE_CREATE").await?;
     let copy_agents_md = copy_agents_md.unwrap_or(true);
     if remote_backend::is_remote_mode(&*state).await {
         let request = workspace_rpc::AddWorktreeRequest {
@@ -330,6 +332,7 @@ pub(crate) async fn worktree_setup_mark_ran(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
+    crate::codex::reject_native_workspace(&app, &workspace_id, "LEGACY_WORKTREE_SETUP_WRITE").await?;
     if remote_backend::is_remote_mode(&*state).await {
         let request = workspace_rpc::WorkspaceIdRequest { workspace_id };
         remote_backend::call_remote(
@@ -355,6 +358,15 @@ pub(crate) async fn remove_workspace(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
+    let affected = {
+        let workspaces = state.workspaces.lock().await;
+        std::iter::once(id.clone()).chain(workspaces.values()
+            .filter(|entry| entry.parent_id.as_deref() == Some(id.as_str()))
+            .map(|entry| entry.id.clone())).collect::<Vec<_>>()
+    };
+    for workspace_id in affected {
+        crate::codex::reject_native_workspace(&app, &workspace_id, "LEGACY_WORKSPACE_REMOVE").await?;
+    }
     if remote_backend::is_remote_mode(&*state).await {
         let request = workspace_rpc::IdRequest { id };
         remote_backend::call_remote(
@@ -394,6 +406,7 @@ pub(crate) async fn remove_worktree(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
+    crate::codex::reject_native_workspace(&app, &id, "LEGACY_WORKTREE_REMOVE").await?;
     if remote_backend::is_remote_mode(&*state).await {
         let request = workspace_rpc::IdRequest { id };
         remote_backend::call_remote(
@@ -432,6 +445,7 @@ pub(crate) async fn rename_worktree(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<WorkspaceInfo, String> {
+    crate::codex::reject_native_workspace(&app, &id, "LEGACY_WORKTREE_RENAME").await?;
     if remote_backend::is_remote_mode(&*state).await {
         let request = workspace_rpc::RenameWorktreeRequest { id, branch };
         let response = remote_backend::call_remote(
@@ -489,6 +503,7 @@ pub(crate) async fn rename_worktree_upstream(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
+    crate::codex::reject_native_workspace(&app, &id, "LEGACY_WORKTREE_UPSTREAM_RENAME").await?;
     if remote_backend::is_remote_mode(&*state).await {
         let request = workspace_rpc::RenameWorktreeUpstreamRequest {
             id,
@@ -545,7 +560,9 @@ pub(crate) async fn rename_worktree_upstream(
 pub(crate) async fn apply_worktree_changes(
     workspace_id: String,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<(), String> {
+    crate::codex::reject_native_workspace(&app, &workspace_id, "LEGACY_WORKTREE_APPLY").await?;
     workspaces_core::apply_worktree_changes_core(&state.workspaces, workspace_id).await
 }
 

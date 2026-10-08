@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -457,9 +457,13 @@ pub(crate) enum SessionTransport {
     },
     Native {
         app: AppHandle,
-        association: RwLock<NativeAssociation>,
-        confirmed_stop: AtomicBool,
+        state: RwLock<NativeSessionState>,
     },
+}
+
+pub(crate) struct NativeSessionState {
+    association: NativeAssociation,
+    confirmed_stop_fact: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -484,8 +488,10 @@ impl WorkspaceSession {
             codex_args: None,
             transport: SessionTransport::Native {
                 app,
-                association: RwLock::new(association),
-                confirmed_stop: AtomicBool::new(false),
+                state: RwLock::new(NativeSessionState {
+                    association,
+                    confirmed_stop_fact: None,
+                }),
             },
             pending: Mutex::new(HashMap::new()),
             request_context: Mutex::new(HashMap::new()),
@@ -508,9 +514,9 @@ impl WorkspaceSession {
 
     pub(crate) fn native_association(&self) -> Result<Option<NativeAssociation>, String> {
         match &self.transport {
-            SessionTransport::Native { association, .. } => association
+            SessionTransport::Native { state, .. } => state
                 .read()
-                .map(|current| Some(current.clone()))
+                .map(|current| Some(current.association.clone()))
                 .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}")),
             SessionTransport::Legacy { .. } => Ok(None),
         }
@@ -521,23 +527,37 @@ impl WorkspaceSession {
         expected: &NativeAssociation,
         next: NativeAssociation,
     ) -> Result<(), String> {
-        let SessionTransport::Native { association, .. } = &self.transport else {
+        let SessionTransport::Native { state, .. } = &self.transport else {
             return Err("GOGOKE_NATIVE_ASSOCIATION_TRANSPORT_MISMATCH".into());
         };
-        let mut current = association
+        let mut current = state
             .write()
             .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?;
-        if &*current != expected {
+        if &current.association != expected {
             return Err("GOGOKE_NATIVE_ASSOCIATION_CHANGED_BEFORE_COMMIT".into());
         }
-        *current = next;
+        current.association = next;
+        current.confirmed_stop_fact = None;
         Ok(())
     }
 
-    pub(crate) fn note_native_stop_fact(&self) -> Result<(), String> {
+    pub(crate) fn note_native_stop_fact(
+        &self,
+        expected: &NativeAssociation,
+        stop_fact: String,
+    ) -> Result<(), String> {
         match &self.transport {
-            SessionTransport::Native { confirmed_stop, .. } => {
-                confirmed_stop.store(true, Ordering::SeqCst);
+            SessionTransport::Native { state, .. } => {
+                let mut current = state
+                    .write()
+                    .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?;
+                if &current.association != expected {
+                    return Err("GOGOKE_NATIVE_ASSOCIATION_CHANGED_BEFORE_STOP_COMMIT".into());
+                }
+                if stop_fact.is_empty() {
+                    return Err("GOGOKE_NATIVE_STOP_FACT_MISSING".into());
+                }
+                current.confirmed_stop_fact = Some(stop_fact);
                 Ok(())
             }
             SessionTransport::Legacy { .. } => Err("GOGOKE_LEGACY_STOP_FACT_MISMATCH".into()),
@@ -560,13 +580,11 @@ impl WorkspaceSession {
                 .try_wait()
                 .map(|status| status.is_none())
                 .map_err(|error| error.to_string()),
-            SessionTransport::Native {
-                app, association, ..
-            } => {
-                let association = association
+            SessionTransport::Native { app, state } => {
+                let association = state
                     .read()
                     .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?
-                    .clone();
+                    .association.clone();
                 crate::codex::native_visible_live_state(app, &self.owner_workspace_id, &association)
                     .await
             }
@@ -585,21 +603,18 @@ impl WorkspaceSession {
                     Err(_) => Err("GOGOKE_LEGACY_STOP_NOT_CONFIRMED".into()),
                 }
             }
-            SessionTransport::Native {
-                app,
-                association,
-                confirmed_stop,
-            } => {
-                if confirmed_stop.load(Ordering::SeqCst) {
-                    Ok(())
-                } else {
-                    let association = association
+            SessionTransport::Native { app, state } => {
+                let association = {
+                    let current = state
                         .read()
-                        .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?
-                        .clone();
-                    crate::codex::native_visible_stop(app, &self.owner_workspace_id, &association)
-                        .await
-                }
+                        .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?;
+                    if current.confirmed_stop_fact.is_some() {
+                        return Ok(());
+                    }
+                    current.association.clone()
+                };
+                crate::codex::native_visible_stop(app, &self.owner_workspace_id, &association)
+                    .await
             }
         }
     }
@@ -663,14 +678,12 @@ impl WorkspaceSession {
         method: &str,
         params: Value,
     ) -> Result<Value, String> {
-        if let SessionTransport::Native {
-            app, association, ..
-        } = &self.transport
+        if let SessionTransport::Native { app, state } = &self.transport
         {
-            let association = association
+            let association = state
                 .read()
                 .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?
-                .clone();
+                .association.clone();
             return crate::codex::native_visible_request(
                 app,
                 workspace_id,

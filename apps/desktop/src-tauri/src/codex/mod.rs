@@ -5,17 +5,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 pub(crate) mod args;
 pub(crate) mod config;
 pub(crate) mod home;
 
-use crate::backend::app_server::spawn_workspace_session as spawn_workspace_session_inner;
 use crate::backend::app_server::NativeAssociation;
 pub(crate) use crate::backend::app_server::WorkspaceSession;
 use crate::backend::events::AppServerEvent;
-use crate::event_sink::TauriEventSink;
 use crate::remote_backend;
 use crate::shared::agents_config_core;
 use crate::shared::codex_core::{self, insert_optional_nullable_string};
@@ -87,9 +85,17 @@ struct VisibleReadReply {
     #[serde(default)]
     response: Option<Value>,
     #[serde(default)]
-    live: Option<bool>,
+    live: Option<VisibleLiveReply>,
     #[serde(default)]
     reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct VisibleLiveReply {
+    state: String,
+    #[serde(default)]
+    pending_questions: Vec<Value>,
 }
 
 async fn visible_user_frame(app: &AppHandle, frame: Value) -> Result<String, String> {
@@ -100,7 +106,7 @@ async fn visible_user_frame(app: &AppHandle, frame: Value) -> Result<String, Str
     .await
 }
 
-async fn visible_route(app: &AppHandle, workspace_id: &str) -> Result<VisibleRouteReply, String> {
+async fn read_visible_route(app: &AppHandle, workspace_id: &str) -> Result<VisibleRouteReply, String> {
     let raw = visible_user_frame(
         app,
         json!({
@@ -115,10 +121,15 @@ async fn visible_route(app: &AppHandle, workspace_id: &str) -> Result<VisibleRou
     if reply.schema != VISIBLE_SCHEMA || reply.workspace_id != workspace_id {
         return Err("GOGOKE_VISIBLE_ROUTE_IDENTITY_MISMATCH".into());
     }
+    Ok(reply)
+}
+
+async fn visible_route(app: &AppHandle, workspace_id: &str) -> Result<VisibleRouteReply, String> {
+    let reply = read_visible_route(app, workspace_id).await?;
     match reply.state.as_str() {
-        "LEGACY" if reply.association.is_none() => Ok(reply),
+        "LEGACY" => Err("GOGOKE_VISIBLE_LEGACY_MODEL_ROUTE_UNSUPPORTED".into()),
         "NATIVE" if reply.association.is_some() => Ok(reply),
-        "LEGACY" | "NATIVE" => Err("GOGOKE_VISIBLE_ROUTE_ASSOCIATION_INVALID".into()),
+        "NATIVE" => Err("GOGOKE_VISIBLE_ROUTE_ASSOCIATION_INVALID".into()),
         "NEEDS_SETUP" | "UNKNOWN" => {
             Err(visible_failure(&reply.state, reply.reason.as_deref(), None))
         }
@@ -709,7 +720,19 @@ pub(crate) async fn native_visible_stop_with_intent(
     native_request_id: Option<String>,
 ) -> Result<(), String> {
     let request_id = stable_native_request_id(native_request_id)?;
-    let association = native_association(state, workspace_id).await?;
+    let session = state
+        .sessions
+        .lock()
+        .await
+        .get(workspace_id)
+        .cloned()
+        .ok_or("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE")?;
+    if session.owner_workspace_id != workspace_id {
+        return Err("GOGOKE_NATIVE_WORKSPACE_OWNER_MISMATCH".into());
+    }
+    let association = session
+        .native_association()?
+        .ok_or("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE")?;
     let reply = visible_operation(
         app,
         workspace_id,
@@ -726,13 +749,17 @@ pub(crate) async fn native_visible_stop_with_intent(
             .as_deref()
             .is_some_and(|fact| !fact.is_empty())
     {
-        state
-            .sessions
-            .lock()
-            .await
+        let sessions = state.sessions.lock().await;
+        if !sessions
             .get(workspace_id)
-            .ok_or("GOGOKE_NATIVE_SESSION_DISAPPEARED")?
-            .note_native_stop_fact()?;
+            .is_some_and(|current| Arc::ptr_eq(&session, current))
+        {
+            return Err("GOGOKE_NATIVE_SESSION_REPLACED_BEFORE_STOP_COMMIT".into());
+        }
+        session.note_native_stop_fact(
+            &association,
+            reply.stop_fact.ok_or("GOGOKE_NATIVE_STOP_FACT_MISSING")?,
+        )?;
         Ok(())
     } else {
         Err(visible_failure(
@@ -835,16 +862,23 @@ async fn native_session_active(state: &AppState, workspace_id: &str) -> bool {
         .is_some_and(|session| session.is_native())
 }
 
-async fn reject_native_workspace(
+pub(crate) async fn reject_native_workspace(
     app: &AppHandle,
     workspace_id: &str,
     surface: &str,
 ) -> Result<(), String> {
     crate::public_runtime::product_entry::ensure_design37_user_host(app).await?;
-    if visible_route(app, workspace_id).await?.state == "NATIVE" {
-        Err(format!("GOGOKE_NATIVE_{surface}_UNSUPPORTED"))
-    } else {
-        Ok(())
+    if native_session_active(app.state::<AppState>().inner(), workspace_id).await {
+        return Err(format!("GOGOKE_NATIVE_{surface}_UNSUPPORTED"));
+    }
+    let reply = read_visible_route(app, workspace_id).await?;
+    match reply.state.as_str() {
+        // Compatibility file/configuration operations do not grant permission
+        // to start a model. Every Gogoke model route remains native-only.
+        "NEEDS_SETUP" | "LEGACY" if reply.association.is_none() => Ok(()),
+        "NATIVE" => Err(format!("GOGOKE_NATIVE_{surface}_UNSUPPORTED")),
+        "UNKNOWN" => Err(visible_failure("UNKNOWN", reply.reason.as_deref(), None)),
+        _ => Err("GOGOKE_VISIBLE_ROUTE_ASSOCIATION_INVALID".into()),
     }
 }
 
@@ -873,7 +907,13 @@ pub(crate) async fn native_visible_live_state(
     if reply.state != "APPLIED" {
         return Err(visible_failure(&reply.state, reply.reason.as_deref(), None));
     }
-    reply.live.ok_or("GOGOKE_NATIVE_LIVE_STATE_MISSING".into())
+    let live = reply.live.ok_or("GOGOKE_NATIVE_LIVE_STATE_MISSING")?;
+    // The current host supplies UNKNOWN and question facts, not proof of a live
+    // process. Do not turn receipt of a read response into an alive/stop fact.
+    Err(format!(
+        "GOGOKE_NATIVE_LIVE_STATE_UNCONFIRMED:{}:pendingQuestions={}",
+        live.state, live.pending_questions.len()
+    ))
 }
 
 pub(crate) async fn native_visible_stop(
@@ -900,10 +940,10 @@ fn emit_thread_live_event(app: &AppHandle, workspace_id: &str, method: &str, par
 
 pub(crate) async fn spawn_workspace_session(
     entry: WorkspaceEntry,
-    default_codex_bin: Option<String>,
-    codex_args: Option<String>,
+    _default_codex_bin: Option<String>,
+    _codex_args: Option<String>,
     app_handle: AppHandle,
-    codex_home: Option<PathBuf>,
+    _codex_home: Option<PathBuf>,
 ) -> Result<Arc<WorkspaceSession>, String> {
     crate::public_runtime::product_entry::ensure_design37_user_host(&app_handle).await?;
     let _ = VISIBLE_APP.set(app_handle.clone());
@@ -918,20 +958,8 @@ pub(crate) async fn spawn_workspace_session(
                     .ok_or("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE")?,
             ))
         }
-        "LEGACY" => {}
-        _ => return Err("GOGOKE_VISIBLE_ROUTE_STATE_INVALID".into()),
+        _ => Err("GOGOKE_VISIBLE_MODEL_ROUTE_UNSUPPORTED".into()),
     }
-    let client_version = env!("CARGO_PKG_VERSION").to_string();
-    let event_sink = TauriEventSink::new(app_handle);
-    spawn_workspace_session_inner(
-        entry,
-        default_codex_bin,
-        codex_args,
-        codex_home,
-        client_version,
-        event_sink,
-    )
-    .await
 }
 
 #[tauri::command]
