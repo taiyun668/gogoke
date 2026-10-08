@@ -178,18 +178,22 @@ def v12_exact_input_and_tool_range(db, journal, case, originals):
     # original question and cursor-only reference; they are not the bare question.
     turn = case["readbackRequirements"]["sideTurn"]
     raw = originals[side["id"]]
-    start = [int(row["sourceCursor"]) for row, frame, _ in raw if
+    stream = lambda row: tuple(row[key] for key in
+        ("operationId", "sourceEpoch", "generation", "processTicket", "custodianNonce"))
+    start = [row for row, frame, _ in raw if
         frame.get("method") == "turn/started" and frame.get("params", {}).get("threadId") == turn["threadId"] and
         frame.get("params", {}).get("turn", {}).get("id") == turn["turnId"]]
-    end = [int(row["sourceCursor"]) for row, frame, _ in raw if
+    end = [row for row, frame, _ in raw if
         frame.get("method") == "turn/completed" and frame.get("params", {}).get("threadId") == turn["threadId"] and
         frame.get("params", {}).get("turn", {}).get("id") == turn["turnId"]]
-    if len(start) != 1 or len(end) != 1 or start[0] >= end[0]:
+    if len(start) != 1 or len(end) != 1 or stream(start[0]) != stream(end[0]) or \
+            int(start[0]["sourceCursor"]) >= int(end[0]["sourceCursor"]):
         raise RuntimeError("V12 original explicit tool turn range is incomplete")
     for row, frame, _ in raw:
         if tool(frame) and (frame.get("params", {}).get("threadId") != turn["threadId"] or
                 frame.get("params", {}).get("turnId") != turn["turnId"] or
-                not start[0] < int(row["sourceCursor"]) < end[0]):
+                stream(row) != stream(start[0]) or
+                not int(start[0]["sourceCursor"]) < int(row["sourceCursor"]) < int(end[0]["sourceCursor"])):
             raise RuntimeError("V12 original side tool is outside the explicitly authorized turn")
 
 def verified_model_evidence(db, instance_id, model, expected_domain=None, expected_session=None):
@@ -1172,7 +1176,8 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             if not completed_turn(source_frames, source_turn) or not completed_turn(side_frames, side_turn):
                 raise RuntimeError("Original V12 source or side turn was not completed in A")
             def tool(frame):
-                if frame.get("method") == "item/tool/call":
+                if frame.get("method") in ("item/tool/call", "item/commandExecution/outputDelta",
+                        "item/fileChange/outputDelta", "item/mcpToolCall/progress"):
                     return True
                 item = frame.get("params", {}).get("item", {})
                 return frame.get("method") in ("item/started", "item/completed") and \
