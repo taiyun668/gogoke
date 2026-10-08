@@ -959,7 +959,9 @@ mod tests {
                 "INSERT INTO main.gogoke_v37_rpc_steps(domain_id,session_id,open_request_id,step_id,process_operation_id,ticket,custodian_nonce,pid,creation_time,image_path,binary_digest,profile_id,generation,command_hex,requires_response,phase,source_epoch,source_cursor) VALUES('projectA','sessionA','openA','thread-start','processA','pct1_ticketA','nonceA','11','1','fixture','sha256:fixture','profileA','1',?1,1,'OBSERVED','nonceA','1')").unwrap();
             open_rpc.bind_text(1,&encode_hex(&opened)).unwrap();open_rpc.step_done().unwrap();drop(open_rpc);
             let input=|id:&str,cursor:&str,text:&str,turn:&str,ack:&[u8]| {
-                let request=format!(r#"{{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send","requestId":"{id}","targetId":"sessionA","domainId":"projectA","expectedRevision":"2","payload":{{"generation":"1","body":"{text}"}}}}"#);
+                let previous=cursor.parse::<u64>().unwrap().checked_sub(1).unwrap().to_string();
+                let next=cursor.parse::<u64>().unwrap().to_string();
+                let request=format!(r#"{{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send","requestId":"{id}","targetId":"sessionA","domainId":"projectA","expectedRevision":"{previous}","payload":{{"generation":"1","body":"{text}"}}}}"#);
                 assert!(request.len()<=1024*1024,"original H request must fit the fixed 1 MiB bound");
                 let rpc_id=RpcId::String(id.into());
                 let command=Command::TurnStart {thread_id:"threadA".into(),cwd:"fixture".into(),model:"fixture".into(),
@@ -972,16 +974,17 @@ mod tests {
                 assert!(matches!(codex_rpc::decode(ack,Some((&stored_id,&stored_command))).unwrap(),
                     Reply::Turn {id,turn_id,status:TurnStatus::InProgress} if id==stored_id && turn_id==turn));
                 let journal=Statement::prepare(product.connection.as_ptr(),
-                    "INSERT INTO main.gogoke_v37_h_stdin_journal(domain_id,request_id,operation,ticket,process_operation_id,custodian_nonce,session_id,generation,request_hex,phase,receipt_hex,receipt_status,expected_revision,receipt_previous_revision,receipt_revision) VALUES('projectA',?1,'send','pct1_ticketA','processA','nonceA','sessionA','1',?2,'RECEIPTED','00','APPLIED','2','2','3')").unwrap();
-                journal.bind_text(1,id).unwrap();journal.bind_text(2,&encode_hex(request.as_bytes())).unwrap();journal.step_done().unwrap();drop(journal);
+                    "INSERT INTO main.gogoke_v37_h_stdin_journal(domain_id,request_id,operation,ticket,process_operation_id,custodian_nonce,session_id,generation,request_hex,phase,receipt_hex,receipt_status,expected_revision,receipt_previous_revision,receipt_revision) VALUES('projectA',?1,'send','pct1_ticketA','processA','nonceA','sessionA','1',?2,'RECEIPTED','00','APPLIED',?3,?3,?4)").unwrap();
+                journal.bind_text(1,id).unwrap();journal.bind_text(2,&encode_hex(request.as_bytes())).unwrap();
+                journal.bind_text(3,&previous).unwrap();journal.bind_text(4,&next).unwrap();journal.step_done().unwrap();drop(journal);
                 let step=format!("send-{}",&crate::store::digest::sha256_hex(request.as_bytes())[..40]);
                 let rpc=Statement::prepare(product.connection.as_ptr(),
                     "INSERT INTO main.gogoke_v37_rpc_steps(domain_id,session_id,open_request_id,step_id,process_operation_id,ticket,custodian_nonce,pid,creation_time,image_path,binary_digest,profile_id,generation,command_hex,requires_response,phase,source_epoch,source_cursor) VALUES('projectA','sessionA','openA',?1,'processA','pct1_ticketA','nonceA','11','1','fixture','sha256:fixture','profileA','1',?2,1,'OBSERVED','nonceA',?3)").unwrap();
                 rpc.bind_text(1,&step).unwrap();rpc.bind_text(2,&encode_hex(&encoded)).unwrap();rpc.bind_text(3,cursor).unwrap();rpc.step_done().unwrap();
             };
-            // Seven separately admissible original frames cross the 4 MiB
-            // USER page bound. The fixed Codex RPC/line bound is 1 MiB per
-            // frame; no original command or response exceeds that bound.
+            // This synthetic source history checks pagination, not physical
+            // H admission or an actual CLI session. Seven codec-valid frames
+            // cross the 4 MiB USER page bound; each stays within 1 MiB.
             let large="x".repeat(700_000);
             for number in 0..7 {
                 let id=format!("send{number}");let cursor=(number+3).to_string();
