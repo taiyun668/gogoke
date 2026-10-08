@@ -1,6 +1,7 @@
 import { lazy, useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import type { Messages } from "@/features/messages/components/Messages";
 import type { Composer } from "@/features/composer/components/Composer";
+import { ComposerInput } from "@/features/composer/components/ComposerInput";
 import successSoundUrl from "@/assets/success-notification.mp3";
 import errorSoundUrl from "@/assets/error-notification.mp3";
 import { MainAppShell } from "@app/components/MainAppShell";
@@ -84,7 +85,9 @@ import { normalizeCodexArgsInput } from "@/utils/codexArgsInput";
 import { subscribeTrayOpenThread } from "@services/events";
 import { I18nProvider } from "@/i18n";
 import { hasNativeBackendTransport } from "@/platform/runtime";
-import { createDesign37SecretarySource, signalGogokeUpdateReady } from "@/services/tauri";
+import { createDesign37SecretarySource, sameSecretaryWriter, signalGogokeUpdateReady,
+  type SecretaryBinding, type SecretaryOriginalInput, type SecretaryVendorUserFact,
+  type SecretaryWriteFact } from "@/services/tauri";
 import { NowProvider, NowPinSlot, type NowSource } from "@/features/now/NowContext";
 import { SecretaryEntry, SecretaryPanel, SecretaryActionLine, type SecretarySource } from "@/features/secretary/Secretary";
 import { entryLine, type EntryState, type ActionLine } from "@/features/secretary/secretaryModel";
@@ -92,7 +95,7 @@ import { entryLine, type EntryState, type ActionLine } from "@/features/secretar
 /** Complete host read, with explicit native identity and separate UI/output anchors. */
 export type SecretaryView = {
   association: {
-    workspaceId: string;
+    workspaceId: string | null;
     threadId: string;
     domainId: string;
     seatId: string;
@@ -109,6 +112,22 @@ export type SecretaryView = {
     messages: Omit<ComponentProps<typeof Messages>, "afterItem">;
     composer: ComponentProps<typeof Composer> | null;
   } | null;
+  nativeInput?: {
+    instanceId: string; model: string; effort: string; permissionTier: string;
+    canSend: boolean; canStop: boolean;
+    binding: SecretaryBinding;
+    send: (binding: SecretaryBinding, body: string) => Promise<SecretaryWriteFact>;
+    stop: (binding: SecretaryBinding) => Promise<SecretaryWriteFact>;
+  } | null;
+  outbound?: SecretaryWriteFact[];
+  historyGap?: string | null;
+  statuses?: string[];
+  originalInputs?: SecretaryOriginalInput[];
+  vendorUserFacts?: SecretaryVendorUserFact[];
+  inputRowsEnded?: boolean;
+  verifiedSend?: { requestId: string; body: string; hGeneration: string } | null;
+  retryStop?: (requestId: string) => Promise<SecretaryWriteFact>;
+  retrySend?: (requestId: string) => Promise<SecretaryWriteFact>;
   openConversation?: () => Promise<void>;
   openAction?: (id: string) => void;
 };
@@ -137,23 +156,44 @@ function useNativeSecretaryView(enabled: boolean): SecretaryView | null {
       pending = (async () => {
         try {
           const snapshot = await producer.readSnapshot();
+          const conversation = await producer.readConversation(snapshot.configuration);
           if (disposed) return;
           setView({
-            association: null,
+            association: conversation ? { workspaceId: null, threadId: conversation.threadId,
+              domainId: "global", seatId: conversation.seatId,
+              sessionId: conversation.sessionId } : null,
             entry: snapshot.page.entry,
             source: producer.source,
             readState: "known",
             readAt: new Date().toLocaleString(),
             actionLines: [],
-            // No native conversation is manufactured from the active project.
-            conversation: null,
+            conversation: conversation ? {
+              messages: { items: conversation.messages, threadId: conversation.threadId,
+                workspaceId: null, workspacePath: null,
+                isThinking: conversation.turnState === "RUNNING",
+                openTargets: [], selectedOpenAppId: "" },
+              composer: null,
+            } : null,
+            nativeInput: conversation?.writer ? { ...conversation.writer,
+              send: producer.send, stop: producer.stop } : null,
+            outbound: producer.writeFacts(),
+            historyGap: conversation?.historyGap ?? null,
+            statuses: conversation?.statuses ?? [],
+            originalInputs: conversation?.inputs ?? [],
+            vendorUserFacts: conversation?.vendorUserFacts ?? [],
+            inputRowsEnded: conversation?.inputRowsEnded ?? false,
+            verifiedSend: conversation?.verifiedSend ?? null,
+            retryStop: producer.retryStop,
+            retrySend: producer.retrySend,
             openConversation: refresh,
           });
         } catch (cause) {
           if (disposed) return;
           const readError = cause instanceof Error ? cause.message : String(cause);
+          producer.invalidateTranscript();
           setView((previous) => previous
-            ? { ...previous, readState: "frozen", readError }
+            ? { ...previous, readState: "frozen", readError,
+                outbound: producer.writeFacts(), nativeInput: null }
             : { association: null, conversation: null,
                 entry: { kind: "down", reason: readError }, source: producer.source,
                 readState: "frozen", readAt: "尚未读到", readError, actionLines: [] });
@@ -202,6 +242,46 @@ function MainAppContent({
 }) {
   const secretaryKey = secretaryAssociationKey(secretaryView);
   const secretaryToken = useMemo(() => ({}), [secretaryView?.source, secretaryKey]);
+  const [secretaryDrafts, setSecretaryDrafts] = useState<Record<string, {
+    text: string; revision: number }>>({});
+  const secretaryDraftState = secretaryKey ? secretaryDrafts[secretaryKey] : undefined;
+  const secretaryDraft = secretaryDraftState?.text ?? "";
+  const secretarySubmittedDrafts = useRef(new Map<string, {
+    text: string; revision: number; binding: SecretaryBinding;
+    requestId: string | null; earlierRequestIds: Set<string>;
+  }>());
+  useEffect(() => {
+    const verified = secretaryView?.verifiedSend;
+    if (!verified) return;
+    const submitted = secretaryKey ? secretarySubmittedDrafts.current.get(secretaryKey) : undefined;
+    const original = secretaryView?.outbound?.find((fact) => fact.operation === "send" &&
+      fact.requestId === verified.requestId && fact.hGeneration === verified.hGeneration &&
+      fact.inputVerified && fact.status === "ACCEPTED");
+    if (!submitted || !original || submitted.text !== verified.body ||
+        original.body !== verified.body || !sameSecretaryWriter(submitted.binding, original.binding) ||
+        (submitted.requestId !== null ? submitted.requestId !== verified.requestId
+          : submitted.earlierRequestIds.has(verified.requestId))) return;
+    setSecretaryDrafts((previous) => {
+      if (!secretaryKey) return previous;
+      const draft = previous[secretaryKey];
+      return draft?.revision === submitted.revision && draft.text === verified.body
+        ? { ...previous, [secretaryKey]: { ...draft, text: "" } } : previous;
+    });
+    if (secretaryKey) secretarySubmittedDrafts.current.delete(secretaryKey);
+  }, [secretaryKey, secretaryView?.verifiedSend?.requestId,
+    secretaryView?.verifiedSend?.body, secretaryView?.verifiedSend?.hGeneration]);
+  const [secretaryWritePending, setSecretaryWritePending] = useState(false);
+  const secretaryWritePendingRef = useRef(false);
+  const [secretaryWriteFailure, setSecretaryWriteFailure] = useState<{
+    token: object; operation: "send" | "stop"; sessionId: string | null;
+    body: string | null; text: string } | null>(null);
+  const relevantSecretarySends = secretaryView?.outbound?.filter((fact) =>
+    fact.operation === "send" && secretaryView.nativeInput &&
+    sameSecretaryWriter(fact.binding, secretaryView.nativeInput.binding)) ?? [];
+  const secretarySendBlocked = relevantSecretarySends.some((fact) => fact.status === "UNKNOWN") ||
+    relevantSecretarySends.some((fact) => fact.status === "ACCEPTED" &&
+      !fact.inputVerified && fact.body === secretaryDraft);
+  const secretaryTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const currentSecretary = useRef<{ view: SecretaryView | null; token: object | null }>({ view: secretaryView, token: secretaryToken });
   currentSecretary.current = { view: secretaryView, token: secretaryToken };
   const [secretaryOpening, setSecretaryOpening] = useState<object | null>(null);
@@ -1923,8 +2003,12 @@ function MainAppContent({
   projectNavigation.current = { workspaceId: activeWorkspaceId, threadId: activeThreadId };
   useEffect(() => { leaveSecretary(); }, [activeWorkspaceId, activeThreadId, leaveSecretary]);
   const secretaryHasAssociation = Boolean(secretaryView?.association && secretaryView.conversation)
-    && Object.values(secretaryView!.association!)
-    .every((value) => typeof value === "string" && value.length > 0)
+    && [secretaryView!.association!.threadId, secretaryView!.association!.domainId,
+      secretaryView!.association!.seatId, secretaryView!.association!.sessionId]
+      .every((value) => typeof value === "string" && value.length > 0)
+    && (secretaryView!.association!.workspaceId === null ||
+      (typeof secretaryView!.association!.workspaceId === "string" &&
+        secretaryView!.association!.workspaceId.length > 0))
     && secretaryView!.conversation!.messages.workspaceId === secretaryView!.association!.workspaceId
     && secretaryView!.conversation!.messages.threadId === secretaryView!.association!.threadId;
   const secretarySettingsOnly = secretaryView !== null && secretaryView.association === null
@@ -2015,6 +2099,10 @@ function MainAppContent({
       {secretaryReadTimeLabel} 最后读到；{secretaryView.readError ?? "最新状态未读到"}
     </div> : null}
     {secretaryOpenError?.token === secretaryToken ? <div className="sec-help" role="alert">{secretaryOpenError.text}</div> : null}
+    {!secretaryActive && secretaryWriteFailure ? <div className="sec-help" role="alert">
+      {secretaryWriteFailure.text}
+      {secretaryWriteFailure.body ? <pre>{secretaryWriteFailure.body}</pre> : null}
+    </div> : null}
   </> : null;
   integratedSurfaces.primary.messagesProps.afterItem = secretaryActive ? (itemId) => <>
     {secretaryView!.actionLines.filter((action) => action.itemId === itemId && action.turnId.length > 0)
@@ -2048,6 +2136,199 @@ function MainAppContent({
   const mainMessagesNode = secretaryActive && secretarySettingsOnly
     ? <div role="status">{entryLine(secretaryView!.entry).text}。右侧显示宿主读回的设置和定时任务。</div>
     : !secretaryActive && showWorkspaceHome ? workspaceHomeNode : messagesNode;
+  const nativeInput = secretaryActive && secretaryHasAssociation && secretaryView?.readState === "known"
+    ? secretaryView.nativeInput : null;
+  const sendSecretary = async () => {
+    if (!secretaryKey || !nativeInput?.canSend || secretarySendBlocked || secretaryWritePendingRef.current ||
+        !secretaryDraft.trim()) return;
+    const token = secretaryToken;
+    const submitted = { text: secretaryDraft, revision: secretaryDraftState?.revision ?? 0,
+      binding: nativeInput.binding, requestId: null as string | null,
+      earlierRequestIds: new Set(secretaryView?.outbound?.map((fact) => fact.requestId)) };
+    secretarySubmittedDrafts.current.set(secretaryKey, submitted);
+    secretaryWritePendingRef.current = true;
+    setSecretaryWritePending(true);
+    try {
+      const fact = await nativeInput.send(nativeInput.binding, secretaryDraft);
+      if (secretarySubmittedDrafts.current.get(secretaryKey) === submitted) {
+        submitted.requestId = fact.requestId;
+      }
+      if (currentSecretary.current.token === token) {
+        setSecretaryWriteFailure(null);
+        void currentSecretary.current.view?.openConversation?.();
+      }
+    } catch (cause) {
+      if (currentSecretary.current.token === token) {
+        setSecretaryWriteFailure({ token, operation: "send",
+          sessionId: nativeInput.binding.sessionId, body: secretaryDraft,
+          text: cause instanceof Error ? cause.message : String(cause) });
+        void currentSecretary.current.view?.openConversation?.();
+      }
+    } finally {
+      secretaryWritePendingRef.current = false;
+      setSecretaryWritePending(false);
+    }
+  };
+  const stopSecretary = async () => {
+    if (!nativeInput?.canStop || secretaryWritePendingRef.current) return;
+    const token = secretaryToken;
+    secretaryWritePendingRef.current = true;
+    setSecretaryWritePending(true);
+    try {
+      await nativeInput.stop(nativeInput.binding);
+      if (currentSecretary.current.token === token) {
+        setSecretaryWriteFailure(null);
+        void currentSecretary.current.view?.openConversation?.();
+      }
+    } catch (cause) {
+      if (currentSecretary.current.token === token) {
+        setSecretaryWriteFailure({ token, operation: "stop",
+          sessionId: nativeInput.binding.sessionId, body: null,
+          text: cause instanceof Error ? cause.message : String(cause) });
+        void currentSecretary.current.view?.openConversation?.();
+      }
+    } finally {
+      secretaryWritePendingRef.current = false;
+      setSecretaryWritePending(false);
+    }
+  };
+  const retrySecretaryStop = async (requestId: string) => {
+    if (!secretaryView?.retryStop || secretaryWritePendingRef.current) return;
+    const token = secretaryToken;
+    secretaryWritePendingRef.current = true;
+    setSecretaryWritePending(true);
+    try {
+      await secretaryView.retryStop(requestId);
+      if (currentSecretary.current.token === token) {
+        setSecretaryWriteFailure(null);
+        void currentSecretary.current.view?.openConversation?.();
+      }
+    } catch (cause) {
+      if (currentSecretary.current.token === token) {
+        setSecretaryWriteFailure({ token, operation: "stop",
+          sessionId: secretaryView.outbound?.find((fact) => fact.operation === "stop")?.sessionId ?? null,
+          body: null,
+          text: cause instanceof Error ? cause.message : String(cause) });
+        void currentSecretary.current.view?.openConversation?.();
+      }
+    } finally {
+      secretaryWritePendingRef.current = false;
+      setSecretaryWritePending(false);
+    }
+  };
+  const retrySecretarySend = async (requestId: string) => {
+    if (!secretaryView?.retrySend || secretaryWritePendingRef.current) return;
+    const original = secretaryView.outbound?.find((fact) => fact.operation === "send" &&
+      fact.requestId === requestId);
+    if (!original) return;
+    const token = secretaryToken;
+    secretaryWritePendingRef.current = true;
+    setSecretaryWritePending(true);
+    try {
+      await secretaryView.retrySend(requestId);
+      if (currentSecretary.current.token === token) {
+        setSecretaryWriteFailure(null);
+        void currentSecretary.current.view?.openConversation?.();
+      }
+    } catch (cause) {
+      if (currentSecretary.current.token === token) {
+        setSecretaryWriteFailure({ token, operation: "send",
+          sessionId: original.sessionId, body: original.body,
+          text: cause instanceof Error ? cause.message : String(cause) });
+        void currentSecretary.current.view?.openConversation?.();
+      }
+    } finally {
+      secretaryWritePendingRef.current = false;
+      setSecretaryWritePending(false);
+    }
+  };
+  const secretaryEvidenceNode = secretaryActive ? <>
+    {secretaryView?.historyGap ? <div role="status">对话读取未完整：{secretaryView.historyGap}</div> : null}
+    {!nativeInput && secretaryDraft ? <div role="status">此秘书长会话的草稿已保留：<pre>{secretaryDraft}</pre></div> : null}
+    {secretaryView?.statuses?.length ? <details>
+      <summary>宿主原始轮次状态</summary>
+      <pre>{secretaryView.statuses.join("\n")}</pre>
+    </details> : null}
+    {secretaryView?.inputRowsEnded ? <details>
+      <summary>H 原始用户输入记录（{secretaryView.originalInputs?.length ?? 0}）</summary>
+      <div>本次已读完 H 存储行；这不表示轮次或回复已完成。</div>
+      <ol>{secretaryView.originalInputs?.map((input) => <li key={`${input.generation}:${input.requestId}`}>
+        <div>请求 {input.requestId} · H 代 {input.generation} · {input.operation}</div>
+        <div>原文 {input.bodyState} · H 阶段 {input.phase} · 回执 {input.receiptStatus ?? "未取得"}
+          {input.occurredAtMs ? ` · 原始用户时间 ${input.occurredAtMs} ms` : ""}</div>
+        {input.bodyState === "VERIFIED" && input.body !== null ? <pre>{input.body}</pre> : null}
+        {input.receiptState ? <div>回执正文 {input.receiptState}</div> : null}
+        {input.turnId ? <div>原始轮次 {input.turnId}</div> : null}
+      </li>)}</ol>
+    </details> : null}
+    {secretaryView?.vendorUserFacts?.length ? <details>
+      <summary>A 供应商 USER 回显（非 USER 授权事实，{secretaryView.vendorUserFacts.length} 项）</summary>
+      <ol>{secretaryView.vendorUserFacts.map((fact) => <li key={fact.sourceEventId}>
+        <div>来源 {fact.sourceEventId} · 轮次 {fact.turnId ?? "未提供"} ·
+          {fact.matchedOriginal ? "与已验证 H 原文一致" : "未与已验证 H 原文对应"}</div>
+        <pre>{fact.text}</pre>
+      </li>)}</ol>
+    </details> : null}
+    {secretaryView?.outbound?.map((fact) => <div role="status" key={fact.requestId}>
+      <div>原始会话 {fact.sessionId} · 席位 {fact.seatId} · H 代 {fact.hGeneration}</div>
+      {fact.operation === "send"
+        ? fact.status === "ACCEPTED"
+          ? fact.inputVerified
+            ? "原始 H 用户正文与发送回执已核实。"
+            : "原始 H 发送回执已接受；用户正文尚未从持久来源核实，草稿仍保留。"
+          : "原始 H 发送结果未确认；未创建第二个发送请求。"
+        : fact.status === "ACCEPTED"
+          ? "原始 H 停止事实已确认。"
+          : "原始 H 停止结果未确认。"}
+      {fact.body ? <pre>{fact.body}</pre> : null}
+      {fact.reason ? <div>{fact.reason}</div> : null}
+      {fact.receipt ? <details><summary>原始回执</summary>
+        <pre>{JSON.stringify(fact.receipt)}</pre></details> : null}
+      {fact.operation === "send" && fact.status === "UNKNOWN" && secretaryView.retrySend
+        ? <button type="button" disabled={secretaryWritePending}
+          onClick={() => void retrySecretarySend(fact.requestId)}>核对原始发送请求</button> : null}
+      {fact.operation === "stop" && fact.status === "UNKNOWN"
+        && secretaryView.retryStop ? <button type="button" disabled={secretaryWritePending}
+          onClick={() => void retrySecretaryStop(fact.requestId)}>核对原始停止请求</button> : null}
+    </div>)}
+    {secretaryWriteFailure ? <div role="alert">
+      {secretaryWriteFailure.sessionId ? `会话 ${secretaryWriteFailure.sessionId}：` : ""}{secretaryWriteFailure.text}
+      {secretaryWriteFailure.body && secretaryWriteFailure.token !== secretaryToken
+        ? <pre>{secretaryWriteFailure.body}</pre> : null}
+    </div> : null}
+  </> : null;
+  const secretaryComposerNode = secretaryActive && secretaryHasAssociation
+    ? nativeInput ? <footer className="composer">
+      <ComposerInput text={secretaryDraft} disabled={secretaryWritePending}
+        placeholder="向秘书长发送消息…" disabledPlaceholder="秘书长操作正在确认…"
+        sendLabel="发送给秘书长" canStop={nativeInput.canStop && !secretaryWritePending}
+        canSend={nativeInput.canSend && !secretarySendBlocked && !secretaryWritePending && Boolean(secretaryDraft.trim())}
+        isProcessing={nativeInput.canStop} onStop={() => void stopSecretary()}
+        onSend={() => void sendSecretary()}
+        onTextChange={(text) => {
+          if (!secretaryKey) return;
+          setSecretaryDrafts((previous) => ({ ...previous,
+            [secretaryKey]: { text, revision: (previous[secretaryKey]?.revision ?? 0) + 1 },
+          }));
+        }}
+        onSelectionChange={() => {}}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            void sendSecretary();
+          }
+        }}
+        textareaRef={secretaryTextareaRef} suggestionsOpen={false} suggestions={[]}
+        highlightIndex={0} onHighlightIndex={() => {}} onSelectSuggestion={() => {}} />
+      <div className="composer-meta" role="status">
+        实例 {nativeInput.instanceId} · 模型 {nativeInput.model} · 强度 {nativeInput.effort} · 权限档位 {nativeInput.permissionTier}
+      </div>
+      {secretaryEvidenceNode}
+    </footer> : secretaryView?.conversation?.composer ? composerNode
+      : <div role="status">{secretaryView?.readState === "frozen"
+      ? secretaryView.readError ?? "秘书长最新状态未读到"
+      : entryLine(secretaryView!.entry).text}。当前会话只可查看。{secretaryEvidenceNode}</div>
+    : secretaryActive ? secretaryEvidenceNode : composerNode;
   const compactThreadConnectionState: "live" | "polling" | "disconnected" =
     !activeWorkspace?.connected
       ? "disconnected"
@@ -2089,7 +2370,7 @@ function MainAppContent({
       activeWorkspace: secretaryActive || Boolean(activeWorkspace),
       sidebarNode,
       messagesNode: mainMessagesNode,
-      composerNode: <><NowPinSlot />{composerNode}</>,
+      composerNode: <><NowPinSlot />{secretaryComposerNode}</>,
       approvalToastsNode,
       updateToastNode,
       errorToastsNode,
@@ -2123,7 +2404,7 @@ function MainAppContent({
 
   return (
     <NowProvider source={nowSource} active={
-      secretaryActive && secretaryHasAssociation && composerNode
+      secretaryActive && secretaryHasAssociation && composerNode && secretaryView!.association!.workspaceId
         ? { workspaceId: secretaryView!.association!.workspaceId, threadId: secretaryView!.association!.threadId }
         : !isNewAgentDraftMode && composerNode && activeWorkspaceId && activeThreadId
         ? { workspaceId: activeWorkspaceId, threadId: activeThreadId } : null
