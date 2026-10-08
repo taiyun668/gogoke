@@ -378,8 +378,8 @@ pub(crate) async fn start_native_visible_events(session: &Arc<WorkspaceSession>)
     // replaying historical text deltas into an already rendered conversation.
     let seeded: Result<(NativeAssociation, NativeEventPosition), String> = async {
         let association = session.native_association()?.ok_or("GOGOKE_NATIVE_EVENT_ASSOCIATION_MISSING")?;
-        if let Some(position) = retained_position { return Ok((association, position)); }
-        let mut position = NativeEventPosition::default();
+        let restoring = retained_position.is_some();
+        let mut position = retained_position.unwrap_or_default();
         loop {
             let params = if position.params.is_null() { json!({}) } else { position.params.clone() };
             let reply = visible_read(&app, &session.owner_workspace_id, &association,
@@ -390,7 +390,20 @@ pub(crate) async fn start_native_visible_events(session: &Arc<WorkspaceSession>)
                 || !session.native_event_reader_current(reader_id, &association)? {
                 return Err("GOGOKE_NATIVE_EVENT_ATTACHMENT_CHANGED_DURING_READ".into());
             }
-            position = native_event_page(&reply, &association, &position)?.0;
+            let (next_position, notifications) = native_event_page(&reply, &association, &position)?;
+            if restoring {
+                if !session.commit_native_events(reader_id, &association, next_position.clone(), || {
+                    for item in &notifications {
+                        app.emit("app-server-event", json!({
+                            "workspace_id": session.owner_workspace_id,
+                            "message": item["notification"], "nativeAssociation": association,
+                            "nativeSourceRef": item["sourceRef"],
+                        })).map_err(|error| format!("GOGOKE_NATIVE_EVENT_DELIVERY_FAILED:{error}"))?;
+                    }
+                    Ok(())
+                })? { return Err("GOGOKE_NATIVE_EVENT_ATTACHMENT_CHANGED_BEFORE_DELIVERY".into()); }
+            }
+            position = next_position;
             if reply.state == "APPLIED" {
                 if !session.commit_native_events(reader_id, &association, position.clone(), || Ok(()))? {
                     return Err("GOGOKE_NATIVE_EVENT_ATTACHMENT_CHANGED_BEFORE_COMMIT".into());

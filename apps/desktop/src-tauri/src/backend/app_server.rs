@@ -558,7 +558,6 @@ impl WorkspaceSession {
         current.event_reader_id = current.event_reader_id.checked_add(1)
             .ok_or("GOGOKE_NATIVE_EVENT_READER_ID_OVERFLOW")?;
         current.event_reader_running = true;
-        current.event_reader_error = None;
         Ok(Some((app.clone(), current.event_reader_id, current.event_position.clone())))
     }
 
@@ -604,6 +603,7 @@ impl WorkspaceSession {
             || current.confirmed_stop_fact.is_some() { return Ok(false); }
         emit()?;
         current.event_position = Some(position);
+        current.event_reader_error = None;
         Ok(true)
     }
 
