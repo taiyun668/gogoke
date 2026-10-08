@@ -1232,6 +1232,13 @@ mod tests {
             instance_id:"grokA".into(),home_id:"sessionHomeB".into(),
             binding_id:"bindingB".into(),generation:"1".into(),revision:2,
             phase:super::super::runtime::SessionPhase::Committed,process_operation_id:None};
+        let successor_path=home.path.join("auth-next.json");
+        std::fs::write(&successor_path,b"synthetic non-secret successor fixture").unwrap();
+        std::fs::remove_file(home.path.join("auth.json")).unwrap();
+        std::fs::rename(&successor_path,home.path.join("auth.json")).unwrap();
+        let successor=observe_grok_auth_candidate(&home.path,&home.identity).unwrap();
+        assert_ne!(successor.identity,grant.auth_identity);
+        launch.verify(&db,&profile,false).unwrap();
         let peer_profile=AppContainerProfile::derived_for_test("Gogoke37.ActiveRootAuthorizedPeer").unwrap();
         let peer_launch=GrokHomeLaunch::prepare(&mut db,&root,&peer_profile,
             "Gogoke37.ActiveRootAuthorizedPeer",&peer_claim,&pin,&home,
