@@ -1859,8 +1859,12 @@ mod tests {
                 assert!(original.len()<=1024*1024,"every admitted fixture request fits H's original frame bound");
                 let request=decode_request(original.as_bytes()).unwrap();
                 let original_hex=hex(original.as_bytes());
-                let receipt=if phase=="RECEIPTED" {Some(encode_receipt(&request,
-                    V37Status::Applied,revision,revision+1,BTreeMap::new()))} else {None};
+                let receipt=if phase=="RECEIPTED" {
+                    let mut bytes=encode_receipt(&request,
+                        V37Status::Applied,revision,revision+1,BTreeMap::new());
+                    bytes.push(b'\n');
+                    Some(bytes)
+                } else {None};
                 let row=Statement::prepare(product.connection.as_ptr(),
                     "INSERT INTO main.gogoke_v37_h_stdin_journal(domain_id,request_id,operation,
                      ticket,process_operation_id,custodian_nonce,session_id,generation,request_hex,
