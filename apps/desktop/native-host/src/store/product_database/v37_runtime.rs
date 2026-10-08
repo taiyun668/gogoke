@@ -229,6 +229,9 @@ impl<'root> ProductDatabase<'root> {
         }
         let registration=ledger::read_registered_session(&self.connection,session)?
             .ok_or(OrchestrationError::OperationConflict)?;
+        if registration.domain_id!=domain || registration.session_id!=session {
+            return Err(OrchestrationError::OperationConflict);
+        }
         let (repository,worktree)=if registration.purpose==SessionPurpose::Secretary {
             if domain!="global" || !original.payload.is_empty() {
                 return Err(OrchestrationError::OperationConflict);

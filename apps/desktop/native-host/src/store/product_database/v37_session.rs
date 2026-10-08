@@ -2,6 +2,7 @@
 //! capacities are resolved natively; neither is accepted in operation payloads.
 use super::*;
 use crate::process::AppContainerProfile;
+use crate::store::ledger::{self,SessionPurpose};
 use crate::store::seat::{self, NativeOrigin, State, SecretaryConfiguration};
 use crate::store::session_transport::{self as h, runtime, AdmissionError,
     AdmissionRequest, AdmissionResult, OwnerBinding};
