@@ -216,7 +216,7 @@ fn changed_user_marker_h_response_and_current_authority_never_write() {
             ("DELETE FROM gogoke_v37_seat_secretary_presence", "missing INPUT marker"),
             ("UPDATE gogoke_v37_seat_secretary_presence SET source_cursor='other'", "wrong INPUT marker"),
             ("UPDATE gogoke_v37_h_stdin_journal SET request_hex='00' WHERE request_id='sendS'", "changed USER bytes"),
-            ("UPDATE v37_ledger_raw_source SET raw_bytes=x'00' WHERE operation_id='processS' AND source_cursor='2'", "changed observed RPC response"),
+            ("UPDATE v37_ledger_raw_source SET raw_bytes=CAST(replace(CAST(raw_bytes AS TEXT),'\"id\":\"turnS\"','\"id\":\"otherTurn\"') AS BLOB) WHERE operation_id='processS' AND source_cursor='2'", "changed observed RPC response"),
             ("UPDATE gogoke_v37_h_claim SET generation='2' WHERE session_id='sessionS'", "wrong H generation"),
             ("UPDATE gogoke_v37_seats SET state='IDLE' WHERE seat_id='seatS'", "no current BUSY seat"),
             ("UPDATE v37_ledger_session SET purpose='WORK' WHERE session_id='sessionS'", "project purpose"),

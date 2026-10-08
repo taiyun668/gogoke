@@ -121,6 +121,7 @@ jobs:
           & cargo build --release --locked --manifest-path apps/desktop/native-host/Cargo.toml 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'release-build.log') | Write-Host
           if ($LASTEXITCODE -ne 0) { throw "Secretary release build failed: $LASTEXITCODE" }
           $results = @()
+          $failures = @()
           foreach ($filter in @('v37_secretary_routine_model_tests','secretary_schedule::tests','secretary_routines_replay_absence_and_unknown_are_fail_closed','secretary_thread_registers_only_global_read_and_user_routine_and_rejects_tool_substitution','only_exact_live_user_input_adds_an_atomic_fixed_presence_witness')) {
             $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib $filter -- --nocapture --show-output 2>&1
             $exitCode = $LASTEXITCODE
@@ -128,10 +129,16 @@ jobs:
             $output | Tee-Object -FilePath (Join-Path $evidence "$label.log") | Write-Host
             $joined = $output -join "`n"
             $summary = [regex]::Matches($joined,'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;')
-            if ($summary.Count -ne 1 -or $exitCode -ne 0 -or [int]$summary[0].Groups[2].Value -le 0 -or [int]$summary[0].Groups[3].Value -ne 0 -or [int]$summary[0].Groups[4].Value -ne 0) { throw "Secretary directed boundary failed or did not execute: $filter exit=$exitCode" }
-            $results += [ordered]@{ filter=$filter; exitCode=$exitCode; passed=[int]$summary[0].Groups[2].Value; failed=0; ignored=0 }
+            $valid = $summary.Count -eq 1 -and $exitCode -eq 0 -and [int]$summary[0].Groups[2].Value -gt 0 -and [int]$summary[0].Groups[3].Value -eq 0 -and [int]$summary[0].Groups[4].Value -eq 0
+            $results += [ordered]@{ filter=$filter; exitCode=$exitCode; state=$(if($valid){'PASS'}else{'FAIL_OR_NOT_EXECUTED'}); passed=$(if($summary.Count -eq 1){[int]$summary[0].Groups[2].Value}else{$null}); failed=$(if($summary.Count -eq 1){[int]$summary[0].Groups[3].Value}else{$null}); ignored=$(if($summary.Count -eq 1){[int]$summary[0].Groups[4].Value}else{$null}) }
+            if (-not $valid) { $failures += $filter }
+            # Independent compiled cases continue after a behavioral failure.
+            # A missing summary cannot prove execution; stop repeating a broken
+            # test build and retain all later filters as NOT_RUN.
+            if ($exitCode -ne 0 -and $summary.Count -eq 0) { break }
           }
-          [ordered]@{ schema='gogoke.secretary-routine-boundaries.v1'; sourceCommit=(git rev-parse HEAD).Trim(); state='PASS_DIRECTED_BOUNDARIES_ONLY'; library='NOT_RUN'; product='NOT_RUN'; results=$results } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidence 'boundary-results.json') -Encoding utf8NoBOM
+          [ordered]@{ schema='gogoke.secretary-routine-boundaries.v1'; sourceCommit=(git rev-parse HEAD).Trim(); state=$(if($failures.Count -eq 0){'PASS_DIRECTED_BOUNDARIES_ONLY'}else{'FAIL_DIRECTED_BOUNDARIES'}); library='NOT_RUN'; product='NOT_RUN'; results=$results } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidence 'boundary-results.json') -Encoding utf8NoBOM
+          if ($failures.Count -ne 0) { throw "Secretary directed boundary failed or did not execute: $($failures -join ', ')" }
           & ./tools/ci/gogoke37-secretary-routine-mutation.ps1 -EvidenceDirectory $evidence
           if ($LASTEXITCODE -ne 0) { throw "Secretary production mutation failed: $LASTEXITCODE" }
           'Only actual directed boundary cases and compile-valid production mutation ran. Full library, other native/security/server gates and Win11 product: NOT_RUN.' >> $env:GITHUB_STEP_SUMMARY
