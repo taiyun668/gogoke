@@ -9,7 +9,6 @@ use tokio::sync::Mutex;
 use crate::backend::app_server::WorkspaceSession;
 use crate::codex::args::resolve_workspace_codex_args;
 use crate::codex::home::resolve_workspace_codex_home;
-use crate::shared::process_core::kill_child_process_tree;
 use crate::types::{AppSettings, WorkspaceEntry};
 
 use super::helpers::resolve_entry_and_parent;
@@ -21,8 +20,7 @@ pub(super) fn workspace_session_spawn_lock() -> &'static Mutex<()> {
 }
 
 async fn session_process_is_alive(session: &Arc<WorkspaceSession>) -> bool {
-    let mut child = session.child.lock().await;
-    matches!(child.try_wait(), Ok(None))
+    session.is_alive().await.unwrap_or(false)
 }
 
 async fn remove_session_references(
@@ -39,7 +37,10 @@ pub(super) async fn take_live_shared_session(
     loop {
         let existing_session = {
             let sessions = sessions.lock().await;
-            sessions.values().next().cloned()
+            sessions
+                .values()
+                .find(|session| !session.is_native())
+                .cloned()
         };
         let Some(existing_session) = existing_session else {
             return None;
@@ -64,24 +65,30 @@ where
 {
     let (entry, parent_entry) = resolve_entry_and_parent(workspaces, &workspace_id).await?;
     let _spawn_guard = workspace_session_spawn_lock().lock().await;
+    let native_route = crate::codex::native_visible_route_preflight(&entry.id).await?;
     if let Some(existing_for_entry) = {
         let sessions = sessions.lock().await;
         sessions.get(&entry.id).cloned()
     } {
-        if session_process_is_alive(&existing_for_entry).await {
+        if native_route.is_some_and(|native| native != existing_for_entry.is_native()) {
+            return Err("GOGOKE_WORKSPACE_TRANSPORT_ROUTE_CHANGED".into());
+        }
+        if existing_for_entry.is_alive().await? {
             return Ok(());
         }
         remove_session_references(sessions, &existing_for_entry).await;
     }
-    if let Some(existing_session) = take_live_shared_session(sessions).await {
-        existing_session
-            .register_workspace_with_path(&entry.id, Some(&entry.path))
-            .await;
-        sessions
-            .lock()
-            .await
-            .insert(entry.id.clone(), existing_session);
-        return Ok(());
+    if native_route != Some(true) {
+        if let Some(existing_session) = take_live_shared_session(sessions).await {
+            existing_session
+                .register_workspace_with_path(&entry.id, Some(&entry.path))
+                .await;
+            sessions
+                .lock()
+                .await
+                .insert(entry.id.clone(), existing_session);
+            return Ok(());
+        }
     }
     let (default_bin, codex_args) = {
         let settings = app_settings.lock().await;
@@ -102,7 +109,7 @@ where
 pub(super) async fn kill_session_by_id(
     sessions: &Mutex<HashMap<String, Arc<WorkspaceSession>>>,
     id: &str,
-) {
+) -> Result<(), String> {
     let (removed, still_referenced) = {
         let mut sessions = sessions.lock().await;
         let removed = sessions.remove(id);
@@ -116,11 +123,15 @@ pub(super) async fn kill_session_by_id(
     if let Some(session) = removed {
         session.unregister_workspace(id).await;
         if still_referenced {
-            return;
+            return Ok(());
         }
-        let mut child = session.child.lock().await;
-        kill_child_process_tree(&mut child).await;
+        if let Err(error) = session.stop().await {
+            session.register_workspace(id).await;
+            sessions.lock().await.insert(id.to_string(), session);
+            return Err(error);
+        }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -169,8 +180,10 @@ mod tests {
 
         Arc::new(WorkspaceSession {
             codex_args: None,
-            child: Mutex::new(child),
-            stdin: Mutex::new(stdin),
+            transport: crate::backend::app_server::SessionTransport::Legacy {
+                child: Mutex::new(child),
+                stdin: Mutex::new(stdin),
+            },
             pending: Mutex::new(HashMap::new()),
             request_context: Mutex::new(HashMap::new()),
             thread_workspace: Mutex::new(HashMap::new()),

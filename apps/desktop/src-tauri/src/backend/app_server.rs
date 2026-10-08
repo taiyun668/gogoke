@@ -1,12 +1,14 @@
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use tauri::AppHandle;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -435,8 +437,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub(crate) struct WorkspaceSession {
     pub(crate) codex_args: Option<String>,
-    pub(crate) child: Mutex<Child>,
-    pub(crate) stdin: Mutex<ChildStdin>,
+    pub(crate) transport: SessionTransport,
     pub(crate) pending: Mutex<HashMap<u64, oneshot::Sender<Value>>>,
     pub(crate) request_context: Mutex<HashMap<u64, RequestContext>>,
     pub(crate) thread_workspace: Mutex<HashMap<String, String>>,
@@ -447,6 +448,132 @@ pub(crate) struct WorkspaceSession {
     pub(crate) owner_workspace_id: String,
     pub(crate) workspace_ids: Mutex<HashSet<String>>,
     pub(crate) workspace_roots: Mutex<HashMap<String, String>>,
+}
+
+pub(crate) enum SessionTransport {
+    Legacy {
+        child: Mutex<Child>,
+        stdin: Mutex<ChildStdin>,
+    },
+    Native {
+        app: AppHandle,
+        association: NativeAssociation,
+        confirmed_stop: AtomicBool,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct NativeAssociation {
+    pub(crate) domain_id: String,
+    pub(crate) session_id: String,
+    pub(crate) seat_id: String,
+    pub(crate) incarnation: String,
+    pub(crate) authorization_generation: String,
+    pub(crate) binding_generation: String,
+    pub(crate) instance_id: String,
+}
+
+impl WorkspaceSession {
+    pub(crate) fn new_native(
+        entry: &WorkspaceEntry,
+        app: AppHandle,
+        association: NativeAssociation,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            codex_args: None,
+            transport: SessionTransport::Native {
+                app,
+                association,
+                confirmed_stop: AtomicBool::new(false),
+            },
+            pending: Mutex::new(HashMap::new()),
+            request_context: Mutex::new(HashMap::new()),
+            thread_workspace: Mutex::new(HashMap::new()),
+            hidden_thread_ids: Mutex::new(HashSet::new()),
+            next_id: AtomicU64::new(1),
+            background_thread_callbacks: Mutex::new(HashMap::new()),
+            owner_workspace_id: entry.id.clone(),
+            workspace_ids: Mutex::new(HashSet::from([entry.id.clone()])),
+            workspace_roots: Mutex::new(HashMap::from([(
+                entry.id.clone(),
+                normalize_root_path(&entry.path),
+            )])),
+        })
+    }
+
+    pub(crate) fn is_native(&self) -> bool {
+        matches!(self.transport, SessionTransport::Native { .. })
+    }
+
+    pub(crate) fn native_association(&self) -> Option<NativeAssociation> {
+        match &self.transport {
+            SessionTransport::Native { association, .. } => Some(association.clone()),
+            SessionTransport::Legacy { .. } => None,
+        }
+    }
+
+    pub(crate) fn note_native_stop_fact(&self) -> Result<(), String> {
+        match &self.transport {
+            SessionTransport::Native { confirmed_stop, .. } => {
+                confirmed_stop.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+            SessionTransport::Legacy { .. } => Err("GOGOKE_LEGACY_STOP_FACT_MISMATCH".into()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn legacy_child(&self) -> Option<&Mutex<Child>> {
+        match &self.transport {
+            SessionTransport::Legacy { child, .. } => Some(child),
+            SessionTransport::Native { .. } => None,
+        }
+    }
+
+    pub(crate) async fn is_alive(&self) -> Result<bool, String> {
+        match &self.transport {
+            SessionTransport::Legacy { child, .. } => child
+                .lock()
+                .await
+                .try_wait()
+                .map(|status| status.is_none())
+                .map_err(|error| error.to_string()),
+            SessionTransport::Native {
+                app, association, ..
+            } => {
+                crate::codex::native_visible_live_state(app, &self.owner_workspace_id, association)
+                    .await
+            }
+        }
+    }
+
+    /// Only a durable H StopFact permits cleanup. An interrupt ACK is not a stop.
+    pub(crate) async fn stop(&self) -> Result<(), String> {
+        match &self.transport {
+            SessionTransport::Legacy { child, .. } => {
+                let mut child = child.lock().await;
+                kill_child_process_tree(&mut child).await;
+                match timeout(Duration::from_secs(5), child.wait()).await {
+                    Ok(Ok(_)) => Ok(()),
+                    Ok(Err(error)) => Err(format!("GOGOKE_LEGACY_STOP_STATUS_FAILED:{error}")),
+                    Err(_) => Err("GOGOKE_LEGACY_STOP_NOT_CONFIRMED".into()),
+                }
+            }
+            SessionTransport::Native {
+                app,
+                association,
+                confirmed_stop,
+            } => {
+                if confirmed_stop.load(Ordering::SeqCst) {
+                    Ok(())
+                } else {
+                    crate::codex::native_visible_stop(app, &self.owner_workspace_id, association)
+                        .await
+                }
+            }
+        }
+    }
 }
 
 impl WorkspaceSession {
@@ -484,7 +611,10 @@ impl WorkspaceSession {
     }
 
     async fn write_message(&self, value: Value) -> Result<(), String> {
-        let mut stdin = self.stdin.lock().await;
+        let SessionTransport::Legacy { stdin, .. } = &self.transport else {
+            return Err("GOGOKE_NATIVE_RAW_STDIN_UNAVAILABLE".into());
+        };
+        let mut stdin = stdin.lock().await;
         let mut line = serde_json::to_string(&value).map_err(|e| e.to_string())?;
         line.push('\n');
         stdin
@@ -504,6 +634,19 @@ impl WorkspaceSession {
         method: &str,
         params: Value,
     ) -> Result<Value, String> {
+        if let SessionTransport::Native {
+            app, association, ..
+        } = &self.transport
+        {
+            return crate::codex::native_visible_request(
+                app,
+                workspace_id,
+                association,
+                method,
+                params,
+            )
+            .await;
+        }
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         self.register_workspace(workspace_id).await;
@@ -779,8 +922,10 @@ pub(crate) async fn spawn_workspace_session<E: EventSink>(
 
     let session = Arc::new(WorkspaceSession {
         codex_args,
-        child: Mutex::new(child),
-        stdin: Mutex::new(stdin),
+        transport: SessionTransport::Legacy {
+            child: Mutex::new(child),
+            stdin: Mutex::new(stdin),
+        },
         pending: Mutex::new(HashMap::new()),
         request_context: Mutex::new(HashMap::new()),
         thread_workspace: Mutex::new(HashMap::new()),
@@ -1089,8 +1234,7 @@ pub(crate) async fn spawn_workspace_session<E: EventSink>(
     let init_response = match init_result {
         Ok(response) => response,
         Err(_) => {
-            let mut child = session.child.lock().await;
-            kill_child_process_tree(&mut child).await;
+            session.stop().await?;
             return Err(
                 "Codex app-server did not respond to initialize. Check that `codex app-server` works in Terminal."
                     .to_string(),

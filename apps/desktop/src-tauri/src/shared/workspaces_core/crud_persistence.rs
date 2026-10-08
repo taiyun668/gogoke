@@ -9,7 +9,6 @@ use uuid::Uuid;
 use crate::backend::app_server::WorkspaceSession;
 use crate::codex::args::resolve_workspace_codex_args;
 use crate::codex::home::resolve_workspace_codex_home;
-use crate::shared::process_core::kill_child_process_tree;
 use crate::shared::{git_core, worktree_core};
 use crate::storage::write_workspaces;
 use crate::types::{AppSettings, WorkspaceEntry, WorkspaceInfo, WorkspaceKind, WorkspaceSettings};
@@ -54,7 +53,12 @@ where
     };
 
     let _spawn_guard = workspace_session_spawn_lock().lock().await;
-    let existing_session = take_live_shared_session(sessions).await;
+    let native_route = crate::codex::native_visible_route_preflight(&entry.id).await?;
+    let existing_session = if native_route == Some(true) {
+        None
+    } else {
+        take_live_shared_session(sessions).await
+    };
     let (session, spawned_new_session) = if let Some(existing_session) = existing_session {
         (existing_session, false)
     } else {
@@ -83,8 +87,7 @@ where
             workspaces.remove(&entry.id);
         }
         if spawned_new_session {
-            let mut child = session.child.lock().await;
-            kill_child_process_tree(&mut child).await;
+            session.stop().await?;
         }
         return Err(error);
     }
@@ -205,7 +208,12 @@ where
     };
 
     let _spawn_guard = workspace_session_spawn_lock().lock().await;
-    let existing_session = take_live_shared_session(sessions).await;
+    let native_route = crate::codex::native_visible_route_preflight(&entry.id).await?;
+    let existing_session = if native_route == Some(true) {
+        None
+    } else {
+        take_live_shared_session(sessions).await
+    };
     let (session, spawned_new_session) = if let Some(existing_session) = existing_session {
         (existing_session, false)
     } else {
@@ -237,8 +245,7 @@ where
             workspaces.remove(&entry.id);
         }
         if spawned_new_session {
-            let mut child = session.child.lock().await;
-            kill_child_process_tree(&mut child).await;
+            session.stop().await?;
         }
         let _ = tokio::fs::remove_dir_all(&destination_path).await;
         return Err(error);
@@ -370,7 +377,12 @@ where
     };
 
     let _spawn_guard = workspace_session_spawn_lock().lock().await;
-    let existing_session = take_live_shared_session(sessions).await;
+    let native_route = crate::codex::native_visible_route_preflight(&entry.id).await?;
+    let existing_session = if native_route == Some(true) {
+        None
+    } else {
+        take_live_shared_session(sessions).await
+    };
     let (session, spawned_new_session) = if let Some(existing_session) = existing_session {
         (existing_session, false)
     } else {
@@ -402,8 +414,7 @@ where
             workspaces.remove(&entry.id);
         }
         if spawned_new_session {
-            let mut child = session.child.lock().await;
-            kill_child_process_tree(&mut child).await;
+            session.stop().await?;
         }
         let _ = tokio::fs::remove_dir_all(&clone_path).await;
         return Err(error);
@@ -466,7 +477,7 @@ where
     let mut failures: Vec<(String, String)> = Vec::new();
 
     for child in &child_worktrees {
-        kill_session_by_id(sessions, &child.id).await;
+        kill_session_by_id(sessions, &child.id).await?;
 
         let child_path = PathBuf::from(&child.path);
         if child_path.exists() {
@@ -509,7 +520,7 @@ where
 
     let mut ids_to_remove = removed_child_ids;
     if failures.is_empty() || !require_all_children_removed_to_remove_parent {
-        kill_session_by_id(sessions, &id).await;
+        kill_session_by_id(sessions, &id).await?;
         ids_to_remove.push(id.clone());
     }
 

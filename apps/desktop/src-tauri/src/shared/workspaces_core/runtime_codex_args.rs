@@ -9,7 +9,6 @@ use tokio::sync::Mutex;
 use crate::backend::app_server::WorkspaceSession;
 use crate::codex::args::resolve_workspace_codex_args;
 use crate::codex::home::resolve_workspace_codex_home;
-use crate::shared::process_core::kill_child_process_tree;
 use crate::types::{AppSettings, WorkspaceEntry};
 
 use super::connect::workspace_session_spawn_lock;
@@ -36,6 +35,9 @@ where
 {
     let (entry, parent_entry) = resolve_entry_and_parent(workspaces, &workspace_id).await?;
     let _spawn_guard = workspace_session_spawn_lock().lock().await;
+    if crate::codex::native_visible_route_preflight(&entry.id).await? == Some(true) {
+        return Err("GOGOKE_NATIVE_GLOBAL_CODEX_ARGS_UNSUPPORTED".into());
+    }
 
     let (default_bin, resolved_args) = {
         let settings = app_settings.lock().await;
@@ -58,7 +60,7 @@ where
         let sessions = sessions.lock().await;
         (
             sessions.contains_key(&entry.id),
-            sessions.values().next().cloned(),
+            sessions.get(&entry.id).cloned(),
         )
     };
     if !workspace_connected {
@@ -75,6 +77,10 @@ where
         });
     };
 
+    if current_session.is_native() {
+        return Err("GOGOKE_NATIVE_GLOBAL_CODEX_ARGS_UNSUPPORTED".into());
+    }
+
     if current_session.codex_args == target_args {
         return Ok(WorkspaceRuntimeCodexArgsResult {
             applied_codex_args: target_args,
@@ -85,9 +91,23 @@ where
     let codex_home = resolve_workspace_codex_home(&entry, parent_entry.as_ref());
     let new_session =
         spawn_session(entry.clone(), default_bin, target_args.clone(), codex_home).await?;
+    if new_session.is_native() {
+        return Err("GOGOKE_CODEX_ARGS_RESPAWN_TRANSPORT_CHANGED".into());
+    }
+    // Retain the old registry until its physical process has stopped.
+    if let Err(error) = current_session.stop().await {
+        if let Err(cleanup_error) = new_session.stop().await {
+            return Err(format!("{error}; NEW_SESSION_STOP_FAILED:{cleanup_error}"));
+        }
+        return Err(error);
+    }
     let workspace_ids = {
         let mut sessions = sessions.lock().await;
-        let keys: Vec<String> = sessions.keys().cloned().collect();
+        let keys: Vec<String> = sessions
+            .iter()
+            .filter(|(_, session)| Arc::ptr_eq(session, &current_session))
+            .map(|(id, _)| id.clone())
+            .collect();
         for key in &keys {
             sessions.insert(key.clone(), Arc::clone(&new_session));
         }
@@ -116,9 +136,6 @@ where
             .register_workspace_with_path(workspace_id, path)
             .await;
     }
-    let mut child = current_session.child.lock().await;
-    kill_child_process_tree(&mut child).await;
-
     Ok(WorkspaceRuntimeCodexArgsResult {
         applied_codex_args: target_args,
         respawned: true,
@@ -169,8 +186,10 @@ mod tests {
 
         WorkspaceSession {
             codex_args,
-            child: Mutex::new(child),
-            stdin: Mutex::new(stdin),
+            transport: crate::backend::app_server::SessionTransport::Legacy {
+                child: Mutex::new(child),
+                stdin: Mutex::new(stdin),
+            },
             pending: Mutex::new(HashMap::new()),
             request_context: Mutex::new(HashMap::new()),
             thread_workspace: Mutex::new(HashMap::new()),
