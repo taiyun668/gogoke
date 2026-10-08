@@ -311,7 +311,8 @@ fn proven_inherited_successors(db:&VerifiedDatabaseConnection<'_>,grant:&GrokGra
             effect.phase=="APPLIED" &&effect.relative_name=="auth.json" &&
             effect.rights==RIGHTS &&effect.flags==0 &&
             effect.after_aces==format!("1:{RIGHTS}:0") &&
-            !own_ids.contains(&effect.object_identity) &&!ids.contains(&effect.object_identity)) {
+            !own_ids.contains(&effect.object_identity)) {
+            if ids.contains(&source.object_identity) {continue;}
             let Some(auth)=evidence("inherited-successor-FileID",observe_grok_recorded_auth(
                 &home.path,&home.identity,&source.object_identity))? else {continue;};
             let acl=evidence("inherited-successor-ACL",auth.acl(profile))?;
