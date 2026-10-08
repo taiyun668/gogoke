@@ -10,7 +10,8 @@ type SecretaryConfiguration =
       permissionTier: string | null; seatState: "IDLE" | "BUSY" | "RECLAIMED";
       conversation?: { state: "NONE" | "UNKNOWN" | "CONFLICT" | "FOUND";
         sessionId?: string; generation?: string; revision?: string;
-        claimState?: string; stoppedFact?: boolean; runtimeAvailable?: boolean;
+        claimState?: string; stoppedFact?: boolean | null; runtimeAvailable?: boolean;
+        historical?: boolean;
         turnState?: "IDLE" | "RUNNING" | "UNKNOWN";
         threadId?: string; ledgerEpoch?: string; ledgerCursor?: string } };
 
@@ -31,7 +32,7 @@ const optionalText = (value: unknown): value is string | null =>
 
 function parseSecretaryConfiguration(value: unknown): SecretaryConfiguration {
   if (!record(value) || value.schema !== "gogoke.37.secretary-configuration.v1") {
-    throw new Error("Native Secretary configuration schema is unavailable.");
+    throw new Error(`Native Secretary configuration schema is unavailable: ${JSON.stringify(value)}`);
   }
   if (value.state === "UNSET" || value.state === "REVOKED") {
     return value as SecretaryConfiguration;
@@ -42,7 +43,7 @@ function parseSecretaryConfiguration(value: unknown): SecretaryConfiguration {
       !optionalText(value.model) || !optionalText(value.effort) ||
       !optionalText(value.permissionTier) ||
       !["IDLE", "BUSY", "RECLAIMED"].includes(String(value.seatState))) {
-    throw new Error("Native Secretary designation is incomplete or invalid.");
+    throw new Error(`Native Secretary designation is incomplete or invalid: ${JSON.stringify(value)}`);
   }
   if (value.conversation !== undefined) {
     const conversation = value.conversation;
@@ -51,13 +52,17 @@ function parseSecretaryConfiguration(value: unknown): SecretaryConfiguration {
         ["sessionId", "generation", "revision", "claimState",
           "threadId", "ledgerEpoch", "ledgerCursor"].some((key) =>
             conversation[key] !== undefined && !nonempty(conversation[key])) ||
-        (conversation.stoppedFact !== undefined &&
+        (conversation.stoppedFact !== undefined && conversation.stoppedFact !== null &&
           typeof conversation.stoppedFact !== "boolean") ||
+        (conversation.historical !== undefined &&
+          typeof conversation.historical !== "boolean") ||
+        (conversation.state === "FOUND" &&
+          typeof conversation.historical !== "boolean") ||
         (conversation.runtimeAvailable !== undefined &&
           typeof conversation.runtimeAvailable !== "boolean") ||
         (conversation.turnState !== undefined &&
           !["IDLE", "RUNNING", "UNKNOWN"].includes(String(conversation.turnState)))) {
-      throw new Error("Native Secretary conversation fact is invalid.");
+      throw new Error(`Native Secretary conversation fact is invalid: ${JSON.stringify(conversation)}`);
     }
   }
   return value as SecretaryConfiguration;
@@ -78,7 +83,7 @@ function parseSecretaryRoutines(value: unknown): SecretaryRoutineRow[] {
         !["ACTIVE", "PAUSED", "ABSENCE_PAUSED", "WAITING_NEXT", "DELETED"].includes(String(item.state)) ||
         !decimal(item.revision) || !["NONE", "UNKNOWN", "FAILED", "DELIVERED"].includes(String(item.lastResult)) ||
         typeof item.lastReason !== "string") {
-      throw new Error("Native Secretary routine row is incomplete or invalid.");
+      throw new Error(`Native Secretary routine row is incomplete or invalid: ${JSON.stringify(item)}`);
     }
     ids.add(item.routineId);
     return item as SecretaryRoutineRow;
@@ -98,6 +103,11 @@ async function readSecretaryRoutines(): Promise<SecretaryRoutineRow[]> {
 }
 
 function routinePageRow(row: SecretaryRoutineRow): Routine {
+  // G's current Routine only accepts a dated lastRun; E has an outcome and
+  // reason but no outcome timestamp. Rendering it as "never run" is false.
+  if (row.lastResult !== "NONE" || row.lastReason !== "") {
+    throw new Error(`Native Secretary routine outcome cannot be displayed without a host timestamp: ${row.routineId} ${row.lastResult} ${row.lastReason}`);
+  }
   const ms = Number(row.nextDueMs);
   if (!Number.isSafeInteger(ms) || !Number.isFinite(new Date(ms).getTime())) {
     throw new Error("Native Secretary next due time is invalid.");
@@ -130,9 +140,46 @@ export function createDesign37SecretarySource(): {
     settings.model = configuration.model ?? undefined;
     settings.effort = configuration.effort ?? undefined;
     settings.permission = configuration.permissionTier ?? undefined;
+    // These are only the E-selected values in a disabled form, not a claim
+    // that other efforts or permission tiers are available on this instance.
+    if (configuration.effort) settings.efforts = [configuration.effort];
+    if (configuration.permissionTier) settings.permissions = [configuration.permissionTier];
     if (!configuration.instanceId || !configuration.model || !configuration.effort ||
         !configuration.permissionTier || configuration.seatState === "RECLAIMED") {
       return { configuration, page: { entry: { kind: "unset" as const }, routines: [], settings } };
+    }
+    const management = await design37UserFrame({
+      schema: "gogoke.37.owner-configuration.v1", command: "instance-management-read",
+    });
+    if (!record(management) || management.schema !== "gogoke.37.instance-management.v1" ||
+        !Array.isArray(management.profiles)) {
+      throw new Error(`Native Secretary instance management read is malformed: ${JSON.stringify(management)}`);
+    }
+    const matching = management.profiles.filter((profile: unknown) =>
+      record(profile) && profile.instanceId === configuration.instanceId);
+    if (matching.length > 1) {
+      throw new Error(`Native Secretary instance profile is duplicated: ${configuration.instanceId}`);
+    }
+    const profile: unknown = matching[0];
+    if (profile === undefined) {
+      settings.cannot = [`宿主没有返回当前实例 ${configuration.instanceId} 的资料`];
+    } else if (!record(profile) ||
+        (profile.name !== null && profile.name !== undefined && typeof profile.name !== "string") ||
+        (profile.models !== undefined && (!Array.isArray(profile.models) ||
+          !profile.models.every(nonempty))) ||
+        (profile.modelsSource !== null && profile.modelsSource !== undefined &&
+          typeof profile.modelsSource !== "string") ||
+        (profile.modelsObservedAt !== null && profile.modelsObservedAt !== undefined &&
+          typeof profile.modelsObservedAt !== "string")) {
+      throw new Error(`Native Secretary current instance profile is malformed: ${JSON.stringify(profile)}`);
+    } else if (!nonempty(profile.name) || !Array.isArray(profile.models) ||
+        !nonempty(profile.modelsSource) || !nonempty(profile.modelsObservedAt)) {
+      settings.cannot = [`宿主没有给出当前实例 ${configuration.instanceId} 的名称或已验证模型来源`];
+    } else if (!profile.models.includes(configuration.model)) {
+      settings.cannot = [`当前配置模型 ${configuration.model} 不在实例 ${configuration.instanceId} 的已验证模型中`];
+    } else {
+      settings.instances = [{ id: configuration.instanceId,
+        name: profile.name, models: profile.models }];
     }
     const rows = await readSecretaryRoutines();
     const routines = rows.filter((row) => {
@@ -153,7 +200,8 @@ export function createDesign37SecretarySource(): {
     // configuration. Use the last host observation instead of freezing it.
     const conversation = confirmed.conversation;
     const runnable = conversation?.state === "FOUND" &&
-      conversation.runtimeAvailable === true && conversation.stoppedFact === false;
+      conversation.historical === false && conversation.runtimeAvailable === true &&
+      conversation.stoppedFact !== true;
     const entry: SecretaryPage["entry"] = runnable && conversation.turnState === "IDLE"
       ? { kind: "quiet" }
       : runnable && conversation.turnState === "RUNNING" ? { kind: "working" } :
