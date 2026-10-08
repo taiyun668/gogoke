@@ -54,7 +54,7 @@ fn command(product: &mut ProductDatabase<'_>, command: &str, driver: &str,
         "managed CLI {command} did not reach {expected}: {reply}");
 }
 
-pub(super) fn ready(product: &mut ProductDatabase<'_>, root: &RootLock, driver: &str) {
+pub(crate) fn ready(product: &mut ProductDatabase<'_>, root: &RootLock, driver: &str) {
     let pin = instance::read_fixed_official_cli(driver).expect("fixed official CLI pin");
     let original = archive(driver, pin.version, pin.archive_sha256);
     let staging = instance::managed_cli_root(root).expect("private managed CLI staging root");
