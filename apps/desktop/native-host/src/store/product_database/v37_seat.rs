@@ -857,6 +857,10 @@ impl<'root> ProductDatabase<'root> {
             return Err(OrchestrationError::Invalid("configuration schema"));
         }
         let command = string_field(&fields, "command")?;
+        if matches!(command.as_str(), "secretary-routines-read" | "secretary-routine-pause"
+            | "secretary-routine-resume" | "secretary-routine-delete") {
+            return self.dispatch_user_secretary_routine_configuration(&command, &fields, frame);
+        }
         if command == "secretary-configuration-read" && fields.len() == 2 {
             self.connection.execute("BEGIN").map_err(OrchestrationError::CommitUnknownWithCause)?;
             let observed=seat::read_secretary_configuration_in_transaction(&self.connection,&self.owner);
@@ -1328,6 +1332,58 @@ mod tests {
             assert_eq!(status(product, &request("reclaim", "reclaimA", "seatA", 3, "{}")), V37Status::Applied);
             assert_eq!(status(product, &request("short-to-long", "latePromote", "seatA", 4, "{}")), V37Status::Conflict);
             assert_eq!(status(product, &request("takeover-answers", "takeoverA", "seatA", 4, "{}")), V37Status::Unsupported);
+        });
+    }
+
+    #[test]
+    fn secretary_routine_user_commands_read_original_rows_and_preserve_history() {
+        fixture(|product| {
+            let list=r#"{"schema":"gogoke.37.owner-configuration.v1","command":"secretary-routines-read"}"#;
+            assert!(product.configure_user_v37(list.as_bytes()).is_err(),
+                "an unset Secretary is not an empty routine list");
+            seat::store_template(&mut product.connection, NativeOrigin::user(&product.owner),
+                seat::StoreTemplate {domain_id:"global",template_id:"routineBase",settings_json:br#"{}"#}).unwrap();
+            let created=seat::create(&mut product.connection, NativeOrigin::user(&product.owner),
+                CreateSeat {domain_id:"global",seat_id:"routineSecretary",template_id:"routineBase",
+                    instance_id:None,kind:Kind::Long,request_id:"createRoutineSeat",
+                    request_bytes:b"create routine seat"}).unwrap().seat;
+            seat::designate_secretary(&mut product.connection,&product.owner,&created.seat_id,
+                &created.incarnation,"designateRoutine",b"designate routine").unwrap();
+            // Storage fixture only: production create requires an independently
+            // authenticated User input locator and schedule parser.
+            seat::create_secretary_routine(&mut product.connection,&product.owner,
+                seat::SecretaryRoutineCreate {routine_id:"routineA",request_id:"createRoutine",
+                    request_bytes:b"fixture create",original_text:"明天提醒我",source_operation_id:"inputA",
+                    source_epoch:"epochA",source_cursor:"1",schedule_raw:"明天",timezone:"Asia/Shanghai",
+                    next_due_ms:100,now_ms:50}).unwrap();
+            let call=|product:&mut ProductDatabase<'_>,frame:&str| {
+                String::from_utf8(product.configure_user_v37(frame.as_bytes()).unwrap()).unwrap()
+            };
+            let original=call(product,list);
+            assert!(original.contains("\"originalText\":\"明天提醒我\""));
+            assert!(original.contains("\"sourceOperationId\":\"inputA\""));
+            assert!(original.contains("\"lastResult\":\"NONE\""));
+            let missing=r#"{"schema":"gogoke.37.owner-configuration.v1","command":"secretary-routines-read","routineId":"missing"}"#;
+            assert!(product.configure_user_v37(missing.as_bytes()).is_err());
+            let pause=r#"{"schema":"gogoke.37.owner-configuration.v1","command":"secretary-routine-pause","routineId":"routineA","requestId":"pauseA","expectedRevision":"1"}"#;
+            assert!(call(product,pause).contains("\"status\":\"APPLIED\""));
+            assert!(call(product,pause).contains("\"status\":\"REPLAYED\""));
+            assert!(call(product,list).contains("\"state\":\"PAUSED\""));
+            let future=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()+86_400_000;
+            let resume=format!(r#"{{"schema":"gogoke.37.owner-configuration.v1","command":"secretary-routine-resume","routineId":"routineA","requestId":"resumeA","expectedRevision":"2","nextDueMs":"{future}"}}"#);
+            assert!(call(product,&resume).contains("\"state\":\"ACTIVE\""));
+            let delete=r#"{"schema":"gogoke.37.owner-configuration.v1","command":"secretary-routine-delete","routineId":"routineA","requestId":"deleteA","expectedRevision":"3"}"#;
+            assert!(call(product,delete).contains("\"state\":\"DELETED\""));
+            let history=r#"{"schema":"gogoke.37.owner-configuration.v1","command":"secretary-routines-read","routineId":"routineA"}"#;
+            let final_row=call(product,history);
+            assert!(final_row.contains("\"state\":\"DELETED\""));
+            assert!(final_row.contains("\"originalText\":\"明天提醒我\""));
+            assert!(final_row.contains("\"occurrences\":[]"));
+            product.connection.execute("BEGIN").unwrap();
+            let (presence,policy)=seat::read_secretary_presence_in_transaction(
+                &product.connection,&product.owner).unwrap();
+            product.connection.execute("COMMIT").unwrap();
+            assert!(presence.is_none() && policy.is_none(),"reads and changes never invent presence");
         });
     }
 }
