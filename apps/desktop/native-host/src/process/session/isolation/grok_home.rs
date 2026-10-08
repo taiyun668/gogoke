@@ -52,7 +52,6 @@ pub(crate) struct GrokAclSnapshot {
 
 fn snapshot(handle: Handle, profile: &AppContainerProfile) -> Result<GrokAclSnapshot, IsolationError> {
     let identity=file_identity(handle)?;
-    let target=package_aces(handle,profile.sid)?;
     let mut acl=ptr::null_mut();
     let mut descriptor=ptr::null_mut();
     let status=unsafe {GetSecurityInfo(handle,FILE_OBJECT,DACL_SECURITY_INFORMATION,
@@ -68,6 +67,7 @@ fn snapshot(handle: Handle, profile: &AppContainerProfile) -> Result<GrokAclSnap
     let mut other_aces=Vec::new();
     let mut ordered_aces=Vec::new();
     let mut package_sid_aces=Vec::new();
+    let mut target_aces=Vec::new();
     for index in 0..size.ace_count {
         let mut ace=ptr::null_mut();
         if unsafe {GetAce(acl,index,&mut ace)}==0 || ace.is_null(){
@@ -98,6 +98,12 @@ fn snapshot(handle: Handle, profile: &AppContainerProfile) -> Result<GrokAclSnap
         if sid_value.starts_with("S-1-15-2-") {package_sid_aces.push(sid_value);}
         if unsafe{EqualSid(sid,profile.sid)}==0 {
             other_aces.push(raw);
+        } else {
+            let access=unsafe{&*ace.cast::<AccessAce>()};
+            let mode=if header.ace_type==ACCESS_ALLOWED_ACE_TYPE {
+                GRANT_ACCESS
+            } else {DENY_ACCESS};
+            target_aces.push(format!("{mode}:{}:{}",access.mask,header.ace_flags));
         }
     }
     let other_aces_in_order=other_aces.clone();
@@ -107,8 +113,7 @@ fn snapshot(handle: Handle, profile: &AppContainerProfile) -> Result<GrokAclSnap
     if unsafe{GetSecurityDescriptorControl(descriptor,&mut control,&mut revision)}==0 {
         return Err(IsolationError::Acl(io::Error::last_os_error()));
     }
-    Ok(GrokAclSnapshot {identity,target_aces:target.iter().map(|(mode,mask,flags)|
-        format!("{mode}:{mask}:{flags}")).collect::<Vec<_>>().join(","),
+    Ok(GrokAclSnapshot {identity,target_aces:target_aces.join(","),
         dacl_protected:control & SE_DACL_PROTECTED !=0,dacl_control:control,
         other_aces,other_aces_in_order,ordered_aces,package_sid_aces})
 }
