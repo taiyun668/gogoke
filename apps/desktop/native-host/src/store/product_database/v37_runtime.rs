@@ -1873,7 +1873,8 @@ impl<'root> ProductDatabase<'root> {
             let driver=run.evidence.driver_id().to_owned();
             let cwd=run.evidence.cwd().to_string_lossy().into_owned();
             let model=run.model.clone();
-            let host_tools=run.evidence.host_tools_enabled() || purpose==SessionPurpose::SideChat;
+            let host_tools=run.evidence.host_tools_enabled() ||
+                matches!(purpose,SessionPurpose::SideChat|SessionPurpose::Secretary);
             let thread_id=match driver.as_str() {
                 "codex" => {
                     let initialize=if host_tools {Command::InitializeHostTools {client_version:"0.1.0".into()}}
@@ -1882,6 +1883,7 @@ impl<'root> ProductDatabase<'root> {
                     self.native_rpc(&key,"initialized",None,&Command::Initialized)?;
                     self.native_credential_config_read(&key,"config-read",cwd.clone())?;
                     let start=if purpose==SessionPurpose::SideChat {Command::ThreadStartSideTools {cwd,model}}
+                        else if purpose==SessionPurpose::Secretary {Command::ThreadStartSecretaryTools {cwd,model}}
                         else if host_tools {Command::ThreadStartHostTools {cwd,model}}
                         else {Command::ThreadStart {cwd,model}};
                     let Some(Reply::Thread {thread_id,..})=self.native_rpc(&key,"thread-start",Some(3),&start)? else {

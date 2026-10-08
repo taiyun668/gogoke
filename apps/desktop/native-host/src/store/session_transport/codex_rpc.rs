@@ -86,6 +86,10 @@ pub(crate) enum Command {
         cwd: String,
         model: String,
     },
+    ThreadStartSecretaryTools {
+        cwd: String,
+        model: String,
+    },
     ThreadResume {
         thread_id: String,
         cwd: String,
@@ -139,7 +143,7 @@ impl Command {
             Self::FeatureList { .. } => Some("experimentalFeature/list"),
             Self::ModelList { .. } => Some("model/list"),
             Self::ThreadStart { .. } | Self::ThreadStartHostTools { .. } |
-                Self::ThreadStartSideTools { .. } => Some("thread/start"),
+                Self::ThreadStartSideTools { .. } | Self::ThreadStartSecretaryTools { .. } => Some("thread/start"),
             Self::ThreadResume { .. } => Some("thread/resume"),
             Self::TurnStart { .. } => Some("turn/start"),
             Self::TurnSteer { .. } => Some("turn/steer"),
@@ -272,6 +276,13 @@ impl Command {
                     cwd: cwd.clone(), model: model.clone(),
                 }).params()? else { return Err(RpcError::Invalid("side tool thread params")); };
                 fields.insert(k("dynamicTools"), side_tools());
+                return Ok(Json::Object(fields));
+            }
+            Self::ThreadStartSecretaryTools { cwd, model } => {
+                let Json::Object(mut fields) = (Self::ThreadStart {
+                    cwd: cwd.clone(), model: model.clone(),
+                }).params()? else { return Err(RpcError::Invalid("secretary tool thread params")); };
+                fields.insert(k("dynamicTools"), secretary_tools());
                 return Ok(Json::Object(fields));
             }
             Self::ThreadResume {
@@ -605,7 +616,8 @@ pub(crate) fn decode(frame: &[u8], pending: Option<(&RpcId, &Command)>) -> Resul
             })
         }
         Command::ThreadStart { .. } | Command::ThreadStartHostTools { .. } |
-            Command::ThreadStartSideTools { .. } | Command::ThreadResume { .. } => {
+            Command::ThreadStartSideTools { .. } | Command::ThreadStartSecretaryTools { .. } |
+            Command::ThreadResume { .. } => {
             let thread = object(field(object(result, "thread result")?, "thread")?, "thread")?;
             let found = string(field(thread, "id")?, "thread id")?;
             let actual_cwd = string(field(thread, "cwd")?, "thread cwd")?;
@@ -741,7 +753,9 @@ pub(crate) fn decode_stored_thread_start(
     let model = string(field(params, "model")?, "thread model")?;
     let command = if params.contains_key(&k("dynamicTools")) {
         let side=Command::ThreadStartSideTools {cwd:cwd.clone(),model:model.clone()};
+        let secretary=Command::ThreadStartSecretaryTools {cwd:cwd.clone(),model:model.clone()};
         if stored_thread_command_matches(&side,&id,command_frame)? {side}
+        else if stored_thread_command_matches(&secretary,&id,command_frame)? {secretary}
         else {Command::ThreadStartHostTools { cwd, model }}
     } else { Command::ThreadStart { cwd, model } };
     if !stored_thread_command_matches(&command,&id,command_frame)? {
@@ -1108,6 +1122,24 @@ fn side_tool() -> Json {
 }
 fn side_tools() -> Json {Json::Array(vec![side_tool()])}
 
+/// Only the native Secretary thread receives this read-only function. The
+/// model selects a cursor; H/A/E derive and revalidate the global reader.
+fn secretary_tools() -> Json {
+    Json::Array(vec![obj([
+        ("type", s("function")),
+        ("name", s("gogoke_ledger")),
+        ("description", s("Read the admitted Secretary's global A ledger page. Supply the epoch and afterCursor returned by the previous page; omit both to start at the current epoch's beginning. The native host determines the global reader. No scope, domain, reader, grant, or source identity is accepted.")),
+        ("inputSchema", obj([
+            ("type", s("object")),
+            ("additionalProperties", Json::Bool(false)),
+            ("properties", obj([
+                ("epoch", obj([("type", s("string"))])),
+                ("afterCursor", obj([("type", s("string"))])),
+            ])),
+        ])),
+    ])])
+}
+
 fn host_tools() -> Json {
     let mut tools:Vec<Json>=[
         ("gogoke_seat", "Manage only direct subordinate seats in the native parent scope. create-from-template: targetId=new seat ID, expectedRevision='0', payload={layer:'LEAD',templateId,instanceId}. dispatch: targetId=child seat ID, payload={repositoryId,layout:'SINGLE'|'MIXED',body}; confirms submission only and returns the registered logical worktreeId for later graph/merge selection. stop: targetId=child, payload={}; derives the session, proves process stop, then releases admission. state-card: payload={}; reads self or child control facts, not private task output; self includes nativeAnswerSources for its own answered current-turn cards. tune: payload={setting,value}. bind-instance: payload={instanceId}. change-instance: payload={instanceId,model,effort,permissionTier}; atomically replaces the binding and complete model configuration, requires the selected instance verified model, and also repairs configuration on the same instance. Missing verified models must not reuse the prior instance model. reclaim/short-to-long: payload={}. Existing child operations require its current seat revision as a string. No caller, domain, grant or path is accepted from model arguments."),
@@ -1198,6 +1230,21 @@ mod tests {
         let response=b"{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-a\",\"cwd\":\"D:/sealed-tree\"}}}\n";
         assert_eq!(decode_stored_thread_start(&original,response).unwrap(),"thread-a");
         let changed=std::str::from_utf8(&original).unwrap().replace("gogoke_side_message","gogoke_policy");
+        assert!(decode_stored_thread_start(changed.as_bytes(),response).is_err());
+    }
+    #[test]
+    fn secretary_thread_registers_only_global_read_and_rejects_tool_substitution() {
+        let id=RpcId::Number(2);
+        let command=Command::ThreadStartSecretaryTools {cwd:"D:/sealed-tree".into(),model:"m".into()};
+        let original=command.encode(Some(&id)).unwrap();
+        let Json::Object(frame)=Parser::parse(std::str::from_utf8(&original[..original.len()-1]).unwrap()).unwrap() else {panic!("frame");};
+        let params=object(field(&frame,"params").unwrap(),"params").unwrap();
+        let Json::Array(tools)=field(params,"dynamicTools").unwrap() else {panic!("tools");};
+        assert_eq!(tools.len(),1);
+        assert_eq!(string(field(object(&tools[0],"tool").unwrap(),"name").unwrap(),"name").unwrap(),"gogoke_ledger");
+        let response=b"{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-a\",\"cwd\":\"D:/sealed-tree\"}}}\n";
+        assert_eq!(decode_stored_thread_start(&original,response).unwrap(),"thread-a");
+        let changed=std::str::from_utf8(&original).unwrap().replace("gogoke_ledger","gogoke_seat");
         assert!(decode_stored_thread_start(changed.as_bytes(),response).is_err());
     }
     #[test]

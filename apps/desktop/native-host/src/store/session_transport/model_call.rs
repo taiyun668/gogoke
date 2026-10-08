@@ -251,7 +251,29 @@ fn original_source(db:&VerifiedDatabaseConnection<'_>,proof:&ModelCallProof)->Re
     match registration.purpose {
         ledger::SessionPurpose::SideChat if registration.side_id.is_some() &&
             proof.tool=="gogoke_side_message" => {},
-        ledger::SessionPurpose::Work if registration.side_id.is_none() => {
+        ledger::SessionPurpose::Secretary if registration.side_id.is_none()
+            && proof.domain=="global" && proof.tool=="gogoke_ledger" => {
+            let binding=session_binding::read(db,&proof.domain,&proof.session)
+                .map_err(|error|ModelCallError::Store(AtomicError::DurabilityContractFailed(
+                    format!("secretary model original binding: {error:?}"))))?
+                .ok_or(ModelCallError::Denied)?;
+            if binding.provenance!=session_binding::Provenance::NativeV2
+                || binding.seat_id!=proof.seat
+                || binding.seat_incarnation!=proof.incarnation
+                || binding.seat_authorization_generation!=proof.seat_authorization_generation {
+                return Err(ModelCallError::Denied);
+            }
+            let designated=Statement::prepare(db.as_ptr(),
+                "SELECT 1 FROM main.gogoke_v37_seat_secretary
+                  WHERE singleton=1 AND domain_id='global' AND seat_id=?1 AND incarnation=?2")?;
+            designated.bind_text(1,&proof.seat)?;
+            designated.bind_text(2,&proof.incarnation)?;
+            if !designated.step_row()? || designated.step_row()? {
+                return Err(ModelCallError::Denied);
+            }
+        },
+        ledger::SessionPurpose::Work if registration.side_id.is_none()
+            && proof.tool!="gogoke_ledger" => {
             let seat=seat::get(db,&proof.domain,&proof.seat)?
                 .ok_or(ModelCallError::Denied)?;
             seat::orchestration_scope(&seat).map_err(|_|ModelCallError::Denied)?;
@@ -350,7 +372,8 @@ fn build_from_captured_source(db:&VerifiedDatabaseConnection<'_>,
     if call.namespace.is_some() || call.thread_id!=expected_thread
         || call.turn_id!=expected_turn
         || !matches!(call.tool.as_str(),"gogoke_seat"|"gogoke_policy"|
-            "gogoke_worktree"|"gogoke_takeover"|"gogoke_side_message") {
+            "gogoke_worktree"|"gogoke_takeover"|"gogoke_side_message"|
+            "gogoke_ledger") {
         return Err(ModelCallError::Denied);
     }
     let (operation,open_request_id,seat,incarnation)=

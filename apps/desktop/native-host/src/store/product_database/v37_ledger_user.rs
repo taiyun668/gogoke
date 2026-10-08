@@ -300,7 +300,7 @@ mod tests {
         assert_eq!(replay.len(),crate::ipc::MAX_FRAME_BYTES,"the largest admitted original still fits the actual replay encoding");
     }
 }
-fn events(values:&[LedgerEvent])->Result<Json> {
+pub(super) fn events(values:&[LedgerEvent])->Result<Json> {
     values.iter().map(|event| {
         Ok(Json::Object(BTreeMap::from([
             (JsonString::from_str("cursor"),text(&event.cursor.to_string())),
@@ -381,7 +381,7 @@ impl<'root> ProductDatabase<'root> {
     /// Owner USER read authority over a previously admitted Secretary session.
     /// Original A purpose and H NATIVE_V2 binding remain after H release; E's
     /// singleton still has to designate that exact USER/LONG incarnation.
-    fn native_secretary_ledger_reader(&self,session:&str)->Result<Reader> {
+    pub(super) fn native_secretary_ledger_reader(&self,session:&str)->Result<Reader> {
         let binding=crate::store::session_transport::session_binding::read(&self.connection,"global",session)
             .map_err(|error|OrchestrationError::V37StoreFailure(format!("ledger original H binding: {error:?}")))?
             .ok_or(OrchestrationError::AccessDenied)?;
