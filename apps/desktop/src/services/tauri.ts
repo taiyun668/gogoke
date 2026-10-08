@@ -106,7 +106,7 @@ function routinePageRow(row: SecretaryRoutineRow): Routine {
   // G's current Routine only accepts a dated lastRun; E has an outcome and
   // reason but no outcome timestamp. Rendering it as "never run" is false.
   if (row.lastResult !== "NONE" || row.lastReason !== "") {
-    throw new Error(`Native Secretary routine outcome cannot be displayed without a host timestamp: ${row.routineId} ${row.lastResult} ${row.lastReason}`);
+    throw new Error(`Native Secretary routine outcome cannot be displayed by the current page contract: ${row.lastResult} ${row.lastReason}`);
   }
   const ms = Number(row.nextDueMs);
   if (!Number.isSafeInteger(ms) || !Number.isFinite(new Date(ms).getTime())) {

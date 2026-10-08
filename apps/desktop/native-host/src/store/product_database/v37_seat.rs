@@ -1591,6 +1591,15 @@ mod tests {
                     request_bytes:b"create routine seat"}).unwrap().seat;
             seat::designate_secretary(&mut product.connection,&product.owner,&created.seat_id,
                 &created.incarnation,"designateRoutine",b"designate routine").unwrap();
+            product.connection.execute("BEGIN").unwrap();
+            let (initial_presence,initial_policy)=seat::read_secretary_presence_in_transaction(
+                &product.connection,&product.owner).unwrap();
+            product.connection.execute("COMMIT").unwrap();
+            assert!(initial_presence.is_none(),"designation does not invent Owner presence");
+            assert_eq!(initial_policy,Some(seat::SecretaryAbsencePolicyFact {
+                revision:1,max_absent_ms:86_400_000,
+                source_id:"PRODUCT_DEFAULT_V1:ABSENCE_24_HOURS".into(),
+            }));
             // Storage fixture only: production create requires an independently
             // authenticated User input locator and schedule parser.
             seat::create_secretary_routine(&mut product.connection,&product.owner,
@@ -1625,7 +1634,8 @@ mod tests {
             let (presence,policy)=seat::read_secretary_presence_in_transaction(
                 &product.connection,&product.owner).unwrap();
             product.connection.execute("COMMIT").unwrap();
-            assert!(presence.is_none() && policy.is_none(),"reads and changes never invent presence");
+            assert_eq!(presence,initial_presence,"reads and changes never invent presence");
+            assert_eq!(policy,initial_policy,"reads and changes preserve the designated product policy");
         });
     }
 }
