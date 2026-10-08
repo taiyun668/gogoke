@@ -1142,8 +1142,12 @@ mod tests {
         assert!(before.preserves_other_aces(&granted.acl(&profile).unwrap()));
         let effects=instance::read_grok_effects(&db,"bindingA").unwrap();
         let auth_effect=effects.iter().find(|e|e.action=="GRANT_AUTH").unwrap();
-        assert_eq!(auth_effect.before_control,before.dacl_control);
-        assert_eq!(auth_effect.after_control,before.dacl_control|0x1000);
+        // prepare grants the parent before protecting auth. Windows may set
+        // AUTO_INHERITED during that parent transition; the earlier snapshot
+        // is not the control value at the actual auth effect's write boundary.
+        assert_eq!(auth_effect.before_control & 0x1000,0);
+        assert_eq!(auth_effect.after_control,auth_effect.before_control|0x1000);
+        assert_eq!(auth_effect.after_control,granted.acl(&profile).unwrap().dacl_control);
         assert_eq!(auth_effect.phase,"APPLIED");
         launch.revoke_uncreated(&mut db,&root,&profile).unwrap();
         assert_eq!(one(&db,"grokA","bindingA").unwrap().phase,"REVOKED");
