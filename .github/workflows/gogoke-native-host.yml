@@ -32,7 +32,7 @@ on:
         type: boolean
         default: false
       grok_home_fixture_only:
-        description: Select existing Grok HOME boundaries within private_history_fixture_only; other F, full library and server gates are NOT_RUN
+        description: Select thirteen Grok HOME boundaries and initial-auth mutation within private_history_fixture_only; other F, full library and server gates are NOT_RUN
         type: boolean
         default: false
       full_library_only:
@@ -278,6 +278,7 @@ jobs:
           "machine_result=$machineResult" >> $env:GITHUB_OUTPUT
           if ($failed -or $releaseResult.state -ne 'PASS') { throw 'Release build or one or more required native-host axes failed or did not execute.' }
       - name: Run focused native-host lib failure probes
+        id: focused-lib-probes
         if: ${{ !cancelled() && steps.release-build.outcome == 'success' && !inputs.full_library_only && !inputs.catalog_program_fixture_only }}
         shell: pwsh
         run: |
@@ -405,14 +406,15 @@ jobs:
               @{ id = 'grok-resume-original'; filter = 'before_promote_resume_uses_old_stopped_claim_and_exact_new_episode' }
               @{ id = 'grok-deleted-revoked'; filter = 'deleted_revoked_old_auth_cold_recovery_preserves_original_receipts' }
               @{ id = 'grok-deleted-unrevoked'; filter = 'deleted_unrevoked_old_auth_cold_recovery_rejects_without_acl_or_journal_write' }
+              @{ id = 'grok-initial-auth'; filter = 'original_inherited_auth_is_journaled_protected_and_revoked_without_process' }
             )
             Write-Host 'F private-history/credential and Grok exact HOME ACL/journal boundaries only; full library, compiled mutations and server suites NOT_RUN.'
           }
           if ('${{ inputs.grok_home_fixture_only }}' -eq 'true') {
             if ('${{ inputs.private_history_fixture_only }}' -ne 'true') { throw 'Grok HOME subset requires the existing private-history directed scope' }
-            $probes = @($probes | Where-Object { $_.id -in @('grok-inherited-directory', 'grok-inherited-auth-residue', 'grok-inherited-successor', 'grok-protected-peer', 'grok-link-refusal', 'grok-cold-original', 'grok-home-refusal', 'grok-intent-recovery', 'grok-applied-peer', 'grok-resume-original', 'grok-deleted-revoked', 'grok-deleted-unrevoked') })
-            if ($probes.Count -ne 12) { throw 'Grok HOME boundary selection is incomplete' }
-            Write-Host 'Twelve Grok HOME boundaries only; other F, full library and server suites NOT_RUN.'
+            $probes = @($probes | Where-Object { $_.id -in @('grok-inherited-directory', 'grok-inherited-auth-residue', 'grok-inherited-successor', 'grok-protected-peer', 'grok-link-refusal', 'grok-cold-original', 'grok-home-refusal', 'grok-intent-recovery', 'grok-applied-peer', 'grok-resume-original', 'grok-deleted-revoked', 'grok-deleted-unrevoked', 'grok-initial-auth') })
+            if ($probes.Count -ne 13) { throw 'Grok HOME boundary selection is incomplete' }
+            Write-Host 'Thirteen Grok HOME boundaries and initial-auth mutation; other F, full library and server suites NOT_RUN.'
           }
           if ('${{ inputs.trace_canonicalize }}' -eq 'true') {
             $debugger = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'
@@ -463,6 +465,18 @@ jobs:
           }
           $results | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'focused-lib-probes.json') -Encoding utf8NoBOM
           if (@($results | Where-Object state -ne 'PASS').Count -ne 0) { throw 'One or more focused native-host lib probes failed.' }
+      - name: Verify initial Grok auth admission with a compiled production mutation
+        if: ${{ !cancelled() && steps.focused-lib-probes.outcome == 'success' && inputs.grok_home_fixture_only }}
+        shell: pwsh
+        run: |
+          ./tools/ci/gogoke37-grok-initial-auth-mutation.ps1 -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence')
+      - name: Retain initial Grok auth mutation source and original transcripts
+        if: ${{ always() && inputs.grok_home_fixture_only }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-host-grok-initial-auth-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/gogoke-native-host-evidence/grok-initial-auth-*
+          if-no-files-found: error
       - name: Retain original focused logs before the full library run
         if: ${{ !cancelled() && steps.release-build.outcome == 'success' && !inputs.trace_canonicalize && !inputs.full_library_only && !inputs.catalog_program_fixture_only }}
         uses: actions/upload-artifact@v4
