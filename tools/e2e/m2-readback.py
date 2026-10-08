@@ -420,14 +420,24 @@ def verify_v12_lifecycle_and_ledger(db, journal, case, plan):
         raise RuntimeError("Original V12 D transcript differs across reopen and archive/restore")
 
     source_id = case["sourceSession"]["id"]
-    # Match the installed 0.1.38/41cf5403 producer's complete event projection,
-    # whose BTreeMap serialization is key-sorted (it has no domainId field).
+    # The frozen 0.1.38 projection has seven fields; the current producer also
+    # carries domainId. Match the complete original shape and verify that added
+    # qualifier against the actual DB scope, rather than guessing from version.
     direct_events = [{"cursor": str(ledger_cursor), "sourceEventId": event_id, "sourceEpoch": epoch,
         "sourceCursor": cursor, "seatId": seat, "sessionId": session,
         "update": json.loads(update)} for ledger_cursor, event_id, epoch, cursor, seat, session, update in rows(db,
             "SELECT cursor,source_event_id,source_epoch,source_cursor,seat_id,session_id,update_json "
             "FROM v37_ledger_index WHERE source_kind='v37' AND domain_id=? AND session_id=? "
             "AND cursor>? ORDER BY cursor", (journal["domainId"], source_id, int(plan["sourceCursor"]))) ]
+    required_fields = {"cursor", "sourceEventId", "sourceEpoch", "sourceCursor", "seatId", "sessionId", "update"}
+    observed = [event for key in ("sourceLedgerBeforeDelete", "sourceLedgerAfterDelete")
+                for event in case[key].get("events", [])]
+    shapes = {frozenset(event) for event in observed if isinstance(event, dict)}
+    if not observed or len(shapes) != 1 or next(iter(shapes)) not in (
+            required_fields, required_fields | {"domainId"}):
+        raise RuntimeError("V12 source ledger has an unknown or inconsistent original projection")
+    if "domainId" in next(iter(shapes)):
+        direct_events = [{**event, "domainId": journal["domainId"]} for event in direct_events]
     for key in ("sourceLedgerBeforeDelete", "sourceLedgerAfterDelete"):
         measured = case[key]
         if canonical(measured.get("events")) != canonical(direct_events) or \
