@@ -54,6 +54,26 @@ struct VisibleOperationReply {
     association: Option<NativeAssociation>,
     #[serde(default)]
     reason: Option<String>,
+    #[serde(default)]
+    method: Option<String>,
+    #[serde(default)]
+    original_request_ref: Option<OriginalRequestRef>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OriginalRequestRef {
+    frame_sha256: String,
+    selection_row_id: String,
+}
+
+fn valid_original_request_ref(original: &OriginalRequestRef) -> bool {
+    original.frame_sha256.len() == 64
+        && original
+            .frame_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        && canonical_binding_generation(&original.selection_row_id).is_ok_and(|row_id| row_id > 0)
 }
 
 #[derive(Deserialize)]
@@ -193,6 +213,20 @@ async fn visible_operation(
             "GOGOKE_VISIBLE_OPERATION_ASSOCIATION_MISMATCH:{}",
             reply.reason.as_deref().unwrap_or("reason missing")
         ));
+    }
+    if command == "visible-conversation-operate"
+        && matches!(reply.state.as_str(), "APPLIED" | "UNKNOWN")
+    {
+        if method.is_some_and(|method| reply.method.as_deref() != Some(method)) {
+            return Err("GOGOKE_VISIBLE_ORIGINAL_METHOD_MISMATCH".into());
+        }
+        if !reply
+            .original_request_ref
+            .as_ref()
+            .is_some_and(valid_original_request_ref)
+        {
+            return Err("GOGOKE_VISIBLE_ORIGINAL_REQUEST_REF_INVALID".into());
+        }
     }
     Ok(reply)
 }
@@ -648,14 +682,11 @@ async fn native_visible_effect(
             if let Some(requested_thread_id) = requested_thread_id {
                 let next =
                     validated_resume_association(&response, &association, &requested_thread_id)?;
-                let current = state
-                    .sessions
-                    .lock()
-                    .await
+                let sessions = state.sessions.lock().await;
+                if !sessions
                     .get(workspace_id)
-                    .cloned()
-                    .ok_or("GOGOKE_NATIVE_SESSION_DISAPPEARED")?;
-                if !Arc::ptr_eq(&session, &current) {
+                    .is_some_and(|current| Arc::ptr_eq(&session, current))
+                {
                     return Err("GOGOKE_NATIVE_SESSION_REPLACED_BEFORE_RESUME_COMMIT".into());
                 }
                 session.advance_native_association(&association, next)?;
@@ -717,6 +748,7 @@ pub(crate) async fn recover_native_visible_request(
     workspace_id: String,
     native_request_id: String,
     expected_association: Option<NativeAssociation>,
+    state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<Value, String> {
     let request_id = stable_native_request_id(Some(native_request_id))?;
@@ -733,9 +765,58 @@ pub(crate) async fn recover_native_visible_request(
     )
     .await?;
     match reply.state.as_str() {
-        "APPLIED" => reply
-            .response
-            .ok_or("GOGOKE_VISIBLE_RESPONSE_MISSING".into()),
+        "APPLIED" => {
+            let response = reply.response.ok_or("GOGOKE_VISIBLE_RESPONSE_MISSING")?;
+            if reply.method.as_deref() == Some("thread/resume")
+                && reply
+                    .original_request_ref
+                    .as_ref()
+                    .is_some_and(valid_original_request_ref)
+            {
+                let Some(thread_id) = response
+                    .get("result")
+                    .and_then(|result| result.get("thread"))
+                    .and_then(|thread| thread.get("id"))
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty())
+                else {
+                    return Ok(response);
+                };
+                let Ok(next) = validated_resume_association(&response, &association, thread_id)
+                else {
+                    return Ok(response);
+                };
+                // Recovery is authorized by the original journal. This read only
+                // decides whether an existing UI cache still describes its current choice.
+                let current_route_matches =
+                    visible_route(&app, &workspace_id).await.is_ok_and(|route| {
+                        route.state == "NATIVE" && route.association.as_ref() == Some(&next)
+                    });
+                if current_route_matches {
+                    let sessions = state.sessions.lock().await;
+                    if let Some(session) = sessions.get(&workspace_id) {
+                        if session.owner_workspace_id == workspace_id {
+                            match session.native_association() {
+                                Ok(Some(cached)) if cached == association => {
+                                    if let Err(error) =
+                                        session.advance_native_association(&association, next)
+                                    {
+                                        eprintln!(
+                                            "GOGOKE_NATIVE_RECOVER_CACHE_SYNC_FAILED:{error}"
+                                        );
+                                    }
+                                }
+                                Err(error) => {
+                                    eprintln!("GOGOKE_NATIVE_RECOVER_CACHE_READ_FAILED:{error}")
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(response)
+        }
         "UNKNOWN" | "DENIED" | "UNSUPPORTED" => Err(visible_failure(
             &reply.state,
             reply.reason.as_deref(),
@@ -777,7 +858,7 @@ async fn native_association(
         .await
         .get(workspace_id)
         .cloned()
-        .ok_or("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE".into())?;
+        .ok_or_else(|| "GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE".to_string())?;
     session
         .native_association()?
         .ok_or("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE".into())
