@@ -6,7 +6,7 @@ use super::session_binding::{self, Provenance, SessionBinding};
 use crate::process::{AppContainerProfile, CompatModule, DirectoryRoots, NativeBinding, PrepareRequest, ProcessLaunch};
 use crate::root::{RootIdentity, RootLock};
 use crate::store::authority::{self, OwnerIssuer, ProductIdentitySnapshot};
-use crate::store::instance::{self, InstanceLaunchHomes};
+use crate::store::instance::{self, InstanceLaunchHomes, ResolvedDirectory};
 use crate::store::same_open::VerifiedDatabaseConnection;
 use crate::store::seat::{self, NativeOrigin, PermissionTier, Seat, State};
 use crate::store::seat::HostEscalationProof;
@@ -46,9 +46,7 @@ pub(crate) struct LaunchEvidence {
     credential: Option<super::credential_launch::CredentialLaunch>,
     grok_home: Option<super::grok_home_launch::GrokHomeLaunch>,
     launch_request_id: String,
-    repository_id: String,
-    worktree: ResolvedBinding,
-    worktree_group: Vec<ResolvedBinding>,
+    directory: LaunchDirectory,
     profile: AppContainerProfile,
     profile_name: String,
     program: PathBuf,
@@ -61,6 +59,29 @@ pub(crate) struct LaunchEvidence {
     resume_request_id: Option<String>,
     launch_admission: Option<seat::NativeLeadAdmission>,
     host_guard: Option<(HostEscalationProof,HostRecipient)>,
+}
+
+/// Project source access and the global secretary's private cwd are different
+/// native grants. There is no repository-shaped placeholder for the latter.
+enum LaunchDirectory {
+    ProjectWorktrees { repository_id:String, worktree:ResolvedBinding,
+        group:Vec<ResolvedBinding> },
+    SecretarySessionHome(ResolvedDirectory),
+}
+
+impl LaunchDirectory {
+    fn cwd(&self)->&Path {
+        match self {
+            Self::ProjectWorktrees {worktree,..}=>&worktree.path,
+            Self::SecretarySessionHome(home)=>&home.path,
+        }
+    }
+    fn identity(&self)->&RootIdentity {
+        match self {
+            Self::ProjectWorktrees {worktree,..}=>&worktree.identity,
+            Self::SecretarySessionHome(home)=>&home.identity,
+        }
+    }
 }
 
 fn verify_host_guard(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,
@@ -144,7 +165,9 @@ impl LaunchEvidence {
             &self.claim.session_id))?.ok_or("native initial relationship: A registration absent")?;
         if registration.domain_id!=self.claim.domain_id
             || registration.session_id!=self.claim.session_id
-            || registration.seat_id!=self.seat.seat_id {
+            || registration.seat_id!=self.seat.seat_id
+            || (registration.purpose==crate::store::ledger::SessionPurpose::Secretary)
+                !=matches!(&self.directory,LaunchDirectory::SecretarySessionHome(_)) {
             return Err("native initial relationship: A registration changed".into());
         }
         let original=crate::store::atomic::Statement::prepare(db.as_ptr(),
@@ -228,7 +251,7 @@ impl LaunchEvidence {
         request_id:&str,retained:&mut Vec<super::credential_launch::CredentialPreparationCustody>,
     )->Result<Self,String> {
         Self::observe_with_guard(db,root,host,origin,domain_id,seat_id,session_id,
-            repository_id,worktree_id,request_id,None,retained)
+            repository_id,worktree_id,request_id,None,false,retained)
     }
 
     pub(crate) fn observe_host(db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock,
@@ -237,7 +260,14 @@ impl LaunchEvidence {
         choice:&HostRecipient,request_id:&str,
         retained:&mut Vec<super::credential_launch::CredentialPreparationCustody>)->Result<Self,String> {
         Self::observe_with_guard(db,root,owner,&NativeOrigin::user(owner),domain_id,seat_id,
-            session_id,repository_id,worktree_id,request_id,Some((proof,choice)),retained)
+            session_id,repository_id,worktree_id,request_id,Some((proof,choice)),false,retained)
+    }
+
+    pub(crate) fn observe_secretary(db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock,
+        owner:&OwnerIssuer,seat_id:&str,session_id:&str,request_id:&str,
+        retained:&mut Vec<super::credential_launch::CredentialPreparationCustody>)->Result<Self,String> {
+        Self::observe_with_guard(db,root,owner,&NativeOrigin::user(owner),"global",seat_id,
+            session_id,"","",request_id,None,true,retained)
     }
 
     fn observe_with_guard(db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock,
@@ -245,6 +275,7 @@ impl LaunchEvidence {
         repository_id:&str,worktree_id:&str,
         request_id:&str,
         guard:Option<(&HostEscalationProof,&HostRecipient)>,
+        secretary:bool,
         retained:&mut Vec<super::credential_launch::CredentialPreparationCustody>)->Result<Self,String> {
         verify_host_guard(db,host,guard)?;
         let identity = evidence(authority::read_product_identity(db, host))?;
@@ -260,7 +291,7 @@ impl LaunchEvidence {
             NativeOrigin::Lead(admission)=>Some((*admission).clone()),
             NativeOrigin::User(_)=>None,
         };
-        Self::build(db,root,host,identity,seat,claim,repository_id,worktree_id,None,None,admission,guard,request_id,retained)
+        Self::build(db,root,host,identity,seat,claim,repository_id,worktree_id,None,None,admission,guard,secretary,request_id,retained)
     }
 
     pub(crate) fn observe_resume(db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
@@ -338,20 +369,31 @@ impl LaunchEvidence {
             || instance_id!=old.instance_id {return Err("native resume candidate conflict".into());}
         let candidate=ClaimObservation {generation,home_id,binding_id,instance_id,
             phase:SessionPhase::Committed,process_operation_id:None,..old.clone()};
+        let secretary=evidence(crate::store::ledger::read_registered_session(db,session_id))?
+            .is_some_and(|registered|registered.domain_id==domain_id && registered.seat_id==seat_id
+                && registered.purpose==crate::store::ledger::SessionPurpose::Secretary);
         Self::build(db,root,owner,identity,seat,candidate,repository_id,worktree_id,
-            Some(old),Some(request_id.to_owned()),None,guard,request_id,retained)
+            Some(old),Some(request_id.to_owned()),None,guard,secretary,request_id,retained)
     }
 
     fn build(db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock, owner: &OwnerIssuer,
         identity: ProductIdentitySnapshot, seat: Seat, claim: ClaimObservation,
         repository_id: &str, worktree_id: &str, resume_old: Option<ClaimObservation>,
         resume_request_id: Option<String>,launch_admission:Option<seat::NativeLeadAdmission>,
-        host_guard:Option<(&HostEscalationProof,&HostRecipient)>,request_id:&str,
+        host_guard:Option<(&HostEscalationProof,&HostRecipient)>,secretary:bool,request_id:&str,
         retained:&mut Vec<super::credential_launch::CredentialPreparationCustody>) -> Result<Self,String> {
         verify_host_guard(db,owner,host_guard)?;
         let domain_id=&claim.domain_id;
         let session_id=&claim.session_id;
         let seat_id=&seat.seat_id;
+        if secretary {
+            if domain_id!="global" || !repository_id.is_empty() || !worktree_id.is_empty()
+                || launch_admission.is_some() || host_guard.is_some() {
+                return Err("native secretary launch: project or delegated authority supplied".into());
+            }
+            let current=evidence(seat::require_secretary_session(db,owner,seat_id,&seat.incarnation))?;
+            if current!=seat {return Err("native secretary launch: designated seat changed".into());}
+        }
         let tier=evidence(seat::permission_tier(&seat))?;
         let pin = evidence(runtime::current_instance_pin(db, &claim.instance_id))?;
         if !supported_driver_version(&pin) {
@@ -413,9 +455,14 @@ impl LaunchEvidence {
         // Retain the exact credential witness across all remaining fallible
         // preparation. No process factory has been called in this builder.
         let prepared = (|| -> Result<_, String> {
-        let worktree = evidence(worktree::resolve_for_launch(db, root, worktree_id,
-            repository_id, domain_id, seat_id, &seat.incarnation, seat.generation))?;
-        let worktree_group = evidence(worktree::resolve_group_for_launch(db, root, &worktree))?;
+        let directory=if secretary {
+            LaunchDirectory::SecretarySessionHome(homes.session.clone())
+        } else {
+            let worktree=evidence(worktree::resolve_for_launch(db, root, worktree_id,
+                repository_id, domain_id, seat_id, &seat.incarnation, seat.generation))?;
+            let group=evidence(worktree::resolve_group_for_launch(db, root, &worktree))?;
+            LaunchDirectory::ProjectWorktrees {repository_id:repository_id.into(),worktree,group}
+        };
         // F's stored instance/tier/generation describe creation provenance.
         // Current execution authority comes from the E seat and H claim;
         // a legitimate idle instance rebind does not change the worktree.
@@ -437,10 +484,12 @@ impl LaunchEvidence {
         verify_host_guard(db,owner,host_guard)?;
         evidence_at("grant-session-home", profile.grant_bound_tree(&homes.session.path, &homes.session.identity, true))?;
         let writable = matches!(tier, PermissionTier::IsolatedWrite | PermissionTier::NetworkedWrite);
-        for (member_index, member) in worktree_group.iter().enumerate() {
-            verify_host_guard(db,owner,host_guard)?;
-            evidence_at(&format!("grant-worktree-member-{member_index}"),
-                profile.grant_bound_tree(&member.path, &member.identity, writable))?;
+        if let LaunchDirectory::ProjectWorktrees {group,..}=&directory {
+            for (member_index,member) in group.iter().enumerate() {
+                verify_host_guard(db,owner,host_guard)?;
+                evidence_at(&format!("grant-worktree-member-{member_index}"),
+                    profile.grant_bound_tree(&member.path,&member.identity,writable))?;
+            }
         }
         verify_host_guard(db,owner,host_guard)?;
         evidence_at("grant-pinned-program", profile.grant_bound_catalog_program(&program, &program_identity))?;
@@ -452,8 +501,9 @@ impl LaunchEvidence {
             (model_home.path.clone(), model_home.identity.clone()),
             (homes.session.path.clone(), homes.session.identity.clone()),
         ];
-        roots.extend(worktree_group.iter().map(|member|
-            (member.path.clone(), member.identity.clone())));
+        if let LaunchDirectory::ProjectWorktrees {group,..}=&directory {
+            roots.extend(group.iter().map(|member|(member.path.clone(),member.identity.clone())));
+        }
         let (module, directory_roots) = if pin.driver_id == "codex" {
             verify_host_guard(db,owner,host_guard)?;
             (Some(evidence(CompatModule::prepare_with_roots(root, &roots, &profile, &profile_name))?), None)
@@ -461,9 +511,9 @@ impl LaunchEvidence {
             verify_host_guard(db,owner,host_guard)?;
             (None, Some(Arc::new(evidence_at("prepare-compat-directory-roots", DirectoryRoots::prepare(root, &roots))?)))
         };
-        Ok((worktree, worktree_group, program, program_identity, code_mode, module, directory_roots))
+        Ok((directory, program, program_identity, code_mode, module, directory_roots))
         })();
-        let (worktree, worktree_group, program, program_identity, code_mode, module, directory_roots) =
+        let (directory, program, program_identity, code_mode, module, directory_roots) =
             match prepared {
                 Ok(prepared) => prepared,
                 Err(original) => {
@@ -477,8 +527,8 @@ impl LaunchEvidence {
             };
         let observed = Self { identity, seat, claim, pin, homes, private_history,
             credential,grok_home,
-            launch_request_id:request_id.into(),repository_id: repository_id.into(),
-            worktree, worktree_group, profile, profile_name, program, program_identity, code_mode, module, directory_roots, tier,
+            launch_request_id:request_id.into(),directory,
+            profile, profile_name, program, program_identity, code_mode, module, directory_roots, tier,
             resume_old,resume_request_id,launch_admission,
             host_guard:host_guard.map(|(proof,choice)|(proof.clone(),choice.clone())) };
         if let Err(original) = observed.verify(db, root, owner, None) {
@@ -569,6 +619,11 @@ impl LaunchEvidence {
             || evidence(runtime::current_instance_pin(db, &self.claim.instance_id))? != self.pin {
             return Err("native session launch: current identity/seat/pin changed".into());
         }
+        if matches!(&self.directory,LaunchDirectory::SecretarySessionHome(_)) {
+            let current=evidence(seat::require_secretary_session(db,owner,
+                &self.seat.seat_id,&self.seat.incarnation))?;
+            if current!=self.seat {return Err("native secretary launch: current designation changed".into());}
+        }
         let current = evidence(runtime::observe_claim_bound(db,
             &self.claim.domain_id, &self.seat.seat_id, &self.claim.session_id))?
             .ok_or("native session launch: claim no longer current")?;
@@ -629,29 +684,35 @@ impl LaunchEvidence {
         if expected_operation.is_some() {
             let registration=evidence(crate::store::ledger::read_registered_session(db,
                 &self.claim.session_id))?.ok_or("native session launch: A registration absent")?;
-            if registration.domain_id!=self.claim.domain_id || registration.seat_id!=self.seat.seat_id {
+            if registration.domain_id!=self.claim.domain_id || registration.seat_id!=self.seat.seat_id
+                || (registration.purpose==crate::store::ledger::SessionPurpose::Secretary)
+                    !=matches!(&self.directory,LaunchDirectory::SecretarySessionHome(_)) {
                 return Err("native session launch: A registration binding changed".into());
             }
             if self.resume_old.is_some() && registration.purpose==crate::store::ledger::SessionPurpose::FormalReview {
                 return Err("native resume: formal review continuation refused".into());
             }
         }
-        let worktree = evidence(worktree::resolve_for_launch(db, root, &self.worktree.worktree_id,
-            &self.repository_id, &self.seat.domain_id, &self.seat.seat_id,
-            &self.seat.incarnation, self.seat.generation))?;
-        if worktree.identity != self.worktree.identity || worktree.pointer_hash != self.worktree.pointer_hash
-            || worktree.pointer_identity != self.worktree.pointer_identity
-            || worktree.common_identity != self.worktree.common_identity {
-            return Err("native session launch: physical worktree changed".into());
-        }
-        let group = evidence(worktree::resolve_group_for_launch(db, root, &worktree))?;
-        if group.len() != self.worktree_group.len() || group.iter().zip(&self.worktree_group)
-            .any(|(current, original)| current.worktree_id != original.worktree_id
-                || current.identity != original.identity
-                || current.pointer_hash != original.pointer_hash
-                || current.pointer_identity != original.pointer_identity
-                || current.common_identity != original.common_identity) {
-            return Err("native session launch: physical worktree group changed".into());
+        if let LaunchDirectory::ProjectWorktrees {repository_id,worktree,group}=&self.directory {
+            let current=evidence(worktree::resolve_for_launch(db,root,&worktree.worktree_id,
+                repository_id,&self.seat.domain_id,&self.seat.seat_id,
+                &self.seat.incarnation,self.seat.generation))?;
+            if current.identity!=worktree.identity || current.pointer_hash!=worktree.pointer_hash
+                || current.pointer_identity!=worktree.pointer_identity
+                || current.common_identity!=worktree.common_identity {
+                return Err("native session launch: physical worktree changed".into());
+            }
+            let current_group=evidence(worktree::resolve_group_for_launch(db,root,&current))?;
+            if current_group.len()!=group.len() || current_group.iter().zip(group)
+                .any(|(now,original)|now.worktree_id!=original.worktree_id
+                    || now.identity!=original.identity || now.pointer_hash!=original.pointer_hash
+                    || now.pointer_identity!=original.pointer_identity
+                    || now.common_identity!=original.common_identity) {
+                return Err("native session launch: physical worktree group changed".into());
+            }
+        } else if self.directory.cwd()!=self.homes.session.path
+            || self.directory.identity()!=&self.homes.session.identity {
+            return Err("native secretary launch: session home identity changed".into());
         }
         let program = evidence(instance::locate_bound_instance_program(db,&self.claim.instance_id,&self.pin.driver_id, &self.pin.digest, &self.pin.version))?;
         if program != self.program { return Err("native session launch: program path changed".into()); }
@@ -686,13 +747,15 @@ impl LaunchEvidence {
             };
         }
         let writable = matches!(self.tier, PermissionTier::IsolatedWrite | PermissionTier::NetworkedWrite);
-        for member in &self.worktree_group {
-            match phase {
-                VerificationPhase::PreActivation => evidence(self.profile.verify_bound_tree_grant(
-                    &member.path, &member.identity, writable))?,
-                VerificationPhase::Active => evidence(self.profile.verify_bound_directory_grant(
-                    &member.path, &member.identity, writable))?,
-            };
+        if let LaunchDirectory::ProjectWorktrees {group,..}=&self.directory {
+            for member in group {
+                match phase {
+                    VerificationPhase::PreActivation => evidence(self.profile.verify_bound_tree_grant(
+                        &member.path, &member.identity, writable))?,
+                    VerificationPhase::Active => evidence(self.profile.verify_bound_directory_grant(
+                        &member.path, &member.identity, writable))?,
+                };
+            }
         }
         evidence(self.profile.verify_bound_catalog_program_grant(&self.program, &self.program_identity))?;
         if let Some(code_mode) = &self.code_mode { code_mode.verify(&self.profile)?; }
@@ -706,7 +769,7 @@ impl LaunchEvidence {
         }
     }
 
-    pub(crate) fn cwd(&self) -> &Path { &self.worktree.path }
+    pub(crate) fn cwd(&self) -> &Path { self.directory.cwd() }
 
     fn model_home(&self)->&instance::ResolvedDirectory {
         self.private_history.as_ref().map(|history|&history.directory).unwrap_or(&self.homes.instance)
@@ -796,14 +859,14 @@ impl LaunchEvidence {
             let value=value.replace('/',"\\");
             value.strip_prefix("\\\\?\\").unwrap_or(&value).to_ascii_lowercase()
         };
-        if spelling(observed)!=spelling(&self.worktree.path.to_string_lossy()) {
-            return Err(format!("native thread cwd outside bound path spellings: expected={:?}; observed={observed:?}",self.worktree.path));
+        if spelling(observed)!=spelling(&self.directory.cwd().to_string_lossy()) {
+            return Err(format!("native thread cwd outside bound path spellings: expected={:?}; observed={observed:?}",self.directory.cwd()));
         }
         let returned=crate::root::inspect_root(path).map_err(|error|
-            format!("native thread cwd observation: expected={:?}; observed={observed:?}; error={error:?}",self.worktree.path))?;
-        if returned.identity != self.worktree.identity {
+            format!("native thread cwd observation: expected={:?}; observed={observed:?}; error={error:?}",self.directory.cwd()))?;
+        if &returned.identity != self.directory.identity() {
             return Err(format!("native thread physical cwd mismatch: expected={:?} identity={:?}; observed={observed:?} identity={:?}",
-                self.worktree.path,self.worktree.identity,returned.identity));
+                self.directory.cwd(),self.directory.identity(),returned.identity));
         }
         Ok(())
     }
@@ -922,7 +985,7 @@ impl LaunchEvidence {
         if self.file_credentials_bound() {
             launch.arguments.splice(0..0,["-c".to_owned(),"cli_auth_credentials_store=\"file\"".to_owned()]);
         }
-        launch.current_directory = Some(self.worktree.path.clone());
+        launch.current_directory = Some(self.directory.cwd().to_path_buf());
         launch.protocol_stdio = true;
         launch.persistent_protocol_stdio = true;
         launch.environment = Some(environment);
@@ -931,9 +994,11 @@ impl LaunchEvidence {
         launch.app_container_cli_identity_services = true;
         launch.path_compat = self.module.clone();
         launch.directory_roots = self.directory_roots.clone();
-        let guards = self.worktree_group.iter().map(|member| evidence(member.retained_pointer()))
-            .collect::<Result<Vec<_>, String>>()?;
-        launch.worktree_guard = Some(Arc::new(guards));
+        if let LaunchDirectory::ProjectWorktrees {group,..}=&self.directory {
+            let guards=group.iter().map(|member|evidence(member.retained_pointer()))
+                .collect::<Result<Vec<_>,String>>()?;
+            launch.worktree_guard=Some(Arc::new(guards));
+        }
         Ok(PrepareRequest { launch, binding: NativeBinding {
             binary_digest_sha256: self.pin.digest.clone(), profile_id: self.claim.instance_id.clone(),
             domain_id: self.claim.domain_id.clone(), generation: self.claim.generation.clone(),

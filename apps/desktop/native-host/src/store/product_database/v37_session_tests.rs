@@ -17,6 +17,23 @@ fn worktree_request(id: &str, target: &str, domain: &str, seat_id: &str) -> V37R
 }
 
 #[test]
+fn global_secretary_cannot_be_selected_by_wire_role_or_unset_e() {
+    let _guard=route_b_test_guard();
+    let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path=std::env::temp_dir().join(format!("gogoke-v37-secretary-ingress-{}-{nonce}",std::process::id()));
+    std::fs::create_dir(&path).unwrap();
+    let root=RootLock::acquire(&path).unwrap();
+    let mut product=ProductDatabase::open(&root,&path.join("state.sqlite")).unwrap();
+    let forged=decode_request(br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"open","requestId":"forgedSecretary","targetId":"globalSession","domainId":"global","expectedRevision":"0","payload":{"purpose":"SECRETARY","seatId":"forgedSeat","generation":"1","repositoryId":"fakeRepo","worktreeId":"fakeTree"}}"#).unwrap();
+    let receipt=h::decode_receipt(&product.dispatch_user_request(&forged).unwrap()).unwrap();
+    assert_eq!(receipt.status,V37Status::Denied);
+    let unset=decode_request(br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"admission-reserve","requestId":"unsetSecretary","targetId":"globalSession","domainId":"global","expectedRevision":"0","payload":{}}"#).unwrap();
+    assert!(matches!(product.dispatch_user_request(&unset),Err(OrchestrationError::AccessDenied)));
+    assert!(ledger::read_registered_session(&product.connection,"globalSession").unwrap().is_none());
+    drop(product);drop(root);std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn product_merge_history_rechecks_current_grant_without_git_and_preserves_unknown_cause() {
     // This is the actual product dispatch and E permission reader. Trusted-turn
     // construction arranges ingress only; authenticated model ingress is NOT_RUN.

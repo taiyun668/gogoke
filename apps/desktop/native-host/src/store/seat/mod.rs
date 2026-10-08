@@ -16,7 +16,7 @@ mod page_facts;
 mod secretary;
 mod secretary_routines;
 pub(crate) use secretary::{configure_secretary, designate_secretary,
-    read_secretary_configuration_in_transaction, SecretaryConfiguration,
+    read_secretary_configuration_in_transaction, require_secretary_session, SecretaryConfiguration,
     SecretaryDesignation};
 pub(crate) use secretary_routines::{create_secretary_routine,change_secretary_routine,
     read_secretary_routines_in_transaction,record_user_presence,configure_absence_policy,

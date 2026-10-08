@@ -227,8 +227,17 @@ impl<'root> ProductDatabase<'root> {
             || original.domain_id!=domain || original.target_id!=session {
             return Err(OrchestrationError::OperationConflict);
         }
-        let repository=user_payload_string(&original,"repositoryId")?;
-        let worktree=user_payload_string(&original,"worktreeId")?;
+        let registration=ledger::read_registered_session(&self.connection,session)?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        let (repository,worktree)=if registration.purpose==SessionPurpose::Secretary {
+            if domain!="global" || !original.payload.is_empty() {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            (String::new(),String::new())
+        } else {
+            (user_payload_string(&original,"repositoryId")?,
+                user_payload_string(&original,"worktreeId")?)
+        };
         let observed=Statement::prepare(self.connection.as_ptr(),
             "SELECT s.ticket,s.custodian_nonce
                FROM main.gogoke_v37_rpc_steps s
@@ -1606,6 +1615,11 @@ impl<'root> ProductDatabase<'root> {
     /// Observe the original durable outcome before preparing another process.
     /// UNKNOWN cannot be converted into a launch by changing a request ID.
     pub(super) fn dispatch_native_open(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        if request.domain_id=="global" {
+            if !request.payload.is_empty() {return Ok(encode_receipt(request,V37Status::Denied,
+                request.expected_revision,request.expected_revision,Default::default()));}
+            return self.dispatch_native_open_registered(request,SessionPurpose::Secretary,None,None,None);
+        }
         let purpose=match request.payload.get(&JsonString::from_str("purpose")) {
             None=>SessionPurpose::Work,
             Some(Json::String(value)) if value.to_well_formed_string().as_deref()==Some("FORMAL_REVIEW")=>
@@ -1661,15 +1675,19 @@ impl<'root> ProductDatabase<'root> {
         host:Option<(&HostEscalationProof,&HostRecipient)>) -> Result<Vec<u8>> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
         if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
-        let expected_fields=if purpose==SessionPurpose::FormalReview {5} else {4};
+        let expected_fields=if purpose==SessionPurpose::Secretary {0}
+            else if purpose==SessionPurpose::FormalReview {5} else {4};
         if request.payload.len() != expected_fields {
             return Ok(encode_receipt(request, V37Status::Denied,
                 request.expected_revision, request.expected_revision, Default::default()));
         }
-        let seat_id = user_payload_string(request, "seatId")?;
-        let generation = user_payload_string(request, "generation")?;
-        let repository_id = user_payload_string(request, "repositoryId")?;
-        let worktree_id = user_payload_string(request, "worktreeId")?;
+        let (seat_id,generation,repository_id,worktree_id)=if purpose==SessionPurpose::Secretary {
+            let (seat_id,generation)=self.secretary_committed_selection(request)?;
+            (seat_id,generation,String::new(),String::new())
+        } else {
+            (user_payload_string(request,"seatId")?,user_payload_string(request,"generation")?,
+                user_payload_string(request,"repositoryId")?,user_payload_string(request,"worktreeId")?)
+        };
         let registration = SessionRegistration {
             domain_id: request.domain_id.clone(), seat_id: seat_id.clone(), session_id: request.target_id.clone(),
             purpose, side_id: side_id.map(str::to_owned),
@@ -1730,7 +1748,10 @@ impl<'root> ProductDatabase<'root> {
         self.ensure_native_credential_backend(&credential_claim.instance_id,request)?;
         let origin=match admission {Some(admission)=>NativeOrigin::lead(admission),None=>NativeOrigin::user(&self.owner)};
         let mut retained=Vec::new();
-        let observed = if let Some((proof,choice))=host {
+        let observed = if purpose==SessionPurpose::Secretary {
+            LaunchEvidence::observe_secretary(&mut self.connection,self.root,&self.owner,
+                &seat_id,&request.target_id,&request.request_id,&mut retained)
+        } else if let Some((proof,choice))=host {
             LaunchEvidence::observe_host(&mut self.connection,self.root,&self.owner,
                 &request.domain_id,&seat_id,&request.target_id,&repository_id,&worktree_id,
                 proof,choice,&request.request_id,&mut retained)

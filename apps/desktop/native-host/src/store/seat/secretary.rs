@@ -132,6 +132,26 @@ pub(crate) fn read_secretary_configuration_in_transaction(
         permission,state:seat.state})
 }
 
+/// H's current USER admission fact. The singleton and its incarnation are
+/// re-read at every launch verification; a display name or wire flag has no
+/// authority. All four selections must be present before a model can start.
+pub(crate) fn require_secretary_session(db:&VerifiedDatabaseConnection<'_>,
+    issuer:&OwnerIssuer,seat_id:&str,incarnation:&str)->Result<Seat,SeatError> {
+    let SecretaryConfiguration::Designated {seat_id:current,incarnation:current_inc,
+        instance_id:Some(instance),model:Some(_),effort:Some(_),permission:Some(_),
+        state,..}=read_secretary_configuration_in_transaction(db,issuer)? else {
+        return Err(SeatError::Denied);
+    };
+    if current!=seat_id || current_inc!=incarnation ||
+        !matches!(state,State::Idle|State::Busy) {return Err(SeatError::Denied);}
+    require_enabled_instance(db,&instance)?;
+    let seat=read(db,"global",seat_id)?.ok_or(SeatError::SchemaDrift)?;
+    if seat.incarnation!=incarnation || seat.instance_id!=instance {
+        return Err(SeatError::Denied);
+    }
+    Ok(seat)
+}
+
 /// One atomic change of the four selections. Existing E operation receipts
 /// supply original-byte deduplication, CAS, busy/unreleased refusal, and a
 /// current-target replay check. F's source-bound model evidence is rechecked

@@ -2,7 +2,7 @@
 //! capacities are resolved natively; neither is accepted in operation payloads.
 use super::*;
 use crate::process::AppContainerProfile;
-use crate::store::seat::{self, NativeOrigin, State};
+use crate::store::seat::{self, NativeOrigin, State, SecretaryConfiguration};
 use crate::store::session_transport::{self as h, runtime, AdmissionError,
     AdmissionRequest, AdmissionResult, OwnerBinding};
 
@@ -50,6 +50,33 @@ fn admission_status(error: &AdmissionError) -> V37Status {
 }
 
 impl<'root> ProductDatabase<'root> {
+    fn secretary_current_seat(&self)->Result<seat::Seat> {
+        let SecretaryConfiguration::Designated {seat_id,incarnation,
+            instance_id:Some(_),model:Some(_),effort:Some(_),permission:Some(_),..}=
+            seat::read_secretary_configuration_in_transaction(&self.connection,&self.owner)? else {
+            return Err(OrchestrationError::AccessDenied);
+        };
+        seat::require_secretary_session(&self.connection,&self.owner,&seat_id,&incarnation)
+            .map_err(Into::into)
+    }
+
+    /// The USER supplies a session identity and request bytes only. H derives
+    /// the sole configured E seat and the committed H generation itself.
+    pub(super) fn secretary_committed_selection(&self,request:&V37Request)->Result<(String,String)> {
+        if request.domain_id!="global" || !request.payload.is_empty() {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let seat=self.secretary_current_seat()?;
+        let claim=runtime::observe_claim_bound(&self.connection,"global",
+            &seat.seat_id,&request.target_id)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!("secretary claim: {error:?}")))?
+            .ok_or(OrchestrationError::AccessDenied)?;
+        if claim.phase!=runtime::SessionPhase::Committed || claim.instance_id!=seat.instance_id
+            || claim.generation!=seat.generation.to_string() {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        Ok((seat.seat_id,claim.generation))
+    }
     /// K-WORKTREE creation is User-only at the parent ingress. Source and Git
     /// paths live solely in the separate Owner configuration plane; this
     /// closed operation accepts logical repository/seat IDs only.
@@ -368,6 +395,18 @@ impl<'root> ProductDatabase<'root> {
         if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
         let seat = seat::get(&self.connection, &request.domain_id, seat_id)?
             .ok_or(OrchestrationError::AccessDenied)?;
+        if request.domain_id=="global" {
+            if caller.is_some() || host.is_some() ||
+                seat::require_secretary_session(&self.connection,&self.owner,
+                    &seat.seat_id,&seat.incarnation)?!=seat {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            if resume && !ledger::read_registered_session(&self.connection,&request.target_id)?
+                .is_some_and(|row|row.domain_id=="global" && row.seat_id==seat.seat_id
+                    && row.purpose==SessionPurpose::Secretary) {
+                return Err(OrchestrationError::AccessDenied);
+            }
+        }
         if let Some(caller)=caller {self.check_native_child_home_caller(request,&seat,caller)?;}
         if seat.instance_id.is_empty() || !matches!(seat.state, State::Idle | State::Busy) {
             return Err(OrchestrationError::AccessDenied);
@@ -415,6 +454,11 @@ impl<'root> ProductDatabase<'root> {
             let now = seat::get(&self.connection, &request.domain_id, seat_id)?
                 .ok_or(OrchestrationError::AccessDenied)?;
             if now != seat { return Err(OrchestrationError::OperationConflict); }
+            if request.domain_id=="global" &&
+                seat::require_secretary_session(&self.connection,&self.owner,
+                    &now.seat_id,&now.incarnation)?!=now {
+                return Err(OrchestrationError::AccessDenied);
+            }
             if let Some(caller)=caller {self.check_native_child_home_caller(request,&now,caller)?;}
             if let Some((proof,choice))=host {
                 self.check_host_recipient_choice_in_transaction(proof,choice)?;
@@ -566,12 +610,20 @@ impl<'root> ProductDatabase<'root> {
             return Ok(encode_receipt(request, V37Status::Unsupported,
                 request.expected_revision, request.expected_revision, Default::default()));
         }
-        if request.payload.len() != 2 {
+        let secretary=request.domain_id=="global";
+        if request.payload.len() != if secretary {0} else {2} {
             return Ok(encode_receipt(request, V37Status::Denied,
                 request.expected_revision, request.expected_revision, Default::default()));
         }
-        let seat_id = user_payload_string(request, "seatId")?;
-        let generation = user_payload_string(request, "generation")?;
+        let (seat_id,generation)=if secretary {
+            let seat=self.secretary_current_seat()?;
+            let next=if request.operation=="admission-reserve" && seat.state==State::Idle {
+                seat.generation.checked_add(1).ok_or(OrchestrationError::OperationConflict)?
+            } else {seat.generation};
+            (seat.seat_id,next.to_string())
+        } else {
+            (user_payload_string(request,"seatId")?,user_payload_string(request,"generation")?)
+        };
         let expected = i64::try_from(request.expected_revision).map_err(|error|
             OrchestrationError::V37StoreFailure(format!("admission revision: {error}")))?;
         let (instance_id, home_id) = if request.operation == "admission-reserve" {
