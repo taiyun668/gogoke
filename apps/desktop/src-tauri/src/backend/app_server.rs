@@ -5,7 +5,7 @@ use std::env;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use tauri::AppHandle;
@@ -457,7 +457,7 @@ pub(crate) enum SessionTransport {
     },
     Native {
         app: AppHandle,
-        association: NativeAssociation,
+        association: RwLock<NativeAssociation>,
         confirmed_stop: AtomicBool,
     },
 }
@@ -484,7 +484,7 @@ impl WorkspaceSession {
             codex_args: None,
             transport: SessionTransport::Native {
                 app,
-                association,
+                association: RwLock::new(association),
                 confirmed_stop: AtomicBool::new(false),
             },
             pending: Mutex::new(HashMap::new()),
@@ -506,11 +506,32 @@ impl WorkspaceSession {
         matches!(self.transport, SessionTransport::Native { .. })
     }
 
-    pub(crate) fn native_association(&self) -> Option<NativeAssociation> {
+    pub(crate) fn native_association(&self) -> Result<Option<NativeAssociation>, String> {
         match &self.transport {
-            SessionTransport::Native { association, .. } => Some(association.clone()),
-            SessionTransport::Legacy { .. } => None,
+            SessionTransport::Native { association, .. } => association
+                .read()
+                .map(|current| Some(current.clone()))
+                .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}")),
+            SessionTransport::Legacy { .. } => Ok(None),
         }
+    }
+
+    pub(crate) fn advance_native_association(
+        &self,
+        expected: &NativeAssociation,
+        next: NativeAssociation,
+    ) -> Result<(), String> {
+        let SessionTransport::Native { association, .. } = &self.transport else {
+            return Err("GOGOKE_NATIVE_ASSOCIATION_TRANSPORT_MISMATCH".into());
+        };
+        let mut current = association
+            .write()
+            .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?;
+        if &*current != expected {
+            return Err("GOGOKE_NATIVE_ASSOCIATION_CHANGED_BEFORE_COMMIT".into());
+        }
+        *current = next;
+        Ok(())
     }
 
     pub(crate) fn note_native_stop_fact(&self) -> Result<(), String> {
@@ -542,7 +563,11 @@ impl WorkspaceSession {
             SessionTransport::Native {
                 app, association, ..
             } => {
-                crate::codex::native_visible_live_state(app, &self.owner_workspace_id, association)
+                let association = association
+                    .read()
+                    .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?
+                    .clone();
+                crate::codex::native_visible_live_state(app, &self.owner_workspace_id, &association)
                     .await
             }
         }
@@ -568,7 +593,11 @@ impl WorkspaceSession {
                 if confirmed_stop.load(Ordering::SeqCst) {
                     Ok(())
                 } else {
-                    crate::codex::native_visible_stop(app, &self.owner_workspace_id, association)
+                    let association = association
+                        .read()
+                        .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?
+                        .clone();
+                    crate::codex::native_visible_stop(app, &self.owner_workspace_id, &association)
                         .await
                 }
             }
@@ -638,10 +667,14 @@ impl WorkspaceSession {
             app, association, ..
         } = &self.transport
         {
+            let association = association
+                .read()
+                .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?
+                .clone();
             return crate::codex::native_visible_request(
                 app,
                 workspace_id,
-                association,
+                &association,
                 method,
                 params,
             )
