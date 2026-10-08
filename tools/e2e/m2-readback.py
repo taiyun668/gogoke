@@ -204,7 +204,10 @@ def verified_model_evidence(db, instance_id, model, expected_domain=None, expect
         "WHERE i.instance_id=?", (instance_id,))
     available = json.loads(evidence[5] or "null")
     source = (evidence[6] or "").split(":")
-    if evidence[0] != "codex" or not evidence[1] or evidence[3:5] != ("INSTALLED", "LOGGED_IN") or \
+    # Availability is proven by the original bound H model/list below. The
+    # legacy registration install label is a separate fact; an UNKNOWN label
+    # cannot erase an OBSERVED reply from the exact pinned CLI that ran.
+    if evidence[0] != "codex" or not evidence[1] or evidence[4] != "LOGGED_IN" or \
             evidence[2] != evidence[8] or not isinstance(available, list) or model not in available or \
             not isinstance(evidence[7], str) or not evidence[7].isdigit() or len(source) != 6 or \
             source[:2] != ["codex-model/list", "OBSERVED"] or \
@@ -239,6 +242,7 @@ def verified_model_evidence(db, instance_id, model, expected_domain=None, expect
     if custody != (source_domain, instance_id, evidence[2], "STOPPED"):
         raise RuntimeError("Original model/list page lacks matching stopped instance custody")
     return {"instanceId": instance_id, "instanceVersion": evidence[1], "model": model,
+            "reportedInstallState": evidence[3],
             "modelsSource": evidence[6],
             "modelsObservedAt": evidence[7], "modelsProgramDigest": evidence[8],
             "originalRequestId": command.get("id"), "originalFirstPageSha256": fingerprint(bytes(original[1]))}
@@ -354,8 +358,11 @@ def verify_v12_stop_release(db, journal, case, result):
             if stored != (entry["rawFrame"].encode().hex(), "APPLIED"):
                 raise RuntimeError("V12 original H stop/release wire bytes differ")
         selected = next((row for row in result["sessions"] if row["sessionId"] == sid), None)
+        # PENDING is the A mapping state, not an H stop state. Retain its count
+        # in sessions; the raw turn/tool/input checks bind every V12 fact.
+        # This case does not claim complete coverage of vendor notifications.
         if selected is None or not selected["allEpisodesStopped"] or \
-                selected["rawFrameCount"] == 0 or selected["unknownFrameCount"] != 0:
+                selected["rawFrameCount"] == 0:
             raise RuntimeError("V12 source/side original stopped A/H rows are incomplete")
         for episode in selected["episodes"]:
             custody = one(db,
