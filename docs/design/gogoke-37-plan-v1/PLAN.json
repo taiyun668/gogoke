@@ -1071,6 +1071,16 @@
      "C",
      "G"
     ]
+   },
+   {
+    "path": "apps/desktop/native-host/src/store/product_database/v37_visible_effect.rs",
+    "extension": "For a new visible USER effect only, require the selected workspace row to be the latest current selection in the existing immediate transaction before preparing the original action. Existing request replay/recover keeps its original historical selection and H/A proof; do not add commands, fields, capabilities or writers.",
+    "serves": [
+     "H",
+     "A",
+     "C",
+     "G"
+    ]
    }
   ],
   "conditional_rule": "A conditional file is recorded in T00 or L0 as either MODIFIED, with the change, or VERIFIED_UNCHANGED, with the reason; no line widens its own scope to reach it."

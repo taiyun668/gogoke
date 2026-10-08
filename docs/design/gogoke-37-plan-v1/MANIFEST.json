@@ -5,8 +5,8 @@
     "main": "5b638c73200c0fb691a74c5717e3bdbbba45357d"
   },
   "sha256": {
-    "PLAN.md": "6fc6e876dbd036af61a572890d8accb1e06c4c1ab60c3b8f661038672f371d7e",
-    "PLAN.json": "e2540196dd897d29e0f8306cdfd9ad404e656b7e5faecd8126908015c8342447",
+    "PLAN.md": "781a1ecb92745483826ac1b61a18fe9a58e9f70769e2d301b1fb5a7f29f6aaaa",
+    "PLAN.json": "1d13c9cef3aba544172d196966a61cd102786f1ea0240102806cb60143125c4f",
     "verify_plan.py": "b6d8bde90e4dead4f169c7922bfba295513f91ae962d1cdc8cc0b1726d9176b5"
   },
   "excluded": [
@@ -14,5 +14,5 @@
     "VALIDATION.json"
   ],
   "exclusion_reason": "self-reference and generated diagnostic output; neither grants authority or product acceptance",
-  "scope_digest": "dda0691b6d20dbad4c9786829ddc6c4b77d8e620e6a7d7500515d68e47ba2c42"
+  "scope_digest": "b2d36f6d55865d1c40168457dbd04989669aaec9836c1a065bcc58071457fabd"
 }

@@ -3,7 +3,7 @@
   "mapping_snapshot": "5b638c73200c0fb691a74c5717e3bdbbba45357d",
   "authorization_base": "b8c5a902e00f900d98fddbe31c1764cfeb21dde7",
   "prior_receipt_blob": "470e27951143b83d5230bfa3602fa6e21148a918",
-  "shared_file_count": 73,
+  "shared_file_count": 74,
   "shared_file_blob_differences": 2,
   "changes": [
     {
@@ -534,6 +534,17 @@
       "authorization_base_blob": "5550f74494f9f971d215690d279fe22de83c3138",
       "new_write_scope": true,
       "match": true
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/product_database/v37_visible_effect.rs",
+      "mapping_blob": null,
+      "authorization_base_blob": null,
+      "new_write_scope": true,
+      "match": null,
+      "source_status": "ABSENT_FROM_MAPPING_AND_AUTHORIZATION_MAIN_PRESENT_IN_UNINTEGRATED_SHADOW",
+      "reviewed_shadow_commit": "ac8607a5aadd214944ee842cb17ff42d90af1c1f",
+      "reviewed_shadow_blob": "684deba468dd3d87fe4c8daa30a823b574575ce9",
+      "disposition": "Proposed exact write scope only; current-selection repair waits for Owner merge/readback. Shadow provenance is not prior authorization."
     }
   ],
   "assets": [
@@ -583,7 +594,9 @@
   "new_scope_files": [
     "apps/desktop/src/features/threads/hooks/useThreads.ts",
     "apps/desktop/src/features/threads/hooks/useThreadMessaging.ts",
-    "apps/desktop/src/features/threads/hooks/useThreadActions.ts"
+    "apps/desktop/src/features/threads/hooks/useThreadActions.ts",
+    "apps/desktop/native-host/src/store/product_database/v37_visible_effect.rs"
   ],
-  "meaning": "Read-only proposal baseline; the three newly proposed consumers remain untouched and unauthorized until Owner merge and exact readback. Existing source differences retained explicitly; no product completion or acceptance."
+  "meaning": "Read-only proposal baseline. Three hooks plus one existing shadow effect helper remain unauthorized until Owner merge and exact readback. Existing source differences and absent-main helper are explicit. No product completion or acceptance.",
+  "proposed_source_absent_from_main_count": 1
 }
