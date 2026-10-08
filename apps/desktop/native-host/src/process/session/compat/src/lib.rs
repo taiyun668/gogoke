@@ -17,6 +17,8 @@ pub const DETOURS_LICENSE: &str = "MIT";
 pub const SUPPORTED_CLI_VERSION: &str = "0.160.0-win32-x64";
 pub const OBSERVED_CLI_SHA256: &str =
     "fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d";
+pub const OBSERVED_CLAUDE_SHA256: &str =
+    "180d7b279455e8b89d4353a5146447be2f80b80fb0db14bdc6dd9cb98c0aef09";
 
 const IMAGE_FILE_MACHINE_AMD64: u16 = 0x8664;
 const WC_NO_BEST_FIT_CHARS: u32 = 0x400;

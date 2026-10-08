@@ -1,6 +1,6 @@
-# Fixed LPAC path compatibility package
+# Fixed LPAC compatibility and Claude startup observation
 
-This package is only for the native x64 Codex CLI 0.160.0 launched by H inside
+The path mode is only for the native x64 Codex CLI 0.160.0 launched by H inside
 its verified LPAC profile. The official npm platform archive binary is PE machine `0x8664`,
 SHA-256 `fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d`,
 and imports `GetFinalPathNameByHandleW` once from `kernel32.dll`. This is a
@@ -8,6 +8,38 @@ read-only archive observation, not an installed launch result; the host still pe
 its own program identity checks at every launch. The original 0.149.0 failure
 was flags `0` returning `0` / Win32 `5` after an LPAC-denied open of
 `\??\MountPointManager`, although the exact F home metadata handle opened.
+
+The same embedded DLL has a separate observation mode for the exact Claude
+2.1.196 x64 image, SHA-256
+`180d7b279455e8b89d4353a5146447be2f80b80fb0db14bdc6dd9cb98c0aef09`.
+H constructs `GOGOKE_LPAC_COMPAT_MODE=CLAUDE_PIPE_V1` only for that pinned
+digest and checks the actual suspended child digest again before injection.
+The DLL requires one `CreateNamedPipeA` and one `CreateNamedPipeW` main-image
+import from `kernel32.dll`, then patches only those two IAT slots. Codex keeps
+its existing path mode with no mode variable. The host does not accept a
+caller or inherited mode value and supplies no Codex path mappings to Claude.
+
+Each Claude wrapper calls the original API once with unchanged arguments. On
+the first failed matching libuv pipe call per process it emits one stderr line
+containing the API name, exact Win32 error number and `uv` prefix class.
+It never emits the pipe name, payload, credential or private path. Return
+handle and LastError remain the original values even if stderr writing fails.
+Successes, unrelated names and later failures pass through without logging.
+This does not map names, retry, wait, or change CLI bytes or pipe rights.
+Loading the host-owned embedded DLL for Claude uses the existing exact-file
+LPAC read/execute grant and verification. That grant writes the DLL ACL for
+the Claude profile; no CLI, worktree, or pipe object rights are added. The
+existing module custody retains the file across child lifetime. The existing
+module grant cleanup is a residual outside this observation repair; no
+profile-specific RX withdrawal at stop or release is claimed.
+
+The target follows the fixed-image PE metadata and the pinned
+[oven-sh/libuv Windows pipe implementation](https://github.com/oven-sh/libuv/blob/4dcfac4780d394e0dc2d3fb30335ca01b553eb46/src/win/pipe.c),
+whose `uv__pipe_server` retries `ERROR_PIPE_BUSY` and `ERROR_ACCESS_DENIED`
+after `CreateNamedPipeA`. The original installed 0.1.38 Claude attempts had
+no stdout, stderr or debug file; sampled syscall PCs are not returned error
+codes. An installed-product attempt can establish the Win32 result when a
+matching main-image call fails and its stderr is captured.
 
 The DLL is built at cloud build time and embedded in Rust as `MODULE_BYTES`.
 `MODULE_SHA256`, `SHIM_SOURCE_SHA256`, and `DETOURS_COMMIT` give the host and
@@ -67,7 +99,9 @@ cloud build/test is not Owner Windows 11/SAC acceptance. No local native
 binary build or run is part of this package.
 `cargo test --manifest-path .../compat/Cargo.toml` on cloud Windows runs the
 same-source C++ shim test for buffer, mapping, LastError and PE import guards;
-the actual CLI tests remain the definitive behavior check.
+the same-source fixture also checks Claude argument/return/LastError
+passthrough, bounded stderr text, unrelated calls and exact A/W import shape.
+The installed CLI remains the definitive behavior check.
 
 ## Dependency provenance
 

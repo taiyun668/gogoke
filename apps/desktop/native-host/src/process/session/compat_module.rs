@@ -20,6 +20,8 @@ const NT_ROOT_1: &str = "GOGOKE_LPAC_PATH_NT_ROOT_1";
 const DOS_ROOT_1: &str = "GOGOKE_LPAC_PATH_DOS_ROOT_1";
 const NT_ROOT_2: &str = "GOGOKE_LPAC_PATH_NT_ROOT_2";
 const DOS_ROOT_2: &str = "GOGOKE_LPAC_PATH_DOS_ROOT_2";
+const OBSERVATION_MODE: &str = "GOGOKE_LPAC_COMPAT_MODE";
+const CLAUDE_PIPE_MODE: &str = "CLAUDE_PIPE_V1";
 const MAX_ROOTS: usize = 3;
 const REPARSE: u32 = 0x400;
 const DIRECTORY: u32 = 0x10;
@@ -341,7 +343,11 @@ pub(crate) struct CompatModule {
     _directories: Vec<Arc<File>>,
     homes: Vec<HeldRoot>,
     profile_name: String,
+    mode: CompatMode,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompatMode { CodexPath, ClaudePipe }
 
 impl CompatModule {
     pub(crate) fn prepare(
@@ -368,7 +374,28 @@ impl CompatModule {
         profile: &AppContainerProfile,
         profile_name: &str,
     ) -> io::Result<Arc<Self>> {
-        let DirectoryRoots { _directories: mut directories, homes } = DirectoryRoots::prepare(root, roots)?;
+        let DirectoryRoots { _directories: directories, homes } = DirectoryRoots::prepare(root, roots)?;
+        Self::prepare_module(root, directories, homes, profile, profile_name, CompatMode::CodexPath)
+    }
+
+    /// Observation of the fixed Claude image only. The caller retains its
+    /// ordinary directory custody separately; this mode never maps a path.
+    pub(crate) fn prepare_claude_observation(
+        root: &RootLock,
+        profile: &AppContainerProfile,
+        profile_name: &str,
+    ) -> io::Result<Arc<Self>> {
+        Self::prepare_module(root, Vec::new(), Vec::new(), profile, profile_name, CompatMode::ClaudePipe)
+    }
+
+    fn prepare_module(
+        root: &RootLock,
+        mut directories: Vec<Arc<File>>,
+        homes: Vec<HeldRoot>,
+        profile: &AppContainerProfile,
+        profile_name: &str,
+        mode: CompatMode,
+    ) -> io::Result<Arc<Self>> {
         let base = root.canonical_root().canonical_path.join("v37-native-components");
         let version = base.join(gogoke_lpac_path_compat::MODULE_SHA256);
         for directory in [&base, &version] {
@@ -416,6 +443,7 @@ impl CompatModule {
             _directories: directories,
             homes,
             profile_name: profile_name.to_owned(),
+            mode,
         };
         module.verify()?;
         profile
@@ -451,6 +479,10 @@ impl CompatModule {
     }
 
     pub(crate) fn extend_environment(&self, environment: &mut Vec<(String, String)>) {
+        if self.mode == CompatMode::ClaudePipe {
+            environment.push((OBSERVATION_MODE.to_owned(), CLAUDE_PIPE_MODE.to_owned()));
+            return;
+        }
         environment.push((NT_ROOT.to_owned(), self.homes[0].nt.clone()));
         environment.push((DOS_ROOT.to_owned(), self.homes[0].dos.clone()));
         if self.homes.len() > 1 {
@@ -473,6 +505,17 @@ impl CompatModule {
             return Err(invalid("compatibility LPAC profile mismatch"));
         }
         let environment = environment.ok_or_else(|| invalid("compatibility environment absent"))?;
+        if self.mode == CompatMode::ClaudePipe {
+            if environment.iter().filter(|(key, _)| key.eq_ignore_ascii_case(OBSERVATION_MODE)).count() != 1
+                || !environment.iter().any(|(key, value)| key == OBSERVATION_MODE && value == CLAUDE_PIPE_MODE)
+                || environment.iter().any(|(key, _)| key.to_ascii_uppercase().starts_with("GOGOKE_LPAC_PATH_")) {
+                return Err(invalid("Claude observation mode environment mismatch"));
+            }
+            return self.verify();
+        }
+        if environment.iter().any(|(key, _)| key.eq_ignore_ascii_case(OBSERVATION_MODE)) {
+            return Err(invalid("Codex compatibility mode environment mismatch"));
+        }
         let mut expected = vec![
             (NT_ROOT, self.homes[0].nt.as_str()),
             (DOS_ROOT, self.homes[0].dos.as_str()),
@@ -516,6 +559,13 @@ impl CompatModule {
         self.verify()?;
         gogoke_lpac_path_compat::update_suspended(process, &self.ansi)
     }
+
+    pub(crate) fn expected_cli_sha256(&self) -> &'static str {
+        match self.mode {
+            CompatMode::CodexPath => gogoke_lpac_path_compat::OBSERVED_CLI_SHA256,
+            CompatMode::ClaudePipe => gogoke_lpac_path_compat::OBSERVED_CLAUDE_SHA256,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -547,6 +597,9 @@ mod tests {
         module
             .validate_launch(Some(&name), Some(&environment))
             .unwrap();
+        assert!(module.validate_launch(Some(&name), Some(&[
+            (OBSERVATION_MODE.to_owned(), CLAUDE_PIPE_MODE.to_owned())
+        ])).is_err());
         assert!(module
             .validate_launch(Some("Gogoke37.Other"), Some(&environment))
             .is_err());
@@ -569,6 +622,36 @@ mod tests {
         assert!(CompatModule::prepare(&root, &home, &wrong_identity, &profile, &name).is_err());
         drop(root);
         fs::remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn fixed_claude_observation_mode_rejects_mapping_and_mode_tamper() {
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("gogoke-compat-claude-{}-{stamp}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root = RootLock::acquire(&path).unwrap();
+        let name = format!("Gogoke37.CompatClaude.{stamp}");
+        let profile = AppContainerProfile::ensure(&name, false).unwrap();
+        let module = CompatModule::prepare_claude_observation(&root, &profile, &name).unwrap();
+        let mut environment = Vec::new();
+        module.extend_environment(&mut environment);
+        assert_eq!(environment, vec![(OBSERVATION_MODE.to_owned(), CLAUDE_PIPE_MODE.to_owned())]);
+        assert_eq!(module.expected_cli_sha256(), gogoke_lpac_path_compat::OBSERVED_CLAUDE_SHA256);
+        module.validate_launch(Some(&name), Some(&environment)).unwrap();
+        assert!(module.validate_launch(Some("Gogoke37.Other"), Some(&environment)).is_err());
+        assert!(module.validate_launch(Some(&name), Some(&[])).is_err());
+        let mut changed = environment.clone();
+        changed[0].1 = "CODEX_PATH".into();
+        assert!(module.validate_launch(Some(&name), Some(&changed)).is_err());
+        changed = environment.clone();
+        changed.push((OBSERVATION_MODE.to_ascii_lowercase(), CLAUDE_PIPE_MODE.into()));
+        assert!(module.validate_launch(Some(&name), Some(&changed)).is_err());
+        changed = environment.clone();
+        changed.push((NT_ROOT.into(), "untrusted".into()));
+        assert!(module.validate_launch(Some(&name), Some(&changed)).is_err());
+        drop(module);
+        drop(root);
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
