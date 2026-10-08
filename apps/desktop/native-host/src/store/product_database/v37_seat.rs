@@ -1785,7 +1785,7 @@ mod tests {
             binding.step_done().unwrap();drop(binding);
             product.connection.execute("INSERT INTO main.gogoke_v37_h_owner_binding VALUES('bindingS','instanceS','global','SESSION','secretarySession','2','ACTIVE')").unwrap();
             product.connection.execute("INSERT INTO main.gogoke_v37_instance_homes(home_id,instance_id,domain_id,kind,owner_id,generation,state,revision) VALUES('homeS','instanceS','global','SESSION','secretarySession','2','ACTIVE',1)").unwrap();
-            product.connection.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id) VALUES('global','secretarySession','instanceS','homeS','bindingS','2','COMMITTED',4,'newProcess')").unwrap();
+            product.connection.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id) VALUES('global','secretarySession','instanceS','homeS','bindingS','2','COMMITTED',7,'newProcess')").unwrap();
             let original_open=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"open","requestId":"open1","targetId":"secretarySession","domainId":"global","expectedRevision":"0","payload":{}}"#;
             for (generation,operation,ticket,nonce,phase,custody,stop) in [
                 ("1","oldProcess","oldTicket","oldNonce","STOPPED","STOPPED",Some("oldProof")),
@@ -1795,8 +1795,8 @@ mod tests {
                     "INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,
                      generation,old_generation,raw_hex,previous_revision,result_revision,process_operation_id,
                      instance_id,home_id,binding_id,phase,stop_fact_id)
-                     VALUES('global',?1,'secretarySession',?2,?3,?4,0,1,?5,
-                     'instanceS','homeS','bindingS',?6,?7)").unwrap();
+                     VALUES('global',?1,'secretarySession',?2,?3,?4,?5,?6,?7,
+                     'instanceS','homeS','bindingS',?8,?9)").unwrap();
                 let open=format!("open{generation}");
                 let old_generation=if generation=="1" {None} else {Some("1")};
                 let raw=if generation=="1" {hex(original_open)} else {hex(br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"resume","requestId":"open2","targetId":"secretarySession","domainId":"global","expectedRevision":"1","payload":{"generation":"1"}}"#)};
@@ -1804,9 +1804,11 @@ mod tests {
                 episode.bind_text(2,generation).unwrap();
                 if let Some(old)=old_generation {episode.bind_text(3,old).unwrap();}
                 episode.bind_text(4,&raw).unwrap();
-                episode.bind_text(5,operation).unwrap();
-                episode.bind_text(6,phase).unwrap();
-                if let Some(stop)=stop {episode.bind_text(7,stop).unwrap();}
+                episode.bind_i64(5,if generation=="1" {0} else {2}).unwrap();
+                episode.bind_i64(6,if generation=="1" {1} else {3}).unwrap();
+                episode.bind_text(7,operation).unwrap();
+                episode.bind_text(8,phase).unwrap();
+                if let Some(stop)=stop {episode.bind_text(9,stop).unwrap();}
                 episode.step_done().unwrap();drop(episode);
                 let generation_row=Statement::prepare(product.connection.as_ptr(),
                     "INSERT INTO main.gogoke_v37_h_generation VALUES('global','secretarySession',?1,?2,?3)").unwrap();
@@ -1844,16 +1846,17 @@ mod tests {
                  'thread-start','oldProcess','oldTicket','oldNonce','11','1','fixture',
                  'sha256:fixture','profileS','1',?1,1,'OBSERVED','oldEpoch','1')").unwrap();
             step.bind_text(1,&hex(&command)).unwrap();step.step_done().unwrap();drop(step);
-            let long="a".repeat(2_200_000);
-            let empty=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send","requestId":"oversizeUser","targetId":"secretarySession","domainId":"global","expectedRevision":"3","payload":{"body":"","generation":"2"}}"#;
-            let oversized="a".repeat(crate::ipc::MAX_FRAME_BYTES-empty.len());
+            let long="a".repeat(900_000);
             for (id,generation,operation,ticket,nonce,revision,body,phase,marked) in [
                 ("oldUser","1","oldProcess","oldTicket","oldNonce",1,&long,"RECEIPTED",true),
-                ("unmarkedUser","2","newProcess","newTicket","newNonce",1,&long,"UNKNOWN",false),
-                ("newUser","2","newProcess","newTicket","newNonce",2,&long,"RECEIPTED",true),
-                ("oversizeUser","2","newProcess","newTicket","newNonce",3,&oversized,"RECEIPTED",true),
+                ("newUser","2","newProcess","newTicket","newNonce",3,&long,"RECEIPTED",true),
+                ("moreUser","2","newProcess","newTicket","newNonce",4,&long,"RECEIPTED",true),
+                ("tailUser","2","newProcess","newTicket","newNonce",5,&long,"RECEIPTED",true),
+                ("lastUser","2","newProcess","newTicket","newNonce",6,&long,"RECEIPTED",true),
+                ("unmarkedUser","2","newProcess","newTicket","newNonce",7,&long,"UNKNOWN",false),
             ] {
                 let original=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"send\",\"requestId\":\"{id}\",\"targetId\":\"secretarySession\",\"domainId\":\"global\",\"expectedRevision\":\"{revision}\",\"payload\":{{\"body\":\"{body}\",\"generation\":\"{generation}\"}}}}");
+                assert!(original.len()<=1024*1024,"every admitted fixture request fits H's original frame bound");
                 let request=decode_request(original.as_bytes()).unwrap();
                 let original_hex=hex(original.as_bytes());
                 let receipt=if phase=="RECEIPTED" {Some(encode_receipt(&request,
@@ -1928,15 +1931,11 @@ mod tests {
             assert_eq!(conversation.get(&key("historical")).unwrap().canonical(),"false");
             let Json::Object(first)=result.remove(&key("inputHistory")).unwrap() else {panic!("page");};
             let Json::Array(first_rows)=first.get(&key("items")).unwrap() else {panic!("items");};
-            assert_eq!(first_rows.len(),2,"page stops before the next original body exceeds the frame");
+            assert_eq!(first_rows.len(),4,"page stops before the next valid H body exceeds the IPC frame");
             let Json::Object(old)=&first_rows[0] else {panic!("old");};
             assert_eq!(old.get(&key("bodyState")).unwrap().canonical(),"\"VERIFIED\"");
             assert_eq!(old.get(&key("generation")).unwrap().canonical(),"\"1\"");
             assert_eq!(old.get(&key("receiptStatus")).unwrap().canonical(),"\"APPLIED\"");
-            let Json::Object(gap)=&first_rows[1] else {panic!("gap");};
-            assert_eq!(gap.get(&key("bodyState")).unwrap().canonical(),"\"UNKNOWN\"");
-            assert_eq!(gap.get(&key("body")).unwrap().canonical(),"null");
-            assert_eq!(gap.get(&key("phase")).unwrap().canonical(),"\"UNKNOWN\"");
             let Json::String(cursor)=first.get(&key("nextContinuation")).unwrap() else {panic!("cursor");};
             let cursor=cursor.to_well_formed_string().unwrap();
             assert!(product.configure_user_v37(frame(&designated.incarnation,
@@ -1954,23 +1953,36 @@ mod tests {
             let mut result=parse(&second_bytes);
             let Json::Object(second)=result.remove(&key("inputHistory")).unwrap() else {panic!("second");};
             let Json::Array(second_rows)=second.get(&key("items")).unwrap() else {panic!("items");};
-            assert_eq!(second_rows.len(),1);
-            let Json::String(cursor)=second.get(&key("nextContinuation")).unwrap() else {panic!("cursor");};
-            let cursor=cursor.to_well_formed_string().unwrap();
-            let third_bytes=product.configure_user_v37(frame(&designated.incarnation,
-                designated.generation,"secretarySession",Some(&cursor)).as_bytes()).unwrap();
-            assert!(!String::from_utf8_lossy(&third_bytes).contains("foreignUser"));
-            let mut result=parse(&third_bytes);
-            let Json::Object(third)=result.remove(&key("inputHistory")).unwrap() else {panic!("third");};
-            let Json::Array(third_rows)=third.get(&key("items")).unwrap() else {panic!("items");};
-            assert_eq!(third_rows.len(),1);
-            let Json::Object(too_large)=&third_rows[0] else {panic!("oversized");};
-            assert_eq!(too_large.get(&key("bodyState")).unwrap().canonical(),"\"TOO_LARGE\"");
-            assert_eq!(too_large.get(&key("body")).unwrap().canonical(),"null");
-            assert_eq!(third.get(&key("nextContinuation")).unwrap().canonical(),"null");
+            assert_eq!(second_rows.len(),2);
+            let Json::Object(last)=&second_rows[0] else {panic!("last original");};
+            assert_eq!(last.get(&key("requestId")).unwrap().canonical(),"\"lastUser\"");
+            assert_eq!(last.get(&key("bodyState")).unwrap().canonical(),"\"VERIFIED\"");
+            let Json::Object(gap)=&second_rows[1] else {panic!("gap");};
+            assert_eq!(gap.get(&key("requestId")).unwrap().canonical(),"\"unmarkedUser\"");
+            assert_eq!(gap.get(&key("bodyState")).unwrap().canonical(),"\"UNKNOWN\"");
+            assert_eq!(gap.get(&key("body")).unwrap().canonical(),"null");
+            assert_eq!(gap.get(&key("phase")).unwrap().canonical(),"\"UNKNOWN\"");
+            assert_eq!(second.get(&key("nextContinuation")).unwrap().canonical(),"null");
             assert_eq!(product.configure_user_v37(old_read).unwrap(),original_configuration,
                 "scoped read never mutates the old two-field configuration response");
             assert_eq!(changes(product),before_reads,"USER history reads never write product facts");
+            let invalid=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"send\",\"requestId\":\"invalidUser\",\"targetId\":\"secretarySession\",\"domainId\":\"global\",\"expectedRevision\":\"8\",\"payload\":{{\"body\":\"{}\",\"generation\":\"2\"}}}}",
+                "x".repeat(1_100_000));
+            assert!(invalid.len()>1024*1024 && invalid.len()<crate::ipc::MAX_FRAME_BYTES);
+            let oversized_row=Statement::prepare(product.connection.as_ptr(),
+                "INSERT INTO main.gogoke_v37_h_stdin_journal(domain_id,request_id,operation,
+                 ticket,process_operation_id,custodian_nonce,session_id,generation,request_hex,
+                 phase,expected_revision) VALUES('global','invalidUser','send','newTicket',
+                 'newProcess','newNonce','secretarySession','2',?1,'PREPARED','8')").unwrap();
+            oversized_row.bind_text(1,&hex(invalid.as_bytes())).unwrap();
+            oversized_row.step_done().unwrap();drop(oversized_row);
+            let before_refusal=changes(product);
+            let error=product.configure_user_v37(frame(&designated.incarnation,
+                designated.generation,"secretarySession",Some(&cursor)).as_bytes()).unwrap_err();
+            assert!(format!("{error:?}").contains("stored original operation size"),
+                "H rejects an impossible original request before it can become history");
+            assert_eq!(changes(product),before_refusal,"refused read has no product write");
+            product.connection.execute("DELETE FROM main.gogoke_v37_h_stdin_journal WHERE domain_id='global' AND request_id='invalidUser'").unwrap();
             for (field,wrong,correct) in [
                 ("source_operation_id","otherProcess","oldProcess"),
                 ("source_epoch","otherNonce","oldNonce"),
