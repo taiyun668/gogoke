@@ -1,0 +1,602 @@
+{
+  "schema": "gogoke.37.t00.scope-amendment-readback.v1",
+  "mapping_snapshot": "5b638c73200c0fb691a74c5717e3bdbbba45357d",
+  "authorization_base": "b8c5a902e00f900d98fddbe31c1764cfeb21dde7",
+  "prior_receipt_blob": "470e27951143b83d5230bfa3602fa6e21148a918",
+  "shared_file_count": 74,
+  "shared_file_blob_differences": 2,
+  "changes": [
+    {
+      "path": ".github/workflows/gogoke-desktop.yml",
+      "mapping_blob": "73734fa0f1ee25c2bd7b1050a33f895bdb6cf1a2",
+      "authorization_base_blob": "446623a3f6cb56e7307bbe28ed38ef12b9097660",
+      "new_write_scope": false,
+      "match": false,
+      "disposition": "Owner-merged PR76 supplies the already-requested web_only switch; current main baseline retained, this proposal does not edit this workflow."
+    },
+    {
+      "path": "tools/ci/test_gogoke_uninstall_finalizer_cloud.py",
+      "mapping_blob": "fbb0f8a7a0e53c4e57dedd8bcf2fad0afbcc950e",
+      "authorization_base_blob": "dff4b85329aa79cfad4ce77ad2bd025a86904746",
+      "new_write_scope": false,
+      "match": false,
+      "disposition": "Previously Owner-merged and recorded uninstall fixture lock-release change; current main baseline retained, this proposal does not edit the fixture."
+    }
+  ],
+  "shared_files": [
+    {
+      "path": "apps/desktop/native-host/src/lib.rs",
+      "mapping_blob": "2b1f268d27b8885885202090222d9bcf798dcebd",
+      "authorization_base_blob": "2b1f268d27b8885885202090222d9bcf798dcebd",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/native-host/src/main.rs",
+      "mapping_blob": "38eeffcf95241ae8acddffffb9b5e1919789f4b3",
+      "authorization_base_blob": "38eeffcf95241ae8acddffffb9b5e1919789f4b3",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/native-host/src/ipc/mod.rs",
+      "mapping_blob": "bb4f9b2cfa5607c2800640c891c0544431ad3912",
+      "authorization_base_blob": "bb4f9b2cfa5607c2800640c891c0544431ad3912",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/native-host/src/process/mod.rs",
+      "mapping_blob": "ae2317606fa7633a71abb91d1e7a4632138597e7",
+      "authorization_base_blob": "ae2317606fa7633a71abb91d1e7a4632138597e7",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/native-host/src/process/windows.rs",
+      "mapping_blob": "0346c025fc08e9e72ae6a10c7b59cdd780bf21ba",
+      "authorization_base_blob": "0346c025fc08e9e72ae6a10c7b59cdd780bf21ba",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/mod.rs",
+      "mapping_blob": "ace1fc1982a61cb05bb82e98eac65221e01f9f7d",
+      "authorization_base_blob": "ace1fc1982a61cb05bb82e98eac65221e01f9f7d",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/protocol.rs",
+      "mapping_blob": "9cd0154963bb8cef15ca0942cd8d891a1a68c644",
+      "authorization_base_blob": "9cd0154963bb8cef15ca0942cd8d891a1a68c644",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/session.rs",
+      "mapping_blob": "7bf913c3a0bc3f141c619eaa370c66901e9b85bf",
+      "authorization_base_blob": "7bf913c3a0bc3f141c619eaa370c66901e9b85bf",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/orchestration.rs",
+      "mapping_blob": "21349947103fcceec8e6a15bae314c1fa85fb7fa",
+      "authorization_base_blob": "21349947103fcceec8e6a15bae314c1fa85fb7fa",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/authority/mod.rs",
+      "mapping_blob": "89a0e7665b150affac3a35bf9f2a971c497269e3",
+      "authorization_base_blob": "89a0e7665b150affac3a35bf9f2a971c497269e3",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/authority/bootstrap.rs",
+      "mapping_blob": "940407af9e41888f2cec7fc3312df3c6ea549f14",
+      "authorization_base_blob": "940407af9e41888f2cec7fc3312df3c6ea549f14",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/authority/schema.sql",
+      "mapping_blob": "e1f685c219c8d69f808c66a230ea76903c3739a0",
+      "authorization_base_blob": "e1f685c219c8d69f808c66a230ea76903c3739a0",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/authority/process_custody.rs",
+      "mapping_blob": "35e131cbfdeb91b9e7f0d98fc0e80030c8f0df32",
+      "authorization_base_blob": "35e131cbfdeb91b9e7f0d98fc0e80030c8f0df32",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/native-host/Cargo.toml",
+      "mapping_blob": "54d8c785b088312d51b0e269c497b3bdecacd9f5",
+      "authorization_base_blob": "54d8c785b088312d51b0e269c497b3bdecacd9f5",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "third_party/t3code/apps/server/src/gogoke/index.ts",
+      "mapping_blob": "4baf5ad03a7fe4f1be57dc3b4ea391ffb639654f",
+      "authorization_base_blob": "4baf5ad03a7fe4f1be57dc3b4ea391ffb639654f",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "third_party/t3code/apps/server/src/gogoke/contracts/model.ts",
+      "mapping_blob": "25b73cf1198fc24c917dcb41672c47d02affebeb",
+      "authorization_base_blob": "25b73cf1198fc24c917dcb41672c47d02affebeb",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "third_party/t3code/apps/server/src/gogoke/contracts/codec.ts",
+      "mapping_blob": "ffb13869aa9e5e8f3949bc4915f2b7d9e2c8c42f",
+      "authorization_base_blob": "ffb13869aa9e5e8f3949bc4915f2b7d9e2c8c42f",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "third_party/t3code/apps/server/src/gogoke/contracts/index.ts",
+      "mapping_blob": "8488a9f6e13a443c0797b1b6b86709ee5fb802c9",
+      "authorization_base_blob": "8488a9f6e13a443c0797b1b6b86709ee5fb802c9",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "third_party/t3code/apps/server/src/gogoke/persistence/base/nativeHostClient.ts",
+      "mapping_blob": "b4f47498fa669ca35ee75ae21171ec60c1b8d7ea",
+      "authorization_base_blob": "b4f47498fa669ca35ee75ae21171ec60c1b8d7ea",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "third_party/t3code/apps/server/src/gogoke/bootstrap/index.ts",
+      "mapping_blob": "8ec06bf41b00695a8ae0e105c553948472c5476c",
+      "authorization_base_blob": "8ec06bf41b00695a8ae0e105c553948472c5476c",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "third_party/t3code/apps/server/src/gogoke/bootstrap/nativeStoreService.ts",
+      "mapping_blob": "8f07e13ea687c2a12038233c5cbe77b160eb3149",
+      "authorization_base_blob": "8f07e13ea687c2a12038233c5cbe77b160eb3149",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "third_party/t3code/apps/server/src/gogoke/bootstrap/productEntry.ts",
+      "mapping_blob": "484be89a5a6a8b3a8a05a2fda43ff30353bb1824",
+      "authorization_base_blob": "484be89a5a6a8b3a8a05a2fda43ff30353bb1824",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "third_party/t3code/apps/server/src/gogoke/adapters/native/registry.ts",
+      "mapping_blob": "b668ac697f78c65967de0bd63a2fe12f6ab65f9a",
+      "authorization_base_blob": "b668ac697f78c65967de0bd63a2fe12f6ab65f9a",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "third_party/t3code/apps/server/src/gogoke/runtimeCatalog/catalog.ts",
+      "mapping_blob": "22ff9521cebd2d94c7ed65ad1389bbee009f5cbf",
+      "authorization_base_blob": "22ff9521cebd2d94c7ed65ad1389bbee009f5cbf",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "third_party/t3code/apps/server/src/gogoke/host/coordinator.ts",
+      "mapping_blob": "e9e60ee0edc525212aa7638a105626939ec2697e",
+      "authorization_base_blob": "e9e60ee0edc525212aa7638a105626939ec2697e",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "third_party/t3code/apps/server/package.json",
+      "mapping_blob": "10bc14f851dc5c6484061d32c9135a9f0f1f8a50",
+      "authorization_base_blob": "10bc14f851dc5c6484061d32c9135a9f0f1f8a50",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "third_party/t3code/pnpm-lock.yaml",
+      "mapping_blob": "e7b969ee89168a8f77eb4cb189b85b5014eb5599",
+      "authorization_base_blob": "e7b969ee89168a8f77eb4cb189b85b5014eb5599",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/lib.rs",
+      "mapping_blob": "2904772c36c4ec31b387392bd00e97f4878d2241",
+      "authorization_base_blob": "2904772c36c4ec31b387392bd00e97f4878d2241",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/public_runtime/product_entry.rs",
+      "mapping_blob": "a148cd08c99dac0faeea74ef91641aecec64f509",
+      "authorization_base_blob": "a148cd08c99dac0faeea74ef91641aecec64f509",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/workspaces/commands.rs",
+      "mapping_blob": "4f8166e75fff7af56320d65a98ec78a76b376c77",
+      "authorization_base_blob": "4f8166e75fff7af56320d65a98ec78a76b376c77",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/shared/workspaces_core.rs",
+      "mapping_blob": "90eb5f91170cf0aae50996a6b2100e930f7e2b14",
+      "authorization_base_blob": "90eb5f91170cf0aae50996a6b2100e930f7e2b14",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/shared/workspaces_core/worktree.rs",
+      "mapping_blob": "824e4aecdadb228e0363ca2faf87833cc08ab4c2",
+      "authorization_base_blob": "824e4aecdadb228e0363ca2faf87833cc08ab4c2",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src/App.tsx",
+      "mapping_blob": "aaba5ec4d45ba191c9ae6b03c7291469cd4038a5",
+      "authorization_base_blob": "aaba5ec4d45ba191c9ae6b03c7291469cd4038a5",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src/features/app/components/MainApp.tsx",
+      "mapping_blob": "cd0f8022e988069b20587c504d48dba20dd64f9d",
+      "authorization_base_blob": "cd0f8022e988069b20587c504d48dba20dd64f9d",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src/features/layout/components/PanelTabs.tsx",
+      "mapping_blob": "6b593999dfc29d4e07a125bb10820b5e0273da9d",
+      "authorization_base_blob": "6b593999dfc29d4e07a125bb10820b5e0273da9d",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src/features/layout/hooks/layoutNodes/buildGitNodes.tsx",
+      "mapping_blob": "821bd49363313856c0ac996f613f0a99edd805ed",
+      "authorization_base_blob": "821bd49363313856c0ac996f613f0a99edd805ed",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src/features/layout/hooks/layoutNodes/types.ts",
+      "mapping_blob": "0155503d569f39921fb25226cc566e3b9647099e",
+      "authorization_base_blob": "0155503d569f39921fb25226cc566e3b9647099e",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src/features/app/hooks/useGitPanelController.ts",
+      "mapping_blob": "fb23ab5eca9d49200ee18506d13f55b9437e3f9c",
+      "authorization_base_blob": "fb23ab5eca9d49200ee18506d13f55b9437e3f9c",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src/features/app/hooks/useMainAppComposerWorkspaceState.ts",
+      "mapping_blob": "247e8a75b98dc45bb979fe72add6d8b7636af1aa",
+      "authorization_base_blob": "247e8a75b98dc45bb979fe72add6d8b7636af1aa",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src/features/app/hooks/useWorkspaceFileListing.ts",
+      "mapping_blob": "e6cbe6c102b301bbf113339de8c1c2853b7b5ac5",
+      "authorization_base_blob": "e6cbe6c102b301bbf113339de8c1c2853b7b5ac5",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src/features/app/hooks/useMainAppLayoutSurfaces.ts",
+      "mapping_blob": "b6ac0527976dcd659c756d4a90be8cfed7799e68",
+      "authorization_base_blob": "b6ac0527976dcd659c756d4a90be8cfed7799e68",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src/services/tauri.ts",
+      "mapping_blob": "b9888a945d0f6da1dbc94f14fba440f7580b9d75",
+      "authorization_base_blob": "b9888a945d0f6da1dbc94f14fba440f7580b9d75",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/package.json",
+      "mapping_blob": "b554f7d8208e5ce6c2f976baeee2cf711897b036",
+      "authorization_base_blob": "b554f7d8208e5ce6c2f976baeee2cf711897b036",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/package-lock.json",
+      "mapping_blob": "e8da203e5247d7a81d23cf2937fe5d860697a177",
+      "authorization_base_blob": "e8da203e5247d7a81d23cf2937fe5d860697a177",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": ".github/workflows/gogoke-native-host.yml",
+      "mapping_blob": "67fa9b8497e1fcede81c0a28709a46be303b7ffe",
+      "authorization_base_blob": "67fa9b8497e1fcede81c0a28709a46be303b7ffe",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": ".github/workflows/gogoke-desktop.yml",
+      "mapping_blob": "73734fa0f1ee25c2bd7b1050a33f895bdb6cf1a2",
+      "authorization_base_blob": "446623a3f6cb56e7307bbe28ed38ef12b9097660",
+      "new_write_scope": false,
+      "match": false
+    },
+    {
+      "path": ".github/workflows/gogoke-source-hygiene.yml",
+      "mapping_blob": "c33a50639322a123d1765a8b7f0be239413f6530",
+      "authorization_base_blob": "c33a50639322a123d1765a8b7f0be239413f6530",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "tools/ci/gogoke-server-tests.mjs",
+      "mapping_blob": "263f25126fe09d2f1409b9842321ad6499e39ee1",
+      "authorization_base_blob": "263f25126fe09d2f1409b9842321ad6499e39ee1",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src/features/settings/components/SettingsView.tsx",
+      "mapping_blob": "b4a7e5e1076dc3cd4d5dd0dd109a2ba01c732e6f",
+      "authorization_base_blob": "b4a7e5e1076dc3cd4d5dd0dd109a2ba01c732e6f",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src/features/settings/components/sections/SettingsSectionContainers.tsx",
+      "mapping_blob": "d01bb342091d661f8f8da06f99e717ab0fe9c87c",
+      "authorization_base_blob": "d01bb342091d661f8f8da06f99e717ab0fe9c87c",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src/features/settings/components/settingsTypes.ts",
+      "mapping_blob": "166f79148581ebad6f76ed68d10974feb6530470",
+      "authorization_base_blob": "166f79148581ebad6f76ed68d10974feb6530470",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src/features/settings/components/settingsViewConstants.ts",
+      "mapping_blob": "9f9e6f5b7b07ca2a4f54104efcc70027d288039d",
+      "authorization_base_blob": "9f9e6f5b7b07ca2a4f54104efcc70027d288039d",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src/features/settings/components/SettingsNav.tsx",
+      "mapping_blob": "60e6004e84b6a66b63c8ae5b684b7d3043ccb92b",
+      "authorization_base_blob": "60e6004e84b6a66b63c8ae5b684b7d3043ccb92b",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src/i18n/index.tsx",
+      "mapping_blob": "97beebb6ca17976299df181aedd9afc81b2fb4fb",
+      "authorization_base_blob": "97beebb6ca17976299df181aedd9afc81b2fb4fb",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src/features/app/components/RequestUserInputMessage.tsx",
+      "mapping_blob": "cd297a91bc7bdedb9cd3d8370f9794b09de27332",
+      "authorization_base_blob": "cd297a91bc7bdedb9cd3d8370f9794b09de27332",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/native-host/Cargo.lock",
+      "mapping_blob": "0b58e807eab4ab0f928b6faad2951673297dfe18",
+      "authorization_base_blob": "0b58e807eab4ab0f928b6faad2951673297dfe18",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "tools/check-public-source.py",
+      "mapping_blob": "324bcf40e57b552c7ea15d4485eb6f9ad08def79",
+      "authorization_base_blob": "324bcf40e57b552c7ea15d4485eb6f9ad08def79",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "tools/tests/test_check_public_source.py",
+      "mapping_blob": "1284f52eb91c8b3ae724a456794b1f5e3cee96ef",
+      "authorization_base_blob": "1284f52eb91c8b3ae724a456794b1f5e3cee96ef",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "tools/ci/gogoke-package-service.mjs",
+      "mapping_blob": "6d71d74c219d6f3075f0cae7c29480e3af85bf4f",
+      "authorization_base_blob": "6d71d74c219d6f3075f0cae7c29480e3af85bf4f",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "tools/ci/test_gogoke_uninstall_finalizer_cloud.py",
+      "mapping_blob": "fbb0f8a7a0e53c4e57dedd8bcf2fad0afbcc950e",
+      "authorization_base_blob": "dff4b85329aa79cfad4ce77ad2bd025a86904746",
+      "new_write_scope": false,
+      "match": false
+    },
+    {
+      "path": "apps/desktop/src/features/messages/components/Messages.tsx",
+      "mapping_blob": "09b7a3852ca7b02e442b5cb7d28da3c2600617df",
+      "authorization_base_blob": "09b7a3852ca7b02e442b5cb7d28da3c2600617df",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src/features/app/components/ThreadRow.tsx",
+      "mapping_blob": "9098345b13a524986e9eafe34e2cf8d9cd44c702",
+      "authorization_base_blob": "9098345b13a524986e9eafe34e2cf8d9cd44c702",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src/features/composer/components/ComposerInput.tsx",
+      "mapping_blob": "fea3c3f2576d8e8011b5d18704448ebf21269935",
+      "authorization_base_blob": "fea3c3f2576d8e8011b5d18704448ebf21269935",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/backend/app_server.rs",
+      "mapping_blob": "f7ac59b157aa0fe445747e4468c459944a91809b",
+      "authorization_base_blob": "f7ac59b157aa0fe445747e4468c459944a91809b",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/codex/mod.rs",
+      "mapping_blob": "a3c303e661ec2cb3e0a7840081f815ca7f9b0402",
+      "authorization_base_blob": "a3c303e661ec2cb3e0a7840081f815ca7f9b0402",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/shared/workspaces_core/connect.rs",
+      "mapping_blob": "73dfb30b7c1407ac721ee413e6c9df688114ea0b",
+      "authorization_base_blob": "73dfb30b7c1407ac721ee413e6c9df688114ea0b",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/shared/workspaces_core/crud_persistence.rs",
+      "mapping_blob": "633b078f041e2960b0b6a216e66ee284ddfaae75",
+      "authorization_base_blob": "633b078f041e2960b0b6a216e66ee284ddfaae75",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/shared/workspaces_core/runtime_codex_args.rs",
+      "mapping_blob": "f3bde52d46b52d231556663621692f4e90b9013c",
+      "authorization_base_blob": "f3bde52d46b52d231556663621692f4e90b9013c",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon.rs",
+      "mapping_blob": "dbe037c0fd259df89776513e58d9cda266da913f",
+      "authorization_base_blob": "dbe037c0fd259df89776513e58d9cda266da913f",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src/features/app/components/Sidebar.tsx",
+      "mapping_blob": "c62559a032d752baf44af07d577988668a3508e9",
+      "authorization_base_blob": "c62559a032d752baf44af07d577988668a3508e9",
+      "new_write_scope": false,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src/features/threads/hooks/useThreads.ts",
+      "mapping_blob": "508d0544d7a5a2d789812da420eae2c8ca564737",
+      "authorization_base_blob": "508d0544d7a5a2d789812da420eae2c8ca564737",
+      "new_write_scope": true,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src/features/threads/hooks/useThreadMessaging.ts",
+      "mapping_blob": "cc2bae58096c50e23984e5535070cdd3c776ec3a",
+      "authorization_base_blob": "cc2bae58096c50e23984e5535070cdd3c776ec3a",
+      "new_write_scope": true,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/src/features/threads/hooks/useThreadActions.ts",
+      "mapping_blob": "5550f74494f9f971d215690d279fe22de83c3138",
+      "authorization_base_blob": "5550f74494f9f971d215690d279fe22de83c3138",
+      "new_write_scope": true,
+      "match": true
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/product_database/v37_visible_effect.rs",
+      "mapping_blob": null,
+      "authorization_base_blob": null,
+      "new_write_scope": true,
+      "match": null,
+      "source_status": "ABSENT_FROM_MAPPING_AND_AUTHORIZATION_MAIN_PRESENT_IN_UNINTEGRATED_SHADOW",
+      "reviewed_shadow_commit": "ac8607a5aadd214944ee842cb17ff42d90af1c1f",
+      "reviewed_shadow_blob": "684deba468dd3d87fe4c8daa30a823b574575ce9",
+      "disposition": "Proposed exact write scope only; current-selection repair waits for Owner merge/readback. Shadow provenance is not prior authorization."
+    }
+  ],
+  "assets": [
+    {
+      "object": "instance, seat template, seat, session",
+      "existing_contract": "contracts/model.ts RuntimeInstance, RoleSpec, Seat, NativeBinding, SessionLineage",
+      "existing_behaviour": "only the S1-R4 controlled task",
+      "new": "generic five-CLI sessions, layers, state card, home lifecycle"
+    },
+    {
+      "object": "process launch and custody",
+      "existing_contract": "process/windows.rs ProcessLaunch; process_custody.rs stop proof",
+      "existing_behaviour": "launches the bundled Node with one controlled script; closed operation set",
+      "new": "H: generic sessions, admission, explicit environment, per-session directories, permission tiers"
+    },
+    {
+      "object": "events",
+      "existing_contract": "store/orchestration.rs Message, Activity, Session, Turn, Approval",
+      "existing_behaviour": "serves existing orchestration",
+      "new": "A: vendor-neutral seat ledger; L0 decides how old events map in, one authority"
+    },
+    {
+      "object": "worktrees",
+      "existing_contract": "src-tauri shared/workspaces_core/worktree.rs creates Git worktrees under the data dir",
+      "existing_behaviour": "serves CodexMonitor's Codex threads",
+      "new": "F: logic ported into the host, one standard, classification, graph, merge permission; legacy entry kept for legacy threads only"
+    },
+    {
+      "object": "question cards",
+      "existing_contract": "RequestUserInputMessage.tsx with request, options, free text and per-question answers",
+      "existing_behaviour": "bound to the existing Codex thread and workspace",
+      "new": "C: vendor-neutral K-QCARD, seat and turn binding, durable state, native or own card normalisation, recovery; G wraps the existing component"
+    },
+    {
+      "object": "quota",
+      "existing_contract": "local_usage aggregates historic tokens; a Codex rate-limit read path exists in the UI",
+      "existing_behaviour": "Codex only",
+      "new": "none in v1 (Owner 2026-09-26); only CLI-reported exhaustion or error"
+    },
+    {
+      "object": "inbox, side chat, takeover answers, call permission, gates, escalation",
+      "existing_contract": "none",
+      "existing_behaviour": "none",
+      "new": "C, D, E"
+    }
+  ],
+  "new_scope_files": [
+    "apps/desktop/src/features/threads/hooks/useThreads.ts",
+    "apps/desktop/src/features/threads/hooks/useThreadMessaging.ts",
+    "apps/desktop/src/features/threads/hooks/useThreadActions.ts",
+    "apps/desktop/native-host/src/store/product_database/v37_visible_effect.rs"
+  ],
+  "meaning": "Read-only proposal baseline. Three hooks plus one existing shadow effect helper remain unauthorized until Owner merge and exact readback. Existing source differences and absent-main helper are explicit. No product completion or acceptance.",
+  "proposed_source_absent_from_main_count": 1
+}
