@@ -1530,11 +1530,33 @@ pub(crate) fn subscribe(
     after: &LedgerPosition,
     limit: u32,
 ) -> Result<SubscriptionPage, AtomicError> {
+    subscribe_with_scope(connection, reader, id, after, limit, false)
+}
+
+pub(crate) fn subscribe_global(
+    connection: &mut VerifiedDatabaseConnection<'_>, reader: &Reader, id: &str,
+    after: &LedgerPosition, limit: u32,
+) -> Result<SubscriptionPage, AtomicError> {
+    subscribe_with_scope(connection, reader, id, after, limit, true)
+}
+
+fn subscribe_with_scope(
+    connection: &mut VerifiedDatabaseConnection<'_>, reader: &Reader, id: &str,
+    after: &LedgerPosition, limit: u32, global: bool,
+) -> Result<SubscriptionPage, AtomicError> {
     required(id, "subscriptionId")?;
     if subscription(connection, id)?.is_some() {
         return Err(AtomicError::OperationConflict);
     }
-    let page = query(connection, reader, after, limit)?;
+    let registration = registered(connection, &reader.session_id)?
+        .ok_or(AtomicError::InvalidRecord("unregistered reader"))?;
+    if registration.domain_id != reader.domain_id || registration.seat_id != reader.seat_id
+        || (global && (registration.purpose != SessionPurpose::Secretary || reader.domain_id != "global"))
+        || (!global && registration.purpose == SessionPurpose::Secretary) {
+        return Err(AtomicError::OperationConflict);
+    }
+    let page = if global { query_global(connection, after, limit)? }
+        else { query(connection, reader, after, limit)? };
     let position = if page.events.len() == usize::try_from(limit).unwrap_or(usize::MAX) {
         page.events
             .last()
@@ -1542,9 +1564,7 @@ pub(crate) fn subscribe(
     } else {
         page.position.cursor
     };
-    let registration = registered(connection, &reader.session_id)?
-        .ok_or(AtomicError::InvalidRecord("unregistered reader"))?;
-    let kind = if registration.purpose == SessionPurpose::SideChat {
+    let kind = if global { "GLOBAL" } else if registration.purpose == SessionPurpose::SideChat {
         "SIDE"
     } else {
         "PROJECT"
@@ -1580,15 +1600,39 @@ pub(crate) fn resume_subscription(
     after: &LedgerPosition,
     limit: u32,
 ) -> Result<SubscriptionPage, AtomicError> {
+    resume_with_scope(connection, reader, id, after, limit, false)
+}
+
+pub(crate) fn resume_global_subscription(
+    connection: &mut VerifiedDatabaseConnection<'_>, reader: &Reader, id: &str,
+    after: &LedgerPosition, limit: u32,
+) -> Result<SubscriptionPage, AtomicError> {
+    resume_with_scope(connection, reader, id, after, limit, true)
+}
+
+fn resume_with_scope(
+    connection: &mut VerifiedDatabaseConnection<'_>, reader: &Reader, id: &str,
+    after: &LedgerPosition, limit: u32, global: bool,
+) -> Result<SubscriptionPage, AtomicError> {
+    let registration = registered(connection, &reader.session_id)?
+        .ok_or(AtomicError::InvalidRecord("unregistered reader"))?;
+    if registration.domain_id != reader.domain_id || registration.seat_id != reader.seat_id
+        || (global && (registration.purpose != SessionPurpose::Secretary || reader.domain_id != "global")) {
+        return Err(AtomicError::OperationConflict);
+    }
+    let expected_scope = if global { "GLOBAL" } else if registration.purpose == SessionPurpose::SideChat { "SIDE" } else { "PROJECT" };
     let old = subscription(connection, id)?.ok_or(AtomicError::InvalidRecord("subscriptionId"))?;
+    let scope = subscription_scope(connection, id)?;
     if !old.active
         || old.reader_session_id != reader.session_id
         || old.epoch != after.epoch
         || old.cursor != after.cursor
+        || scope != expected_scope
     {
         return Err(AtomicError::OperationConflict);
     }
-    let page = query(connection, reader, after, limit)?;
+    let page = if global { query_global(connection, after, limit)? }
+        else { query(connection, reader, after, limit)? };
     let position = if page.events.len() == usize::try_from(limit).unwrap_or(usize::MAX) {
         page.events
             .last()
@@ -1626,24 +1670,52 @@ pub(crate) fn end_subscription(
     id: &str,
     expected_revision: u64,
 ) -> Result<Subscription, AtomicError> {
+    end_with_scope(connection, reader, id, expected_revision, false)
+}
+
+pub(crate) fn end_global_subscription(
+    connection: &mut VerifiedDatabaseConnection<'_>, reader: &Reader, id: &str,
+    expected_revision: u64,
+) -> Result<Subscription, AtomicError> {
+    end_with_scope(connection, reader, id, expected_revision, true)
+}
+
+fn subscription_scope(connection: &VerifiedDatabaseConnection<'_>, id: &str)
+    -> Result<String, AtomicError> {
+    let row = Statement::prepare(connection.as_ptr(),
+        "SELECT reader_kind FROM v37_ledger_subscription WHERE subscription_id = ?")?;
+    row.bind_text(1, id)?;
+    if !row.step_row()? { return Err(AtomicError::InvalidRecord("subscriptionId")); }
+    let kind = row.column_text(0)?;
+    if row.step_row()? { return Err(AtomicError::OperationConflict); }
+    Ok(kind)
+}
+
+fn end_with_scope(
+    connection: &mut VerifiedDatabaseConnection<'_>, reader: &Reader, id: &str,
+    expected_revision: u64, global: bool,
+) -> Result<Subscription, AtomicError> {
+    let registration = registered(connection, &reader.session_id)?
+        .ok_or(AtomicError::InvalidRecord("unregistered reader"))?;
+    if registration.domain_id != reader.domain_id || registration.seat_id != reader.seat_id
+        || (global && (registration.purpose != SessionPurpose::Secretary || reader.domain_id != "global")) {
+        return Err(AtomicError::OperationConflict);
+    }
+    let expected_scope = if global { "GLOBAL" } else if registration.purpose == SessionPurpose::SideChat { "SIDE" } else { "PROJECT" };
     let old = subscription(connection, id)?.ok_or(AtomicError::InvalidRecord("subscriptionId"))?;
+    let scope = subscription_scope(connection, id)?;
     if !old.active
         || old.reader_session_id != reader.session_id
         || old.revision != expected_revision
+        || scope != expected_scope
     {
         return Err(AtomicError::OperationConflict);
     }
     // Validate the current reader and purpose at end as on every read.
     let position = recover(connection)?;
-    let _ = query(
-        connection,
-        reader,
-        &LedgerPosition {
-            epoch: position.epoch,
-            cursor: old.cursor,
-        },
-        1,
-    )?;
+    let after = LedgerPosition { epoch: position.epoch, cursor: old.cursor };
+    let _ = if global { query_global(connection, &after, 1)? }
+        else { query(connection, reader, &after, 1)? };
     let statement = Statement::prepare(
         connection.as_ptr(),
         "UPDATE v37_ledger_subscription SET state = 'ENDED', revision = revision + 1

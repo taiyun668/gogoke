@@ -21,6 +21,9 @@ mod tests {
     fn request(verb:&str,id:&str,target:&str,revision:u64,payload:&str)->V37Request {
         decode_request(format!(r#"{{"schema":"gogoke.37.operations.v1","family":"K-LEDGER","operation":"{verb}","requestId":"{id}","targetId":"{target}","domainId":"projectA","expectedRevision":"{revision}","payload":{payload}}}"#).as_bytes()).unwrap()
     }
+    fn global_request(verb:&str,id:&str,target:&str,revision:u64,payload:&str)->V37Request {
+        decode_request(format!(r#"{{"schema":"gogoke.37.operations.v1","family":"K-LEDGER","operation":"{verb}","requestId":"{id}","targetId":"{target}","domainId":"global","expectedRevision":"{revision}","payload":{payload}}}"#).as_bytes()).unwrap()
+    }
     fn reply(product:&mut ProductDatabase<'_>,request:&V37Request)->crate::store::session_transport::V37Receipt {
         crate::store::session_transport::decode_receipt(&product.dispatch_user_request(request).unwrap()).unwrap()
     }
@@ -43,6 +46,82 @@ mod tests {
             source_epoch:"synthetic-source".into(),source_cursor:cursor.to_string(),domain_id:"projectA".into(),
             seat_id:"seatA".into(),session_id:"sessionA".into(),tier,side_id:None,
             occurred_at:"synthetic-time".into(),update_json:update}).unwrap();
+    }
+    #[test]
+    fn secretary_user_global_read_subscribe_and_released_history() {
+        let _guard=route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("gogoke-secretary-ledger-{}-{nonce}",std::process::id()));
+        std::fs::create_dir(&path).unwrap();let root=RootLock::acquire(&path).unwrap();
+        let database=path.join("state.sqlite");let mut product=ProductDatabase::open(&root,&database).unwrap();
+        // All rows below are synthetic qualification facts, not an observed H
+        // process, actual model output, installed UI, login or grant.
+        product.connection.execute("INSERT INTO gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('instanceA','codex','syntheticHome','syntheticIdentity','sha256:fixture','fixture','INSTALLED','LOGGED_OUT',1)").unwrap();
+        seat::store_template(&mut product.connection,NativeOrigin::user(&product.owner),StoreTemplate {
+            domain_id:"global",template_id:"secretaryTemplate",settings_json:br#"{}"#}).unwrap();
+        let seat=seat::create(&mut product.connection,NativeOrigin::user(&product.owner),CreateSeat {
+            domain_id:"global",seat_id:"secretarySeat",template_id:"secretaryTemplate",instance_id:None,
+            kind:Kind::Long,request_id:"createSecretarySeat",request_bytes:b"synthetic secretary seat"}).unwrap().seat;
+        seat::designate_secretary(&mut product.connection,&product.owner,&seat.seat_id,&seat.incarnation,
+            "designateSecretary",b"synthetic designation").unwrap();
+        let q=Statement::prepare(product.connection.as_ptr(),
+            "UPDATE gogoke_v37_seats SET state='BUSY',instance_id='instanceA' WHERE domain_id='global' AND seat_id='secretarySeat'").unwrap();q.step_done().unwrap();drop(q);
+        let generation="synthetic-generation";
+        let q=Statement::prepare(product.connection.as_ptr(),
+            "INSERT INTO gogoke_v37_h_owner_binding VALUES('secretaryBinding','instanceA','global','SESSION','secretarySession',?1,'ACTIVE')").unwrap();
+        q.bind_text(1,generation).unwrap();q.step_done().unwrap();drop(q);
+        let q=Statement::prepare(product.connection.as_ptr(),
+            "INSERT INTO gogoke_v37_instance_homes(home_id,instance_id,domain_id,kind,owner_id,generation,state,revision) VALUES('secretaryHome','instanceA','global','SESSION','secretarySession',?1,'ACTIVE',1)").unwrap();
+        q.bind_text(1,generation).unwrap();q.step_done().unwrap();drop(q);
+        let q=Statement::prepare(product.connection.as_ptr(),
+            "INSERT INTO gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision) VALUES('global','secretarySession','instanceA','secretaryHome','secretaryBinding',?1,'COMMITTED',2)").unwrap();
+        q.bind_text(1,generation).unwrap();q.step_done().unwrap();drop(q);
+        let q=Statement::prepare(product.connection.as_ptr(),
+            "INSERT INTO gogoke_v37_session_binding_v2(domain_id,session_id,seat_id,seat_incarnation,seat_authorization_generation,selected_instance_id,provenance) VALUES('global','secretarySession','secretarySeat',?1,?2,'instanceA','NATIVE_V2')").unwrap();
+        q.bind_text(1,&seat.incarnation).unwrap();q.bind_i64(2,seat.generation).unwrap();q.step_done().unwrap();drop(q);
+        ledger::register_session(&mut product.connection,&ledger::SessionRegistration {domain_id:"global".into(),
+            seat_id:"secretarySeat".into(),session_id:"secretarySession".into(),purpose:ledger::SessionPurpose::Secretary,side_id:None}).unwrap();
+        for (cursor,domain,seat_id,session,marker) in [(1,"projectA","seatA","workA","PROJECT_A"),
+            (2,"projectB","seatB","workB","PROJECT_B"),(3,"global","secretarySeat","secretarySession","OWN_HISTORY")] {
+            if domain!="global" {ledger::register_session(&mut product.connection,&ledger::SessionRegistration {
+                domain_id:domain.into(),seat_id:seat_id.into(),session_id:session.into(),purpose:ledger::SessionPurpose::Work,side_id:None}).unwrap();}
+            let update=Json::Object(BTreeMap::from([
+                (JsonString::from_str("content"),Json::Object(BTreeMap::from([
+                    (JsonString::from_str("text"),text(marker)),(JsonString::from_str("type"),text("text"))]))),
+                (JsonString::from_str("sessionUpdate"),text("agent_message_chunk")),
+            ])).canonical();
+            ledger::record(&mut product.connection,&ledger::EventInput {event_id:format!("secretaryEvent{cursor}"),
+                source_epoch:"synthetic-source".into(),source_cursor:"1".into(),domain_id:domain.into(),
+                seat_id:seat_id.into(),session_id:session.into(),tier:if domain=="global" {ledger::Tier::Global} else {ledger::Tier::Project},
+                side_id:None,occurred_at:"synthetic-time".into(),update_json:update}).unwrap();
+        }
+        let position=ledger::recover(&product.connection).unwrap();
+        let payload=format!(r#"{{"readerSessionId":"secretarySession","scope":"GLOBAL","epoch":{},"afterCursor":"0"}}"#,text(&position.epoch).canonical());
+        let query=global_request("scoped-query","globalQuery","ledger",position.cursor,&payload);
+        let body=String::from_utf8(product.dispatch_user_request(&query).unwrap()).unwrap();
+        for fact in ["PROJECT_A","PROJECT_B","OWN_HISTORY","domainId","sourceEpoch","sourceCursor"] {assert!(body.contains(fact),"missing {fact}");}
+        assert_eq!(reply(&mut product,&query).status,V37Status::Replayed);
+        let subscription=global_request("subscribe","globalSubscribe","globalSub",0,&payload);
+        assert_eq!(reply(&mut product,&subscription).status,V37Status::Applied);
+        product.connection.execute("UPDATE gogoke_v37_h_claim SET state='RELEASED' WHERE session_id='secretarySession'").unwrap();
+        product.connection.execute("UPDATE gogoke_v37_h_owner_binding SET state='REVOKED' WHERE binding_id='secretaryBinding'").unwrap();
+        product.connection.execute("UPDATE gogoke_v37_seats SET state='IDLE',generation=generation+1 WHERE domain_id='global' AND seat_id='secretarySeat'").unwrap();
+        product.close_checked().unwrap();let mut product=ProductDatabase::open(&root,&database).unwrap();
+        assert_eq!(reply(&mut product,&query).status,V37Status::Replayed);
+        let resume=global_request("resume-subscription","globalResume","globalSub",1,
+            &format!(r#"{{"epoch":{},"afterCursor":"{}"}}"#,text(&position.epoch).canonical(),position.cursor));
+        assert_eq!(reply(&mut product,&resume).status,V37Status::Applied);
+        let end=global_request("end-subscription","globalEnd","globalSub",2,"{}");
+        assert_eq!(reply(&mut product,&end).status,V37Status::Applied);
+        product.connection.execute("UPDATE gogoke_v37_session_binding_v2 SET provenance='LEGACY_V1' WHERE session_id='secretarySession'").unwrap();
+        assert_eq!(reply(&mut product,&query).status,V37Status::Denied);
+        product.connection.execute("UPDATE gogoke_v37_session_binding_v2 SET provenance='NATIVE_V2' WHERE session_id='secretarySession'").unwrap();
+        product.connection.execute("UPDATE gogoke_v37_seats SET state='RECLAIMED' WHERE domain_id='global' AND seat_id='secretarySeat'").unwrap();
+        assert_eq!(reply(&mut product,&query).status,V37Status::Denied);
+        product.connection.execute("UPDATE gogoke_v37_seats SET state='IDLE' WHERE domain_id='global' AND seat_id='secretarySeat'").unwrap();
+        product.connection.execute("UPDATE v37_ledger_session SET purpose='WORK' WHERE session_id='secretarySession'").unwrap();
+        assert_eq!(reply(&mut product,&query).status,V37Status::Denied);
+        product.close_checked().unwrap();drop(root);std::fs::remove_dir_all(path).unwrap();
     }
     #[test]
     fn native_user_ledger_scopes_replay_and_subscription_survive_reopen() {
@@ -152,6 +231,7 @@ fn events(values:&[LedgerEvent])->Result<Json> {
             (JsonString::from_str("sourceEventId"),text(&event.input.event_id)),
             (JsonString::from_str("sourceEpoch"),text(&event.input.source_epoch)),
             (JsonString::from_str("sourceCursor"),text(&event.input.source_cursor)),
+            (JsonString::from_str("domainId"),text(&event.input.domain_id)),
             (JsonString::from_str("seatId"),text(&event.input.seat_id)),
             (JsonString::from_str("sessionId"),text(&event.input.session_id)),
             (JsonString::from_str("update"),crate::store::atomic::Parser::parse(&event.input.update_json)?),
@@ -178,6 +258,55 @@ fn committed_receipt(request:&V37Request,previous:u64,revision:u64,result:BTreeM
 }
 
 impl<'root> ProductDatabase<'root> {
+    /// Owner USER read authority over a previously admitted Secretary session.
+    /// Original A purpose and H NATIVE_V2 binding remain after H release; E's
+    /// singleton still has to designate that exact USER/LONG incarnation.
+    fn native_secretary_ledger_reader(&self,session:&str)->Result<Reader> {
+        let binding=crate::store::session_transport::session_binding::read(&self.connection,"global",session)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!("ledger original H binding: {error:?}")))?
+            .ok_or(OrchestrationError::AccessDenied)?;
+        if binding.provenance!=crate::store::session_transport::session_binding::Provenance::NativeV2 {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let designation=crate::store::seat::read_secretary_configuration_in_transaction(&self.connection,&self.owner)?;
+        let crate::store::seat::SecretaryConfiguration::Designated {seat_id,incarnation,state,..}=designation else {
+            return Err(OrchestrationError::AccessDenied);
+        };
+        if state==crate::store::seat::State::Reclaimed || seat_id!=binding.seat_id
+            || incarnation!=binding.seat_incarnation {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let row=Statement::prepare(self.connection.as_ptr(),
+            "SELECT l.domain_id,l.seat_id,l.session_id
+             FROM main.v37_ledger_session l
+             JOIN main.gogoke_v37_h_claim h ON h.domain_id=l.domain_id AND h.session_id=l.session_id
+             JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=h.binding_id
+               AND b.domain_id=h.domain_id AND b.instance_id=h.instance_id
+               AND b.kind='SESSION' AND b.owner_id=h.session_id AND b.generation=h.generation
+             JOIN main.gogoke_v37_instance_homes home ON home.home_id=h.home_id
+               AND home.domain_id=h.domain_id AND home.instance_id=h.instance_id
+               AND home.kind='SESSION' AND home.owner_id=h.session_id AND home.generation=h.generation
+             JOIN main.gogoke_v37_session_binding_v2 v ON v.domain_id=h.domain_id
+               AND v.session_id=h.session_id AND v.provenance='NATIVE_V2'
+               AND v.selected_instance_id=h.instance_id AND v.seat_id=l.seat_id
+             JOIN main.gogoke_v37_seat_secretary d ON d.singleton=1 AND d.domain_id='global'
+               AND d.seat_id=v.seat_id AND d.incarnation=v.seat_incarnation
+             JOIN main.gogoke_v37_seats s ON s.domain_id=d.domain_id AND s.seat_id=d.seat_id
+               AND s.incarnation=d.incarnation AND s.layer='USER' AND s.kind='LONG'
+               AND s.state<>'RECLAIMED'
+             WHERE l.domain_id='global' AND l.session_id=?1 AND l.purpose='SECRETARY'
+               AND h.state IN ('COMMITTED','STOPPED','RELEASED')
+               AND (b.state='ACTIVE' OR h.state='RELEASED')")?;
+        row.bind_text(1,session)?;
+        if !row.step_row()? {return Err(OrchestrationError::AccessDenied);}
+        let reader=Reader {domain_id:row.column_text(0)?,seat_id:row.column_text(1)?,session_id:row.column_text(2)?};
+        if reader.seat_id!=binding.seat_id || reader.session_id!=binding.session_id {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        if row.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        Ok(reader)
+    }
+
     fn native_ledger_reader(&self,request:&V37Request,session:&str)->Result<Reader> {
         let relationship=crate::store::session_transport::session_binding::current_relationship(
             &self.connection,&request.domain_id,session)
@@ -233,21 +362,27 @@ impl<'root> ProductDatabase<'root> {
             return Ok(encode_receipt(request,V37Status::Unsupported,request.expected_revision,
                 request.expected_revision,BTreeMap::from([(JsonString::from_str("reason"),text("LEDGER_RECORD_REQUIRES_NATIVE_SOURCE_FACT"))])));
         }
-        let session=if matches!(request.operation.as_str(),"scoped-query"|"subscribe") {
-            user_payload_string(request,"readerSessionId")?
+        let (session,global)=if matches!(request.operation.as_str(),"scoped-query"|"subscribe") {
+            (user_payload_string(request,"readerSessionId")?,
+                user_payload_string(request,"scope")?=="GLOBAL")
         } else {
             let row=Statement::prepare(self.connection.as_ptr(),
-                "SELECT reader_id FROM main.v37_ledger_subscription WHERE subscription_id=?1 AND domain_id=?2")?;
+                "SELECT reader_id,reader_kind FROM main.v37_ledger_subscription WHERE subscription_id=?1 AND domain_id=?2")?;
             row.bind_text(1,&request.target_id)?;row.bind_text(2,&request.domain_id)?;
             if !row.step_row()? {return Ok(encode_receipt(request,V37Status::Conflict,request.expected_revision,request.expected_revision,Default::default()));}
-            row.column_text(0)?
+            (row.column_text(0)?,row.column_text(1)?=="GLOBAL")
         };
-        let reader=match self.native_ledger_reader(request,&session) {
+        let selected=if global && request.domain_id=="global" {
+            self.native_secretary_ledger_reader(&session)
+        } else if !global {self.native_ledger_reader(request,&session)}
+        else {Err(OrchestrationError::AccessDenied)};
+        let reader=match selected {
             Ok(reader)=>reader,
             Err(OrchestrationError::AccessDenied)=>return Ok(encode_receipt(request,V37Status::Denied,
                 request.expected_revision,request.expected_revision,Default::default())),
             Err(error)=>return Err(error),
         };
+        let expected_scope=if global {"GLOBAL"} else {"PROJECT"};
         let position=ledger::recover(&self.connection)?;
         if request.operation!="scoped-query" {
             if let Some(original)=original.take() {
@@ -259,7 +394,7 @@ impl<'root> ProductDatabase<'root> {
             }
         }
         let (previous,revision,result)=if request.operation=="scoped-query" {
-            if request.payload.len()!=4 || user_payload_string(request,"scope")?!="PROJECT" {
+            if request.payload.len()!=4 || user_payload_string(request,"scope")?!=expected_scope {
                 return Ok(encode_receipt(request,V37Status::Denied,position.cursor,position.cursor,Default::default()));
             }
             if request.expected_revision!=position.cursor {
@@ -274,7 +409,8 @@ impl<'root> ProductDatabase<'root> {
                 return Ok(encode_receipt(request,V37Status::Conflict,position.cursor,position.cursor,
                     BTreeMap::from([(JsonString::from_str("reason"),text("CURSOR_AHEAD"))])));
             }
-            let page=ledger::query(&self.connection,&reader,&after,32)?;
+            let page=if global {ledger::query_global(&self.connection,&after,32)?}
+                else {ledger::query(&self.connection,&reader,&after,32)?};
             let next_cursor=if page.events.len()==32 {page.events.last().map_or(after.cursor,|event|event.cursor)}
                 else {page.position.cursor};
             (page.position.cursor,page.position.cursor,BTreeMap::from([
@@ -285,14 +421,15 @@ impl<'root> ProductDatabase<'root> {
             ]))
         } else {
             let (before,page)=if request.operation=="subscribe" {
-                if request.payload.len()!=4 || user_payload_string(request,"scope")?!="PROJECT" {
+                if request.payload.len()!=4 || user_payload_string(request,"scope")?!=expected_scope {
                     return Ok(encode_receipt(request,V37Status::Denied,0,0,Default::default()));
                 }
                 let row=Statement::prepare(self.connection.as_ptr(),
-                    "SELECT revision,domain_id,reader_id FROM main.v37_ledger_subscription WHERE subscription_id=?1")?;
+                    "SELECT revision,domain_id,reader_id,reader_kind FROM main.v37_ledger_subscription WHERE subscription_id=?1")?;
                 row.bind_text(1,&request.target_id)?;
                 let existing=if row.step_row()? {
-                    if row.column_text(1)?!=request.domain_id || row.column_text(2)?!=reader.session_id {
+                    if row.column_text(1)?!=request.domain_id || row.column_text(2)?!=reader.session_id
+                        || row.column_text(3)?!=expected_scope {
                         return Ok(encode_receipt(request,V37Status::Denied,request.expected_revision,request.expected_revision,Default::default()));
                     }
                     Some(number(&row.column_text(0)?)?)
@@ -304,7 +441,8 @@ impl<'root> ProductDatabase<'root> {
                 if after.epoch!=position.epoch {return Ok(encode_receipt(request,V37Status::Stale,0,0,Default::default()));}
                 if after.cursor>position.cursor {return Ok(encode_receipt(request,V37Status::Conflict,0,0,
                     BTreeMap::from([(JsonString::from_str("reason"),text("CURSOR_AHEAD"))])));}
-                (0,ledger::subscribe(&mut self.connection,&reader,&request.target_id,&after,32)?)
+                (0,if global {ledger::subscribe_global(&mut self.connection,&reader,&request.target_id,&after,32)?}
+                    else {ledger::subscribe(&mut self.connection,&reader,&request.target_id,&after,32)?})
             } else {
                 let row=Statement::prepare(self.connection.as_ptr(),"SELECT revision,epoch,cursor,state FROM main.v37_ledger_subscription WHERE subscription_id=?1 AND reader_id=?2")?;
                 row.bind_text(1,&request.target_id)?;row.bind_text(2,&reader.session_id)?;
@@ -316,7 +454,8 @@ impl<'root> ProductDatabase<'root> {
                 if !active {return Ok(encode_receipt(request,V37Status::Conflict,current,current,Default::default()));}
                 if request.operation=="end-subscription" {
                     if !request.payload.is_empty() {return Err(OrchestrationError::Invalid("ledger end payload"));}
-                    let ended=ledger::end_subscription(&mut self.connection,&reader,&request.target_id,current)?;
+                    let ended=if global {ledger::end_global_subscription(&mut self.connection,&reader,&request.target_id,current)?}
+                        else {ledger::end_subscription(&mut self.connection,&reader,&request.target_id,current)?};
                     (current,ledger::SubscriptionPage {subscription:ended,events:Vec::new()})
                 } else {
                     if request.payload.len()!=2 {return Err(OrchestrationError::Invalid("ledger resume payload"));}
@@ -326,7 +465,8 @@ impl<'root> ProductDatabase<'root> {
                         return Ok(encode_receipt(request,V37Status::Conflict,current,current,BTreeMap::from([
                             (JsonString::from_str("reason"),text(if after.cursor<cursor {"CURSOR_REWIND"} else {"CURSOR_GAP"}))])));
                     }
-                    (current,ledger::resume_subscription(&mut self.connection,&reader,&request.target_id,&after,32)?)
+                    (current,if global {ledger::resume_global_subscription(&mut self.connection,&reader,&request.target_id,&after,32)?}
+                        else {ledger::resume_subscription(&mut self.connection,&reader,&request.target_id,&after,32)?})
                 }
             };
             (before,page.subscription.revision,subscription_result(&page.subscription,&page.events)?)
