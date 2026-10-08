@@ -416,6 +416,7 @@ pub(crate) async fn spawn_workspace_session(
     app_handle: AppHandle,
     codex_home: Option<PathBuf>,
 ) -> Result<Arc<WorkspaceSession>, String> {
+    crate::public_runtime::product_entry::ensure_design37_user_host(&app_handle).await?;
     let _ = VISIBLE_APP.set(app_handle.clone());
     let route = visible_route(&app_handle, &entry.id).await?;
     match route.state.as_str() {
