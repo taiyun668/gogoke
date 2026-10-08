@@ -103,7 +103,10 @@ impl Selection {
 }
 
 pub(super) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Result<()> {
-    if !schema_state(db)? {db.execute(SCHEMA)?;}
+    if !schema_state(db)? {
+        db.execute(SCHEMA).map_err(|cause|OrchestrationError::V37StoreFailure(
+            format!("visible conversation selection schema creation: {cause:?}")))?;
+    }
     if !schema_state(db)? {return Err(OrchestrationError::Invalid("visible selection schema"));}
     Ok(())
 }

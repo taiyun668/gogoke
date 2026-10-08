@@ -11,7 +11,10 @@ const TABLE:&str="gogoke_v37_visible_effect";
 const SCHEMA:&str="CREATE TABLE gogoke_v37_visible_effect(workspace_id TEXT NOT NULL,request_id TEXT NOT NULL,domain_id TEXT NOT NULL,selection_row INTEGER NOT NULL,association_json TEXT NOT NULL,request_hex TEXT NOT NULL,method TEXT NOT NULL,params_json TEXT NOT NULL,translation_json TEXT NOT NULL,thread_id TEXT NOT NULL,turn_id TEXT NOT NULL,process_operation_id TEXT NOT NULL,ticket TEXT NOT NULL,custodian_nonce TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('UNKNOWN','APPLIED','DENIED','UNSUPPORTED')),reply_json TEXT NOT NULL,original_error TEXT NOT NULL,PRIMARY KEY(workspace_id,request_id),UNIQUE(domain_id,request_id)) STRICT";
 
 pub(super) fn initialize_schema(db:&mut VerifiedDatabaseConnection<'_>)->Result<()> {
-    if !schema_state(db)? {db.execute(SCHEMA)?;}
+    if !schema_state(db)? {
+        db.execute(SCHEMA).map_err(|cause|OrchestrationError::V37StoreFailure(
+            format!("visible USER effect schema creation: {cause:?}")))?;
+    }
     if !schema_state(db)? {return Err(OrchestrationError::Invalid("visible effect schema"));}Ok(())
 }
 fn schema_state(db:&VerifiedDatabaseConnection<'_>)->Result<bool> {
