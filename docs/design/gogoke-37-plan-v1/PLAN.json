@@ -667,7 +667,7 @@
    },
    {
     "path": "apps/desktop/src-tauri/src/lib.rs",
-    "extension": "command registration for new UI calls",
+    "extension": "command registration for new UI calls Also initialize the existing native visible USER view context before the first workspace operation; initialization grants no H admission and launches no model.",
     "serves": [
      "G"
     ]
@@ -979,7 +979,7 @@
    },
    {
     "path": "apps/desktop/src-tauri/src/codex/mod.rs",
-    "extension": "Forward Design37 conversation start/resume/read/list/send/steer/interrupt/approval/input and original events through that verified H session while preserving current Tauri command and event shapes; no legacy ID aliases or global CLI fallback.",
+    "extension": "Forward Design37 conversation start/resume/read/list/send/steer/interrupt/approval/input and original events through that verified H session while preserving current Tauri command and event shapes; no legacy ID aliases or global CLI fallback. For first desktop workspace registration, start only the existing verified USER host and read the exact NEEDS_SETUP route; expose metadata-only registration solely when no original association exists. Unknown, malformed and legacy routes retain the original refusal; explicit native connection still requires the saved original USER selection.",
     "serves": [
      "H",
      "A",
@@ -1001,7 +1001,7 @@
    },
    {
     "path": "apps/desktop/src-tauri/src/shared/workspaces_core/crud_persistence.rs",
-    "extension": "Use the same exact session stop method at the existing workspace creation/clone rollback points; preserve original failures and do not manufacture STOPPED.",
+    "extension": "Use the same exact session stop method at the existing workspace creation/clone rollback points; preserve original failures and do not manufacture STOPPED. For the existing add_workspace command only, persist its original newly generated workspace ID and metadata with connected=false when the verified desktop USER route is NEEDS_SETUP with no association. Do not create a WorkspaceSession, reuse a legacy model, admit H or guess any identity. Preserve original write failures; do not claim atomic on-disk rollback. Native clone/import behavior is not widened by this amendment.",
     "serves": [
      "H",
      "A",
@@ -1023,7 +1023,7 @@
    },
    {
     "path": "apps/desktop/src-tauri/src/bin/gogoke_daemon.rs",
-    "extension": "Use the same session lifecycle for stale/prune/shutdown call sites; unsupported native modes refuse before launch, never fall back to an ordinary model process.",
+    "extension": "Use the same session lifecycle for stale/prune/shutdown call sites; unsupported native modes refuse before launch, never fall back to an ordinary model process. Add only the compile-compatible registration probe stub returning false because this binary has no USER host; its existing daemon lifecycle remains unchanged.",
     "serves": [
      "H",
      "A",
@@ -1079,6 +1079,15 @@
      "H",
      "A",
      "C",
+     "G"
+    ]
+   },
+   {
+    "path": "apps/desktop/native-host/src/store/product_database/v37_visible_conversation.rs",
+    "extension": "Change only the existing live-state read envelope: outer APPLIED only for an original reason-free H-proven LIVE or fully proven STOPPED observation; outer/inner UNKNOWN and original error remain for missing, uncertain, mismatched or failed proof. Preserve all existing exact E/F/H/A selection and physical holder/StopFact verification. No added command, field, capability, persistent writer, model process or forged proof.",
+    "serves": [
+     "H",
+     "A",
      "G"
     ]
    }
