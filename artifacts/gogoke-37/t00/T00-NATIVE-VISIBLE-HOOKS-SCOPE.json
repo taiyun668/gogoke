@@ -11,14 +11,16 @@
       "mapping_blob": "73734fa0f1ee25c2bd7b1050a33f895bdb6cf1a2",
       "authorization_base_blob": "446623a3f6cb56e7307bbe28ed38ef12b9097660",
       "new_write_scope": false,
-      "match": false
+      "match": false,
+      "disposition": "Owner-merged PR76 supplies the already-requested web_only switch; current main baseline retained, this proposal does not edit this workflow."
     },
     {
       "path": "tools/ci/test_gogoke_uninstall_finalizer_cloud.py",
       "mapping_blob": "fbb0f8a7a0e53c4e57dedd8bcf2fad0afbcc950e",
       "authorization_base_blob": "dff4b85329aa79cfad4ce77ad2bd025a86904746",
       "new_write_scope": false,
-      "match": false
+      "match": false,
+      "disposition": "Previously Owner-merged and recorded uninstall fixture lock-release change; current main baseline retained, this proposal does not edit the fixture."
     }
   ],
   "shared_files": [
