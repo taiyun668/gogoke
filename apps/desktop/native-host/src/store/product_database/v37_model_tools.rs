@@ -497,6 +497,25 @@ impl<'root> ProductDatabase<'root> {
             if caller.tool()==Some("gogoke_ledger") {
                 return self.dispatch_model_secretary_ledger(&caller).map(|text|(text,true));
             }
+            if caller.tool()==Some("gogoke_routine") {
+                let bytes=self.dispatch_model_secretary_routine(&caller,
+                    |body,span,zone,input_ms,_now| {
+                        let host_zone=if zone=="HOST_DEFAULT" {
+                            iana_time_zone::get_timezone().map_err(|error|
+                                OrchestrationError::V37StoreFailure(format!("host timezone: {error}")))?
+                        } else {String::new()};
+                        let resolved=seat::secretary_schedule::resolve_user_schedule(
+                            body,span,zone,input_ms,&host_zone).map_err(|error|
+                                OrchestrationError::V37StoreFailure(format!("secretary time rule: {error:?}")))?;
+                        Ok(super::v37_secretary_routine_model::ResolvedRoutineSchedule {
+                            schedule_raw:span.to_string(),timezone:resolved.timezone,
+                            next_due_ms:resolved.next_due_ms,
+                        })
+                    })?;
+                let text=String::from_utf8(bytes).map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!("secretary routine result UTF-8: {error}")))?;
+                return Ok((text,true));
+            }
             if caller.tool()==Some("gogoke_side_message") {
                 let bytes=self.dispatch_model_side_message(&caller)?;
                 return model_receipt_result(bytes);

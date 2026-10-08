@@ -252,7 +252,7 @@ fn original_source(db:&VerifiedDatabaseConnection<'_>,proof:&ModelCallProof)->Re
         ledger::SessionPurpose::SideChat if registration.side_id.is_some() &&
             proof.tool=="gogoke_side_message" => {},
         ledger::SessionPurpose::Secretary if registration.side_id.is_none()
-            && proof.domain=="global" && proof.tool=="gogoke_ledger" => {
+            && proof.domain=="global" && matches!(proof.tool.as_str(),"gogoke_ledger"|"gogoke_routine") => {
             let binding=session_binding::read(db,&proof.domain,&proof.session)
                 .map_err(|error|ModelCallError::Store(AtomicError::DurabilityContractFailed(
                     format!("secretary model original binding: {error:?}"))))?
@@ -273,7 +273,7 @@ fn original_source(db:&VerifiedDatabaseConnection<'_>,proof:&ModelCallProof)->Re
             }
         },
         ledger::SessionPurpose::Work if registration.side_id.is_none()
-            && proof.tool!="gogoke_ledger" => {
+            && !matches!(proof.tool.as_str(),"gogoke_ledger"|"gogoke_routine") => {
             let seat=seat::get(db,&proof.domain,&proof.seat)?
                 .ok_or(ModelCallError::Denied)?;
             seat::orchestration_scope(&seat).map_err(|_|ModelCallError::Denied)?;
@@ -373,7 +373,7 @@ fn build_from_captured_source(db:&VerifiedDatabaseConnection<'_>,
         || call.turn_id!=expected_turn
         || !matches!(call.tool.as_str(),"gogoke_seat"|"gogoke_policy"|
             "gogoke_worktree"|"gogoke_takeover"|"gogoke_side_message"|
-            "gogoke_ledger") {
+            "gogoke_ledger"|"gogoke_routine") {
         return Err(ModelCallError::Denied);
     }
     let (operation,open_request_id,seat,incarnation)=

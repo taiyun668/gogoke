@@ -15,10 +15,12 @@ mod orchestration;
 mod page_facts;
 mod secretary;
 mod secretary_routines;
+pub(crate) mod secretary_schedule;
 pub(crate) use secretary::{configure_secretary, designate_secretary,
     read_secretary_configuration_in_transaction, require_secretary_session, SecretaryConfiguration,
     SecretaryDesignation};
 pub(crate) use secretary_routines::{create_secretary_routine,change_secretary_routine,
+    create_secretary_routine_from_model_in_transaction,replay_secretary_routine_from_model_in_transaction,
     read_secretary_routines_in_transaction,record_user_presence,record_user_presence_in_transaction,
     configure_absence_policy,
     read_secretary_presence_in_transaction,SecretaryPresenceFact,SecretaryAbsencePolicyFact,

@@ -3,6 +3,10 @@ name: gogoke native-host CI
 on:
   workflow_dispatch:
     inputs:
+      dependency_lock_only:
+        description: Generate the pinned native dependency lock as data only; build, library, mutation and server gates are NOT_RUN
+        type: boolean
+        default: false
       security_remainder_source:
         description: Run only unfinished security groups against this exact ancestor source SHA; other gates are NOT_RUN
         type: string
@@ -52,8 +56,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  native-dependency-lock:
+    if: ${{ inputs.dependency_lock_only }}
+    name: Resolve pinned native dependency lock only
+    timeout-minutes: 10
+    runs-on: windows-latest
+    env:
+      RUSTUP_TOOLCHAIN: 1.85.1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.1
+      - name: Generate lock data without native compilation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo generate-lockfile --manifest-path apps/desktop/native-host/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { throw "Pinned dependency resolution failed: $LASTEXITCODE" }
+          $source = (git rev-parse HEAD).Trim()
+          $lock = 'apps/desktop/native-host/Cargo.lock'
+          $manifest = 'apps/desktop/native-host/Cargo.toml'
+          [ordered]@{ schema='gogoke.native-dependency-lock.v1'; sourceCommit=$source;
+            manifestSha256=(Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash.ToLowerInvariant();
+            lockSha256=(Get-FileHash -LiteralPath $lock -Algorithm SHA256).Hash.ToLowerInvariant();
+            compilerExecuted=$false; formalGates='NOT_RUN' } |
+            ConvertTo-Json | Set-Content -LiteralPath native-dependency-lock-result.json -Encoding utf8NoBOM
+          'Native compilation, tests, mutations and product gates: NOT_RUN' >> $env:GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-dependency-lock-${{ github.sha }}-${{ github.run_id }}
+          path: |
+            apps/desktop/native-host/Cargo.lock
+            native-dependency-lock-result.json
+          if-no-files-found: error
+          retention-days: 14
+
   native-host-windows-real-axes:
-    if: ${{ !inputs.catalog_program_fixture_only && !inputs.security_remainder_source }}
+    if: ${{ !inputs.dependency_lock_only && !inputs.catalog_program_fixture_only && !inputs.security_remainder_source }}
     name: ${{ matrix.shard == 'all' && 'Native host Windows real process axes' || format('Native host Windows library {0}', matrix.shard) }}
     # Full-library shards use independent runners so their fixed native fixtures
     # never execute in separate test processes on the same Windows host.
@@ -634,7 +672,7 @@ jobs:
           retention-days: 30
 
   native-host-library-partitions:
-    if: ${{ always() && inputs.full_library_only && !inputs.security_remainder_source }}
+    if: ${{ always() && !inputs.dependency_lock_only && inputs.full_library_only && !inputs.security_remainder_source }}
     needs: native-host-windows-real-axes
     name: Verify complete native-host library partitions
     timeout-minutes: 15
@@ -752,7 +790,7 @@ jobs:
           retention-days: 30
 
   native-host-windows-security-mutations:
-    if: ${{ !inputs.full_library_only || inputs.security_remainder_source }}
+    if: ${{ !inputs.dependency_lock_only && (!inputs.full_library_only || inputs.security_remainder_source) }}
     name: Native host Windows security mutations (${{ matrix.group }})
     # Keep unchanged mutation commands, but separate compile-heavy groups.
     # A remainder run tests the explicitly checked-out ancestor, not workflow SHA.
@@ -1262,7 +1300,7 @@ jobs:
           retention-days: 30
 
   gogoke-server-tests:
-    if: ${{ !inputs.security_remainder_source && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.full_library_only && !inputs.catalog_program_fixture_only }}
+    if: ${{ !inputs.dependency_lock_only && !inputs.security_remainder_source && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.full_library_only && !inputs.catalog_program_fixture_only }}
     name: Gogoke server cloud tests
     timeout-minutes: 45
     runs-on: windows-latest

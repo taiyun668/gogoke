@@ -14,6 +14,7 @@ pub(crate) mod codex_rpc;
 pub(crate) mod codex_output;
 pub(crate) mod rpc_journal;
 pub(crate) mod model_call;
+pub(crate) mod secretary_user_turn;
 pub(crate) mod host_health;
 pub(crate) mod runtime;
 pub(crate) mod provider_evidence;

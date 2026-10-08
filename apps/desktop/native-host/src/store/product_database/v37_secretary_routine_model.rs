@@ -61,10 +61,11 @@ fn response(status:&str,row:&SecretaryRoutine,request_id:&str)->Vec<u8> {
 
 impl<'root> ProductDatabase<'root> {
     /// The injected resolver is host code, not a model callback. It receives
-    /// `(full original USER body, exact proposed span, proposed zone, trusted now)`.
+    /// `(full original USER body, exact proposed span, proposed zone,
+    /// original H USER input timestamp, trusted current timestamp)`.
     pub(super) fn dispatch_model_secretary_routine<F>(&mut self,
         caller:&seat::NativeSeatCall,resolve:F)->Result<Vec<u8>>
-    where F:FnOnce(&str,&str,&str,i64)->Result<ResolvedRoutineSchedule> {
+    where F:FnOnce(&str,&str,&str,i64,i64)->Result<ResolvedRoutineSchedule> {
         let (span,proposed_zone)=proposal(caller)?;
         let request_id=caller.host_request_id().ok_or(OrchestrationError::AccessDenied)?;
         let raw=caller.raw_request_bytes().ok_or(OrchestrationError::AccessDenied)?;
@@ -89,7 +90,10 @@ impl<'root> ProductDatabase<'root> {
                 return Ok(response("REPLAYED",&row,request_id));
             }
             let now=now_ms()?;
-            let resolved=resolve(&original.body,&span,&proposed_zone,now)?;
+            if original.user_input_ms>now {
+                return Err(OrchestrationError::Invalid("secretary USER clock"));
+            }
+            let resolved=resolve(&original.body,&span,&proposed_zone,original.user_input_ms,now)?;
             if resolved.schedule_raw!=span || resolved.timezone.is_empty()
                 || resolved.next_due_ms<=now {
                 return Err(OrchestrationError::Invalid("secretary schedule resolution"));

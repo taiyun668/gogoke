@@ -20,6 +20,10 @@ path = "src/root/lock_probe.rs"
 ryu-js = "=1.0.3"
 # Reuse the exact SHA-256 crate already pinned for the LPAC shim build.
 sha2 = "=0.10.9"
+# Use the existing desktop calendar versions; native H owns clock and source.
+chrono = { version = "=0.4.43", default-features = false, features = ["std"] }
+chrono-tz = "=0.10.4"
+iana-time-zone = "=0.1.64"
 
 [target.'cfg(windows)'.dependencies]
 gogoke-lpac-path-compat = { path = "src/process/session/compat" }

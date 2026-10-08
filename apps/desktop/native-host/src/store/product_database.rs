@@ -51,6 +51,7 @@ mod v37_qcard;
 mod v37_qcard_user;
 mod v37_ledger_user;
 mod v37_secretary_routine_user;
+mod v37_secretary_routine_model;
 mod v37_inbox;
 mod v37_capability;
 mod v37_models;

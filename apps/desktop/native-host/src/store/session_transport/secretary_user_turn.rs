@@ -18,6 +18,7 @@ pub(crate) struct OriginalSecretaryUserTurn {
     pub(crate) source_cursor:String,
     pub(crate) request_id:String,
     pub(crate) request_bytes:Vec<u8>,
+    pub(crate) user_input_ms:i64,
 }
 
 fn unhex(value:&str)->Result<Vec<u8>,UserTurnError> {
@@ -103,14 +104,19 @@ pub(crate) fn read_original_user_turn_in_transaction(
         if body.is_empty() || body.contains('\0') {return Err(UserTurnError::Denied);}
         let marker_id=format!("H-USER:global:{}:{}",proof.session_id(),request_id);
         let marker=Statement::prepare(db.as_ptr(),
-            "SELECT 1 FROM main.gogoke_v37_seat_secretary_presence
+            "SELECT CAST(occurred_at_ms AS TEXT),CAST(observed_at_ms AS TEXT) FROM main.gogoke_v37_seat_secretary_presence
              WHERE source_id=?1 AND kind='INPUT' AND source_operation_id=?2
                AND source_epoch=?3 AND source_cursor=?4")?;
         for (index,value) in [marker_id.as_str(),source.operation_id.as_str(),
             proof.custody().custodian_nonce.as_str(),request_id.as_str()].iter().enumerate() {
             marker.bind_text((index+1) as i32,value)?;
         }
-        if !marker.step_row()? || marker.step_row()? {continue;}
+        if !marker.step_row()? {continue;}
+        let user_input_ms=marker.column_text(0)?.parse::<i64>().map_err(|_|UserTurnError::Denied)?;
+        let observed_ms=marker.column_text(1)?.parse::<i64>().map_err(|_|UserTurnError::Denied)?;
+        if user_input_ms<=0 || observed_ms<user_input_ms || marker.step_row()? {
+            return Err(UserTurnError::Denied);
+        }
         let step_id=format!("send-{}",&sha256_hex(&original)[..40]);
         let observed=Statement::prepare(db.as_ptr(),
             "SELECT s.command_hex,s.source_epoch,s.source_cursor,hex(r.raw_bytes)
@@ -159,7 +165,7 @@ pub(crate) fn read_original_user_turn_in_transaction(
         }
         if found.is_some() {return Err(UserTurnError::Ambiguous);}
         found=Some(OriginalSecretaryUserTurn {body,source_operation_id:source.operation_id.clone(),
-            source_epoch:epoch,source_cursor:cursor,request_id,request_bytes:original});
+            source_epoch:epoch,source_cursor:cursor,request_id,request_bytes:original,user_input_ms});
     }
     found.ok_or(UserTurnError::Denied)
 }
