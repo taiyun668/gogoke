@@ -37,6 +37,23 @@ fn relative_time_uses_original_user_input_not_tool_time() {
     )
     .unwrap();
     assert_eq!(row.next_due_ms, stamp("2026-10-07T14:00:00Z"));
+    let row = resolve(
+        "Please remind me in 10 minutes to review the queue.",
+        "in 10 minutes",
+        "HOST_DEFAULT",
+        "2026-10-07T12:00:00Z",
+        "America/Los_Angeles",
+    )
+    .unwrap();
+    assert_eq!(row.next_due_ms, stamp("2026-10-07T12:10:00Z"));
+    assert!(resolve(
+        "Notify me in 10 minutes to review docs/PLAN.md.",
+        "in 10 minutes",
+        "HOST_DEFAULT",
+        "2026-10-07T12:00:00Z",
+        "America/Los_Angeles",
+    )
+    .is_ok());
 }
 
 #[test]
@@ -173,6 +190,16 @@ fn model_cannot_supply_a_different_or_duplicate_rule() {
     );
     assert_eq!(
         resolve(
+            "10分钟后提醒我，或者20分钟以后",
+            "10分钟后",
+            "HOST_DEFAULT",
+            "2026-10-07T12:00:00Z",
+            "Asia/Shanghai"
+        ),
+        Err(ScheduleError::ConflictingRule)
+    );
+    assert_eq!(
+        resolve(
             "不要忘了每天 09:00 提醒",
             "每天 09:00",
             "HOST_DEFAULT",
@@ -211,6 +238,26 @@ fn timezone_must_come_from_user_or_real_host() {
     assert_eq!(
         resolve(
             "明天 09:00 日本时间提醒我",
+            "明天 09:00",
+            "HOST_DEFAULT",
+            source,
+            "America/Los_Angeles"
+        ),
+        Err(ScheduleError::InvalidTimezone("日本时间".to_owned()))
+    );
+    assert_eq!(
+        resolve(
+            "明天 09:00 提醒我，日本时间",
+            "明天 09:00",
+            "HOST_DEFAULT",
+            source,
+            "America/Los_Angeles"
+        ),
+        Err(ScheduleError::InvalidTimezone("日本时间".to_owned()))
+    );
+    assert_eq!(
+        resolve(
+            "明天 09:00 提醒我用日本时间",
             "明天 09:00",
             "HOST_DEFAULT",
             source,

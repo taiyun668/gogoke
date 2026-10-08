@@ -45,8 +45,59 @@ fn zone(value: &str) -> Result<(Tz, String), ScheduleError> {
     Ok((parsed, parsed.to_string()))
 }
 
+fn chinese_zone_prefix(text: &str) -> Option<&str> {
+    ["时间", "時間", "时区", "時區"].iter().find_map(|suffix| {
+        let index = text.find(*suffix)?;
+        let name = &text[..index];
+        (!name.is_empty() && name.chars().all(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)))
+            .then_some(&text[..index + suffix.len()])
+    })
+}
+
+// A standalone clause is an explicit zone declaration even when it follows
+// the task instead of the time token. Unknown declarations cannot select the
+// host timezone by omission.
+fn clause_zone(clause: &str) -> Option<&str> {
+    let clause = clause
+        .trim()
+        .trim_end_matches(|c: char| matches!(c, '.' | '!' | '！'));
+    let clause = ["按照", "按", "使用", "用", "以"]
+        .iter()
+        .find_map(|prefix| clause.strip_prefix(*prefix))
+        .unwrap_or(clause)
+        .trim();
+    if clause.is_empty() {
+        return None;
+    }
+    let named_chinese_zone = chinese_zone_prefix(clause).is_some_and(|name| name == clause);
+    let named_english_zone = clause
+        .split_once(' ')
+        .is_some_and(|(name, suffix)| !name.is_empty() && matches!(suffix, "time" | "timezone"));
+    let abbreviation =
+        (2..=5).contains(&clause.len()) && clause.bytes().all(|byte| byte.is_ascii_uppercase());
+    (named_chinese_zone || named_english_zone || abbreviation).then_some(clause)
+}
+
 fn explicit_zones(text: &str) -> Result<Vec<String>, ScheduleError> {
     let mut found = Vec::new();
+    for clause in text.split(|c| matches!(c, ',' | '，' | ';' | '；' | '。')) {
+        if let Some(name) = clause_zone(clause) {
+            zone(name)?;
+            found.push(name.to_owned());
+        }
+    }
+    for (index, _) in text.char_indices() {
+        let tail = &text[index..];
+        if let Some(after_preposition) = ["按照", "按", "使用", "用", "以"]
+            .iter()
+            .find_map(|prefix| tail.strip_prefix(*prefix))
+        {
+            if let Some(name) = chinese_zone_prefix(after_preposition) {
+                zone(name)?;
+                found.push(name.to_owned());
+            }
+        }
+    }
     for alias in ["北京时间", "中国标准时间"] {
         if text.contains(alias) {
             found.push(alias.to_owned());
@@ -225,6 +276,27 @@ fn after_clock(input: &str, prefix: &str) -> Option<usize> {
     Some(prefix.len() + spaces + clock_prefix(&rest[spaces..])?)
 }
 
+fn strip_ascii_prefix<'a>(input: &'a str, prefix: &str) -> Option<&'a str> {
+    input
+        .get(..prefix.len())
+        .filter(|head| head.eq_ignore_ascii_case(prefix))
+        .map(|_| &input[prefix.len()..])
+}
+
+fn numeric_relative_prefix(input: &str) -> bool {
+    let digits = input.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 {
+        return false;
+    }
+    ["秒", "分钟", "小时", "天", "周"].iter().any(|unit| {
+        input[digits..].strip_prefix(*unit).is_some_and(|tail| {
+            ["后", "以后", "之后", "前", "以前", "之前"]
+                .iter()
+                .any(|suffix| tail.starts_with(*suffix))
+        })
+    })
+}
+
 // Only the beginning of the authenticated USER command can designate a rule.
 // This grammar selects complete numeric and calendar tokens before examining
 // the model's proposal; a substring such as 1分钟后 inside 11分钟后 is never a rule.
@@ -325,27 +397,21 @@ fn command_rule(original: &str) -> Result<&str, ScheduleError> {
     {
         return Err(ScheduleError::ConflictingRule);
     }
-    let (command, positive_idiom) = [
-        "请在",
-        "在",
-        "请帮我",
-        "帮我",
-        "请",
-        "不要忘了",
-        "别忘了",
-        "please ",
-        "don't forget to ",
-    ]
-    .iter()
-    .find_map(|prefix| {
-        text.strip_prefix(prefix).map(|rest| {
-            (
-                rest.trim_start(),
-                matches!(*prefix, "不要忘了" | "别忘了" | "don't forget to "),
-            )
-        })
-    })
-    .unwrap_or((text, false));
+    let english = strip_ascii_prefix(text, "please ").unwrap_or(text);
+    let (command, positive_idiom) = if let Some(rest) = strip_ascii_prefix(english, "remind me ")
+        .or_else(|| strip_ascii_prefix(english, "notify me "))
+        .or_else(|| strip_ascii_prefix(english, "don't forget to "))
+    {
+        (rest.trim_start(), true)
+    } else {
+        ["请在", "在", "请帮我", "帮我", "请", "不要忘了", "别忘了"]
+            .iter()
+            .find_map(|prefix| {
+                text.strip_prefix(prefix)
+                    .map(|rest| (rest.trim_start(), matches!(*prefix, "不要忘了" | "别忘了")))
+            })
+            .unwrap_or((english, false))
+    };
     let mut end = rule_prefix(command).ok_or(ScheduleError::UnsupportedRule)?;
     let tail = &command[end..];
     if tail
@@ -373,12 +439,8 @@ fn command_rule(original: &str) -> Result<&str, ScheduleError> {
                         })
                         .count(),
                 )
-            } else if word.starts_with("日本时间") || word.ends_with("时间") {
-                Some(
-                    word.find("时间")
-                        .map(|i| i + "时间".len())
-                        .unwrap_or(word.len()),
-                )
+            } else if let Some(name) = chinese_zone_prefix(word) {
+                Some(name.len())
             } else if word.len() >= 2
                 && word.len() <= 5
                 && word.bytes().all(|b| b.is_ascii_uppercase())
@@ -407,8 +469,8 @@ fn command_rule(original: &str) -> Result<&str, ScheduleError> {
     let positive = rest.starts_with("提醒")
         || rest.starts_with("通知")
         || rest.starts_with("叫我")
-        || rest.starts_with("remind me")
-        || rest.starts_with("notify me");
+        || strip_ascii_prefix(rest, "remind me").is_some()
+        || strip_ascii_prefix(rest, "notify me").is_some();
     if !positive && !positive_idiom {
         return Err(ScheduleError::ConflictingRule);
     }
@@ -425,7 +487,7 @@ fn command_rule(original: &str) -> Result<&str, ScheduleError> {
     }
     // A second supported rule anywhere in the task makes the command ambiguous.
     for (i, _) in rest.char_indices() {
-        if rule_prefix(&rest[i..]).is_some() {
+        if rule_prefix(&rest[i..]).is_some() || numeric_relative_prefix(&rest[i..]) {
             return Err(ScheduleError::ConflictingRule);
         }
     }
