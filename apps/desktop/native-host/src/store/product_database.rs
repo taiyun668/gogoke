@@ -1208,6 +1208,7 @@ mod secretary_user_input_tests {
     use crate::store::seat::{self, CreateSeat, Kind, NativeOrigin, StoreTemplate};
     use crate::store::session_transport::{self as h, StdinRequest, PrepareDisposition};
     use std::fs::OpenOptions;
+    use std::io::Write;
 
     fn count(db: &VerifiedDatabaseConnection<'_>, table: &str) -> String {
         let sql = format!("SELECT COUNT(*) FROM main.{table}");
@@ -1258,7 +1259,10 @@ mod secretary_user_input_tests {
         let path=listener.path().to_owned();
         let (release,held)=std::sync::mpsc::channel::<()>();
         let client=std::thread::spawn(move|| {
-            let _pipe=OpenOptions::new().read(true).write(true).open(path).unwrap();
+            let mut pipe=OpenOptions::new().read(true).write(true).open(path).unwrap();
+            // The actual listener reads its transport preface before it can
+            // impersonate and authenticate this exact live USER client.
+            pipe.write_all(&[0x47]).unwrap();
             held.recv().unwrap();
         });
         let mut pipe=listener.accept_user().unwrap();

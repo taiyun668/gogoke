@@ -121,7 +121,7 @@ jobs:
           & cargo build --release --locked --manifest-path apps/desktop/native-host/Cargo.toml 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'release-build.log') | Write-Host
           if ($LASTEXITCODE -ne 0) { throw "Secretary release build failed: $LASTEXITCODE" }
           $results = @()
-          foreach ($filter in @('v37_secretary_routine_model_tests','secretary_schedule::tests','secretary_routines_replay_absence_and_unknown_are_fail_closed','secretary_thread_registers_only_global_read_and_user_routine_and_rejects_tool_substitution')) {
+          foreach ($filter in @('v37_secretary_routine_model_tests','secretary_schedule::tests','secretary_routines_replay_absence_and_unknown_are_fail_closed','secretary_thread_registers_only_global_read_and_user_routine_and_rejects_tool_substitution','only_exact_live_user_input_adds_an_atomic_fixed_presence_witness')) {
             $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib $filter -- --nocapture --show-output 2>&1
             $exitCode = $LASTEXITCODE
             $label = $filter.Replace('::','-')
