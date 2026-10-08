@@ -84,7 +84,7 @@ import { normalizeCodexArgsInput } from "@/utils/codexArgsInput";
 import { subscribeTrayOpenThread } from "@services/events";
 import { I18nProvider } from "@/i18n";
 import { hasNativeBackendTransport } from "@/platform/runtime";
-import { signalGogokeUpdateReady } from "@/services/tauri";
+import { createDesign37SecretarySource, signalGogokeUpdateReady } from "@/services/tauri";
 import { NowProvider, NowPinSlot, type NowSource } from "@/features/now/NowContext";
 import { SecretaryEntry, SecretaryPanel, SecretaryActionLine, type SecretarySource } from "@/features/secretary/Secretary";
 import { entryLine, type EntryState, type ActionLine } from "@/features/secretary/secretaryModel";
@@ -97,7 +97,7 @@ export type SecretaryView = {
     domainId: string;
     seatId: string;
     sessionId: string;
-  };
+  } | null;
   entry: EntryState;
   source: SecretarySource;
   readState: "known" | "frozen";
@@ -108,12 +108,12 @@ export type SecretaryView = {
   conversation: {
     messages: Omit<ComponentProps<typeof Messages>, "afterItem">;
     composer: ComponentProps<typeof Composer> | null;
-  };
+  } | null;
   openConversation?: () => Promise<void>;
   openAction?: (id: string) => void;
 };
 
-const secretaryAssociationKey = (view: SecretaryView | null) => view
+const secretaryAssociationKey = (view: SecretaryView | null) => view?.association
   ? JSON.stringify([view.association.workspaceId, view.association.threadId,
       view.association.domainId, view.association.seatId, view.association.sessionId]) : null;
 
@@ -123,11 +123,60 @@ const SettingsView = lazy(() =>
   })),
 );
 
-export default function MainApp({ nowSource = null, secretaryView = null }: {
+/** The native singleton is independent of the selected project and its hooks. */
+function useNativeSecretaryView(enabled: boolean): SecretaryView | null {
+  const producer = useMemo(() => enabled ? createDesign37SecretarySource() : null, [enabled]);
+  const [view, setView] = useState<SecretaryView | null>(null);
+  useEffect(() => {
+    setView(null);
+    if (!producer) return;
+    let disposed = false;
+    let pending: Promise<void> | null = null;
+    const refresh = (): Promise<void> => {
+      if (pending) return pending;
+      pending = (async () => {
+        try {
+          const snapshot = await producer.readSnapshot();
+          if (disposed) return;
+          setView({
+            association: null,
+            entry: snapshot.page.entry,
+            source: producer.source,
+            readState: "known",
+            readAt: new Date().toLocaleString(),
+            actionLines: [],
+            // No native conversation is manufactured from the active project.
+            conversation: null,
+            openConversation: refresh,
+          });
+        } catch (cause) {
+          if (disposed) return;
+          const readError = cause instanceof Error ? cause.message : String(cause);
+          setView((previous) => previous
+            ? { ...previous, readState: "frozen", readError }
+            : { association: null, conversation: null,
+                entry: { kind: "down", reason: readError }, source: producer.source,
+                readState: "frozen", readAt: "尚未读到", readError, actionLines: [] });
+        } finally {
+          pending = null;
+        }
+      })();
+      return pending;
+    };
+    void refresh();
+    const timer = window.setInterval(() => { void refresh(); }, 2_000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [producer]);
+  return view;
+}
+
+export default function MainApp({ nowSource = null, secretaryView }: {
   nowSource?: NowSource | null;
   secretaryView?: SecretaryView | null;
 } = {}) {
   const bootstrap = useAppBootstrapOrchestration();
+  const nativeSecretary = useNativeSecretaryView(secretaryView === undefined && hasNativeBackendTransport());
+  const selectedSecretaryView = secretaryView === undefined ? nativeSecretary : secretaryView;
   useEffect(() => {
     if (hasNativeBackendTransport()) {
       void signalGogokeUpdateReady().catch((error) => {
@@ -137,7 +186,7 @@ export default function MainApp({ nowSource = null, secretaryView = null }: {
   }, []);
   return (
     <I18nProvider language={bootstrap.appSettings.appLanguage}>
-      <MainAppContent bootstrap={bootstrap} nowSource={nowSource} secretaryView={secretaryView} />
+      <MainAppContent bootstrap={bootstrap} nowSource={nowSource} secretaryView={selectedSecretaryView} />
     </I18nProvider>
   );
 }
@@ -1866,12 +1915,16 @@ function MainAppContent({
   const projectNavigation = useRef({ workspaceId: activeWorkspaceId, threadId: activeThreadId });
   projectNavigation.current = { workspaceId: activeWorkspaceId, threadId: activeThreadId };
   useEffect(() => { leaveSecretary(); }, [activeWorkspaceId, activeThreadId, leaveSecretary]);
-  const secretaryHasAssociation = secretaryView !== null && Object.values(secretaryView.association)
+  const secretaryHasAssociation = Boolean(secretaryView?.association && secretaryView.conversation)
+    && Object.values(secretaryView!.association!)
     .every((value) => typeof value === "string" && value.length > 0)
-    && secretaryView.conversation.messages.workspaceId === secretaryView.association.workspaceId
-    && secretaryView.conversation.messages.threadId === secretaryView.association.threadId;
-  const secretaryActive = secretaryHasAssociation && selectedSecretary === secretaryToken;
-  const secretaryCanOpen = secretaryHasAssociation && secretaryView!.readState === "known"
+    && secretaryView!.conversation!.messages.workspaceId === secretaryView!.association!.workspaceId
+    && secretaryView!.conversation!.messages.threadId === secretaryView!.association!.threadId;
+  const secretarySettingsOnly = secretaryView !== null && secretaryView.association === null
+    && secretaryView.conversation === null;
+  const secretaryActive = (secretaryHasAssociation || secretarySettingsOnly)
+    && selectedSecretary === secretaryToken;
+  const secretaryCanOpen = (secretaryHasAssociation || secretarySettingsOnly) && secretaryView!.readState === "known"
     && Boolean(secretaryView!.openConversation) && secretaryOpening !== secretaryToken;
   const openSecretary = async () => {
     if (!secretaryCanOpen || !secretaryView?.openConversation
@@ -1916,13 +1969,15 @@ function MainAppContent({
   if (secretaryActive) {
     integratedSurfaces.primary.sidebarProps.activeWorkspaceId = null;
     integratedSurfaces.primary.sidebarProps.activeThreadId = null;
-    integratedSurfaces.primary.messagesProps = { ...secretaryView!.conversation.messages };
+    if (secretaryView!.conversation) {
+      integratedSurfaces.primary.messagesProps = { ...secretaryView!.conversation.messages };
+    }
     if (secretaryView!.readState === "frozen") {
       integratedSurfaces.primary.messagesProps.onUserInputSubmit = undefined;
       integratedSurfaces.primary.messagesProps.onPlanAccept = undefined;
       integratedSurfaces.primary.messagesProps.onPlanSubmitChanges = undefined;
     }
-    integratedSurfaces.primary.composerProps = secretaryView!.conversation.composer
+    integratedSurfaces.primary.composerProps = secretaryView!.conversation?.composer
       ? { ...secretaryView!.conversation.composer, disabled: secretaryView!.readState === "frozen"
         || secretaryView!.conversation.composer.disabled,
         canStop: secretaryView!.readState === "known" && secretaryView!.conversation.composer.canStop } : null;
@@ -1974,7 +2029,9 @@ function MainAppContent({
     compactGitBackNode,
   } = useMainAppLayoutNodes(integratedSurfaces);
 
-  const mainMessagesNode = !secretaryActive && showWorkspaceHome ? workspaceHomeNode : messagesNode;
+  const mainMessagesNode = secretaryActive && secretarySettingsOnly
+    ? <div role="status">{entryLine(secretaryView!.entry).text}。右侧显示宿主读回的设置和定时任务。</div>
+    : !secretaryActive && showWorkspaceHome ? workspaceHomeNode : messagesNode;
   const compactThreadConnectionState: "live" | "polling" | "disconnected" =
     !activeWorkspace?.connected
       ? "disconnected"
@@ -2050,8 +2107,8 @@ function MainAppContent({
 
   return (
     <NowProvider source={nowSource} active={
-      secretaryActive && composerNode
-        ? { workspaceId: secretaryView!.association.workspaceId, threadId: secretaryView!.association.threadId }
+      secretaryActive && secretaryHasAssociation && composerNode
+        ? { workspaceId: secretaryView!.association!.workspaceId, threadId: secretaryView!.association!.threadId }
         : !isNewAgentDraftMode && composerNode && activeWorkspaceId && activeThreadId
         ? { workspaceId: activeWorkspaceId, threadId: activeThreadId } : null
     }>

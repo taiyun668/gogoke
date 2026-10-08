@@ -146,11 +146,12 @@ export function createDesign37SecretarySource(): {
         confirmed.seatId !== configuration.seatId ||
         confirmed.incarnation !== configuration.incarnation ||
         confirmed.generation !== configuration.generation ||
-        confirmed.revision !== configuration.revision ||
-        JSON.stringify(confirmed.conversation) !== JSON.stringify(configuration.conversation)) {
+        confirmed.revision !== configuration.revision) {
       throw new Error("Native Secretary snapshot changed while it was being read.");
     }
-    const conversation = configuration.conversation;
+    // Turn and ledger progress may change during a read without changing E's
+    // configuration. Use the last host observation instead of freezing it.
+    const conversation = confirmed.conversation;
     const runnable = conversation?.state === "FOUND" &&
       conversation.runtimeAvailable === true && conversation.stoppedFact === false;
     const entry: SecretaryPage["entry"] = runnable && conversation.turnState === "IDLE"
@@ -161,7 +162,7 @@ export function createDesign37SecretarySource(): {
           conversation?.state === "NONE" ? "宿主未找到秘书长会话" :
           conversation?.stoppedFact === true ? "宿主报告秘书长会话已停止" :
           "宿主未报告可用的秘书长会话轮次状态" };
-    return { configuration, page: { entry, routines, settings } };
+    return { configuration: confirmed, page: { entry, routines, settings } };
   };
   const changeRoutine = async (id: string, command: "secretary-routine-pause" | "secretary-routine-delete") => {
     const configuration = await readSecretaryConfiguration();
