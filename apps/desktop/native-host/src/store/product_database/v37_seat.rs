@@ -1239,6 +1239,11 @@ impl<'root> ProductDatabase<'root> {
     /// Separate Owner configuration plane. Parent must verify UserOriginProof
     /// before calling; service and seat ingress must never route here.
     pub(super) fn configure_user_v37(&mut self, frame: &[u8]) -> Result<Vec<u8>> {
+        self.configure_user_v37_with_input(frame,None)
+    }
+
+    pub(super) fn configure_user_v37_with_input(&mut self, frame: &[u8],
+        user_input: Option<&VerifiedDirectUserInput<'_>>) -> Result<Vec<u8>> {
         if frame.is_empty() || frame.len() > crate::ipc::MAX_FRAME_BYTES {
             return Err(OrchestrationError::Invalid("configuration frame"));
         }
@@ -1254,6 +1259,9 @@ impl<'root> ProductDatabase<'root> {
             return Err(OrchestrationError::Invalid("configuration schema"));
         }
         let command = string_field(&fields, "command")?;
+        if matches!(command.as_str(),"visible-conversation-operate"|"visible-conversation-recover") {
+            return self.dispatch_visible_effect(&command,&fields,frame,user_input);
+        }
         if matches!(command.as_str(), "visible-conversation-route" | "visible-conversation-choices"
             | "visible-conversation-select" | "visible-conversation-read"
             | "visible-conversation-operate" | "visible-conversation-recover") {

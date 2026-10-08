@@ -7,45 +7,45 @@ use crate::store::atomic::Parser;
 const TABLE: &str = "gogoke_v37_visible_conversation_selection";
 const SCHEMA: &str = "CREATE TABLE gogoke_v37_visible_conversation_selection(workspace_id TEXT NOT NULL,request_id TEXT NOT NULL,route TEXT NOT NULL CHECK(route IN ('LEGACY','NATIVE')),selection_hex TEXT NOT NULL,association_json TEXT NOT NULL,repository_id TEXT NOT NULL,worktree_id TEXT NOT NULL,thread_id TEXT NOT NULL,open_request_id TEXT NOT NULL,open_generation TEXT NOT NULL,open_operation_id TEXT NOT NULL,ack_source_id INTEGER NOT NULL,started_source_id INTEGER NOT NULL,CHECK((route='LEGACY' AND association_json='null' AND repository_id='' AND worktree_id='' AND thread_id='' AND open_request_id='' AND open_generation='' AND open_operation_id='' AND ack_source_id=0 AND started_source_id=0) OR (route='NATIVE' AND association_json<>'null' AND repository_id<>'' AND worktree_id<>'' AND thread_id<>'' AND open_request_id<>'' AND open_generation<>'' AND open_operation_id<>'' AND ack_source_id>0 AND started_source_id>0)),PRIMARY KEY(workspace_id,request_id)) STRICT";
 
-fn k(name: &str) -> JsonString { JsonString::from_str(name) }
-fn s(value: &str) -> Json { Json::String(k(value)) }
-fn is_text(value: Option<&Json>, expected: &str) -> bool {
+pub(super) fn k(name: &str) -> JsonString { JsonString::from_str(name) }
+pub(super) fn s(value: &str) -> Json { Json::String(k(value)) }
+pub(super) fn is_text(value: Option<&Json>, expected: &str) -> bool {
     matches!(value,Some(Json::String(value)) if value.to_well_formed_string().as_deref()==Some(expected))
 }
-fn same_json(left: Option<&Json>, right: Option<&Json>) -> bool {
+pub(super) fn same_json(left: Option<&Json>, right: Option<&Json>) -> bool {
     match (left,right) {(Some(left),Some(right))=>left.canonical()==right.canonical(),_=>false}
 }
-fn copy_json(value: &Json) -> Json {
+pub(super) fn copy_json(value: &Json) -> Json {
     match value {
         Json::Null=>Json::Null,Json::Bool(value)=>Json::Bool(*value),
         Json::Number(value)=>Json::Number(value.clone()),Json::String(value)=>Json::String(value.clone()),
         Json::Array(values)=>Json::Array(copy_array(values)),Json::Object(fields)=>Json::Object(copy_fields(fields)),
     }
 }
-fn copy_array(values: &[Json]) -> Vec<Json> {values.iter().map(copy_json).collect()}
-fn copy_fields(fields: &BTreeMap<JsonString,Json>) -> BTreeMap<JsonString,Json> {
+pub(super) fn copy_array(values: &[Json]) -> Vec<Json> {values.iter().map(copy_json).collect()}
+pub(super) fn copy_fields(fields: &BTreeMap<JsonString,Json>) -> BTreeMap<JsonString,Json> {
     fields.iter().map(|(name,value)|(name.clone(),copy_json(value))).collect()
 }
-fn object(value: &Json) -> Result<&BTreeMap<JsonString,Json>> {
+pub(super) fn object(value: &Json) -> Result<&BTreeMap<JsonString,Json>> {
     if let Json::Object(fields)=value {Ok(fields)} else {
         Err(OrchestrationError::Invalid("visible conversation object"))
     }
 }
-fn exact(fields: &BTreeMap<JsonString,Json>, required: &[&str], optional: &[&str]) -> Result<()> {
+pub(super) fn exact(fields: &BTreeMap<JsonString,Json>, required: &[&str], optional: &[&str]) -> Result<()> {
     if required.iter().any(|name|!fields.contains_key(&k(name)))
         || fields.keys().any(|name|!required.iter().chain(optional).any(|allowed|name==&k(allowed))) {
         return Err(OrchestrationError::Invalid("visible conversation fields"));
     }
     Ok(())
 }
-fn decimal(value: &str) -> Result<i64> {
+pub(super) fn decimal(value: &str) -> Result<i64> {
     let number=value.parse::<i64>().map_err(|error|OrchestrationError::V37StoreFailure(
         format!("visible conversation generation: {error}")))?;
     if number<0 || number.to_string()!=value {return Err(OrchestrationError::Invalid("visible generation"));}
     Ok(number)
 }
-fn encode_hex(bytes: &[u8]) -> String {bytes.iter().map(|byte|format!("{byte:02x}")).collect()}
-fn decode_hex(value: &str) -> Result<Vec<u8>> {
+pub(super) fn encode_hex(bytes: &[u8]) -> String {bytes.iter().map(|byte|format!("{byte:02x}")).collect()}
+pub(super) fn decode_hex(value: &str) -> Result<Vec<u8>> {
     if value.len()%2!=0 {return Err(OrchestrationError::Invalid("visible source hex"));}
     value.as_bytes().chunks_exact(2).map(|pair| {
         let high=hex_nibble(pair[0]).ok_or(OrchestrationError::Invalid("visible source hex"))?;
@@ -53,7 +53,7 @@ fn decode_hex(value: &str) -> Result<Vec<u8>> {
         Ok(high*16+low)
     }).collect()
 }
-fn source_json(value: &str) -> Result<Json> {
+pub(super) fn source_json(value: &str) -> Result<Json> {
     let bytes=decode_hex(value)?;
     let source=std::str::from_utf8(&bytes).map_err(|error|OrchestrationError::V37StoreFailure(
         format!("visible original source UTF-8: {error}")))?;
@@ -61,12 +61,12 @@ fn source_json(value: &str) -> Result<Json> {
 }
 
 #[derive(Clone,Debug,Eq,PartialEq)]
-struct Association {
-    domain: String, session: String, seat: String, incarnation: String,
-    authorization: String, generation: String, instance: String,
+pub(super) struct Association {
+    pub(super) domain: String, pub(super) session: String, pub(super) seat: String, pub(super) incarnation: String,
+    pub(super) authorization: String, pub(super) generation: String, pub(super) instance: String,
 }
 impl Association {
-    fn parse(value: &Json) -> Result<Self> {
+    pub(super) fn parse(value: &Json) -> Result<Self> {
         let fields=object(value)?;
         exact(fields,&["domainId","sessionId","seatId","incarnation",
             "authorizationGeneration","bindingGeneration","instanceId"],&[])?;
@@ -77,7 +77,7 @@ impl Association {
         decimal(&value.authorization)?;decimal(&value.generation)?;
         Ok(value)
     }
-    fn json(&self) -> Json {Json::Object(BTreeMap::from([
+    pub(super) fn json(&self) -> Json {Json::Object(BTreeMap::from([
         (k("domainId"),s(&self.domain)),(k("sessionId"),s(&self.session)),
         (k("seatId"),s(&self.seat)),(k("incarnation"),s(&self.incarnation)),
         (k("authorizationGeneration"),s(&self.authorization)),
@@ -85,10 +85,10 @@ impl Association {
     ]))}
 }
 #[derive(Clone)]
-struct Selection {
-    row: i64, route: String, association: Option<Association>, repository: String,
-    worktree: String, thread: String, open_request: String, open_generation: String,
-    open_operation: String, ack: i64, started: i64,
+pub(super) struct Selection {
+    pub(super) row: i64, pub(super) route: String, pub(super) association: Option<Association>, pub(super) repository: String,
+    pub(super) worktree: String, pub(super) thread: String, pub(super) open_request: String, pub(super) open_generation: String,
+    pub(super) open_operation: String, pub(super) ack: i64, pub(super) started: i64,
 }
 impl Selection {
     fn from_row(row: &Statement) -> Result<Self> {
@@ -150,7 +150,7 @@ impl<'root> ProductDatabase<'root> {
             },
         }
     }
-    fn visible_reply(&self, workspace: &str, state: &str, association: Option<&Association>, reason: Option<&str>)
+    pub(super) fn visible_reply(&self, workspace: &str, state: &str, association: Option<&Association>, reason: Option<&str>)
         -> BTreeMap<JsonString,Json> {
         let mut reply=BTreeMap::from([(k("schema"),s("gogoke.37.visible-conversation.v1")),
             (k("workspaceId"),s(workspace)),(k("state"),s(state))]);
@@ -170,7 +170,7 @@ impl<'root> ProductDatabase<'root> {
         }
         Ok(true)
     }
-    fn visible_selection(&self, workspace: &str, association: Option<&Association>) -> Result<Option<Selection>> {
+    pub(super) fn visible_selection(&self, workspace: &str, association: Option<&Association>) -> Result<Option<Selection>> {
         let row=Statement::prepare(self.connection.as_ptr(),
             "SELECT rowid,route,association_json,repository_id,worktree_id,thread_id,open_request_id,open_generation,open_operation_id,ack_source_id,started_source_id FROM main.gogoke_v37_visible_conversation_selection WHERE workspace_id=?1 ORDER BY rowid DESC")?;
         row.bind_text(1,workspace)?;
@@ -182,7 +182,7 @@ impl<'root> ProductDatabase<'root> {
     }
     /// Verify an explicit existing relationship; directory names and vendor IDs
     /// never choose an E seat, F repository, H session or instance.
-    fn visible_candidate(&self, association: &Association, current: bool) -> Result<Selection> {
+    pub(super) fn visible_candidate(&self, association: &Association, current: bool) -> Result<Selection> {
         use crate::store::session_transport::session_binding::{self,Provenance};
         if association.domain=="global" {return Err(OrchestrationError::AccessDenied);}
         let binding=session_binding::read(&self.connection,&association.domain,&association.session)
@@ -271,7 +271,7 @@ impl<'root> ProductDatabase<'root> {
             worktree,thread,open_request,open_generation,open_operation,ack,started})
     }
 
-    fn visible_verify_saved(&self, saved: &Selection) -> Result<()> {
+    pub(super) fn visible_verify_saved(&self, saved: &Selection) -> Result<()> {
         let association=saved.association.as_ref().ok_or(OrchestrationError::AccessDenied)?;
         let actual=self.visible_candidate(association,false)?;
         if actual.repository!=saved.repository || actual.worktree!=saved.worktree || actual.thread!=saved.thread
@@ -407,7 +407,8 @@ impl<'root> ProductDatabase<'root> {
                     "live-state"=>{
                         exact(params,&[],&[])?;
                         reply.insert(k("reason"),s("No qualified current thread readiness/closure observation is available from this producer."));
-                        reply.insert(k("live"),Json::Object(BTreeMap::from([(k("state"),s("UNKNOWN"))])));
+                        reply.insert(k("live"),Json::Object(BTreeMap::from([(k("state"),s("UNKNOWN")),
+                            (k("pendingQuestions"),self.visible_pending_questions(&association,&selected.thread)?)])));
                     },
                     "thread/read"=>{
                         exact(params,&["threadId","includeTurns"],&["cursor"])?;

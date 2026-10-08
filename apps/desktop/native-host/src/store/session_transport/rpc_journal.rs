@@ -2624,6 +2624,101 @@ pub(crate) struct ReconciledResponse {
     pub(crate) newly_resolved: bool,
 }
 
+/// Finite original USER controls. Readback can inspect old custody after a
+/// legitimate E rebind; it cannot reconstruct a handle or grant a write.
+#[derive(Clone,Copy)]
+pub(crate) enum VisibleRpcExpectation<'a> {
+    Start {thread:&'a str,body:&'a str},
+    Steer {thread:&'a str,turn:&'a str,body:&'a str},
+    Interrupt {thread:&'a str,turn:&'a str},
+    Resume {thread:&'a str},
+}
+pub(crate) struct VisibleRpcResponse {
+    pub(crate) bytes:Vec<u8>,
+    pub(crate) source:RawSourceKey,
+}
+pub(crate) fn read_visible_original_response(db:&VerifiedDatabaseConnection<'_>,domain:&str,
+    session:&str,generation:&str,operation:&str,ticket:&str,nonce:&str,step_id:&str,
+    expected:VisibleRpcExpectation<'_>)->Result<Option<VisibleRpcResponse>> {
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT s.command_hex,s.phase,COALESCE(s.source_epoch,''),COALESCE(s.source_cursor,'') FROM main.gogoke_v37_rpc_steps s JOIN main.gogoke_v37_h_process_episode e ON e.domain_id=s.domain_id AND e.session_id=s.session_id AND e.generation=s.generation AND e.process_operation_id=s.process_operation_id JOIN main.gogoke_v37_h_generation g ON g.domain_id=e.domain_id AND g.session_id=e.session_id AND g.generation=e.generation AND g.process_operation_id=e.process_operation_id JOIN main.gogoke_coordination_process_custody c ON c.operation_id=s.process_operation_id AND c.domain_id=s.domain_id AND c.generation=s.generation AND c.ticket=s.ticket AND c.custodian_nonce=s.custodian_nonce AND c.pid=s.pid AND c.creation_time_100ns=s.creation_time AND c.image_path=s.image_path AND c.binary_digest_sha256=s.binary_digest AND c.profile_id=s.profile_id WHERE s.domain_id=?1 AND s.session_id=?2 AND s.generation=?3 AND s.process_operation_id=?4 AND s.ticket=?5 AND s.custodian_nonce=?6 AND s.step_id=?7 AND s.requires_response=1")?;
+    for (index,value) in [domain,session,generation,operation,ticket,nonce,step_id].iter().enumerate() {q.bind_text((index+1) as i32,value)?;}
+    if !q.step_row()? {return Ok(None);}
+    let command=unhex(&q.column_text(0)?)?;let phase=q.column_text(1)?;
+    let epoch=q.column_text(2)?;let cursor=q.column_text(3)?;
+    if q.step_row()? {return Err(RpcJournalError::Conflict);}drop(q);
+    // INTENT/UNKNOWN never authorize a retry. A WRITTEN step can be matched
+    // only to a unique already-captured response from its original process.
+    if !matches!(phase.as_str(),"OBSERVED"|"WRITTEN") {return Ok(None);}
+    let parsed=Parser::parse(std::str::from_utf8(&command).map_err(|error|
+        RpcJournalError::Authority(crate::store::orchestration::OrchestrationError::V37StoreFailure(
+            format!("original visible command UTF-8: {error}"))))?.trim_end_matches('\n'))?;
+    let Json::Object(fields)=parsed else {return Err(RpcJournalError::Denied);};
+    let id=match fields.get(&JsonString::from_str("id")) {
+        Some(Json::Number(value))=>RpcId::Number(value.parse::<i64>().map_err(|_|RpcJournalError::Denied)?),
+        Some(Json::String(value))=>RpcId::String(value.to_well_formed_string().ok_or(RpcJournalError::Denied)?),
+        _=>return Err(RpcJournalError::Denied),
+    };
+    let control=match &expected {
+        VisibleRpcExpectation::Start {thread,body}=>{
+            let (actual_id,actual)=codex_rpc::decode_stored_turn_start(&command)?;
+            if actual_id!=id||!matches!(&actual,Command::TurnStart {thread_id,text,..} if thread_id.as_str()==*thread&&text.as_str()==*body) {return Err(RpcJournalError::Denied);}Some(actual)
+        },
+        VisibleRpcExpectation::Steer {thread,turn,body}=>Some(Command::TurnSteer {thread_id:(*thread).into(),expected_turn_id:(*turn).into(),text:(*body).into()}),
+        VisibleRpcExpectation::Interrupt {thread,turn}=>Some(Command::TurnInterrupt {thread_id:(*thread).into(),turn_id:(*turn).into()}),
+        VisibleRpcExpectation::Resume {..}=>None,
+    };
+    if let Some(control)=&control {if control.encode(Some(&id))?!=command {return Err(RpcJournalError::Denied);}}
+    let raw=Statement::prepare(db.as_ptr(),
+        "SELECT source_epoch,source_cursor,hex(raw_bytes) FROM main.v37_ledger_raw_source WHERE domain_id=?1 AND session_id=?2 AND generation=?3 AND operation_id=?4 AND process_ticket=?5 AND custodian_nonce=?6 AND (?7='' OR source_epoch=?7) AND (?8='' OR source_cursor=?8) ORDER BY CAST(source_cursor AS INTEGER)")?;
+    for (index,value) in [domain,session,generation,operation,ticket,nonce,epoch.as_str(),cursor.as_str()].iter().enumerate() {raw.bind_text((index+1) as i32,value)?;}
+    let mut result=None;
+    while raw.step_row()? {
+        let bytes=unhex(&raw.column_text(2)?)?;
+        let matching=if let Some(control)=&control {
+            match codex_rpc::decode(&bytes,Some((&id,control))) {
+                Ok(codex_rpc::Reply::Turn {..})=>matches!(expected,VisibleRpcExpectation::Start {..}),
+                Ok(codex_rpc::Reply::Ack {..})=>!matches!(expected,VisibleRpcExpectation::Start {..}),
+                Ok(codex_rpc::Reply::RemoteError {..})=>return Err(RpcJournalError::Codec(codex_rpc::RpcError::RemoteResponse(bytes))),
+                _=>false,
+            }
+        } else if let VisibleRpcExpectation::Resume {thread}=&expected {
+            match codex_rpc::decode_stored_thread_resume(&command,&bytes) {
+                Ok(actual)=>actual==*thread,
+                Err(error@codex_rpc::RpcError::RemoteResponse(_))=>return Err(RpcJournalError::Codec(error)),
+                _=>false,
+            }
+        } else {false};
+        if matching {
+            if result.is_some() {return Err(RpcJournalError::Conflict);}
+            result=Some(VisibleRpcResponse {bytes,source:RawSourceKey {operation_id:operation.into(),
+                source_epoch:raw.column_text(0)?,source_cursor:raw.column_text(1)?}});
+        }
+    }
+    Ok(result)
+}
+
+/// Finish only the retained WRITTEN -> original captured typed ACK gap. This
+/// allocates no ID, handle or write permission and never touches a child pipe.
+pub(crate) fn reconcile_visible_original_response(db:&mut VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,domain:&str,session:&str,generation:&str,operation:&str,ticket:&str,
+    nonce:&str,step_id:&str,expected:VisibleRpcExpectation<'_>)->Result<Option<VisibleRpcResponse>> {
+    let result=transact(db,|db| {
+        check_owner_in_current_transaction(db,owner)?;
+        let result=read_visible_original_response(db,domain,session,generation,operation,ticket,nonce,step_id,expected)?;
+        if let Some(result)=&result {
+            let update=Statement::prepare(db.as_ptr(),
+                "UPDATE main.gogoke_v37_rpc_steps SET phase='OBSERVED',source_epoch=?1,source_cursor=?2 WHERE domain_id=?3 AND session_id=?4 AND generation=?5 AND process_operation_id=?6 AND ticket=?7 AND custodian_nonce=?8 AND step_id=?9 AND phase='WRITTEN'")?;
+            for (index,value) in [result.source.source_epoch.as_str(),result.source.source_cursor.as_str(),domain,session,
+                generation,operation,ticket,nonce,step_id].iter().enumerate() {update.bind_text((index+1) as i32,value)?;}
+            update.step_done()?;
+        }
+        Ok(result)
+    })?;
+    if result.is_some() {reconcile_observed_no_event(db,owner,domain,session,step_id)?;}
+    Ok(result)
+}
+
 /// Repair only the old split-commit window: a previously OBSERVED RPC step
 /// whose exact A source still says PENDING. No process is contacted and no RPC
 /// ID or command is resent. The native OwnerIssuer is checked on the same

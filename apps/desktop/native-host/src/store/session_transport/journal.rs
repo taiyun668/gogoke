@@ -1651,8 +1651,10 @@ fn prepare_decoded_in_transaction(connection: &mut VerifiedDatabaseConnection<'_
     input: &StdinRequest<'_>, request: &super::V37Request,
     user_input: Option<(&OwnerIssuer,&VerifiedDirectUserInput<'_>)>) -> Result<JournalDecision, JournalError> {
         if let Some((_,source))=user_input {
-            if request.operation!="send" || !source.matches_live_frame(input.request_bytes)
-                .map_err(JournalError::UserOrigin)? {return Err(JournalError::Conflict);}
+            if request.operation!="send" || !source.matches_original_in_transaction(connection,input.request_bytes)
+                .map_err(|error|JournalError::Store(AtomicError::DurabilityContractFailed(error)))? {
+                return Err(JournalError::Conflict);
+            }
         }
         if let Some(record) = read_row(connection, input.domain_id, &request.request_id)? {
             input_matches(input, &request, &record)?;
