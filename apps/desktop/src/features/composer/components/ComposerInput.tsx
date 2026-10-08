@@ -29,6 +29,8 @@ type ComposerInputProps = {
   text: string;
   disabled: boolean;
   sendLabel: string;
+  placeholder?: string;
+  disabledPlaceholder?: string;
   canStop: boolean;
   canSend: boolean;
   isProcessing: boolean;
@@ -87,6 +89,8 @@ export function ComposerInput({
   text,
   disabled,
   sendLabel,
+  placeholder,
+  disabledPlaceholder,
   canStop,
   canSend,
   isProcessing,
@@ -280,8 +284,8 @@ export function ComposerInput({
             ref={textareaRef}
             placeholder={
               disabled
-                ? tx("Review in progress. Chat will re-enable when it completes.")
-                : tx("Ask Codex to do something...")
+                ? disabledPlaceholder ?? tx("Review in progress. Chat will re-enable when it completes.")
+                : placeholder ?? tx("Ask Codex to do something...")
             }
             value={text}
             onChange={handleTextareaChange}

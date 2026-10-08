@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { SecretarySource } from "@/features/secretary/Secretary";
 import type { SecretaryPage, Routine } from "@/features/secretary/secretaryModel";
+import type { ConversationItem } from "@/types";
 
 type SecretaryConfiguration =
   | { schema: "gogoke.37.secretary-configuration.v1"; state: "UNSET" | "REVOKED" }
@@ -121,10 +122,81 @@ function routinePageRow(row: SecretaryRoutineRow): Routine {
     paused: row.state === "PAUSED" || row.state === "ABSENCE_PAUSED" };
 }
 
+type SecretaryConversation = {
+  sessionId: string; threadId: string; seatId: string;
+  generation: string; revision: string;
+  turnState: "IDLE" | "RUNNING" | "UNKNOWN";
+  historical: boolean; runtimeAvailable: boolean;
+  messages: ConversationItem[];
+  writer: { instanceId: string; model: string; effort: string; permissionTier: string;
+    canSend: boolean; canStop: boolean } | null;
+};
+
+function secretaryReceipt(value: unknown, family: "K-SESSION" | "K-LEDGER",
+  operation: string, requestId: string, targetId: string): Record<string, unknown> {
+  if (!record(value) || value.schema !== "gogoke.37.operations.v1" ||
+      value.family !== family || value.operation !== operation ||
+      value.requestId !== requestId || value.targetId !== targetId ||
+      !["APPLIED", "REPLAYED"].includes(String(value.status)) ||
+      !decimal(value.revision) || !record(value.result)) {
+    throw new Error(`Native Secretary ${operation} was not confirmed: ${JSON.stringify(value)}`);
+  }
+  return value.result;
+}
+
+async function secretaryOperation(family: "K-SESSION" | "K-LEDGER", operation: string,
+  targetId: string, expectedRevision: string, payload: Record<string, unknown>) {
+  const requestId = `secretary_${crypto.randomUUID()}`;
+  const reply = await design37UserFrame({ schema: "gogoke.37.operations.v1", family,
+    operation, requestId, targetId, domainId: "global", expectedRevision, payload });
+  return { result: secretaryReceipt(reply, family, operation, requestId, targetId), reply };
+}
+
+function confirmedConversation(configuration: SecretaryConfiguration):
+  { configuration: Extract<SecretaryConfiguration, { state: "DESIGNATED" }>;
+    fact: NonNullable<Extract<SecretaryConfiguration, { state: "DESIGNATED" }>["conversation"]> } | null {
+  if (configuration.state !== "DESIGNATED" || configuration.conversation?.state !== "FOUND") return null;
+  const fact = configuration.conversation;
+  if (!nonempty(fact.sessionId) || !decimal(fact.generation) || !decimal(fact.revision) ||
+      !nonempty(fact.threadId) || !nonempty(fact.ledgerEpoch) || !decimal(fact.ledgerCursor) ||
+      !["COMMITTED", "STOPPED", "RELEASED"].includes(String(fact.claimState)) ||
+      typeof fact.runtimeAvailable !== "boolean" || !["IDLE", "RUNNING", "UNKNOWN"].includes(String(fact.turnState))) {
+    throw new Error(`Native Secretary FOUND conversation lacks original H/A facts: ${JSON.stringify(fact)}`);
+  }
+  return { configuration, fact };
+}
+
+function secretaryEvent(value: unknown, sessionId: string, seatId: string): ConversationItem | null {
+  if (!record(value) || !decimal(value.cursor) || !nonempty(value.sourceEventId) ||
+      !nonempty(value.sourceEpoch) || !nonempty(value.sourceCursor) ||
+      !nonempty(value.domainId) || !nonempty(value.seatId) || !nonempty(value.sessionId) ||
+      !record(value.update)) {
+    throw new Error(`Native Secretary ledger event is malformed: ${JSON.stringify(value)}`);
+  }
+  if (value.sessionId !== sessionId || value.seatId !== seatId || value.domainId !== "global") return null;
+  const update = value.update;
+  if (!nonempty(update.sessionUpdate)) {
+    throw new Error(`Native Secretary original update has no kind: ${JSON.stringify(value)}`);
+  }
+  if (update.sessionUpdate === "user_message_chunk" || update.sessionUpdate === "agent_message_chunk") {
+    if (!record(update.content) || update.content.type !== "text" || typeof update.content.text !== "string") {
+      throw new Error(`Native Secretary text update is malformed: ${JSON.stringify(value)}`);
+    }
+    return { id: value.sourceEventId, kind: "message",
+      role: update.sessionUpdate === "user_message_chunk" ? "user" : "assistant",
+      text: update.content.text };
+  }
+  return { id: value.sourceEventId, kind: "tool", toolType: update.sessionUpdate,
+    title: update.sessionUpdate, detail: JSON.stringify(update) };
+}
+
 /** Actual E configuration and E routines; the optional conversation is H's fact only. */
 export function createDesign37SecretarySource(): {
   source: SecretarySource;
   readSnapshot: () => Promise<{ configuration: SecretaryConfiguration; page: SecretaryPage }>;
+  readConversation: (configuration: SecretaryConfiguration) => Promise<SecretaryConversation | null>;
+  send: (body: string) => Promise<void>;
+  stop: () => Promise<void>;
 } {
   const readSnapshot = async () => {
     const configuration = await readSecretaryConfiguration();
@@ -208,6 +280,7 @@ export function createDesign37SecretarySource(): {
         { kind: "down", reason: conversation?.state === "CONFLICT" ? "宿主报告秘书长会话冲突" :
           conversation?.state === "UNKNOWN" ? "宿主无法确认秘书长会话" :
           conversation?.state === "NONE" ? "宿主未找到秘书长会话" :
+          conversation?.historical === true ? "原会话已结束，可查看历史" :
           conversation?.stoppedFact === true ? "宿主报告秘书长会话已停止" :
           "宿主未报告可用的秘书长会话轮次状态" };
     return { configuration: confirmed, page: { entry, routines, settings } };
@@ -239,7 +312,110 @@ export function createDesign37SecretarySource(): {
       throw new Error(`Native Secretary routine change failed: ${JSON.stringify(reply)}`);
     }
   };
-  return { readSnapshot, source: { read: async () => (await readSnapshot()).page,
+  let transcript: { sessionId: string; seatId: string; epoch: string; cursor: string;
+    messages: ConversationItem[]; ids: Set<string> } | null = null;
+  const readConversation = async (configuration: SecretaryConfiguration): Promise<SecretaryConversation | null> => {
+    const original = confirmedConversation(configuration);
+    if (!original) { transcript = null; return null; }
+    const { fact } = original;
+    if (fact.historical === false && fact.runtimeAvailable === true && fact.claimState === "COMMITTED") {
+      const output = (await secretaryOperation("K-SESSION", "output-stream", fact.sessionId!, fact.revision!,
+        { generation: fact.generation, afterCursor: fact.ledgerCursor })).result;
+      if (output.generation !== fact.generation || !decimal(output.cursor) ||
+          (output.sourceError !== null && output.sourceError !== undefined)) {
+        throw new Error(`Native Secretary output source is unresolved: ${JSON.stringify(output)}`);
+      }
+    }
+    const latest = confirmedConversation(await readSecretaryConfiguration());
+    if (!latest || latest.configuration.seatId !== original.configuration.seatId ||
+        latest.configuration.incarnation !== original.configuration.incarnation ||
+        latest.configuration.generation !== original.configuration.generation ||
+        latest.configuration.revision !== original.configuration.revision ||
+        latest.fact.sessionId !== fact.sessionId || latest.fact.threadId !== fact.threadId ||
+        latest.fact.ledgerEpoch !== fact.ledgerEpoch) {
+      throw new Error("Native Secretary conversation identity changed during transcript read.");
+    }
+    const head = latest.fact.ledgerCursor!;
+    const prior = transcript && transcript.sessionId === fact.sessionId &&
+      transcript.seatId === original.configuration.seatId &&
+      transcript.epoch === fact.ledgerEpoch && BigInt(transcript.cursor) <= BigInt(head)
+      ? transcript : null;
+    let after = prior?.cursor ?? "0";
+    const messages: ConversationItem[] = prior ? [...prior.messages] : [];
+    const ids = prior ? new Set(prior.ids) : new Set<string>();
+    while (BigInt(after) < BigInt(head)) {
+      const result = (await secretaryOperation("K-LEDGER", "scoped-query", "ledger", head,
+        { readerSessionId: fact.sessionId, scope: "GLOBAL", epoch: fact.ledgerEpoch,
+          afterCursor: after })).result;
+      if (result.epoch !== fact.ledgerEpoch || !decimal(result.cursor) ||
+          !decimal(result.highWaterCursor) || !Array.isArray(result.events) ||
+          result.highWaterCursor !== head || BigInt(result.cursor) <= BigInt(after) ||
+          BigInt(result.cursor) > BigInt(head)) {
+        throw new Error(`Native Secretary ledger page is incomplete: ${JSON.stringify(result)}`);
+      }
+      for (const event of result.events) {
+        const item = secretaryEvent(event, fact.sessionId!, original.configuration.seatId);
+        if (item) {
+          if (ids.has(item.id)) throw new Error(`Native Secretary source event repeated: ${item.id}`);
+          ids.add(item.id);
+          messages.push(item);
+        }
+      }
+      after = result.cursor;
+    }
+    transcript = { sessionId: fact.sessionId!, seatId: original.configuration.seatId,
+      epoch: fact.ledgerEpoch!, cursor: head, messages, ids };
+    const writer = latest.fact.historical === false &&
+      latest.fact.claimState === "COMMITTED" && latest.fact.stoppedFact !== true &&
+      latest.fact.runtimeAvailable === true &&
+      (latest.fact.turnState === "IDLE" || latest.fact.turnState === "RUNNING") &&
+      nonempty(latest.configuration.instanceId) && nonempty(latest.configuration.model) &&
+      nonempty(latest.configuration.effort) && nonempty(latest.configuration.permissionTier)
+      ? { instanceId: latest.configuration.instanceId, model: latest.configuration.model,
+          effort: latest.configuration.effort,
+          permissionTier: latest.configuration.permissionTier,
+          canSend: latest.fact.turnState === "IDLE",
+          canStop: latest.fact.turnState === "RUNNING" } : null;
+    return { sessionId: fact.sessionId!, threadId: fact.threadId!,
+      seatId: original.configuration.seatId, generation: latest.fact.generation!,
+      revision: latest.fact.revision!, turnState: latest.fact.turnState!,
+      historical: latest.fact.historical!, runtimeAvailable: latest.fact.runtimeAvailable!,
+      messages, writer };
+  };
+  const currentWriter = async (turnState: "IDLE" | "RUNNING") => {
+    const selected = confirmedConversation(await readSecretaryConfiguration());
+    if (!selected || !selected.configuration.instanceId || !selected.configuration.model ||
+        !selected.configuration.effort || !selected.configuration.permissionTier ||
+        selected.fact.historical !== false || selected.fact.claimState !== "COMMITTED" ||
+        selected.fact.stoppedFact === true || selected.fact.runtimeAvailable !== true ||
+        selected.fact.turnState !== turnState) {
+      throw new Error("Native Secretary has no confirmed current writer for this operation.");
+    }
+    return selected;
+  };
+  let sendUnconfirmed = false;
+  const send = async (body: string) => {
+    if (!body.trim()) throw new Error("Secretary message is empty.");
+    if (sendUnconfirmed) throw new Error("Previous Secretary send outcome is unconfirmed.");
+    const { fact } = await currentWriter("IDLE");
+    sendUnconfirmed = true;
+    await secretaryOperation("K-SESSION", "send", fact.sessionId!, fact.revision!,
+      { body, generation: fact.generation });
+    sendUnconfirmed = false;
+  };
+  let stopUnconfirmed = false;
+  const stop = async () => {
+    if (stopUnconfirmed) throw new Error("Previous Secretary stop outcome is unconfirmed.");
+    const { fact, configuration } = await currentWriter("RUNNING");
+    stopUnconfirmed = true;
+    const stopped = await secretaryOperation("K-SESSION", "stop", fact.sessionId!, fact.revision!,
+      { seatId: configuration.seatId, generation: fact.generation });
+    if (!nonempty(stopped.result.stopFact)) {
+      throw new Error(`Native Secretary stop lacks original H stop fact: ${JSON.stringify(stopped.reply)}`);
+    }
+    stopUnconfirmed = false;
+  };
+  return { readSnapshot, readConversation, send, stop, source: { read: async () => (await readSnapshot()).page,
     actions: { pauseRoutine: (id) => changeRoutine(id, "secretary-routine-pause"),
       deleteRoutine: (id) => changeRoutine(id, "secretary-routine-delete") } } };
 }

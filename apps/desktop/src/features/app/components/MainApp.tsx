@@ -1,6 +1,7 @@
 import { lazy, useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import type { Messages } from "@/features/messages/components/Messages";
 import type { Composer } from "@/features/composer/components/Composer";
+import { ComposerInput } from "@/features/composer/components/ComposerInput";
 import successSoundUrl from "@/assets/success-notification.mp3";
 import errorSoundUrl from "@/assets/error-notification.mp3";
 import { MainAppShell } from "@app/components/MainAppShell";
@@ -92,7 +93,7 @@ import { entryLine, type EntryState, type ActionLine } from "@/features/secretar
 /** Complete host read, with explicit native identity and separate UI/output anchors. */
 export type SecretaryView = {
   association: {
-    workspaceId: string;
+    workspaceId: string | null;
     threadId: string;
     domainId: string;
     seatId: string;
@@ -108,6 +109,12 @@ export type SecretaryView = {
   conversation: {
     messages: Omit<ComponentProps<typeof Messages>, "afterItem">;
     composer: ComponentProps<typeof Composer> | null;
+  } | null;
+  nativeInput?: {
+    instanceId: string; model: string; effort: string; permissionTier: string;
+    canSend: boolean; canStop: boolean;
+    send: (body: string) => Promise<void>;
+    stop: () => Promise<void>;
   } | null;
   openConversation?: () => Promise<void>;
   openAction?: (id: string) => void;
@@ -137,16 +144,26 @@ function useNativeSecretaryView(enabled: boolean): SecretaryView | null {
       pending = (async () => {
         try {
           const snapshot = await producer.readSnapshot();
+          const conversation = await producer.readConversation(snapshot.configuration);
           if (disposed) return;
           setView({
-            association: null,
+            association: conversation ? { workspaceId: null, threadId: conversation.threadId,
+              domainId: "global", seatId: conversation.seatId,
+              sessionId: conversation.sessionId } : null,
             entry: snapshot.page.entry,
             source: producer.source,
             readState: "known",
             readAt: new Date().toLocaleString(),
             actionLines: [],
-            // No native conversation is manufactured from the active project.
-            conversation: null,
+            conversation: conversation ? {
+              messages: { items: conversation.messages, threadId: conversation.threadId,
+                workspaceId: null, workspacePath: null,
+                isThinking: conversation.turnState === "RUNNING",
+                openTargets: [], selectedOpenAppId: "" },
+              composer: null,
+            } : null,
+            nativeInput: conversation?.writer ? { ...conversation.writer,
+              send: producer.send, stop: producer.stop } : null,
             openConversation: refresh,
           });
         } catch (cause) {
@@ -202,6 +219,17 @@ function MainAppContent({
 }) {
   const secretaryKey = secretaryAssociationKey(secretaryView);
   const secretaryToken = useMemo(() => ({}), [secretaryView?.source, secretaryKey]);
+  const [secretaryDraftState, setSecretaryDraftState] = useState<{ token: object; text: string } | null>(null);
+  const secretaryDraft = secretaryDraftState?.token === secretaryToken ? secretaryDraftState.text : "";
+  const [secretaryWritePending, setSecretaryWritePending] = useState(false);
+  const secretaryWritePendingRef = useRef(false);
+  const [secretaryWriteFailure, setSecretaryWriteFailure] = useState<{
+    token: object; operation: "send" | "stop"; text: string } | null>(null);
+  const secretarySendBlocked = secretaryWriteFailure?.token === secretaryToken &&
+    secretaryWriteFailure.operation === "send";
+  const secretaryStopBlocked = secretaryWriteFailure?.token === secretaryToken &&
+    secretaryWriteFailure.operation === "stop";
+  const secretaryTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const currentSecretary = useRef<{ view: SecretaryView | null; token: object | null }>({ view: secretaryView, token: secretaryToken });
   currentSecretary.current = { view: secretaryView, token: secretaryToken };
   const [secretaryOpening, setSecretaryOpening] = useState<object | null>(null);
@@ -1916,8 +1944,12 @@ function MainAppContent({
   projectNavigation.current = { workspaceId: activeWorkspaceId, threadId: activeThreadId };
   useEffect(() => { leaveSecretary(); }, [activeWorkspaceId, activeThreadId, leaveSecretary]);
   const secretaryHasAssociation = Boolean(secretaryView?.association && secretaryView.conversation)
-    && Object.values(secretaryView!.association!)
-    .every((value) => typeof value === "string" && value.length > 0)
+    && [secretaryView!.association!.threadId, secretaryView!.association!.domainId,
+      secretaryView!.association!.seatId, secretaryView!.association!.sessionId]
+      .every((value) => typeof value === "string" && value.length > 0)
+    && (secretaryView!.association!.workspaceId === null ||
+      (typeof secretaryView!.association!.workspaceId === "string" &&
+        secretaryView!.association!.workspaceId.length > 0))
     && secretaryView!.conversation!.messages.workspaceId === secretaryView!.association!.workspaceId
     && secretaryView!.conversation!.messages.threadId === secretaryView!.association!.threadId;
   const secretarySettingsOnly = secretaryView !== null && secretaryView.association === null
@@ -2032,6 +2064,80 @@ function MainAppContent({
   const mainMessagesNode = secretaryActive && secretarySettingsOnly
     ? <div role="status">{entryLine(secretaryView!.entry).text}。右侧显示宿主读回的设置和定时任务。</div>
     : !secretaryActive && showWorkspaceHome ? workspaceHomeNode : messagesNode;
+  const nativeInput = secretaryActive && secretaryHasAssociation && secretaryView?.readState === "known"
+    ? secretaryView.nativeInput : null;
+  const sendSecretary = async () => {
+    if (!nativeInput?.canSend || secretarySendBlocked || secretaryWritePendingRef.current ||
+        !secretaryDraft.trim()) return;
+    const token = secretaryToken;
+    secretaryWritePendingRef.current = true;
+    setSecretaryWritePending(true);
+    try {
+      await nativeInput.send(secretaryDraft);
+      if (currentSecretary.current.token === token) {
+        setSecretaryDraftState({ token, text: "" });
+        setSecretaryWriteFailure(null);
+        void currentSecretary.current.view?.openConversation?.();
+      }
+    } catch (cause) {
+      if (currentSecretary.current.token === token) {
+        setSecretaryWriteFailure({ token, operation: "send",
+          text: cause instanceof Error ? cause.message : String(cause) });
+      }
+    } finally {
+      secretaryWritePendingRef.current = false;
+      setSecretaryWritePending(false);
+    }
+  };
+  const stopSecretary = async () => {
+    if (!nativeInput?.canStop || secretaryStopBlocked || secretaryWritePendingRef.current) return;
+    const token = secretaryToken;
+    secretaryWritePendingRef.current = true;
+    setSecretaryWritePending(true);
+    try {
+      await nativeInput.stop();
+      if (currentSecretary.current.token === token) {
+        setSecretaryWriteFailure(null);
+        void currentSecretary.current.view?.openConversation?.();
+      }
+    } catch (cause) {
+      if (currentSecretary.current.token === token) {
+        setSecretaryWriteFailure({ token, operation: "stop",
+          text: cause instanceof Error ? cause.message : String(cause) });
+      }
+    } finally {
+      secretaryWritePendingRef.current = false;
+      setSecretaryWritePending(false);
+    }
+  };
+  const secretaryComposerNode = secretaryActive && secretaryHasAssociation
+    ? nativeInput ? <footer className="composer">
+      <ComposerInput text={secretaryDraft} disabled={secretaryWritePending}
+        placeholder="向秘书长发送消息…" disabledPlaceholder="秘书长操作正在确认…"
+        sendLabel="发送给秘书长" canStop={nativeInput.canStop && !secretaryStopBlocked && !secretaryWritePending}
+        canSend={nativeInput.canSend && !secretarySendBlocked && !secretaryWritePending && Boolean(secretaryDraft.trim())}
+        isProcessing={nativeInput.canStop} onStop={() => void stopSecretary()}
+        onSend={() => void sendSecretary()}
+        onTextChange={(text) => setSecretaryDraftState({ token: secretaryToken, text })}
+        onSelectionChange={() => {}}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            void sendSecretary();
+          }
+        }}
+        textareaRef={secretaryTextareaRef} suggestionsOpen={false} suggestions={[]}
+        highlightIndex={0} onHighlightIndex={() => {}} onSelectSuggestion={() => {}} />
+      <div className="composer-meta" role="status">
+        实例 {nativeInput.instanceId} · 模型 {nativeInput.model} · 强度 {nativeInput.effort} · 权限档位 {nativeInput.permissionTier}
+      </div>
+      {secretaryWriteFailure?.token === secretaryToken
+        ? <div role="alert">{secretaryWriteFailure.text}</div> : null}
+    </footer> : secretaryView?.conversation?.composer ? composerNode
+      : <div role="status">{secretaryView?.readState === "frozen"
+      ? secretaryView.readError ?? "秘书长最新状态未读到"
+      : entryLine(secretaryView!.entry).text}。当前会话只可查看。</div>
+    : composerNode;
   const compactThreadConnectionState: "live" | "polling" | "disconnected" =
     !activeWorkspace?.connected
       ? "disconnected"
@@ -2073,7 +2179,7 @@ function MainAppContent({
       activeWorkspace: secretaryActive || Boolean(activeWorkspace),
       sidebarNode,
       messagesNode: mainMessagesNode,
-      composerNode: <><NowPinSlot />{composerNode}</>,
+      composerNode: <><NowPinSlot />{secretaryComposerNode}</>,
       approvalToastsNode,
       updateToastNode,
       errorToastsNode,
@@ -2107,7 +2213,7 @@ function MainAppContent({
 
   return (
     <NowProvider source={nowSource} active={
-      secretaryActive && secretaryHasAssociation && composerNode
+      secretaryActive && secretaryHasAssociation && composerNode && secretaryView!.association!.workspaceId
         ? { workspaceId: secretaryView!.association!.workspaceId, threadId: secretaryView!.association!.threadId }
         : !isNewAgentDraftMode && composerNode && activeWorkspaceId && activeThreadId
         ? { workspaceId: activeWorkspaceId, threadId: activeThreadId } : null
