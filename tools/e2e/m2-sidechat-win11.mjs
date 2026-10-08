@@ -15,7 +15,7 @@ const inside = (child, parent) => child === parent || child.startsWith(parent + 
 const unique = values => new Set(values).size === values.length;
 const required = ['installed', 'version', 'sourceCommit', 'installedSha256', 'registryKey',
   'pwsh', 'python', 'evidenceDirectory', 'result', 'stateRoot', 'testbedSource',
-  'domainId', 'repositoryId', 'observers', 'sideChat'];
+  'domainId', 'repositoryId', 'observers', 'sideChat', 'modelMemoryReader'];
 if (process.platform !== 'win32' || required.some(key => config[key] === undefined) ||
     config.repositoryId !== 'gogokeSeatTestbed' || !atom(config.domainId) ||
     !/^[a-f0-9]{40}$/.test(config.sourceCommit) ||
@@ -24,6 +24,11 @@ if (process.platform !== 'win32' || required.some(key => config[key] === undefin
       /^[a-f0-9]{64}$/.test(config.installedSha256[name] ?? '')) ||
     !Array.isArray(config.observers) || !['formal', 'memory', 'ledger'].every(name =>
       config.observers.some(row => row.name === name)) ||
+    config.modelMemoryReader?.runtime !== config.python ||
+    !Array.isArray(config.modelMemoryReader?.args) ||
+    !['{home}', '{output}'].every(token => config.modelMemoryReader.args.filter(arg => arg === token).length === 1) ||
+    !/^[a-f0-9]{64}$/.test(config.modelMemoryReader?.scriptSha256 ?? '') ||
+    sha256(config.modelMemoryReader.args[0]) !== config.modelMemoryReader.scriptSha256 ||
     !config.observers.every(row => atom(row.name) && typeof row.runtime === 'string' &&
       path.isAbsolute(row.runtime) && Array.isArray(row.args) && row.args.includes('{output}') &&
       Array.isArray(row.equalFields) && row.equalFields.length > 0) ||
@@ -45,6 +50,7 @@ const side = config.sideChat;
 const selections = ['sourceSeatId', 'sourceInstanceId', 'sourceWorktreeId',
   'sideSeatId', 'sideInstanceId', 'sideWorktreeId'];
 if (side.lifecycleOwnership !== 'EXCLUSIVE_V12_SOURCE_AND_SIDE' ||
+    side.sourceInstanceId !== side.sideInstanceId ||
     selections.some(key => !atom(side[key])) ||
     !atom(side.sourceTemplateId) || !atom(side.sideTemplateId) ||
     !unique([side.sourceSeatId, side.sideSeatId]) ||
@@ -67,7 +73,7 @@ const journal = { schema: 'gogoke.37.m2-win11-e2e.v1', entry: 'm2-sidechat-win11
   launches: [], closes: [], operations: [], sessions: [], snapshots: {}, readbacks: [],
   sideChatCases: [], assertions: [], v12: 'RUNNING' };
 const product = new ActualProduct(config, journal);
-for (const file of ['m2-sidechat-win11.mjs', 'm2-sidechat.mjs', 'm2-readback.py'])
+for (const file of ['m2-sidechat-win11.mjs', 'm2-sidechat.mjs', 'm2-readback.py', 'm2-provider-capture-readback.py'])
   journal.driverBytes[file] = sha256(path.join(here, file));
 product.save();
 const check = (condition, message) => {
@@ -138,7 +144,7 @@ try {
   await snapshot('before');
   const initialMemory = snapshotValue('memory', 'before');
   check(initialMemory.memoryDataUnchangedByRead && initialMemory.stage1OutputCount === 0 &&
-    initialMemory.memoryJobCount === 0, 'Actual initial memory store is unchanged by measurement and has no memory jobs');
+    initialMemory.memoryJobCount === 0, 'Registration HOME memory observation is unchanged; actual model HOME is checked separately');
   const initialLedger = snapshotValue('ledger', 'before');
   check(initialLedger.epoch === side.ledgerEpoch && initialLedger.cursor === side.sourceCursor,
     'Root-provided V12 epoch and source cursor match the fresh native read-only ledger observation');
@@ -169,7 +175,8 @@ try {
   await product.closeNormally();
   const original = await readback('side-worktrees');
   check(original.epoch === initialLedger.epoch &&
-    BigInt(original.cursor) >= BigInt(initialLedger.cursor) && original.worktrees?.length === 2,
+    BigInt(original.cursor) >= BigInt(initialLedger.cursor) && original.worktrees?.length === 2 &&
+    original.freshModelHistoriesAbsentBeforeOpen === true,
     'V12 original F readback binds both roots and the same measured ledger epoch');
   const sourceTree = original.worktrees.find(row => row.worktreeId === side.sourceWorktreeId);
   const sideTree = original.worktrees.find(row => row.worktreeId === side.sideWorktreeId);
@@ -198,10 +205,31 @@ try {
   check(final.sideChatCases?.length === 1 &&
     final.sideChatCases[0].result === 'DIRECT_A_H_F_AND_AUTHORIZED_TOOL_EXPORTED_REQUIRES_V12_REVIEW',
     'Existing immutable reader confirms actual V12 A/H/F and authorized tool evidence');
+  check(final.actualModelMemoryHomes?.length === 2 &&
+    new Set(final.actualModelMemoryHomes.map(row => row.path)).size === 2,
+    'Two real H/F-bound model CODEX_HOME directories are observed');
+  journal.actualModelMemory = [];
+  for (const [index, home] of final.actualModelMemoryHomes.entries()) {
+    check(home.effectiveMemory === 'ORIGINAL_H_CONFIG_READ_DISABLED',
+      'Actual H config/read confirms the model memory configuration is disabled');
+    const output = path.join(config.evidenceDirectory, `model-memory-${index}-final.json`);
+    check(!fs.existsSync(output) && sha256(config.modelMemoryReader.args[0]) === config.modelMemoryReader.scriptSha256,
+      'Original model memory reader and fresh output are unchanged');
+    await runChild(config.modelMemoryReader.runtime,
+      config.modelMemoryReader.args.map(arg => arg === '{home}' ? home.path : arg === '{output}' ? output : arg),
+      'Actual closed model CODEX_HOME memory observation');
+    const memory = readJson(output);
+    check(memory.credentialsRead === false && memory.memoryDataUnchangedByRead === true &&
+      memory.stage1OutputCount === 0 && memory.memoryJobCount === 0,
+      'Actual final model HOME has no memory jobs or stage1 outputs and observation preserves its bytes');
+    journal.actualModelMemory.push({ ...home, file: path.basename(output), sha256: sha256(output),
+      readerSha256: config.modelMemoryReader.scriptSha256,
+      scope: 'ORIGINAL_EFFECTIVE_CONFIG_AND_FINAL_STORE_NOT_CONTINUOUS_WRITE_MONITOR' }); product.save();
+  }
   await snapshot('after');
   const finalMemory = snapshotValue('memory', 'after');
   check(finalMemory.memoryDataUnchangedByRead && finalMemory.stage1OutputCount === 0 &&
-    finalMemory.memoryJobCount === 0, 'Actual final memory store is unchanged by measurement and has no memory jobs');
+    finalMemory.memoryJobCount === 0, 'Registration HOME memory observation remains unchanged');
   for (const observer of config.observers) {
     const before = snapshotValue(observer.name, 'before');
     const after = snapshotValue(observer.name, 'after');

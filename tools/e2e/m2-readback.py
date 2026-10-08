@@ -85,6 +85,81 @@ def ordinary(path):
 def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
+def v12_model_memory_homes(db, journal, case, result, originals):
+    def metadata(sql, args):
+        cursor = db.execute(sql, args)
+        values = cursor.fetchall()
+        if len(values) != 1:
+            raise RuntimeError("V12 private history metadata is not one original row")
+        return dict(zip((field[0] for field in cursor.description), values[0]))
+
+    helper = Path(__file__).with_name("m2-provider-capture-readback.py")
+    identities = {}
+    def identity(directory):
+        key = str(directory)
+        if key not in identities:
+            read = subprocess.run([sys.executable, str(helper), "--directory-identity", key],
+                capture_output=True, text=True, timeout=30, check=False,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            if read.returncode:
+                raise RuntimeError(f"V12 original directory metadata: {read.stderr[-2048:]}")
+            identities[key] = read.stdout.strip()
+        return identities[key]
+
+    result["actualModelMemoryHomes"] = []
+    for session in (case["sourceSession"], case["sideSession"]):
+        episode = metadata("SELECT * FROM gogoke_v37_h_process_episode "
+            "WHERE domain_id=? AND session_id=? AND generation=?",
+            (journal["domainId"], session["id"], session["generation"]))
+        generation = metadata("SELECT * FROM gogoke_v37_instance_history_generations "
+            "WHERE binding_id=? AND generation=?", (episode["binding_id"], episode["generation"]))
+        custody = metadata("SELECT * FROM gogoke_coordination_process_custody WHERE operation_id=?",
+            (episode["process_operation_id"],))
+        history = metadata("SELECT * FROM gogoke_v37_instance_histories WHERE history_id=?",
+            (generation["history_id"],))
+        if any(history[key] != expected for key, expected in (
+                ("instance_id", session["instanceId"]), ("domain_id", journal["domainId"]),
+                ("session_id", session["id"]), ("seat_id", session["seatId"]),
+                ("seat_incarnation", episode["seat_incarnation"]))) or \
+                generation["process_operation_id"] != episode["process_operation_id"] or \
+                any(generation[key] != custody[key] for key in ("ticket", "custodian_nonce")) or \
+                history["state"] != "READY" or \
+                not re.fullmatch(r"[a-f0-9]{64}", history["history_id"]) or \
+                history["directory_ref"] != "history-" + history["history_id"]:
+            raise RuntimeError("V12 actual model HOME differs from its original H/F binding")
+        home = root / "v37-instances" / session["instanceId"]
+        directory = home / history["directory_ref"]
+        if not beneath(home, directory) or \
+                identity(root) != history["root_identity"] or \
+                identity(root / "v37-instances") != history["parent_identity"] or \
+                identity(home) != history["home_identity"] or \
+                identity(directory) != history["directory_identity"]:
+            raise RuntimeError("V12 actual model HOME physical identity changed")
+        configs = [row for row in result["commands"] if row["sessionId"] == session["id"] and
+            json.loads(row["originalFrame"]).get("method") == "config/read"]
+        if len(configs) != 1 or configs[0]["phase"] != "OBSERVED":
+            raise RuntimeError("V12 effective memory needs its original observed config/read")
+        command = json.loads(configs[0]["originalFrame"])
+        replies = [(row, frame) for row, frame, _ in originals[session["id"]] if
+            "method" not in frame and type(frame.get("id")) is type(command["id"]) and
+            frame.get("id") == command["id"] and
+            row["sourceEpoch"] == configs[0]["sourceEpoch"] and
+            row["sourceCursor"] == configs[0]["sourceCursor"]]
+        if len(replies) != 1 or "error" in replies[0][1]:
+            raise RuntimeError("V12 effective memory config has no original H response")
+        config = replies[0][1]["result"]["config"]
+        if config["features"]["memories"] is not False or \
+                config["memories"]["generate_memories"] is not False or \
+                config["memories"]["use_memories"] is not False:
+            raise RuntimeError("V12 actual model memory configuration is enabled or unknown")
+        result["actualModelMemoryHomes"].append({"sessionId": session["id"],
+            "instanceId": session["instanceId"], "generation": session["generation"],
+            "historyId": history["history_id"], "bindingId": episode["binding_id"],
+            "path": str(directory), "directoryIdentity": history["directory_identity"],
+            "identityObserver": "WIN32_FILE_ID_INFO", "effectiveMemory": "ORIGINAL_H_CONFIG_READ_DISABLED",
+            "configSourceEpoch": replies[0][0]["sourceEpoch"],
+            "configSourceCursor": replies[0][0]["sourceCursor"]})
+
 def verified_model_evidence(db, instance_id, model, expected_domain=None, expected_session=None):
     evidence = one(db,
         "SELECT i.driver_id,i.version,i.program_digest,i.install_state,i.login_state,"
@@ -1208,11 +1283,17 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
         if phase == "side-worktrees":
             if result["worktrees"] == [] or journal.get("sessions") != [] or journal.get("sideChatCases") != []:
                 raise RuntimeError("Independent V12 first F readback must precede all H admission")
+            if rows(db, "SELECT history_id FROM gogoke_v37_instance_histories "
+                    "WHERE domain_id=? AND seat_id IN (?,?)",
+                    (domain, plan["sourceSeatId"], plan["sideSeatId"])):
+                raise RuntimeError("Fresh V12 seats already have private model history")
+            result["freshModelHistoriesAbsentBeforeOpen"] = True
         else:
             case = journal["sideChatCases"][0]
             verify_v12_selected_models(db, journal, case, journal["sideChatPlan"], result)
             verify_v12_stop_release(db, journal, case, result)
             verify_v12_lifecycle_and_ledger(db, journal, case, journal["sideChatPlan"])
+            v12_model_memory_homes(db, journal, case, result, originals)
             if len(result["sideChatCases"]) != 1:
                 raise RuntimeError("Independent V12 common A/H/D/F checks did not produce one original case")
         result["directCaseEvidence"] = True

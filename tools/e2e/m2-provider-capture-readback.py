@@ -113,6 +113,10 @@ def native_directory_identity(value):
     finally:
         kernel32.CloseHandle(handle)
 
+if len(sys.argv) == 3 and sys.argv[1] == "--directory-identity":
+    print(native_directory_identity(sys.argv[2]))
+    raise SystemExit(0)
+
 if len(sys.argv) == 4 and sys.argv[1] == "--process-identity":
     observed = capture_process_identity(sys.argv[2], sys.argv[3])
     print(json.dumps(observed, separators=(",", ":")))
