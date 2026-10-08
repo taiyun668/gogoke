@@ -244,6 +244,26 @@ pub(crate) fn no_unsettled_instance_use(db: &VerifiedDatabaseConnection<'_>, dri
     own_probe.bind_text(1, &format!("managed-cli-{driver}"))?;
     if own_probe.step_row()? { return Err(ManagedCliError::Busy); }
     no_unsettled_global_cli_custody(db,driver)?;
+    // Preparing a first managed copy cannot change an old instance's selected
+    // program. A genuine version change retains the original strict barrier.
+    let pin=read_fixed_official_cli(driver).ok_or(ManagedCliError::Unsupported)?;
+    let copy=Statement::prepare(db.as_ptr(),
+        "SELECT COALESCE(version,''),COALESCE(previous_version,'') FROM main.gogoke_v37_instance_cli_copies WHERE driver_id=?1")?;
+    copy.bind_text(1,driver)?;
+    if copy.step_row()? {
+        let version=copy.column_text(0)?;
+        let previous=copy.column_text(1)?;
+        if copy.step_row()? {return Err(ManagedCliError::Busy)}
+        if (!version.is_empty() && version!=pin.version) ||
+            (!previous.is_empty() && previous!=pin.version) {
+            no_unsettled_version_change(db,driver)?;
+        }
+    }
+    Ok(())
+}
+
+fn no_unsettled_version_change(db: &VerifiedDatabaseConnection<'_>, driver: &str)
+    -> Result<(), ManagedCliError> {
     for sql in [
         "SELECT 1 FROM main.gogoke_v37_h_claim c JOIN main.gogoke_v37_instances i ON i.instance_id=c.instance_id LEFT JOIN main.gogoke_coordination_process_custody p ON p.operation_id=c.process_operation_id AND p.domain_id=c.domain_id AND p.generation=c.generation WHERE i.driver_id=?1 AND (c.state NOT IN ('RELEASED','STOPPED') OR (c.state='STOPPED' AND (c.stop_fact_id IS NULL OR p.state IS NULL OR p.state!='STOPPED' OR p.stop_proof_hash IS NULL OR c.stop_fact_id!=p.stop_proof_hash))) LIMIT 1",
         "SELECT 1 FROM main.gogoke_v37_h_owner_binding b JOIN main.gogoke_v37_instances i ON i.instance_id=b.instance_id LEFT JOIN main.gogoke_v37_h_claim c ON c.binding_id=b.binding_id LEFT JOIN main.gogoke_coordination_process_custody p ON p.operation_id=c.process_operation_id AND p.domain_id=c.domain_id AND p.generation=c.generation WHERE i.driver_id=?1 AND b.state='ACTIVE' AND (c.binding_id IS NULL OR c.state NOT IN ('STOPPED','RELEASED') OR (c.state='STOPPED' AND (c.stop_fact_id IS NULL OR p.state IS NULL OR p.state!='STOPPED' OR p.stop_proof_hash IS NULL OR c.stop_fact_id!=p.stop_proof_hash))) LIMIT 1",
@@ -543,6 +563,7 @@ pub(crate) fn uninstall_managed_cli(db: &mut VerifiedDatabaseConnection<'_>, roo
     let stage_name = transaction(db, |db| {
         check_owner_in_current_transaction(db, owner)?;
         no_unsettled_instance_use(db, driver)?;
+        no_unsettled_version_change(db, driver)?;
         let instance = Statement::prepare(db.as_ptr(),
             "SELECT 1 FROM main.gogoke_v37_instances i LEFT JOIN main.gogoke_v37_instance_profiles p ON p.instance_id=i.instance_id WHERE i.driver_id=?1 AND (p.tombstoned IS NULL OR p.tombstoned=0) LIMIT 1")?;
         instance.bind_text(1, driver)?;
@@ -588,6 +609,7 @@ pub(crate) fn uninstall_managed_cli(db: &mut VerifiedDatabaseConnection<'_>, roo
     transaction(db, |db| {
         check_owner_in_current_transaction(db, owner)?;
         no_unsettled_instance_use(db, driver)?;
+        no_unsettled_version_change(db, driver)?;
         let instance = Statement::prepare(db.as_ptr(),
             "SELECT 1 FROM main.gogoke_v37_instances i LEFT JOIN main.gogoke_v37_instance_profiles p ON p.instance_id=i.instance_id WHERE i.driver_id=?1 AND (p.tombstoned IS NULL OR p.tombstoned=0) LIMIT 1")?;
         instance.bind_text(1, driver)?;

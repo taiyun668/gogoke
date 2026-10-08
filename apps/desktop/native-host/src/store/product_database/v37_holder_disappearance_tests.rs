@@ -354,6 +354,8 @@ fn actual_two_disappeared_holders_recover_in_one_call_replay_without_acl_effect_
                 generation.session_id, "APPLIED".into(), old[7].clone(), expected[7].clone()]]);
         }
         assert_eq!(occupancy(&mut product),Some(0),"exact completed recovery does not poison the current count");
+        assert!(product.qualified_managed_source_resources(INSTANCE,"codex").is_ok(),
+            "the original two APPLIED releases qualify only their own retained H resources");
         // Negative metadata instrument, not an observed stop or a new effect.
         // Roll back the exact old row before continuing the real recovery case.
         product.connection.execute("BEGIN IMMEDIATE").unwrap();
@@ -362,6 +364,8 @@ fn actual_two_disappeared_holders_recover_in_one_call_replay_without_acl_effect_
         changed.bind_text(1,&cold.claims[0][0]).unwrap();changed.bind_text(2,&cold.claims[0][1]).unwrap();
         changed.step_done().unwrap();drop(changed);
         assert_eq!(occupancy(&mut product),None,"an empty string is not the original NULL evidence");
+        assert!(product.qualified_managed_source_resources(INSTANCE,"codex").is_err(),
+            "changed stop metadata invalidates the original holder release for source migration");
         product.connection.execute("ROLLBACK").unwrap();
         assert_ne!(source_acl_digest(&product, root, cold), before_acl);
         assert_eq!(CredentialBinding::observe_source_metadata(root, &cold.home.join("auth.json"),

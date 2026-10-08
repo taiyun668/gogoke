@@ -63,13 +63,118 @@ impl<'a> ProductDatabase<'a> {
                   LIMIT 1")?;
             active.bind_text(1,&id)?;
             if active.step_row()?{return Err(OrchestrationError::AccessDenied)}
-            // Settle only already qualified independent H holder-gone work.
-            // Its original kernel and ACL proof remains separate from a StopFact.
-            if driver=="codex" {self.recover_disappeared_credential_resources(&id,None)?;}
         }
+        // Copy preparation is independent of retained instance resources. In
+        // particular it must not run holder recovery or write the old ACL.
         instance::no_unsettled_instance_use(&self.connection,driver)
             .map_err(|error|failure("global login/observer custody",error))?;
         Ok(())
+    }
+
+    /// Select only instances whose original source can be switched in this
+    /// transaction. A disabled instance is retained, unbound and unable to
+    /// launch after READY. Every other old instance must qualify.
+    fn qualified_managed_source_instances(&self,driver:&str)->Result<Vec<String>> {
+        if !self.pending_native_launches.is_empty() ||
+            !self.pending_credential_preparations.is_empty() {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let rows=Statement::prepare(self.connection.as_ptr(),
+            "SELECT i.instance_id,COALESCE(CAST(p.enabled AS TEXT),'') FROM main.gogoke_v37_instances i LEFT JOIN main.gogoke_v37_instance_profiles p ON p.instance_id=i.instance_id WHERE i.driver_id=?1 AND (p.tombstoned IS NULL OR p.tombstoned=0) ORDER BY i.instance_id")?;
+        rows.bind_text(1,driver)?;
+        let mut selected=Vec::new();
+        while rows.step_row()? {
+            let id=rows.column_text(0)?;
+            let enabled=rows.column_text(1)?;
+            if enabled=="0" {continue}
+            if !matches!(enabled.as_str(),""|"1") ||
+                self.owner_login.as_ref().is_some_and(|session|
+                    v37_login::pending_login_for_instance(session,&id)) ||
+                self.native_sessions.values().any(|session|session.evidence.instance_id()==id) {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            selected.push(id);
+        }
+        drop(rows);
+        for id in &selected {self.qualified_managed_source_resources(id,driver)?;}
+        Ok(selected)
+    }
+
+    fn qualified_managed_source_resources(&self,id:&str,driver:&str)->Result<()> {
+        let pending=|sql:&str|->Result<bool>{
+            let row=Statement::prepare(self.connection.as_ptr(),sql)?;
+            row.bind_text(1,id)?;
+            Ok(row.step_row()?)
+        };
+        for sql in [
+            "SELECT 1 FROM main.gogoke_v37_h_generation_change g JOIN main.gogoke_v37_h_process_episode e ON e.process_operation_id=g.old_process_operation_id WHERE e.instance_id=?1 AND g.stage NOT IN ('APPLIED','CANCELLED','UNSUPPORTED') LIMIT 1",
+            "SELECT 1 FROM main.gogoke_v37_h_operation o JOIN main.gogoke_v37_h_claim c ON c.domain_id=o.domain_id AND c.session_id=o.session_id WHERE c.instance_id=?1 AND o.status!='APPLIED' LIMIT 1",
+            "SELECT 1 FROM main.gogoke_v37_instance_homes WHERE instance_id=?1 AND state NOT IN ('ACTIVE','CLEANED','CLOSED') LIMIT 1",
+            "SELECT 1 FROM main.gogoke_v37_instance_operations WHERE target_id=?1 AND phase!='APPLIED' LIMIT 1",
+            "SELECT 1 FROM main.gogoke_v37_credential_objects WHERE instance_id=?1 AND phase!='ACTIVE' LIMIT 1",
+            "SELECT 1 FROM main.gogoke_v37_credential_aliases WHERE instance_id=?1 AND state IN ('PREPARING','REMOVE_PENDING','UNKNOWN') LIMIT 1",
+            "SELECT 1 FROM main.gogoke_v37_credential_profiles WHERE instance_id=?1 AND state IN ('GRANT_PENDING','REVOKE_PENDING','UNKNOWN') LIMIT 1",
+        ] {if pending(sql)? {return Err(OrchestrationError::AccessDenied)}}
+
+        let claims=Statement::prepare(self.connection.as_ptr(),
+            "SELECT a.domain_id,a.session_id,a.state,COALESCE(a.process_operation_id,''),COALESCE(a.stop_fact_id,''),COALESCE(c.state,''),COALESCE(c.stop_proof_hash,'') FROM main.gogoke_v37_h_claim a LEFT JOIN main.gogoke_coordination_process_custody c ON c.operation_id=a.process_operation_id AND c.profile_id=a.instance_id AND c.domain_id=a.domain_id AND c.generation=a.generation WHERE a.instance_id=?1")?;
+        claims.bind_text(1,id)?;
+        let mut rows=Vec::new();
+        while claims.step_row()? {rows.push((0..7).map(|n|claims.column_text(n)).collect::<std::result::Result<Vec<_>,_>>()?);}
+        drop(claims);
+        for row in rows {
+            let (domain,session,state,operation,stop,custody,proof)=
+                (&row[0],&row[1],&row[2],&row[3],&row[4],&row[5],&row[6]);
+            if state=="RELEASED" && operation.is_empty() && stop.is_empty() {
+                let q=Statement::prepare(self.connection.as_ptr(),
+                    "SELECT 1 FROM main.gogoke_v37_h_process_episode WHERE domain_id=?1 AND session_id=?2 UNION ALL SELECT 1 FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND session_id=?2 AND operation='open' LIMIT 1")?;
+                q.bind_text(1,domain)?;q.bind_text(2,session)?;
+                if !q.step_row()? {continue}
+            }
+            if matches!(state.as_str(),"RELEASED"|"STOPPED") && !operation.is_empty() &&
+                !stop.is_empty() && custody=="STOPPED" && proof==stop {continue}
+            if state=="RELEASED" && stop.is_empty() && !operation.is_empty() &&
+                driver=="codex" && self.completed_codex_holder_release(id,domain,session,operation)? {
+                continue;
+            }
+            return Err(OrchestrationError::AccessDenied);
+        }
+
+        let episodes=Statement::prepare(self.connection.as_ptr(),
+            "SELECT e.domain_id,e.session_id,COALESCE(e.process_operation_id,''),e.phase,COALESCE(e.stop_fact_id,''),COALESCE(c.state,''),COALESCE(c.stop_proof_hash,'') FROM main.gogoke_v37_h_process_episode e LEFT JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id AND c.profile_id=e.instance_id AND c.domain_id=e.domain_id AND c.generation=e.generation WHERE e.instance_id=?1")?;
+        episodes.bind_text(1,id)?;
+        let mut rows=Vec::new();
+        while episodes.step_row()? {rows.push((0..7).map(|n|episodes.column_text(n)).collect::<std::result::Result<Vec<_>,_>>()?);}
+        drop(episodes);
+        for row in rows {
+            let (domain,session,operation,phase,stop,custody,proof)=
+                (&row[0],&row[1],&row[2],&row[3],&row[4],&row[5],&row[6]);
+            if operation.is_empty() && phase=="FAILED" {continue}
+            if matches!(phase.as_str(),"STOPPED"|"FAILED") && !stop.is_empty() &&
+                custody=="STOPPED" && proof==stop {continue}
+            if !operation.is_empty() && driver=="codex" &&
+                self.completed_codex_holder_release(id,domain,session,operation)? {continue}
+            return Err(OrchestrationError::AccessDenied);
+        }
+        Ok(())
+    }
+
+    fn migrate_managed_cli(&mut self,driver:&str,stage:&str)->Result<usize> {
+        self.connection.execute("BEGIN IMMEDIATE")?;
+        let result=(||{
+            authority::check_owner_in_current_transaction(&self.connection,&self.owner)
+                .map_err(|error|failure("migration owner",error))?;
+            self.no_live_global_cli_owner(driver)?;
+            let qualified=self.qualified_managed_source_instances(driver)?;
+            instance::migrate_quiescent_legacy_instances(&self.connection,self.root,&self.owner,
+                driver,stage,&qualified).map_err(|error|failure("legacy migration",error))
+        })();
+        match result {
+            Ok(count)=>{self.connection.execute("COMMIT")
+                .map_err(OrchestrationError::CommitUnknownWithCause)?;Ok(count)},
+            Err(error)=>{self.connection.execute("ROLLBACK")
+                .map_err(OrchestrationError::CommitUnknownWithCause)?;Err(error)},
+        }
     }
 
     pub(super) fn dispatch_user_managed_cli(&mut self,frame:&[u8])->Result<Vec<u8>>{
@@ -105,9 +210,7 @@ impl<'a> ProductDatabase<'a> {
                     "PROBED"=>(),
                     _=>return Err(OrchestrationError::AccessDenied),
                 }
-                let migrated=instance::migrate_quiescent_legacy_instances(&mut self.connection,
-                    self.root,&self.owner,&driver,&stage)
-                    .map_err(|error|failure("resume migration",error))?;
+                let migrated=self.migrate_managed_cli(&driver,&stage)?;
                 Ok(result("resume",[("driverId",string(&driver)),
                     ("state",string("READY")),("migrated",Json::Number(migrated.to_string()))]))
             },
@@ -156,9 +259,7 @@ impl<'a> ProductDatabase<'a> {
                 let driver=field(&fields,"driverId")?;
                 let stage=field(&fields,"stageName")?;
                 self.no_live_global_cli_owner(&driver)?;
-                let migrated=instance::migrate_quiescent_legacy_instances(&mut self.connection,
-                    self.root,&self.owner,&driver,&stage)
-                    .map_err(|error|failure("legacy migration",error))?;
+                let migrated=self.migrate_managed_cli(&driver,&stage)?;
                 Ok(result("migrate",[("driverId",string(&driver)),
                     ("state",string("READY")),("migrated",Json::Number(migrated.to_string()))]))
             },
@@ -226,7 +327,7 @@ impl<'a> ProductDatabase<'a> {
             profile_id:format!("managed-cli-{driver}"),domain_id:"global".into(),
             generation:copy.revision.to_string()};
         // A durable STOPPED prior attempt can be re-probed after a crash in
-        // STAGED. Unsettled attempts were rejected by no_unsettled_instance_use.
+        // STAGED. Unsettled managed probe attempts were rejected above.
         let attempts=Statement::prepare(self.connection.as_ptr(),
             "SELECT COUNT(*) FROM main.gogoke_coordination_process_custody WHERE profile_id=?1")?;
         attempts.bind_text(1,&format!("managed-cli-{driver}"))?;

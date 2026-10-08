@@ -54,7 +54,7 @@ fn command(product: &mut ProductDatabase<'_>, command: &str, driver: &str,
         "managed CLI {command} did not reach {expected}: {reply}");
 }
 
-pub(super) fn ready(product: &mut ProductDatabase<'_>, root: &RootLock, driver: &str) {
+pub(super) fn prepared_image(root: &RootLock, driver: &str) -> (String, PathBuf) {
     let pin = instance::read_fixed_official_cli(driver).expect("fixed official CLI pin");
     let original = archive(driver, pin.version, pin.archive_sha256);
     let staging = instance::managed_cli_root(root).expect("private managed CLI staging root");
@@ -77,11 +77,20 @@ pub(super) fn ready(product: &mut ProductDatabase<'_>, root: &RootLock, driver: 
     }
     instance::inspect_staged_official_cli(root, driver, &stage)
         .expect("native verified the per-root original archive and executable");
-    command(product, "stage", driver, &stage, None, "STAGED");
-    command(product, "probe", driver, &stage, Some("fixture-probe"), "PROBED");
+    (stage, image)
+}
+
+pub(super) fn ready(product: &mut ProductDatabase<'_>, root: &RootLock, driver: &str) {
+    let (stage, _) = prepared_image(root, driver);
+    staged_probe(product,driver,&stage);
     command(product, "migrate", driver, &stage, None, "READY");
     let copy = instance::read_managed_cli(&product.connection, root, driver)
         .unwrap().expect("managed CLI copy row");
     assert_eq!(copy.state, "READY");
     assert_eq!(copy.stage_name.as_deref(), Some(stage.as_str()));
+}
+
+pub(super) fn staged_probe(product: &mut ProductDatabase<'_>, driver: &str, stage: &str) {
+    command(product, "stage", driver, &stage, None, "STAGED");
+    command(product, "probe", driver, &stage, Some("fixture-probe"), "PROBED");
 }

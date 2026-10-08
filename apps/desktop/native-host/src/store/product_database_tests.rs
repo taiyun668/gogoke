@@ -866,6 +866,52 @@ fn user_instance_install_read_rejects_a_changed_registered_digest_without_revisi
 }
 
 #[test]
+fn managed_first_install_keeps_disabled_unsettled_legacy_and_binds_enabled_instance() {
+    fixture(|root, product| {
+        let (stage,image)=managed_cli_test_setup::prepared_image(root,"codex");
+        let program=instance::ProgramObservation::observe(&image,"0.160.0").unwrap();
+        let pin=instance::read_fixed_official_cli("codex").unwrap();
+        let digest=format!("sha256:{}",pin.image_sha256);
+        assert!(program.matches_pin(&digest,pin.version));
+        for id in ["legacyFrozen","legacyReady"] {
+            let frame=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-INSTANCE\",\"operation\":\"register\",\"requestId\":\"register{id}\",\"targetId\":\"{id}\",\"domainId\":\"global\",\"expectedRevision\":\"0\",\"payload\":{{\"driverId\":\"codex\"}}}}");
+            let request=decode_request(frame.as_bytes()).unwrap();
+            instance::register_instance(&mut product.connection,root,&instance::Registration {
+                request_id:&request.request_id,request_bytes:&request.raw_bytes,
+                instance_id:id,driver_id:"codex",program:&program,
+            }).unwrap();
+            instance::set_instance_profile(&mut product.connection,&product.owner,id,id,true,None,None).unwrap();
+        }
+        product.connection.execute("INSERT INTO main.gogoke_v37_h_owner_binding(binding_id,instance_id,domain_id,kind,owner_id,generation,state) VALUES('frozenBinding','legacyFrozen','oldProject','SESSION','oldSession','1','ACTIVE')").unwrap();
+        product.connection.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision) VALUES('oldProject','oldSession','legacyFrozen','oldHome','frozenBinding','1','COMMITTED',1)").unwrap();
+        managed_cli_test_setup::staged_probe(product,"codex",&stage);
+        let migrate=format!("{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"migrate\",\"driverId\":\"codex\",\"stageName\":\"{stage}\"}}");
+        assert!(product.dispatch_user_managed_cli(migrate.as_bytes()).is_err(),
+            "an enabled committed reservation cannot be silently skipped");
+        assert_eq!(scalar(product,"SELECT state FROM main.gogoke_v37_instance_cli_copies WHERE driver_id='codex'"),"PROBED");
+        assert_eq!(scalar(product,"SELECT count(*) FROM main.gogoke_v37_instance_program_sources"),"0");
+
+        instance::set_instance_profile(&mut product.connection,&product.owner,
+            "legacyFrozen","legacyFrozen",false,None,Some(1)).unwrap();
+        let reply=String::from_utf8(product.dispatch_user_managed_cli(migrate.as_bytes()).unwrap()).unwrap();
+        assert!(reply.contains("\"migrated\":1"),"{reply}");
+        assert_eq!(scalar(product,"SELECT state FROM main.gogoke_v37_instance_cli_copies WHERE driver_id='codex'"),"READY");
+        assert_eq!(scalar(product,"SELECT instance_id FROM main.gogoke_v37_instance_program_sources"),"legacyReady");
+        assert_eq!(scalar(product,"SELECT state FROM main.gogoke_v37_h_claim WHERE instance_id='legacyFrozen'"),"COMMITTED");
+        assert!(matches!(instance::locate_bound_instance_program(&product.connection,
+            "legacyFrozen","codex",&digest,pin.version),Err(instance::ProgramSourceError::Conflict)));
+        assert!(instance::locate_bound_instance_program(&product.connection,
+            "legacyReady","codex",&digest,pin.version).is_ok());
+        let read=product.dispatch_user_request(&instance_request(
+            "install-state","readFrozen","legacyFrozen","1")).unwrap();
+        let read=String::from_utf8(read).unwrap();
+        assert!(read.contains("\"status\":\"UNKNOWN\"") &&
+            read.contains("no qualified managed program source"),"{read}");
+        remove_instance_home(root);
+    });
+}
+
+#[test]
 fn user_instance_login_read_replays_a_durable_login_observation() {
     fixture(|root, product| {
         managed_cli_test_setup::ready(product, root, "codex");
