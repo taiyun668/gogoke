@@ -557,6 +557,10 @@ impl<'root> ProductDatabase<'root> {
     fn visible_native_events(&self, workspace: &str, association: &Association,
         selected: &Selection, params: &BTreeMap<JsonString,Json>,
         reply: &mut BTreeMap<JsonString,Json>) -> Result<()> {
+        if self.visible_selection(workspace,None)?.as_ref().map(|latest|latest.row)!=Some(selected.row) {
+            return Err(OrchestrationError::V37StoreFailure(
+                "Original USER workspace selection changed before native event read.".into()));
+        }
         let current=self.visible_candidate(association,true)?;
         if current.thread!=selected.thread || current.repository!=selected.repository
             || current.worktree!=selected.worktree {
@@ -1119,6 +1123,15 @@ mod tests {
             assert!(product.configure_user_v37(malformed.as_bytes()).is_err(),"vendor/native identity fields do not coerce JSON number and string");
             let count=Statement::prepare(product.connection.as_ptr(),"SELECT COUNT(*) FROM main.gogoke_v37_visible_conversation_selection").unwrap();
             assert!(count.step_row().unwrap());assert_eq!(count.column_text(0).unwrap(),"1","denied recovery cannot create or resend an effect");
+            drop(count);
+            let old=product.visible_selection("workspaceA",Some(&association)).unwrap().unwrap();
+            let switched=Statement::prepare(product.connection.as_ptr(),
+                "INSERT INTO main.gogoke_v37_visible_conversation_selection VALUES('workspaceA','laterLegacy','LEGACY','00','null','','','','','','',0,0)").unwrap();
+            switched.step_done().unwrap();drop(switched);
+            let mut result=product.visible_reply("workspaceA","UNKNOWN",Some(&association),None);
+            let error=product.visible_native_events("workspaceA",&association,&old,&BTreeMap::new(),&mut result).unwrap_err();
+            assert!(format!("{error:?}").contains("selection changed"),
+                "an older matching association cannot append events after workspace selection changed");
         });
     }
     #[test]
