@@ -591,7 +591,7 @@ mod tests {
             let mut pipe=OpenOptions::new().read(true).write(true).open(endpoint).unwrap();pipe.write_all(&[0x47]).unwrap();hold.recv().unwrap();
         });
         let mut pipe=listener.accept_user().unwrap();let proof=pipe.take_user_origin_proof().unwrap();
-        run(&mut product,&proof);drop(proof);drop(pipe);release.send(()).unwrap();client.join().unwrap();drop(listener);
+        run(&mut product,&proof);drop(proof);drop(pipe);release.send(()).unwrap();client.join().unwrap();
         product.close_checked().unwrap();drop(root);std::fs::remove_file(database).unwrap();
         std::fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).unwrap();
         if let Err(error)=std::fs::remove_dir(&path) {eprintln!("owned original USER fixture retained: {error}");}
@@ -611,7 +611,7 @@ mod tests {
     }
     /// Synthetic immutable H/selection facts only. There is deliberately no
     /// live native session, current E authority, process launch or model call.
-    fn history(product:&ProductDatabase<'_>,association:&Association) {
+    fn history(product:&mut ProductDatabase<'_>,association:&Association) {
         let selected=Statement::prepare(product.connection.as_ptr(),
             "INSERT INTO main.gogoke_v37_visible_conversation_selection VALUES('workspaceA','selectionA','NATIVE','00',?1,'repositoryA','worktreeA','vendorThreadA','openA','1','processA',1,2)").unwrap();
         selected.bind_text(1,&association.json().canonical()).unwrap();selected.step_done().unwrap();drop(selected);
