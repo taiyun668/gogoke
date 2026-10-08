@@ -908,6 +908,12 @@ impl LaunchEvidence {
                         PermissionTier::IsolatedWrite|PermissionTier::NetworkedWrite) {
                         "acceptEdits".into()
                     } else { "plan".into() });
+                    // The fixed Agent SDK exposes the same debug-file option.
+                    // Keep the CLI's own diagnostics in the original private
+                    // runtime HOME; H does not read credentials or log data.
+                    args.push("--debug-file".into());
+                    args.push(self.homes.session.path.join("claude-startup-debug.log")
+                        .to_string_lossy().into_owned());
                     args
                 },
                 // The pinned top-level --pure switch disables external plugins;
