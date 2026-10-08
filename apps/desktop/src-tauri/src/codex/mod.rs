@@ -107,6 +107,7 @@ async fn visible_user_frame(app: &AppHandle, frame: Value) -> Result<String, Str
 }
 
 async fn read_visible_route(app: &AppHandle, workspace_id: &str) -> Result<VisibleRouteReply, String> {
+    crate::public_runtime::product_entry::ensure_design37_user_host(app).await?;
     let raw = visible_user_frame(
         app,
         json!({
@@ -135,6 +136,22 @@ async fn visible_route(app: &AppHandle, workspace_id: &str) -> Result<VisibleRou
         }
         _ => Err("GOGOKE_VISIBLE_ROUTE_STATE_INVALID".into()),
     }
+}
+
+pub(crate) fn initialize_native_visible_app(app: &AppHandle) {
+    VISIBLE_APP.get_or_init(|| app.clone());
+}
+
+pub(crate) async fn native_visible_workspace_registration_only(
+    workspace_id: &str,
+) -> Result<bool, String> {
+    let Some(app) = VISIBLE_APP.get() else {
+        return Ok(false);
+    };
+    let route = read_visible_route(app, workspace_id).await?;
+    // Registration exposes the original new ID for explicit USER selection.
+    // It grants no H admission and does not create a model process.
+    Ok(route.state == "NEEDS_SETUP" && route.association.is_none())
 }
 
 /// A routing preflight must run before any legacy shared-session reuse.
@@ -1271,7 +1288,7 @@ pub(crate) async fn spawn_workspace_session(
     _codex_home: Option<PathBuf>,
 ) -> Result<Arc<WorkspaceSession>, String> {
     crate::public_runtime::product_entry::ensure_design37_user_host(&app_handle).await?;
-    let _ = VISIBLE_APP.set(app_handle.clone());
+    initialize_native_visible_app(&app_handle);
     let route = visible_route(&app_handle, &entry.id).await?;
     match route.state.as_str() {
         "NATIVE" => {

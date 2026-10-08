@@ -41,6 +41,12 @@ mod workspace_settings;
 mod codex {
     use serde_json::Value;
     use tauri::AppHandle;
+    pub(crate) async fn native_visible_workspace_registration_only(
+        _workspace_id: &str,
+    ) -> Result<bool, String> {
+        // No USER host exists in the daemon; preserve its original lifecycle.
+        Ok(false)
+    }
     pub(crate) async fn native_visible_route_preflight(
         _workspace_id: &str,
     ) -> Result<Option<crate::backend::app_server::NativeAssociation>, String> {

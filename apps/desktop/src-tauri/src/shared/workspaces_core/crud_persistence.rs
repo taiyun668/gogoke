@@ -19,6 +19,30 @@ use super::helpers::{
     normalize_setup_script, normalize_workspace_path_input, workspace_path_to_string,
 };
 
+async fn register_unconnected_workspace(
+    entry: WorkspaceEntry,
+    workspaces: &Mutex<HashMap<String, WorkspaceEntry>>,
+    storage_path: &PathBuf,
+) -> Result<WorkspaceInfo, String> {
+    let mut current = workspaces.lock().await;
+    current.insert(entry.id.clone(), entry.clone());
+    let list: Vec<_> = current.values().cloned().collect();
+    if let Err(error) = write_workspaces(storage_path, &list) {
+        current.remove(&entry.id);
+        return Err(error);
+    }
+    Ok(WorkspaceInfo {
+        id: entry.id,
+        name: entry.name,
+        path: entry.path,
+        connected: false,
+        kind: entry.kind,
+        parent_id: entry.parent_id,
+        worktree: entry.worktree,
+        settings: entry.settings,
+    })
+}
+
 pub(crate) async fn add_workspace_core<F, Fut>(
     path: String,
     workspaces: &Mutex<HashMap<String, WorkspaceEntry>>,
@@ -53,6 +77,9 @@ where
     };
 
     let _spawn_guard = workspace_session_spawn_lock().lock().await;
+    if crate::codex::native_visible_workspace_registration_only(&entry.id).await? {
+        return register_unconnected_workspace(entry, workspaces, storage_path).await;
+    }
     let native_route = crate::codex::native_visible_route_preflight(&entry.id).await?;
     let existing_session = if native_route.is_some() {
         None

@@ -268,6 +268,7 @@ pub fn run() {
             }
         })
         .setup(move |app| {
+            codex::initialize_native_visible_app(app.handle());
             let state = state::AppState::load(&app.handle());
             app.manage(state);
             #[cfg(target_os = "windows")]

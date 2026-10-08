@@ -506,6 +506,9 @@ impl<'root> ProductDatabase<'root> {
                             Ok(observed)=>observed,
                             Err(error)=>("UNKNOWN",Some(format!("Original H live-state observation: {error:?}"))),
                         };
+                        if matches!(state,"LIVE"|"STOPPED") && reason.is_none() {
+                            reply.insert(k("state"),s("APPLIED"));
+                        }
                         if let Some(reason)=reason {reply.insert(k("reason"),s(&reason));}
                         reply.insert(k("live"),Json::Object(BTreeMap::from([(k("state"),s(state)),
                             (k("pendingQuestions"),self.visible_pending_questions(&association,&selected.thread)?)])));
