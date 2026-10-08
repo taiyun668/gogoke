@@ -35,6 +35,41 @@ pub(super) struct NativeSession {
     pending_acp: Option<(Vec<u8>,h::AcpSendIdentity)>,
     pub(super) pending_claude: Option<(Vec<u8>,h::ClaudeSendIdentity)>,
     host_recipient: Option<(HostEscalationProof,HostRecipient)>,
+    startup_observed: StartupObservationTimes,
+}
+
+// These are observations of this holder's existing launch, never readiness,
+// authorization, a deadline adjustment, or a recovered process's timestamps.
+struct StartupObservationTimes {
+    prepared_returned: String,
+    activate_started: Option<String>,
+    activate_returned: Option<String>,
+}
+
+fn observed_unix_ns() -> String {
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(time) => time.as_nanos().to_string(),
+        Err(error) => format!("unknown({error})"),
+    }
+}
+
+fn bounded_original_error(source: &str, max_bytes: usize) -> String {
+    if source.len()<=max_bytes {return source.to_owned();}
+    // Error text, unlike the separate stdout hex field, can be abbreviated.
+    // Keep both producer ends and report the exact omitted middle byte count.
+    let budget=max_bytes.saturating_sub(80)/2;
+    let mut head=budget;
+    while !source.is_char_boundary(head) {head-=1;}
+    let mut tail=source.len()-budget;
+    while !source.is_char_boundary(tail) {tail+=1;}
+    format!("{}; [omitted_error_middle_bytes={}]; {}",&source[..head],tail-head,&source[tail..])
+}
+
+impl StartupObservationTimes {
+    fn prepared_now() -> Self {
+        Self { prepared_returned: observed_unix_ns(), activate_started: None,
+            activate_returned: None }
+    }
 }
 
 struct RpcObservation {
@@ -49,6 +84,36 @@ impl NativeSession {
 }
 
 impl<'root> ProductDatabase<'root> {
+    fn native_original_read_evidence(&self, key: &(String,String), cause: String,
+        write_started: &str, write_returned: &str, written: &str, read_started: Instant) -> String {
+        let Some(run)=self.native_sessions.get(key) else {
+            return format!("{cause}; launch_observations=unknown(original holder absent)");
+        };
+        let complete=(|| -> std::result::Result<(String,String),crate::store::atomic::AtomicError> {
+            let query=Statement::prepare(self.connection.as_ptr(),
+                "SELECT CAST(COUNT(*) AS TEXT),CAST(COALESCE(SUM(length(raw_bytes)),0) AS TEXT) FROM main.v37_ledger_raw_source WHERE operation_id=?1 AND process_ticket=?2 AND custodian_nonce=?3 AND domain_id=?4 AND session_id=?5 AND generation=?6")?;
+            for (index,value) in [run.operation_id.as_str(),run.custody.ticket.opaque(),
+                run.custody.custodian_nonce.as_str(),key.0.as_str(),key.1.as_str(),
+                run.custody.binding.generation.as_str()].iter().enumerate() {
+                query.bind_text((index+1) as i32,value)?;
+            }
+            if !query.step_row()? {return Err(crate::store::atomic::AtomicError::InvalidRecord("original frame counts absent"));}
+            Ok((query.column_text(0)?,query.column_text(1)?))
+        })();
+        let counts=match complete {
+            Ok((frames,bytes))=>format!("captured_complete_stdout_frames={frames}; captured_complete_stdout_bytes={bytes}"),
+            Err(error)=>format!("captured_complete_stdout=unknown({})",
+                bounded_original_error(&format!("{error:?}"),512)),
+        };
+        // Bounded observations precede cause/fragment details, so the existing
+        // Claude journal limit cannot silently discard these original facts.
+        format!("{counts}; process_creation_100ns={}; prepared_returned_unix_ns={}; activate_started_unix_ns={}; activate_returned_unix_ns={}; rpc_write_started_unix_ns={write_started}; rpc_write_returned_unix_ns={write_returned}; rpc_mark_written_returned_unix_ns={written}; read_failure_unix_ns={}; rpc_read_elapsed_ms={}; {cause}",
+            run.custody.identity.creation_time_100ns,run.startup_observed.prepared_returned,
+            run.startup_observed.activate_started.as_deref().unwrap_or("unknown"),
+            run.startup_observed.activate_returned.as_deref().unwrap_or("unknown"),
+            observed_unix_ns(),read_started.elapsed().as_millis())
+    }
+
     /// Explicit H ingress before pure verification. The same live kernel
     /// process and original F/H tuple authorize a changed Grok auth FileID.
     pub(super) fn refresh_native_grok_boundary(&mut self,key:&(String,String))->Result<()>{
@@ -526,6 +591,7 @@ impl<'root> ProductDatabase<'root> {
             model,effort,thread_id:None,turn_id:None,raw_capture:Default::default(),
             stop_proof:None,next_rpc_id:4,pending_acp:None,pending_claude:None,
             host_recipient:host.map(|(proof,choice)|(proof.clone(),choice.clone())),
+            startup_observed:StartupObservationTimes::prepared_now(),
         });
         authority::record_prepared_process(&mut self.connection,&operation_id,&custody)?;
         failure(self.connection.execute("BEGIN IMMEDIATE"))?;
@@ -552,7 +618,11 @@ impl<'root> ProductDatabase<'root> {
             failure(run.evidence.verify(&mut self.connection,self.root,&self.owner,
                 Some(&operation_id)))?;
             if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
+            self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?
+                .startup_observed.activate_started=Some(observed_unix_ns());
             self.process_custodian.activate(&custody)?;
+            self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?
+                .startup_observed.activate_returned=Some(observed_unix_ns());
             authority::mark_process_active(&mut self.connection,&operation_id,&custody)?;
             let driver=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?
                 .evidence.driver_id().to_owned();
@@ -1773,7 +1843,8 @@ impl<'root> ProductDatabase<'root> {
             open_request_bytes: request.raw_bytes.clone(), domain_id: request.domain_id.clone(),
             session_id: request.target_id.clone(), model, effort, thread_id: None, turn_id: None, raw_capture: Default::default(), stop_proof: None,
             next_rpc_id: 4, pending_acp:None,pending_claude:None,
-            host_recipient:host.map(|(proof,choice)|(proof.clone(),choice.clone())) });
+            host_recipient:host.map(|(proof,choice)|(proof.clone(),choice.clone())),
+            startup_observed:StartupObservationTimes::prepared_now() });
         if let Err(error) = authority::record_prepared_process(&mut self.connection, &operation_id, &custody) {
             let abort = self.process_custodian.abort_prepared(&custody);
             return Err(OrchestrationError::V37StoreFailure(format!(
@@ -1807,7 +1878,11 @@ impl<'root> ProductDatabase<'root> {
                 &operation_id,&custody))?;
             failure(run.evidence.verify(&mut self.connection, self.root, &self.owner, Some(&operation_id)))?;
             if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
+            self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?
+                .startup_observed.activate_started=Some(observed_unix_ns());
             self.process_custodian.activate(&custody)?;
+            self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?
+                .startup_observed.activate_returned=Some(observed_unix_ns());
             authority::mark_process_active(&mut self.connection, &operation_id, &custody)?;
             let run = self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
             let driver=run.evidence.driver_id().to_owned();
@@ -2549,8 +2624,12 @@ impl<'root> ProductDatabase<'root> {
             open_request_id:&open_id,open_request_bytes:&open_bytes,step_id:&step_id,
             custody:&custody,command:&command};
         let prepared=failure(rpc::prepare_claude(&mut self.connection,&self.owner,&step))?;
+        let mut write_started="unknown(original write occurred before this observation)".to_owned();
+        let mut write_returned="unknown(original write occurred before this observation)".to_owned();
+        let mut written="unknown(original write occurred before this observation)".to_owned();
         match prepared.disposition {
             rpc::Disposition::NewWrite=>{
+                write_started=observed_unix_ns();
                 let process=self.process_custodian.active(&custody.ticket)
                     .ok_or(OrchestrationError::OperationConflict)?;
                 if let Err(error)=process.write_persistent_frame(&prepared.bytes) {
@@ -2559,7 +2638,9 @@ impl<'root> ProductDatabase<'root> {
                     let marked=rpc::mark_claude_unknown(&mut self.connection,&self.owner,&step,&original.to_string());
                     return Err(OrchestrationError::V37StoreFailure(format!("Claude initialize write: {original}; UNKNOWN: {marked:?}")));
                 }
+                write_returned=observed_unix_ns();
                 failure(rpc::mark_claude_written(&mut self.connection,&self.owner,&step))?;
+                written=observed_unix_ns();
             },
             rpc::Disposition::Existing(rpc::Phase::Written|rpc::Phase::Observed)=>{},
             _=>return Err(OrchestrationError::OperationConflict),
@@ -2595,9 +2676,12 @@ impl<'root> ProductDatabase<'root> {
                     let detail=match fragment {
                         Ok(bytes)=>format!("incomplete_stdout_bytes={}; incomplete_stdout_tail_hex={}; tail_limit_bytes=512",
                             bytes.len(),hex(&bytes[bytes.len().saturating_sub(512)..])),
-                        Err(snapshot_error)=>format!("incomplete_stdout_snapshot_error={snapshot_error}"),
+                        Err(snapshot_error)=>format!("incomplete_stdout_bytes=unknown; incomplete_stdout_snapshot_error={}",
+                            bounded_original_error(&snapshot_error.to_string(),1024)),
                     };
-                    let mut diagnostic=format!("original_read_error={original}; {detail}");
+                    let mut diagnostic=self.native_original_read_evidence(key,
+                        format!("original_read_error={original}; {detail}"),
+                        &write_started,&write_returned,&written,start);
                     if let Some(process)=self.process_custodian.active(&custody.ticket) {
                         diagnostic.push_str(&format!("; exact_process_exit={:?}; job_active={:?}",
                             process.exit_code(),process.active_job_processes()));
@@ -3160,6 +3244,7 @@ impl<'root> ProductDatabase<'root> {
         if let Some((proof,choice))=&host {self.check_host_recipient_choice(proof,choice)?;}
         let process = self.process_custodian.active(&custody.ticket)
             .ok_or(OrchestrationError::Invalid("native RPC process absent"))?;
+        let write_started=observed_unix_ns();
         if let Err(error) = process.write_persistent_frame(&intention.bytes) {
             let original = self.process_custodian.protocol_error_with_stderr(&custody.ticket,
                 crate::process::ProcessCustodyError::ProtocolPipe(error));
@@ -3168,15 +3253,19 @@ impl<'root> ProductDatabase<'root> {
             if persisted.is_ok() {return Err(OrchestrationError::NativeRecipientFailure(cause));}
             return Err(OrchestrationError::V37StoreFailure(cause));
         }
+        let write_returned=observed_unix_ns();
         failure(rpc::mark_written(&mut self.connection, &self.owner, &step))?;
+        let written=observed_unix_ns();
         if id.is_none() { return Ok(None); }
         let start = Instant::now();
         loop {
             let remaining = Duration::from_secs(30).saturating_sub(start.elapsed());
             if remaining.is_zero() {
                 let original = "native RPC response deadline";
-                let diagnostic = rpc_read_failure_evidence(original,
-                    self.process_custodian.persistent_stdout_fragment(&custody.ticket));
+                let diagnostic = self.native_original_read_evidence(key,
+                    rpc_read_failure_evidence(original,
+                        self.process_custodian.persistent_stdout_fragment(&custody.ticket)),
+                    &write_started,&write_returned,&written,start);
                 let persisted = rpc::mark_unknown(&mut self.connection, &self.owner, &step, &diagnostic);
                 if let Err(error) = persisted {
                     return Err(OrchestrationError::V37StoreFailure(format!(
@@ -3187,8 +3276,10 @@ impl<'root> ProductDatabase<'root> {
             let frame = match self.process_custodian.read_persistent_child_frame(&custody.ticket, remaining) {
                 Ok(frame) => frame,
                 Err(error) => {
-                    let diagnostic = rpc_read_failure_evidence(&error.to_string(),
-                        self.process_custodian.persistent_stdout_fragment(&custody.ticket));
+                    let diagnostic = self.native_original_read_evidence(key,
+                        rpc_read_failure_evidence(&error.to_string(),
+                            self.process_custodian.persistent_stdout_fragment(&custody.ticket)),
+                        &write_started,&write_returned,&written,start);
                     let persisted = rpc::mark_unknown(&mut self.connection, &self.owner, &step, &diagnostic);
                     let pipe=match &error {
                         crate::process::ProcessCustodyError::ProtocolPipe(_)=>true,
