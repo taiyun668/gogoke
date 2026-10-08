@@ -229,7 +229,9 @@ mod tests {
             .expect("connect should be noop");
 
             assert_eq!(spawn_calls.load(Ordering::SeqCst), 0);
-            kill_session_by_id(&sessions, &entry.id).await;
+            kill_session_by_id(&sessions, &entry.id)
+                .await
+                .expect("stop session");
         });
     }
 
@@ -263,7 +265,9 @@ mod tests {
 
             assert_eq!(spawn_calls.load(Ordering::SeqCst), 1);
             assert!(sessions.lock().await.contains_key(&entry.id));
-            kill_session_by_id(&sessions, &entry.id).await;
+            kill_session_by_id(&sessions, &entry.id)
+                .await
+                .expect("stop session");
         });
     }
 }
