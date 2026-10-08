@@ -60,13 +60,25 @@ fn explicit_zones(text: &str) -> Result<Vec<String>, ScheduleError> {
             )
     }) {
         let candidate = word.trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '.' | '!'));
-        if (candidate.contains('/')
-            && candidate
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_alphabetic()))
-            || candidate == "UTC"
-        {
+        let iana_area = candidate.split_once('/').is_some_and(|(area, _)| {
+            matches!(
+                area,
+                "Africa"
+                    | "America"
+                    | "Antarctica"
+                    | "Arctic"
+                    | "Asia"
+                    | "Atlantic"
+                    | "Australia"
+                    | "Europe"
+                    | "Indian"
+                    | "Pacific"
+                    | "Etc"
+                    | "US"
+                    | "Canada"
+            )
+        });
+        if iana_area || candidate == "UTC" {
             zone(candidate)?;
             found.push(candidate.to_owned());
         } else if ["PST", "PDT", "EST", "EDT", "CST", "CDT", "IST", "GMT"].contains(&candidate) {
@@ -199,6 +211,61 @@ fn has_clock(text: &str) -> bool {
             && part[3].is_ascii_digit()
             && part[4].is_ascii_digit()
     })
+}
+
+fn has_english_relative_rule(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let words: Vec<_> = lower
+        .split(|c: char| {
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    ',' | '，' | '.' | '。' | ';' | '；' | '!' | '?' | '(' | ')'
+                )
+        })
+        .filter(|word| !word.is_empty())
+        .collect();
+    words.windows(3).any(|parts| {
+        matches!(parts[0], "in" | "every")
+            && parts[1].bytes().all(|b| b.is_ascii_digit())
+            && matches!(
+                parts[2],
+                "second" | "seconds" | "minute" | "minutes" | "hour" | "hours"
+            )
+    })
+}
+
+fn explicit_negative_request(text: &str) -> bool {
+    // These are bounded, explicit positive reminder idioms. Everything else
+    // containing a recognized negation remains unsupported as authorization.
+    let without_positive = text
+        .replace("不要忘了", "")
+        .replace("不要忘记", "")
+        .replace("别忘了", "")
+        .replace("别忘记", "");
+    let lower = without_positive
+        .to_ascii_lowercase()
+        .replace("don't forget to", "")
+        .replace("do not forget to", "");
+    [
+        "不要",
+        "不是",
+        "取消",
+        "不按",
+        "别在",
+        "别按",
+        "别把",
+        "别给",
+        "别提醒",
+        "别设",
+    ]
+    .iter()
+    .any(|word| lower.contains(word))
+        || lower.trim_end().ends_with('别')
+        || lower.contains("别 ")
+        || ["not ", "don't ", "do not ", "instead of "]
+            .iter()
+            .any(|word| lower.contains(word))
 }
 
 fn weekday(value: &str) -> Option<chrono::Weekday> {
@@ -348,24 +415,6 @@ pub(crate) fn resolve_user_schedule(
     if original_user[position + exact_span.len()..].contains(exact_span) {
         return Err(ScheduleError::SourceMismatch);
     }
-    let prefix: String = original_user[..position]
-        .chars()
-        .rev()
-        .take(16)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    let prefix_lower = prefix.to_ascii_lowercase();
-    if ["不要", "别", "不是", "取消", "不按"]
-        .iter()
-        .any(|word| prefix.contains(word))
-        || ["not ", "don't ", "do not ", "instead of "]
-            .iter()
-            .any(|word| prefix_lower.contains(word))
-    {
-        return Err(ScheduleError::ConflictingRule);
-    }
     let (tz, timezone) = selected_zone(original_user, proposed_zone, host_timezone)?;
     if source_input_ms <= 0 {
         return Err(ScheduleError::TimeOutOfRange);
@@ -386,6 +435,9 @@ pub(crate) fn resolve_user_schedule(
         &original_user[..position],
         &original_user[position + exact_span.len()..]
     );
+    if explicit_negative_request(&outside) {
+        return Err(ScheduleError::ConflictingRule);
+    }
     if [
         "每天",
         "每周",
@@ -394,14 +446,13 @@ pub(crate) fn resolve_user_schedule(
         "daily at ",
         "weekly on ",
         "tomorrow at ",
-        "every ",
-        "in ",
     ]
     .iter()
     .any(|token| outside.contains(token))
         || outside.contains("分钟后")
         || outside.contains("小时后")
         || outside.contains("秒后")
+        || has_english_relative_rule(&outside)
         || has_clock(&outside)
     {
         return Err(ScheduleError::ConflictingRule);

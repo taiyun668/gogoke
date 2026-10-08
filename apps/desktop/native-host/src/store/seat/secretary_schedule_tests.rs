@@ -91,6 +91,50 @@ fn model_cannot_supply_a_different_or_duplicate_rule() {
         ),
         Err(ScheduleError::ConflictingRule)
     );
+    assert_eq!(
+        resolve(
+            "每天 09:00 check tests in main",
+            "每天 09:00",
+            "HOST_DEFAULT",
+            "2026-10-07T12:00:00Z",
+            "Asia/Shanghai"
+        )
+        .unwrap()
+        .next_due_ms,
+        stamp("2026-10-08T01:00:00Z")
+    );
+    assert_eq!(
+        resolve(
+            "每天 09:00 and in 2 hours",
+            "每天 09:00",
+            "HOST_DEFAULT",
+            "2026-10-07T12:00:00Z",
+            "Asia/Shanghai"
+        ),
+        Err(ScheduleError::ConflictingRule)
+    );
+    assert_eq!(
+        resolve(
+            "不要忘了每天 09:00 提醒",
+            "每天 09:00",
+            "HOST_DEFAULT",
+            "2026-10-07T12:00:00Z",
+            "Asia/Shanghai"
+        )
+        .unwrap()
+        .next_due_ms,
+        stamp("2026-10-08T01:00:00Z")
+    );
+    assert_eq!(
+        resolve(
+            "不要把旧任务改成这样。请每天 09:00 提醒",
+            "每天 09:00",
+            "HOST_DEFAULT",
+            "2026-10-07T12:00:00Z",
+            "Asia/Shanghai"
+        ),
+        Err(ScheduleError::ConflictingRule)
+    );
 }
 
 #[test]
@@ -144,11 +188,29 @@ fn timezone_must_come_from_user_or_real_host() {
         resolve(
             "明天 09:00 Mars/Base",
             "明天 09:00 Mars/Base",
-            "HOST_DEFAULT",
+            "Mars/Base",
             source,
             "America/Los_Angeles"
         ),
         Err(ScheduleError::InvalidTimezone("Mars/Base".to_owned()))
+    );
+    assert!(resolve(
+        "每天 09:00 检查 docs/PLAN.md",
+        "每天 09:00",
+        "HOST_DEFAULT",
+        source,
+        "America/Los_Angeles"
+    )
+    .is_ok());
+    assert_eq!(
+        resolve(
+            "明天 09:00 Europe/Invalid",
+            "明天 09:00 Europe/Invalid",
+            "HOST_DEFAULT",
+            source,
+            "America/Los_Angeles"
+        ),
+        Err(ScheduleError::InvalidTimezone("Europe/Invalid".to_owned()))
     );
 }
 
