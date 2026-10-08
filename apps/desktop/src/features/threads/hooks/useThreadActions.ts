@@ -12,6 +12,8 @@ import {
   listThreads as listThreadsService,
   listWorkspaces as listWorkspacesService,
   resumeThread as resumeThreadService,
+  readThread as readThreadService,
+  nativeConversationAssociation,
   startThread as startThreadService,
 } from "@services/tauri";
 import {
@@ -197,11 +199,23 @@ export function useThreadActions({
       if (!threadId) {
         return null;
       }
-      if (!force && loadedThreadsRef.current[threadId]) {
+      let native: Awaited<ReturnType<typeof nativeConversationAssociation>>;
+      try {
+        native = "__TAURI_INTERNALS__" in window
+          ? await nativeConversationAssociation(workspaceId) : null;
+      } catch (error) {
+        dispatch({ type: "addAssistantMessage", threadId,
+          text: error instanceof Error ? error.message : String(error) });
+        onDebug?.({ id: `${Date.now()}-native-read-association-error`, timestamp: Date.now(),
+          source: "error", label: "Native conversation association read",
+          payload: error instanceof Error ? error.message : String(error) });
+        return null;
+      }
+      if (!native && !force && loadedThreadsRef.current[threadId]) {
         return threadId;
       }
       const status = threadStatusByIdRef.current[threadId];
-      if (status?.isProcessing && loadedThreadsRef.current[threadId] && !force) {
+      if (!native && status?.isProcessing && loadedThreadsRef.current[threadId] && !force) {
         onDebug?.({
           id: `${Date.now()}-client-thread-resume-skipped`,
           timestamp: Date.now(),
@@ -215,7 +229,7 @@ export function useThreadActions({
         id: `${Date.now()}-client-thread-resume`,
         timestamp: Date.now(),
         source: "client",
-        label: "thread/resume",
+        label: native ? "thread/read" : "thread/resume",
         payload: { workspaceId, threadId },
       });
       const inFlightCount =
@@ -226,17 +240,21 @@ export function useThreadActions({
       }
       try {
         const response =
-          (await resumeThreadService(workspaceId, threadId)) as
+          (await (native ? readThreadService(workspaceId, threadId)
+                         : resumeThreadService(workspaceId, threadId))) as
             | Record<string, unknown>
             | null;
         onDebug?.({
           id: `${Date.now()}-server-thread-resume`,
           timestamp: Date.now(),
           source: "server",
-          label: "thread/resume response",
+          label: native ? "thread/read response" : "thread/resume response",
           payload: response,
         });
         const thread = extractThreadFromResponse(response);
+        if (native && (!thread || thread.id !== threadId || !Array.isArray(thread.turns))) {
+          throw new Error("Original native thread/read did not return the selected thread and full turns.");
+        }
         if (thread) {
           dispatch({ type: "ensureThread", workspaceId, threadId });
           applyThreadMetadata(workspaceId, threadId, thread, {
@@ -245,7 +263,7 @@ export function useThreadActions({
           applyCollabThreadLinksFromThread(workspaceId, threadId, thread);
           const localItems = itemsByThread[threadId] ?? [];
           const shouldReplace =
-            replaceLocal || replaceOnResumeRef.current[threadId] === true;
+            Boolean(native) || replaceLocal || replaceOnResumeRef.current[threadId] === true;
           if (shouldReplace) {
             replaceOnResumeRef.current[threadId] = false;
           }
@@ -254,7 +272,7 @@ export function useThreadActions({
             workspaceId,
             threadId,
             replaceLocal: shouldReplace,
-            localItems,
+            localItems: native ? [] : localItems,
             localStatus: threadStatusByIdRef.current[threadId],
             localActiveTurnId: activeTurnIdByThreadRef.current[threadId] ?? null,
             getCustomName,
@@ -288,7 +306,7 @@ export function useThreadActions({
             threadId,
             isReviewing: hydrationPlan.reviewing,
           });
-          if (hydrationPlan.mergedItems.length > 0) {
+          if (native || hydrationPlan.mergedItems.length > 0) {
             dispatch({
               type: "setThreadItems",
               threadId,
@@ -317,11 +335,15 @@ export function useThreadActions({
         loadedThreadsRef.current[threadId] = true;
         return threadId;
       } catch (error) {
+        if (native) {
+          dispatch({ type: "addAssistantMessage", threadId,
+            text: error instanceof Error ? error.message : String(error) });
+        }
         onDebug?.({
           id: `${Date.now()}-client-thread-resume-error`,
           timestamp: Date.now(),
           source: "error",
-          label: "thread/resume error",
+          label: native ? "thread/read error" : "thread/resume error",
           payload: error instanceof Error ? error.message : String(error),
         });
         return null;

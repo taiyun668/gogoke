@@ -1622,6 +1622,26 @@ async function confirmedNativeVisibleAssociation(
   return actual;
 }
 
+/** Identify the actual attachment; a saved choice never substitutes for a live transport. */
+export async function nativeConversationAssociation(
+  workspaceId: string,
+): Promise<NativeConversationAssociation | null> {
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return null;
+  const transport = await nativeVisibleTransport(workspaceId);
+  if (transport.state === "LEGACY" || transport.state === "REMOTE") return null;
+  if (transport.state === "NATIVE" && transport.association) {
+    return confirmedNativeVisibleAssociation(workspaceId, transport.association);
+  }
+  const route = await design37UserFrame({ schema: "gogoke.37.owner-configuration.v1",
+    command: "visible-conversation-route", workspaceId });
+  if (!record(route) || route.schema !== "gogoke.37.visible-conversation.v1" ||
+      route.workspaceId !== workspaceId || route.state !== "NATIVE") {
+    throw new Error(`Native visible conversation route is unresolved: ${JSON.stringify(route)}`);
+  }
+  exactNativeAssociation(route.association);
+  throw new Error("The selected native conversation is not attached; connect the workspace before reading or sending.");
+}
+
 async function invokeVisibleWrite<T>(
   command: string, payload: Record<string, unknown>, nativeRequestId?: string,
 ): Promise<T> {

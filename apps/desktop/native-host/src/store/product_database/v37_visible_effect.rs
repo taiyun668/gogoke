@@ -155,6 +155,11 @@ impl<'root> ProductDatabase<'root> {
             let method=string_field(fields,"method")?;let params=fields.get(&k("params")).ok_or(OrchestrationError::AccessDenied)?;
             finite_params(&method,object(params)?)?;
             let selected=self.visible_selection(&workspace,Some(&association))?.ok_or(OrchestrationError::AccessDenied)?;
+            let latest=self.visible_selection(&workspace,None)?.ok_or(OrchestrationError::AccessDenied)?;
+            if latest.row!=selected.row {
+                return Err(OrchestrationError::V37StoreFailure(
+                    "Original workspace selection changed before new visible action.".into()));
+            }
             self.visible_verify_saved(&selected)?;self.visible_candidate(&association,true)?;
             let action=self.prepare_visible_action(&workspace,&id,frame,&association,&selected,&method,params)?;
             self.insert_visible_action(&action)?;Ok((action,true))
@@ -663,6 +668,16 @@ mod tests {
             // A later explicit Legacy selection does not rewrite the old
             // request's history identity or authorize a new native command.
             product.connection.execute("INSERT INTO main.gogoke_v37_visible_conversation_selection VALUES('workspaceA','laterLegacy','LEGACY','00','null','','','','','','',0,0)").unwrap();
+            // The original intent remains recoverable, but a new intent may
+            // not use the old choice after this workspace selected another row.
+            let new_frame=original("newAfterChoice","turn/interrupt",&saved.association,&saved.params);
+            let denied=product.dispatch_user_frame(proof,&new_frame).unwrap();
+            let denied=Parser::parse(std::str::from_utf8(&denied).unwrap()).unwrap();
+            let denied=object(&denied).unwrap();
+            assert!(is_text(denied.get(&k("state")),"DENIED"));
+            assert!(string_field(denied,"reason").unwrap().contains("Original workspace selection changed before new visible action."));
+            assert!(read_action(product.connection.as_ptr(),"workspaceA","newAfterChoice").unwrap().is_none(),
+                "a rejected new intent must not create an action or writer");
             let recover=Json::Object(BTreeMap::from([(k("schema"),s("gogoke.37.owner-configuration.v1")),(k("command"),s("visible-conversation-recover")),
                 (k("workspaceId"),s("workspaceA")),(k("requestId"),s("interruptA")),(k("expectedAssociation"),saved.association.json())])).canonical();
             let response=product.dispatch_user_frame(proof,recover.as_bytes()).unwrap();

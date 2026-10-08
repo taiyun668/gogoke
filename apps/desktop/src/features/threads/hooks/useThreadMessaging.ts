@@ -14,6 +14,7 @@ import type {
 import {
   compactThread as compactThreadService,
   sendUserMessage as sendUserMessageService,
+  nativeConversationAssociation,
   steerTurn as steerTurnService,
   startReview as startReviewService,
   interruptTurn as interruptTurnService,
@@ -152,6 +153,14 @@ export function useThreadMessaging({
         }
         finalText = promptExpansion?.expanded ?? messageText;
       }
+      let native = false;
+      try {
+        native = "__TAURI_INTERNALS__" in window &&
+          Boolean(await nativeConversationAssociation(workspace.id));
+      } catch (error) {
+        pushThreadErrorMessage(threadId, error instanceof Error ? error.message : String(error));
+        return { status: "blocked" };
+      }
       const isProcessing = threadStatusById[threadId]?.isProcessing ?? false;
       const activeTurnId = activeTurnIdByThread[threadId] ?? null;
       const {
@@ -199,10 +208,10 @@ export function useThreadMessaging({
           turnId: activeTurnId,
           text: finalText,
           images,
-          model: resolvedModel,
-          effort: resolvedEffort,
-          serviceTier: resolvedServiceTier,
-          collaborationMode: sanitizedCollaborationMode,
+          model: native ? undefined : resolvedModel,
+          effort: native ? undefined : resolvedEffort,
+          serviceTier: native ? undefined : resolvedServiceTier,
+          collaborationMode: native ? undefined : sanitizedCollaborationMode,
           sendIntent,
           threadCustomName: customThreadName,
         },
@@ -212,6 +221,7 @@ export function useThreadMessaging({
           shouldPreflightRuntimeCodexArgsForSend?.(workspace.id, threadId) ?? true;
         if (
           !shouldSteer &&
+          !native &&
           shouldPreflightRuntimeCodexArgs &&
           ensureWorkspaceRuntimeCodexArgs
         ) {
@@ -238,7 +248,7 @@ export function useThreadMessaging({
             workspace.id,
             threadId,
             finalText,
-            buildTurnStartPayload({
+            native ? { images, appMentions } : buildTurnStartPayload({
               model: resolvedModel,
               effort: resolvedEffort,
               serviceTier: resolvedServiceTier,

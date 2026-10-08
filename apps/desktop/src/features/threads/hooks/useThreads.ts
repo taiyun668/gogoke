@@ -26,6 +26,7 @@ import { useDetachedReviewTracking } from "./useDetachedReviewTracking";
 import {
   archiveThread as archiveThreadService,
   readThread as readThreadService,
+  nativeConversationAssociation,
   setThreadName as setThreadNameService,
 } from "@services/tauri";
 import {
@@ -593,6 +594,7 @@ export function useThreads({
         return;
       }
       try {
+        if ("__TAURI_INTERNALS__" in window && await nativeConversationAssociation(workspaceId)) return;
         await ensureWorkspaceRuntimeCodexArgs(workspaceId, threadId);
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
@@ -675,13 +677,17 @@ export function useThreads({
       if (!threadId) {
         return null;
       }
-    } else if (!loadedThreadsRef.current[threadId]) {
-      await ensureWorkspaceRuntimeCodexArgsBestEffort(
-        activeWorkspace.id,
-        threadId,
-        "resume",
-      );
-      await resumeThreadForWorkspace(activeWorkspace.id, threadId);
+    } else {
+      try {
+        if (!loadedThreadsRef.current[threadId] ||
+            ("__TAURI_INTERNALS__" in window && await nativeConversationAssociation(activeWorkspace.id))) {
+          await ensureWorkspaceRuntimeCodexArgsBestEffort(activeWorkspace.id, threadId, "resume");
+          if (!await resumeThreadForWorkspace(activeWorkspace.id, threadId)) return null;
+        }
+      } catch (error) {
+        pushThreadErrorMessage(threadId, error instanceof Error ? error.message : String(error));
+        return null;
+      }
     }
     return threadId;
   }, [
@@ -689,6 +695,7 @@ export function useThreads({
     activeThreadId,
     ensureWorkspaceRuntimeCodexArgsBestEffort,
     resumeThreadForWorkspace,
+    pushThreadErrorMessage,
     startThreadForWorkspace,
   ]);
 
@@ -704,9 +711,17 @@ export function useThreads({
         if (!threadId) {
           return null;
         }
-      } else if (!loadedThreadsRef.current[threadId]) {
-        await ensureWorkspaceRuntimeCodexArgsBestEffort(workspaceId, threadId, "resume");
-        await resumeThreadForWorkspace(workspaceId, threadId);
+      } else {
+        try {
+          if (!loadedThreadsRef.current[threadId] ||
+              ("__TAURI_INTERNALS__" in window && await nativeConversationAssociation(workspaceId))) {
+            await ensureWorkspaceRuntimeCodexArgsBestEffort(workspaceId, threadId, "resume");
+            if (!await resumeThreadForWorkspace(workspaceId, threadId)) return null;
+          }
+        } catch (error) {
+          pushThreadErrorMessage(threadId, error instanceof Error ? error.message : String(error));
+          return null;
+        }
       }
       if (shouldActivate && currentActiveThreadId !== threadId) {
         dispatch({ type: "setActiveThreadId", workspaceId, threadId });
@@ -719,6 +734,7 @@ export function useThreads({
       ensureWorkspaceRuntimeCodexArgsBestEffort,
       loadedThreadsRef,
       resumeThreadForWorkspace,
+      pushThreadErrorMessage,
       startThreadForWorkspace,
       state.activeThreadIdByWorkspace,
     ],
@@ -816,7 +832,8 @@ export function useThreads({
       if (threadId) {
         void (async () => {
           const hasLocalSnapshot = hasLocalThreadSnapshot(threadId);
-          if (hasLocalSnapshot) {
+          if (hasLocalSnapshot && !("__TAURI_INTERNALS__" in window &&
+              await nativeConversationAssociation(targetId))) {
             loadedThreadsRef.current[threadId] = true;
             return;
           }
@@ -825,7 +842,9 @@ export function useThreads({
             await ensureWorkspaceRuntimeCodexArgsBestEffort(targetId, threadId, "resume");
           }
           await resumeThreadForWorkspace(targetId, threadId);
-        })();
+        })().catch((error) => {
+          pushThreadErrorMessage(threadId, error instanceof Error ? error.message : String(error));
+        });
       }
     },
     [
@@ -835,6 +854,7 @@ export function useThreads({
       hasProcessingThreadInWorkspace,
       loadedThreadsRef,
       resumeThreadForWorkspace,
+      pushThreadErrorMessage,
       state.activeThreadIdByWorkspace,
     ],
   );
