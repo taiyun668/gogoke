@@ -109,7 +109,10 @@ export class ActualProduct {
     this.endpoint = { pid: this.child.pid, port, setId, generationId: index.generationId,
       readyPath: ready, stderrPath: this.stderrFile };
     this.journal.currentEndpoint = this.endpoint; this.save();
-    const deadline = Date.now() + 60000;
+    // The real cold bootstrap receipt arrived at 70 s on Win11. Use the
+    // existing 3-minute product-operation bound for readiness as well;
+    // this observes the one launch and never repeats a mutation.
+    const deadline = Date.now() + 180000;
     let target;
     while (Date.now() < deadline) {
       if (this.childError || this.child.exitCode !== null) throw Error(`Installed product launch failed: ${this.childError ?? this.child.exitCode}; ${this.stderr}`);
@@ -123,7 +126,11 @@ export class ActualProduct {
             ['gogoke-resource.localhost', 'localhost'].includes(url.hostname) &&
             url.pathname === `/${setId}/index.html`;
         });
-      } catch (error) { this.lastReadinessError = String(error); }
+      } catch (error) {
+        this.lastReadinessError = JSON.stringify({ name: error.name, message: error.message,
+          cause: error.cause && { name: error.cause.name, message: error.cause.message,
+            code: error.cause.code, address: error.cause.address, port: error.cause.port } });
+      }
       if (target && fs.existsSync(ready)) break;
       await delay(200);
     }
