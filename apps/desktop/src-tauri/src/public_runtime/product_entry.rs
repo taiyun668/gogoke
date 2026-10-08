@@ -1421,6 +1421,19 @@ struct ManagedCliStageReply {
     stage_name: String,
 }
 
+fn managed_cli_user_reply(bytes: Vec<u8>, step: &str) -> Result<Vec<u8>, String> {
+    // The native User transport returns an explicit ERR frame for a failed
+    // operation. It is not a JSON receipt and must stop the next stage.
+    // Reuse the ordinary User entry's original-error rule before decoding.
+    if bytes.starts_with(b"ERR\t") {
+        let original = std::str::from_utf8(&bytes).map_err(|error| {
+            format!("GOGOKE_MANAGED_CLI_NATIVE_{step}_UTF8:{error}; original bytes:{bytes:?}")
+        })?;
+        return Err(format!("GOGOKE_MANAGED_CLI_NATIVE_{step}:{original}"));
+    }
+    Ok(bytes)
+}
+
 /// One Owner click uses the already retained User host and signed Node service.
 /// Only the driver and operation ID come from UI; URL, bytes, root and program
 /// digest are fixed by the installed product and rechecked by native F/H.
@@ -1445,7 +1458,7 @@ pub(crate) async fn gogoke_design37_install_cli(
             "schema":"gogoke.37.managed-cli.v1","command":"status",
             "driverId":request.driver_id,
         })).map_err(|error|format!("GOGOKE_MANAGED_CLI_STATUS_ENCODE:{error}"))?;
-        let status=host.request_user(&status_frame)?;
+        let status=managed_cli_user_reply(host.request_user(&status_frame)?,"STATUS")?;
         let status:serde_json::Value=serde_json::from_slice(&status)
             .map_err(|error|format!("GOGOKE_MANAGED_CLI_STATUS_DECODE:{error}"))?;
         if status.get("state").and_then(serde_json::Value::as_str)==Some("READY") {
@@ -1460,7 +1473,8 @@ pub(crate) async fn gogoke_design37_install_cli(
             let (sender,receiver)=tokio::sync::oneshot::channel();
             tokio::task::spawn_blocking(move||{
                 let _guard=product_guard;
-                let _=sender.send(host.request_user(&resume));
+                let _=sender.send(host.request_user(&resume)
+                    .and_then(|bytes|managed_cli_user_reply(bytes,"RESUME")));
             });
             let response=receiver.await.map_err(|error|
                 format!("GOGOKE_MANAGED_CLI_RESUME_OWNER:{error}"))??;
@@ -1470,7 +1484,7 @@ pub(crate) async fn gogoke_design37_install_cli(
         let root_frame=serde_json::to_vec(&serde_json::json!({
             "schema":"gogoke.37.managed-cli.v1","command":"root"}))
             .map_err(|error|format!("GOGOKE_MANAGED_CLI_ROOT_ENCODE:{error}"))?;
-        let native_root=host.request_user(&root_frame)?;
+        let native_root=managed_cli_user_reply(host.request_user(&root_frame)?,"ROOT")?;
         let native_root:serde_json::Value=serde_json::from_slice(&native_root)
             .map_err(|error|format!("GOGOKE_MANAGED_CLI_ROOT_DECODE:{error}"))?;
         let root=native_root.get("root").and_then(serde_json::Value::as_str)
@@ -1484,7 +1498,7 @@ pub(crate) async fn gogoke_design37_install_cli(
             "schema":"gogoke.37.managed-cli.v1","command":"begin",
             "driverId":request.driver_id,
         })).map_err(|error|format!("GOGOKE_MANAGED_CLI_BEGIN_ENCODE:{error}"))?;
-        host.request_user(&begin_frame)?;
+        managed_cli_user_reply(host.request_user(&begin_frame)?,"BEGIN")?;
         let node_request=serde_json::to_vec(&serde_json::json!({
             "operation":"managed-cli-stage","driverId":request.driver_id}))
             .map_err(|error|format!("GOGOKE_MANAGED_CLI_STAGE_ENCODE:{error}"))?;
@@ -1499,7 +1513,9 @@ pub(crate) async fn gogoke_design37_install_cli(
                     "schema":"gogoke.37.managed-cli.v1","command":"failure",
                     "driverId":request.driver_id,"state":"INSTALL_FAILED","raw":raw,
                 })).map_err(|cause|format!("GOGOKE_MANAGED_CLI_FAILURE_ENCODE:{cause}; source:{error}"))?;
-                host.request_user(&failure).map_err(|cause|
+                let record=host.request_user(&failure).map_err(|cause|
+                    format!("GOGOKE_MANAGED_CLI_STAGE:{error}; failure record:{cause}"))?;
+                managed_cli_user_reply(record,"FAILURE_RECORD").map_err(|cause|
                     format!("GOGOKE_MANAGED_CLI_STAGE:{error}; failure record:{cause}"))?;
                 return Err(format!("GOGOKE_MANAGED_CLI_STAGE:{error}"));
             },
@@ -1529,9 +1545,9 @@ pub(crate) async fn gogoke_design37_install_cli(
         tokio::task::spawn_blocking(move||{
             let _guard=product_guard;
             let outcome=(||{
-                host.request_user(&stage_frame)?;
-                host.request_user(&probe_frame)?;
-                host.request_user(&migrate_frame)
+                managed_cli_user_reply(host.request_user(&stage_frame)?,"STAGE")?;
+                managed_cli_user_reply(host.request_user(&probe_frame)?,"PROBE")?;
+                managed_cli_user_reply(host.request_user(&migrate_frame)?,"MIGRATE")
             })();
             let _=sender.send(outcome);
         });
