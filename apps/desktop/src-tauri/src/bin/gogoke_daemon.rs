@@ -39,6 +39,37 @@ mod workspace_settings;
 
 // Provide feature-style module paths for shared cores when compiled in the daemon.
 mod codex {
+    use serde_json::Value;
+    use tauri::AppHandle;
+    pub(crate) async fn native_visible_route_preflight(
+        _workspace_id: &str,
+    ) -> Result<Option<bool>, String> {
+        // This binary has no User host attachment. It cannot claim a Native route.
+        Ok(None)
+    }
+    pub(crate) async fn native_visible_request(
+        _app: &AppHandle,
+        _workspace_id: &str,
+        _association: &crate::backend::app_server::NativeAssociation,
+        _method: &str,
+        _params: Value,
+    ) -> Result<Value, String> {
+        Err("GOGOKE_DAEMON_NATIVE_TRANSPORT_UNSUPPORTED".into())
+    }
+    pub(crate) async fn native_visible_live_state(
+        _app: &AppHandle,
+        _workspace_id: &str,
+        _association: &crate::backend::app_server::NativeAssociation,
+    ) -> Result<bool, String> {
+        Err("GOGOKE_DAEMON_NATIVE_TRANSPORT_UNSUPPORTED".into())
+    }
+    pub(crate) async fn native_visible_stop(
+        _app: &AppHandle,
+        _workspace_id: &str,
+        _association: &crate::backend::app_server::NativeAssociation,
+    ) -> Result<(), String> {
+        Err("GOGOKE_DAEMON_NATIVE_TRANSPORT_UNSUPPORTED".into())
+    }
     pub(crate) mod args {
         pub(crate) use crate::codex_args::*;
     }
@@ -77,10 +108,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Mutex, Semaphore};
 
-use backend::app_server::{spawn_workspace_session, WorkspaceSession};
+use backend::app_server::WorkspaceSession;
 use backend::events::{AppServerEvent, EventSink, TerminalExit, TerminalOutput};
 use shared::codex_core::CodexLoginCancelState;
-use shared::process_core::kill_child_process_tree;
 use shared::prompts_core::{self, CustomPromptEntry};
 use shared::{
     agents_config_core, codex_aux_core, codex_core, files_core, git_core, git_ui_core,
@@ -106,14 +136,17 @@ fn spawn_with_client(
     codex_args: Option<String>,
     codex_home: Option<PathBuf>,
 ) -> impl std::future::Future<Output = Result<Arc<WorkspaceSession>, String>> {
-    spawn_workspace_session(
+    // The daemon cannot query the retained User host's route decision. Every
+    // new model session is refused before a legacy CLI process can be spawned.
+    let _ = (
+        event_sink,
+        client_version,
         entry,
         default_bin,
         codex_args,
         codex_home,
-        client_version,
-        event_sink,
-    )
+    );
+    async { Err("GOGOKE_DAEMON_VISIBLE_ROUTE_UNAVAILABLE".into()) }
 }
 
 #[derive(Clone)]
@@ -234,8 +267,14 @@ impl DaemonState {
         };
 
         for (workspace_id, session) in stale_sessions {
-            let mut child = session.child.lock().await;
-            kill_child_process_tree(&mut child).await;
+            if let Err(error) = session.stop().await {
+                eprintln!("daemon: stale session stop unconfirmed for {workspace_id}: {error}");
+                self.sessions
+                    .lock()
+                    .await
+                    .insert(workspace_id.clone(), session);
+                continue;
+            }
             eprintln!("daemon: pruned stale session for removed workspace {workspace_id}");
         }
     }
@@ -1671,8 +1710,10 @@ mod tests {
 
         Arc::new(WorkspaceSession {
             codex_args: None,
-            child: Mutex::new(child),
-            stdin: Mutex::new(stdin),
+            transport: backend::app_server::SessionTransport::Legacy {
+                child: Mutex::new(child),
+                stdin: Mutex::new(stdin),
+            },
             pending: Mutex::new(HashMap::new()),
             request_context: Mutex::new(HashMap::new()),
             thread_workspace: Mutex::new(HashMap::new()),
@@ -1871,7 +1912,8 @@ mod tests {
             let stale_session_exited = tokio::time::timeout(Duration::from_secs(2), async {
                 loop {
                     let exited = stale_session
-                        .child
+                        .legacy_child()
+                        .expect("legacy child")
                         .lock()
                         .await
                         .try_wait()
@@ -1890,19 +1932,28 @@ mod tests {
             );
 
             if let Some(keep_session) = state.sessions.lock().await.remove("ws-keep") {
-                let mut child = keep_session.child.lock().await;
+                let mut child = keep_session
+                    .legacy_child()
+                    .expect("legacy child")
+                    .lock()
+                    .await;
                 kill_child_process_tree(&mut child).await;
             }
 
             if stale_session
-                .child
+                .legacy_child()
+                .expect("legacy child")
                 .lock()
                 .await
                 .try_wait()
                 .expect("query stale session child")
                 .is_none()
             {
-                let mut child = stale_session.child.lock().await;
+                let mut child = stale_session
+                    .legacy_child()
+                    .expect("legacy child")
+                    .lock()
+                    .await;
                 kill_child_process_tree(&mut child).await;
             }
 

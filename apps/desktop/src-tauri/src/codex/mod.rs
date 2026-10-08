@@ -1,6 +1,9 @@
+use serde::Deserialize;
 use serde_json::{json, Map, Value};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use tauri::{AppHandle, Emitter, State};
 
@@ -9,6 +12,7 @@ pub(crate) mod config;
 pub(crate) mod home;
 
 use crate::backend::app_server::spawn_workspace_session as spawn_workspace_session_inner;
+use crate::backend::app_server::NativeAssociation;
 pub(crate) use crate::backend::app_server::WorkspaceSession;
 use crate::backend::events::AppServerEvent;
 use crate::event_sink::TauriEventSink;
@@ -17,6 +21,630 @@ use crate::shared::agents_config_core;
 use crate::shared::codex_core::{self, insert_optional_nullable_string};
 use crate::state::AppState;
 use crate::types::WorkspaceEntry;
+
+const VISIBLE_SCHEMA: &str = "gogoke.37.visible-conversation.v1";
+static VISIBLE_APP: OnceLock<AppHandle> = OnceLock::new();
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct VisibleRouteReply {
+    schema: String,
+    workspace_id: String,
+    state: String,
+    #[serde(default)]
+    association: Option<NativeAssociation>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct VisibleOperationReply {
+    schema: String,
+    workspace_id: String,
+    request_id: String,
+    state: String,
+    #[serde(default)]
+    response: Option<Value>,
+    #[serde(default)]
+    stop_fact: Option<String>,
+    #[serde(default)]
+    live: Option<bool>,
+    #[serde(default)]
+    association: Option<NativeAssociation>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct VisibleReadReply {
+    schema: String,
+    workspace_id: String,
+    #[serde(default)]
+    association: Option<NativeAssociation>,
+    state: String,
+    #[serde(default)]
+    response: Option<Value>,
+    #[serde(default)]
+    live: Option<bool>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+async fn visible_user_frame(app: &AppHandle, frame: Value) -> Result<String, String> {
+    crate::public_runtime::product_entry::gogoke_design37_user_operation(
+        app.clone(),
+        frame.to_string(),
+    )
+    .await
+}
+
+async fn visible_route(app: &AppHandle, workspace_id: &str) -> Result<VisibleRouteReply, String> {
+    let raw = visible_user_frame(
+        app,
+        json!({
+            "schema": "gogoke.37.owner-configuration.v1",
+            "command": "visible-conversation-route",
+            "workspaceId": workspace_id,
+        }),
+    )
+    .await?;
+    let reply: VisibleRouteReply = serde_json::from_str(&raw)
+        .map_err(|error| format!("GOGOKE_VISIBLE_ROUTE_REPLY_INVALID:{error}"))?;
+    if reply.schema != VISIBLE_SCHEMA || reply.workspace_id != workspace_id {
+        return Err("GOGOKE_VISIBLE_ROUTE_IDENTITY_MISMATCH".into());
+    }
+    match reply.state.as_str() {
+        "LEGACY" if reply.association.is_none() => Ok(reply),
+        "NATIVE" if reply.association.is_some() => Ok(reply),
+        "LEGACY" | "NATIVE" => Err("GOGOKE_VISIBLE_ROUTE_ASSOCIATION_INVALID".into()),
+        "NEEDS_SETUP" | "UNKNOWN" => {
+            Err(visible_failure(&reply.state, reply.reason.as_deref(), None))
+        }
+        _ => Err("GOGOKE_VISIBLE_ROUTE_STATE_INVALID".into()),
+    }
+}
+
+/// A routing preflight must run before any legacy shared-session reuse.
+/// None is the daemon/test process, which has no User host attachment.
+pub(crate) async fn native_visible_route_preflight(
+    workspace_id: &str,
+) -> Result<Option<bool>, String> {
+    let Some(app) = VISIBLE_APP.get() else {
+        return Ok(None);
+    };
+    visible_route(app, workspace_id)
+        .await
+        .map(|route| Some(route.state == "NATIVE"))
+}
+
+fn native_visible_params(method: &str, params: &Value) -> Result<(), String> {
+    let fields = params
+        .as_object()
+        .ok_or("GOGOKE_NATIVE_PARAMS_OBJECT_REQUIRED")?;
+    let allowed: &[&str] = match method {
+        "thread/start" => &[],
+        "thread/resume" => &["threadId"],
+        "thread/read" => &["threadId", "includeTurns", "cursor"],
+        "thread/list" => &["cursor", "limit"],
+        "turn/start" => &["threadId", "input"],
+        "turn/steer" => &["threadId", "expectedTurnId", "input"],
+        "turn/interrupt" => &["threadId", "turnId"],
+        "physical-stop" => &[],
+        "original-question-answer" => &["requestId", "result"],
+        _ => return Err(format!("GOGOKE_NATIVE_METHOD_UNSUPPORTED:{method}")),
+    };
+    if let Some(field) = fields
+        .keys()
+        .find(|field| !allowed.contains(&field.as_str()))
+    {
+        return Err(format!("GOGOKE_NATIVE_FIELD_UNSUPPORTED:{field}"));
+    }
+    if matches!(method, "turn/start" | "turn/steer") {
+        let input = fields
+            .get("input")
+            .and_then(Value::as_array)
+            .ok_or("GOGOKE_NATIVE_INPUT_INVALID")?;
+        if input.len() != 1
+            || input[0].get("type").and_then(Value::as_str) != Some("text")
+            || input[0].get("text").and_then(Value::as_str).is_none()
+            || input[0].as_object().is_none_or(|item| item.len() != 2)
+        {
+            return Err("GOGOKE_NATIVE_INPUT_UNSUPPORTED".into());
+        }
+    }
+    Ok(())
+}
+
+async fn visible_operation(
+    app: &AppHandle,
+    workspace_id: &str,
+    command: &str,
+    association: &NativeAssociation,
+    request_id: &str,
+    method: Option<&str>,
+    params: Option<Value>,
+) -> Result<VisibleOperationReply, String> {
+    let mut frame = json!({
+        "schema": "gogoke.37.owner-configuration.v1",
+        "command": command,
+        "workspaceId": workspace_id,
+        "requestId": request_id,
+        "expectedAssociation": association,
+    });
+    if let Some(method) = method {
+        frame["method"] = json!(method);
+    }
+    if let Some(params) = params {
+        frame["params"] = params;
+    }
+    let raw = visible_user_frame(app, frame).await?;
+    let reply: VisibleOperationReply = serde_json::from_str(&raw)
+        .map_err(|error| format!("GOGOKE_VISIBLE_OPERATION_REPLY_INVALID:{error}"))?;
+    if reply.schema != VISIBLE_SCHEMA
+        || reply.workspace_id != workspace_id
+        || reply.request_id != request_id
+    {
+        return Err("GOGOKE_VISIBLE_OPERATION_IDENTITY_MISMATCH".into());
+    }
+    if reply.association.as_ref() != Some(association) {
+        return Err(format!(
+            "GOGOKE_VISIBLE_OPERATION_ASSOCIATION_MISMATCH:{}",
+            reply.reason.as_deref().unwrap_or("reason missing")
+        ));
+    }
+    Ok(reply)
+}
+
+async fn visible_read(
+    app: &AppHandle,
+    workspace_id: &str,
+    association: &NativeAssociation,
+    method: &str,
+    params: Option<Value>,
+) -> Result<VisibleReadReply, String> {
+    let mut frame = json!({
+        "schema": "gogoke.37.owner-configuration.v1",
+        "command": "visible-conversation-read",
+        "workspaceId": workspace_id,
+        "expectedAssociation": association,
+        "method": method,
+    });
+    if let Some(params) = params {
+        frame["params"] = params;
+    }
+    let raw = visible_user_frame(app, frame).await?;
+    let reply: VisibleReadReply = serde_json::from_str(&raw)
+        .map_err(|error| format!("GOGOKE_VISIBLE_READ_REPLY_INVALID:{error}"))?;
+    if reply.schema != VISIBLE_SCHEMA || reply.workspace_id != workspace_id {
+        return Err("GOGOKE_VISIBLE_READ_IDENTITY_MISMATCH".into());
+    }
+    if reply.association.as_ref() != Some(association) {
+        return Err(format!(
+            "GOGOKE_VISIBLE_READ_ASSOCIATION_MISMATCH:{}",
+            reply.reason.as_deref().unwrap_or("reason missing")
+        ));
+    }
+    Ok(reply)
+}
+
+fn visible_failure(state: &str, reason: Option<&str>, request_id: Option<&str>) -> String {
+    let reason = reason
+        .filter(|reason| !reason.is_empty())
+        .unwrap_or("GOGOKE_VISIBLE_REASON_MISSING");
+    match request_id {
+        Some(request_id) => format!("GOGOKE_VISIBLE_{state}:{request_id}:{reason}"),
+        None => format!("GOGOKE_VISIBLE_{state}:{reason}"),
+    }
+}
+
+pub(crate) async fn native_visible_request(
+    app: &AppHandle,
+    workspace_id: &str,
+    association: &NativeAssociation,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
+    native_visible_params(method, &params)?;
+    if !matches!(method, "thread/read" | "thread/list") {
+        return Err("GOGOKE_NATIVE_STABLE_INTENT_REQUIRED".into());
+    }
+    if method == "thread/read" {
+        return native_visible_history(app, workspace_id, association, params).await;
+    }
+    let reply = visible_read(app, workspace_id, association, method, Some(params)).await?;
+    match reply.state.as_str() {
+        "PARTIAL" | "APPLIED" => {
+            let response = reply.response.ok_or("GOGOKE_VISIBLE_RESPONSE_MISSING")?;
+            let result = response
+                .get("result")
+                .and_then(Value::as_object)
+                .ok_or("GOGOKE_NATIVE_THREAD_LIST_RESULT_INVALID")?;
+            if result.get("data").and_then(Value::as_array).is_none() {
+                return Err("GOGOKE_NATIVE_THREAD_LIST_DATA_INVALID".into());
+            }
+            let history = result
+                .get("nativeHistory")
+                .and_then(Value::as_object)
+                .ok_or("GOGOKE_NATIVE_THREAD_LIST_MARKER_MISSING")?;
+            let expected_state = if reply.state == "PARTIAL" {
+                "PARTIAL"
+            } else {
+                "COMPLETE"
+            };
+            if history.get("state").and_then(Value::as_str) != Some(expected_state)
+                || history
+                    .get("highWater")
+                    .and_then(Value::as_str)
+                    .is_none_or(str::is_empty)
+                || history
+                    .get("sourceRefs")
+                    .and_then(Value::as_array)
+                    .is_none()
+            {
+                return Err("GOGOKE_NATIVE_THREAD_LIST_MARKER_INVALID".into());
+            }
+            let next = history
+                .get("nextCursor")
+                .ok_or("GOGOKE_NATIVE_THREAD_LIST_CURSOR_MISSING")?;
+            if result.get("nextCursor") != Some(next)
+                || (reply.state == "PARTIAL" && next.as_str().is_none_or(str::is_empty))
+                || (reply.state == "APPLIED" && !next.is_null())
+            {
+                return Err("GOGOKE_NATIVE_THREAD_LIST_CURSOR_INVALID".into());
+            }
+            Ok(response)
+        }
+        "UNKNOWN" | "DENIED" | "UNSUPPORTED" => {
+            Err(visible_failure(&reply.state, reply.reason.as_deref(), None))
+        }
+        _ => Err("GOGOKE_VISIBLE_OPERATION_STATE_INVALID".into()),
+    }
+}
+
+async fn native_visible_history(
+    app: &AppHandle,
+    workspace_id: &str,
+    association: &NativeAssociation,
+    mut params: Value,
+) -> Result<Value, String> {
+    let fields = params
+        .as_object_mut()
+        .ok_or("GOGOKE_NATIVE_HISTORY_PARAMS_INVALID")?;
+    let thread_id = fields
+        .get("threadId")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or("GOGOKE_NATIVE_HISTORY_THREAD_ID_INVALID")?
+        .to_owned();
+    if fields.get("includeTurns") != Some(&Value::Bool(true))
+        || fields.get("cursor").is_some_and(|cursor| !cursor.is_null())
+    {
+        return Err("GOGOKE_NATIVE_HISTORY_FULL_READ_REQUIRED".into());
+    }
+    let mut high_water: Option<String> = None;
+    let mut thread_base: Option<Value> = None;
+    let mut turns = Vec::new();
+    let mut source_refs = Vec::new();
+    let mut seen_cursors = HashSet::new();
+    let mut seen_turns = HashSet::new();
+    let mut seen_sources = HashSet::new();
+    loop {
+        let reply = visible_read(
+            app,
+            workspace_id,
+            association,
+            "thread/read",
+            Some(params.clone()),
+        )
+        .await?;
+        if !matches!(reply.state.as_str(), "PARTIAL" | "APPLIED") {
+            return Err(visible_failure(&reply.state, reply.reason.as_deref(), None));
+        }
+        let mut response = reply
+            .response
+            .ok_or("GOGOKE_NATIVE_HISTORY_RESPONSE_MISSING")?;
+        let result = response
+            .get_mut("result")
+            .and_then(Value::as_object_mut)
+            .ok_or("GOGOKE_NATIVE_HISTORY_RESULT_INVALID")?;
+        let thread = result
+            .get("thread")
+            .and_then(Value::as_object)
+            .ok_or("GOGOKE_NATIVE_HISTORY_THREAD_INVALID")?;
+        if thread.get("id").and_then(Value::as_str) != Some(thread_id.as_str()) {
+            return Err("GOGOKE_NATIVE_HISTORY_THREAD_ID_MISMATCH".into());
+        }
+        let page_turns = thread
+            .get("turns")
+            .and_then(Value::as_array)
+            .ok_or("GOGOKE_NATIVE_HISTORY_TURNS_INVALID")?;
+        for turn in page_turns {
+            let turn_id = turn
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .ok_or("GOGOKE_NATIVE_HISTORY_TURN_ID_INVALID")?;
+            if !seen_turns.insert(turn_id.to_owned()) {
+                return Err("GOGOKE_NATIVE_HISTORY_TURN_REPEATED".into());
+            }
+        }
+        turns.extend(page_turns.iter().cloned());
+        let mut base = Value::Object(thread.clone());
+        base.as_object_mut()
+            .ok_or("GOGOKE_NATIVE_HISTORY_THREAD_INVALID")?
+            .remove("turns");
+        if let Some(first) = &thread_base {
+            if first != &base {
+                return Err("GOGOKE_NATIVE_HISTORY_THREAD_CHANGED".into());
+            }
+        } else {
+            thread_base = Some(base);
+        }
+        let history = result
+            .get("nativeHistory")
+            .and_then(Value::as_object)
+            .ok_or("GOGOKE_NATIVE_HISTORY_MARKER_MISSING")?;
+        let expected_history_state = if reply.state == "PARTIAL" {
+            "PARTIAL"
+        } else {
+            "COMPLETE"
+        };
+        if history.get("state").and_then(Value::as_str) != Some(expected_history_state) {
+            return Err("GOGOKE_NATIVE_HISTORY_STATE_MISMATCH".into());
+        }
+        let page_high_water = history
+            .get("highWater")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or("GOGOKE_NATIVE_HISTORY_HIGH_WATER_INVALID")?;
+        if let Some(first) = &high_water {
+            if first != page_high_water {
+                return Err("GOGOKE_NATIVE_HISTORY_HIGH_WATER_CHANGED".into());
+            }
+        } else {
+            high_water = Some(page_high_water.to_owned());
+        }
+        let refs = history
+            .get("sourceRefs")
+            .and_then(Value::as_array)
+            .ok_or("GOGOKE_NATIVE_HISTORY_SOURCE_REFS_INVALID")?;
+        for source in refs {
+            let fields = source
+                .as_object()
+                .ok_or("GOGOKE_NATIVE_HISTORY_SOURCE_REF_INVALID")?;
+            if [
+                "operationId",
+                "generation",
+                "sourceEpoch",
+                "sourceCursor",
+                "rawSourceId",
+            ]
+            .iter()
+            .any(|key| {
+                fields
+                    .get(*key)
+                    .and_then(Value::as_str)
+                    .is_none_or(str::is_empty)
+            }) {
+                return Err("GOGOKE_NATIVE_HISTORY_SOURCE_REF_INVALID".into());
+            }
+            let identity = serde_json::to_string(source).map_err(|error| {
+                format!("GOGOKE_NATIVE_HISTORY_SOURCE_REF_ENCODE_FAILED:{error}")
+            })?;
+            if !seen_sources.insert(identity) {
+                return Err("GOGOKE_NATIVE_HISTORY_SOURCE_REF_REPEATED".into());
+            }
+        }
+        source_refs.extend(refs.iter().cloned());
+        let next = history
+            .get("nextCursor")
+            .ok_or("GOGOKE_NATIVE_HISTORY_CURSOR_MISSING")?;
+        let next = if next.is_null() {
+            None
+        } else {
+            Some(
+                next.as_str()
+                    .filter(|value| !value.is_empty())
+                    .ok_or("GOGOKE_NATIVE_HISTORY_CURSOR_INVALID")?
+                    .to_owned(),
+            )
+        };
+        if reply.state == "PARTIAL" {
+            let cursor = next.ok_or("GOGOKE_NATIVE_HISTORY_PARTIAL_WITHOUT_CURSOR")?;
+            if !seen_cursors.insert(cursor.clone()) {
+                return Err("GOGOKE_NATIVE_HISTORY_CURSOR_REPEATED".into());
+            }
+            params["cursor"] = Value::String(cursor);
+            continue;
+        }
+        if next.is_some() {
+            return Err("GOGOKE_NATIVE_HISTORY_APPLIED_WITH_CURSOR".into());
+        }
+        let result = response
+            .get_mut("result")
+            .and_then(Value::as_object_mut)
+            .ok_or("GOGOKE_NATIVE_HISTORY_RESULT_INVALID")?;
+        let thread = result
+            .get_mut("thread")
+            .and_then(Value::as_object_mut)
+            .ok_or("GOGOKE_NATIVE_HISTORY_THREAD_INVALID")?;
+        thread.insert("turns".to_string(), Value::Array(turns));
+        let history = result
+            .get_mut("nativeHistory")
+            .and_then(Value::as_object_mut)
+            .ok_or("GOGOKE_NATIVE_HISTORY_MARKER_MISSING")?;
+        history.insert("state".to_string(), Value::String("COMPLETE".into()));
+        history.insert("sourceRefs".to_string(), Value::Array(source_refs));
+        return Ok(response);
+    }
+}
+
+fn stable_native_request_id(value: Option<String>) -> Result<String, String> {
+    let value = value.ok_or("GOGOKE_NATIVE_STABLE_INTENT_REQUIRED")?;
+    let bytes = value.as_bytes();
+    if !(1..=64).contains(&bytes.len())
+        || !bytes[0].is_ascii_alphabetic()
+        || !bytes[1..]
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-' || *byte == b'_')
+    {
+        return Err("GOGOKE_NATIVE_STABLE_INTENT_INVALID".into());
+    }
+    Ok(value)
+}
+
+async fn native_visible_effect(
+    app: &AppHandle,
+    state: &AppState,
+    workspace_id: &str,
+    native_request_id: Option<String>,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
+    native_visible_params(method, &params)?;
+    let request_id = stable_native_request_id(native_request_id)?;
+    let association = native_association(state, workspace_id).await?;
+    let reply = visible_operation(
+        app,
+        workspace_id,
+        "visible-conversation-operate",
+        &association,
+        &request_id,
+        Some(method),
+        Some(params),
+    )
+    .await?;
+    match reply.state.as_str() {
+        "APPLIED" => reply
+            .response
+            .ok_or("GOGOKE_VISIBLE_RESPONSE_MISSING".into()),
+        "UNKNOWN" | "DENIED" | "UNSUPPORTED" => Err(visible_failure(
+            &reply.state,
+            reply.reason.as_deref(),
+            Some(&request_id),
+        )),
+        _ => Err("GOGOKE_VISIBLE_OPERATION_STATE_INVALID".into()),
+    }
+}
+
+pub(crate) async fn native_visible_stop_with_intent(
+    app: &AppHandle,
+    state: &AppState,
+    workspace_id: &str,
+    native_request_id: Option<String>,
+) -> Result<(), String> {
+    let request_id = stable_native_request_id(native_request_id)?;
+    let association = native_association(state, workspace_id).await?;
+    let reply = visible_operation(
+        app,
+        workspace_id,
+        "visible-conversation-operate",
+        &association,
+        &request_id,
+        Some("physical-stop"),
+        Some(json!({})),
+    )
+    .await?;
+    if reply.state == "APPLIED"
+        && reply
+            .stop_fact
+            .as_deref()
+            .is_some_and(|fact| !fact.is_empty())
+    {
+        state
+            .sessions
+            .lock()
+            .await
+            .get(workspace_id)
+            .ok_or("GOGOKE_NATIVE_SESSION_DISAPPEARED")?
+            .note_native_stop_fact()?;
+        Ok(())
+    } else {
+        Err(visible_failure(
+            &reply.state,
+            reply.reason.as_deref(),
+            Some(&request_id),
+        ))
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn recover_native_visible_request(
+    workspace_id: String,
+    native_request_id: String,
+    expected_association: Option<NativeAssociation>,
+    app: AppHandle,
+) -> Result<Value, String> {
+    let request_id = stable_native_request_id(Some(native_request_id))?;
+    let association = expected_association.ok_or("GOGOKE_NATIVE_ORIGINAL_ASSOCIATION_REQUIRED")?;
+    crate::public_runtime::product_entry::ensure_design37_user_host(&app).await?;
+    let reply = visible_operation(
+        &app,
+        &workspace_id,
+        "visible-conversation-recover",
+        &association,
+        &request_id,
+        None,
+        None,
+    )
+    .await?;
+    match reply.state.as_str() {
+        "APPLIED" => reply
+            .response
+            .ok_or("GOGOKE_VISIBLE_RESPONSE_MISSING".into()),
+        "UNKNOWN" | "DENIED" | "UNSUPPORTED" => Err(visible_failure(
+            &reply.state,
+            reply.reason.as_deref(),
+            Some(&request_id),
+        )),
+        _ => Err("GOGOKE_VISIBLE_RECOVER_STATE_INVALID".into()),
+    }
+}
+
+async fn native_session_active(state: &AppState, workspace_id: &str) -> bool {
+    state
+        .sessions
+        .lock()
+        .await
+        .get(workspace_id)
+        .is_some_and(|session| session.is_native())
+}
+
+async fn native_association(
+    state: &AppState,
+    workspace_id: &str,
+) -> Result<NativeAssociation, String> {
+    state
+        .sessions
+        .lock()
+        .await
+        .get(workspace_id)
+        .and_then(|session| session.native_association())
+        .ok_or("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE".into())
+}
+
+pub(crate) async fn native_visible_live_state(
+    app: &AppHandle,
+    workspace_id: &str,
+    association: &NativeAssociation,
+) -> Result<bool, String> {
+    let reply = visible_read(app, workspace_id, association, "live-state", None).await?;
+    if reply.state != "APPLIED" {
+        return Err(visible_failure(&reply.state, reply.reason.as_deref(), None));
+    }
+    reply.live.ok_or("GOGOKE_NATIVE_LIVE_STATE_MISSING".into())
+}
+
+pub(crate) async fn native_visible_stop(
+    app: &AppHandle,
+    workspace_id: &str,
+    association: &NativeAssociation,
+) -> Result<(), String> {
+    let _ = (app, workspace_id, association);
+    Err("GOGOKE_NATIVE_PHYSICAL_STOP_STABLE_INTENT_REQUIRED".into())
+}
 
 fn emit_thread_live_event(app: &AppHandle, workspace_id: &str, method: &str, params: Value) {
     let _ = app.emit(
@@ -38,6 +666,22 @@ pub(crate) async fn spawn_workspace_session(
     app_handle: AppHandle,
     codex_home: Option<PathBuf>,
 ) -> Result<Arc<WorkspaceSession>, String> {
+    crate::public_runtime::product_entry::ensure_design37_user_host(&app_handle).await?;
+    let _ = VISIBLE_APP.set(app_handle.clone());
+    let route = visible_route(&app_handle, &entry.id).await?;
+    match route.state.as_str() {
+        "NATIVE" => {
+            return Ok(WorkspaceSession::new_native(
+                &entry,
+                app_handle,
+                route
+                    .association
+                    .ok_or("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE")?,
+            ))
+        }
+        "LEGACY" => {}
+        _ => return Err("GOGOKE_VISIBLE_ROUTE_STATE_INVALID".into()),
+    }
     let client_version = env!("CARGO_PKG_VERSION").to_string();
     let event_sink = TauriEventSink::new(app_handle);
     spawn_workspace_session_inner(
@@ -74,6 +718,7 @@ pub(crate) async fn codex_update(
 #[tauri::command]
 pub(crate) async fn start_thread(
     workspace_id: String,
+    native_request_id: Option<String>,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<Value, String> {
@@ -87,6 +732,17 @@ pub(crate) async fn start_thread(
         .await;
     }
 
+    if native_session_active(&state, &workspace_id).await {
+        return native_visible_effect(
+            &app,
+            &state,
+            &workspace_id,
+            native_request_id,
+            "thread/start",
+            json!({}),
+        )
+        .await;
+    }
     codex_core::start_thread_core(&state.sessions, &state.workspaces, workspace_id).await
 }
 
@@ -94,6 +750,7 @@ pub(crate) async fn start_thread(
 pub(crate) async fn resume_thread(
     workspace_id: String,
     thread_id: String,
+    native_request_id: Option<String>,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<Value, String> {
@@ -107,6 +764,17 @@ pub(crate) async fn resume_thread(
         .await;
     }
 
+    if native_session_active(&state, &workspace_id).await {
+        return native_visible_effect(
+            &app,
+            &state,
+            &workspace_id,
+            native_request_id,
+            "thread/resume",
+            json!({"threadId": thread_id}),
+        )
+        .await;
+    }
     codex_core::resume_thread_core(&state.sessions, workspace_id, thread_id).await
 }
 
@@ -127,6 +795,17 @@ pub(crate) async fn read_thread(
         .await;
     }
 
+    if native_session_active(&state, &workspace_id).await {
+        let association = native_association(&state, &workspace_id).await?;
+        return native_visible_request(
+            &app,
+            &workspace_id,
+            &association,
+            "thread/read",
+            json!({"threadId": thread_id, "includeTurns": true, "cursor": null}),
+        )
+        .await;
+    }
     codex_core::read_thread_core(&state.sessions, workspace_id, thread_id).await
 }
 
@@ -250,6 +929,20 @@ pub(crate) async fn list_threads(
         .await;
     }
 
+    if native_session_active(&state, &workspace_id).await {
+        if sort_key.is_some() {
+            return Err("GOGOKE_NATIVE_SORT_KEY_UNSUPPORTED".into());
+        }
+        let association = native_association(&state, &workspace_id).await?;
+        return native_visible_request(
+            &app,
+            &workspace_id,
+            &association,
+            "thread/list",
+            json!({"cursor": cursor, "limit": limit}),
+        )
+        .await;
+    }
     codex_core::list_threads_core(&state.sessions, workspace_id, cursor, limit, sort_key).await
 }
 
@@ -347,6 +1040,7 @@ pub(crate) async fn send_user_message(
     images: Option<Vec<String>>,
     app_mentions: Option<Vec<Value>>,
     collaboration_mode: Option<Value>,
+    native_request_id: Option<String>,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<Value, String> {
@@ -381,6 +1075,30 @@ pub(crate) async fn send_user_message(
         .await;
     }
 
+    if native_session_active(&state, &workspace_id).await {
+        if model.is_some()
+            || effort.is_some()
+            || service_tier.is_some()
+            || access_mode.is_some()
+            || images.is_some_and(|items| !items.is_empty())
+            || app_mentions.is_some_and(|items| !items.is_empty())
+            || collaboration_mode.is_some_and(|value| !value.is_null())
+        {
+            return Err("GOGOKE_NATIVE_CALLER_SELECTION_OR_ATTACHMENT_UNSUPPORTED".into());
+        }
+        if text.trim().is_empty() {
+            return Err("GOGOKE_NATIVE_TEXT_REQUIRED".into());
+        }
+        return native_visible_effect(
+            &app,
+            &state,
+            &workspace_id,
+            native_request_id,
+            "turn/start",
+            json!({"threadId": thread_id, "input": [{"type":"text", "text": text}]}),
+        )
+        .await;
+    }
     codex_core::send_user_message_core(
         &state.sessions,
         &state.workspaces,
@@ -406,6 +1124,7 @@ pub(crate) async fn turn_steer(
     text: String,
     images: Option<Vec<String>>,
     app_mentions: Option<Vec<Value>>,
+    native_request_id: Option<String>,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<Value, String> {
@@ -432,6 +1151,26 @@ pub(crate) async fn turn_steer(
         .await;
     }
 
+    if native_session_active(&state, &workspace_id).await {
+        if images.is_some_and(|items| !items.is_empty())
+            || app_mentions.is_some_and(|items| !items.is_empty())
+        {
+            return Err("GOGOKE_NATIVE_ATTACHMENT_UNSUPPORTED".into());
+        }
+        if text.trim().is_empty() || turn_id.trim().is_empty() {
+            return Err("GOGOKE_NATIVE_STEER_INPUT_INVALID".into());
+        }
+        return native_visible_effect(
+            &app,
+            &state,
+            &workspace_id,
+            native_request_id,
+            "turn/steer",
+            json!({"threadId": thread_id, "expectedTurnId": turn_id,
+                "input": [{"type":"text", "text": text}]}),
+        )
+        .await;
+    }
     codex_core::turn_steer_core(
         &state.sessions,
         workspace_id,
@@ -468,6 +1207,7 @@ pub(crate) async fn turn_interrupt(
     workspace_id: String,
     thread_id: String,
     turn_id: String,
+    native_request_id: Option<String>,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<Value, String> {
@@ -481,6 +1221,17 @@ pub(crate) async fn turn_interrupt(
         .await;
     }
 
+    if native_session_active(&state, &workspace_id).await {
+        return native_visible_effect(
+            &app,
+            &state,
+            &workspace_id,
+            native_request_id,
+            "turn/interrupt",
+            json!({"threadId": thread_id, "turnId": turn_id}),
+        )
+        .await;
+    }
     codex_core::turn_interrupt_core(&state.sessions, workspace_id, thread_id, turn_id).await
 }
 
@@ -833,6 +1584,7 @@ pub(crate) async fn respond_to_server_request(
     workspace_id: String,
     request_id: Value,
     result: Value,
+    native_request_id: Option<String>,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
@@ -847,6 +1599,18 @@ pub(crate) async fn respond_to_server_request(
         return Ok(());
     }
 
+    if native_session_active(&state, &workspace_id).await {
+        native_visible_effect(
+            &app,
+            &state,
+            &workspace_id,
+            native_request_id,
+            "original-question-answer",
+            json!({"requestId": request_id, "result": result}),
+        )
+        .await?;
+        return Ok(());
+    }
     codex_core::respond_to_server_request_core(&state.sessions, workspace_id, request_id, result)
         .await
 }
@@ -1014,4 +1778,40 @@ pub(crate) async fn generate_agent_description(
         },
     )
     .await
+}
+
+#[cfg(test)]
+mod native_visible_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn caller_cannot_choose_native_runtime_fields_or_expand_methods() {
+        assert!(native_visible_params("thread/start", &json!({"cwd":"."})).is_err());
+        assert!(native_visible_params(
+            "turn/start",
+            &json!({
+                "threadId":"threadA", "input":[{"type":"text","text":"hello"}],
+                "approvalPolicy":"never"
+            })
+        )
+        .is_err());
+        assert!(native_visible_params("account/read", &json!({})).is_err());
+        assert!(native_visible_params(
+            "turn/start",
+            &json!({
+                "threadId":"threadA", "input":[{"type":"image","url":"file:///x"}]
+            })
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn effect_requires_caller_stable_intent_id() {
+        assert!(stable_native_request_id(None).is_err());
+        assert!(stable_native_request_id(Some("../bad".into())).is_err());
+        assert_eq!(
+            stable_native_request_id(Some("intent_1".into())).unwrap(),
+            "intent_1"
+        );
+    }
 }
