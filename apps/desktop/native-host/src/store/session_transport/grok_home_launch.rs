@@ -292,7 +292,10 @@ fn proven_inherited_successors(db:&VerifiedDatabaseConnection<'_>,grant:&GrokGra
     profile:&AppContainerProfile,home:&ResolvedDirectory)->Result<Vec<RootIdentity>,String>{
     let own_effects=instance::read_grok_effects(db,&grant.binding_id)?;
     if !has_original_root_source(&own_effects,&home.identity) {
-        return Err("Grok private HOME: original ROOT source absent for inherited successor".into());
+        // A failed first preparation can retire before GRANT_ROOT applies.
+        // It has no source for a protected inherited successor; the ordinary
+        // residue scan will still reject any such unproven object.
+        return Ok(Vec::new());
     }
     let own_ids=recorded_auth(db,grant)?;
     let mut ids=Vec::new();

@@ -491,7 +491,7 @@ jobs:
           if ([regex]::Matches($source, $pattern).Count -ne 1) { throw 'Exact production inherited-source branch must occur once.' }
           $testStart = $source.IndexOf('#[cfg(test)]')
           if ($testStart -lt 0 -or [regex]::Match($source, $pattern).Index -ge $testStart) { throw 'Mutation must touch production only.' }
-          $mutated = [regex]::Replace($source, $pattern, '', 1)
+          $mutated = [regex]::new($pattern).Replace($source, '', 1)
           if ($source.Substring($testStart) -cne $mutated.Substring($mutated.IndexOf('#[cfg(test)]'))) { throw 'Test source changed during mutation.' }
           $records = @()
           $restored = $false
