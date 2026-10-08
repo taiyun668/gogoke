@@ -372,3 +372,22 @@ USER 是产品授权层，不是要求 Owner 手工操作每项设置。Controll
 参照：直接读现有三 hooks、MainApp、`codex/mod.rs` 原 native history、`v37_visible_conversation.rs` 的 choices/select、`v37_visible_effect.rs` 的原 USER effect，以及当前 shared_files 清单。采用已有完整 hydration 和原 H/A 来源；增加无法在外层包装替代的三处消费者，并将已有 effect helper 的当前选择修正纳入同一最小范围；不为方便扩大 G 或通用 types/events 范围。
 
 此修订改变范围摘要，同 PR 更新 v2 回执、MANIFEST 和三处固定回执 blob。Owner 合并一次、Controller 精确读回并用 main verifier 重算摘要后，才能修改这四个确切路径；不新增登录、重启、候选接受或公开发布触点。M2 既有授权范围内的云检继续推进。
+
+
+## 2026-10-08：原生首次项目登记与 live-state 回读（范围提案，待 Owner 合并）
+
+直接复核确认两个闭环缺口：`v37_visible_conversation.rs` 的 live-state 内层已有原 H 物理观察，外层却留为 UNKNOWN；Tauri 的 liveness 消费者因此拒绝原生重连。首次 `add_workspace` 在保存新编号前要求该编号已有 USER 选择，产生循环；普通视图只读确认候选尚无既存 workspace 行。不能靠修改候选数据文件、猜编号或采用 global CLI 绕开。
+
+本修订只增一个确切写路径，并澄清四个既有共享路径的最少职责：
+
+- `apps/desktop/native-host/src/store/product_database/v37_visible_conversation.rs`：仅在原 H 已证明 LIVE 或完整 STOPPED 且无原因时把读回外层置 APPLIED。UNKNOWN、原错误、关联校验、物理句柄和原 StopFact 要求保持。现行 main 没有该文件；只读依据为施工源 `8d0e6ea5cf34f1f25603577fae9e36f22c6687f8` 的 blob `d54a0636cc4cab671734d262aa6b2724c753d907`，历史实现和阅读参照不是授权。
+- `apps/desktop/src-tauri/src/lib.rs`：在第一次 workspace 调用前建立既有原生 USER view context，不启动模型。
+- `apps/desktop/src-tauri/src/codex/mod.rs`：仅启动已有受验证的 USER host，读取原新 workspace 的 NEEDS_SETUP；无原 association 时提供只登记路径。其他失败保留原拒绝，连接仍必须先有原 USER 精确选择。
+- `apps/desktop/src-tauri/src/shared/workspaces_core/crud_persistence.rs`：仅现有 add_workspace 登记原新编号/元数据并返回 connected=false，不创建会话，不准入 H，不借 legacy 模型。原磁盘写错误保留，不声称原直接文件写入具有原子回滚。本次不扩展 native clone/import。
+- `apps/desktop/src-tauri/src/bin/gogoke_daemon.rs`：仅补编译兼容的 false probe；没有 USER host 的 daemon 不借此声称 native 支持，原生命周期保持。
+
+上述改变不增加 Tauri 命令、字段、通用类型/事件、能力、持久写方或 CLI/LPAC/账号权限。登记项目、选择已准入 H 的原身份、连接原会话分开；禁止自动采用第一项或从 workspace/thread/cwd 推导身份。受影响云端编译/检查和已安装普通 Win11 的实际首次登记、原 H live/stop 回读、普通对话与重启历史继续按既有端到端门槛验证；source review 和历史通过不是本体通过。没有新登录、重启、公开发布或验收步骤。
+
+参照：gogo-party `packages/room/src/server.ts` 的 createProjectFromPath 先 openOrRegister 再切换/派活；采用“登记与启动分开”，保留 gogoke 已有 exact USER/H 边界。直接核了现行 native producer、Tauri liveness、workspace persistence、daemon stub、原 UI restore 和 startup。只修新项目登记，不因旁支 clone UI 的立即 connect 扩大界面写域。
+
+本次范围摘要改变；同 PR 更新 v2 回执、MANIFEST 和三处固定 receipt blob。Owner 合并一次并精确读回前，以上增补未授权，不提交保全的产品补丁。原 PR77 四路径施工结果、失败原件和云检证据保留；M2 既有授权内工作继续。
