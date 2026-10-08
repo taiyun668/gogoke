@@ -381,6 +381,9 @@ fn verify_held_auth_authority(db:&VerifiedDatabaseConnection<'_>,grant:&GrokGran
     let peers=instance::read_grok_grants(db,&grant.instance_id)?;
     for auth in held {
         let original=evidence("held-auth-ACL",auth.acl(profile))?;
+        if !original.canonical_dacl() {
+            return Err("Grok private HOME: held auth DACL order changed".into());
+        }
         let original_bytes=original.ordered_aces_bytes();
         let mut expected_sids=Vec::new();
         let mut whole_effect=false;
