@@ -1,8 +1,9 @@
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$EvidenceDirectory)
+param([Parameter(Mandatory)][string]$EvidenceDirectory,[switch]$History)
 $ErrorActionPreference='Stop'
 $PSNativeCommandUseErrorActionPreference=$false
-$source=Join-Path $PSScriptRoot '..\..\apps\desktop\native-host\src\store\session_transport\secretary_user_turn.rs'
+$relative=if($History){'..\..\apps\desktop\native-host\src\store\product_database\v37_seat.rs'}else{'..\..\apps\desktop\native-host\src\store\session_transport\secretary_user_turn.rs'}
+$source=Join-Path $PSScriptRoot $relative
 $source=[IO.Path]::GetFullPath($source)
 $original=[IO.File]::ReadAllBytes($source)
 $originalHash=(Get-FileHash -LiteralPath $source).Hash.ToLowerInvariant()
@@ -11,7 +12,8 @@ $text=[Text.Encoding]::UTF8.GetString($original)
 # removing its source comparison cannot fail only through a bind-range error.
 $needle='AND source_cursor=?4'
 if ([regex]::Matches($text,[regex]::Escape($needle)).Count -ne 1) { throw 'Original USER marker source locator is not unique' }
-$filter='changed_user_marker_h_response_and_current_authority_never_write'
+$filter=if($History){'secretary_original_user_pages_preserve_historical_provenance_and_gaps'}else{'changed_user_marker_h_response_and_current_authority_never_write'}
+$prefix=if($History){'history-marker'}else{'marker'}
 function Observe([string]$label) {
     $output=& cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib $filter -- --nocapture --show-output 2>&1
     $code=$LASTEXITCODE
@@ -23,19 +25,19 @@ function Observe([string]$label) {
 }
 $results=@()
 try {
-    $baseline=Observe 'marker-baseline'
+    $baseline=Observe "$prefix-baseline"
     if ($baseline.exitCode -ne 0 -or $baseline.passed -ne 1 -or $baseline.failed -ne 0 -or $baseline.ignored -ne 0) { throw 'Original marker boundary baseline failed' }
     $results+=$baseline
     $mutated=$text.Replace($needle,'AND (?4 IS NOT NULL)')
     [IO.File]::WriteAllText($source,$mutated,[Text.UTF8Encoding]::new($false))
-    $mutation=Observe 'marker-source-comparison-removed'
+    $mutation=Observe "$prefix-source-comparison-removed"
     if ($mutation.exitCode -ne 101 -or $mutation.passed -ne 0 -or $mutation.failed -ne 1 -or $mutation.ignored -ne 0 -or -not $mutation.originalMarkerAssertion) { throw 'Production source comparison mutation did not fail its original assertion' }
     $results+=$mutation
 } finally {
     [IO.File]::WriteAllBytes($source,$original)
     if ((Get-FileHash -LiteralPath $source).Hash.ToLowerInvariant() -cne $originalHash) { throw 'Original USER source file restoration failed' }
 }
-$restored=Observe 'marker-restored'
+$restored=Observe "$prefix-restored"
 if ($restored.exitCode -ne 0 -or $restored.passed -ne 1 -or $restored.failed -ne 0 -or $restored.ignored -ne 0) { throw 'Restored marker boundary failed' }
 $results+=$restored
-[ordered]@{schema='gogoke.secretary-routine-source-mutation.v1'; sourceCommit=(git rev-parse HEAD).Trim(); originalSourceSha256=$originalHash; sourceRestored=$true; results=$results; acceptance=$false} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $EvidenceDirectory 'marker-mutation.json') -Encoding utf8NoBOM
+[ordered]@{schema='gogoke.secretary-routine-source-mutation.v1'; sourceCommit=(git rev-parse HEAD).Trim(); originalSourceSha256=$originalHash; sourceRestored=$true; results=$results; acceptance=$false} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $EvidenceDirectory "$prefix-mutation.json") -Encoding utf8NoBOM

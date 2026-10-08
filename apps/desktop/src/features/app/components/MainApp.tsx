@@ -2194,6 +2194,9 @@ function MainAppContent({
   };
   const retrySecretaryStop = async (requestId: string) => {
     if (!secretaryView?.retryStop || secretaryWritePendingRef.current) return;
+    const original = secretaryView.outbound?.find((fact) => fact.operation === "stop" &&
+      fact.requestId === requestId);
+    if (!original) return;
     const token = secretaryToken;
     secretaryWritePendingRef.current = true;
     setSecretaryWritePending(true);
@@ -2206,7 +2209,7 @@ function MainAppContent({
     } catch (cause) {
       if (currentSecretary.current.token === token) {
         setSecretaryWriteFailure({ token, operation: "stop",
-          sessionId: secretaryView.outbound?.find((fact) => fact.operation === "stop")?.sessionId ?? null,
+          sessionId: original.sessionId,
           body: null,
           text: cause instanceof Error ? cause.message : String(cause) });
         void currentSecretary.current.view?.openConversation?.();
@@ -2271,7 +2274,7 @@ function MainAppContent({
     </details> : null}
     {secretaryView?.outbound?.map((fact) => <div role="status" key={fact.requestId}>
       <div>原始会话 {fact.sessionId} · 席位 {fact.seatId} · H 代 {fact.hGeneration}</div>
-      {fact.operation === "send"
+      {fact.status === "REJECTED" ? "宿主已明确拒绝此原始请求；原文与回执已保留。" : fact.operation === "send"
         ? fact.status === "ACCEPTED"
           ? fact.inputVerified
             ? "原始 H 用户正文与发送回执已核实。"

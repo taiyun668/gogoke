@@ -99,7 +99,9 @@ jobs:
   native-secretary-routine-boundaries:
     if: ${{ inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only }}
     name: Native Secretary original USER routine boundaries
-    timeout-minutes: 20
+    # Original routine run used 19m47s; history-source mutation adds two
+    # measured 4-5 minute test rebuilds without changing production budgets.
+    timeout-minutes: 35
     runs-on: windows-latest
     env:
       RUSTUP_TOOLCHAIN: 1.85.1
@@ -141,6 +143,8 @@ jobs:
           if ($failures.Count -ne 0) { throw "Secretary directed boundary failed or did not execute: $($failures -join ', ')" }
           & ./tools/ci/gogoke37-secretary-routine-mutation.ps1 -EvidenceDirectory $evidence
           if ($LASTEXITCODE -ne 0) { throw "Secretary production mutation failed: $LASTEXITCODE" }
+          & ./tools/ci/gogoke37-secretary-routine-mutation.ps1 -EvidenceDirectory $evidence -History
+          if ($LASTEXITCODE -ne 0) { throw "Secretary history production mutation failed: $LASTEXITCODE" }
           'Only actual directed boundary cases and compile-valid production mutation ran. Full library, other native/security/server gates and Win11 product: NOT_RUN.' >> $env:GITHUB_STEP_SUMMARY
       - uses: actions/upload-artifact@v4
         if: always()

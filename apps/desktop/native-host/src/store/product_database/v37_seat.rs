@@ -2032,7 +2032,8 @@ mod tests {
                 let Json::Array(rows)=page.get(&key("items")).unwrap() else {panic!("items");};
                 let Json::Object(old)=&rows[0] else {panic!("old row");};
                 assert_eq!(old.get(&key("requestId")).unwrap().canonical(),"\"oldUser\"");
-                assert_eq!(old.get(&key("bodyState")).unwrap().canonical(),"\"UNKNOWN\"");
+                assert_eq!(old.get(&key("bodyState")).unwrap().canonical(),"\"UNKNOWN\"",
+                    "wrong INPUT marker must not become verified USER history");
                 assert_eq!(old.get(&key("body")).unwrap().canonical(),"null");
                 let restore=format!("UPDATE main.gogoke_v37_seat_secretary_presence SET {field}='{correct}' WHERE source_id='H-USER:global:secretarySession:oldUser'");
                 product.connection.execute(&restore).unwrap();

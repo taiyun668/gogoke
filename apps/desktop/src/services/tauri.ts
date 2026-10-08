@@ -147,7 +147,7 @@ export type SecretaryBinding = {
 export type SecretaryWriteFact = { operation: "send" | "stop"; requestId: string;
   binding: SecretaryBinding;
   sessionId: string; seatId: string; hGeneration: string;
-  body: string | null; status: "UNKNOWN" | "ACCEPTED"; receipt: unknown | null;
+  body: string | null; status: "UNKNOWN" | "ACCEPTED" | "REJECTED"; receipt: unknown | null;
   reason: string | null; inputVerified: boolean };
 
 export type SecretaryOriginalInput = { requestId: string; generation: string;
@@ -434,18 +434,23 @@ function secretaryEvent(state: SecretaryTranscript, value: unknown, threadId: st
       ? JSON.stringify(["tool", meta.turnId, meta.itemId]) : null;
     const index = toolKey ? state.groups.get(toolKey) : undefined;
     const old = index === undefined ? null : state.messages[index];
-    const detail = update.rawOutput === undefined ? JSON.stringify(update) :
+    const detail = update.rawOutput === undefined ? "" :
       typeof update.rawOutput === "string" ? update.rawOutput : JSON.stringify(update.rawOutput);
     const status = typeof update.status === "string" ? update.status : undefined;
+    const method = typeof meta?.codexMethod === "string" ? meta.codexMethod : null;
+    const delta = method === "item/commandExecution/outputDelta" || method === "item/fileChange/outputDelta";
+    const progress = method === "item/mcpToolCall/progress";
+    if (progress && detail) state.statuses.push(`工具进度：${detail}`);
     if (old && old.kind === "tool") {
-      state.messages[index!] = { ...old, detail: old.detail + (detail ? `\n${detail}` : ""),
+      state.messages[index!] = { ...old,
+        detail: progress || update.rawOutput === undefined ? old.detail : delta ? old.detail + detail : detail,
         ...(status ? { status } : {}) };
     } else {
       if (toolKey) state.groups.set(toolKey, state.messages.length);
       state.messages.push({ id: value.sourceEventId, kind: "tool",
         toolType: typeof update.kind === "string" ? update.kind : "native",
         title: typeof update.title === "string" ? update.title : update.sessionUpdate,
-        detail, ...(status ? { status } : {}) });
+        detail: progress ? "" : detail, ...(status ? { status } : {}) });
     }
     return;
   }
@@ -593,7 +598,7 @@ export function createDesign37SecretarySource(): {
   let transcript: SecretaryTranscript | null = null;
   type OriginalWrite = { binding: SecretaryBinding; frame: string; requestId: string;
     expectedRevision: string; operation: "send" | "stop"; body: string | null;
-    status: "UNKNOWN" | "ACCEPTED"; receipt: unknown | null; reason: string | null;
+    status: "UNKNOWN" | "ACCEPTED" | "REJECTED"; receipt: unknown | null; reason: string | null;
     inputVerified: boolean };
   const sends: OriginalWrite[] = [];
   const stops: OriginalWrite[] = [];
@@ -605,9 +610,11 @@ export function createDesign37SecretarySource(): {
     inputVerified: write.inputVerified });
   const writeFacts = () => [...sends, ...stops]
     .map(factOf);
-  const removeSend = (write: OriginalWrite) => {
-    const index = sends.indexOf(write);
-    if (index >= 0) sends.splice(index, 1);
+  const rejectWrite = (write: OriginalWrite, receipt: unknown) => {
+    write.status = "REJECTED";
+    write.receipt = receipt;
+    write.reason = `Native Secretary ${write.operation} was refused without execution: ${JSON.stringify(receipt)}`;
+    return write.reason;
   };
   const observeOriginalInputs = (values: unknown[]) => {
     for (const raw of values) {
@@ -626,7 +633,7 @@ export function createDesign37SecretarySource(): {
         send.receipt = raw.receipt;
         send.reason = null;
       } else if (result === "REJECTED") {
-        removeSend(send);
+        rejectWrite(send, raw.receipt);
       }
     }
   };
@@ -674,6 +681,7 @@ export function createDesign37SecretarySource(): {
       inputRowsEnded = read.rowsEnded;
     } catch (cause) {
       inputGap = `宿主原始用户输入读取不可用或无法核实：${cause instanceof Error ? cause.message : String(cause)}`;
+      invalidateTranscript();
     }
     const prior = transcript && transcript.sessionId === fact.sessionId &&
       transcript.seatId === original.configuration.seatId &&
@@ -839,12 +847,7 @@ export function createDesign37SecretarySource(): {
       const outcome = originalWriteReceipt(reply, write.operation, write.requestId,
         write.binding.sessionId, write.expectedRevision);
       if (outcome === "REJECTED") {
-        if (write.operation === "send") removeSend(write);
-        else {
-          const index = stops.indexOf(write);
-          if (index >= 0) stops.splice(index, 1);
-        }
-        throw new Error(`Native Secretary ${write.operation} was refused without execution: ${JSON.stringify(reply)}`);
+        throw new Error(rejectWrite(write, reply));
       }
       if (outcome === "ACCEPTED") {
         write.status = "ACCEPTED";
