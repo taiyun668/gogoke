@@ -403,6 +403,17 @@ fn actual_two_disappeared_holders_recover_in_one_call_replay_without_acl_effect_
         let old_acl_writes=holder_gone_acl_write_count_for_test();
         product.connection.execute("DELETE FROM main.gogoke_v37_instance_program_sources WHERE instance_id='instanceA'").unwrap();
         product.connection.execute("UPDATE main.gogoke_v37_instance_cli_copies SET state='PROBED' WHERE driver_id='codex'").unwrap();
+        let unknown=Statement::prepare(product.connection.as_ptr(),
+            "INSERT INTO main.gogoke_v37_h_stdin_journal(domain_id,request_id,operation,ticket,process_operation_id,custodian_nonce,session_id,generation,request_hex,phase,expected_revision) VALUES(?1,'managed-unknown-migrate','send','synthetic-ticket','synthetic-operation','synthetic-nonce',?2,'1','00','UNKNOWN','1')").unwrap();
+        unknown.bind_text(1,&cold.claims[0][0]).unwrap();
+        unknown.bind_text(2,&cold.claims[0][1]).unwrap();
+        unknown.step_done().unwrap();drop(unknown);
+        assert!(product.migrate_managed_cli("codex",&stage).is_err(),
+            "original UNKNOWN input is unresolved despite the old holder release");
+        assert_eq!(rows(&product,"SELECT state FROM main.gogoke_v37_instance_cli_copies WHERE driver_id='codex'",&[],1),
+            vec![vec![String::from("PROBED")]]);
+        assert!(rows(&product,"SELECT instance_id FROM main.gogoke_v37_instance_program_sources",&[],1).is_empty());
+        product.connection.execute("DELETE FROM main.gogoke_v37_h_stdin_journal WHERE request_id='managed-unknown-migrate'").unwrap();
         let changed=Statement::prepare(product.connection.as_ptr(),
             "UPDATE main.gogoke_v37_h_claim SET stop_fact_id='' WHERE domain_id=?1 AND session_id=?2 AND stop_fact_id IS NULL").unwrap();
         changed.bind_text(1,&cold.claims[0][0]).unwrap();changed.bind_text(2,&cold.claims[0][1]).unwrap();
@@ -410,16 +421,26 @@ fn actual_two_disappeared_holders_recover_in_one_call_replay_without_acl_effect_
         assert!(product.migrate_managed_cli("codex",&stage).is_err(),
             "changed original holder receipt cannot partially activate the copy");
         assert_eq!(rows(&product,"SELECT state FROM main.gogoke_v37_instance_cli_copies WHERE driver_id='codex'",&[],1),
-            vec![vec!["PROBED".into()]]);
+            vec![vec![String::from("PROBED")]]);
         assert!(rows(&product,"SELECT instance_id FROM main.gogoke_v37_instance_program_sources",&[],1).is_empty());
         let restore=Statement::prepare(product.connection.as_ptr(),
             "UPDATE main.gogoke_v37_h_claim SET stop_fact_id=NULL WHERE domain_id=?1 AND session_id=?2 AND stop_fact_id=''").unwrap();
         restore.bind_text(1,&cold.claims[0][0]).unwrap();restore.bind_text(2,&cold.claims[0][1]).unwrap();
         restore.step_done().unwrap();drop(restore);
+        product.connection.execute("CREATE TEMP TRIGGER managed_second_source_abort BEFORE INSERT ON main.gogoke_v37_instance_program_sources WHEN NEW.instance_id='legacyFresh' BEGIN SELECT RAISE(ABORT,'second source insert refused'); END").unwrap();
+        assert!(product.migrate_managed_cli("codex",&stage).is_err(),
+            "failure after the first exact source insert must roll back every binding and READY");
+        assert_eq!(rows(&product,"SELECT state FROM main.gogoke_v37_instance_cli_copies WHERE driver_id='codex'",&[],1),
+            vec![vec![String::from("PROBED")]]);
+        assert!(rows(&product,"SELECT instance_id FROM main.gogoke_v37_instance_program_sources",&[],1).is_empty());
+        assert_eq!(claim_rows(&product),old_claims);
+        assert_eq!(episode_rows(&product),old_episodes);
+        assert_eq!(custody_rows(&product),old_custody);
+        product.connection.execute("DROP TRIGGER temp.managed_second_source_abort").unwrap();
         assert_eq!(product.migrate_managed_cli("codex",&stage).unwrap(),2,
             "real completed holder releases and profile-less old instance migrate together");
         assert_eq!(rows(&product,"SELECT instance_id FROM main.gogoke_v37_instance_program_sources ORDER BY instance_id",&[],1),
-            vec![vec![INSTANCE.into()],vec!["legacyFresh".into()]]);
+            vec![vec![INSTANCE.to_owned()],vec![String::from("legacyFresh")]]);
         assert_eq!(claim_rows(&product),old_claims,"source selection does not rewrite old claims");
         assert_eq!(episode_rows(&product),old_episodes,"source selection does not invent STOPPED");
         assert_eq!(custody_rows(&product),old_custody,"source selection does not rewrite custody");

@@ -885,6 +885,14 @@ fn managed_first_install_keeps_disabled_legacy_and_binds_every_other_instance() 
                 instance::set_instance_profile(&mut product.connection,&product.owner,id,id,true,None,None).unwrap();
             }
         }
+        // This trusted F observation models the already logged-in old M1
+        // instance. A synthetic UNKNOWN login would be rejected before H ever
+        // resolves the intentionally unbound managed program source.
+        instance::record_observation(&mut product.connection,root,&instance::ObservationRequest {
+            request_id:"frozenOriginalLogin",request_bytes:b"original native login observation",
+            instance_id:"legacyFrozen",expected_revision:1,
+            observation:instance::InstanceObservation::LoggedIn,
+        }).unwrap();
         instance::set_instance_concurrency_cap(&mut product.connection,&product.owner,
             "legacyFrozen",2).unwrap();
         seat::set_project_parallel_cap(&mut product.connection,&product.owner,"newProject",2).unwrap();
@@ -925,7 +933,7 @@ fn managed_first_install_keeps_disabled_legacy_and_binds_every_other_instance() 
         assert!(instance::locate_bound_instance_program(&product.connection,
             "legacyFresh","codex",&digest,pin.version).is_ok());
         let read=product.dispatch_user_request(&instance_request(
-            "install-state","readFrozen","legacyFrozen","1")).unwrap();
+            "install-state","readFrozen","legacyFrozen","2")).unwrap();
         let read=String::from_utf8(read).unwrap();
         assert!(read.contains("\"status\":\"UNKNOWN\"") &&
             read.contains("no qualified managed program source"),"{read}");
@@ -937,6 +945,27 @@ fn managed_first_install_keeps_disabled_legacy_and_binds_every_other_instance() 
             receipt.contains("no qualified managed program source"),"{receipt}");
         assert_eq!(scalar(product,"SELECT count(*) FROM main.gogoke_v37_h_claim WHERE session_id='frozenSession'"),"0");
         remove_instance_home(root);
+    });
+}
+
+#[test]
+fn managed_begin_without_copy_row_retains_version_change_barrier() {
+    fixture(|root,product| {
+        let old_path=root.canonical_root().canonical_path.join("old-cli.fixture");
+        std::fs::write(&old_path,b"original different CLI bytes").unwrap();
+        let old=instance::ProgramObservation::observe(&old_path,"0.149.0").unwrap();
+        let registration=register_request();
+        instance::register_instance(&mut product.connection,root,&instance::Registration {
+            request_id:&registration.request_id,request_bytes:&registration.raw_bytes,
+            instance_id:"instanceA",driver_id:"codex",program:&old,
+        }).unwrap();
+        product.connection.execute("INSERT INTO main.gogoke_v37_h_owner_binding(binding_id,instance_id,domain_id,kind,owner_id,generation,state) VALUES('oldBinding','instanceA','oldProject','SESSION','oldSession','1','ACTIVE')").unwrap();
+        product.connection.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision) VALUES('oldProject','oldSession','instanceA','oldHome','oldBinding','1','COMMITTED',1)").unwrap();
+        assert!(instance::record_managed_cli_progress(&mut product.connection,&product.owner,
+            "codex","DOWNLOADING",0).is_err(),"old pin plus unsettled reservation is a version change");
+        assert_eq!(scalar(product,"SELECT count(*) FROM main.gogoke_v37_instance_cli_copies WHERE driver_id='codex'"),"0");
+        assert_eq!(scalar(product,"SELECT state FROM main.gogoke_v37_h_claim WHERE instance_id='instanceA'"),"COMMITTED");
+        std::fs::remove_file(old_path).unwrap();remove_instance_home(root);
     });
 }
 
