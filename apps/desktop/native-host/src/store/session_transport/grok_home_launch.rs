@@ -1097,6 +1097,30 @@ mod tests {
         assert!(grok_root_acl(&profile,&home.path,&home.identity).unwrap().target_aces.is_empty());
         assert!(granted.candidate_acl(&profile).unwrap().target_aces.is_empty());
         drop(granted);drop(candidate);drop(launch);drop(profile);
+        // Model an old, fully settled F/H journal opened by the new schema:
+        // its original ordered anchor did not exist. A new authorized F
+        // preparation may establish its own baseline without another login.
+        db.execute("DELETE FROM main.gogoke_v37_grok_home_root_anchor WHERE instance_id='grokA'").unwrap();
+        let release=AdmissionRequest{domain_id:"domainA",session_id:"sessionA",request_id:"releaseA",
+            raw_bytes:b"fixture original unstarted release",instance_id:"grokA",
+            home_id:"sessionHomeA",generation:"1",expected_revision:2};
+        assert_eq!(admission::release_unstarted_owner_commit(&mut db,&release,|_|Ok(())).unwrap(),
+            AdmissionResult::Applied(3));
+        db.execute("UPDATE main.gogoke_v37_seats SET generation=2,state='BUSY' WHERE domain_id='domainA' AND seat_id='seatA'").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_owner_binding VALUES('bindingB','grokA','domainA','SESSION','sessionB','2','ACTIVE')").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision) VALUES('domainA','sessionB','grokA','sessionHomeB','bindingB','2','COMMITTED',2)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_seat_binding VALUES('domainA','sessionB','seatA','incA','2')").unwrap();
+        let next=ClaimObservation{domain_id:"domainA".into(),session_id:"sessionB".into(),
+            instance_id:"grokA".into(),home_id:"sessionHomeB".into(),
+            binding_id:"bindingB".into(),generation:"2".into(),revision:2,
+            phase:super::super::runtime::SessionPhase::Committed,process_operation_id:None};
+        let rebased_profile=AppContainerProfile::derived_for_test("Gogoke37.OriginalRebase").unwrap();
+        let rebased=GrokHomeLaunch::prepare(&mut db,&root,&rebased_profile,
+            "Gogoke37.OriginalRebase",&next,&pin,&home,"seatA","incA","openB").unwrap();
+        let anchor=instance::read_grok_root_anchor(&db,"grokA").unwrap().unwrap();
+        assert!(!anchor.baseline_effect_id.is_empty());
+        rebased.revoke_uncreated(&mut db,&root,&rebased_profile).unwrap();
+        drop(rebased);
         db.close_checked().unwrap();drop(root);std::fs::remove_dir_all(path).unwrap();
     }
 

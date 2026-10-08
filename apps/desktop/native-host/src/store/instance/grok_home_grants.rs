@@ -325,8 +325,16 @@ fn settled_legacy_root_baseline(db:&VerifiedDatabaseConnection<'_>,
                 }
                 released_gone.push(operation.to_owned());
             }
-        } else if old.stop_fact_id.is_some() {
-            return Err("grok F journal: old no-attempt StopFact fabricated".into());
+        } else {
+            if old.stop_fact_id.is_some() {
+                return Err("grok F journal: old no-attempt StopFact fabricated".into());
+            }
+            let no_attempt=stmt(db,"SELECT 1 FROM main.gogoke_v37_h_claim h JOIN main.gogoke_v37_h_operation o ON o.domain_id=h.domain_id AND o.session_id=h.session_id AND o.operation='admission-release' AND o.status='APPLIED' AND o.revision=h.revision AND o.previous_revision=h.revision-1 WHERE h.instance_id=?1 AND h.domain_id=?2 AND h.session_id=?3 AND h.binding_id=?4 AND h.generation=?5 AND h.state='RELEASED' AND h.process_operation_id IS NULL AND h.stop_fact_id IS NULL AND NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e WHERE e.binding_id=h.binding_id) AND NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_operation x WHERE x.domain_id=h.domain_id AND x.session_id=h.session_id AND x.operation='open')")?;
+            bind(&no_attempt,&[&old.instance_id,&old.domain_id,&old.session_id,
+                &old.binding_id,&old.generation])?;
+            if !next(&no_attempt)? ||next(&no_attempt)? {
+                return Err("grok F journal: old no-attempt release journal absent".into());
+            }
         }
         if source.is_none() {
             source=effects.iter().find(|e|e.action=="REVOKE_ROOT" &&
