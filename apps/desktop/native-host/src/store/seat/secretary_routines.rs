@@ -395,7 +395,10 @@ pub(crate) fn take_due_secretary_routine_in_transaction(db:&VerifiedDatabaseConn
     }
     // A deterministic occurrence key and UNIQUE(routine_id,due_ms) prevent
     // a restart or competing coordinator from claiming this time twice.
-    let occurrence_id=fingerprint(&["secretary-occurrence",routine_id,&row.next_due_ms.to_string()],b"");
+    let digest=fingerprint(&["secretary-occurrence",routine_id,&row.next_due_ms.to_string()],b"");
+    let hex=digest.strip_prefix("sha256:").ok_or(SeatError::SchemaDrift)?;
+    let occurrence_id=format!("occ-{hex}");
+    if !valid_id(&occurrence_id) {return Err(SeatError::SchemaDrift);}
     let q=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_seat_secretary_occurrences(occurrence_id,routine_id,due_ms,state,h_receipt_id,original_reason) VALUES(?1,?2,?3,'UNKNOWN','','')")?;
     q.bind_text(1,&occurrence_id)?;q.bind_text(2,routine_id)?;q.bind_i64(3,row.next_due_ms)?;q.step_done()?;
     let q=Statement::prepare(db.as_ptr(),"UPDATE main.gogoke_v37_seat_secretary_routines SET state='WAITING_NEXT',revision=?1,last_occurrence_id=?2,last_result='UNKNOWN',last_reason='' WHERE routine_id=?3 AND revision=?4")?;

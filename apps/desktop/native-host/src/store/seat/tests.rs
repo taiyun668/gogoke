@@ -390,6 +390,8 @@ fn secretary_routines_replay_absence_and_unknown_are_fail_closed() {
         let reserved=take_due_secretary_routine_in_transaction(db,owner,"routineA",3,200).unwrap();
         let SecretaryRoutineDecision::Reserved {occurrence_id,revision}=reserved else {panic!("expected reserved");};
         assert_eq!(revision,4);
+        assert!(valid_id(&occurrence_id));
+        assert!(occurrence_id.starts_with("occ-"));
         db.execute("COMMIT").unwrap();
         db.execute("BEGIN IMMEDIATE").unwrap();
         assert!(matches!(take_due_secretary_routine_in_transaction(db,owner,"routineA",4,201),
