@@ -354,11 +354,21 @@ impl<'root> ProductDatabase<'root> {
             let original=encode_hex(&action.original);let association=action.association.json().canonical();
             for (index,value) in [state.as_str(),serialized,reason.as_str(),action.workspace.as_str(),action.id.as_str(),original.as_str(),association.as_str()].iter().enumerate() {update.bind_text((index+1) as i32,value)?;}
             update.step_done()?;
-            if action.method=="thread/resume"&&state=="APPLIED" {self.append_visible_resume_association(action,&reply)?;}
             Ok(())
         })();
         match outcome {Ok(())=>self.connection.execute("COMMIT").map_err(OrchestrationError::CommitUnknownWithCause)?,
             Err(error)=>{self.connection.execute("ROLLBACK").map_err(OrchestrationError::CommitUnknownWithCause)?;return Err(error);}}
+        // The original result is durable before optional current-choice CAS.
+        // A later legitimate H/E transition cannot roll back historical ACKs.
+        if action.method=="thread/resume"&&state=="APPLIED" {
+            self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
+            let outcome=(||->Result<()> {
+                authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
+                self.append_visible_resume_association(action,&reply)
+            })();
+            match outcome {Ok(())=>self.connection.execute("COMMIT").map_err(OrchestrationError::CommitUnknownWithCause)?,
+                Err(error)=>{self.connection.execute("ROLLBACK").map_err(OrchestrationError::CommitUnknownWithCause)?;return Err(error);}}
+        }
         Ok(bytes)
     }
     fn append_visible_resume_association(&self,action:&Action,reply:&Json)->Result<()> {
@@ -372,7 +382,21 @@ impl<'root> ProductDatabase<'root> {
         if expected!=next {return Err(OrchestrationError::AccessDenied);}
         // This is the same explicit USER resume, appended as a new selection
         // generation only while its original selection is still current.
-        let selected=self.visible_candidate(&next,true)?;
+        let current=h::session_binding::current_relationship(&self.connection,&next.domain,&next.session)
+            .map_err(|cause|OrchestrationError::V37StoreFailure(format!("resume choice current E/H qualification: {cause:?}")))?;
+        let Some(current)=current else {return Ok(());};
+        if !current.native_v2||current.seat_id!=next.seat||current.seat_incarnation!=next.incarnation
+            ||current.seat_authorization_generation.to_string()!=next.authorization
+            ||current.session_generation!=next.generation||current.instance_id!=next.instance {return Ok(());}
+        let eligible=Statement::prepare(self.connection.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_instances i JOIN main.gogoke_v37_worktrees w ON w.worktree_id=?2 AND w.repository_id=?3 JOIN main.gogoke_v37_worktree_sources f ON f.repository_id=w.repository_id WHERE i.instance_id=?1 AND i.driver_id='codex' AND i.version='0.160.0' AND w.state='REGISTERED' AND w.revision=1 AND w.domain_id=?4 AND w.seat_id=?5 AND w.seat_incarnation=?6")?;
+        for (index,value) in [next.instance.as_str(),latest.worktree.as_str(),latest.repository.as_str(),next.domain.as_str(),
+            next.seat.as_str(),next.incarnation.as_str()].iter().enumerate() {eligible.bind_text((index+1) as i32,value)?;}
+        if !eligible.step_row()? {return Ok(());}
+        if eligible.step_row()? {return Err(OrchestrationError::OperationConflict);}drop(eligible);
+        // Current eligibility is now proven. Original source/binding/format
+        // failures are not stale-cache outcomes and must retain their causes.
+        let selected=self.visible_candidate(&next,false)?;
         let insert=Statement::prepare(self.connection.as_ptr(),
             "INSERT INTO main.gogoke_v37_visible_conversation_selection(workspace_id,request_id,route,selection_hex,association_json,repository_id,worktree_id,thread_id,open_request_id,open_generation,open_operation_id,ack_source_id,started_source_id) VALUES(?1,?2,'NATIVE',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)")?;
         let id=format!("{}-resume-association",action.id);let original=encode_hex(&action.original);let association=next.json().canonical();
@@ -642,6 +666,34 @@ mod tests {
                 let count=Statement::prepare(product.connection.as_ptr(),&format!("SELECT COUNT(*) FROM main.{table}")).unwrap();
                 assert!(count.step_row().unwrap());assert_eq!(count.column_text(0).unwrap(),"0","cold UNKNOWN must not create a {table} writer");
             }
+        });
+    }
+    #[test]
+    fn visible_resume_original_receipt_survives_ineligible_current_choice_and_reports_cas_format_error() {
+        fixture(|product,_| {
+            let params=Json::Object(BTreeMap::from([(k("threadId"),s("vendorThreadA"))]));
+            let saved=action("resumeHistorical","thread/resume",params,Vec::new());
+            history(product,&saved.association);product.insert_visible_action(&saved).unwrap();
+            let mut next=saved.association.clone();next.generation="2".into();
+            // This test starts after original H/A recovery has produced its
+            // result. It tests receipt persistence, not synthetic model ACKs.
+            let response=Json::Object(BTreeMap::from([(k("result"),Json::Object(BTreeMap::from([
+                (k("nativeAssociation"),next.json())])))]));
+            let reply=product.action_reply(&saved,"APPLIED",None,Some(response));
+            let original_reply=reply.canonical();
+            // No current E authority exists in this fixture: the old selection
+            // remains current, but cannot qualify the new generation for CAS.
+            assert_eq!(product.store_visible_reply(&saved,reply).unwrap(),original_reply.as_bytes());
+            let retained=read_action(&product.connection,"workspaceA","resumeHistorical").unwrap().unwrap();
+            assert_eq!(retained.phase,"APPLIED");assert_eq!(retained.reply.canonical(),original_reply);
+            assert_eq!(product.visible_selection("workspaceA",None).unwrap().unwrap().row,1);
+            // A malformed result is an actual format error, not stale current
+            // authority. The committed original result must still survive it.
+            let malformed=product.action_reply(&saved,"APPLIED",None,Some(Json::Null));
+            assert!(product.store_visible_reply(&saved,malformed).is_err());
+            let retained=read_action(&product.connection,"workspaceA","resumeHistorical").unwrap().unwrap();
+            assert_eq!(retained.phase,"APPLIED");assert_eq!(retained.reply.canonical(),original_reply);
+            assert_eq!(product.visible_selection("workspaceA",None).unwrap().unwrap().row,1);
         });
     }
     #[test]

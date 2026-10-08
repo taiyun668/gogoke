@@ -294,7 +294,8 @@ impl<'root> ProductDatabase<'root> {
                     return Ok(Json::Object(self.visible_reply(workspace,"NEEDS_SETUP",None,
                         Some("No explicit USER visible-conversation selection is recorded."))));
                 };
-                if selected.route=="LEGACY" {return Ok(Json::Object(self.visible_reply(workspace,"LEGACY",None,None)));}
+                if selected.route=="LEGACY" {return Ok(Json::Object(self.visible_reply(workspace,"NEEDS_SETUP",None,
+                    Some("The retained historical LEGACY selection grants no Gogoke USER model execution; an explicit qualified native association is required."))));}
                 let association=selected.association.as_ref().ok_or(OrchestrationError::OperationConflict)?;
                 match self.visible_verify_saved(&selected) {
                     Ok(())=>Ok(Json::Object(self.visible_reply(workspace,"NATIVE",Some(association),None))),
@@ -352,7 +353,12 @@ impl<'root> ProductDatabase<'root> {
                     return Err(OrchestrationError::OperationConflict);
                 }
                 drop(prior);
-                let selected=if route=="NATIVE" {
+                if route=="LEGACY" {
+                    let mut reply=self.visible_reply(workspace,"UNSUPPORTED",None,Some(
+                        "Gogoke USER model conversations require LPAC native custody; LEGACY selection cannot grant ordinary CLI execution."));
+                    reply.insert(k("requestId"),s(&request));return Ok(Json::Object(reply));
+                }
+                let selected={
                     let association=Association::parse(fields.get(&k("association")).ok_or(OrchestrationError::AccessDenied)?)?;
                     match self.visible_candidate(&association,!exists) {
                         Ok(selected) if selected.repository==string_field(fields,"repositoryId")?
@@ -364,9 +370,7 @@ impl<'root> ProductDatabase<'root> {
                             reply.insert(k("requestId"),s(&request));return Ok(Json::Object(reply));
                         },
                     }
-                } else {Selection {row:0,route:route.clone(),association:None,repository:String::new(),
-                    worktree:String::new(),thread:String::new(),open_request:String::new(),open_generation:String::new(),
-                    open_operation:String::new(),ack:0,started:0}};
+                };
                 if !exists {
                     let insert=Statement::prepare(self.connection.as_ptr(),
                         "INSERT INTO main.gogoke_v37_visible_conversation_selection(workspace_id,request_id,route,selection_hex,association_json,repository_id,worktree_id,thread_id,open_request_id,open_generation,open_operation_id,ack_source_id,started_source_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)")?;
@@ -467,6 +471,42 @@ impl<'root> ProductDatabase<'root> {
             (k("operationId"),s(&query.column_text(0)?)),(k("generation"),s(&query.column_text(1)?)),
             (k("sourceEpoch"),s(&query.column_text(2)?)),(k("sourceCursor"),s(&query.column_text(3)?))])))
     }
+    /// Input membership comes from the exact ACK already selected by the
+    /// snapshot raw-source query, never from current H receipt totals/phases.
+    fn visible_snapshot_input(&self,selected:&Selection,source:&Statement,step_id:&str,
+        command_bytes:&[u8],operation:&str)->Result<bool> {
+        use crate::store::session_transport::{decode_request,codex_rpc};
+        let association=selected.association.as_ref().ok_or(OrchestrationError::AccessDenied)?;
+        let inputs=Statement::prepare(self.connection.as_ptr(),
+            "SELECT request_id,request_hex FROM main.gogoke_v37_h_stdin_journal WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3 AND generation=?4 AND ticket=?5 AND custodian_nonce=?6 AND operation=?7")?;
+        for (index,value) in [association.domain.as_str(),association.session.as_str(),source.column_text(3)?.as_str(),
+            source.column_text(4)?.as_str(),source.column_text(11)?.as_str(),source.column_text(13)?.as_str(),operation]
+            .iter().enumerate() {inputs.bind_text((index+1) as i32,value)?;}
+        let mut matched=false;
+        while inputs.step_row()? {
+            let raw=decode_hex(&inputs.column_text(1)?)?;
+            let expected=format!("{}-{}",if operation=="send" {"send"} else {"append"},&crate::store::digest::sha256_hex(&raw)[..40]);
+            if expected!=step_id {continue;}
+            let request=decode_request(&raw).map_err(|cause|OrchestrationError::V37StoreFailure(
+                format!("original snapshot H input decode: {cause:?}")))?;
+            let (_,command)=(if operation=="send" {codex_rpc::decode_stored_turn_start(command_bytes)}
+                else {codex_rpc::decode_stored_append(command_bytes)})
+                .map_err(|cause|OrchestrationError::V37StoreFailure(format!("original snapshot H command decode: {cause:?}")))?;
+            let (thread,text)=match command {
+                codex_rpc::Command::TurnStart {thread_id,text,..}|codex_rpc::Command::AppendWithoutTurn {thread_id,text}=>(thread_id,text),
+                _=>return Err(OrchestrationError::OperationConflict),
+            };
+            if matched||request.family!="K-SESSION"||request.operation!=operation
+                ||request.request_id!=inputs.column_text(0)?||request.domain_id!=association.domain
+                ||request.target_id!=association.session||request.payload.len()!=2
+                ||!is_text(request.payload.get(&k("generation")),&source.column_text(4)?)
+                ||!is_text(request.payload.get(&k("body")),&text)||thread!=selected.thread {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            matched=true;
+        }
+        Ok(matched)
+    }
     /// Each page is rebuilt against its first page's immutable raw-source
     /// high-water. Complete original vendor Turn objects are the page unit;
     /// partial notifications are never promoted to a complete empty history.
@@ -495,7 +535,7 @@ impl<'root> ProductDatabase<'root> {
         let mut complete=true;
         let mut original_reason=None;
         let mut observed_items:BTreeMap<String,Vec<(String,Option<Json>,Option<Json>)>>=BTreeMap::new();
-        let mut observed_turn_acks=Vec::new();
+        let mut observed_turn_acks:Vec<(String,i64)>=Vec::new();
         while query.step_row()? {
             let row=decimal(&query.column_text(0)?)?;
             if query.column_text(7)?!=association.seat || query.column_text(8)?!=association.incarnation
@@ -509,26 +549,35 @@ impl<'root> ProductDatabase<'root> {
                 // Correlate the original response to the exact retained command;
                 // string "7" and numeric 7 remain distinct JSON-RPC identities.
                 let step=Statement::prepare(self.connection.as_ptr(),
-                    "SELECT command_hex FROM main.gogoke_v37_rpc_steps WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3 AND generation=?4 AND source_epoch=?5 AND source_cursor=?6 AND phase='OBSERVED'")?;
+                    "SELECT command_hex,step_id FROM main.gogoke_v37_rpc_steps WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3 AND generation=?4 AND source_epoch=?5 AND source_cursor=?6 AND ticket=?7 AND custodian_nonce=?8 AND phase='OBSERVED'")?;
                 for (index,value) in [association.domain.as_str(),association.session.as_str(),
                     query.column_text(3)?.as_str(),query.column_text(4)?.as_str(),query.column_text(5)?.as_str(),
-                    query.column_text(6)?.as_str()].iter().enumerate() {step.bind_text((index+1) as i32,value)?;}
+                    query.column_text(6)?.as_str(),query.column_text(11)?.as_str(),query.column_text(13)?.as_str()].iter().enumerate() {step.bind_text((index+1) as i32,value)?;}
                 if step.step_row()? {
-                    let command=source_json(&step.column_text(0)?)?;let command=object(&command)?;
+                    let command_bytes=decode_hex(&step.column_text(0)?)?;
+                    let step_id=step.column_text(1)?;
+                    let command=source_json(&encode_hex(&command_bytes))?;let command=object(&command)?;
                     if !same_json(command.get(&k("id")),envelope.get(&k("id"))) || step.step_row()? {
                         complete=false;original_reason=Some(format!("Original RPC response {row} does not match its typed command ID."));continue;
                     }
                     if is_text(command.get(&k("method")),"turn/start") {
+                        if !self.visible_snapshot_input(selected,&query,&step_id,&command_bytes,"send")? {
+                            complete=false;original_reason=Some(format!("Original turn/start ACK source {row} has no exact original H send request."));continue;
+                        }
                         let params=object(command.get(&k("params")).ok_or(OrchestrationError::OperationConflict)?)?;
                         if !is_text(params.get(&k("threadId")),&selected.thread) {return Err(OrchestrationError::AccessDenied);}
                         let result=object(envelope.get(&k("result")).ok_or_else(||OrchestrationError::V37StoreFailure(
                             format!("Original turn/start response source {row}: {}",source.canonical())))?)?;
                         let turn=result.get(&k("turn")).ok_or(OrchestrationError::OperationConflict)?;
                         let id=string_field(object(turn)?,"id")?;
-                        if !observed_turn_acks.contains(&id) {observed_turn_acks.push(id.clone());}
+                        observed_turn_acks.push((id.clone(),row));
                         if !turn_ids.contains(&id) {
-                            turn_ids.push(id);turns.push(copy_json(turn));turn_refs.push(vec![self.visible_source_ref(row,selected)?]);
+                            turn_ids.push(id);turns.push(copy_json(turn));turn_refs.push(Vec::new());
                         }
+                    } else if is_text(command.get(&k("method")),"thread/inject_items") {
+                        let matched=self.visible_snapshot_input(selected,&query,&step_id,&command_bytes,"append-without-turn")?;
+                        complete=false;original_reason=Some(format!("Original append-without-turn ACK source {row} {}.",
+                            if matched {"has no qualified vendor history projection"} else {"has no exact original H input request"}));
                     }
                 } else if query.column_text(2)?=="PENDING" {
                     complete=false;original_reason=Some(format!("Original RPC response {row} has no correlated H command."));
@@ -590,29 +639,15 @@ impl<'root> ProductDatabase<'root> {
             }
             projection.insert(k("items"),Json::Array(projected));turns[index]=Json::Object(projection);
         }
-        for turn in &observed_turn_acks {
+        for (turn,row) in &observed_turn_acks {
             let index=turn_ids.iter().position(|id|id==turn).ok_or(OrchestrationError::OperationConflict)?;
+            // Retain the actual input ACK as well as later item/turn snapshots.
+            turn_refs[index].push(self.visible_source_ref(*row,selected)?);
             let fields=object(&turns[index])?;
             if !matches!(fields.get(&k("items")),Some(Json::Array(items)) if items.iter().any(|item|
                 matches!(item,Json::Object(fields) if is_text(fields.get(&k("type")),"userMessage")))) {
                 complete=false;original_reason=Some(format!("Original turn/start ACK for turn {turn} has no actual userMessage item source."));
             }
-        }
-        let inputs=Statement::prepare(self.connection.as_ptr(),
-            "SELECT request_id,operation,phase,COALESCE(receipt_status,'') FROM main.gogoke_v37_h_stdin_journal WHERE domain_id=?1 AND session_id=?2 AND operation IN ('send','append-without-turn')")?;
-        inputs.bind_text(1,&association.domain)?;inputs.bind_text(2,&association.session)?;
-        let mut applied_sends=0usize;
-        while inputs.step_row()? {
-            let status=inputs.column_text(3)?;
-            if inputs.column_text(2)?!="RECEIPTED" || status=="UNKNOWN" {
-                complete=false;original_reason=Some(format!("Original H input {} has unresolved phase/status {} / {status}.",inputs.column_text(0)?,inputs.column_text(2)?));
-            } else if matches!(status.as_str(),"APPLIED"|"REPLAYED") {
-                if inputs.column_text(1)?=="send" {applied_sends+=1;}
-                else {complete=false;original_reason=Some(format!("Original append-without-turn input {} has no qualified vendor history projection.",inputs.column_text(0)?));}
-            }
-        }
-        if applied_sends>observed_turn_acks.len() {
-            complete=false;original_reason=Some("An original applied H send has no typed vendor turn/start ACK in this fixed raw-source snapshot.".into());
         }
         if after as usize>turns.len() {return Err(OrchestrationError::Invalid("visible page position"));}
         let mut page=Vec::new();let mut refs=Vec::new();
@@ -757,15 +792,23 @@ mod tests {
             let route=r#"{"schema":"gogoke.37.owner-configuration.v1","command":"visible-conversation-route","workspaceId":"workspaceA"}"#;
             assert!(is_text(object(&reply(product,route)).unwrap().get(&k("state")),"NEEDS_SETUP"));
             let select=r#"{"schema":"gogoke.37.owner-configuration.v1","command":"visible-conversation-select","workspaceId":"workspaceA","requestId":"explicitLegacy","route":"LEGACY"}"#;
-            assert!(is_text(object(&reply(product,select)).unwrap().get(&k("state")),"LEGACY"));
-            assert!(is_text(object(&reply(product,route)).unwrap().get(&k("state")),"LEGACY"));
+            let denied=reply(product,select);
+            assert!(is_text(object(&denied).unwrap().get(&k("state")),"UNSUPPORTED"));
+            assert!(object(&denied).unwrap().contains_key(&k("reason")));
+            let count=Statement::prepare(product.connection.as_ptr(),"SELECT COUNT(*) FROM main.gogoke_v37_visible_conversation_selection").unwrap();
+            assert!(count.step_row().unwrap());assert_eq!(count.column_text(0).unwrap(),"0");drop(count);
+            // Retained pre-policy history is not a new model capability.
+            let retained=Statement::prepare(product.connection.as_ptr(),
+                "INSERT INTO main.gogoke_v37_visible_conversation_selection VALUES('workspaceA','explicitLegacy','LEGACY',?1,'null','','','','','','',0,0)").unwrap();
+            retained.bind_text(1,&encode_hex(select.as_bytes())).unwrap();retained.step_done().unwrap();drop(retained);
+            assert!(is_text(object(&reply(product,route)).unwrap().get(&k("state")),"NEEDS_SETUP"));
             assert!(product.configure_user_v37(format!("{select} ").as_bytes()).is_err(),"same request ID cannot rewrite original selection bytes");
             assert!(product.configure_user_v37(route.replace("workspaceA\"}","workspaceA\",\"sql\":\"DROP TABLE\"}").as_bytes()).is_err(),"configuration is a closed set, not a SQL transport");
             assert!(is_text(object(&reply(product,&route.replace("workspaceA","workspaceB"))).unwrap().get(&k("state")),"NEEDS_SETUP"),"workspace IDs never imply a shared route");
             product.connection.execute("CREATE TEMP TRIGGER injected_visible_effect BEFORE INSERT ON main.gogoke_v37_visible_conversation_selection BEGIN SELECT RAISE(ABORT,'injected USER journal effect'); END").unwrap();
             assert!(product.configure_user_v37(route.as_bytes()).is_err(),"the actual producer rejects extra schema effects");
             product.connection.execute("DROP TRIGGER temp.injected_visible_effect").unwrap();
-            assert!(is_text(object(&reply(product,route)).unwrap().get(&k("state")),"LEGACY"));
+            assert!(is_text(object(&reply(product,route)).unwrap().get(&k("state")),"NEEDS_SETUP"));
         });
     }
     #[test]
@@ -792,6 +835,61 @@ mod tests {
             assert!(product.configure_user_v37(malformed.as_bytes()).is_err(),"vendor/native identity fields do not coerce JSON number and string");
             let count=Statement::prepare(product.connection.as_ptr(),"SELECT COUNT(*) FROM main.gogoke_v37_visible_conversation_selection").unwrap();
             assert!(count.step_row().unwrap());assert_eq!(count.column_text(0).unwrap(),"1","denied recovery cannot create or resend an effect");
+        });
+    }
+    #[test]
+    fn visible_history_snapshot_uses_original_send_ack_not_later_applied_inputs() {
+        use crate::store::session_transport::codex_rpc::{Command,RpcId};
+        fixture(|product| {
+            let association=Association {domain:"projectA".into(),session:"sessionA".into(),seat:"leadA".into(),
+                incarnation:"incarnationA".into(),authorization:"1".into(),generation:"1".into(),instance:"instanceA".into()};
+            let selected=Selection {row:1,route:"NATIVE".into(),association:Some(association),repository:"repositoryA".into(),
+                worktree:"worktreeA".into(),thread:"threadA".into(),open_request:"openA".into(),open_generation:"1".into(),
+                open_operation:"processA".into(),ack:1,started:2};
+            product.connection.execute("INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,old_generation,raw_hex,previous_revision,result_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase,stop_fact_id) VALUES('projectA','openA','sessionA','1',NULL,'00',0,1,'processA','instanceA','homeA','bindingA','leadA','incarnationA','STOPPED','syntheticFixtureStop')").unwrap();
+            product.connection.execute("INSERT INTO main.gogoke_v37_h_generation VALUES('projectA','sessionA','1','openA','processA')").unwrap();
+            product.connection.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) VALUES('processA','pct1_ticketA','nonceA','11','1','fixture','sha256:fixture','profileA','projectA','1','STOPPED','syntheticFixtureStop')").unwrap();
+            let raw=|cursor:&str,bytes:&[u8]| {
+                let row=Statement::prepare(product.connection.as_ptr(),
+                    "INSERT INTO main.v37_ledger_raw_source(operation_id,process_ticket,custodian_nonce,domain_id,session_id,generation,source_epoch,source_cursor,raw_bytes,state) VALUES('processA','pct1_ticketA','nonceA','projectA','sessionA','1','nonceA',?1,?2,'PENDING')").unwrap();
+                row.bind_text(1,cursor).unwrap();row.bind_blob(2,bytes).unwrap();row.step_done().unwrap();
+            };
+            // Synthetic protocol frames exercise the real producer without a
+            // CLI process, ModelCallProof or inferred provider/stop fact.
+            raw("1",b"{\"id\":1,\"result\":{\"thread\":{\"id\":\"threadA\",\"turns\":[]}}}\n");
+            raw("2",b"{\"method\":\"thread/started\",\"params\":{\"thread\":{\"id\":\"threadA\",\"turns\":[]}}}\n");
+            let opened=Command::ThreadStart {cwd:"fixture".into(),model:"fixture".into()}.encode(Some(&RpcId::Number(1))).unwrap();
+            let open_rpc=Statement::prepare(product.connection.as_ptr(),
+                "INSERT INTO main.gogoke_v37_rpc_steps(domain_id,session_id,open_request_id,step_id,process_operation_id,ticket,custodian_nonce,pid,creation_time,image_path,binary_digest,profile_id,generation,command_hex,requires_response,phase,source_epoch,source_cursor) VALUES('projectA','sessionA','openA','thread-start','processA','pct1_ticketA','nonceA','11','1','fixture','sha256:fixture','profileA','1',?1,1,'OBSERVED','nonceA','1')").unwrap();
+            open_rpc.bind_text(1,&encode_hex(&opened)).unwrap();open_rpc.step_done().unwrap();drop(open_rpc);
+            let input=|id:&str,cursor:&str,text:&str| {
+                let request=format!(r#"{{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send","requestId":"{id}","targetId":"sessionA","domainId":"projectA","expectedRevision":"2","payload":{{"generation":"1","body":"{text}"}}}}"#);
+                let journal=Statement::prepare(product.connection.as_ptr(),
+                    "INSERT INTO main.gogoke_v37_h_stdin_journal(domain_id,request_id,operation,ticket,process_operation_id,custodian_nonce,session_id,generation,request_hex,phase,receipt_hex,receipt_status,expected_revision,receipt_previous_revision,receipt_revision) VALUES('projectA',?1,'send','pct1_ticketA','processA','nonceA','sessionA','1',?2,'RECEIPTED','00','APPLIED','2','2','3')").unwrap();
+                journal.bind_text(1,id).unwrap();journal.bind_text(2,&encode_hex(request.as_bytes())).unwrap();journal.step_done().unwrap();drop(journal);
+                let command=Command::TurnStart {thread_id:"threadA".into(),cwd:"fixture".into(),model:"fixture".into(),
+                    effort:"low".into(),text:text.into(),network_access:None}.encode(Some(&RpcId::String(id.into()))).unwrap();
+                let step=format!("send-{}",&crate::store::digest::sha256_hex(request.as_bytes())[..40]);
+                let rpc=Statement::prepare(product.connection.as_ptr(),
+                    "INSERT INTO main.gogoke_v37_rpc_steps(domain_id,session_id,open_request_id,step_id,process_operation_id,ticket,custodian_nonce,pid,creation_time,image_path,binary_digest,profile_id,generation,command_hex,requires_response,phase,source_epoch,source_cursor) VALUES('projectA','sessionA','openA',?1,'processA','pct1_ticketA','nonceA','11','1','fixture','sha256:fixture','profileA','1',?2,1,'OBSERVED','nonceA',?3)").unwrap();
+                rpc.bind_text(1,&step).unwrap();rpc.bind_text(2,&encode_hex(&command)).unwrap();rpc.bind_text(3,cursor).unwrap();rpc.step_done().unwrap();
+            };
+            input("sendA","3","first body");
+            raw("3",b"{\"id\":\"sendA\",\"result\":{\"turn\":{\"id\":\"turnA\",\"items\":[{\"id\":\"messageA\",\"type\":\"userMessage\"}]}}}\n");
+            let mut first=product.visible_reply("workspaceA","UNKNOWN",selected.association.as_ref(),None);
+            product.visible_thread_page("workspaceA",&selected,&BTreeMap::new(),&mut first).unwrap();
+            assert!(is_text(first.get(&k("state")),"APPLIED"));
+            let scope=format!("thread/read\nworkspaceA\n1\nthreadA\n{}",selected.association.as_ref().unwrap().json().canonical());
+            let fixed=BTreeMap::from([(k("cursor"),s(&visible_page_token(3,0,&scope)))]);
+            input("sendLater","4","later body");
+            raw("4",b"{\"id\":\"sendLater\",\"result\":{\"turn\":{\"id\":\"turnLater\",\"items\":[{\"id\":\"messageLater\",\"type\":\"userMessage\"}]}}}\n");
+            let mut repeated=product.visible_reply("workspaceA","UNKNOWN",selected.association.as_ref(),None);
+            product.visible_thread_page("workspaceA",&selected,&fixed,&mut repeated).unwrap();
+            assert_eq!(Json::Object(first).canonical(),Json::Object(repeated).canonical(),"later real H input/ACK cannot change an earlier raw-source snapshot");
+            let mut fresh=product.visible_reply("workspaceA","UNKNOWN",selected.association.as_ref(),None);
+            product.visible_thread_page("workspaceA",&selected,&BTreeMap::new(),&mut fresh).unwrap();
+            assert!(is_text(fresh.get(&k("state")),"APPLIED"));
+            assert!(Json::Object(fresh).canonical().contains("turnLater"),"fresh high-water must retain the later input's actual ACK");
         });
     }
     #[test]
