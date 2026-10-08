@@ -522,6 +522,33 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     let history=product.native_append_rpc(&key,"materialize-original-history",&thread,
         "cloud no-model durable history marker".into()).unwrap();
     assert!(matches!(history,Some(Reply::Ack {..})),"actual original history injection ACK: {history:?}");
+    // Explicit RPC/A instrument for the synthetic turn used by C below.
+    // The real H process/binding is retained, but these command/ACK bytes are
+    // modelled and never written to the provider. A cached turn alone is not
+    // an original historical turn proof for the production resolver.
+    {
+        use crate::store::session_transport::{codex_rpc::RpcId,rpc_journal as rpc};
+        let live=product.native_sessions.get(&key).unwrap();
+        let open_id=live.open_request_id.clone();let open_bytes=live.open_request_bytes.clone();
+        let command=Command::TurnStart {thread_id:thread.clone(),
+            cwd:live.evidence.cwd().to_string_lossy().into_owned(),model:"gpt-6-sol".into(),
+            effort:"high".into(),text:"synthetic fence control; no provider write".into(),
+            network_access:Some(live.evidence.network_access())};
+        let rpc_id=RpcId::Number(88002);
+        let step=rpc::Step {domain_id:"projectA",session_id:"sessionA",open_request_id:&open_id,
+            open_request_bytes:&open_bytes,step_id:"synthetic-fence-turn",custody:&custody,
+            rpc_id:Some(&rpc_id),command:&command};
+        assert_eq!(rpc::prepare(&mut product.connection,&product.owner,&step).unwrap().disposition,rpc::Disposition::NewWrite);
+        rpc::mark_written(&mut product.connection,&product.owner,&step).unwrap();
+        let ack=health_control_source(&mut product,
+            b"{\"id\":88002,\"result\":{\"turn\":{\"id\":\"syntheticTurn\",\"status\":\"inProgress\"}}}\n");
+        let observed=Statement::prepare(product.connection.as_ptr(),
+            "UPDATE main.gogoke_v37_rpc_steps SET phase='OBSERVED',source_epoch=?1,source_cursor=?2 WHERE step_id='synthetic-fence-turn' AND phase='WRITTEN'").unwrap();
+        observed.bind_text(1,&ack.source_epoch).unwrap();observed.bind_text(2,&ack.source_cursor).unwrap();
+        observed.step_done().unwrap();drop(observed);
+        ledger::resolve_raw_source_no_event(&mut product.connection,&ack.operation_id,&ack.source_epoch,
+            &ack.source_cursor,"CODEX_RPC_RESPONSE").unwrap();
+    }
     // These are explicitly synthetic A/C ordering controls, not provider
     // questions, EOF observations, Owner login or model-delivery evidence.
     // The production composition below still uses the real opened session.
@@ -988,11 +1015,20 @@ fn qualify_synthetic_file_backend(product: &mut ProductDatabase<'_>, root: &Root
 
 fn actual_saved_thread_files(home: &std::path::Path, thread: &str) -> Vec<std::path::PathBuf> {
     use std::os::windows::fs::MetadataExt;
-    let mut pending = vec![home.to_path_buf()];
+    // Observe Codex's persisted rollout tree, not the whole CODEX_HOME.
+    // Its unrelated .tmp plugin clones may disappear during this read.
+    // An absent/unreadable sessions tree still fails with the original error.
+    let sessions = home.join("sessions");
+    let metadata = std::fs::symlink_metadata(&sessions).unwrap();
+    assert_eq!(metadata.file_attributes() & 0x400, 0, "native history reparse: {sessions:?}");
+    assert!(metadata.is_dir(), "original native history sessions directory: {sessions:?}");
+    let mut pending = vec![sessions];
     let mut matches = Vec::new();
     let suffix = format!("{thread}.jsonl");
     while let Some(parent) = pending.pop() {
-        for entry in std::fs::read_dir(&parent).unwrap() {
+        for entry in std::fs::read_dir(&parent).unwrap_or_else(|error| {
+            panic!("original native history directory observation failed: parent={parent:?}, win32={:?}, error={error}", error.raw_os_error())
+        }) {
             let path = entry.unwrap().path();
             let metadata = std::fs::symlink_metadata(&path).unwrap();
             assert_eq!(metadata.file_attributes() & 0x400, 0, "native history reparse: {path:?}");

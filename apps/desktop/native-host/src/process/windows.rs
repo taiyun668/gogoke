@@ -2615,6 +2615,11 @@ mod tests {
             .join("cmd.exe")
     }
 
+    fn controlled_node() -> PathBuf {
+        PathBuf::from(std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
+            .expect("CI binds the existing controlled Node runtime"))
+    }
+
     fn unique_marker(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "gogoke-process-{name}-{}-{}",
@@ -2782,11 +2787,12 @@ mod tests {
 
     #[test]
     fn native_input_close_delivers_eof_and_preserves_graceful_stop_proof() {
-        let mut launch = ProcessLaunch::new(powershell());
+        // The boundary is real pipe EOF and Job exit, not CLR startup.
+        let mut launch = ProcessLaunch::new(controlled_node());
         launch.protocol_stdio = true;
         launch.persistent_protocol_stdio = true;
-        launch.arguments = vec!["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(),
-            "while ($null -ne [Console]::ReadLine()) {}; [Console]::Out.WriteLine('stdin-eof'); exit 0".into()];
+        launch.arguments = vec!["-e".into(),
+            "process.stdin.resume(); process.stdin.on('end', () => process.stdout.write('stdin-eof\\r\\n'));".into()];
         let mut custodian = ProcessCustodian::new().unwrap();
         let prepared = custodian.prepare(&request(launch)).unwrap();
         custodian.activate(&prepared).unwrap();
@@ -2807,11 +2813,11 @@ mod tests {
 
     #[test]
     fn failed_protocol_retains_direct_stderr_and_does_not_block_large_stderr() {
-        let mut launch = ProcessLaunch::new(powershell());
+        let mut launch = ProcessLaunch::new(controlled_node());
         launch.protocol_stdio = true;
         launch.persistent_protocol_stdio = true;
-        launch.arguments = vec!["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(),
-            "[Console]::Error.Write(('x' * 20000)); [Console]::Error.WriteLine('DIRECT_ERROR_1234'); exit 7".into()];
+        launch.arguments = vec!["-e".into(),
+            "process.stderr.write('x'.repeat(20000) + 'DIRECT_ERROR_1234\\r\\n'); process.exitCode = 7;".into()];
         let mut custodian = ProcessCustodian::new().unwrap();
         let prepared = custodian.prepare(&request(launch)).unwrap();
         custodian.activate(&prepared).unwrap();
@@ -2837,11 +2843,11 @@ mod tests {
                 thread::sleep(Duration::from_millis(10));
             }
         }
-        let mut launch = ProcessLaunch::new(powershell());
+        let mut launch = ProcessLaunch::new(controlled_node());
         launch.protocol_stdio = true;
         launch.persistent_protocol_stdio = true;
-        launch.arguments = vec!["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(),
-            "[Console]::Error.WriteLine('x' * 5000); [Console]::Error.Write('https://auth.openai.com/oauth/authorize?state=synthetic&part='); [Console]::Error.Flush(); [Console]::Out.WriteLine('first'); [Console]::ReadLine() | Out-Null; [Console]::Error.WriteLine('second'); [Console]::Error.Flush(); [Console]::Out.WriteLine('second'); [Console]::ReadLine() | Out-Null".into()];
+        launch.arguments = vec!["-e".into(),
+            "process.stderr.write('x'.repeat(5000) + '\\r\\nhttps://auth.openai.com/oauth/authorize?state=synthetic&part='); process.stdout.write('first\\r\\n'); const input = require('node:readline').createInterface({ input: process.stdin }); let first = true; input.on('line', () => { if (first) { first = false; process.stderr.write('second\\r\\n'); process.stdout.write('second\\r\\n'); } else { input.close(); process.stdin.destroy(); } });".into()];
         let mut custodian = ProcessCustodian::new().unwrap();
         let prepared = custodian.prepare(&request(launch)).unwrap();
         custodian.activate(&prepared).unwrap();
@@ -2893,12 +2899,12 @@ mod tests {
 
     #[test]
     fn persistent_child_exchanges_multiple_jsonl_frames_on_one_owned_job() {
-        let mut launch = ProcessLaunch::new(powershell());
+        let mut launch = ProcessLaunch::new(controlled_node());
         launch.protocol_stdio = true;
         launch.persistent_protocol_stdio = true;
         launch.arguments = vec![
-            "-NoProfile".into(), "-NonInteractive".into(), "-Command".into(),
-            r#"while ($null -ne ($line = [Console]::ReadLine())) { [Console]::Out.WriteLine('{"jsonrpc":"2.0","method":"turn/started"}'); [Console]::Out.WriteLine('{"jsonrpc":"2.0","id":7,"method":"approval"}'); [Console]::Out.WriteLine($line) }"#.into(),
+            "-e".into(),
+            r#"require('node:readline').createInterface({ input: process.stdin }).on('line', line => { process.stdout.write('{"jsonrpc":"2.0","method":"turn/started"}\r\n'); process.stdout.write('{"jsonrpc":"2.0","id":7,"method":"approval"}\r\n'); process.stdout.write(line + '\r\n'); });"#.into(),
         ];
         let mut custodian = ProcessCustodian::new().expect("native custodian");
         let prepared = custodian.prepare(&request(launch)).expect("prepared persistent ticket");
