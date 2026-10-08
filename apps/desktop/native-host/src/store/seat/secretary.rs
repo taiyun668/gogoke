@@ -27,7 +27,7 @@ pub(crate) enum SecretaryConfiguration {
     },
 }
 
-fn designation(db:&VerifiedDatabaseConnection<'_>)
+pub(super) fn designation(db:&VerifiedDatabaseConnection<'_>)
     ->Result<Option<(String,String,String,String)>,SeatError> {
     let q=Statement::prepare(db.as_ptr(),
         "SELECT seat_id,incarnation,request_id,fingerprint FROM main.gogoke_v37_seat_secretary WHERE singleton=1")?;
@@ -72,6 +72,7 @@ pub(crate) fn designate_secretary(db:&mut VerifiedDatabaseConnection<'_>,
             if current.incarnation!=incarnation||current.state==State::Reclaimed {
                 return Err(SeatError::Denied);
             }
+            super::secretary_routines::ensure_product_absence_policy_in_transaction(db)?;
             return Ok(SecretaryDesignation {seat_id:seat_id.into(),
                 incarnation:incarnation.into(),replayed:true});
         }
@@ -95,6 +96,7 @@ pub(crate) fn designate_secretary(db:&mut VerifiedDatabaseConnection<'_>,
             "INSERT INTO main.gogoke_v37_seat_secretary(singleton,domain_id,seat_id,incarnation,request_id,fingerprint) VALUES(1,'global',?1,?2,?3,?4)")?;
         q.bind_text(1,seat_id)?;q.bind_text(2,incarnation)?;
         q.bind_text(3,request_id)?;q.bind_text(4,&fp)?;q.step_done()?;
+        super::secretary_routines::ensure_product_absence_policy_in_transaction(db)?;
         Ok(SecretaryDesignation {seat_id:seat_id.into(),incarnation:incarnation.into(),replayed:false})
     })
 }
@@ -130,6 +132,26 @@ pub(crate) fn read_secretary_configuration_in_transaction(
         instance_id:if seat.instance_id.is_empty(){None}else{Some(seat.instance_id)},
         model:optional_string("model")?,effort:optional_string("effort")?,
         permission,state:seat.state})
+}
+
+/// H's current USER admission fact. The singleton and its incarnation are
+/// re-read at every launch verification; a display name or wire flag has no
+/// authority. All four selections must be present before a model can start.
+pub(crate) fn require_secretary_session(db:&VerifiedDatabaseConnection<'_>,
+    issuer:&OwnerIssuer,seat_id:&str,incarnation:&str)->Result<Seat,SeatError> {
+    let SecretaryConfiguration::Designated {seat_id:current,incarnation:current_inc,
+        instance_id:Some(instance),model:Some(_),effort:Some(_),permission:Some(_),
+        state,..}=read_secretary_configuration_in_transaction(db,issuer)? else {
+        return Err(SeatError::Denied);
+    };
+    if current!=seat_id || current_inc!=incarnation ||
+        !matches!(state,State::Idle|State::Busy) {return Err(SeatError::Denied);}
+    require_enabled_instance(db,&instance)?;
+    let seat=read(db,"global",seat_id)?.ok_or(SeatError::SchemaDrift)?;
+    if seat.incarnation!=incarnation || seat.instance_id!=instance {
+        return Err(SeatError::Denied);
+    }
+    Ok(seat)
 }
 
 /// One atomic change of the four selections. Existing E operation receipts

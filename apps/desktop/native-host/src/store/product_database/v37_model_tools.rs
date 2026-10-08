@@ -8,6 +8,37 @@ use crate::store::ledger;
 use crate::store::session_transport::{codex_rpc, model_call, rpc_journal as rpc};
 use crate::store::session_transport::{runtime,AdmissionRequest,AdmissionResult};
 
+fn secretary_ledger_text(page:&ledger::EventPage,count:usize,highwater:bool)->Result<String> {
+    let cursor=if highwater {page.position.cursor} else {
+        page.events.get(count.checked_sub(1).ok_or(OrchestrationError::Invalid("secretary ledger page"))?)
+            .ok_or(OrchestrationError::Invalid("secretary ledger page"))?.cursor
+    };
+    Ok(Json::Object(BTreeMap::from([
+        (key("epoch"),Json::String(JsonString::from_str(&page.position.epoch))),
+        (key("cursor"),Json::String(JsonString::from_str(&cursor.to_string()))),
+        (key("highWaterCursor"),Json::String(JsonString::from_str(&page.position.cursor.to_string()))),
+        (key("events"),super::v37_ledger_user::events(&page.events[..count])?),
+    ])).canonical())
+}
+
+fn secretary_ledger_fits(caller:&seat::NativeSeatCall,text:&str)->Result<bool> {
+    let request_id=caller.typed_rpc_id().ok_or(OrchestrationError::AccessDenied)?.clone();
+    match (codex_rpc::Command::DynamicToolResponse {request_id,text:text.into(),success:true}).encode(None) {
+        Ok(_)=>Ok(true),
+        Err(codex_rpc::RpcError::FrameTooLarge)=>Ok(false),
+        Err(error)=>Err(OrchestrationError::V37StoreFailure(format!("secretary ledger tool frame: {error:?}"))),
+    }
+}
+
+fn model_receipt_result(bytes:Vec<u8>)->Result<(String,bool)> {
+    let receipt=crate::store::session_transport::decode_receipt(&bytes)
+        .map_err(|error|OrchestrationError::V37StoreFailure(format!("native tool receipt: {error:?}")))?;
+    let success=matches!(receipt.status,V37Status::Applied|V37Status::Replayed);
+    let text=String::from_utf8(bytes).map_err(|error|OrchestrationError::V37StoreFailure(
+        format!("native tool receipt UTF-8: {error}")))?;
+    Ok((text,success))
+}
+
 fn key(name:&str)->JsonString {JsonString::from_str(name)}
 fn field(fields:&BTreeMap<JsonString,Json>,name:&str)->Result<String> {
     let Some(Json::String(value))=fields.get(&key(name)) else {
@@ -87,6 +118,97 @@ fn applied_revision(result:AdmissionResult)->Result<u64> {
 }
 
 impl<'root> ProductDatabase<'root> {
+    /// This is a live model read, not the USER history bridge. The A purpose,
+    /// original H call and current E singleton are checked in one snapshot.
+    fn dispatch_model_secretary_ledger(&mut self,caller:&seat::NativeSeatCall)->Result<String> {
+        if caller.tool()!=Some("gogoke_ledger") || caller.domain_id()!="global" {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let Json::Object(arguments)=Parser::parse(caller.arguments_json()
+            .ok_or(OrchestrationError::AccessDenied)?)? else {
+            return Err(OrchestrationError::Invalid("secretary ledger arguments"));
+        };
+        let requested=match arguments.len() {
+            0=>None,
+            2=>{
+                let epoch=field(&arguments,"epoch")?;
+                let cursor=field(&arguments,"afterCursor")?;
+                let number=cursor.parse::<u64>().map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!("secretary ledger cursor: {error}")))?;
+                if number.to_string()!=cursor || number>i64::MAX as u64 {
+                    return Err(OrchestrationError::Invalid("secretary ledger cursor"));
+                }
+                Some((epoch,number))
+            },
+            _=>return Err(OrchestrationError::Invalid("secretary ledger argument fields")),
+        };
+        authority::read_product_identity(&mut self.connection,&self.owner)?;
+        self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
+        let result=(||->Result<String> {
+            authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
+            let current=model_call::revalidate_model_call_in_transaction(&self.connection,caller)
+                .map_err(|error|match error {
+                    model_call::ModelCallError::Denied=>OrchestrationError::AccessDenied,
+                    other=>OrchestrationError::V37StoreFailure(format!("secretary model source: {other:?}")),
+                })?;
+            let session=caller.session_id().ok_or(OrchestrationError::AccessDenied)?;
+            let reader=self.native_secretary_ledger_reader(session)?;
+            if reader.domain_id!="global" || reader.seat_id!=current.seat_id
+                || reader.session_id!=session || current.incarnation!=caller.incarnation()
+                || current.generation!=caller.generation() {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let position=ledger::recover(&self.connection)?;
+            let after=match requested.as_ref() {
+                None=>ledger::LedgerPosition {epoch:position.epoch.clone(),cursor:0},
+                Some((epoch,cursor)) if epoch==&position.epoch && *cursor<=position.cursor=>
+                    ledger::LedgerPosition {epoch:epoch.clone(),cursor:*cursor},
+                Some((epoch,_)) if epoch!=&position.epoch=>
+                    return Err(OrchestrationError::Invalid("secretary ledger stale epoch")),
+                Some(_)=>return Err(OrchestrationError::Invalid("secretary ledger cursor ahead")),
+            };
+            let page=ledger::query_global(&self.connection,&after,32)?;
+            if page.events.is_empty() {
+                let text=secretary_ledger_text(&page,0,true)?;
+                if !secretary_ledger_fits(caller,&text)? {
+                    return Err(OrchestrationError::Invalid("secretary ledger empty tool frame bound"));
+                }
+                return Ok(text);
+            }
+            let mut lower=1usize;
+            let mut upper=page.events.len();
+            let mut fitted=0usize;
+            while lower<=upper {
+                let count=lower+(upper-lower)/2;
+                let text=secretary_ledger_text(&page,count,false)?;
+                if secretary_ledger_fits(caller,&text)? {
+                    fitted=count;lower=count+1;
+                } else {upper=count-1;}
+            }
+            if fitted==0 {
+                return Err(OrchestrationError::Invalid("secretary ledger single event tool frame bound"));
+            }
+            if fitted==page.events.len() && fitted<32 {
+                let complete=secretary_ledger_text(&page,fitted,true)?;
+                if secretary_ledger_fits(caller,&complete)? {return Ok(complete);}
+            }
+            secretary_ledger_text(&page,fitted,false)
+        })();
+        match result {
+            Ok(text)=>{
+                self.connection.execute("COMMIT").map_err(OrchestrationError::CommitUnknownWithCause)?;
+                Ok(text)
+            },
+            Err(primary)=>{
+                if let Err(error)=self.connection.execute("ROLLBACK") {
+                    return Err(OrchestrationError::V37StoreFailure(format!(
+                        "secretary ledger read: {primary:?}; rollback: {error:?}")));
+                }
+                Err(primary)
+            },
+        }
+    }
+
     fn child_control_stage(&self,caller:&seat::NativeSeatCall,child:&seat::Seat,
         operation:&str,suffix:&str)->Result<Option<V37Request>> {
         let id=format!("{}{suffix}",caller.host_request_id().ok_or(OrchestrationError::AccessDenied)?);
@@ -371,12 +493,35 @@ impl<'root> ProductDatabase<'root> {
         }
         let wait=outstanding.step_row()?;drop(outstanding);
         if wait {return Ok(false)};
-        let outcome=(||->Result<Vec<u8>> {
+        let outcome=(||->Result<(String,bool)> {
+            if caller.tool()==Some("gogoke_ledger") {
+                return self.dispatch_model_secretary_ledger(&caller).map(|text|(text,true));
+            }
+            if caller.tool()==Some("gogoke_routine") {
+                let bytes=self.dispatch_model_secretary_routine(&caller,
+                    |body,span,zone,input_ms,_now| {
+                        let host_zone=if zone=="HOST_DEFAULT" {
+                            iana_time_zone::get_timezone().map_err(|error|
+                                OrchestrationError::V37StoreFailure(format!("host timezone: {error}")))?
+                        } else {String::new()};
+                        let resolved=seat::secretary_schedule::resolve_user_schedule(
+                            body,span,zone,input_ms,&host_zone).map_err(|error|
+                                OrchestrationError::V37StoreFailure(format!("secretary time rule: {error:?}")))?;
+                        Ok(super::v37_secretary_routine_model::ResolvedRoutineSchedule {
+                            schedule_raw:span.to_string(),timezone:resolved.timezone,
+                            next_due_ms:resolved.next_due_ms,
+                        })
+                    })?;
+                let text=String::from_utf8(bytes).map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!("secretary routine result UTF-8: {error}")))?;
+                return Ok((text,true));
+            }
             if caller.tool()==Some("gogoke_side_message") {
-                return self.dispatch_model_side_message(&caller);
+                let bytes=self.dispatch_model_side_message(&caller)?;
+                return model_receipt_result(bytes);
             }
             let request=native_request(&caller)?;
-            match caller.tool() {
+            let bytes=match caller.tool() {
                 Some("gogoke_seat") if request.operation=="dispatch"=>self.dispatch_model_child(&request,&caller),
                 Some("gogoke_seat") if request.operation=="stop"=>self.dispatch_model_child_stop(&request,&caller),
                 Some("gogoke_seat")=>self.dispatch_native_seat(&request,&caller),
@@ -384,16 +529,11 @@ impl<'root> ProductDatabase<'root> {
                 Some("gogoke_worktree")=>self.dispatch_native_worktree(&request,&caller),
                 Some("gogoke_takeover")=>self.dispatch_native_takeover_answer(&request,&caller),
                 _=>Err(OrchestrationError::AccessDenied),
-            }
+            }?;
+            model_receipt_result(bytes)
         })();
         let (text,success)=match outcome {
-            Ok(bytes)=>{
-                let receipt=crate::store::session_transport::decode_receipt(&bytes)
-                    .map_err(|error|OrchestrationError::V37StoreFailure(format!("native tool receipt: {error:?}")))?;
-                let success=matches!(receipt.status,V37Status::Applied|V37Status::Replayed);
-                (String::from_utf8(bytes).map_err(|error|OrchestrationError::V37StoreFailure(
-                    format!("native tool receipt UTF-8: {error}")))?,success)
-            }
+            Ok(result)=>result,
             Err(error)=>(format!("Native host operation failed: {error:?}"),false),
         };
         let command=codex_rpc::Command::DynamicToolResponse {request_id:call.request_id,text,success};

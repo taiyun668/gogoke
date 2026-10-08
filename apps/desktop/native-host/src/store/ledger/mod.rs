@@ -85,6 +85,7 @@ pub(crate) enum SessionPurpose {
     Handoff,
     SideChat,
     FormalReview,
+    Secretary,
 }
 
 impl SessionPurpose {
@@ -94,6 +95,7 @@ impl SessionPurpose {
             Self::Handoff => "HANDOFF",
             Self::SideChat => "SIDE_CHAT",
             Self::FormalReview => "FORMAL_REVIEW",
+            Self::Secretary => "SECRETARY",
         }
     }
 }
@@ -605,6 +607,170 @@ fn ensure_raw_source_schema(
     }
 }
 
+// Compare with the DDL actually executed by schema.sql, rather than a second
+// hand-written approximation of the installed table. The only older shape is
+// the same definition before SECRETARY was added to the purpose CHECK.
+fn session_schema_definitions() -> Result<(String, String), AtomicError> {
+    let marker = "CREATE TABLE IF NOT EXISTS v37_ledger_session (";
+    let fragment = "'FORMAL_REVIEW', 'SECRETARY'";
+    let source = include_str!("schema.sql");
+    let (_, tail) = source.split_once(marker).ok_or_else(|| {
+        AtomicError::DurabilityContractFailed("A.1 session DDL missing".into())
+    })?;
+    let (body, _) = tail.split_once(") STRICT;").ok_or_else(|| {
+        AtomicError::DurabilityContractFailed("A.1 session DDL terminator missing".into())
+    })?;
+    // SQLite stores this CREATE TABLE without IF NOT EXISTS in sqlite_schema.
+    // Keep the remaining bytes exact; schema.sql still executes the original
+    // IF NOT EXISTS form for fresh databases.
+    let current = format!("CREATE TABLE v37_ledger_session ({body}) STRICT");
+    if current.matches(fragment).count() != 1 {
+        return Err(AtomicError::DurabilityContractFailed(
+            "A.1 session purpose DDL is unknown".into(),
+        ));
+    }
+    let old = current.replacen(fragment, "'FORMAL_REVIEW'", 1);
+    Ok((old, current))
+}
+
+fn session_schema_state(
+    connection: &VerifiedDatabaseConnection<'_>,
+) -> Result<Option<String>, AtomicError> {
+    let statement = Statement::prepare(
+        connection.as_ptr(),
+        "SELECT type, sql FROM main.sqlite_schema WHERE name = 'v37_ledger_session' COLLATE NOCASE",
+    )?;
+    if !statement.step_row()? {
+        return Ok(None);
+    }
+    if statement.column_text(0)? != "table" {
+        return Err(AtomicError::DurabilityContractFailed(
+            "A.1 session schema is not a table".into(),
+        ));
+    }
+    let sql = statement.column_text(1)?;
+    if statement.step_row()? {
+        return Err(AtomicError::DurabilityContractFailed(
+            "A.1 session schema is ambiguous".into(),
+        ));
+    }
+    Ok(Some(sql))
+}
+
+fn check_session_schema_dependencies(
+    connection: &VerifiedDatabaseConnection<'_>,
+) -> Result<(), AtomicError> {
+    // A table rename would rewrite dependent SQL. Accept only its implicit
+    // primary-key autoindex; refuse unknown indexes, triggers, views and FKs.
+    for query in [
+        "SELECT name FROM main.sqlite_schema
+         WHERE (tbl_name = 'v37_ledger_session' AND type IN ('index', 'trigger')
+                AND (type <> 'index' OR name <> 'sqlite_autoindex_v37_ledger_session_1'
+                     OR sql IS NOT NULL))
+            OR (type IN ('view', 'trigger')
+                AND instr(lower(sql), 'v37_ledger_session') > 0) LIMIT 1",
+        "SELECT name FROM temp.sqlite_schema
+         WHERE (tbl_name = 'v37_ledger_session' AND type IN ('index', 'trigger'))
+            OR (type IN ('view', 'trigger')
+                AND instr(lower(sql), 'v37_ledger_session') > 0) LIMIT 1",
+        "SELECT s.name FROM main.sqlite_schema AS s
+         JOIN pragma_foreign_key_list(s.name, 'main') AS f
+         WHERE s.type = 'table' AND lower(f.\"table\") = 'v37_ledger_session'
+         LIMIT 1",
+        "SELECT s.name FROM temp.sqlite_schema AS s
+         JOIN pragma_foreign_key_list(s.name, 'temp') AS f
+         WHERE s.type = 'table' AND lower(f.\"table\") = 'v37_ledger_session'
+         LIMIT 1",
+    ] {
+        if Statement::prepare(connection.as_ptr(), query)?.step_row()? {
+            return Err(AtomicError::DurabilityContractFailed(
+                "A.1 session schema has an unknown dependency".into(),
+            ));
+        }
+    }
+    if scalar(connection, "SELECT COUNT(*) FROM main.sqlite_schema
+        WHERE type = 'index' AND tbl_name = 'v37_ledger_session'")? != "1" {
+        return Err(AtomicError::DurabilityContractFailed(
+            "A.1 session primary-key index shape is unknown".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Rebuild only the exact four-purpose table, preserving every registered
+/// identity and purpose. Unknown schema or dependencies cannot be guessed.
+fn ensure_session_schema(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+) -> Result<(), AtomicError> {
+    let (old, current) = session_schema_definitions()?;
+    let Some(actual) = session_schema_state(connection)? else {
+        return Ok(());
+    };
+    if actual != old && actual != current {
+        return Err(AtomicError::DurabilityContractFailed(
+            "A.1 session schema shape is unknown".into(),
+        ));
+    }
+    check_session_schema_dependencies(connection)?;
+    if actual == current {
+        return Ok(());
+    }
+    connection.execute("BEGIN IMMEDIATE")?;
+    let migrated: Result<(), AtomicError> = (|| {
+        if session_schema_state(connection)?.as_deref() != Some(old.as_str()) {
+            return Err(AtomicError::DurabilityContractFailed(
+                "A.1 session schema changed before migration".into(),
+            ));
+        }
+        check_session_schema_dependencies(connection)?;
+        if Statement::prepare(connection.as_ptr(),
+            "SELECT name FROM main.sqlite_schema
+             WHERE lower(name) = 'v37_ledger_session_legacy' LIMIT 1")?.step_row()? {
+            return Err(AtomicError::DurabilityContractFailed(
+                "A.1 session migration name is occupied".into(),
+            ));
+        }
+        connection.execute("ALTER TABLE main.v37_ledger_session RENAME TO v37_ledger_session_legacy")?;
+        connection.execute(&current)?;
+        connection.execute("INSERT INTO main.v37_ledger_session
+            (session_id, domain_id, seat_id, purpose, side_id)
+            SELECT session_id, domain_id, seat_id, purpose, side_id
+            FROM main.v37_ledger_session_legacy")?;
+        if scalar(connection, "SELECT COUNT(*) FROM main.v37_ledger_session")?
+            != scalar(connection, "SELECT COUNT(*) FROM main.v37_ledger_session_legacy")? {
+            return Err(AtomicError::DurabilityContractFailed(
+                "A.1 session migration row count changed".into(),
+            ));
+        }
+        connection.execute("DROP TABLE main.v37_ledger_session_legacy")?;
+        if session_schema_state(connection)?.as_deref() != Some(current.as_str()) {
+            return Err(AtomicError::DurabilityContractFailed(
+                "A.1 session schema verification failed".into(),
+            ));
+        }
+        Ok(())
+    })();
+    match migrated {
+        Ok(()) => match connection.execute("COMMIT") {
+            Ok(()) => Ok(()),
+            Err(commit_error) => {
+                let rollback = connection.execute("ROLLBACK");
+                Err(AtomicError::DurabilityContractFailed(format!(
+                    "A.1 session migration commit failed: {commit_error:?}; rollback: {rollback:?}"
+                )))
+            }
+        },
+        Err(error) => {
+            if let Err(rollback_error) = connection.execute("ROLLBACK") {
+                return Err(AtomicError::DurabilityContractFailed(format!(
+                    "A.1 session migration failed: {error}; rollback failed: {rollback_error:?}"
+                )));
+            }
+            Err(error)
+        }
+    }
+}
+
 fn registered(
     connection: &VerifiedDatabaseConnection<'_>,
     session_id: &str,
@@ -623,6 +789,7 @@ fn registered(
         "HANDOFF" => SessionPurpose::Handoff,
         "SIDE_CHAT" => SessionPurpose::SideChat,
         "FORMAL_REVIEW" => SessionPurpose::FormalReview,
+        "SECRETARY" => SessionPurpose::Secretary,
         value => {
             return Err(AtomicError::DurabilityContractFailed(format!(
                 "unknown session purpose: {value}"
@@ -1207,6 +1374,11 @@ pub(crate) fn query(
             "formal review cannot read ledger",
         ));
     }
+    if session.purpose == SessionPurpose::Secretary {
+        return Err(AtomicError::InvalidRecord(
+            "secretary requires a dedicated ledger API",
+        ));
+    }
     let position = recover(connection)?;
     if after.epoch != position.epoch || after.cursor > position.cursor {
         return Err(AtomicError::OperationConflict);
@@ -1358,11 +1530,33 @@ pub(crate) fn subscribe(
     after: &LedgerPosition,
     limit: u32,
 ) -> Result<SubscriptionPage, AtomicError> {
+    subscribe_with_scope(connection, reader, id, after, limit, false)
+}
+
+pub(crate) fn subscribe_global(
+    connection: &mut VerifiedDatabaseConnection<'_>, reader: &Reader, id: &str,
+    after: &LedgerPosition, limit: u32,
+) -> Result<SubscriptionPage, AtomicError> {
+    subscribe_with_scope(connection, reader, id, after, limit, true)
+}
+
+fn subscribe_with_scope(
+    connection: &mut VerifiedDatabaseConnection<'_>, reader: &Reader, id: &str,
+    after: &LedgerPosition, limit: u32, global: bool,
+) -> Result<SubscriptionPage, AtomicError> {
     required(id, "subscriptionId")?;
     if subscription(connection, id)?.is_some() {
         return Err(AtomicError::OperationConflict);
     }
-    let page = query(connection, reader, after, limit)?;
+    let registration = registered(connection, &reader.session_id)?
+        .ok_or(AtomicError::InvalidRecord("unregistered reader"))?;
+    if registration.domain_id != reader.domain_id || registration.seat_id != reader.seat_id
+        || (global && (registration.purpose != SessionPurpose::Secretary || reader.domain_id != "global"))
+        || (!global && registration.purpose == SessionPurpose::Secretary) {
+        return Err(AtomicError::OperationConflict);
+    }
+    let page = if global { query_global(connection, after, limit)? }
+        else { query(connection, reader, after, limit)? };
     let position = if page.events.len() == usize::try_from(limit).unwrap_or(usize::MAX) {
         page.events
             .last()
@@ -1370,9 +1564,7 @@ pub(crate) fn subscribe(
     } else {
         page.position.cursor
     };
-    let registration = registered(connection, &reader.session_id)?
-        .ok_or(AtomicError::InvalidRecord("unregistered reader"))?;
-    let kind = if registration.purpose == SessionPurpose::SideChat {
+    let kind = if global { "GLOBAL" } else if registration.purpose == SessionPurpose::SideChat {
         "SIDE"
     } else {
         "PROJECT"
@@ -1408,15 +1600,39 @@ pub(crate) fn resume_subscription(
     after: &LedgerPosition,
     limit: u32,
 ) -> Result<SubscriptionPage, AtomicError> {
+    resume_with_scope(connection, reader, id, after, limit, false)
+}
+
+pub(crate) fn resume_global_subscription(
+    connection: &mut VerifiedDatabaseConnection<'_>, reader: &Reader, id: &str,
+    after: &LedgerPosition, limit: u32,
+) -> Result<SubscriptionPage, AtomicError> {
+    resume_with_scope(connection, reader, id, after, limit, true)
+}
+
+fn resume_with_scope(
+    connection: &mut VerifiedDatabaseConnection<'_>, reader: &Reader, id: &str,
+    after: &LedgerPosition, limit: u32, global: bool,
+) -> Result<SubscriptionPage, AtomicError> {
+    let registration = registered(connection, &reader.session_id)?
+        .ok_or(AtomicError::InvalidRecord("unregistered reader"))?;
+    if registration.domain_id != reader.domain_id || registration.seat_id != reader.seat_id
+        || (global && (registration.purpose != SessionPurpose::Secretary || reader.domain_id != "global")) {
+        return Err(AtomicError::OperationConflict);
+    }
+    let expected_scope = if global { "GLOBAL" } else if registration.purpose == SessionPurpose::SideChat { "SIDE" } else { "PROJECT" };
     let old = subscription(connection, id)?.ok_or(AtomicError::InvalidRecord("subscriptionId"))?;
+    let scope = subscription_scope(connection, id)?;
     if !old.active
         || old.reader_session_id != reader.session_id
         || old.epoch != after.epoch
         || old.cursor != after.cursor
+        || scope != expected_scope
     {
         return Err(AtomicError::OperationConflict);
     }
-    let page = query(connection, reader, after, limit)?;
+    let page = if global { query_global(connection, after, limit)? }
+        else { query(connection, reader, after, limit)? };
     let position = if page.events.len() == usize::try_from(limit).unwrap_or(usize::MAX) {
         page.events
             .last()
@@ -1454,24 +1670,52 @@ pub(crate) fn end_subscription(
     id: &str,
     expected_revision: u64,
 ) -> Result<Subscription, AtomicError> {
+    end_with_scope(connection, reader, id, expected_revision, false)
+}
+
+pub(crate) fn end_global_subscription(
+    connection: &mut VerifiedDatabaseConnection<'_>, reader: &Reader, id: &str,
+    expected_revision: u64,
+) -> Result<Subscription, AtomicError> {
+    end_with_scope(connection, reader, id, expected_revision, true)
+}
+
+fn subscription_scope(connection: &VerifiedDatabaseConnection<'_>, id: &str)
+    -> Result<String, AtomicError> {
+    let row = Statement::prepare(connection.as_ptr(),
+        "SELECT reader_kind FROM v37_ledger_subscription WHERE subscription_id = ?")?;
+    row.bind_text(1, id)?;
+    if !row.step_row()? { return Err(AtomicError::InvalidRecord("subscriptionId")); }
+    let kind = row.column_text(0)?;
+    if row.step_row()? { return Err(AtomicError::OperationConflict); }
+    Ok(kind)
+}
+
+fn end_with_scope(
+    connection: &mut VerifiedDatabaseConnection<'_>, reader: &Reader, id: &str,
+    expected_revision: u64, global: bool,
+) -> Result<Subscription, AtomicError> {
+    let registration = registered(connection, &reader.session_id)?
+        .ok_or(AtomicError::InvalidRecord("unregistered reader"))?;
+    if registration.domain_id != reader.domain_id || registration.seat_id != reader.seat_id
+        || (global && (registration.purpose != SessionPurpose::Secretary || reader.domain_id != "global")) {
+        return Err(AtomicError::OperationConflict);
+    }
+    let expected_scope = if global { "GLOBAL" } else if registration.purpose == SessionPurpose::SideChat { "SIDE" } else { "PROJECT" };
     let old = subscription(connection, id)?.ok_or(AtomicError::InvalidRecord("subscriptionId"))?;
+    let scope = subscription_scope(connection, id)?;
     if !old.active
         || old.reader_session_id != reader.session_id
         || old.revision != expected_revision
+        || scope != expected_scope
     {
         return Err(AtomicError::OperationConflict);
     }
     // Validate the current reader and purpose at end as on every read.
     let position = recover(connection)?;
-    let _ = query(
-        connection,
-        reader,
-        &LedgerPosition {
-            epoch: position.epoch,
-            cursor: old.cursor,
-        },
-        1,
-    )?;
+    let after = LedgerPosition { epoch: position.epoch, cursor: old.cursor };
+    let _ = if global { query_global(connection, &after, 1)? }
+        else { query(connection, reader, &after, 1)? };
     let statement = Statement::prepare(
         connection.as_ptr(),
         "UPDATE v37_ledger_subscription SET state = 'ENDED', revision = revision + 1
@@ -1511,6 +1755,7 @@ fn scalar(connection: &VerifiedDatabaseConnection<'_>, sql: &str) -> Result<Stri
 pub(crate) fn initialize_schema(
     connection: &mut VerifiedDatabaseConnection<'_>,
 ) -> Result<LedgerPosition, AtomicError> {
+    ensure_session_schema(connection)?;
     ensure_raw_source_schema(connection)?;
     exec(connection, include_str!("schema.sql"))?;
     recover(connection)
@@ -2419,6 +2664,117 @@ pub(crate) mod tests {
         assert_eq!(record.raw_bytes, b"a\n");
         assert_eq!(record.no_event_reason, None);
         connection.close_checked().expect("close");
+    }
+
+    #[test]
+    fn secretary_purpose_migration_preserves_old_rows_and_refuses_unknown_shapes() {
+        let _guard = route_b_test_guard();
+        let path = scratch_root();
+        let root = RootLock::acquire(&path).expect("root");
+        let db = path.join("ledger.db");
+        let mut connection = create_new(&root, &db).expect("open");
+        let (old_ddl, current_ddl) = session_schema_definitions().expect("known DDL");
+        connection.execute("CREATE TABLE orchestration_events
+            (sequence INTEGER PRIMARY KEY, event_id TEXT UNIQUE, stream_id TEXT,
+             occurred_at TEXT, event_type TEXT, payload_json TEXT)").expect("legacy events");
+        // The historical schema script executed IF NOT EXISTS, while SQLite
+        // stores the normalized statement without that clause.
+        connection.execute(&old_ddl.replacen("CREATE TABLE ",
+            "CREATE TABLE IF NOT EXISTS ", 1)).expect("old session table");
+        assert_eq!(session_schema_state(&connection).unwrap().as_deref(), Some(old_ddl.as_str()));
+        connection.execute("INSERT INTO main.v37_ledger_session
+            (session_id, domain_id, seat_id, purpose, side_id) VALUES
+            ('work', 'project-a', 'lead', 'WORK', NULL),
+            ('handoff', 'project-a', 'lead', 'HANDOFF', NULL),
+            ('side', 'project-a', 'owner', 'SIDE_CHAT', 'side-a'),
+            ('review', 'project-b', 'auditor', 'FORMAL_REVIEW', NULL);
+            INSERT INTO orchestration_events
+            (sequence, event_id, stream_id, occurred_at, event_type, payload_json)
+            VALUES (1, 'old-event', 'old-thread', '2026-09-29T00:00:00Z',
+                    'old', '{\"original\":true}')").expect("old history");
+        let before = scalar(&connection, "SELECT group_concat(
+            quote(session_id) || ':' || quote(domain_id) || ':' || quote(seat_id)
+            || ':' || quote(purpose) || ':' || quote(side_id), '|')
+            FROM (SELECT * FROM v37_ledger_session ORDER BY session_id)")
+            .expect("old rows");
+        connection.execute("CREATE INDEX unexpected_session_index
+            ON v37_ledger_session(domain_id)").expect("foreign index fixture");
+        assert!(initialize_schema(&mut connection).is_err());
+        assert_eq!(session_schema_state(&connection).unwrap().as_deref(), Some(old_ddl.as_str()));
+        assert_eq!(scalar(&connection, "SELECT COUNT(*) FROM main.v37_ledger_session").unwrap(), "4");
+        connection.execute("DROP INDEX unexpected_session_index").expect("remove fixture");
+        connection.execute("CREATE TRIGGER unexpected_session_trigger
+            AFTER INSERT ON v37_ledger_session BEGIN SELECT 1; END")
+            .expect("foreign trigger fixture");
+        assert!(initialize_schema(&mut connection).is_err());
+        connection.execute("DROP TRIGGER unexpected_session_trigger").expect("remove trigger");
+        connection.execute("CREATE TABLE dependent_session_fk (
+            session_id TEXT REFERENCES v37_ledger_session(session_id)) STRICT")
+            .expect("foreign key fixture");
+        assert!(initialize_schema(&mut connection).is_err());
+        connection.execute("DROP TABLE dependent_session_fk").expect("remove foreign key");
+
+        let position = initialize_schema(&mut connection).expect("upgrade old session schema");
+        assert_eq!(session_schema_state(&connection).unwrap().as_deref(), Some(current_ddl.as_str()));
+        assert_eq!(before, scalar(&connection, "SELECT group_concat(
+            quote(session_id) || ':' || quote(domain_id) || ':' || quote(seat_id)
+            || ':' || quote(purpose) || ':' || quote(side_id), '|')
+            FROM (SELECT * FROM v37_ledger_session ORDER BY session_id)").unwrap());
+        assert_eq!(position.cursor, 1);
+        assert_eq!(scalar(&connection, "SELECT source_event_id FROM v37_ledger_index
+            WHERE source_kind = 'legacy'").unwrap(), "old-event");
+        assert_eq!(scalar(&connection, "SELECT payload_json FROM orchestration_events
+            WHERE event_id = 'old-event'").unwrap(), "{\"original\":true}");
+        for (id, purpose) in [
+            ("work", SessionPurpose::Work),
+            ("handoff", SessionPurpose::Handoff),
+            ("side", SessionPurpose::SideChat),
+            ("review", SessionPurpose::FormalReview),
+        ] {
+            assert_eq!(registered(&connection, id).unwrap().unwrap().purpose, purpose);
+        }
+        let secretary = session("global", "secretary-seat", "secretary-session",
+            SessionPurpose::Secretary, None);
+        register_session(&mut connection, &secretary).expect("secretary registration");
+        assert_eq!(registered(&connection, "secretary-session").unwrap(), Some(secretary.clone()));
+        assert!(register_session(&mut connection, &session("global", "secretary-seat",
+            "secretary-session", SessionPurpose::Work, None)).is_err());
+        assert!(query(&connection, &Reader { domain_id: "global".into(),
+            seat_id: "secretary-seat".into(), session_id: "secretary-session".into() },
+            &position, 1).is_err());
+        connection.close_checked().expect("close migrated");
+
+        for table_name in ["v37_ledger_session", "V37_LEDGER_SESSION"] {
+            let unknown_path = scratch_root();
+            let unknown_root = RootLock::acquire(&unknown_path).expect("unknown root");
+            let unknown_db = unknown_path.join("ledger.db");
+            let mut unknown = create_new(&unknown_root, &unknown_db).expect("unknown open");
+            unknown.execute(&format!("CREATE TABLE main.{table_name} (
+                session_id TEXT PRIMARY KEY, domain_id TEXT NOT NULL,
+                seat_id TEXT NOT NULL, purpose TEXT NOT NULL, side_id TEXT
+            ) STRICT;
+            INSERT INTO main.v37_ledger_session VALUES
+                ('unknown-session', 'project-a', 'lead', 'WORK', NULL)"))
+                .expect("unknown schema fixture");
+            let unknown_ddl = session_schema_state(&unknown).unwrap().unwrap();
+            assert!(initialize_schema(&mut unknown).is_err());
+            assert_eq!(session_schema_state(&unknown).unwrap(), Some(unknown_ddl));
+            assert_eq!(scalar(&unknown, "SELECT COUNT(*) FROM main.v37_ledger_session").unwrap(), "1");
+            unknown.close_checked().expect("close unknown");
+        }
+
+        let fresh_path = scratch_root();
+        let fresh_root = RootLock::acquire(&fresh_path).expect("fresh root");
+        let fresh_db = fresh_path.join("ledger.db");
+        let mut fresh = create_new(&fresh_root, &fresh_db).expect("fresh open");
+        fresh.execute("CREATE TABLE orchestration_events
+            (sequence INTEGER PRIMARY KEY, event_id TEXT UNIQUE, stream_id TEXT,
+             occurred_at TEXT, event_type TEXT, payload_json TEXT)")
+            .expect("fresh legacy events");
+        initialize_schema(&mut fresh).expect("fresh schema script");
+        assert_eq!(session_schema_state(&fresh).unwrap().as_deref(), Some(current_ddl.as_str()));
+        initialize_schema(&mut fresh).expect("reopen current schema");
+        fresh.close_checked().expect("close fresh");
     }
 
     #[test]

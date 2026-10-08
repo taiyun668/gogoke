@@ -19,6 +19,7 @@ const TURN: &str = r#"{"id":4,"result":{"turn":{"id":"turnA","status":"inProgres
 const STARTED: &str = r#"{"method":"turn/started","params":{"threadId":"threadA","turn":{"id":"turnA","status":"inProgress"}}}"#;
 const CALL: &str = r#"{"id":91,"method":"item/tool/call","params":{"callId":"callA","threadId":"threadA","turnId":"turnA","tool":"gogoke_seat","arguments":{"callerSeatId":"Owner","callerGrant":"Owner","action":"self-authorize"}}}"#;
 const SIDE_CALL: &str = r#"{"id":92,"method":"item/tool/call","params":{"callId":"callSide","threadId":"threadA","turnId":"turnA","tool":"gogoke_side_message","arguments":{"operation":"send","targetId":"sideA","expectedRevision":null,"payload":{"body":"hello"}}}}"#;
+const GLOBAL_CALL: &str = r#"{"id":93,"method":"item/tool/call","params":{"callId":"callGlobal","threadId":"threadA","turnId":"turnA","tool":"gogoke_ledger","arguments":{}}}"#;
 const ENDED: &str = r#"{"method":"turn/completed","params":{"threadId":"threadA","turn":{"id":"turnA","status":"completed"}}}"#;
 
 fn hex(bytes: &[u8]) -> String {
@@ -186,6 +187,15 @@ fn side_purpose_denies_unregistered_host_tools_in_the_production_caller_factory(
         db.execute("UPDATE main.v37_ledger_session SET purpose='FORMAL_REVIEW',side_id=NULL WHERE session_id='sessionA'").unwrap();
         denied(revalidate_model_call_in_transaction(db,&side),
             "a later purpose change cannot retain SIDE_CHAT model tool authority");
+    });
+}
+
+#[test]
+fn work_source_cannot_mint_a_secretary_global_reader() {
+    with_source(&[GLOBAL_CALL], |db, _, custody, frames, _, _, _| {
+        let key=capture(db,&frames[4],5);
+        denied(observe_model_call(db,custody,&frames[4],&key,"threadA","turnA"),
+            "a WORK source cannot acquire GLOBAL from a provider tool name");
     });
 }
 

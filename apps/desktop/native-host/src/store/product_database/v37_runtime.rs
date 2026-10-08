@@ -292,8 +292,20 @@ impl<'root> ProductDatabase<'root> {
             || original.domain_id!=domain || original.target_id!=session {
             return Err(OrchestrationError::OperationConflict);
         }
-        let repository=user_payload_string(&original,"repositoryId")?;
-        let worktree=user_payload_string(&original,"worktreeId")?;
+        let registration=ledger::read_registered_session(&self.connection,session)?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        if registration.domain_id!=domain || registration.session_id!=session {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let (repository,worktree)=if registration.purpose==SessionPurpose::Secretary {
+            if domain!="global" || !original.payload.is_empty() {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            (String::new(),String::new())
+        } else {
+            (user_payload_string(&original,"repositoryId")?,
+                user_payload_string(&original,"worktreeId")?)
+        };
         let observed=Statement::prepare(self.connection.as_ptr(),
             "SELECT s.ticket,s.custodian_nonce
                FROM main.gogoke_v37_rpc_steps s
@@ -1675,7 +1687,48 @@ impl<'root> ProductDatabase<'root> {
 
     /// Observe the original durable outcome before preparing another process.
     /// UNKNOWN cannot be converted into a launch by changing a request ID.
+    fn original_secretary_open(&self,request:&V37Request)->Result<Option<Vec<u8>>> {
+        let q=Statement::prepare(self.connection.as_ptr(),
+            "SELECT raw_hex,operation,session_id,status,revision
+               FROM main.gogoke_v37_h_operation WHERE domain_id='global' AND request_id=?1")?;
+        q.bind_text(1,&request.request_id)?;
+        if !q.step_row()? {return Ok(None);}
+        let same=q.column_text(0)?==hex(&request.raw_bytes)
+            && q.column_text(1)?=="open" && q.column_text(2)?==request.target_id;
+        let state=q.column_text(3)?;
+        let revision=q.column_text(4)?.parse::<u64>().map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("secretary original open revision: {error}")))?;
+        if q.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        drop(q);
+        if !same {return Ok(Some(encode_receipt(request,V37Status::Conflict,
+            request.expected_revision,request.expected_revision,Default::default())));}
+        if state!="APPLIED" {return Ok(Some(encode_receipt(request,V37Status::Unknown,
+            request.expected_revision,revision,Default::default())));}
+        let registration=ledger::read_registered_session(&self.connection,&request.target_id)?;
+        if !registration.is_some_and(|row|row.domain_id=="global"
+            && row.session_id==request.target_id && row.purpose==SessionPurpose::Secretary) {
+            return Ok(Some(encode_receipt(request,V37Status::Unknown,
+                request.expected_revision,revision,Default::default())));
+        }
+        let mut result=BTreeMap::new();
+        let status=if self.original_claude_open_ready(request)? {
+            result.insert(JsonString::from_str("readinessBasis"),text("ORIGINAL_CLAUDE_INITIALIZE_ACK"));
+            V37Status::Replayed
+        } else if let Some(thread)=self.observed_native_open_thread(
+            &request.domain_id,&request.target_id,&request.request_id)? {
+            result.insert(JsonString::from_str("threadId"),text(&thread));
+            V37Status::Replayed
+        } else {V37Status::Unknown};
+        Ok(Some(encode_receipt(request,status,request.expected_revision,revision,result)))
+    }
+
     pub(super) fn dispatch_native_open(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        if request.domain_id=="global" {
+            if !request.payload.is_empty() {return Ok(encode_receipt(request,V37Status::Denied,
+                request.expected_revision,request.expected_revision,Default::default()));}
+            if let Some(original)=self.original_secretary_open(request)? {return Ok(original);}
+            return self.dispatch_native_open_registered(request,SessionPurpose::Secretary,None,None,None);
+        }
         let purpose=match request.payload.get(&JsonString::from_str("purpose")) {
             None=>SessionPurpose::Work,
             Some(Json::String(value)) if value.to_well_formed_string().as_deref()==Some("FORMAL_REVIEW")=>
@@ -1731,15 +1784,19 @@ impl<'root> ProductDatabase<'root> {
         host:Option<(&HostEscalationProof,&HostRecipient)>) -> Result<Vec<u8>> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
         if let Some((proof,choice))=host {self.check_host_recipient_choice(proof,choice)?;}
-        let expected_fields=if purpose==SessionPurpose::FormalReview {5} else {4};
+        let expected_fields=if purpose==SessionPurpose::Secretary {0}
+            else if purpose==SessionPurpose::FormalReview {5} else {4};
         if request.payload.len() != expected_fields {
             return Ok(encode_receipt(request, V37Status::Denied,
                 request.expected_revision, request.expected_revision, Default::default()));
         }
-        let seat_id = user_payload_string(request, "seatId")?;
-        let generation = user_payload_string(request, "generation")?;
-        let repository_id = user_payload_string(request, "repositoryId")?;
-        let worktree_id = user_payload_string(request, "worktreeId")?;
+        let (seat_id,generation,repository_id,worktree_id)=if purpose==SessionPurpose::Secretary {
+            let (seat_id,generation)=self.secretary_committed_selection(request)?;
+            (seat_id,generation,String::new(),String::new())
+        } else {
+            (user_payload_string(request,"seatId")?,user_payload_string(request,"generation")?,
+                user_payload_string(request,"repositoryId")?,user_payload_string(request,"worktreeId")?)
+        };
         let registration = SessionRegistration {
             domain_id: request.domain_id.clone(), seat_id: seat_id.clone(), session_id: request.target_id.clone(),
             purpose, side_id: side_id.map(str::to_owned),
@@ -1800,7 +1857,10 @@ impl<'root> ProductDatabase<'root> {
         self.ensure_native_credential_backend(&credential_claim.instance_id,request)?;
         let origin=match admission {Some(admission)=>NativeOrigin::lead(admission),None=>NativeOrigin::user(&self.owner)};
         let mut retained=Vec::new();
-        let observed = if let Some((proof,choice))=host {
+        let observed = if purpose==SessionPurpose::Secretary {
+            LaunchEvidence::observe_secretary(&mut self.connection,self.root,&self.owner,
+                &seat_id,&request.target_id,&request.request_id,&mut retained)
+        } else if let Some((proof,choice))=host {
             LaunchEvidence::observe_host(&mut self.connection,self.root,&self.owner,
                 &request.domain_id,&seat_id,&request.target_id,&repository_id,&worktree_id,
                 proof,choice,&request.request_id,&mut retained)
@@ -1888,7 +1948,8 @@ impl<'root> ProductDatabase<'root> {
             let driver=run.evidence.driver_id().to_owned();
             let cwd=run.evidence.cwd().to_string_lossy().into_owned();
             let model=run.model.clone();
-            let host_tools=run.evidence.host_tools_enabled() || purpose==SessionPurpose::SideChat;
+            let host_tools=run.evidence.host_tools_enabled() ||
+                matches!(purpose,SessionPurpose::SideChat|SessionPurpose::Secretary);
             let thread_id=match driver.as_str() {
                 "codex" => {
                     let initialize=if host_tools {Command::InitializeHostTools {client_version:"0.1.0".into()}}
@@ -1897,6 +1958,7 @@ impl<'root> ProductDatabase<'root> {
                     self.native_rpc(&key,"initialized",None,&Command::Initialized)?;
                     self.native_credential_config_read(&key,"config-read",cwd.clone())?;
                     let start=if purpose==SessionPurpose::SideChat {Command::ThreadStartSideTools {cwd,model}}
+                        else if purpose==SessionPurpose::Secretary {Command::ThreadStartSecretaryTools {cwd,model}}
                         else if host_tools {Command::ThreadStartHostTools {cwd,model}}
                         else {Command::ThreadStart {cwd,model}};
                     let Some(Reply::Thread {thread_id,..})=self.native_rpc(&key,"thread-start",Some(3),&start)? else {
@@ -2332,11 +2394,16 @@ impl<'root> ProductDatabase<'root> {
     }
 
     pub(super) fn dispatch_native_send(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        self.dispatch_native_send_with_input(request, None)
+    }
+
+    pub(super) fn dispatch_native_send_with_input(&mut self, request: &V37Request,
+        user_input: Option<&VerifiedDirectUserInput<'_>>) -> Result<Vec<u8>> {
         if request.request_id.starts_with("hostsend-") || request.request_id.starts_with("sidesend-") {
             return Ok(encode_receipt(request,V37Status::Denied,request.expected_revision,
                 request.expected_revision,Default::default()));
         }
-        self.dispatch_native_send_inner(request)
+        self.dispatch_native_send_inner(request, user_input)
     }
 
     pub(super) fn dispatch_host_rule_send(&mut self,request:&V37Request,
@@ -2346,7 +2413,7 @@ impl<'root> ProductDatabase<'root> {
         if !self.host_rule_recipient_idle(&key)? {return Err(OrchestrationError::AccessDenied);}
         self.check_host_rule_send(request,proof)?;
         if !self.host_rule_recipient_idle(&key)? {return Err(OrchestrationError::AccessDenied);}
-        self.dispatch_native_send_inner(request)
+        self.dispatch_native_send_inner(request, None)
     }
 
     pub(super) fn dispatch_side_send(&mut self,request:&V37Request,
@@ -2360,10 +2427,11 @@ impl<'root> ProductDatabase<'root> {
             return Err(OrchestrationError::AccessDenied);
         }
         self.check_side_send(request,intent,caller)?;
-        self.dispatch_native_send_inner(request)
+        self.dispatch_native_send_inner(request, None)
     }
 
-    fn dispatch_native_send_inner(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+    fn dispatch_native_send_inner(&mut self, request: &V37Request,
+        user_input: Option<&VerifiedDirectUserInput<'_>>) -> Result<Vec<u8>> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
         if request.payload.len() != 2 {
             return Ok(encode_receipt(request, V37Status::Denied, request.expected_revision,
@@ -2467,7 +2535,7 @@ impl<'root> ProductDatabase<'root> {
                     request.expected_revision,BTreeMap::from([(JsonString::from_str("reason"),
                         Json::String(JsonString::from_str("This fixed ACP transport has no append-without-turn operation")))])));
             }
-            return self.dispatch_native_acp_send(request,&key);
+            return self.dispatch_native_acp_send(request,&key,user_input);
         }
         if run.evidence.driver_id()=="claude" {
             if request.operation!="send" {
@@ -2475,7 +2543,7 @@ impl<'root> ProductDatabase<'root> {
                     request.expected_revision,BTreeMap::from([(JsonString::from_str("reason"),
                         Json::String(JsonString::from_str("The fixed Claude transport has no verified append-without-turn operation")))])));
             }
-            return self.dispatch_native_claude_send(request,&key);
+            return self.dispatch_native_claude_send(request,&key,user_input);
         }
         let thread_id = run.thread_id.clone().ok_or(OrchestrationError::Invalid("native send thread absent"))?;
         let command = if request.operation=="append-without-turn" {Command::AppendWithoutTurn {thread_id:thread_id.clone(),text}} else {Command::TurnStart { thread_id: thread_id.clone(),
@@ -2487,7 +2555,10 @@ impl<'root> ProductDatabase<'root> {
         let custody = run.custody.clone();
         let input = h::StdinRequest { domain_id: &request.domain_id, session_id: &request.target_id,
             ticket: custody.ticket.opaque(), generation: &generation, request_bytes: &request.raw_bytes };
-        let intention = failure(h::prepare_codex_request(&mut self.connection, &input))?;
+        let intention = if let Some(user_input) = user_input {
+            failure(h::prepare_codex_request_with_user_input(&mut self.connection,
+                &self.owner, &input, user_input))?
+        } else { failure(h::prepare_codex_request(&mut self.connection, &input))? };
         if intention.disposition != h::PrepareDisposition::Prepared {
             return Ok(encode_receipt(request, V37Status::Unknown, request.expected_revision,
                 request.expected_revision, Default::default()));
@@ -2714,14 +2785,15 @@ impl<'root> ProductDatabase<'root> {
         }
     }
 
-    fn dispatch_native_claude_send(&mut self,request:&V37Request,key:&(String,String)) -> Result<Vec<u8>> {
+    fn dispatch_native_claude_send(&mut self,request:&V37Request,key:&(String,String),
+        user_input:Option<&VerifiedDirectUserInput<'_>>) -> Result<Vec<u8>> {
         let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
         if !run.allows_input() || run.pending_claude.is_some() {return Err(OrchestrationError::OperationConflict);}
         let custody=run.custody.clone();let open_id=run.open_request_id.clone();let open_bytes=run.open_request_bytes.clone();
         let input=h::ClaudeSendInput {user:h::StdinRequest {domain_id:&request.domain_id,
             session_id:&request.target_id,ticket:custody.ticket.opaque(),generation:&custody.binding.generation,
             request_bytes:&request.raw_bytes},custody:&custody,open_request_id:&open_id,open_request_bytes:&open_bytes};
-        let prepared=failure(h::prepare_claude_send_request(&mut self.connection,&self.owner,&input))?;
+        let prepared=failure(h::prepare_claude_send_request(&mut self.connection,&self.owner,&input,user_input))?;
         if !prepared.write_permitted {return Ok(encode_receipt(request,V37Status::Unknown,
             request.expected_revision,request.expected_revision,Default::default()));}
         self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?
@@ -2869,7 +2941,8 @@ impl<'root> ProductDatabase<'root> {
         Ok(())
     }
 
-    fn dispatch_native_acp_send(&mut self,request:&V37Request,key:&(String,String)) -> Result<Vec<u8>> {
+    fn dispatch_native_acp_send(&mut self,request:&V37Request,key:&(String,String),
+        user_input:Option<&VerifiedDirectUserInput<'_>>) -> Result<Vec<u8>> {
         let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
         if !run.allows_input() || run.pending_acp.is_some() {return Err(OrchestrationError::OperationConflict);}
         let custody=run.custody.clone();let open_id=run.open_request_id.clone();
@@ -2878,7 +2951,7 @@ impl<'root> ProductDatabase<'root> {
             ticket:custody.ticket.opaque(),generation:&custody.binding.generation,
             request_bytes:&request.raw_bytes},custody:&custody,
             open_request_id:&open_id,open_request_bytes:&open_bytes};
-        let prepared=failure(h::prepare_acp_send_request(&mut self.connection,&self.owner,&input))?;
+        let prepared=failure(h::prepare_acp_send_request(&mut self.connection,&self.owner,&input,user_input))?;
         if !prepared.write_permitted {
             return Ok(encode_receipt(request,V37Status::Unknown,request.expected_revision,
                 request.expected_revision,Default::default()));

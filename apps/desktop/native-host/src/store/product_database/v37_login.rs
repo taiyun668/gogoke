@@ -209,6 +209,59 @@ struct LoginRpc {
     response_started: Instant,
     stdout_seen: usize,
     frames_seen: usize,
+    #[cfg(test)]
+    stdout_tail: Vec<u8>,
+}
+
+#[cfg(test)]
+fn direct_login_evidence_test() -> bool {
+    DIRECT_LOGIN_EVIDENCE.with(|evidence| evidence.borrow().is_some())
+}
+
+#[cfg(test)]
+fn retain_login_stdout_tail(tail: &mut Vec<u8>, bytes: &[u8]) {
+    const TAIL_BYTES: usize = 4096;
+    tail.extend_from_slice(bytes);
+    if tail.len() > TAIL_BYTES { tail.drain(..tail.len() - TAIL_BYTES); }
+}
+
+#[cfg(test)]
+fn login_stdout_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(test)]
+thread_local! {
+    static DIRECT_LOGIN_EVIDENCE: std::cell::RefCell<Option<Vec<String>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+struct DirectLoginEvidenceGuard;
+
+#[cfg(test)]
+fn enable_direct_login_evidence() -> DirectLoginEvidenceGuard {
+    DIRECT_LOGIN_EVIDENCE.with(|evidence| *evidence.borrow_mut() = Some(Vec::new()));
+    DirectLoginEvidenceGuard
+}
+
+#[cfg(test)]
+impl Drop for DirectLoginEvidenceGuard {
+    fn drop(&mut self) {
+        DIRECT_LOGIN_EVIDENCE.with(|evidence| *evidence.borrow_mut() = None);
+    }
+}
+
+#[cfg(test)]
+fn retain_direct_login_evidence(line: String) {
+    DIRECT_LOGIN_EVIDENCE.with(|evidence| {
+        let mut evidence = evidence.borrow_mut();
+        let Some(evidence) = evidence.as_mut() else { return; };
+        evidence.push(line);
+        while evidence.iter().map(String::len).sum::<usize>() > 65_536 {
+            evidence.remove(0);
+        }
+    });
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -1292,7 +1345,8 @@ impl<'root> ProductDatabase<'root> {
             halted: false,
             rpc: Some(LoginRpc { phase: LoginRpcPhase::SendInitialize,
                 login_id: None, early_completion: None, response_started: Instant::now(),
-                stdout_seen: 0, frames_seen: 0 }),
+                stdout_seen: 0, frames_seen: 0,
+                #[cfg(test)] stdout_tail: Vec::new() }),
             provider: None,
             provider_completion_frame: false,
         }));
@@ -1471,6 +1525,10 @@ impl<'root> ProductDatabase<'root> {
         if frame.custody() != &active.prepared { return Err("login RPC custody mismatch".into()); }
         rpc.stdout_seen = rpc.stdout_seen.saturating_add(frame.bytes().len());
         rpc.frames_seen += 1;
+        #[cfg(test)]
+        if direct_login_evidence_test() {
+            retain_login_stdout_tail(&mut rpc.stdout_tail, frame.bytes());
+        }
         if rpc.stdout_seen.saturating_add(active.stderr_seen) > 65_536 || rpc.frames_seen > MAX_RPC_FRAMES {
             return Err("owner login output limit".into());
         }
@@ -1753,6 +1811,28 @@ impl<'root> ProductDatabase<'root> {
     fn finish_owner_device_login(&mut self, command: &OwnerLoginCommand,
         mut active: ActiveOwnerLogin, cancelled: bool, inflight_failure: Option<String>) -> Result<Vec<u8>> {
         let mut inflight_failure = inflight_failure;
+        #[cfg(test)]
+        if direct_login_evidence_test() {
+            if let Some(rpc) = &active.rpc {
+                let fragment = self.process_custodian.persistent_stdout_fragment(&active.prepared.ticket);
+                let fragment_text = match fragment {
+                    Ok(bytes) => format!("bytes={} tail_hex={}", bytes.len(),
+                        login_stdout_hex(&bytes[bytes.len().saturating_sub(4096)..])),
+                    Err(error) => format!("snapshot_error={error:?}"),
+                };
+                let phase = match rpc.phase {
+                    LoginRpcPhase::SendInitialize => "SendInitialize",
+                    LoginRpcPhase::Initialize => "Initialize",
+                    LoginRpcPhase::Start => "Start",
+                    LoginRpcPhase::Completion => "Completion",
+                    LoginRpcPhase::Complete => "Complete",
+                };
+                retain_direct_login_evidence(format!("LOGIN_RPC_DIRECT operation={} ticket={} phase={} complete_frames={} complete_stdout_bytes={} complete_stdout_tail_hex={} unfinished_stdout={} inflight_failure={:?}",
+                    active.operation_id, active.prepared.ticket.opaque(), phase,
+                    rpc.frames_seen, rpc.stdout_seen, login_stdout_hex(&rpc.stdout_tail),
+                    fragment_text, inflight_failure));
+            }
+        }
         if let Some(rpc) = &active.rpc {
             if cancelled {
                 if let Some(login_id) = &rpc.login_id {
@@ -1848,6 +1928,11 @@ impl<'root> ProductDatabase<'root> {
                 return Err(cause);
             }
         };
+        #[cfg(test)]
+        if direct_login_evidence_test() {
+            retain_direct_login_evidence(format!("LOGIN_STOP_DIRECT operation={} ticket={} original_proof={proof:?} proof_hash={} durable_revision={revision}",
+                active.operation_id, active.prepared.ticket.opaque(), proof.proof_hash()));
+        }
         if let Err(error) = self.process_custodian.confirm_stop_durable(&DurableStopConfirmation {
             ticket: active.prepared.ticket.clone(),
             custodian_nonce: active.prepared.custodian_nonce.clone(),
@@ -2495,6 +2580,11 @@ impl<'root> ProductDatabase<'root> {
                 return Err(AccountObservationFailure { error: cause, pending: Some(custody) });
             }
         };
+        #[cfg(test)]
+        if direct_login_evidence_test() {
+            retain_direct_login_evidence(format!("ACCOUNT_STOP_DIRECT operation={operation_id} ticket={} original_proof={proof:?} proof_hash={} durable_revision={revision} execution_error={:?}",
+                prepared.ticket.opaque(), proof.proof_hash(), execution.as_ref().err()));
+        }
         if let Err(error) = self.process_custodian.confirm_stop_durable(&DurableStopConfirmation {
             ticket: prepared.ticket.clone(),
             custodian_nonce: prepared.custodian_nonce.clone(),
@@ -2644,16 +2734,51 @@ impl<'root> ProductDatabase<'root> {
                 "account observer account/read response: {error:?}")))
     }
 
+    #[cfg(test)]
+    fn record_account_rpc_failure(&self, prepared: &PreparedCustody, expected_id: &str,
+        reason: &str, frames_seen: usize, stdout_seen: usize, stdout_tail: &[u8]) {
+        if !direct_login_evidence_test() { return; }
+        let fragment = self.process_custodian.persistent_stdout_fragment(&prepared.ticket)
+            .map(|bytes| format!("bytes={} tail_hex={}", bytes.len(),
+                login_stdout_hex(&bytes[bytes.len().saturating_sub(4096)..])));
+        retain_direct_login_evidence(format!("ACCOUNT_RPC_DIRECT expected_id={expected_id} ticket={} error={reason} complete_frames={frames_seen} complete_stdout_bytes={stdout_seen} complete_stdout_tail_hex={} unfinished_stdout={fragment:?}",
+            prepared.ticket.opaque(), login_stdout_hex(stdout_tail)));
+    }
+
     fn read_rpc_response(&self, prepared: &PreparedCustody, expected_id: &str)
         -> Result<OriginBoundFrame> {
         let started = Instant::now();
+        #[cfg(test)]
+        let (mut frames_seen, mut stdout_seen, mut stdout_tail) = (0usize, 0usize, Vec::new());
         for _ in 0..MAX_RPC_FRAMES {
             let remaining = RPC_DEADLINE.saturating_sub(started.elapsed());
             if remaining.is_zero() {
+                #[cfg(test)]
+                self.record_account_rpc_failure(prepared, expected_id, "account RPC deadline",
+                    frames_seen, stdout_seen, &stdout_tail);
                 return Err(OrchestrationError::Invalid("account RPC deadline"));
             }
+            #[cfg(not(test))]
             let frame = self.process_custodian
                 .read_persistent_child_frame(&prepared.ticket, remaining)?;
+            #[cfg(test)]
+            let frame = match self.process_custodian
+                .read_persistent_child_frame(&prepared.ticket, remaining) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    self.record_account_rpc_failure(prepared, expected_id, &format!("{error:?}"),
+                        frames_seen, stdout_seen, &stdout_tail);
+                    return Err(error.into());
+                }
+            };
+            #[cfg(test)]
+            if direct_login_evidence_test() {
+                frames_seen += 1;
+                stdout_seen = stdout_seen.saturating_add(frame.bytes().len());
+                retain_login_stdout_tail(&mut stdout_tail, frame.bytes());
+                retain_direct_login_evidence(format!("ACCOUNT_RPC_FRAME expected_id={expected_id} ticket={} complete_frames={frames_seen} complete_stdout_bytes={stdout_seen} complete_stdout_tail_hex={}",
+                    prepared.ticket.opaque(), login_stdout_hex(&stdout_tail)));
+            }
             if frame.custody() != prepared {
                 return Err(OrchestrationError::AccessDenied);
             }
@@ -2671,6 +2796,9 @@ impl<'root> ProductDatabase<'root> {
                             std::io::ErrorKind::InvalidData, "account RPC response identity"))))),
             }
         }
+        #[cfg(test)]
+        self.record_account_rpc_failure(prepared, expected_id, "frame limit",
+            frames_seen, stdout_seen, &stdout_tail);
         Err(OrchestrationError::Invalid("account RPC frame limit"))
     }
 }
@@ -2847,7 +2975,39 @@ mod tests {
 
     fn test_rpc_waiting(phase: LoginRpcPhase) -> LoginRpc {
         LoginRpc { phase, login_id: None, early_completion: None,
-            response_started: Instant::now(), stdout_seen: 0, frames_seen: 0 }
+            response_started: Instant::now(), stdout_seen: 0, frames_seen: 0,
+            stdout_tail: Vec::new() }
+    }
+
+    fn fail_with_direct_login_evidence(product: &ProductDatabase<'_>, error: &OrchestrationError) -> ! {
+        DIRECT_LOGIN_EVIDENCE.with(|evidence| {
+            for line in evidence.borrow_mut().take().unwrap_or_default() {
+                eprintln!("{line}");
+            }
+        });
+        eprintln!("LOGIN_TEST_FAILURE original_error={error:?}");
+        match product.owner_login.as_ref() {
+            Some(OwnerLoginSession::Active(active)) => eprintln!(
+                "LOGIN_TEST_CUSTODY operation={} ticket={} state=ACTIVE",
+                active.operation_id, active.prepared.ticket.opaque()),
+            Some(OwnerLoginSession::PendingFirstStop(pending)) => eprintln!(
+                "LOGIN_TEST_CUSTODY operation={} ticket={} state=PENDING_FIRST_STOP original_proof={:?} proof_hash={} durable_revision={:?}",
+                pending.active.operation_id, pending.active.prepared.ticket.opaque(),
+                pending.proof, pending.proof.proof_hash(), pending.durable_revision),
+            Some(OwnerLoginSession::PendingAccount(pending)) => eprintln!(
+                "LOGIN_TEST_CUSTODY operation={:?} ticket={:?} state=PENDING_ACCOUNT original_proof={:?} proof_hash={:?} durable_revision={:?} released={}",
+                pending.custody.operation_id,
+                pending.custody.prepared.as_ref().map(|prepared| prepared.ticket.opaque()),
+                pending.custody.proof,
+                pending.custody.proof.as_ref().map(NativeStopProof::proof_hash),
+                pending.custody.durable_revision, pending.custody.released),
+            Some(OwnerLoginSession::Final { state, .. }) =>
+                eprintln!("LOGIN_TEST_CUSTODY state=FINAL login_state={state}"),
+            None => eprintln!("LOGIN_TEST_CUSTODY state=NONE"),
+        }
+        eprintln!("LOGIN_TEST_DB operation_ticket_state_hash={}", scalar(product,
+            "SELECT COALESCE(group_concat(operation_id || ':' || ticket || ':' || state || ':' || COALESCE(stop_proof_hash,''), ';'),'') FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex'"));
+        panic!("direct login test failed: {error:?}");
     }
 
     fn environment_value<'a>(environment: &'a [(String, String)], key: &str) -> Option<&'a str> {
@@ -3004,13 +3164,14 @@ mod tests {
             V37Status::Applied);
         let PreparedOwnerLogin { mut login, account_read, runtime_home, runtime_identity, .. } =
             product.prepare_owner_codex_login("instanceA").unwrap();
-        let powershell = Path::new(&std::env::var("SystemRoot").unwrap())
-            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        // This is a mixed-pipe byte boundary, not a PowerShell startup test.
+        let byte_peer = std::path::PathBuf::from(std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
+            .expect("controlled cloud Node byte peer"));
         login.binding.binary_digest_sha256 = format!("sha256:{}",
-            crate::store::digest::sha256_hex(&fs::read(&powershell).unwrap()));
-        login.launch.application = powershell;
-        login.launch.arguments = vec!["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(),
-            r#"[Console]::Error.WriteLine('x' * 64000); [Console]::Error.Flush(); [Console]::Out.WriteLine('{"id":1,"result":{"padding":"' + ('y' * 3000) + '"}}'); exit 0"#.into()];
+            crate::store::digest::sha256_hex(&fs::read(&byte_peer).unwrap()));
+        login.launch.application = byte_peer;
+        login.launch.arguments = vec!["-e".into(),
+            r#"process.stderr.write('x'.repeat(64000)+'\r\n'); process.stdout.write(JSON.stringify({id:1,result:{padding:'y'.repeat(3000)}})+'\r\n'); process.exitCode=0;"#.into()];
         login.launch.app_container_profile = None;
         login.launch.app_container_internet_client = false;
         login.launch.app_container_cli_identity_services = false;
@@ -3025,7 +3186,8 @@ mod tests {
         product.process_custodian.activate(&prepared).unwrap();
         authority::mark_process_active(&mut product.connection, &operation_id, &prepared).unwrap();
         let child = product.process_custodian.active(&prepared.ticket).unwrap();
-        assert!(child.wait(Duration::from_secs(15)).unwrap());
+        assert!(child.wait(Duration::from_secs(15)).unwrap(),
+            "mixed byte peer did not exit; original stderr: {}", child.stderr_tail());
         assert_eq!(child.exit_code().unwrap(), Some(0));
         let _tail = child.stderr_tail(); // drain the exact child's written stderr before status
         product.owner_login = Some(OwnerLoginSession::Active(ActiveOwnerLogin {
@@ -3093,6 +3255,7 @@ mod tests {
     #[test]
     fn owned_login_rpc_completion_closes_stdin_and_reads_real_lpac_account() {
         let _guard = route_b_test_guard();
+        let _direct_evidence = enable_direct_login_evidence();
         for early in [false, true] {
             let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
             let path = std::env::temp_dir().join(format!(
@@ -3138,7 +3301,11 @@ exit 0
             let mut saw_complete_url = false;
             let final_reply = loop {
                 assert!(Instant::now() < deadline, "controlled real Job app-server protocol did not settle");
-                let reply = String::from_utf8(product.status_owner_device_login(&status).unwrap()).unwrap();
+                let bytes = match product.status_owner_device_login(&status) {
+                    Ok(bytes) => bytes,
+                    Err(error) => fail_with_direct_login_evidence(&product, &error),
+                };
+                let reply = String::from_utf8(bytes).unwrap();
                 if reply.contains("auth.openai.com/oauth/authorize?") {
                     saw_complete_url = true;
                 }
@@ -4191,6 +4358,7 @@ exit 0
     #[test]
     fn pinned_codex_empty_home_reports_native_logout_and_durable_stop() {
         let _guard = route_b_test_guard();
+        let _direct_evidence = enable_direct_login_evidence();
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let path = std::env::temp_dir().join(format!(
             "gogoke-v37-real-login-{}-{nonce}", std::process::id()));
@@ -4246,7 +4414,10 @@ exit 0
         assert_eq!(scalar(&product, "SELECT count(*) FROM gogoke_coordination_process_custody WHERE profile_id!='managed-cli-codex'"), "0",
             "K-INSTANCE login-state is a read; it must not start a provider process");
         let first = request("login-state", "loginReadA", 1, "{}");
-        let observed_bytes = product.dispatch_owner_login_observation(&first).unwrap();
+        let observed_bytes = match product.dispatch_owner_login_observation(&first) {
+            Ok(bytes) => bytes,
+            Err(error) => fail_with_direct_login_evidence(&product, &error),
+        };
         let observed = decode_receipt(&observed_bytes).unwrap();
         assert_eq!(observed.status, V37Status::Applied);
         assert_eq!(observed.revision, 2);

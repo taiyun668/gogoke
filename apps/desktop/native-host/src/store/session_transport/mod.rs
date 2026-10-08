@@ -14,6 +14,7 @@ pub(crate) mod codex_rpc;
 pub(crate) mod codex_output;
 pub(crate) mod rpc_journal;
 pub(crate) mod model_call;
+pub(crate) mod secretary_user_turn;
 pub(crate) mod host_health;
 pub(crate) mod runtime;
 pub(crate) mod provider_evidence;
@@ -31,7 +32,7 @@ pub(crate) use journal::{complete_stdin_request, mark_stdin_write_unknown,
     complete_codex_turn_request,
     recover_codex_turn_request,
     reconcile_observed_codex_sends,
-    prepare_codex_request,
+    prepare_codex_request, prepare_codex_request_with_user_input,
     mark_codex_write_unknown,
     prepare_stdin_request, read_stdin_journal, JournalDecision, JournalError,
     JournalState, PrepareDisposition, StdinJournalKey, StdinJournalRecord, StdinRequest};
