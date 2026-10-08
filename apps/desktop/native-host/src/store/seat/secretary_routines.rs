@@ -44,7 +44,8 @@ pub(super) fn ensure_product_absence_policy_in_transaction(
     drop(existing);
     // One day is an explicit initial product policy, not an inferred Owner
     // presence, timing tolerance, upstream default or automatic resumption.
-    db.execute("INSERT INTO main.gogoke_v37_seat_secretary_absence_policy(singleton,revision,max_absent_ms,source_id) VALUES(1,1,86400000,'PRODUCT_DEFAULT_V1:ABSENCE_24_HOURS')")?;
+    Statement::prepare(db.as_ptr(),
+        "INSERT INTO main.gogoke_v37_seat_secretary_absence_policy(singleton,revision,max_absent_ms,source_id) VALUES(1,1,86400000,'PRODUCT_DEFAULT_V1:ABSENCE_24_HOURS')")?.step_done()?;
     Ok(())
 }
 

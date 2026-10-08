@@ -796,16 +796,23 @@ pub(crate) fn decode_stored_thread_resume(
     }
 }
 
-/// Historical records keep their exact bytes. Accept only the two encodings
+/// Historical records keep their exact bytes. Accept only the encodings
 /// this product actually emitted, without rewriting their original history or
 /// allowing callers to select a legacy configuration for a new native write.
 fn stored_thread_command_matches(command:&Command,id:&RpcId,frame:&[u8])->Result<bool,RpcError> {
     let current=command.encode(Some(id))?;
     if current==frame {return Ok(true);}
-    if !matches!(command,Command::ThreadStart{..}|Command::ThreadResume{..}) {return Ok(false);}
+    if !matches!(command,Command::ThreadStart{..}|Command::ThreadResume{..}|Command::ThreadStartSecretaryTools{..}) {return Ok(false);}
     let Json::Object(mut fields)=Parser::parse(std::str::from_utf8(frame_body(&current)?)?)? else {return Err(RpcError::Invalid("native thread command"));};
     let Some(Json::Object(params))=fields.get_mut(&k("params")) else {return Err(RpcError::Invalid("native thread params"));};
-    params.insert(k("config"),legacy_memory_off());
+    if matches!(command,Command::ThreadStartSecretaryTools{..}) {
+        // The original Secretary thread registered only this exact read-only
+        // tool. This path reads history; new native commands always register
+        // the current tools and cannot select the old encoding.
+        params.insert(k("dynamicTools"),Json::Array(vec![secretary_ledger_tool_v1()]));
+    } else {
+        params.insert(k("config"),legacy_memory_off());
+    }
     let mut original=Json::Object(fields).canonical().into_bytes();original.push(b'\n');
     Ok(original==frame)
 }
@@ -1125,19 +1132,7 @@ fn side_tools() -> Json {Json::Array(vec![side_tool()])}
 /// Only the native Secretary thread receives these functions. H/A/E derive
 /// the global reader and the original USER source; no model identity is trusted.
 fn secretary_tools() -> Json {
-    Json::Array(vec![obj([
-        ("type", s("function")),
-        ("name", s("gogoke_ledger")),
-        ("description", s("Read the admitted Secretary's global A ledger page. Supply the epoch and afterCursor returned by the previous page; omit both to start at the current epoch's beginning. The native host determines the global reader. No scope, domain, reader, grant, or source identity is accepted.")),
-        ("inputSchema", obj([
-            ("type", s("object")),
-            ("additionalProperties", Json::Bool(false)),
-            ("properties", obj([
-                ("epoch", obj([("type", s("string"))])),
-                ("afterCursor", obj([("type", s("string"))])),
-            ])),
-        ])),
-    ]),obj([
+    Json::Array(vec![secretary_ledger_tool_v1(),obj([
         ("type",s("function")),
         ("name",s("gogoke_routine")),
         ("description",s("Create a timed task requested in the original current USER message to the admitted Secretary. operation='create'; scheduleSpan is the exact unique timing phrase from that USER message, not a paraphrase; timezone='HOST_DEFAULT' unless the USER explicitly named a zone. The host resolves the calendar and due time from the original USER input timestamp. Ambiguous, unsupported or already-past times are rejected. Do not supply a routine ID, source, identity, now or due time. A project, side-chat, model reply or scheduled input cannot authorize creation.")),
@@ -1152,6 +1147,24 @@ fn secretary_tools() -> Json {
             ])),
         ])),
     ])])
+}
+
+// Preserve the exact schema and description emitted before routine support.
+// Both current registration and historical matching use this frozen version.
+fn secretary_ledger_tool_v1() -> Json {
+    obj([
+        ("type", s("function")),
+        ("name", s("gogoke_ledger")),
+        ("description", s("Read the admitted Secretary's global A ledger page. Supply the epoch and afterCursor returned by the previous page; omit both to start at the current epoch's beginning. The native host determines the global reader. No scope, domain, reader, grant, or source identity is accepted.")),
+        ("inputSchema", obj([
+            ("type", s("object")),
+            ("additionalProperties", Json::Bool(false)),
+            ("properties", obj([
+                ("epoch", obj([("type", s("string"))])),
+                ("afterCursor", obj([("type", s("string"))])),
+            ])),
+        ])),
+    ])
 }
 
 fn host_tools() -> Json {
@@ -1263,6 +1276,20 @@ mod tests {
         assert!(decode_stored_thread_start(changed.as_bytes(),response).is_err());
         let changed=std::str::from_utf8(&original).unwrap().replace("gogoke_routine","gogoke_worktree");
         assert!(decode_stored_thread_start(changed.as_bytes(),response).is_err());
+        // Literal bytes of the ledger-only format emitted by de4537fc. Do not
+        // derive the control from the current encoder or historical matcher.
+        let legacy=concat!(r#"{"id":2,"method":"thread/start","params":{"config":{"features.memories":false,"memories.generate_memories":false,"memories.use_memories":false},"cwd":"D:/sealed-tree","dynamicTools":[{"description":"Read the admitted Secretary's global A ledger page. Supply the epoch and afterCursor returned by the previous page; omit both to start at the current epoch's beginning. The native host determines the global reader. No scope, domain, reader, grant, or source identity is accepted.","inputSchema":{"additionalProperties":false,"properties":{"afterCursor":{"type":"string"},"epoch":{"type":"string"}},"type":"object"},"name":"gogoke_ledger","type":"function"}],"ephemeral":false,"model":"m"}}"#, "\n");
+        assert_eq!(decode_stored_thread_start(legacy.as_bytes(),response).unwrap(),"thread-a");
+        let changed=legacy.replace("gogoke_ledger","gogoke_seat");
+        assert!(decode_stored_thread_start(changed.as_bytes(),response).is_err());
+        let changed=legacy.replace("\"additionalProperties\":false","\"additionalProperties\":true");
+        assert!(decode_stored_thread_start(changed.as_bytes(),response).is_err());
+        let changed=legacy.replace("\"features.memories\":false","\"features.memories\":true");
+        assert!(decode_stored_thread_start(changed.as_bytes(),response).is_err());
+        let changed=legacy.replace("\"ephemeral\":false","\"ephemeral\":true");
+        assert!(decode_stored_thread_start(changed.as_bytes(),response).is_err());
+        let wrong_response=std::str::from_utf8(response).unwrap().replace("\"id\":2","\"id\":3");
+        assert!(decode_stored_thread_start(legacy.as_bytes(),wrong_response.as_bytes()).is_err());
     }
     #[test]
     fn thread_overrides_preserve_process_features_and_exact_old_history() {
