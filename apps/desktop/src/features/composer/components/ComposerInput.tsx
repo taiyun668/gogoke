@@ -334,7 +334,7 @@ export function ComposerInput({
                 disabled={isDictationBusy || (disabled && !canStop)}
               />
             ) : null}
-            {(!hasNowStop || !canStop) && <button
+            {(!hasNowStop || !canStop || !now?.conversation.actions?.stopTurn) && <button
               className={`composer-action${canStop ? " is-stop" : " is-send"}${
                 canStop && isProcessing ? " is-loading" : ""
               }`}

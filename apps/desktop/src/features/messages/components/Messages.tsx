@@ -1,5 +1,5 @@
-import { Fragment, memo, useCallback, type ReactNode } from "react";
-import { NowOutputSlot } from "@/features/now/NowContext";
+import { Fragment, memo, useCallback, useMemo, type ReactNode } from "react";
+import { NowOutputSlot, useNowConversation } from "@/features/now/NowContext";
 import { useI18n } from "@/i18n";
 import ChevronDown from "lucide-react/dist/esm/icons/chevron-down";
 import ChevronUp from "lucide-react/dist/esm/icons/chevron-up";
@@ -12,7 +12,7 @@ import type {
 import { PlanReadyFollowupMessage } from "../../app/components/PlanReadyFollowupMessage";
 import { RequestUserInputMessage } from "../../app/components/RequestUserInputMessage";
 import { useFileLinkOpener } from "../hooks/useFileLinkOpener";
-import { parseReasoning } from "../utils/messageRenderUtils";
+import { buildToolGroups, parseReasoning, type MessageListEntry } from "../utils/messageRenderUtils";
 import {
   DiffRow,
   ExploreRow,
@@ -135,6 +135,40 @@ export const Messages = memo(function Messages({
     onQuoteMessage,
   });
 
+  const now = useNowConversation(workspaceId, threadId);
+  const anchoredItems = useMemo(() => {
+    const batches = now?.conversation.batches ?? [];
+    const completeAnchor = (entry: (typeof batches)[number]) =>
+      typeof entry.leadTurnId === "string" && entry.leadTurnId.length > 0 &&
+      typeof entry.outputItemId === "string" && entry.outputItemId.length > 0;
+    const anchors = new Set(batches.filter((entry) => completeAnchor(entry) &&
+      batches.filter((candidate) => candidate.batch.id === entry.batch.id && completeAnchor(candidate)).length === 1,
+    ).map((entry) => entry.outputItemId));
+    if (!anchors.size) return groupedItems;
+    const visibleIds = new Set(groupedItems.flatMap((entry) =>
+      entry.kind === "toolGroup" ? entry.group.items.map((item) => item.id) : [entry.item.id],
+    ));
+    const entries: Array<MessageListEntry | { kind: "nowAnchor"; item: ConversationItem; visible: boolean }> = [];
+    let segment: ConversationItem[] = [];
+    const flush = () => {
+      entries.push(...buildToolGroups(segment));
+      segment = [];
+    };
+    // Split at the host's exact original output ID before tool grouping can
+    // merge that ID away or hide its block inside a collapsed group.
+    for (const item of items) {
+      const visible = visibleIds.has(item.id) || item.kind === "explore";
+      if (anchors.has(item.id)) {
+        flush();
+        entries.push({ kind: "nowAnchor", item, visible });
+      } else if (visible) {
+        segment.push(item);
+      }
+    }
+    flush();
+    return entries;
+  }, [items, groupedItems, now?.conversation.batches]);
+
   const planFollowupNode =
     planFollowup.shouldShow && onPlanAccept && onPlanSubmitChanges ? (
       <PlanReadyFollowupMessage
@@ -241,9 +275,7 @@ export const Messages = memo(function Messages({
     <Fragment key={item.id}>
       {renderItemContent(item)}
       {afterItem?.(item.id)}
-      {item.kind === "message" && item.role === "assistant" ? (
-        <NowOutputSlot workspaceId={workspaceId} threadId={threadId} itemId={item.id} />
-      ) : null}
+      <NowOutputSlot workspaceId={workspaceId} threadId={threadId} itemId={item.id} />
     </Fragment>
   );
 
@@ -254,7 +286,14 @@ export const Messages = memo(function Messages({
       onScroll={updateAutoScroll}
     >
       <div className="messages-inner">
-        {groupedItems.map((entry) => {
+        {anchoredItems.map((entry) => {
+          if (entry.kind === "nowAnchor") {
+            return <Fragment key={entry.item.id}>
+              {entry.visible && renderItemContent(entry.item)}
+              {entry.visible && afterItem?.(entry.item.id)}
+              <NowOutputSlot workspaceId={workspaceId} threadId={threadId} itemId={entry.item.id} />
+            </Fragment>;
+          }
           if (entry.kind === "toolGroup") {
             const { group } = entry;
             const isCollapsed = collapsedToolGroups.has(group.id);

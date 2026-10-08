@@ -162,10 +162,17 @@ function MainAppContent({
   const secretaryMounted = useRef(true);
   const leaveSecretary = useCallback(() => { secretaryNavigation.current += 1; setSelectedSecretary(null); }, []);
   const [secretaryOpenError, setSecretaryOpenError] = useState<{ token: object; text: string } | null>(null);
-  const secretaryPanelSource = useMemo<SecretarySource | null>(() => secretaryView ? {
-    read: () => secretaryView.source.read(),
-    actions: secretaryView.readState === "known" ? secretaryView.source.actions : {},
-  } : null, [secretaryView?.source, secretaryView?.readState]);
+  const secretaryPanelSource = useMemo<SecretarySource | null>(() => {
+    const source = secretaryView?.source;
+    if (!source) return null;
+    return {
+      read: source.read,
+      get actions() {
+        const current = currentSecretary.current.view;
+        return current?.source === source && current.readState === "known" ? source.actions : {};
+      },
+    };
+  }, [secretaryView?.source]);
   useEffect(() => {
     secretaryMounted.current = true;
     return () => { secretaryMounted.current = false; };
@@ -1928,11 +1935,20 @@ function MainAppContent({
         canStop: secretaryView!.readState === "known" && secretaryView!.conversation.composer.canStop } : null;
   }
   // Fixed entry stays outside the conversation scroll region. Missing host data is not "unset".
-  integratedSurfaces.primary.sidebarProps.secretaryEntry = <>
+  const secretaryReadTime = secretaryView ? new Date(secretaryView.readAt) : null;
+  const secretaryReadTimeLabel = secretaryReadTime && !Number.isNaN(secretaryReadTime.getTime())
+    ? secretaryReadTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }) : "时间未知";
+  integratedSurfaces.primary.sidebarProps.secretaryEntry = secretaryView ? <>
     {secretaryCanOpen ? (
       <SecretaryEntry state={secretaryView!.entry} active={secretaryActive} onOpen={() => void openSecretary()} />
     ) : (
       <button type="button" className="sec-entry" disabled>
+        <span className="sec-avatar" aria-hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 7h16M4 12h10M4 17h7" />
+            <circle cx="18" cy="16" r="3" />
+          </svg>
+        </span>
         <span className="sec-entry-main">
           <span className="sec-entry-name">秘书长</span>
           <span className="sec-entry-sub">{secretaryOpening === secretaryToken ? "正在打开…"
@@ -1940,11 +1956,11 @@ function MainAppContent({
         </span>
       </button>
     )}
-    {secretaryView?.readState === "frozen" ? <div role="status">
-      上次读到：{secretaryView.readAt}；{secretaryView.readError ?? "最新状态未读到"}
+    {secretaryView.readState === "frozen" ? <div className="sec-help" role="status">
+      {secretaryReadTimeLabel} 最后读到；{secretaryView.readError ?? "最新状态未读到"}
     </div> : null}
-    {secretaryOpenError?.token === secretaryToken ? <div role="alert">{secretaryOpenError.text}</div> : null}
-  </>;
+    {secretaryOpenError?.token === secretaryToken ? <div className="sec-help" role="alert">{secretaryOpenError.text}</div> : null}
+  </> : null;
   integratedSurfaces.primary.messagesProps.afterItem = secretaryActive ? (itemId) => <>
     {secretaryView!.actionLines.filter((action) => action.itemId === itemId && action.turnId.length > 0)
       .map((action) => <SecretaryActionLine key={action.line.id} line={action.line}
