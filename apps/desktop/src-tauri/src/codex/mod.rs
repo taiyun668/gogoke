@@ -141,13 +141,12 @@ async fn visible_route(app: &AppHandle, workspace_id: &str) -> Result<VisibleRou
 /// None is the daemon/test process, which has no User host attachment.
 pub(crate) async fn native_visible_route_preflight(
     workspace_id: &str,
-) -> Result<Option<bool>, String> {
+) -> Result<Option<NativeAssociation>, String> {
     let Some(app) = VISIBLE_APP.get() else {
         return Ok(None);
     };
-    visible_route(app, workspace_id)
-        .await
-        .map(|route| Some(route.state == "NATIVE"))
+    let route = visible_route(app, workspace_id).await?;
+    route.association.map(Some).ok_or("GOGOKE_NATIVE_ASSOCIATION_UNAVAILABLE".into())
 }
 
 fn native_visible_params(method: &str, params: &Value) -> Result<(), String> {

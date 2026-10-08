@@ -43,7 +43,7 @@ mod codex {
     use tauri::AppHandle;
     pub(crate) async fn native_visible_route_preflight(
         _workspace_id: &str,
-    ) -> Result<Option<bool>, String> {
+    ) -> Result<Option<crate::backend::app_server::NativeAssociation>, String> {
         // This binary has no User host attachment. It cannot claim a Native route.
         Ok(None)
     }

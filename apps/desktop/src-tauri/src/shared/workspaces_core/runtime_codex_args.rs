@@ -35,7 +35,7 @@ where
 {
     let (entry, parent_entry) = resolve_entry_and_parent(workspaces, &workspace_id).await?;
     let _spawn_guard = workspace_session_spawn_lock().lock().await;
-    if crate::codex::native_visible_route_preflight(&entry.id).await? == Some(true) {
+    if crate::codex::native_visible_route_preflight(&entry.id).await?.is_some() {
         return Err("GOGOKE_NATIVE_GLOBAL_CODEX_ARGS_UNSUPPORTED".into());
     }
 

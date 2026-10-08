@@ -70,8 +70,30 @@ where
         let sessions = sessions.lock().await;
         sessions.get(&entry.id).cloned()
     } {
-        if native_route.is_some_and(|native| native != existing_for_entry.is_native()) {
-            return Err("GOGOKE_WORKSPACE_TRANSPORT_ROUTE_CHANGED".into());
+        if let Some(expected) = native_route.as_ref() {
+            if existing_for_entry.native_association()?.as_ref() != Some(expected) {
+                if !existing_for_entry.is_native() {
+                    return Err("GOGOKE_WORKSPACE_TRANSPORT_ROUTE_CHANGED".into());
+                }
+                // A native WorkspaceSession is a view attachment with no Child
+                // or H custody ownership. Replace only that attachment; the
+                // original H holder and any awaited request keep their own
+                // lifetime and original association. This does not stop or
+                // launch a model process or synthesize a StopFact.
+                let replacement = spawn_session(entry.clone(), None, None, None).await?;
+                if replacement.native_association()?.as_ref() != Some(expected) {
+                    return Err("GOGOKE_WORKSPACE_NATIVE_SELECTION_CHANGED_DURING_CONNECT".into());
+                }
+                replacement.register_workspace_with_path(&entry.id, Some(&entry.path)).await;
+                let mut current = sessions.lock().await;
+                if !current.get(&entry.id).is_some_and(|actual| Arc::ptr_eq(actual, &existing_for_entry)) {
+                    return Err("GOGOKE_WORKSPACE_SESSION_CHANGED_DURING_CONNECT".into());
+                }
+                current.insert(entry.id.clone(), replacement);
+                return Ok(());
+            }
+        } else if existing_for_entry.is_native() {
+            return Err("GOGOKE_NATIVE_USER_ATTACHMENT_REQUIRED".into());
         }
         if existing_for_entry.is_alive().await? {
             return Ok(());
@@ -81,7 +103,7 @@ where
         }
         remove_session_references(sessions, &existing_for_entry).await;
     }
-    if native_route != Some(true) {
+    if native_route.is_none() {
         if let Some(existing_session) = take_live_shared_session(sessions).await {
             existing_session
                 .register_workspace_with_path(&entry.id, Some(&entry.path))

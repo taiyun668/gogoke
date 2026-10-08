@@ -54,7 +54,7 @@ where
 
     let _spawn_guard = workspace_session_spawn_lock().lock().await;
     let native_route = crate::codex::native_visible_route_preflight(&entry.id).await?;
-    let existing_session = if native_route == Some(true) {
+    let existing_session = if native_route.is_some() {
         None
     } else {
         take_live_shared_session(sessions).await
@@ -209,7 +209,7 @@ where
 
     let _spawn_guard = workspace_session_spawn_lock().lock().await;
     let native_route = crate::codex::native_visible_route_preflight(&entry.id).await?;
-    let existing_session = if native_route == Some(true) {
+    let existing_session = if native_route.is_some() {
         None
     } else {
         take_live_shared_session(sessions).await
@@ -378,7 +378,7 @@ where
 
     let _spawn_guard = workspace_session_spawn_lock().lock().await;
     let native_route = crate::codex::native_visible_route_preflight(&entry.id).await?;
-    let existing_session = if native_route == Some(true) {
+    let existing_session = if native_route.is_some() {
         None
     } else {
         take_live_shared_session(sessions).await
