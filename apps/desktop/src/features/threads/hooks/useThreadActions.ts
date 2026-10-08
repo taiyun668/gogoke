@@ -56,6 +56,7 @@ type UseThreadActionsOptions = {
   threadStatusById: ThreadState["threadStatusById"];
   threadSortKey: ThreadListSortKey;
   onDebug?: (entry: DebugEntry) => void;
+  getThreadProjectionRevision?: (threadId: string) => number;
   getCustomName: (workspaceId: string, threadId: string) => string | undefined;
   threadActivityRef: MutableRefObject<Record<string, Record<string, number>>>;
   loadedThreadsRef: MutableRefObject<Record<string, boolean>>;
@@ -85,6 +86,7 @@ export function useThreadActions({
   threadStatusById,
   threadSortKey,
   onDebug,
+  getThreadProjectionRevision,
   getCustomName,
   threadActivityRef,
   loadedThreadsRef,
@@ -95,6 +97,8 @@ export function useThreadActions({
   onThreadCodexMetadataDetected,
 }: UseThreadActionsOptions) {
   const resumeInFlightByThreadRef = useRef<Record<string, number>>({});
+  const nativeHydratedAssociationRef = useRef<Record<string, string>>({});
+  const nativeReadSequenceRef = useRef<Record<string, number>>({});
   const threadStatusByIdRef = useRef(threadStatusById);
   const activeTurnIdByThreadRef = useRef(activeTurnIdByThread);
   threadStatusByIdRef.current = threadStatusById;
@@ -214,6 +218,11 @@ export function useThreadActions({
       if (!native && !force && loadedThreadsRef.current[threadId]) {
         return threadId;
       }
+      const nativeKey = `${workspaceId}:${threadId}`;
+      if (native && !force && loadedThreadsRef.current[threadId] &&
+          nativeHydratedAssociationRef.current[nativeKey] === JSON.stringify(native)) {
+        return threadId;
+      }
       const status = threadStatusByIdRef.current[threadId];
       if (!native && status?.isProcessing && loadedThreadsRef.current[threadId] && !force) {
         onDebug?.({
@@ -238,7 +247,13 @@ export function useThreadActions({
       if (inFlightCount === 1) {
         dispatch({ type: "setThreadResumeLoading", threadId, isLoading: true });
       }
+      const readSequence = (nativeReadSequenceRef.current[threadId] ?? 0) + 1;
+      nativeReadSequenceRef.current[threadId] = readSequence;
+      const projectionRevision = getThreadProjectionRevision?.(threadId);
       try {
+        if (native && projectionRevision === undefined) {
+          throw new Error("Native full history reconciliation has no projection ordering source.");
+        }
         const response =
           (await (native ? readThreadService(workspaceId, threadId)
                          : resumeThreadService(workspaceId, threadId))) as
@@ -254,6 +269,16 @@ export function useThreadActions({
         const thread = extractThreadFromResponse(response);
         if (native && (!thread || thread.id !== threadId || !Array.isArray(thread.turns))) {
           throw new Error("Original native thread/read did not return the selected thread and full turns.");
+        }
+        if (native) {
+          const current = await nativeConversationAssociation(workspaceId);
+          if (JSON.stringify(current) !== JSON.stringify(native)) {
+            throw new Error("The original native attachment changed during full history reconciliation.");
+          }
+          if (nativeReadSequenceRef.current[threadId] !== readSequence) return null;
+          if (getThreadProjectionRevision?.(threadId) !== projectionRevision) {
+            throw new Error("Newer conversation facts superseded this native history snapshot; full reconciliation remains incomplete.");
+          }
         }
         if (thread) {
           dispatch({ type: "ensureThread", workspaceId, threadId });
@@ -333,9 +358,13 @@ export function useThreadActions({
           }
         }
         loadedThreadsRef.current[threadId] = true;
+        if (native) nativeHydratedAssociationRef.current[nativeKey] = JSON.stringify(native);
         return threadId;
       } catch (error) {
+        if (native && nativeReadSequenceRef.current[threadId] !== readSequence) return null;
         if (native) {
+          loadedThreadsRef.current[threadId] = false;
+          delete nativeHydratedAssociationRef.current[nativeKey];
           dispatch({ type: "addAssistantMessage", threadId,
             text: error instanceof Error ? error.message : String(error) });
         }
@@ -366,6 +395,7 @@ export function useThreadActions({
       dispatchPreviewMessage,
       dispatch,
       getCustomName,
+      getThreadProjectionRevision,
       itemsByThread,
       loadedThreadsRef,
       onDebug,
@@ -456,6 +486,9 @@ export function useThreadActions({
       }
       threadIds.forEach((threadId) => {
         loadedThreadsRef.current[threadId] = false;
+        nativeReadSequenceRef.current[threadId] =
+          (nativeReadSequenceRef.current[threadId] ?? 0) + 1;
+        delete nativeHydratedAssociationRef.current[`${workspaceId}:${threadId}`];
       });
     },
     [activeThreadIdByWorkspace, loadedThreadsRef, threadsByWorkspace],
@@ -519,6 +552,8 @@ export function useThreadActions({
       });
       try {
         const requester = targets.find((workspace) => workspace.connected) ?? targets[0];
+        const native = "__TAURI_INTERNALS__" in window &&
+          Boolean(await nativeConversationAssociation(requester.id));
         const matchingThreadsByWorkspace: Record<string, Record<string, unknown>[]> = {};
         let workspacePathLookup = buildWorkspacePathLookup(targets);
         const targetWorkspaceIds = new Set(targets.map((workspace) => workspace.id));
@@ -550,7 +585,7 @@ export function useThreadActions({
               requester.id,
               cursor,
               THREAD_LIST_PAGE_SIZE,
-              requestedSortKey,
+              native ? undefined : requestedSortKey,
             )) as Record<string, unknown>;
           onDebug?.({
             id: `${Date.now()}-server-thread-list`,
@@ -727,6 +762,8 @@ export function useThreadActions({
         payload: { workspaceId: workspace.id, cursor: cursorValue },
       });
       try {
+        const native = "__TAURI_INTERNALS__" in window &&
+          Boolean(await nativeConversationAssociation(workspace.id));
         try {
           const knownWorkspaces = await listWorkspacesService();
           if (knownWorkspaces.length > 0) {
@@ -749,7 +786,7 @@ export function useThreadActions({
               workspace.id,
               cursor,
               THREAD_LIST_PAGE_SIZE,
-              requestedSortKey,
+              native ? undefined : requestedSortKey,
             )) as Record<string, unknown>;
           onDebug?.({
             id: `${Date.now()}-server-thread-list-older`,

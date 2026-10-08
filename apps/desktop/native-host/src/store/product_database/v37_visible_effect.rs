@@ -676,7 +676,7 @@ mod tests {
             let denied=object(&denied).unwrap();
             assert!(is_text(denied.get(&k("state")),"DENIED"));
             assert!(string_field(denied,"reason").unwrap().contains("Original workspace selection changed before new visible action."));
-            assert!(read_action(product.connection.as_ptr(),"workspaceA","newAfterChoice").unwrap().is_none(),
+            assert!(read_action(&product.connection,"workspaceA","newAfterChoice").unwrap().is_none(),
                 "a rejected new intent must not create an action or writer");
             let recover=Json::Object(BTreeMap::from([(k("schema"),s("gogoke.37.owner-configuration.v1")),(k("command"),s("visible-conversation-recover")),
                 (k("workspaceId"),s("workspaceA")),(k("requestId"),s("interruptA")),(k("expectedAssociation"),saved.association.json())])).canonical();

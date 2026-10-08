@@ -9,7 +9,7 @@ import type {
 } from "@/types";
 import { CHAT_SCROLLBACK_DEFAULT } from "@utils/chatScrollback";
 import { useAppServerEvents } from "@app/hooks/useAppServerEvents";
-import { initialState, threadReducer } from "./useThreadsReducer";
+import { initialState, threadReducer, type ThreadAction } from "./useThreadsReducer";
 import { useThreadStorage } from "./useThreadStorage";
 import { useThreadLinking } from "./useThreadLinking";
 import { useThreadEventHandlers } from "./useThreadEventHandlers";
@@ -99,13 +99,27 @@ export function useThreads({
       ? CHAT_SCROLLBACK_DEFAULT
       : chatHistoryScrollbackItems;
 
-  const [state, dispatch] = useReducer(
+  const [state, dispatchToReducer] = useReducer(
     threadReducer,
     maxItemsPerThread,
     (initialMaxItemsPerThread) => ({
       ...initialState,
       maxItemsPerThread: initialMaxItemsPerThread,
     }),
+  );
+  // Record synchronous projection writes, including events still queued for
+  // React rendering, so a prior full read cannot overwrite their newer facts.
+  const threadProjectionRevisionRef = useRef<Record<string, number>>({});
+  const dispatch = useCallback((action: ThreadAction) => {
+    if ("threadId" in action && typeof action.threadId === "string" &&
+        action.type !== "setThreadResumeLoading") {
+      threadProjectionRevisionRef.current[action.threadId] =
+        (threadProjectionRevisionRef.current[action.threadId] ?? 0) + 1;
+    }
+    dispatchToReducer(action);
+  }, []);
+  const getThreadProjectionRevision = useCallback(
+    (threadId: string) => threadProjectionRevisionRef.current[threadId] ?? 0, [],
   );
   useEffect(() => {
     dispatch({ type: "setMaxItemsPerThread", maxItemsPerThread });
@@ -568,6 +582,7 @@ export function useThreads({
     loadOlderThreadsForWorkspace,
     archiveThread,
   } = useThreadActions({
+    getThreadProjectionRevision,
     dispatch,
     itemsByThread: state.itemsByThread,
     threadsByWorkspace: state.threadsByWorkspace,
@@ -832,8 +847,9 @@ export function useThreads({
       if (threadId) {
         void (async () => {
           const hasLocalSnapshot = hasLocalThreadSnapshot(threadId);
-          if (hasLocalSnapshot && !("__TAURI_INTERNALS__" in window &&
-              await nativeConversationAssociation(targetId))) {
+          const native = "__TAURI_INTERNALS__" in window &&
+            Boolean(await nativeConversationAssociation(targetId));
+          if (hasLocalSnapshot && !native) {
             loadedThreadsRef.current[threadId] = true;
             return;
           }
@@ -841,7 +857,7 @@ export function useThreads({
           if (!hasActiveTurnInWorkspace) {
             await ensureWorkspaceRuntimeCodexArgsBestEffort(targetId, threadId, "resume");
           }
-          await resumeThreadForWorkspace(targetId, threadId);
+          await resumeThreadForWorkspace(targetId, threadId, native);
         })().catch((error) => {
           pushThreadErrorMessage(threadId, error instanceof Error ? error.message : String(error));
         });
