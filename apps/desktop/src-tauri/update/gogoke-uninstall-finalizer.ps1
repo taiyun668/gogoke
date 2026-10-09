@@ -227,7 +227,7 @@ function Delete-Opened([Microsoft.Win32.SafeHandles.SafeFileHandle]$handle,
             if ($allowDirectoryNotEmpty) {
                 Fail "GOGOKE_UNINSTALL_DIRECTORY_DELETE_FAILED_WIN32_$win32"
             }
-            Fail 'GOGOKE_UNINSTALL_DELETE_FAILED'
+            Fail "GOGOKE_UNINSTALL_DELETE_FAILED:WIN32_$win32"
         }
         return $true
     } finally {
@@ -257,7 +257,7 @@ function Verify-File([object]$entry, [bool]$delete) {
         if ($hash -cne [string]$entry.sha256) { Fail 'GOGOKE_UNINSTALL_FILE_CHANGED' }
         $null = Assert-Opened $raw $entry.path $false $entry.identity
         Assert-Root
-        if ($delete) { Delete-Opened $handle }
+        if ($delete) { $null = Delete-Opened $handle $false }
     } finally {
         if ($stream) { $stream.Dispose() }
         $handle.Dispose()
@@ -326,7 +326,7 @@ function Verify-Shortcut([object]$entry) {
         $null = Assert-Opened $raw $path $false $entry.record.identity
         Assert-Root
         $null = Shortcut-Path $entry
-        Delete-Opened $handle
+        $null = Delete-Opened $handle $false
     } finally {
         if ($stream) { $stream.Dispose() }
         if ($handle) { $handle.Dispose() }
