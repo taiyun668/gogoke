@@ -52,13 +52,17 @@
 
 参照：main PLAN 的十二／四项；M2-V08-ORIGINAL-RULES-READBACK、M2-HOST-COMMIT-AND-PROVIDER-FLOW、M2-V12-ORIGINAL-FACTS、M2-MEMORY-E2E-ENTRY、M2-CANDIDATE-36/38/40 原件；当前 PR77 实际 USER 对话／冷恢复记录；现成 m2-seat-management、m2-extra、m2-history-boundaries、m2-readback；gogo-party per-seat HOME/实例与工具转发；实际嵌入 uninstall finalizer 的 owned-file 路径。未用模型自述或源码存在替代实机。
 
-## 建议 Owner 决定的交付优先级
+## Owner 已决定的交付方式（2026-10-09）
+
+Owner 决定不出中间试用版，按施工计划完整推进 M2/M3；保留上述并行分工、中间试验候选轻流程和空目录根因修复，每小时心跳继续在 PR #54 写进度。下述最小版本与推迟项目仅保留为未采用的历史建议，不作为施工次序或缩减范围的依据。范围摘要不变。
+
+## 历史建议（Owner 未采用）
 
 建议先提供 Codex＋Claude 真实对话、基本席位、旁聊的中间试用版，完整 M2/M3 仍照原范围继续。可推迟：V05 的 OpenCode/Grok 完整矩阵（B5 已裁决未运行）、V03b 通用卡、V08 完整升级/stalled 场景、V09 全部接手模板、V13 CLI 升级退回和自动健康；V00b 全矩阵结算及 V14 秘书长、V15 全 25 状态、V16 最终接受放后。
 
 不能推迟两家子集的 V04b/V07/V10/V11 基本安全与停止恢复：不串项目/目的、不继承私聊、只写宿主工作树、主树不直写、原停止事实、无不明重放；V06 基本创建/tune/上限和 V12 真实旁聊/投递是最小版本本体。复杂模板、mixed 多项目图谱及完整负矩阵可后补，但不是弱化已提供功能的隔离和权限证明。
 
-该建议不把任何未跑项改成通过，不宣布 M2/M3 完成，不修改摘要；Owner 未选择前继续原完整范围。
+该建议不把任何未跑项改成通过，不宣布 M2/M3 完成，不修改摘要；按上面的 Owner 决定继续原完整范围。
 
 ## 心跳
 
