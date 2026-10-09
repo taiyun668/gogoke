@@ -467,20 +467,35 @@ def verify_final_source(db, domain, initial, current, journal_operations):
           ["resume", "stop", "admission-release"], "Final source operation order changed")
     for entry in (resume, stop, release):
         request, receipt = entry["request"], entry["receipt"]
-        operation = one(db, "SELECT * FROM gogoke_v37_h_operation WHERE domain_id=? AND request_id=?",
-                        (domain, request["requestId"]))
+        check(json.loads(entry["rawFrame"]) == request and receipt["status"] == "APPLIED" and
+              receipt["previousRevision"] == request["expectedRevision"] and
+              receipt["revision"] == str(int(request["expectedRevision"]) + 1),
+              "Final source retained User request/receipt differs")
+        if request["operation"] == "resume":
+            episode = one(db, "SELECT * "
+                            "FROM gogoke_v37_h_process_episode WHERE domain_id=? AND request_id=? "
+                            "AND old_generation IS NOT NULL", (domain, request["requestId"]))
+            check(bytes.fromhex(episode["raw_hex"]).decode() == entry["rawFrame"] and
+                  episode["session_id"] == initial["id"] and episode["phase"] == "STOPPED" and
+                  episode["previous_revision"] == int(request["expectedRevision"]) and
+                  episode["result_revision"] == int(receipt["revision"]) and
+                  episode["old_generation"] == request["payload"]["generation"] == receipt["result"]["oldGeneration"] and
+                  episode["generation"] == current["generation"] == receipt["result"]["newGeneration"] and
+                  receipt["result"]["state"] == "RUNNING",
+                  "Final source original resume episode/receipt differs")
+        else:
+            operation = one(db, "SELECT * FROM gogoke_v37_h_operation WHERE domain_id=? AND request_id=?",
+                            (domain, request["requestId"]))
+            check(bytes.fromhex(operation["raw_hex"]).decode() == entry["rawFrame"] and
+                  operation["operation"] == request["operation"] and operation["session_id"] == initial["id"] and
+                  operation["status"] == receipt["status"] and
+                  operation["previous_revision"] == int(request["expectedRevision"]) and
+                  operation["revision"] == int(receipt["revision"]),
+                  "Final source original H stop/release differs")
         expected_payload = {"generation": request["payload"]["generation"]}
         if request["operation"] != "resume":
             expected_payload["seatId"] = initial["seatId"]
-        check(json.loads(entry["rawFrame"]) == request and
-              bytes.fromhex(operation["raw_hex"]).decode() == entry["rawFrame"] and
-              operation["operation"] == request["operation"] and operation["session_id"] == initial["id"] and
-              operation["status"] == receipt["status"] == "APPLIED" and
-              operation["previous_revision"] == int(request["expectedRevision"]) and
-              operation["revision"] == int(receipt["revision"]) and
-              receipt["previousRevision"] == request["expectedRevision"] and
-              receipt["revision"] == str(int(request["expectedRevision"]) + 1) and
-              request["payload"] == expected_payload,
+        check(request["payload"] == expected_payload,
               "Final source original H mutation/receipt differs")
     check(resume["request"]["payload"]["generation"] == resume["receipt"]["result"]["oldGeneration"] and
           resume["receipt"]["result"]["newGeneration"] == current["generation"] ==
@@ -492,21 +507,22 @@ def verify_final_source(db, domain, initial, current, journal_operations):
                   (domain, initial["id"], current["generation"]))
     claim = one(db, "SELECT * FROM gogoke_v37_h_claim WHERE domain_id=? AND session_id=?",
                 (domain, initial["id"]))
-    binding = one(db, "SELECT * FROM gogoke_v37_h_seat_binding WHERE domain_id=? AND session_id=?",
+    binding = one(db, "SELECT * FROM gogoke_v37_effective_seat WHERE domain_id=? AND session_id=?",
                   (domain, initial["id"]))
     seat = one(db, "SELECT * FROM gogoke_v37_seats WHERE domain_id=? AND seat_id=?",
                (domain, initial["seatId"]))
     pin = one(db, "SELECT i.driver_id,i.program_digest,c.* FROM gogoke_v37_instances i JOIN "
               "gogoke_coordination_process_custody c ON c.operation_id=? WHERE i.instance_id=?",
               (episode["process_operation_id"], initial["instanceId"]))
-    check(episode["request_id"] == resume["request"]["requestId"] and
+    check(binding["provenance"] == "NATIVE_V2" and
+          episode["request_id"] == resume["request"]["requestId"] and
           episode["old_generation"] == resume["receipt"]["result"]["oldGeneration"] and
           bytes.fromhex(episode["raw_hex"]).decode() == resume["rawFrame"] and
           episode["seat_id"] == binding["seat_id"] == initial["seatId"] and
           episode["seat_incarnation"] == binding["seat_incarnation"] == seat["incarnation"] and
-          episode["instance_id"] == claim["instance_id"] == seat["instance_id"] == initial["instanceId"] and
+          episode["instance_id"] == claim["instance_id"] == binding["selected_instance_id"] == seat["instance_id"] == initial["instanceId"] and
           episode["generation"] == claim["generation"] == binding["generation"] == current["generation"] and
-          seat["generation"] == int(current["generation"]) and seat["state"] == "IDLE" and
+          seat["generation"] == binding["seat_authorization_generation"] + 1 and seat["state"] == "IDLE" and
           episode["phase"] == "STOPPED" and episode["stop_request_id"] == stop["request"]["requestId"] and
           episode["stop_fact_id"] == claim["stop_fact_id"] == stop["receipt"]["result"]["stopFact"] and
           claim["state"] == "RELEASED" and claim["revision"] == int(current["revision"]) and
@@ -605,7 +621,8 @@ def verify_host(db, domain, case, host, operations, result):
           queued["sourceCommit"] == result["sourceCommit"] and queued["databasePath"] == result["databasePath"] and
           queued["rootIdentity"] == result["rootIdentity"] and queued["measurementPreservedDatabaseBytes"] and
           queued["databaseWrites"] is False and queued["credentialReads"] is False and
-          queued["readerSha256"] == case["readerSha256"] == result["readerSha256"], "Queued artifact is another subject")
+          queued["readerSha256"] == case["readerSha256"] == result["originalReaderSha256"],
+          "Queued artifact is another subject")
     prior = [row for row in queued["hostSnapshots"] if row["caseId"] == host["caseId"]]
     check(len(prior) == 1, "Original Host checkpoint cause missing")
     check(queued["checkpointStops"] == verify_checkpoint_stops(db, domain, case, host, operations, queued["stoppedClaims"]),
@@ -693,7 +710,8 @@ def verify_host(db, domain, case, host, operations, result):
             if value.get("method") == "turn/completed" and value["params"]["threadId"] == target["threadId"] and value["params"]["turn"]["id"] == observed["turnId"]:
                 completed.append((row, value))
         items, calls, questions = turn_activity([(row, json.loads(bytes(row["raw_bytes"]))) for row in recipient_source],
-                                                 target["threadId"], observed["turnId"])
+                                                 target["threadId"], observed["turnId"],
+                                                 expected_input=final["message"]["body"])
         check(not items and not calls and not questions,
               "Host notice caused extra original recipient tool/question effects")
         check(len(completed) == 1 and completed[0][0]["state"] != "PENDING" and
@@ -761,7 +779,8 @@ def verify_host(db, domain, case, host, operations, result):
         incoming = select(db, "SELECT * FROM v37_ledger_raw_source WHERE operation_id=?", (stdin["process_operation_id"],))
         items, calls, questions = turn_activity(
             [(row, json.loads(bytes(row["raw_bytes"]))) for row in incoming],
-            busy["binding"]["threadId"], busy["turnId"], allow_question=True)
+            busy["binding"]["threadId"], busy["turnId"], allow_question=True,
+            expected_input=busy["askBytes"])
         check(not items and not calls and len(questions) == 1 and
               bytes(questions[0][0]["raw_bytes"]) == raw,
               "Busy question used unrequested additional tool work")
