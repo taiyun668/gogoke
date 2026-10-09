@@ -122,6 +122,8 @@ export function InstancesPage({ source }: { source: InstancePageSource }) {
   const readSeq = useRef(0);
   // The read still on its way, if any; polling waits for it instead of discarding it.
   const inFlight = useRef(0);
+  // True while only an earlier read is on screen; every operation entry refuses then.
+  const staleRef = useRef(false);
   // Bumped when the source changes or the page unmounts; results from an older epoch are dropped.
   const epoch = useRef(0);
   const sourceRef = useRef(source);
@@ -169,7 +171,7 @@ export function InstancesPage({ source }: { source: InstancePageSource }) {
 
   /** Resolves true only when the operation succeeded; success UI waits for it. */
   const run: RunFn = async (key, operation) => {
-    if (busyRef.current) return false;
+    if (busyRef.current || staleRef.current) return false;
     busyRef.current = true;
     const era = epoch.current;
     setBusy(key);
@@ -192,6 +194,7 @@ export function InstancesPage({ source }: { source: InstancePageSource }) {
 
   // Rows from an earlier read stay visible after a failed read, but nothing can be done to them.
   const stale = page !== null && loadError !== null;
+  staleRef.current = stale;
   const summary = page && !stale ? pageSummary(page) : null;
 
   return (
@@ -950,6 +953,7 @@ function ConfigureForm({
   const providerChoices = providers ?? [];
 
   const submit = () => {
+    if (busy !== null) return;
     if (!name.trim()) {
       setError("给它起个名字");
       return;
@@ -1042,6 +1046,7 @@ function NewInstanceForm({
   const blocked = info.needsProvider === true && !providerChoices.length;
 
   const submit = () => {
+    if (busy !== null) return;
     const finalName = name.trim();
     if (takesName && !finalName) {
       setError("给它起个名字");
