@@ -2,7 +2,7 @@
 
 改了什么：reader 沿真实生产者校普通 resume 的 process episode、NativeV2 effective seat 的授权代次与 H 进程代次，以及释放后 E 的 IDLE 代次自增；旧 checkpoint 绑定原 reader，当前校正 reader 独立记哈希与变更标记。补原消息正文的精确 echo 参数，保留唯一 started/completed 回显和额外工具拒绝条件。未改产品、原请求或数据库。
 
-结果：原已装旧候选的四个新测试 USER 席，在同一已登录 Codex 实例执行十三项基础规则与自动投递、忙碌排队、路由变更、取消四个 Host 场景；共 197 次操作、六次正常关闭退出 0。两源会话与目标的真实 StopFact、释放及 typed A/H/C/E/F 链由校正 final 读回，`directCaseEvidence=true`、数据库测量字节不变。正式版保护读回通过。原失败 journal 和各次失败 reader 输出均保留，未重放产品请求。独立实测核对待收。
+结果：原已装旧候选的四个新测试 USER 席，在同一已登录 Codex 实例执行十三项基础规则与自动投递、忙碌排队、路由变更、取消四个 Host 场景；共 197 次操作、六次正常关闭退出 0。两源会话与目标的真实 StopFact、释放及 typed A/H/C/E/F 链由校正 final 读回，`directCaseEvidence=true`、数据库测量字节不变。正式版保护读回通过。原失败 journal 和各次失败 reader 输出均保留，未重放产品请求。独立实测交叉核对相符；通过的 reader 与原加载模块按当时实际 SHA 归档，后续工具提交不冒充该次字节。
 
 原仪器失败原文：`Expected one original row, found 0: SELECT * FROM gogoke_v37_h_operation WHERE domain_id=? AND request_id=?`；随后旧 binding 表同类零行；`Queued artifact is another subject`。它们分别用了错误写入表和错误仪器哈希关系。普通 resume 的实际 episode、原 NativeV2 selection/effective view、旧 checkpoint 自身字节链仍严格核对。
 
