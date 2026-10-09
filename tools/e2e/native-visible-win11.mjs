@@ -583,6 +583,17 @@ try {
     await actualUiWrite('turn_steer', () => textarea.press('Control+Shift+Enter'),
       { threadId: session.threadId, turnId: originalSend.response.result.turn.id, association });
   }
+  if (config.requireInterruptedPartial === true) {
+    await eventually('original agent delta before exercising partial interruption',
+      () => hOutput(session), output => Array.isArray(output.events) && output.events.some(event =>
+        event.sessionUpdate === 'agent_message_chunk' && event.content?.type === 'text' &&
+        nonempty(event.content.text) && event._meta?.codexMethod === 'item/agentMessage/delta' &&
+        event._meta?.threadId === session.threadId &&
+        event._meta?.turnId === originalSend.response.result.turn.id &&
+        nonempty(event._meta?.itemId) && /^[1-9][0-9]*$/.test(event._meta?.rawSourceCursor ?? '')));
+    step('original-agent-delta-observed-before-interrupt', { threadId: session.threadId,
+      turnId: originalSend.response.result.turn.id });
+  }
   await actualUiWrite('turn_interrupt', async () => {
     const stop = page().locator('.composer-action.is-stop');
     check(await stop.count() === 1, 'Original active turn completed before UI interrupt; no substitute stop.');
