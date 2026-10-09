@@ -391,3 +391,17 @@ USER 是产品授权层，不是要求 Owner 手工操作每项设置。Controll
 参照：gogo-party `packages/room/src/server.ts` 的 createProjectFromPath 先 openOrRegister 再切换/派活；采用“登记与启动分开”，保留 gogoke 已有 exact USER/H 边界。直接核了现行 native producer、Tauri liveness、workspace persistence、daemon stub、原 UI restore 和 startup。只修新项目登记，不因旁支 clone UI 的立即 connect 扩大界面写域。
 
 本次范围摘要改变；同 PR 更新 v2 回执、MANIFEST 和三处固定 receipt blob。Owner 合并一次并精确读回前，以上增补未授权，不提交保全的产品补丁。原 PR77 四路径施工结果、失败原件和云检证据保留；M2 既有授权内工作继续。
+
+## 中断后部分输出的只读冷恢复（同范围细节修订）
+
+普通 Win11 原固定 CLI 直接证据：同一 agentMessage 已发 item/started 和有序文本 delta，却没有 item/completed；原 turn/completed 为 interrupted、itemsView=notLoaded、items=[]。固定 Codex 协议明示 notLoaded 的空数组不代表完整持久 item 清单。现有投影误把没有最终快照视为无法读回，冷启动又不会重放历史实时事件，导致中断前已经流出的文字无法恢复。
+
+本修订只明确三个既有 INTEGRATOR 共享路径：v37_visible_conversation.rs 的原 A/H 只读投影、src-tauri/codex/mod.rs 的既有合页、useThreadActions.ts 的原完整 hydration。原 vendor Turn/item 字段保持；使用既有读投影元数据明确记录“中断时部分输出”，带原 thread/turn/item 身份、有序 sourceRefs 和原高水位。仅在完整来源覆盖、原 item/started、同 item 的有序 delta 和明确 interrupted 终态均成立且没有最终 item 时派生；有最终快照则优先，不重复显示。不得将派生文本称为最终 vendor item，不改 itemsView 为 full。缺帧、乱序、异身份、无可信终态或来源不明继续 UNKNOWN 并保留原文。
+
+Tauri 不改变首次附着丢弃历史实时事件的规则；冷读合页保存上述元数据及来源，hook 在现有消息表示中清楚标为“中断时的部分输出”。不改 G、通用类型/事件，不新增命令、权限、模型进程、持久写方或 Owner 触点。原 H 物理句柄、StopFact、E/F/H/A 关联和 scope/seat 检查保持；未执行的真实工具/中断恢复不可写通过。
+
+验证采用真实 CLI 黄金样本的结构与确切源顺序：原终态不改、partial 文本与原 delta 精确一致、逐项来源可核、冷读幂等且无 stdin/USER 写入；缺源、异 turn/item、非 interrupted 及有 final item 的反例保持原拒绝/优先规则。原生只在云端验证，稳定后候选完整链与已安装 Win11 同一真实中断后的冷恢复仍必须实测。单次 interrupt ACK、源审阅和旧候选历史通过都不等于整体验收。
+
+参照：gogo-party packages/seat-runtime/src/seat-runtime.ts 的 assistant-delta/item-completed/turn-completed 分开记录；既有 A 原帧账本、native full thread/read、Tauri 合页和 hydration；固定 Codex commit a956835d020762cb2b570053af06f643a11c0ecc 的 codex-rs/app-server-protocol/src/protocol/v2/thread_data.rs 中 TurnItemsView 定义。采用明确区分部分输出与最终快照，保留 gogoke 更严格的原 H/A 来源，而不是复制实时事件去假装冷读原件。
+
+共享路径、conditional、owner、各线写域及操作/权限契约均未增加，范围摘要和 v2 回执不变。按现行 amendment_rule，独立审计通过后由 Controller 合并细节 PR，再精确读回；不重新请求 Owner 合并或登录。实施前不得将这份修订草稿当作已生效计划。
