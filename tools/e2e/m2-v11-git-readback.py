@@ -27,8 +27,9 @@ def one(db, query, args=()):
 
 
 def same(a, b):
-    return os.path.normcase(str(Path(a).resolve(strict=True))) == os.path.normcase(
-        str(Path(b).resolve(strict=True)))
+    # Win32 extended and ordinary spellings can identify the same registered
+    # object. Compare its file identity rather than the display spelling.
+    return os.path.samefile(a, b)
 
 
 def same_name(a, b):
