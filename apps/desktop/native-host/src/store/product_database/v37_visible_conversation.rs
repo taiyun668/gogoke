@@ -101,6 +101,16 @@ fn extend_source_pool(pool: &mut Vec<Json>,sources: &[Json]) -> Result<()> {
     Ok(())
 }
 
+fn retain_original_terminal(terminals: &mut BTreeMap<String,(Json,Json)>,id: &str,
+    turn: &Json,source: &Json) -> Result<()> {
+    if let Some((original,_))=terminals.get(id) {
+        if original.canonical()!=turn.canonical() {
+            return Err(OrchestrationError::Invalid("conflicting original turn terminals"));
+        }
+    }
+    terminals.insert(id.to_owned(),(copy_json(turn),copy_json(source)));Ok(())
+}
+
 fn add_partial_messages(envelope: &mut Json,messages: Vec<Json>) -> Result<()> {
     let Json::Object(envelope)=envelope else {return Err(OrchestrationError::OperationConflict);};
     let Some(Json::Object(result))=envelope.get_mut(&k("result")) else {return Err(OrchestrationError::OperationConflict);};
@@ -952,7 +962,9 @@ impl<'root> ProductDatabase<'root> {
                 let Some(turn)=params.get(&k("turn")) else {return Err(OrchestrationError::OperationConflict);};
                 let fields=object(turn)?;let id=string_field(fields,"id")?;
                 if method=="turn/completed" {
-                    terminals.insert(id.clone(),(copy_json(turn),copy_json(&source_ref)));
+                    if let Err(error)=retain_original_terminal(&mut terminals,&id,turn,&source_ref) {
+                        complete=false;original_reason=Some(format!("Original turn terminal source {row}: {error:?}"));continue;
+                    }
                 }
                 let index=if let Some(index)=turn_ids.iter().position(|old|old==&id) {index}
                     else {turn_ids.push(id.clone());turns.push(copy_json(turn));turn_refs.push(Vec::new());turns.len()-1};
@@ -963,7 +975,7 @@ impl<'root> ProductDatabase<'root> {
                 let turn=string_field(params,"turnId")?;
                 let item=params.get(&k("item")).ok_or(OrchestrationError::OperationConflict)?;
                 let id=string_field(object(item)?,"id")?;
-                if method=="item/started" && is_text(object(item)?.get(&k("type")),"agentMessage") {
+                if method=="item/started" {
                     partials.entry((turn.clone(),id.clone())).or_default().start(item,copy_json(&source_ref))?;
                 }
                 let items=observed_items.entry(turn).or_default();
@@ -1488,6 +1500,33 @@ mod tests {
         extend_source_pool(&mut pool,&[copy_json(&terminal),copy_json(&terminal)]).unwrap();assert_eq!(pool.len(),1);
         let mut foreign=copy_fields(object(&terminal).unwrap());foreign.insert(k("sourceEpoch"),s("foreign"));
         assert!(extend_source_pool(&mut pool,&[Json::Object(foreign)]).is_err());
+    }
+
+    #[test]
+    fn interrupted_partial_preserves_conflicting_terminal_as_unknown() {
+        let mut terminals=BTreeMap::new();
+        let mut completed=copy_fields(object(&partial_test_terminal()).unwrap());completed.insert(k("status"),s("completed"));
+        let completed=Json::Object(completed);
+        retain_original_terminal(&mut terminals,"turnInterrupted",&completed,&partial_test_source(23)).unwrap();
+        assert!(retain_original_terminal(&mut terminals,"turnInterrupted",&partial_test_terminal(),&partial_test_source(24)).is_err());
+        assert_eq!(terminals.get("turnInterrupted").unwrap().0.canonical(),completed.canonical());
+        retain_original_terminal(&mut terminals,"turnInterrupted",&completed,&partial_test_source(24)).unwrap();
+    }
+
+    #[test]
+    fn interrupted_partial_refuses_changed_type_start_in_both_orders() {
+        let started=partial_test_started();
+        let mut changed=copy_fields(object(&started).unwrap());changed.insert(k("type"),s("reasoning"));
+        let changed=Json::Object(changed);
+        for reversed in [false,true] {
+            let mut partial=InterruptedPartial::default();
+            let first=if reversed {&changed}else {&started};
+            partial.start(first,partial_test_source(20)).unwrap();
+            partial.delta("known",partial_test_source(21)).unwrap();
+            let second=if reversed {&started}else {&changed};
+            partial.start(second,partial_test_source(23)).unwrap();
+            assert!(partial.finish("turnInterrupted","agentInterrupted",0,&partial_test_terminal(),&partial_test_source(24),&partial_test_coverage(24)).unwrap().is_none());
+        }
     }
 
 }

@@ -233,11 +233,47 @@ async function hOutput(session) {
     eventCount: Array.isArray(reply.result.events) ? reply.result.events.length : null });
   product.save(); return reply.result;
 }
+const nativeHistoryFacts = new Map();
 async function nativeHistory(threadId) {
   const value = await invoke('read_thread', { workspaceId, threadId });
   check(value?.result?.thread?.id === threadId && Array.isArray(value.result.thread.turns) &&
     value.result.nativeHistory?.state === 'COMPLETE', 'Original full native thread/read is incomplete.');
+  nativeHistoryFacts.set(threadId, structuredClone(value.result.nativeHistory));
+  journal.readbacks.push({ kind: 'native-history', threadId,
+    history: structuredClone(value.result.nativeHistory) });
+  product.save();
   return value.result.thread;
+}
+async function assertInterruptedPartial(thread, turnId) {
+  const history = nativeHistoryFacts.get(thread.id);
+  const turns = thread.turns.filter(turn => turn.id === turnId);
+  check(turns.length === 1 && turns[0].status === 'interrupted' && turns[0].itemsView === 'notLoaded',
+    'Original accepted interrupt lacks its interrupted/notLoaded vendor terminal.');
+  check(Array.isArray(history?.partialMessages), 'Original native history has no partial-message sidecar.');
+  const partials = history.partialMessages.filter(item => item.turnId === turnId);
+  check(partials.length > 0 && partials.every(item => item.kind === 'interruptedAgentMessage' &&
+    nonempty(item.itemId) && typeof item.text === 'string' && Array.isArray(item.sourceRefs) &&
+    item.sourceRefs.length >= 2 && !turns[0].items.some(final => final.id === item.itemId)),
+    'Original interrupted partial output is missing or substituted for a final vendor item.');
+  for (const partial of partials) {
+    const label = partial.text ? '中断时的部分输出（未收到最终消息）' : '中断前尚未收到文本（未收到最终消息）';
+    const expectedId = `gogoke-partial:${JSON.stringify([thread.id, turnId, partial.itemId])}`;
+    const expectedText = partial.text ? `${label}\n\n${partial.text}` : label;
+    await eventually('source-qualified interrupted partial in actual UI',
+      () => product.evaluate(`(() => {
+        const expectedId=${JSON.stringify(expectedId)}, expectedText=${JSON.stringify(expectedText)};
+        return [...document.querySelectorAll('.message.assistant')].some(element => {
+          if (!element.querySelector('.message-bubble')?.textContent?.includes(${JSON.stringify(label)})) return false;
+          const key=Object.keys(element).find(key=>key.startsWith('__reactFiber$'));
+          for(let fiber=key?element[key]:null;fiber;fiber=fiber.return) {
+            const item=fiber.memoizedProps?.item;
+            if(item?.id===expectedId) return item.role==='assistant' && item.text===expectedText;
+          }
+          return false;
+        });
+      })()`), matched => matched === true);
+  }
+  return structuredClone(partials);
 }
 function assertCurrentHistory(thread, originalSend) {
   const turnId = originalSend?.response?.result?.turn?.id;
@@ -556,7 +592,10 @@ try {
   await clickUniqueRow(workspace[0].name); // Native setActiveThreadId forces the read-only full history path.
   check((await visibleJournal())?.acceptedRequestIds?.length === writesBeforeRefresh,
     'Read-only UI refresh unexpectedly created a native USER write.');
-  await nativeHistory(session.threadId);
+  const interruptedHistory = await nativeHistory(session.threadId);
+  if (config.requireInterruptedPartial === true) {
+    await assertInterruptedPartial(interruptedHistory, originalSend.response.result.turn.id);
+  }
   await hOutput(session); // Original H read updates its revision after UI writes.
   const stopped = await hOperation(session, 'stop', { seatId: config.seatId }, ['APPLIED', 'STALE']);
   check(stopped.status === 'APPLIED' && nonempty(stopped.result?.stopFact),
@@ -572,6 +611,7 @@ try {
   step('original-H-stop-readback', { stopFact: stopped.result.stopFact, live: live.live });
   await hOutput(session);
   const beforeStop = await nativeHistory(session.threadId);
+  const beforeStopMetadata = structuredClone(nativeHistoryFacts.get(session.threadId));
   assertCurrentHistory(beforeStop, originalSend);
   await product.closeNormally();
   await product.launch();
@@ -581,6 +621,11 @@ try {
   const cold = await nativeHistory(session.threadId);
   assertCurrentHistory(cold, originalSend);
   check(same(cold.turns, beforeStop.turns), 'Cold original full-thread history differs from preclose readback.');
+  if (config.requireInterruptedPartial === true) {
+    check(same(nativeHistoryFacts.get(session.threadId).partialMessages, beforeStopMetadata.partialMessages),
+      'Cold source-qualified interrupted partial output differs from its original preclose readback.');
+    await assertInterruptedPartial(cold, originalSend.response.result.turn.id);
+  }
   await eventually('cold UI original USER message',
     () => page().locator('.message.user .message-bubble').allTextContents(),
     rows => rows.some(text => text.includes(config.askPrompt)));
