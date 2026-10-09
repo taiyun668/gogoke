@@ -1,0 +1,43 @@
+{
+  "schema": "gogoke.37.light-checkpoint.v1",
+  "task": "M2 V06 seat template, copied tuning, bounds, reclaim, and installed-candidate preparation",
+  "baseCommit": "cf1d89978abd87abf88d8e5a3e6b535e9ee8e514",
+  "state": "V06_CAP_HELPER_AND_HOSTROOT_ADAPTER_READY_ACTUAL_CASE_NOT_RUN",
+  "scopeDigestChanged": false,
+  "acceptance": false,
+  "taskResult": "Added the E orchestration cap parser and missing-cap child refusal, plus a strict HostRoot-injected installed-product adapter for the existing two-domain template, model denial and User LEAD subcases. A complete V06 cannot yet be claimed because shared K-SEAT set-bounds, child counting, H stop/load fixture and original product readback still require integration.",
+  "currentState": {
+    "production": "K-SEAT create-from-template, tune, bind-instance, change-instance, reclaim, short-to-long and state-card are dispatched. The separate set-orchestration-bounds operation named by K-SEAT and V06 is absent from the native wire allowlist and has no dispatcher branch. The new orchestration parser preserves old four-field records as max_concurrent=None and validates a new fifth maxConcurrent positive i64 fact; child create/dispatch scope checks deny a missing cap. Shared code still needs to count direct children transactionally and project the original scope cap, not Owner project cap. Reclaim checks seat state and project-lead designation but has no producer-backed reclaim-condition decision.",
+    "installedWin11": "The committed 0.1.40 installed-candidate checkpoint proves the product booted with matching identity, then the managed Codex CLI BEGIN returned the original Busy custody error before a model was started. No complete V06 operation/readback was recorded. V06 is NOT_RUN, not PASS.",
+    "driver": "m2-seat-management-win11.mjs already invokes the actual installed User K-SEAT bridge and normally closed immutable baseline/final reader. The new m2-v06-win11.mjs adapter requires an original HostRoot model callback, same product/journal identity, registered LEAD fixture and baseline/final readback callback; the original reader, not callback self-report, verifies H/A/K-SEAT source facts. It returns named remaining V06 axes with acceptance=false."
+  },
+  "filesChanged": ["apps/desktop/native-host/src/store/seat/orchestration.rs", "tools/e2e/m2-v06-win11.mjs", "tools/e2e/m2-v06-win11.md", "artifacts/gogoke-37/checkpoints/M2-V06-SPEED.json"],
+  "importantDiff": "The cap is an optional original fact for old records; new User set-bounds must pass validate_new_scope and the child scope check rejects None. New installed adapter fails before running if HostRoot original callbacks/LEAD fixture are absent, reuses the existing real K-SEAT runner and immutable reader, and never promotes partial coverage to V06 acceptance.",
+  "validation": {
+    "repositoryIdentity": "worktree branch codex/m2-v06-speed-20261009 at base cf1d89978abd87abf88d8e5a3e6b535e9ee8e514 before checkpoint",
+    "sourceInspection": "PASS_READ_ONLY: PLAN.json K-SEAT/E.2/V06, seat/orchestration.rs, continuity.rs, page_facts.rs, seat/mod.rs, v37_seat.rs, m2-seat-management.mjs, m2-seat-management-win11.mjs, m2-seat-management-readback.py, m2-win11.mjs, and committed 0.1.40 candidate checkpoint",
+    "signedNodePython": "PASS_SIGNED_NODE_CHECK_AND_IMPORT for m2-v06-win11.mjs; Python NOT_RUN_NO_NEW_PYTHON_BYTES",
+    "cloudNative": "NOT_RUN_AFFECTED_FILTER_REQUESTED_FROM_CONTROLLER: cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib seat::orchestration::tests -- --nocapture --show-output; no local native compile",
+    "installedCandidateV06": "NOT_RUN"
+  },
+  "failures": [
+    "V06 set-orchestration-bounds absent from shared K-SEAT wire allowlist and dispatcher despite frozen contract and distinct-receipt requirement",
+    "V06 lead seat cap now parsed and missing-cap scope check denies, but shared direct-child count, wire receipt and page projection remain unimplemented",
+    "V06 reclaim-condition predicate lacks a defined original producer and enforcement path"
+  ],
+  "invariantsChecked": [
+    "User and lead layers are distinct in existing E create/change checks",
+    "Existing User two-domain copy/tune driver preserves original requests and candidate identity and keeps acceptance false",
+    "No real H stop fact or model result may be fabricated from E idle state or a standalone script"
+  ],
+  "risks": "The cap parser alone cannot enforce the numerical limit; shared create/admission transactions must count matching direct children on the verified connection. An injected callback without the original immutable H/A readback is not model evidence. Existing four-field scopes remain readable but deny new child admission until User sets an explicit cap.",
+  "deviationsFromPlan": "No installed-product run or local native compile; both are outside this worker's authorized execution. Root owns the shared dispatcher, page projection, child count and HostRoot integration.",
+  "openQuestions": [
+    "Controller to select the exact frozen-compatible set-bounds payload and separate receipt mapping in shared v37_seat.rs, then bind it to E's transactional User authority",
+    "Root to re-export validate_new_scope in shared seat/mod.rs, use optional max_concurrent as the original page fact, and count direct child seats transactionally at create/admission; old four-field records remain readable but cannot authorize child creation",
+    "Controller to identify the original producer and predicate for the lead's reclaim condition rather than interpreting free-form state-card text as a boolean"
+  ],
+  "recommendedNextAction": "Controller integrates shared K-SEAT set-bounds, direct-child cap and read model, then imports runV06InstalledCases from the single installed HostRoot with its actual original model-turn and normal-close readback callbacks. Run the affected cloud native filter, then one stable candidate Win11 case with additional V06 refusal/limit receipts and immutable readback. Do not run full library, signing, installation or dual audit during this stage.",
+  "remainingEffectiveConstructionDays": "About 1.5-3 effective construction days after this cap parser and adapter: 0.5-1.5 shared K-SEAT/direct-child count/page integration, 0.5-1 original H/stop/load fixture and immutable evidence wiring, 0.5-1 affected cloud repair. This excludes cloud queue, candidate installation and Owner time; one stable candidate Win11 run remains necessary.",
+  "references": "Own implementation: seat/orchestration.rs, continuity.rs, page_facts.rs and mod.rs; producer route: product_database/v37_seat.rs and session_transport/wire.rs; existing installed measurement: tools/e2e/m2-seat-management*.mjs and m2-seat-management-readback.py; product reference: gogo-party seat-runtime and docs/research/2026-09-26-execution-layer-capability-table.md; committed original installed evidence: checkpoints/M2-CANDIDATE-40-INSTALLED.md."
+}
