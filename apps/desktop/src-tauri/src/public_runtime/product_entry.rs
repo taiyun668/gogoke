@@ -534,6 +534,13 @@ mod managed_service {
         error
     }
 
+    fn with_io_error(label: &str, error: std::io::Error) -> String {
+        match error.raw_os_error() {
+            Some(code) => format!("{label}:WIN32_{code}:{error}"),
+            None => format!("{label}:{error}"),
+        }
+    }
+
     struct ModulePolicy {
         path: std::path::PathBuf,
         import_specifier: String,
@@ -1133,9 +1140,12 @@ mod managed_service {
         });
         let stderr_reader = std::thread::spawn(move || read_tail(File::from(stderr)));
         let writer = std::thread::spawn(move || File::from(stdin).write_all(&request));
-        let failure = match unsafe {
+        let wait_result = unsafe {
             WaitForSingleObject(raw(&managed.process), timeout.as_millis() as u32)
-        } {
+        };
+        // Read the original failure before terminate can replace last-error.
+        let wait_error = (wait_result == u32::MAX).then(|| unsafe { GetLastError() });
+        let failure = match wait_result {
             WAIT_OBJECT_0 => None,
             WAIT_TIMEOUT => {
                 terminate(&managed);
@@ -1143,7 +1153,9 @@ mod managed_service {
             }
             _ => {
                 terminate(&managed);
-                Some("GOGOKE_PRODUCT_SERVICE_WAIT_FAILED".to_string())
+                let mut error = format!("GOGOKE_PRODUCT_SERVICE_WAIT_FAILED:RESULT_{wait_result}");
+                if let Some(code) = wait_error { error.push_str(&format!(":WIN32_{code}")); }
+                Some(error)
             }
         };
         if !wait_settled(&managed, CLEANUP_WAIT).unwrap_or(false) {
@@ -1156,30 +1168,41 @@ mod managed_service {
         }
         let write_result = writer.join()
             .map_err(|_| "GOGOKE_PRODUCT_SERVICE_REQUEST_FAILED".to_string())
-            .and_then(|value| value.map_err(|_| "GOGOKE_PRODUCT_SERVICE_REQUEST_FAILED".to_string()));
+            .and_then(|value| value.map_err(|error| with_io_error("GOGOKE_PRODUCT_SERVICE_REQUEST_FAILED", error)));
         let output = stdout_reader.join()
             .map_err(|_| "GOGOKE_PRODUCT_SERVICE_OUTPUT_FAILED".to_string())
-            .and_then(|value| value.map_err(|_| "GOGOKE_PRODUCT_SERVICE_OUTPUT_FAILED".to_string()));
+            .and_then(|value| value.map_err(|error| with_io_error("GOGOKE_PRODUCT_SERVICE_OUTPUT_FAILED", error)));
         let stderr_tail = stderr_reader.join()
             .map_err(|_| "GOGOKE_PRODUCT_SERVICE_STDERR_READ_FAILED".to_string())
-            .and_then(|value| value.map_err(|error| format!("GOGOKE_PRODUCT_SERVICE_STDERR_READ_FAILED:WIN32_{}", error.raw_os_error().unwrap_or(0))));
+            .and_then(|value| value.map_err(|error| with_io_error("GOGOKE_PRODUCT_SERVICE_STDERR_READ_FAILED", error)));
         let mut exit_code = 0;
         let exit_code_available = unsafe { GetExitCodeProcess(raw(&managed.process), &mut exit_code) } != 0;
-        let result = if let Some(error) = failure {
-            Err(error)
+        let exit_error = (!exit_code_available).then(|| unsafe { GetLastError() });
+        let failure = if let Some(error) = failure {
+            Some(error)
         } else if !exit_code_available {
-            Err("GOGOKE_PRODUCT_SERVICE_WAIT_FAILED".to_string())
+            Some(format!("GOGOKE_PRODUCT_SERVICE_WAIT_FAILED:EXIT_CODE:WIN32_{}", exit_error.expect("failed exit-code query captured last-error")))
         } else if exit_code != 0 {
-            let mut error = format!("GOGOKE_PRODUCT_SERVICE_FAILED:{exit_code}");
-            if let Ok(bytes) = &output {
-                error = with_failure_output(error, "STDOUT", bytes);
+            Some(format!("GOGOKE_PRODUCT_SERVICE_FAILED:{exit_code}"))
+        } else {
+            write_result.as_ref().err().cloned().or_else(|| output.as_ref().err().cloned())
+        };
+        // All failures preserve the already captured original streams, including
+        // timeout. Settlement and lease ownership above remain unchanged.
+        let result = if let Some(mut error) = failure {
+            match &output {
+                Ok(bytes) => error = with_failure_output(error, "STDOUT", bytes),
+                Err(read_error) => {
+                    if !error.starts_with(read_error) { error.push_str(&format!(":{read_error}")); }
+                }
             }
             match &stderr_tail {
                 Ok(bytes) => error = with_failure_output(error, "STDERR", bytes),
                 Err(read_error) => error.push_str(&format!(":{read_error}")),
             }
-            Err(error)
-        } else if let Err(error) = write_result {
+            if let Err(write_error) = &write_result {
+                if !error.starts_with(write_error) { error.push_str(&format!(":{write_error}")); }
+            }
             Err(error)
         } else {
             output
