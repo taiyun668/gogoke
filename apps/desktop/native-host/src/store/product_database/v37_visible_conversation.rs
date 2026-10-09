@@ -890,13 +890,13 @@ impl<'root> ProductDatabase<'root> {
             if query.column_text(7)?!=association.seat || query.column_text(8)?!=association.incarnation
                 || query.column_text(9)?!=association.instance || query.column_text(10)?!=query.column_text(11)?
                 || query.column_text(12)?!=query.column_text(13)? {
-                complete=false;original_reason=Some(format!("Original raw source {row} has no matching H generation/episode/custody identity."));continue;
+                complete=false;original_reason.get_or_insert(format!("Original raw source {row} has no matching H generation/episode/custody identity."));continue;
             }
             let source_ref=self.visible_source_ref(row,selected)?;
             let (stream,ordinal)=partial_source(&source_ref)?;
             if query.column_text(5)?!=query.column_text(13)?
                 || !coverage.entry(stream).or_default().insert(ordinal) {
-                complete=false;original_reason=Some(format!("Original raw source {row} has a conflicting epoch or ordinal."));continue;
+                complete=false;original_reason.get_or_insert(format!("Original raw source {row} has a conflicting epoch or ordinal."));continue;
             }
             let source=source_json(&query.column_text(1)?)?;
             let envelope=object(&source)?;
@@ -913,11 +913,11 @@ impl<'root> ProductDatabase<'root> {
                     let step_id=step.column_text(1)?;
                     let command=source_json(&encode_hex(&command_bytes))?;let command=object(&command)?;
                     if !same_json(command.get(&k("id")),envelope.get(&k("id"))) || step.step_row()? {
-                        complete=false;original_reason=Some(format!("Original RPC response {row} does not match its typed command ID."));continue;
+                        complete=false;original_reason.get_or_insert(format!("Original RPC response {row} does not match its typed command ID."));continue;
                     }
                     if is_text(command.get(&k("method")),"turn/start") {
                         if !self.visible_snapshot_input(selected,&query,&step_id,&command_bytes,"send")? {
-                            complete=false;original_reason=Some(format!("Original turn/start ACK source {row} has no exact original H send request."));continue;
+                            complete=false;original_reason.get_or_insert(format!("Original turn/start ACK source {row} has no exact original H send request."));continue;
                         }
                         let params=object(command.get(&k("params")).ok_or(OrchestrationError::OperationConflict)?)?;
                         if !is_text(params.get(&k("threadId")),&selected.thread) {return Err(OrchestrationError::AccessDenied);}
@@ -931,39 +931,39 @@ impl<'root> ProductDatabase<'root> {
                         }
                     } else if is_text(command.get(&k("method")),"thread/inject_items") {
                         let matched=self.visible_snapshot_input(selected,&query,&step_id,&command_bytes,"append-without-turn")?;
-                        complete=false;original_reason=Some(format!("Original append-without-turn ACK source {row} {}.",
+                        complete=false;original_reason.get_or_insert(format!("Original append-without-turn ACK source {row} {}.",
                             if matched {"has no qualified vendor history projection"} else {"has no exact original H input request"}));
                     }
                 } else if query.column_text(2)?=="PENDING" {
-                    complete=false;original_reason=Some(format!("Original RPC response {row} has no correlated H command."));
+                    complete=false;original_reason.get_or_insert(format!("Original RPC response {row} has no correlated H command."));
                 }
                 continue;
             };
             let method=method.to_well_formed_string().ok_or(OrchestrationError::Invalid("visible source method"))?;
             if matches!(method.as_str(),"item/started"|"item/completed"|"item/agentMessage/delta"|"turn/completed")
                 && envelope.contains_key(&k("id")) {
-                complete=false;original_reason=Some(format!("Original item/turn notification {row} carries an RPC response identity."));continue;
+                complete=false;original_reason.get_or_insert(format!("Original item/turn notification {row} carries an RPC response identity."));continue;
             }
             let Some(Json::Object(params))=envelope.get(&k("params")) else {
                 if matches!(method.as_str(),"item/started"|"item/completed"|"item/agentMessage/delta"|"turn/completed") {
-                    complete=false;original_reason=Some(format!("Original item/turn notification {row} lacks its parameters."));
+                    complete=false;original_reason.get_or_insert(format!("Original item/turn notification {row} lacks its parameters."));
                 }
                 continue;
             };
             if let Some(thread_id)=params.get(&k("threadId")) {
                 if !is_text(Some(thread_id),&selected.thread) {
-                    complete=false;original_reason=Some(format!("Original A raw source {row} names another vendor thread."));continue;
+                    complete=false;original_reason.get_or_insert(format!("Original A raw source {row} names another vendor thread."));continue;
                 }
             }
             if method=="turn/started" || method=="turn/completed" {
                 if !is_text(params.get(&k("threadId")),&selected.thread) {
-                    complete=false;original_reason=Some(format!("Original A turn source {row} has no exact vendor thread."));continue;
+                    complete=false;original_reason.get_or_insert(format!("Original A turn source {row} has no exact vendor thread."));continue;
                 }
                 let Some(turn)=params.get(&k("turn")) else {return Err(OrchestrationError::OperationConflict);};
                 let fields=object(turn)?;let id=string_field(fields,"id")?;
                 if method=="turn/completed" {
                     if let Err(error)=retain_original_terminal(&mut terminals,&id,turn,&source_ref) {
-                        complete=false;original_reason=Some(format!("Original turn terminal source {row}: {error:?}"));continue;
+                        complete=false;original_reason.get_or_insert(format!("Original turn terminal source {row}: {error:?}"));continue;
                     }
                 }
                 let index=if let Some(index)=turn_ids.iter().position(|old|old==&id) {index}
@@ -985,7 +985,7 @@ impl<'root> ProductDatabase<'root> {
             } else if method.starts_with("item/") {
                 if method=="item/agentMessage/delta" {
                     if !is_text(params.get(&k("threadId")),&selected.thread) {
-                        complete=false;original_reason=Some(format!("Original agent delta {row} lacks its exact vendor thread."));continue;
+                        complete=false;original_reason.get_or_insert(format!("Original agent delta {row} lacks its exact vendor thread."));continue;
                     }
                     let turn=string_field(params,"turnId")?;let item=string_field(params,"itemId")?;
                     let delta=string_field(params,"delta")?;
@@ -1004,12 +1004,12 @@ impl<'root> ProductDatabase<'root> {
         }
         for (turn,items) in observed_items {
             let Some(index)=turn_ids.iter().position(|id|id==&turn) else {
-                complete=false;original_reason=Some(format!("Original item sources for turn {turn} have no matching original turn ID."));continue;
+                complete=false;original_reason.get_or_insert(format!("Original item sources for turn {turn} have no matching original turn ID."));continue;
             };
             let fields=object(&turns[index])?;
             let mut projection=copy_fields(fields);
             let mut projected=match fields.get(&k("items")) {Some(Json::Array(items))=>copy_array(items),
-                _=>{complete=false;original_reason=Some(format!("Original turn {turn} has no vendor items field."));Vec::new()}};
+                _=>{complete=false;original_reason.get_or_insert(format!("Original turn {turn} has no vendor items field."));Vec::new()}};
             for (id,snapshot,source) in items {
                 if let Some(snapshot)=snapshot {
                     if let Some(index)=projected.iter().position(|item|matches!(item,Json::Object(fields)
@@ -1024,7 +1024,7 @@ impl<'root> ProductDatabase<'root> {
                             }
                         }
                     }
-                    complete=false;original_reason=Some(format!("Original item {id} in turn {turn} has no final vendor item snapshot."));
+                    complete=false;original_reason.get_or_insert(format!("Original item {id} in turn {turn} has no final vendor item snapshot."));
                 }
             }
             projection.insert(k("items"),Json::Array(projected));turns[index]=Json::Object(projection);
@@ -1036,7 +1036,7 @@ impl<'root> ProductDatabase<'root> {
             let fields=object(&turns[index])?;
             if !matches!(fields.get(&k("items")),Some(Json::Array(items)) if items.iter().any(|item|
                 matches!(item,Json::Object(fields) if is_text(fields.get(&k("type")),"userMessage")))) {
-                complete=false;original_reason=Some(format!("Original turn/start ACK for turn {turn} has no actual userMessage item source."));
+                complete=false;original_reason.get_or_insert(format!("Original turn/start ACK for turn {turn} has no actual userMessage item source."));
             }
         }
         if after as usize>turns.len() {return Err(OrchestrationError::Invalid("visible page position"));}
@@ -1396,6 +1396,18 @@ mod tests {
             let mut fresh_continuation=product.visible_reply("workspaceA","UNKNOWN",selected.association.as_ref(),None);
             product.visible_thread_page("workspaceA",&selected,&BTreeMap::from([(k("cursor"),s(&fresh_cursor))]),&mut fresh_continuation).unwrap();
             assert!(Json::Object(fresh_continuation).canonical().contains("turnLater"),"fresh high-water must retain the later input's actual ACK");
+            // Real read-only producer, synthetic source frames: a later missing
+            // item must not erase the original contradictory-terminal reason.
+            raw("11",b"{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"threadA\",\"turn\":{\"id\":\"turnLater\",\"status\":\"completed\",\"itemsView\":\"notLoaded\",\"items\":[]}}}\n");
+            raw("12",b"{\"method\":\"item/started\",\"params\":{\"threadId\":\"threadA\",\"turnId\":\"turnLater\",\"item\":{\"id\":\"agentLater\",\"type\":\"agentMessage\",\"text\":\"\"}}}\n");
+            raw("13",b"{\"method\":\"item/agentMessage/delta\",\"params\":{\"threadId\":\"threadA\",\"turnId\":\"turnLater\",\"itemId\":\"agentLater\",\"delta\":\"known\"}}\n");
+            raw("14",b"{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"threadA\",\"turn\":{\"id\":\"turnLater\",\"status\":\"interrupted\",\"itemsView\":\"notLoaded\",\"items\":[]}}}\n");
+            let mut rejected=product.visible_reply("workspaceA","UNKNOWN",selected.association.as_ref(),None);
+            product.visible_thread_page("workspaceA",&selected,&BTreeMap::new(),&mut rejected).unwrap();
+            assert!(is_text(rejected.get(&k("state")),"UNKNOWN"));
+            let reason=string_field(&rejected,"reason").unwrap();
+            assert!(reason.contains("conflicting original turn terminals"),"original terminal conflict must survive the later missing-item projection: {reason}");
+            assert!(!reason.contains("no final vendor item snapshot"));
         });
     }
     #[test]
