@@ -97,6 +97,7 @@ def original_model(db, journal, case, attempt):
         params = frame.get("params", {})
         if (frame.get("method") == "item/tool/call" and params.get("tool") == "gogoke_seat" and
                 params.get("threadId") == claim["thread_id"] and
+                params.get("turnId") == attempt["turnId"] and
                 params.get("arguments") == attempt["expectedArguments"]):
             calls.append(frame)
         if (frame.get("method") == "turn/completed" and params.get("threadId") == claim["thread_id"] and
