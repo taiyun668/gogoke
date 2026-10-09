@@ -154,8 +154,8 @@ export class ActualProduct {
       this.socket.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
       this.socket.addEventListener('error', () => { clearTimeout(timer); reject(Error('Diagnostic connection failed')); }, { once: true });
     });
-    const ui = await this.evaluate('({url:location.href,home:!!document.querySelector(".home-product-entry"),tauri:!!window.__TAURI_INTERNALS__})');
-    if (ui.url !== target.url || !ui.home || !ui.tauri) throw Error('Actual Home/User bridge is absent');
+    const ui = await this.evaluate('({url:location.href,home:!!document.querySelector(".home-product-entry"),conversation:document.querySelectorAll(".composer").length===1,tauri:!!window.__TAURI_INTERNALS__})');
+    if (ui.url !== target.url || (!ui.home && !ui.conversation) || !ui.tauri) throw Error('Actual Home/conversation User bridge is absent');
     this.journal.launches.push({ ...this.endpoint, sourceCommit: this.config.sourceCommit, bootstrap: receipt, ui }); this.save();
     if (this.config.testerArmy !== false) {
       const { connectWebView } = await import('./e2e-webview.mjs');

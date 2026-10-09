@@ -29,6 +29,26 @@ unsuitable; record the actual reason before setting `testerArmy: false`.
 
 ## M1 flow
 
+`native-visible-win11.mjs PRIVATE_CONFIG` checks the installed native USER
+conversation through actual sidebar/Composer DOM actions. It reuses the same
+product custody, signed runtimes and original observers. Its private config adds
+`sourceRoot`, `readyEvidence`, `m2SourceConfig`, `stateRoot`, `workspacePath`,
+`cliVersion`, `askPrompt`, `steerPrompt` and the original `observerTools` bindings.
+Evidence must be a new child directory of the private config directory.
+An already released prior admission may be identified by `settledRelease` with
+`alreadyReleased: true`; the retained choice must still read as physically STOPPED
+and the current seat must be IDLE. The runner does not repeat that release.
+
+The native runner waits for the exact React thread/workspace row and hydration,
+then identifies each new UI effect by its original request ID. Old rejections are
+retained and cannot become a new failure. It observes the existing native
+operation deadline without replaying a write; an unresolved effect remains
+unknown. Shortcut checks work with translated text, while success requires the
+original native reply. Set `steerBeforeInterrupt: false` for a separate interrupt
+case when the prior steer case already completed its turn. This does not turn an
+unexecuted interrupt into a pass. Cold history must retain the accepted turn and
+exact input, and physical H stop precedes normal caption close.
+
 Run `m1-win11.mjs PRIVATE_CONFIG` with signed Node. The Controller generates the
 private config from the current frozen manifest and existing native bindings.
 All outputs remain outside the repository.

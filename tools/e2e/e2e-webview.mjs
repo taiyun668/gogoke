@@ -17,9 +17,10 @@ export async function connectWebView(endpoint, evidenceDirectory) {
     await engine.startAttempt({ attemptId: `actual-${endpoint.pid}`, artifactsDir: evidenceDirectory,
       signal, resolveSecret: async () => { throw Error('E2E does not request secrets'); } });
     const pages = surfaceOf(engine).context().pages().filter(page => page.url() === endpoint.url);
-    if (pages.length !== 1 || await pages[0].locator('.home-product-entry').count() !== 1 ||
+    if (pages.length !== 1 || (await pages[0].locator('.home-product-entry').count() !== 1 &&
+         await pages[0].locator('.composer').count() !== 1) ||
         !await pages[0].evaluate(() => Boolean(window.__TAURI_INTERNALS__))) {
-      throw Error('e2e must retain the unique actual Home and Tauri bridge');
+      throw Error('e2e must retain the unique actual Home/conversation and Tauri bridge');
     }
     return { engine, page: pages[0], dispose: () => engine.dispose({ signal: AbortSignal.timeout(10000), timeoutMs: 10000 }) };
   } catch (error) {
