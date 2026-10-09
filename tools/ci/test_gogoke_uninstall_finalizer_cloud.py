@@ -344,6 +344,91 @@ class CloudFinalizerTest(unittest.TestCase):
                 self.assertTrue(kernel32.CloseHandle(handle))
             self.assertTrue(lifecycle_lock_released(lock_path))
 
+    def test_owned_nested_directories_are_removed_but_unknown_content_is_retained(self):
+        with tempfile.TemporaryDirectory(prefix="gogoke-finalizer-nested-ci-") as temporary:
+            base = Path(temporary)
+            root = base / "项目-gogoke-nested-candidate"
+            root.mkdir()
+            exe = root / "gogoke.exe"
+            exe.write_bytes(b"fixture shell")
+
+            removable = root / "owned-empty" / "deep" / "owned.bin"
+            removable.parent.mkdir(parents=True)
+            removable.write_bytes(b"owned nested file")
+
+            retained_parent = root / "owned-with-user" / "deep"
+            retained_parent.mkdir(parents=True)
+            retained_owned = retained_parent / "owned.bin"
+            retained_owned.write_bytes(b"owned nested file with user sibling")
+            unknown = retained_parent.parent / "user-note.txt"
+            unknown.write_bytes(b"unknown content must remain")
+            unknown_bytes = unknown.read_bytes()
+
+            instance = f"ci-nested-fixture-{uuid.uuid4()}"
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, REGISTRY) as key:
+                winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, str(root))
+                winreg.SetValueEx(key, "InstallInstanceId", 0, winreg.REG_SZ, instance)
+                winreg.SetValueEx(key, "InstallDomain", 0, winreg.REG_SZ, "CI_CANDIDATE_RESOURCE")
+                winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ,
+                                  f'"{exe}" --uninstall')
+            nonce = str(uuid.uuid4())
+            tag = hashlib.sha256(instance.encode()).hexdigest()[:16]
+            payload = {
+                "root": str(root), "rootIdentity": identity(root),
+                "lockPath": str(base / "gogoke-install-lifecycle.lock"),
+                "registryKey": "gogoke-candidate", "instance": instance,
+                "domain": "CI_CANDIDATE_RESOURCE", "parentPid": 0,
+                "nonce": nonce,
+                "receipt": str(base / f"gogoke-uninstall-{tag}-{nonce}.json"),
+                "files": [
+                    {"path": str(path),
+                     "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                     "identity": identity(path)}
+                    for path in (exe, removable, retained_owned)
+                ],
+                "shortcuts": [],
+            }
+            payload_path = base / f"payload-{nonce}.json"
+            payload_path.write_text(json.dumps(payload), encoding="utf-8")
+            try:
+                result = subprocess.run(
+                    [sys.executable, __file__, "--parent", str(payload_path)],
+                    timeout=45, check=False,
+                )
+                self.assertEqual(result.returncode, 0)
+                receipt = Path(payload["receipt"])
+                deadline = time.monotonic() + 90
+                terminal = None
+                while time.monotonic() < deadline:
+                    try:
+                        observed = json.loads(receipt.read_text(encoding="utf-8"))
+                        if (observed.get("state") in ("FAILED", "DELETED")
+                                and lifecycle_lock_released(Path(payload["lockPath"]))):
+                            terminal = observed
+                            break
+                    except (OSError, json.JSONDecodeError):
+                        pass
+                    time.sleep(0.2)
+                self.assertIsNotNone(terminal, "finalizer did not finish its bounded receipt")
+                self.assertEqual(terminal["state"], "DELETED", terminal)
+                self.assertIn("Win32 145", terminal["detail"])
+                self.assertFalse(removable.exists())
+                self.assertFalse(removable.parent.exists())
+                self.assertFalse(removable.parent.parent.exists())
+                self.assertFalse(retained_owned.exists())
+                self.assertFalse(retained_parent.exists())
+                self.assertTrue(unknown.exists())
+                self.assertEqual(unknown.read_bytes(), unknown_bytes)
+                self.assertTrue(retained_parent.parent.exists())
+                self.assertTrue(root.exists())
+                with self.assertRaises(FileNotFoundError):
+                    winreg.OpenKey(winreg.HKEY_CURRENT_USER, REGISTRY)
+            finally:
+                try:
+                    winreg.DeleteKey(winreg.HKEY_CURRENT_USER, REGISTRY)
+                except FileNotFoundError:
+                    pass
+
     def test_formal_shortcut_requires_recorded_bytes_and_file_id(self):
         desktop = Path(subprocess.check_output(
             ["powershell.exe", "-NoProfile", "-Command",
