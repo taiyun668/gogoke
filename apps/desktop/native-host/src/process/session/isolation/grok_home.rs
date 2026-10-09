@@ -976,14 +976,20 @@ mod tests {
             aces.push(bytes);
         }
         let target=target.unwrap();
-        let length=8+aces.iter().map(Vec::len).sum::<usize>()+target.len();
+        let mut second_target=target.clone();
+        // A byte-identical ACE is collapsed on NTFS even with the Native
+        // writer. A second same-SID ALLOW with distinct flags is observable
+        // and still violates the required unique flags=3 H grant.
+        second_target[1]=NO_INHERITANCE as u8;
+        let length=8+aces.iter().map(Vec::len).sum::<usize>()+second_target.len();
         let mut storage=vec![0usize;length.div_ceil(size_of::<usize>())];
         let built=storage.as_mut_ptr().cast();
         assert_ne!(unsafe{InitializeAcl(built,length as u32,4)},0);
         for ace in &aces {
             assert_ne!(unsafe{AddAce(built,4,u32::MAX,ace.as_ptr().cast(),ace.len() as u32)},0);
             if ace==&target {
-                assert_ne!(unsafe{AddAce(built,4,u32::MAX,target.as_ptr().cast(),target.len() as u32)},0);
+                assert_ne!(unsafe{AddAce(built,4,u32::MAX,second_target.as_ptr().cast(),
+                    second_target.len() as u32)},0);
             }
         }
         let mut built_size=AclSizeInformation{ace_count:0,acl_bytes_in_use:0,acl_bytes_free:0};
@@ -1000,8 +1006,8 @@ mod tests {
         assert_eq!(built_target_count,2);
         let before_write=snapshot(held.0,&profile).unwrap();
         assert_eq!(before_write.target_aces,format!("1:{}:3",directory_rights(true)));
-        // Win32 SetSecurityInfo merges this ACL and drops the duplicate. Use
-        // the same-handle Native writer so the negative fixture has two ACEs.
+        // Use the same-handle Native writer and require both distinct same-SID
+        // ACEs to survive the filesystem's ACL normalization before testing.
         let mut sd=GrokDaclDescriptor{revision:0,reserved:0,control:0,
             owner:ptr::null_mut(),group:ptr::null_mut(),sacl:ptr::null_mut(),dacl:ptr::null_mut()};
         let security_descriptor=(&mut sd as *mut GrokDaclDescriptor).cast();
@@ -1016,6 +1022,12 @@ mod tests {
         assert!(status>=0,"duplicate fixture NTSTATUS=0x{:08x}",status as u32);
         let duplicate=snapshot(held.0,&profile).unwrap();
         assert_eq!(duplicate.target_aces.split(',').count(),2);
+        assert!(duplicate.canonical_dacl());
+        assert_eq!(duplicate.dacl_control,before_write.dacl_control);
+        assert!(duplicate.target_aces.split(',').any(|ace|
+            ace==format!("1:{}:3",directory_rights(true))));
+        assert!(duplicate.target_aces.split(',').any(|ace|
+            ace==format!("1:{}:0",directory_rights(true))));
         let before=duplicate.ordered_aces_bytes();
         let after=duplicate.ordered_without_target_bytes();
         assert!(profile.retire_grok_h_only_object(&home,&root,None,&before,&after,
