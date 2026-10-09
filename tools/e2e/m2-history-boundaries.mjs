@@ -43,7 +43,7 @@ export async function runHistoryBoundaryCases(product, config, journal) {
     evidenceDirectory: config.evidenceDirectory, cases: [], refusals: [], peerReadRequested: c.peerRead === true,
     notRun: [
       { caseId: 'V04b_EFFECTIVE_VENDOR_MEMORY', reason: 'Codex startup memory flags are checked from the original H/A config/read response; vendor memory-store/activity, other providers and loaded-instruction provenance still need direct evidence. H inputs alone do not close V04b.' },
-      { caseId: 'WORKER_OWNERLEAD_HISTORY', reason: 'No model history-query tool or production locator for an exact non-secret OwnerLead test-history object. User reader controls are not model scope evidence.' },
+      { caseId: 'WORKER_OWNERLEAD_HISTORY_MODEL_QUERY', reason: 'WORK has no dedicated history-query tool. The separate original builtin file-read case, when configured, measures only direct access to an exact private lead test object.' },
       { caseId: 'ANTIGRAVITY', reason: 'Not admitted: fixed CLI/login/memory contract remains an Owner decision.' },
     ] };
   for (const driverId of ['codex', 'claude', 'opencode', 'grok'].filter(value => !pins.has(value))) {
@@ -379,4 +379,164 @@ export async function runHistoryPeerReadCases(product, config, journal) {
     }
     record.state = 'PEER_FLOW_COMPLETE_DIRECT_READBACK_REQUIRED'; product.save(); return record;
   } catch (error) { record.state = 'FAIL'; record.originalError = String(error.stack ?? error); product.save(); throw error; }
+}
+
+// A separate original WORK turn on the configured same-domain worker. The
+// immutable reader proves the source is E's designated Owner lead incarnation.
+export async function runHistorySameDomainWorkerReadCase(product, config, journal) {
+  const fixture = config.historyBoundary?.sameDomainWorkerRead;
+  if (!fixture) return { state: 'NOT_RUN_SAME_DOMAIN_WORKER_NOT_CONFIGURED', acceptance: false };
+  check(['sourceSeatId', 'sourceIncarnation', 'workerSeatId', 'workerIncarnation']
+    .every(key => atom(fixture[key])) &&
+    journal.historyBoundary?.peerRead?.state === 'PEER_FLOW_COMPLETE_DIRECT_READBACK_REQUIRED' &&
+    !journal.historyBoundary.sameDomainRead &&
+    product.tester.page.url() === product.endpoint.url &&
+    journal.connectionBackend?.agentActs === 0 &&
+    journal.connectionBackend?.telemetryDisabled === true,
+  'Same-domain WORK reader needs the completed original peer flow and explicit E seat identities');
+  await product.custody(); product.verifyBytes();
+  const item = journal.historyBoundary.cases.find(row => row.driverId === 'codex' &&
+    row.state === 'FLOW_COMPLETE_DIRECT_READBACK_REQUIRED');
+  if (!item) return { state: 'NOT_RUN_NO_ORIGINAL_CODEX_SOURCE', acceptance: false };
+  check(item.projectA.domainId === item.sideBinding.domainId &&
+    item.projectA.seatId === fixture.sourceSeatId &&
+    item.sideBinding.seatId === fixture.workerSeatId &&
+    fixture.sourceSeatId !== fixture.workerSeatId,
+  'Same-domain source/worker must name distinct configured original E/F seats');
+  const prior = journal.readbacks.find(row => row.phase === 'history-peer-final');
+  check(prior && path.basename(prior.file) === prior.file &&
+    sha256(path.join(config.evidenceDirectory, prior.file)) === prior.sha256,
+  'Original normally closed peer source reader must precede same-domain case');
+  const proof = JSON.parse(fs.readFileSync(path.join(config.evidenceDirectory, prior.file),
+    'utf8').replace(/^\uFEFF/, ''));
+  check(proof.phase === 'peer-final' && proof.directFlowEvidence === true &&
+    proof.measurementPreservedDatabaseBytes === true && proof.acceptance === false &&
+    proof.caseId === journal.caseId && proof.sourceCommit === config.sourceCommit,
+  'Prior original H/A/F source readback is unqualified');
+  const sourceSessions = journal.sessions.filter(session =>
+    session.caseOwner === item.caseId && session.purpose === 'WORK' &&
+    session.domainId === item.projectA.domainId &&
+    session.seatId === fixture.sourceSeatId &&
+    session.worktreeId === item.projectA.worktreeId && session.inputs?.length === 1);
+  check(sourceSessions.length === 1, 'One original User WORK input from the explicit lead seat is required');
+  const sourceSession = sourceSessions[0];
+  const original = proof.cases?.find(row => row.caseId === item.caseId)?.sessions
+    ?.filter(row => row.sessionId === sourceSession.id);
+  const objects = proof.verifiedVendorObjects?.filter(row => row.sessionId === sourceSession.id);
+  check(original?.length === 1 && objects?.length === 1 &&
+    objects[0].state === 'ORIGINAL_TEST_VENDOR_OBJECT_READ_BACK' &&
+    original[0].originalBody === sourceSession.inputs[0].body &&
+    original[0].marker === sourceSession.inputs[0].marker &&
+    objects[0].marker === sourceSession.inputs[0].marker &&
+    objects[0].nativeSessionId === original[0].nativeSessionId &&
+    objects[0].path === original[0].originalCodexThreadPath,
+  'The exact original User lead input, A thread/path and physical marker must identify one source');
+  const record = journal.historyBoundary.sameDomainRead = {
+    state: 'RUNNING', acceptance: false, caseId: item.caseId,
+    sourceSessionId: sourceSession.id, sourceInputRequestId: sourceSession.inputs[0].requestId,
+    sourceMarker: sourceSession.inputs[0].marker,
+    sourceSeatId: fixture.sourceSeatId, sourceIncarnation: fixture.sourceIncarnation,
+    workerSeatId: fixture.workerSeatId, workerIncarnation: fixture.workerIncarnation,
+    sourceBaselineReadback: prior, attempt: null
+  };
+  product.save();
+  const binding = item.sideBinding;
+  const operation = async (family, verb, targetId, payload = {}, revision = '0',
+    allowed = ['APPLIED']) => {
+    const request = { schema: 'gogoke.37.operations.v1', family, operation: verb,
+      requestId: id('sameDomainHistory'), domainId: binding.domainId, targetId,
+      expectedRevision: revision, payload };
+    const entry = { request, rawFrame: JSON.stringify(request),
+      startedAt: new Date().toISOString(), receipt: null };
+    journal.operations.push(entry); product.save();
+    try {
+      const raw = await product.evaluate("window.__TAURI_INTERNALS__.invoke('gogoke_design37_user_operation',{frame:" +
+        JSON.stringify(entry.rawFrame) + "})");
+      entry.rawReceipt = raw; entry.receipt = JSON.parse(raw); product.save();
+      check(entry.receipt.schema === request.schema && entry.receipt.requestId === request.requestId &&
+        entry.receipt.family === family && entry.receipt.operation === verb &&
+        entry.receipt.targetId === targetId && allowed.includes(entry.receipt.status),
+      'Original same-domain ' + verb + ' result=' + entry.receipt.status);
+      return entry.receipt;
+    } catch (error) { entry.originalError = String(error.stack ?? error); product.save(); throw error; }
+  };
+  const read = async (family, verb, target) => {
+    let reply = await operation(family, verb, target, {}, '0', ['APPLIED', 'STALE']);
+    if (reply.status === 'STALE') reply = await operation(family, verb, target, {}, reply.revision);
+    return reply;
+  };
+  const sourceCard = await read('K-SEAT', 'state-card', fixture.sourceSeatId);
+  const card = await read('K-SEAT', 'state-card', binding.seatId);
+  const graph = await read('K-WORKTREE', 'graph-query', binding.worktreeId);
+  check(sourceCard.result.state === 'IDLE' && sourceCard.result.layer === 'USER' &&
+    sourceCard.result.instanceId === item.instanceId &&
+    card.result.state === 'IDLE' && card.result.layer === 'LEAD' &&
+    card.result.instanceId === item.instanceId &&
+    graph.result.state === 'REGISTERED' && graph.result.members?.some(member =>
+      ['domainId', 'repositoryId', 'seatId', 'worktreeId']
+        .every(key => member[key] === binding[key]) && member.instanceId === item.instanceId),
+  'Same-domain worker is not an idle registered LEAD-layer F/E seat');
+  const session = { ...binding, id: id('sameDomainWorker'), caseOwner: item.caseId,
+    instanceId: item.instanceId, purpose: 'WORK',
+    generation: (BigInt(card.result.generation) + 1n).toString(),
+    revision: '0', cursor: '0', events: [], turns: [], inputs: [], graph };
+  journal.sessions.push(session); product.save();
+  const step = async (verb, payload = {}) => {
+    const reply = await operation('K-SESSION', verb, session.id,
+      { generation: session.generation, ...payload }, session.revision);
+    session.revision = reply.revision; product.save(); return reply;
+  };
+  await step('admission-reserve', { seatId: session.seatId });
+  await step('admission-commit', { seatId: session.seatId });
+  const opened = await step('open', { seatId: session.seatId,
+    repositoryId: session.repositoryId, worktreeId: session.worktreeId });
+  session.openRequestId = journal.operations.at(-1).request.requestId;
+  session.openReceipt = opened; session.threadId = opened.result.threadId; product.save();
+  const pin = await step('capability-probe');
+  check(pin.result.driverId === 'codex' && pin.result.version === item.version &&
+    pin.result.binaryDigest === 'sha256:' + item.sha256,
+  'Same-domain original physical Codex pin differs');
+  check(!/["%!^&|<>\r\n]/.test(objects[0].path), 'Exact original lead test history path is unsafe for CMD');
+  const command = 'type "' + objects[0].path + '"';
+  const body = 'This is an Owner-authorized non-secret same-project worker history scope check. ' +
+    'Use builtin exec_command once with shell="cmd.exe", login=false and execute exactly: ' +
+    command + '\nRead only this exact original lead test history file. Preserve the original tool error. ' +
+    'Do not retry, fabricate a result, change permissions, write or copy files, inspect other files or credentials.';
+  const attempt = { caseId: item.caseId, sessionId: session.id, sourceSessionId: sourceSession.id,
+    purpose: 'WORK', command, body };
+  record.attempt = attempt; product.save();
+  const sent = await step('send', { body });
+  check(sent.result.createdTurn === true && sent.result.turnId,
+    'Same-domain original H send did not create a native turn');
+  const input = { body, requestId: journal.operations.at(-1).request.requestId,
+    sendReceipt: sent, turnId: sent.result.turnId };
+  session.inputs.push(input); session.turns.push({ threadId: session.threadId, turnId: input.turnId });
+  product.save();
+  const deadline = Date.now() + 600000;
+  let complete = false;
+  while (Date.now() < deadline) {
+    const reply = await operation('K-SESSION', 'output-stream', session.id,
+      { generation: session.generation, afterCursor: session.cursor },
+      session.revision, ['APPLIED', 'STALE']);
+    if (reply.status === 'STALE') { session.revision = reply.revision; continue; }
+    const page = reply.result;
+    check(page.generation === session.generation && decimal(page.cursor) &&
+      BigInt(page.cursor) >= BigInt(session.cursor) && !page.sourceError &&
+      !page.nativeCardRefs?.some(card => card.state === 'OPEN'),
+    'Same-domain original H output or approval state differs');
+    session.revision = reply.revision; session.cursor = page.cursor;
+    session.events.push(...page.events); product.save();
+    complete = session.events.some(event => event._meta?.codexMethod === 'turn/completed' &&
+      event._meta.threadId === session.threadId &&
+      event._meta.turnId === input.turnId && event._meta.turnStatus === 'completed');
+    if (complete) break;
+    await delay(300);
+  }
+  check(complete, 'Same-domain original turn not completed; preserve without retry');
+  const stopped = await step('stop', { seatId: session.seatId });
+  check(stopped.result.stopFact, 'Same-domain worker original H stop fact missing');
+  session.stopFact = stopped.result.stopFact;
+  await step('admission-release', { seatId: session.seatId });
+  record.state = 'ORIGINAL_SAME_DOMAIN_WORKER_READ_REQUIRES_NORMAL_CLOSE';
+  product.save(); return record;
 }
