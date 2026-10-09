@@ -26,6 +26,11 @@ def exactly(db, query, args=()):
     return rows[0]
 
 
+def rpc_id(value):
+    require(type(value) in (int, str), "V11 RPC ID must keep its original number/string type")
+    return type(value).__name__, value
+
+
 def same_path(left, right):
     return os.path.normcase(str(Path(left).resolve(strict=True))) == os.path.normcase(
         str(Path(right).resolve(strict=True)))
@@ -63,6 +68,8 @@ def file_boundaries(root, output, journal_file):
             case.get("sourceCommit") == journal.get("sourceCommit") and
             len(case.get("cases", [])) == 2,
             "V11 two original H boundary cases required")
+    require({item.get("name") for item in case["cases"]} ==
+            {"MAIN_WRITE", "READ_ONLY_WRITE"}, "V11 boundary names changed")
     close = candidate_close(journal, case)
     dbfile, wal, shm = root / "state.sqlite", root / "state.sqlite-wal", root / "state.sqlite-shm"
     require(dbfile.is_file() and (not wal.exists() or wal.stat().st_size == 0),
@@ -137,45 +144,111 @@ def file_boundaries(root, output, journal_file):
             original_send = operations[item["sendRequestId"]]
             sent = json.loads(bytes.fromhex(stdin[1]).decode())
             require(bytes.fromhex(stdin[0]).decode() == original_send["rawFrame"] and
+                    json.loads(original_send["rawFrame"]) == original_send["request"] and
+                    original_send["request"]["domainId"] == case["domainId"] and
+                    original_send["request"]["targetId"] == item["sessionId"] and
+                    original_send["request"]["operation"] == "send" and
+                    original_send["request"]["payload"] == {"generation": session["generation"],
+                                                                "body": item["body"]} and
                     stdin[2:4] == ("RECEIPTED", "APPLIED") and stdin[4] == episode[3] and
                     stdin[5] == session["generation"] and stdin[6:8] == custody[:2] and
+                    sent == item["sendReceipt"] and sent["status"] == "APPLIED" and
                     sent["result"]["createdTurn"] is True and
                     sent["result"]["turnId"] == item["turnId"],
                     "V11 original H send/ACK or physical custody differs")
-            sources = db.execute("SELECT generation,raw_bytes,state,process_ticket,custodian_nonce "
+            sources = db.execute("SELECT generation,raw_bytes,state,process_ticket,custodian_nonce,"
+                                 "source_epoch,source_cursor "
                                  "FROM v37_ledger_raw_source WHERE domain_id=? AND session_id=? "
                                  "AND operation_id=? ORDER BY rowid",
                                  (case["domainId"], item["sessionId"], episode[3])).fetchall()
             require(sources and all(row[0] == session["generation"] and row[2] != "PENDING" and
                                     row[3:5] == custody[:2] for row in sources),
                     "V11 original A source or custody is incomplete")
+            for epoch in {row[5] for row in sources}:
+                cursors = sorted(int(row[6]) for row in sources if row[5] == epoch)
+                require(cursors == list(range(1, max(cursors) + 1)),
+                        "V11 original A source stream has a capture gap")
             frames = [json.loads(bytes(row[1]).decode()) for row in sources]
+            steps = db.execute("SELECT command_hex,phase,source_epoch,source_cursor,generation,"
+                               "ticket,custodian_nonce FROM gogoke_v37_rpc_steps WHERE domain_id=? "
+                               "AND session_id=? AND process_operation_id=? ORDER BY rowid",
+                               (case["domainId"], item["sessionId"], episode[3])).fetchall()
+            require(steps and all(row[4] == session["generation"] and row[1] in
+                                  ("WRITTEN", "OBSERVED") and row[5:7] == custody[:2]
+                                  for row in steps), "V11 original H RPC step custody incomplete")
+            starts = [(row, json.loads(bytes.fromhex(row[0]).decode())) for row in steps
+                      if row[1] == "OBSERVED"]
+            starts = [(row, frame) for row, frame in starts if frame.get("method") == "turn/start" and
+                      frame.get("params", {}).get("threadId") == session["threadId"] and
+                      frame["params"].get("input") == [{"type": "text", "text": item["body"]}]]
+            require(len(starts) == 1, "V11 exact H body has no original turn/start")
+            acknowledgements = [(row, frame) for row, frame in zip(sources, frames)
+                                if "method" not in frame and "id" in frame and
+                                rpc_id(frame["id"]) == rpc_id(starts[0][1]["id"])]
+            require(len(acknowledgements) == 1 and
+                    acknowledgements[0][0][5:7] == starts[0][0][2:4] and
+                    acknowledgements[0][1].get("result", {}).get("turn", {}).get("id") == item["turnId"],
+                    "V11 original Codex turn ACK not bound to H send")
             terminal = [frame for frame in frames if frame.get("method") == "turn/completed" and
                         frame.get("params", {}).get("threadId") == session["threadId"] and
                         frame.get("params", {}).get("turn", {}).get("id") == item["turnId"]]
-            require(len(terminal) == 1, "V11 original exact turn terminal missing")
-            mutating = [frame for frame in frames if frame.get("method") == "item/completed" and
-                        frame.get("params", {}).get("turnId") == item["turnId"] and
-                        frame.get("params", {}).get("item", {}).get("type") in
-                        ("fileChange", "commandExecution", "mcpToolCall", "dynamicToolCall")]
-            original_tool = mutating[0]["params"]["item"] if len(mutating) == 1 else {}
-            failure_source = original_tool.get("error") or original_tool.get("result") or \
-                original_tool.get("aggregatedOutput")
-            failure_text = json.dumps(failure_source, ensure_ascii=False) if failure_source is not None else ""
-            exact_failed = original_tool.get("type") == "fileChange" and \
-                original_tool.get("status") == "failed" and any(
-                    isinstance(change, dict) and change.get("path") == str(target)
-                    for change in original_tool.get("changes", [])) and any(
-                    phrase in failure_text for phrase in
-                    ("Access is denied", "Permission denied", "os error 5", "EACCES", "EPERM"))
+            require(len(terminal) == 1 and terminal[0]["params"]["turn"].get("status") in
+                    ("completed", "failed"), "V11 original exact turn terminal missing")
+            tool_frames = [frame for frame in frames if frame.get("method") in
+                           ("item/started", "item/completed") and
+                           frame.get("params", {}).get("threadId") == session["threadId"] and
+                           frame["params"].get("turnId") == item["turnId"] and
+                           frame["params"].get("item", {}).get("type") in
+                           ("fileChange", "commandExecution", "mcpToolCall", "dynamicToolCall")]
+            unrelated = [frame for frame in frames if frame.get("params", {}).get("threadId") ==
+                         session["threadId"] and frame["params"].get("turnId") == item["turnId"] and
+                         (frame.get("method") == "item/tool/call" or
+                          (frame.get("method") in ("item/started", "item/completed") and
+                           frame["params"].get("item", {}).get("type") not in
+                           ("agentMessage", "reasoning", "contextCompaction",
+                            "fileChange", "commandExecution", "mcpToolCall", "dynamicToolCall")))]
+            completed = [frame for frame in tool_frames if frame["method"] == "item/completed"]
+            started = [frame for frame in tool_frames if frame["method"] == "item/started"]
+            original_tool = completed[0]["params"]["item"] if len(completed) == 1 else {}
+            first_tool = started[0]["params"]["item"] if len(started) == 1 else {}
+            pair = not unrelated and len(tool_frames) == 2 and \
+                len(started) == len(completed) == 1 and \
+                isinstance(original_tool.get("id"), str) and original_tool["id"] and \
+                first_tool.get("id") == original_tool["id"] and \
+                first_tool.get("type") == original_tool.get("type")
+            if item.get("attemptMode") == "execCommand":
+                require(same_path(item["worktreePath"], tree_path),
+                        "V11 CMD workdir differs from registered F tree")
+                marker_atom = "".join(char if char in
+                                      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+                                      else "_" for char in case["markerFile"])
+                require(item.get("command") ==
+                        f'echo V11_{item["name"]}_{marker_atom}>"{target}"',
+                        "V11 CMD command differs from the private marker target")
+                exact = pair and original_tool.get("type") == "commandExecution" and \
+                    first_tool.get("command") == item.get("command") and \
+                    original_tool.get("command") == item.get("command") and \
+                    ("cwd" not in original_tool or same_path(original_tool["cwd"], tree_path)) and \
+                    original_tool.get("status") in ("completed", "failed") and \
+                    type(original_tool.get("exitCode")) is int and original_tool["exitCode"] != 0
+            else:
+                exact = pair and original_tool.get("type") == "fileChange" and \
+                    original_tool.get("status") == "failed" and any(
+                        isinstance(change, dict) and change.get("path") == str(target)
+                        for change in original_tool.get("changes", []))
             claim = exactly(db, "SELECT state FROM gogoke_v37_h_claim WHERE domain_id=? AND session_id=?",
                             (case["domainId"], item["sessionId"]))
             require(claim[0] == "RELEASED", "V11 original H admission was not released")
             details.append({"name": item["name"], "sessionId": item["sessionId"],
                             "turnId": item["turnId"], "stopFact": item["stopFact"],
-                            "exactFailedFileChange": exact_failed,
-                            "state": "DIRECT_ORIGINAL_FILE_CHANGE_PERMISSION_REFUSAL" if exact_failed else
-                                     "NOT_RUN_NO_EXACT_ORIGINAL_FILE_CHANGE_REFUSAL"})
+                            "attemptMode": item.get("attemptMode"), "exactFailedOriginalTool": exact,
+                            "originalToolType": original_tool.get("type"),
+                            "originalToolStatus": original_tool.get("status"),
+                            "originalExitCode": original_tool.get("exitCode"),
+                            "originalError": original_tool.get("error"),
+                            "originalOutput": original_tool.get("aggregatedOutput"),
+                            "state": "ORIGINAL_TOOL_FAILED_TARGET_ABSENT_CAUSE_UNATTRIBUTED" if exact else
+                                     "NOT_RUN_NO_EXACT_FAILED_ORIGINAL_TOOL"})
     finally:
         db.close()
     after = files()
@@ -183,7 +256,8 @@ def file_boundaries(root, output, journal_file):
     result = {"schema": "gogoke.37.private-v11-file-boundaries-readback.v1",
               "sourceCommit": case["sourceCommit"], "normalClosePid": close["pid"],
               "databaseSha256": before["db"], "cases": details,
-              "directCaseEvidence": all(row["exactFailedFileChange"] for row in details),
+              "directAttemptEvidence": all(row["exactFailedOriginalTool"] for row in details),
+              "directCaseEvidence": False,
               "mainTreeFileWriteRefusal": next(row["state"] for row in details if row["name"] == "MAIN_WRITE"),
               "readOnlyFileWriteRefusal": next(row["state"] for row in details if row["name"] == "READ_ONLY_WRITE"),
               "vendorNativeWorktreeEscape": "NOT_RUN", "noNetworkBoundary": "NOT_RUN",

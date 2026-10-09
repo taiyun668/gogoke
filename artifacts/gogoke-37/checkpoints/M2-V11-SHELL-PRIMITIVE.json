@@ -1,0 +1,17 @@
+{
+  "schema": "gogoke.37.checkpoint.v1",
+  "change": "V11 private boundary driver can request the fixed Codex builtin exec_command with CMD and an exact nonsecret marker command. Its immutable reader binds H send and original turn/start ACK to one raw A tool item pair, exact command or file path, structured status/exit, physical target absence, StopFact and released custody. The old permission-text substring pass is removed.",
+  "result": "Source-only preparation. No local model, Win11 candidate, native installation, or original boundary probe ran. A nonzero command exit with the marker absent is reported as an original failed attempt with cause unattributed, not an OS/LPAC permission PASS.",
+  "mechanism": "The fixed H launch developer instruction explicitly calls for builtin exec_command with shell cmd.exe and login false. Gogoke dynamic_tools are additive, not the full native tool set. Existing original commandExecution goldens record exact command, item ID, status, exitCode and output; H records original turn/start and ACK. H's explicit model environment lacks PATH and does not grant the F Git pin/common .git, so Git reachability is unknown until a same-byte original probe.",
+  "next": "On the shared qualified private instance, first capture one original exec_command git --version with exact H/A thread, turn, command, item start/completion and exit. Only if Git is reachable, attempt one Owner-authorized private unregistered git worktree target and compare physical effects. Run V11 file boundary cases and the normal-close immutable reader. Preserve any unexpected effect without cleanup or retry. Do not change product Git grants or scope digest.",
+  "references": [
+    "apps/desktop/native-host/src/store/session_transport/launch.rs CODEX_WINDOWS_SHELL_ENVIRONMENT and explicit environment",
+    "apps/desktop/native-host/src/store/session_transport/codex_output.rs commandExecution/fileChange normalization",
+    "tools/e2e/m1-readback.py original commandExecution readback",
+    "tools/e2e/m2-history-boundaries-readback.py original H turn/start and commandExecution structure",
+    "artifacts/gogoke-37/checkpoints/M1-CMD-ENVIRONMENT-ADAPTATION.json",
+    "https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/core/src/tools/handlers/shell_spec.rs",
+    "https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/core/src/tools/registry.rs"
+  ],
+  "acceptance": false
+}
