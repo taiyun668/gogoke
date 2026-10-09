@@ -142,7 +142,9 @@ export async function runV06NativeUserCases(product, config, journal, hostRoot) 
       observed.parentSeatId === c.parentSeatId && atom(observed.sendRequestId) && atom(observed.turnId) &&
       (!record.modelAttempts.length || observed.sessionId === record.modelAttempts[0].sessionId),
     'Original H callback did not return the same authenticated parent session and exact turn IDs');
-    const attempt = { phase, expectedStatus, targetId, expectedArguments: args, prompt, ...observed };
+    const attempt = { phase, expectedStatus, targetId, expectedArguments: args, prompt,
+      domainId: c.domainId, parentSeatId: c.parentSeatId,
+      sessionId: observed.sessionId, sendRequestId: observed.sendRequestId, turnId: observed.turnId };
     record.modelAttempts.push(attempt); product.save();
     return attempt;
   };

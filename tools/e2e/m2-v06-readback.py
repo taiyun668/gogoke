@@ -64,6 +64,7 @@ def original_model(db, journal, case, attempt):
     sent = [row for row in journal["operations"] if row.get("request", {}).get("requestId") == attempt["sendRequestId"]]
     check(len(sent) == 1 and sent[0]["request"]["family"] == "K-SESSION" and
           sent[0]["request"]["operation"] == "send" and
+          sent[0]["request"]["domainId"] == case["domainId"] and
           sent[0]["request"]["targetId"] == attempt["sessionId"] and
           sent[0]["request"]["payload"]["body"] == attempt["prompt"],
           "Original H send was not the requested model tool turn")
@@ -78,8 +79,23 @@ def original_model(db, journal, case, attempt):
     check(binding["seat_id"] == fixture["parentSeatId"] and
           binding["selected_instance_id"] == fixture["instanceId"],
           "Original H session was not bound to the exact USER parent and instance")
-    claim = one(db, "SELECT process_operation_id,thread_id FROM gogoke_v37_h_claim "
+    claim = one(db, "SELECT process_operation_id,thread_id,generation FROM gogoke_v37_h_claim "
                 "WHERE domain_id=? AND session_id=?", (case["domainId"], attempt["sessionId"]))
+    stdin = one(db, "SELECT phase,receipt_status,request_hex,receipt_hex,session_id,generation,"
+                "process_operation_id,operation FROM gogoke_v37_h_stdin_journal "
+                "WHERE domain_id=? AND request_id=?", (case["domainId"], attempt["sendRequestId"]))
+    check(stdin["phase"] == "RECEIPTED" and stdin["receipt_status"] == "APPLIED" and
+          stdin["session_id"] == attempt["sessionId"] and stdin["operation"] == "send" and
+          str(stdin["generation"]) == str(claim["generation"]) and
+          stdin["process_operation_id"] == claim["process_operation_id"] and
+          bytes.fromhex(stdin["request_hex"]).decode() == sent[0]["rawFrame"],
+          "Original H stdin send was not receipted for this physical session")
+    send_ack = json.loads(bytes.fromhex(stdin["receipt_hex"]))
+    check(send_ack == sent[0]["receipt"] == json.loads(sent[0]["rawReceipt"]) and
+          send_ack["status"] == "APPLIED" and
+          send_ack["result"]["createdTurn"] is True and
+          send_ack["result"]["turnId"] == attempt["turnId"],
+          "Original H stdin receipt did not authorize this exact turn")
     episode = one(db, "SELECT phase,stop_fact_id FROM gogoke_v37_h_process_episode "
                   "WHERE domain_id=? AND session_id=? AND process_operation_id=?",
                   (case["domainId"], attempt["sessionId"], claim["process_operation_id"]))
@@ -128,6 +144,10 @@ def original_model(db, journal, case, attempt):
                    (case["domainId"], row["step_id"]))
     check((len(durable) == 1) == (attempt["expectedStatus"] == "APPLIED"),
           "Native child producer operation count differs from original H receipt")
+    if attempt["expectedStatus"] == "APPLIED":
+        check(durable[0]["seat_id"] == attempt["targetId"] and durable[0]["layer"] == "LEAD" and
+              durable[0]["parent_seat_id"] == fixture["parentSeatId"],
+              "Original child producer row belongs to another seat or parent")
     return True
 
 
