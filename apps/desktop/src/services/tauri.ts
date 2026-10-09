@@ -1049,12 +1049,12 @@ export function createDesign37SeatsSource<Page>(domainId: string | null) {
         if (!scope || typeof scope !== "object" || Array.isArray(scope)) {
           throw new Error("Native orchestration scope is unavailable.");
         }
-        await operation("tune", lead.id, lead._revision, {
-          setting: "orchestrationScope", value: { ...scope,
-            instanceIds: input.instanceIds, maxPermissionTier: input.maxPermission },
-        });
-        await design37UserConfiguration("project-parallel-cap", {
-          domainId, value: input.maxConcurrent,
+        await operation("set-orchestration-bounds", lead.id, lead._revision, {
+          instanceIds: input.instanceIds,
+          models: (scope as Record<string, unknown>).models,
+          reasoningEfforts: (scope as Record<string, unknown>).reasoningEfforts,
+          maxPermissionTier: input.maxPermission,
+          maxConcurrent: input.maxConcurrent,
         });
       },
     },

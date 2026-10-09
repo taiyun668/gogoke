@@ -128,6 +128,22 @@ pub(super) fn child_within_scope(parent:&Seat,child_settings:&str,
     Ok(())
 }
 
+/// Called inside the existing seat/H write transaction. Reclaimed records
+/// remain readable but do not occupy the configured direct-seat allowance.
+pub(super) fn require_child_capacity(db:&VerifiedDatabaseConnection<'_>,
+    parent:&Seat,creating:bool)->Result<(),SeatError> {
+    let cap=orchestration_scope(parent)?.max_concurrent.ok_or(SeatError::Denied)?;
+    let query=Statement::prepare(db.as_ptr(),
+        "SELECT count(*) FROM main.gogoke_v37_seats WHERE domain_id=?1 AND parent_seat_id=?2 AND layer='LEAD' AND state!='RECLAIMED'")?;
+    query.bind_text(1,&parent.domain_id)?;
+    query.bind_text(2,&parent.seat_id)?;
+    if !query.step_row()? {return Err(SeatError::SchemaDrift);}
+    let count=query.column_text(0)?.parse::<i64>().map_err(|_|SeatError::SchemaDrift)?;
+    if query.step_row()? || count<0 {return Err(SeatError::SchemaDrift);}
+    if count>cap || (creating && count==cap) {return Err(SeatError::Denied);}
+    Ok(())
+}
+
 /// Root/H invokes this after live lead authentication and takeover readiness,
 /// before a child reservation or any new work is admitted.
 pub(crate) fn authorize_child_dispatch(db:&VerifiedDatabaseConnection<'_>,
@@ -153,6 +169,7 @@ pub(crate) fn current_child_dispatch_context(db:&VerifiedDatabaseConnection<'_>,
         policy::CallAction::Dispatch)?;
     child_within_scope(&parent,child.settings_json.as_deref().ok_or(SeatError::Denied)?,
         &child.instance_id)?;
+    require_child_capacity(db,&parent,false)?;
     Ok(current)
 }
 

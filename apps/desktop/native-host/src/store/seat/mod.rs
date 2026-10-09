@@ -53,7 +53,7 @@ pub(crate) use continuity::{answer_takeover,answer_takeover_at_seat_revision,ans
     update_state_card,AnswerBasis,HealthObservation,HealthSignal,StateCard,TakeoverAnswer,
     TakeoverQuestion};
 pub(crate) use orchestration::{authorize_child_dispatch,current_child_dispatch_context,
-    orchestration_scope,
+    orchestration_scope,validate_new_scope,
     render_codex_instruction,seat_effort,OrchestrationScope,RenderedInstruction};
 
 const LEGACY_SEATS: &str = "CREATE TABLE gogoke_v37_seats(domain_id TEXT NOT NULL,seat_id TEXT NOT NULL,incarnation TEXT NOT NULL UNIQUE,layer TEXT NOT NULL CHECK(layer IN ('USER','LEAD')),parent_seat_id TEXT,kind TEXT NOT NULL CHECK(kind IN ('LONG','SHORT')),instance_id TEXT NOT NULL REFERENCES gogoke_v37_instances(instance_id),state TEXT NOT NULL CHECK(state IN ('IDLE','BUSY','RECLAIMED')),generation INTEGER NOT NULL CHECK(generation >= 1),revision INTEGER NOT NULL CHECK(revision >= 1),CHECK((layer='USER' AND parent_seat_id IS NULL) OR (layer='LEAD' AND parent_seat_id IS NOT NULL)),PRIMARY KEY(domain_id,seat_id),FOREIGN KEY(domain_id,parent_seat_id) REFERENCES gogoke_v37_seats(domain_id,seat_id)) STRICT";
@@ -1053,6 +1053,7 @@ fn create_inner(
             let parent=read(db,input.domain_id,&admission.seat_id)?.ok_or(SeatError::Denied)?;
             let instance=input.instance_id.ok_or(SeatError::Denied)?;
             orchestration::child_within_scope(&parent,&settings_json,instance)?;
+            orchestration::require_child_capacity(db,&parent,true)?;
         }
         if let Some(instance_id) = input.instance_id {
             if !instance_exists(db, instance_id)? {
@@ -1434,6 +1435,12 @@ pub(crate) fn tune(
         }
         if before.state == State::Busy { return Err(SeatError::Busy); }
         page_facts::ensure_mutable(db,&before)?;
+        if setting=="orchestrationScope" {
+            if !matches!(&origin,NativeOrigin::User(_)) || before.layer!=Layer::User {
+                return Err(SeatError::Denied);
+            }
+            orchestration::validate_new_scope(&value)?;
+        }
         let Some(settings_json) = &before.settings_json else { return Err(SeatError::SchemaDrift); };
         let Json::Object(mut settings) = Parser::parse(settings_json)? else {
             return Err(SeatError::SchemaDrift);

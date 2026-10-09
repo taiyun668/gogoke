@@ -233,6 +233,7 @@ fn operation_admitted(family: &str, operation: &str) -> bool {
             "short-to-long",
             "state-card",
             "takeover-answers",
+            "set-orchestration-bounds",
         ],
         "K-POLICY" => &[
             "call-permission-table",

@@ -3,6 +3,10 @@ name: gogoke native-host CI
 on:
   workflow_dispatch:
     inputs:
+      focused_library:
+        description: Affected checks only (seat-scope or ledger-scope); all full and formal gates are NOT_RUN
+        type: string
+        default: ""
       secretary_routine_fixture_only:
         description: Build and test original USER secretary routine boundaries with production mutation; full library and other formal gates are NOT_RUN
         type: boolean
@@ -60,8 +64,64 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  native-focused-library:
+    if: ${{ inputs.focused_library }}
+    name: Affected native library checks only
+    timeout-minutes: 20
+    runs-on: windows-latest
+    env:
+      RUSTUP_TOOLCHAIN: 1.85.1
+      FOCUSED_LIBRARY: ${{ inputs.focused_library }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.13.1
+      - uses: dtolnay/rust-toolchain@1.85.1
+      - name: Run the explicitly selected affected tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $filters = switch ($env:FOCUSED_LIBRARY) {
+            'seat-scope' { @('store::seat::orchestration::tests',
+              'store::seat::tests::native_child_scope_cap_refuses_a_second_seat_without_minting_a_grant',
+              'store::seat::tests::native_child_create_derives_only_first_exact_dispatch_grant',
+              'store::product_database::v37_seat::tests::owner_orchestration_bounds_have_a_separate_receipt_and_preserve_project_cap') }
+            'ledger-scope' { @('work_source_cannot_mint_a_secretary_global_reader',
+              'native_user_ledger_scopes_replay_and_subscription_survive_reopen') }
+            default { throw 'Unknown affected-check selection; no arbitrary shell or test filter is accepted.' }
+          }
+          $node = Get-Command node.exe -CommandType Application | Select-Object -First 1 -ExpandProperty Source
+          $env:GOGOKE_CONTROLLED_NODE_PATH = $node
+          $evidence = Join-Path $env:RUNNER_TEMP "native-affected-$env:GITHUB_RUN_ID"
+          New-Item -ItemType Directory -Path $evidence | Out-Null
+          $results = @()
+          foreach ($filter in $filters) {
+            $timer = [Diagnostics.Stopwatch]::StartNew()
+            $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib $filter -- --nocapture --show-output 2>&1
+            $code = $LASTEXITCODE
+            $timer.Stop()
+            $output | Set-Content (Join-Path $evidence ($filter.Replace(':','_') + '.log')) -Encoding utf8NoBOM
+            $output | Write-Host
+            $summary = @($output | Select-String -Pattern '^test result: ok\. ([0-9]+) passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out')
+            if ($code -ne 0 -or $summary.Count -ne 1 -or [int]$summary[0].Matches[0].Groups[1].Value -lt 1) {
+              throw "Affected tests failed or no actual test completed: $filter (exit $code)"
+            }
+            $results += [ordered]@{ filter=$filter; passed=[int]$summary[0].Matches[0].Groups[1].Value; seconds=$timer.Elapsed.TotalSeconds }
+          }
+          [ordered]@{ sourceCommit=$env:GITHUB_SHA; state='AFFECTED_CHECKS_ONLY'; results=$results; fullLibrary='NOT_RUN'; formalGates='NOT_RUN' } |
+            ConvertTo-Json -Depth 6 | Set-Content (Join-Path $evidence 'result.json') -Encoding utf8NoBOM
+          'Affected checks only; full library, LPAC, process, mutation and server gates: NOT_RUN' >> $env:GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-affected-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/native-affected-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 14
+
   native-dependency-lock:
-    if: ${{ inputs.dependency_lock_only }}
+    if: ${{ inputs.dependency_lock_only && !inputs.focused_library }}
     name: Resolve pinned native dependency lock only
     timeout-minutes: 10
     runs-on: windows-latest
@@ -97,7 +157,7 @@ jobs:
           retention-days: 14
 
   native-secretary-routine-boundaries:
-    if: ${{ inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only }}
+    if: ${{ inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only && !inputs.focused_library }}
     name: Native Secretary original USER routine boundaries
     # Original routine run used 19m47s; history-source mutation adds two
     # measured 4-5 minute test rebuilds without changing production budgets.
@@ -155,7 +215,7 @@ jobs:
           retention-days: 30
 
   native-host-windows-real-axes:
-    if: ${{ !inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only && !inputs.catalog_program_fixture_only && !inputs.security_remainder_source }}
+    if: ${{ !inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only && !inputs.catalog_program_fixture_only && !inputs.security_remainder_source && !inputs.focused_library }}
     name: ${{ matrix.shard == 'all' && 'Native host Windows real process axes' || format('Native host Windows library {0}', matrix.shard) }}
     # Full-library shards use independent runners so their fixed native fixtures
     # never execute in separate test processes on the same Windows host.
@@ -891,7 +951,7 @@ jobs:
           retention-days: 30
 
   native-host-library-partitions:
-    if: ${{ always() && !inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only && inputs.full_library_only && !inputs.security_remainder_source }}
+    if: ${{ always() && !inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only && inputs.full_library_only && !inputs.security_remainder_source && !inputs.focused_library }}
     needs: native-host-windows-real-axes
     name: Verify complete native-host library partitions
     timeout-minutes: 15
@@ -1009,7 +1069,7 @@ jobs:
           retention-days: 30
 
   native-host-windows-security-mutations:
-    if: ${{ !inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only && (!inputs.full_library_only || inputs.security_remainder_source) }}
+    if: ${{ !inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only && (!inputs.full_library_only || inputs.security_remainder_source) && !inputs.focused_library }}
     name: Native host Windows security mutations (${{ matrix.group }})
     # Keep unchanged mutation commands, but separate compile-heavy groups.
     # A remainder run tests the explicitly checked-out ancestor, not workflow SHA.
@@ -1519,7 +1579,7 @@ jobs:
           retention-days: 30
 
   gogoke-server-tests:
-    if: ${{ !inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only && !inputs.security_remainder_source && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.full_library_only && !inputs.catalog_program_fixture_only }}
+    if: ${{ !inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only && !inputs.security_remainder_source && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.full_library_only && !inputs.catalog_program_fixture_only && !inputs.focused_library }}
     name: Gogoke server cloud tests
     timeout-minutes: 45
     runs-on: windows-latest

@@ -690,7 +690,6 @@ impl<'root> ProductDatabase<'root> {
         if !cap.step_row()? { return Ok(Json::Null); }
         drop(cap);
         let (limit, _) = seat::read_effective_project_parallel_cap(&self.connection, domain)?;
-        let owner_cap = seat::read_project_parallel_cap(&self.connection, domain)?;
         let facts = seat::list_page_facts(&self.connection, domain)?;
         let profiles = instance::read_instance_profiles(&self.connection).map_err(|error|
             OrchestrationError::V37StoreFailure(format!("seat instance profiles: {error:?}")))?;
@@ -839,7 +838,8 @@ impl<'root> ProductDatabase<'root> {
                 range = Some(Json::Object(BTreeMap::from([
                     (key("instanceIds"), Json::Array(scope.instance_ids.iter().map(|id| string(id)).collect())),
                     (key("maxPermission"), string(permission)),
-                    (key("maxConcurrent"), Json::Number(owner_cap.to_string())),
+                    (key("maxConcurrent"), scope.max_concurrent.map(|cap|
+                        Json::Number(cap.to_string())).unwrap_or(Json::Null)),
                 ])));
             }
             rows.push(Json::Object(row));
@@ -1163,13 +1163,15 @@ impl<'root> ProductDatabase<'root> {
                     None=>seat::create(&mut self.connection,native,input),
                 }
             }
-            "tune" | "bind-instance" | "change-instance" | "reclaim" | "short-to-long" => {
+            "tune" | "set-orchestration-bounds" | "bind-instance" | "change-instance" | "reclaim" | "short-to-long" => {
                 let expected_fields: &[&str] = if request.operation == "change-instance" {
                     &["instanceId", "model", "effort", "permissionTier"]
                 } else if request.operation == "bind-instance" {
                     &["instanceId"]
                 } else if request.operation == "tune" {
                     &["setting", "value"]
+                } else if request.operation == "set-orchestration-bounds" {
+                    &["instanceIds", "models", "reasoningEfforts", "maxPermissionTier", "maxConcurrent"]
                 } else { &[] };
                 if !exact_payload(request, expected_fields) {
                     return Ok(receipt(request, V37Status::Denied, prior_revision, prior_revision, BTreeMap::new()));
@@ -1182,6 +1184,39 @@ impl<'root> ProductDatabase<'root> {
                     expected_generation: prior.as_ref().map(|seat| seat.generation).unwrap_or(1),
                     expected_revision, request_id: &request.request_id, request_bytes: &request.raw_bytes };
                 match request.operation.as_str() {
+                    "set-orchestration-bounds" => {
+                        if caller.is_some() {
+                            return Ok(receipt(request,V37Status::Denied,
+                                prior_revision,prior_revision,BTreeMap::new()));
+                        }
+                        let scope=Json::Object(request.payload.clone());
+                        if seat::validate_new_scope(&scope).is_err() {
+                            return Ok(receipt(request,V37Status::Denied,
+                                prior_revision,prior_revision,BTreeMap::new()));
+                        }
+                        // The wire has a revision, not a generation. For an
+                        // exact replay, recover the original pre-write generation
+                        // from E's stored result; tune still verifies the complete
+                        // request fingerprint and the current target/authority.
+                        let mut change=change;
+                        let saved=Statement::prepare(self.connection.as_ptr(),
+                            "SELECT generation FROM main.gogoke_v37_seat_operations WHERE domain_id=?1 AND request_id=?2 AND seat_id=?3")?;
+                        saved.bind_text(1,&request.domain_id)?;
+                        saved.bind_text(2,&request.request_id)?;
+                        saved.bind_text(3,&request.target_id)?;
+                        if saved.step_row()? {
+                            let generation=saved.column_text(0)?.parse::<i64>().map_err(|error|
+                                OrchestrationError::V37StoreFailure(format!("original bounds generation: {error}")))?;
+                            if generation<2 {
+                                return Ok(receipt(request,V37Status::Conflict,
+                                    prior_revision,prior_revision,BTreeMap::new()));
+                            }
+                            change.expected_generation=generation-1;
+                        }
+                        drop(saved);
+                        seat::tune(&mut self.connection,native,change,
+                            "orchestrationScope",&scope.canonical())
+                    }
                     "tune" => {
                         let setting = match string_field(&request.payload, "setting") {
                             Ok(value) => value,
@@ -2071,6 +2106,35 @@ mod tests {
             let Json::Object(old)=&rows[0] else {panic!("old row");};
             assert_eq!(old.get(&key("bodyState")).unwrap().canonical(),"\"VERIFIED\"");
             assert_eq!(old.get(&key("generation")).unwrap().canonical(),"\"1\"");
+        });
+    }
+
+    #[test]
+    fn owner_orchestration_bounds_have_a_separate_receipt_and_preserve_project_cap() {
+        fixture(|product| {
+            config(product,r#"{"schema":"gogoke.37.owner-configuration.v1","command":"project-parallel-cap","domainId":"projectA","value":7}"#);
+            config(product,r#"{"schema":"gogoke.37.owner-configuration.v1","command":"seat-template","domainId":"projectA","requestId":"templateBounds","templateId":"boundsBase","settings":{"instruction":"default"}}"#);
+            assert_eq!(status(product,&request("create-from-template","createBounds","boundsSeat",0,
+                r#"{"layer":"USER","templateId":"boundsBase"}"#)),V37Status::Applied);
+            let fields=r#"{"instanceIds":["instanceA"],"models":["modelA"],"reasoningEfforts":["high"],"maxPermissionTier":"READ_ONLY","maxConcurrent":2}"#;
+            let set=request("set-orchestration-bounds","setBounds","boundsSeat",1,fields);
+            assert_eq!(status(product,&set),V37Status::Applied);
+            assert_eq!(status(product,&set),V37Status::Replayed);
+            assert_eq!(seat::read_project_parallel_cap(&product.connection,"projectA").unwrap(),7);
+            let row=seat::get(&product.connection,"projectA","boundsSeat").unwrap().unwrap();
+            assert_eq!(seat::orchestration_scope(&row).unwrap().max_concurrent,Some(2));
+            assert_eq!(status(product,&request("set-orchestration-bounds","missingCap","boundsSeat",2,
+                r#"{"instanceIds":["instanceA"],"models":["modelA"],"reasoningEfforts":["high"],"maxPermissionTier":"READ_ONLY"}"#)),V37Status::Denied);
+            assert_eq!(status(product,&request("set-orchestration-bounds","badCap","boundsSeat",2,
+                &fields.replace("\"maxConcurrent\":2","\"maxConcurrent\":0"))),V37Status::Denied);
+            assert_eq!(seat::get(&product.connection,"projectA","boundsSeat").unwrap().unwrap(),row);
+            assert_eq!(status(product,&request("set-orchestration-bounds","setBounds","boundsSeat",1,
+                &fields.replace("\"maxConcurrent\":2","\"maxConcurrent\":3"))),V37Status::Conflict);
+            assert_eq!(status(product,&request("set-orchestration-bounds","laterBounds","boundsSeat",2,
+                &fields.replace("\"maxConcurrent\":2","\"maxConcurrent\":3"))),V37Status::Applied);
+            assert_eq!(status(product,&set),V37Status::Conflict,
+                "historical receipt cannot restore the later target configuration");
+            assert_eq!(seat::read_project_parallel_cap(&product.connection,"projectA").unwrap(),7);
         });
     }
 

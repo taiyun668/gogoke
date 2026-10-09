@@ -191,7 +191,7 @@ fn create_user(
     .seat
 }
 
-const E2_SETTINGS: &[u8] = br#"{"instruction":"default","model":"modelA","orchestrationScope":{"instanceIds":["instanceA","instanceB"],"maxPermissionTier":"NETWORKED_WRITE","models":["modelA"],"reasoningEfforts":["high"]},"permissionTier":"NETWORKED_WRITE","reasoningEffort":"high","takeoverQuestions":[{"id":"q","prompt":"What is the project scope?"}]}"#;
+const E2_SETTINGS: &[u8] = br#"{"instruction":"default","model":"modelA","orchestrationScope":{"instanceIds":["instanceA","instanceB"],"maxConcurrent":4,"maxPermissionTier":"NETWORKED_WRITE","models":["modelA"],"reasoningEfforts":["high"]},"permissionTier":"NETWORKED_WRITE","reasoningEffort":"high","takeoverQuestions":[{"id":"q","prompt":"What is the project scope?"}]}"#;
 
 fn create_e2_lead(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer)->Seat {
     store_template(db,NativeOrigin::user(owner),StoreTemplate {domain_id:"projectA",
@@ -1490,6 +1490,40 @@ fn native_child_create_derives_only_first_exact_dispatch_grant() {
         assert!(create_native_child(db,&caller,input()).unwrap().replayed);
         assert!(matches!(authorize_child_dispatch(db,&caller,&child),Err(SeatError::Denied)),
             "create replay must not restore an expired child grant");
+    });
+}
+
+#[test]
+fn native_child_scope_cap_refuses_a_second_seat_without_minting_a_grant() {
+    fixture(|db,owner| {
+        let lead=create_e2_lead(db,owner);
+        let mut settings=match Parser::parse(lead.settings_json.as_deref().unwrap()).unwrap() {
+            Json::Object(settings)=>settings,_=>panic!("original settings object"),
+        };
+        let Json::Object(scope)=settings.get_mut(&JsonString::from_str("orchestrationScope")).unwrap()
+            else {panic!("original scope object")};
+        scope.insert(JsonString::from_str("maxConcurrent"),Json::Number("1".into()));
+        let value=settings.get(&JsonString::from_str("orchestrationScope")).unwrap().canonical();
+        let lead=tune(db,NativeOrigin::user(owner),SeatChange {domain_id:"projectA",
+            seat_id:"lead",expected_generation:lead.generation,expected_revision:lead.revision,
+            request_id:"limitLead",request_bytes:b"original limit"},"orchestrationScope",&value).unwrap().seat;
+        let active=set_dispatch_state(db,&lead,true).unwrap();
+        let caller=NativeSeatCall::from_verified_h_turn(&active,"turnCap").unwrap();
+        initialize_policy(db,owner,"projectA","draft").unwrap();
+        answer_takeover(db,&caller,"q","Known scope",AnswerBasis::Cited {
+            source_ref:"repo:PLAN".into()},0,"answerCap",b"original cap answer").unwrap();
+        let first=CreateSeat {domain_id:"projectA",seat_id:"capChildA",template_id:"templateE2",
+            instance_id:Some("instanceA"),kind:Kind::Short,request_id:"createCapA",request_bytes:b"original cap A"};
+        let child=create_native_child(db,&caller,first).unwrap().seat;
+        authorize_child_dispatch(db,&caller,&child).unwrap();
+        assert!(matches!(create_native_child(db,&caller,CreateSeat {domain_id:"projectA",
+            seat_id:"capChildB",template_id:"templateE2",instance_id:Some("instanceA"),kind:Kind::Short,
+            request_id:"createCapB",request_bytes:b"original cap B"}),Err(SeatError::Denied)));
+        assert!(get(db,"projectA","capChildB").unwrap().is_none());
+        let grants=Statement::prepare(db.as_ptr(),
+            "SELECT count(*) FROM main.gogoke_v37_seat_policy_grants WHERE domain_id='projectA' AND target_id='capChildB'").unwrap();
+        assert!(grants.step_row().unwrap());
+        assert_eq!(grants.column_text(0).unwrap(),"0");
     });
 }
 
