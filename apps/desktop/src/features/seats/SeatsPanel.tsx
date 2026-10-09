@@ -59,6 +59,8 @@ export function SeatsPanel({ source }: { source: SeatsSource }) {
   const [showRemoved, setShowRemoved] = useState(false);
   const busyRef = useRef(false);
   const readSeq = useRef(0);
+  // The read still on its way, if any; polling waits for it instead of discarding it.
+  const inFlight = useRef(0);
   // Bumped when the source changes or the panel unmounts; older results are dropped.
   const epoch = useRef(0);
   const sourceRef = useRef(source);
@@ -67,6 +69,7 @@ export function SeatsPanel({ source }: { source: SeatsSource }) {
   const refresh = async () => {
     const mine = ++readSeq.current;
     const era = epoch.current;
+    inFlight.current = mine;
     try {
       const next = await sourceRef.current.read();
       if (mine !== readSeq.current || era !== epoch.current) return;
@@ -74,6 +77,8 @@ export function SeatsPanel({ source }: { source: SeatsSource }) {
       setLoadError(null);
     } catch (cause) {
       if (mine === readSeq.current && era === epoch.current) setLoadError(errorText(cause));
+    } finally {
+      if (inFlight.current === mine) inFlight.current = 0;
     }
   };
 
@@ -82,13 +87,14 @@ export function SeatsPanel({ source }: { source: SeatsSource }) {
     sourceRef.current = source;
     // An operation still running against the old source never locks the new one.
     busyRef.current = false;
+    inFlight.current = 0;
     setBusy(null);
     setPage(undefined);
     setLoadError(null);
     setActionError(null);
     void refresh();
     const timer = window.setInterval(() => {
-      if (!busyRef.current) void refresh();
+      if (!busyRef.current && !inFlight.current) void refresh();
     }, 2000);
     return () => {
       window.clearInterval(timer);

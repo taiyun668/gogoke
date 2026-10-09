@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InstancesPage, type InstancePageSource } from "./InstancesPage";
 import type { InstancePage } from "./instancePageModel";
@@ -85,4 +85,22 @@ describe("InstancesPage", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(screen.queryByText("旧名字")).toBeNull();
   }, 8000);
+
+  it("waits for a slow read instead of discarding it on every poll", async () => {
+    vi.useFakeTimers();
+    try {
+      const read = vi.fn(() => new Promise<InstancePage>((resolve) => setTimeout(() => resolve(page()), 2500)));
+      render(<InstancesPage source={{ read, actions: {} }} />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2400);
+      });
+      expect(read).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(200);
+      });
+      expect(screen.getAllByText("Plus 1 号").length).toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

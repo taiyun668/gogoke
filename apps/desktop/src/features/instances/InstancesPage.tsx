@@ -120,6 +120,8 @@ export function InstancesPage({ source }: { source: InstancePageSource }) {
   const [now, setNow] = useState(() => Date.now());
   const busyRef = useRef(false);
   const readSeq = useRef(0);
+  // The read still on its way, if any; polling waits for it instead of discarding it.
+  const inFlight = useRef(0);
   // Bumped when the source changes or the page unmounts; results from an older epoch are dropped.
   const epoch = useRef(0);
   const sourceRef = useRef(source);
@@ -129,6 +131,7 @@ export function InstancesPage({ source }: { source: InstancePageSource }) {
   const refresh = async () => {
     const mine = ++readSeq.current;
     const era = epoch.current;
+    inFlight.current = mine;
     try {
       const next = await sourceRef.current.read();
       if (mine === readSeq.current && era === epoch.current) {
@@ -137,6 +140,8 @@ export function InstancesPage({ source }: { source: InstancePageSource }) {
       }
     } catch (cause) {
       if (mine === readSeq.current && era === epoch.current) setLoadError(errorText(cause));
+    } finally {
+      if (inFlight.current === mine) inFlight.current = 0;
     }
   };
 
@@ -146,6 +151,7 @@ export function InstancesPage({ source }: { source: InstancePageSource }) {
     sourceRef.current = source;
     // An operation still running against the old source never locks the new one.
     busyRef.current = false;
+    inFlight.current = 0;
     setBusy(null);
     setPage(null);
     setLoadError(null);
@@ -153,7 +159,7 @@ export function InstancesPage({ source }: { source: InstancePageSource }) {
     void refresh();
     const timer = window.setInterval(() => {
       setNow(Date.now());
-      if (!busyRef.current) void refresh();
+      if (!busyRef.current && !inFlight.current) void refresh();
     }, 1000);
     return () => {
       window.clearInterval(timer);
