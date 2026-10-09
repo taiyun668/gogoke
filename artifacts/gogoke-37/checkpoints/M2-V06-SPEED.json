@@ -7,7 +7,7 @@
   "acceptance": false,
   "taskResult": "Existing native E and installed-product test modules already cover two-domain User template copy and independent tuning, plus an optional idle LEAD tune/reclaim. A complete V06 cannot currently be claimed from those facts. No product bytes were changed in this pass because the remaining gaps cross the frozen K-SEAT wire and shared operation dispatcher.",
   "currentState": {
-    "production": "K-SEAT create-from-template, tune, bind-instance, change-instance, reclaim, short-to-long and state-card are dispatched. The separate set-orchestration-bounds operation named by K-SEAT and V06 has no dispatcher branch. OrchestrationScope parses only instanceIds, models, reasoningEfforts and maxPermissionTier; no seat cap is parsed, projected, or checked during child creation. Reclaim checks seat state and project-lead designation but has no producer-backed reclaim-condition decision.",
+    "production": "K-SEAT create-from-template, tune, bind-instance, change-instance, reclaim, short-to-long and state-card are dispatched. The separate set-orchestration-bounds operation named by K-SEAT and V06 is absent from the native wire allowlist and has no dispatcher branch. OrchestrationScope parses only instanceIds, models, reasoningEfforts and maxPermissionTier; no seat cap is parsed, projected, or checked during child creation. Reclaim checks seat state and project-lead designation but has no producer-backed reclaim-condition decision.",
     "installedWin11": "The committed 0.1.40 installed-candidate checkpoint proves the product booted with matching identity, then the managed Codex CLI BEGIN returned the original Busy custody error before a model was started. No complete V06 operation/readback was recorded. V06 is NOT_RUN, not PASS.",
     "driver": "m2-seat-management-win11.mjs already invokes the actual installed User K-SEAT bridge and normally closed immutable baseline/final reader. Its standalone entry supplies no original H-session model callback and treats a registered idle LEAD target as optional, so MODEL_DENIAL and USER_LEAD_TUNE_AND_RECLAIM remain NOT_RUN when omitted. It cannot represent the rest of V06 as passed."
   },
@@ -21,7 +21,7 @@
     "installedCandidateV06": "NOT_RUN"
   },
   "failures": [
-    "V06 set-orchestration-bounds absent from shared K-SEAT dispatcher despite frozen contract and distinct-receipt requirement",
+    "V06 set-orchestration-bounds absent from shared K-SEAT wire allowlist and dispatcher despite frozen contract and distinct-receipt requirement",
     "V06 lead seat cap absent from scope and direct-child creation check",
     "V06 reclaim-condition predicate lacks a defined original producer and enforcement path"
   ],
@@ -39,5 +39,5 @@
   ],
   "recommendedNextAction": "Controller owns the shared K-SEAT and contract seam, supplies exact minimal payload/semantics, and can then route the bounded E helper changes to this worktree. Reuse m2-seat-management-win11.mjs and its immutable reader for the copy/tune case; wire the actual original H callback and registered idle LEAD fixture in one stable candidate run, with additional V06 refusals/limits read back from original native receipts. Do not run full library, signing, installation or dual audit during this stage.",
   "remainingEffectiveConstructionDays": "2-4 days after shared K-SEAT/seat-cap/reclaim semantics are fixed: about 1-2 days shared E/dispatcher integration, 0.5-1 day genuine H/stop/load fixture and immutable evidence wiring, 0.5-1 day affected cloud repair and focused review. This excludes cloud queue, candidate installation, and Owner time; one stable candidate Win11 run remains necessary.",
-  "references": "Own implementation: seat/orchestration.rs, continuity.rs, page_facts.rs and mod.rs; producer route: product_database/v37_seat.rs; existing installed measurement: tools/e2e/m2-seat-management*.mjs and m2-seat-management-readback.py; product reference: gogo-party seat-runtime and docs/research/2026-09-26-execution-layer-capability-table.md; committed original installed evidence: checkpoints/M2-CANDIDATE-40-INSTALLED.md."
+  "references": "Own implementation: seat/orchestration.rs, continuity.rs, page_facts.rs and mod.rs; producer route: product_database/v37_seat.rs and session_transport/wire.rs; existing installed measurement: tools/e2e/m2-seat-management*.mjs and m2-seat-management-readback.py; product reference: gogo-party seat-runtime and docs/research/2026-09-26-execution-layer-capability-table.md; committed original installed evidence: checkpoints/M2-CANDIDATE-40-INSTALLED.md."
 }
