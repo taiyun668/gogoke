@@ -884,9 +884,6 @@ def verify_host(db, domain, case, host, operations, result):
             completed = [(row, frame) for row, frame in decoded_busy if frame.get("method") == "turn/completed" and
                          frame.get("params", {}).get("threadId") == busy["binding"]["threadId"] and
                          frame["params"].get("turn", {}).get("id") == busy["turnId"]]
-            idle = [(row, frame) for row, frame in decoded_busy if frame.get("method") == "thread/status/changed" and
-                    frame.get("params", {}).get("threadId") == busy["binding"]["threadId"] and
-                    frame["params"].get("status", {}).get("type") == "idle"]
             for request_id, method in ((busy["completedReadRequestId"], "turn/completed"),
                                        (busy["idleReadRequestId"], "thread/status/changed")):
                 observed = operations[request_id]
@@ -904,19 +901,37 @@ def verify_host(db, domain, case, host, operations, result):
                           for event in observed["receipt"]["result"]["events"]),
                       "Original live H output did not carry the CLI completion and positive idle sources")
             delivered = final["nativeDelivery"]["stdin"]
+            busy_ack = final["busyNativeTurn"]["step"]
+            host_ack = final["nativeDelivery"]["step"]
+            sends_on_custody = select(db, "SELECT request_id FROM gogoke_v37_h_stdin_journal "
+                                      "WHERE domain_id=? AND session_id=? AND process_operation_id=? "
+                                      "AND generation=? AND operation='send'",
+                                      (domain, busy["binding"]["id"], stdin["process_operation_id"],
+                                       busy["binding"]["generation"]))
+            statuses = sorted(((row, frame) for row, frame in decoded_busy
+                               if row["source_epoch"] == busy_ack["source_epoch"] and
+                               frame.get("method") == "thread/status/changed" and
+                               frame.get("params", {}).get("threadId") == busy["binding"]["threadId"] and
+                               int(busy_ack["source_cursor"]) < int(row["source_cursor"]) <
+                               int(host_ack["source_cursor"])),
+                              key=lambda pair: int(pair[0]["source_cursor"]))
             check(len(completed) == 1 and completed[0][0]["state"] != "PENDING" and
                   completed[0][1]["params"]["turn"]["status"] == "completed" and
                   busy["completedTurnId"] == busy["turnId"] and
-                  any(int(completed[0][0]["source_cursor"]) < int(row["source_cursor"]) <
-                      int(final["nativeDelivery"]["step"]["source_cursor"])
-                      for row, _ in idle) and
+                  completed[0][0]["source_epoch"] == busy_ack["source_epoch"] and
+                  int(busy_ack["source_cursor"]) < int(completed[0][0]["source_cursor"]) <
+                  int(host_ack["source_cursor"]) and statuses and
+                  statuses[-1][1]["params"]["status"]["type"] == "idle" and
+                  host_ack["source_epoch"] == busy_ack["source_epoch"] and
+                  {row["request_id"] for row in sends_on_custody} ==
+                  {busy["sendRequestId"], delivered["request_id"]} and len(sends_on_custody) == 2 and
                   delivered["process_operation_id"] == stdin["process_operation_id"] and
                   delivered["ticket"] == stdin["ticket"] and
                   delivered["custodian_nonce"] == stdin["custodian_nonce"] and
                   delivered["generation"] == stdin["generation"],
                   "Original C/H positive idle must follow answered turn completion on the same live custody before Host send")
             final["busyCompletion"] = bytes(completed[0][0]["raw_bytes"]).decode()
-            final["busyIdle"] = [bytes(row["raw_bytes"]).decode() for row, _ in idle]
+            final["busyIdle"] = bytes(statuses[-1][0]["raw_bytes"]).decode()
         final["busyOriginalA"] = raw.decode()
     result["hostSnapshots"].append(final)
     return final

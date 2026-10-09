@@ -354,7 +354,7 @@ export async function runRulesCase(product, config, journal) {
       const holdBusy = async (host, session) => {
         const body = `Owner-authorized V08 busy-queue case ${host.caseId}. Ask exactly one non-secret native request_user_input question with id ${JSON.stringify(h.busyQuestion.questionId)}, header "V08 queue", text "Keep this test turn waiting for the Owner", and option label ${JSON.stringify(h.busyQuestion.optionLabel)}. Wait for the answer. Do not call any other tool, edit files, dispatch or contact anyone.`;
         host.busy = { binding: binding(session), question: h.busyQuestion,
-          askBytes: body, readRequestIds: [] }; product.save();
+          askBytes: body, readRequestIds: [], eventStart: session.events.length }; product.save();
         const sent = await product.operation('K-SESSION', 'send', session.id,
           { generation: session.generation, body }, session.revision);
         session.revision = sent.revision;
@@ -398,10 +398,10 @@ export async function runRulesCase(product, config, journal) {
           const readRequestId = journal.operations.at(-1).request.requestId;
           const completed = session.events.find(row => row._meta?.codexMethod === 'turn/completed' &&
             row._meta.threadId === session.threadId && row._meta.turnId === host.busy.turnId);
-          const completedIndex = session.events.indexOf(completed);
-          const idle = session.events.slice(completedIndex + 1).find(row =>
+          const status = session.events.slice(host.busy.eventStart).filter(row =>
             row._meta?.codexMethod === 'thread/status/changed' &&
-            row._meta.threadId === session.threadId && row._meta.threadStatus?.type === 'idle');
+            row._meta.threadId === session.threadId).at(-1);
+          const idle = status?._meta.threadStatus?.type === 'idle';
           if (completed && !host.busy.completedReadRequestId) host.busy.completedReadRequestId = readRequestId;
           if (idle && !host.busy.idleReadRequestId) host.busy.idleReadRequestId = readRequestId;
           product.save();
