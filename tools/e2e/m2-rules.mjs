@@ -394,7 +394,7 @@ export async function runRulesCase(product, config, journal) {
         'Original nonsecret K-QCARD answer must have its exact native write receipt');
         const deadline = Date.now() + 600000;
         while (Date.now() < deadline) {
-          await output(session);
+          const page = await output(session);
           const readRequestId = journal.operations.at(-1).request.requestId;
           const completed = session.events.find(row => row._meta?.codexMethod === 'turn/completed' &&
             row._meta.threadId === session.threadId && row._meta.turnId === host.busy.turnId);
@@ -402,10 +402,15 @@ export async function runRulesCase(product, config, journal) {
             row._meta?.codexMethod === 'thread/status/changed' &&
             row._meta.threadId === session.threadId).at(-1);
           const idle = status?._meta.threadStatus?.type === 'idle';
-          if (completed && !host.busy.completedReadRequestId) host.busy.completedReadRequestId = readRequestId;
-          if (idle && !host.busy.idleReadRequestId) host.busy.idleReadRequestId = readRequestId;
+          if (!host.busy.completedReadRequestId && page.events.some(row =>
+            row._meta?.codexMethod === 'turn/completed' && row._meta.threadId === session.threadId &&
+            row._meta.turnId === host.busy.turnId)) host.busy.completedReadRequestId = readRequestId;
+          if (!host.busy.idleReadRequestId && page.events.some(row =>
+            row._meta?.codexMethod === 'thread/status/changed' &&
+            row._meta.threadId === session.threadId && row._meta.threadStatus?.type === 'idle'))
+            host.busy.idleReadRequestId = readRequestId;
           product.save();
-          if (completed && idle) {
+          if (completed && idle && host.busy.completedReadRequestId && host.busy.idleReadRequestId) {
             requireFact(completed._meta.turnStatus === 'completed', 'Original answered CLI turn must complete');
             host.busy.completedTurnId = completed._meta.turnId;
             product.save(); return;
