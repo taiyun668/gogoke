@@ -265,6 +265,11 @@ export class ActualProduct {
         this.child.once('exit', resolve); this.child.once('error', resolve);
       });
     }
+    this.journal.failedProductExit = {
+      exitCode: this.child?.exitCode ?? null,
+      signal: this.child?.signalCode ?? null,
+      originalError: this.childError ? String(this.childError) : null,
+    };
     this.journal.failedProductHeld = false; this.save();
     this.socket?.close();
     if (this.tester) { await this.tester.dispose(); this.tester = null; }
