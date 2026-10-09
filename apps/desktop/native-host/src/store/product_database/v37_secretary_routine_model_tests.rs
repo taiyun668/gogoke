@@ -144,9 +144,11 @@ fn fixture_with_wire(fourth: &str, extra: &[&str], captured: usize,
     h::prepare_codex_request(&mut product.connection, &input).unwrap();
     let source_id = "H-USER:global:sessionS:sendS";
     let user_ms = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()).unwrap();
-    seat::record_user_presence(&mut product.connection, &product.owner, source_id,
-        seat::UserPresenceKind::Input, "processS", &custody.custodian_nonce, "sendS",
-        user_ms, user_ms).unwrap();
+    if purpose==ledger::SessionPurpose::Secretary {
+        seat::record_user_presence(&mut product.connection, &product.owner, source_id,
+            seat::UserPresenceKind::Input, "processS", &custody.custodian_nonce, "sendS",
+            user_ms, user_ms).unwrap();
+    }
     observed(&product, &custody, &keys[1], &format!("send-{}", &sha256_hex(&user)[..40]),
         &command, codex_rpc::RpcId::Number(4));
     h::complete_codex_turn_request(&mut product.connection, &input, &frames[1],
