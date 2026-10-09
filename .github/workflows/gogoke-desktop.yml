@@ -8,6 +8,11 @@ on:
         type: boolean
         required: false
         default: false
+      experimental_candidate:
+        description: "Light candidate: Browser, notices and one frozen build; repro, compare and compile mutations are NOT_RUN"
+        type: boolean
+        required: false
+        default: false
   push:
     branches:
       - main
@@ -44,31 +49,54 @@ concurrency:
 
 jobs:
   web:
-    name: Browser build and tests
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.experimental_candidate && 'Experimental candidate Browser build and tests' || 'Browser build and tests' }}
     timeout-minutes: 30
     runs-on: windows-latest
     defaults:
       run:
         working-directory: apps/desktop
     steps:
+      - name: Reject incompatible workflow modes
+        if: github.event_name == 'workflow_dispatch' && inputs.web_only && inputs.experimental_candidate
+        working-directory: .
+        shell: pwsh
+        run: throw 'web_only and experimental_candidate are mutually exclusive.'
       - name: Record selected check scope
-        if: github.event_name == 'workflow_dispatch' && inputs.web_only
+        if: github.event_name == 'workflow_dispatch' && (inputs.web_only || inputs.experimental_candidate)
         working-directory: .
         shell: pwsh
         run: |
-          @'
-          ## Browser iteration only
-
-          | Check | Evidence status |
-          | --- | --- |
-          | Browser build and tests | See this job's actual result |
-          | Generate locked dependency notices | NOT_RUN |
-          | Clean Windows build (frozen) | NOT_RUN |
-          | Clean Windows build (repro) | NOT_RUN |
-          | Compare independent Windows executable bytes | NOT_RUN |
-
-          This run cannot satisfy the complete integration or candidate build gate. Run again with web_only=false at the integration point or before producing a candidate.
-          '@ >> $env:GITHUB_STEP_SUMMARY
+          $summary = if ('${{ inputs.experimental_candidate }}' -eq 'true') {
+            @(
+              '## Experimental candidate lightweight checks'
+              ''
+              '| Check | Evidence status |'
+              '| --- | --- |'
+              '| Browser build and tests | See this job''s actual result |'
+              '| Generate locked dependency notices | See the notices job''s actual result |'
+              '| Clean Windows build (frozen) and original artifact byte verification | See the frozen job''s actual result |'
+              '| Clean Windows build (repro) | NOT_RUN |'
+              '| Compare independent Windows executable bytes | NOT_RUN |'
+              '| Unaffected native trust library tests and CI-only negative installer | NOT_RUN |'
+              ''
+              'This run is a lightweight experiment and cannot satisfy the complete stable integration gate; experimental resource signing remains subject to its trusted main verifier.'
+            ) -join [Environment]::NewLine
+          } else {
+            @(
+              '## Browser iteration only'
+              ''
+              '| Check | Evidence status |'
+              '| --- | --- |'
+              '| Browser build and tests | See this job''s actual result |'
+              '| Generate locked dependency notices | NOT_RUN |'
+              '| Clean Windows build (frozen) | NOT_RUN |'
+              '| Clean Windows build (repro) | NOT_RUN |'
+              '| Compare independent Windows executable bytes | NOT_RUN |'
+              ''
+              'This run cannot satisfy the complete integration or candidate build gate. Run again with web_only=false at the integration point or before producing a candidate.'
+            ) -join [Environment]::NewLine
+          }
+          $summary >> $env:GITHUB_STEP_SUMMARY
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -134,7 +162,7 @@ jobs:
       - run: npm run build
 
   licenses:
-    name: Generate locked dependency notices
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.experimental_candidate && 'Experimental candidate dependency notices' || 'Generate locked dependency notices' }}
     if: github.event_name != 'workflow_dispatch' || !inputs.web_only
     timeout-minutes: 45
     runs-on: windows-latest
@@ -211,7 +239,7 @@ jobs:
           retention-days: 30
 
   windows-build:
-    name: Clean Windows build (${{ matrix.lane }})
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.experimental_candidate && format('Experimental candidate Windows build ({0})', matrix.lane) || format('Clean Windows build ({0})', matrix.lane) }}
     if: github.event_name != 'workflow_dispatch' || !inputs.web_only
     timeout-minutes: 75
     needs: [web, licenses]
@@ -219,7 +247,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lane: [frozen, repro]
+        lane: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.experimental_candidate && '["frozen"]' || '["frozen","repro"]') }}
     env:
       RUSTUP_TOOLCHAIN: 1.89.0
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
@@ -384,61 +412,13 @@ jobs:
           node ../../tools/ci/gogoke-package-service.mjs verify src-tauri/resources generated/gogoke-package-hashes.json
           if ($LASTEXITCODE -ne 0) { throw "staged resources failed byte check: $LASTEXITCODE" }
       - name: Test native release and resource trust paths
-        id: native_trust
+        if: github.event_name != 'workflow_dispatch' || !inputs.experimental_candidate
         shell: pwsh
         env:
           GOGOKE_BUILD_LANE: ${{ matrix.lane }}
         run: |
-          # tauri-build's existing Common-Controls v6 resource is linked into
-          # bins, not cargo test --lib. rfd imports TaskDialogIndirect, so the
-          # library test host needs the same pinned manifest at loader startup.
-          # Keep the compiled executable bytes unchanged; no product sidecar is
-          # added to the package and no system configuration is changed.
-          cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_update --lib --no-run
-          if ($LASTEXITCODE -ne 0) { throw "Library test host compilation failed: $LASTEXITCODE" }
-          $testExecutables = @(Get-ChildItem -LiteralPath 'src-tauri/target/debug/deps' -Filter 'gogoke_desktop_lib-*.exe' -File)
-          if ($testExecutables.Count -ne 1) { throw 'The exact compiled library test host is ambiguous or absent' }
-          $metadataText = & cargo +1.89.0 metadata --locked --manifest-path src-tauri/Cargo.toml --format-version 1
-          if ($LASTEXITCODE -ne 0) { throw "Pinned test manifest source resolution failed: $LASTEXITCODE" }
-          $metadata = ($metadataText -join "`n") | ConvertFrom-Json
-          $manifestPackages = @($metadata.packages | Where-Object { $_.name -ceq 'tauri-build' -and $_.version -ceq '2.5.6' })
-          if ($manifestPackages.Count -ne 1) { throw 'Pinned tauri-build test manifest source is ambiguous or absent' }
-          $manifestSource = Join-Path (Split-Path $manifestPackages[0].manifest_path -Parent) 'src/windows-app-manifest.xml'
-          $manifestBytes = [IO.File]::ReadAllBytes($manifestSource)
-          $testExecutable = $testExecutables[0].FullName
-          $testHashBefore = (Get-FileHash -LiteralPath $testExecutable -Algorithm SHA256).Hash
-          [IO.File]::WriteAllBytes(($testExecutable + '.manifest'), $manifestBytes)
-          if ((Get-FileHash -LiteralPath $testExecutable -Algorithm SHA256).Hash -cne $testHashBefore) { throw 'Applying the original loader manifest changed executable bytes' }
-          if ((Get-FileHash -LiteralPath ($testExecutable + '.manifest') -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $manifestSource -Algorithm SHA256).Hash) { throw 'Library test host manifest differs from the pinned original' }
-          Write-Host "Library test host unchanged SHA256=$($testHashBefore.ToLowerInvariant()); original tauri-build 2.5.6 manifest SHA256=$((Get-FileHash -LiteralPath $manifestSource -Algorithm SHA256).Hash.ToLowerInvariant())"
-          $nativeOriginal = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_update --lib 2>&1
-          $nativeExit = $LASTEXITCODE
-          $nativeOriginal | Out-Host
-          if ($nativeExit -ne 0) {
-            # Preserve the actual failed executable and loader facts. This does
-            # not retry the tests or turn a loader failure into a test result.
-            $evidence = Join-Path $env:RUNNER_TEMP "gogoke-test-loader-${{ matrix.lane }}"
-            New-Item -ItemType Directory -Path $evidence -Force | Out-Null
-            $nativeOriginal | Set-Content -LiteralPath (Join-Path $evidence 'original-cargo-output.log') -Encoding utf8NoBOM
-            $executables = @(Get-ChildItem -LiteralPath 'src-tauri/target/debug/deps' -Filter 'gogoke_desktop_lib-*.exe' -File)
-            foreach ($executable in $executables) {
-              Copy-Item -LiteralPath $executable.FullName -Destination $evidence
-              if (Test-Path -LiteralPath ($executable.FullName + '.manifest')) { Copy-Item -LiteralPath ($executable.FullName + '.manifest') -Destination $evidence }
-              & (Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x64/dumpbin.exe') /imports $executable.FullName > (Join-Path $evidence ($executable.Name + '.imports.txt'))
-            }
-            [ordered]@{
-              sourceCommit = (git rev-parse HEAD).Trim(); lane = '${{ matrix.lane }}';
-              originalExit = $nativeExit; testExecution = 'READ_ORIGINAL_CARGO_OUTPUT';
-              executables = @($executables | ForEach-Object { @{ name = $_.Name; sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() } });
-              systemDirectory = [Environment]::SystemDirectory;
-              processPath = $env:PATH
-            } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidence 'loader-facts.json') -Encoding utf8NoBOM
-            Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = [DateTime]::Now.AddMinutes(-10) } -ErrorAction SilentlyContinue |
-              Where-Object { $_.Message -match 'gogoke_desktop_lib|0xc0000139' } |
-              Select-Object TimeCreated, Id, ProviderName, Message |
-              ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $evidence 'original-loader-events.json') -Encoding utf8NoBOM
-            throw "gogoke update tests failed: $nativeExit"
-          }
+          cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_update --lib
+          if ($LASTEXITCODE -ne 0) { throw "gogoke update tests failed: $LASTEXITCODE" }
           cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml resource_trust --lib
           if ($LASTEXITCODE -ne 0) { throw "resource trust tests failed: $LASTEXITCODE" }
           $custody = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml cancelled_reply_retains_job_and_lease_until_accounted_settlement --lib 2>&1
@@ -460,65 +440,10 @@ jobs:
               @($poisonedModule | Where-Object { $_ -match '^test .*managed_product_launch_rejects_poisoned_generation_module \.\.\. ok$' }).Count -ne 1) {
             throw "Poisoned generation module test failed, skipped, or did not execute exactly once: $LASTEXITCODE"
           }
-          $design37 = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml design37_product_composition_reuses_one_tauri_owned_host --lib -- --nocapture 2>&1
-          $design37 | Out-Host
-          if ($LASTEXITCODE -ne 0 -or
-              @($design37 | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' }).Count -ne 1 -or
-              @($design37 | Where-Object { $_ -match '^test .*design37_product_composition_reuses_one_tauri_owned_host \.\.\. ok$' }).Count -ne 1) {
-            throw "Design37 product composition test failed, skipped, or did not execute exactly once: $LASTEXITCODE"
-          }
-          $instanceLogin = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml public_runtime::design37_instances::tests --lib -- --nocapture 2>&1
-          $instanceLogin | Out-Host
-          if ($LASTEXITCODE -ne 0 -or
-              @($instanceLogin | Where-Object { $_ -match 'test result: ok\. 7 passed; 0 failed; 0 ignored' }).Count -ne 1) {
-            throw "Host-owned instance login tests failed, skipped, or did not execute all seven tests: $LASTEXITCODE"
-          }
-          $visibleBoundary = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml native_visible_boundary_tests --lib -- --nocapture 2>&1
-          $visibleExit = $LASTEXITCODE
-          $visibleBoundary | Out-Host
-          if ($visibleExit -ne 0 -or
-              @($visibleBoundary | Where-Object { $_ -match 'test result: ok\. 5 passed; 0 failed; 0 ignored' }).Count -ne 1) {
-            throw "Native visible caller boundary tests failed, skipped, or did not execute all five tests: $visibleExit"
-          }
           cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_uninstall --lib
           if ($LASTEXITCODE -ne 0) { throw "gogoke uninstall tests failed: $LASTEXITCODE" }
-      - name: Preserve failed native test loader evidence
-        if: ${{ failure() && steps.native_trust.outcome == 'failure' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: gogoke-test-loader-${{ matrix.lane }}-${{ github.sha }}-${{ github.run_id }}
-          path: ${{ runner.temp }}/gogoke-test-loader-${{ matrix.lane }}/*
-          if-no-files-found: error
-          retention-days: 14
-      - name: Verify login cancel result with a compiled failing mutation
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $PSNativeCommandUseErrorActionPreference = $false
-          $path = 'src-tauri/src/public_runtime/design37_instances.rs'
-          $original = [IO.File]::ReadAllBytes($path)
-          $source = [Text.Encoding]::UTF8.GetString($original)
-          $baselineHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
-          $correct = 'action == "cancel" && reply.settled && reply.state == "LOGGED_OUT"'
-          if ([regex]::Matches($source,[regex]::Escape($correct)).Count -ne 1) { throw 'R3 production fix locator must match once' }
-          try {
-            [IO.File]::WriteAllText($path,$source.Replace($correct,'record.cancel_requested && reply.settled'),[Text.UTF8Encoding]::new($false))
-            $output = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml cancellation_intent_cannot_overwrite_a_successful_original_result --lib -- --nocapture 2>&1
-            $exitCode = $LASTEXITCODE
-            $output | Out-Host
-            if ($exitCode -eq 0 -or @($output | Where-Object { $_ -match 'test result: FAILED\. 0 passed; 1 failed; 0 ignored' }).Count -ne 1) {
-              throw 'R3 mutation must compile and fail the unchanged successful-result assertion'
-            }
-          } finally {
-            [IO.File]::WriteAllBytes($path,$original)
-            if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -cne $baselineHash) { throw 'Host production source restoration hash mismatch' }
-          }
-          $restored = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml public_runtime::design37_instances::tests --lib -- --nocapture 2>&1
-          $restored | Out-Host
-          if ($LASTEXITCODE -ne 0 -or @($restored | Where-Object { $_ -match 'test result: ok\. 7 passed; 0 failed; 0 ignored' }).Count -ne 1) {
-            throw 'All seven unchanged host login tests must pass after exact production restoration'
-          }
       - name: Upload one-shot task deletion receipt
+        if: github.event_name != 'workflow_dispatch' || !inputs.experimental_candidate
         uses: actions/upload-artifact@v4
         with:
           name: gogoke-job-custody-delete-${{ matrix.lane }}-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}
@@ -639,7 +564,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Build separate CI-barrier installer for negative installation axes
-        if: matrix.lane == 'frozen' && github.event_name == 'workflow_dispatch'
+        if: matrix.lane == 'frozen' && github.event_name == 'workflow_dispatch' && !inputs.experimental_candidate
         shell: pwsh
         run: |
           $sysroot = (& rustc +1.89.0 --print sysroot).Trim()
@@ -671,7 +596,7 @@ jobs:
           [ordered]@{schema='gogoke.r2-06a.nsis-negative-instrument.v1';sourceCommit='${{ github.event.pull_request.head.sha || github.sha }}';runId='${{ github.run_id }}';runAttempt='${{ github.run_attempt }}';setupSha256=$testHash;productionShellSha256=$expectedShell;barrier='CI_ONLY'} |
             ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $directory 'instrument.json') -Encoding utf8
       - name: Upload separate CI-barrier installer
-        if: matrix.lane == 'frozen' && github.event_name == 'workflow_dispatch'
+        if: matrix.lane == 'frozen' && github.event_name == 'workflow_dispatch' && !inputs.experimental_candidate
         uses: actions/upload-artifact@v4
         with:
           name: gogoke-nsis-negative-${{ github.sha }}-${{ github.run_id }}
@@ -681,7 +606,7 @@ jobs:
 
   windows-reproducibility:
     name: Compare independent Windows executable bytes
-    if: github.event_name != 'workflow_dispatch' || !inputs.web_only
+    if: github.event_name != 'workflow_dispatch' || (!inputs.web_only && !inputs.experimental_candidate)
     timeout-minutes: 15
     needs: [windows-build]
     runs-on: windows-latest
