@@ -220,7 +220,8 @@ def host_snapshot(db, domain, host):
                 row = rows[0]
                 request = json.loads(bytes.fromhex(row["request_hex"]))
                 check(row["message_id"] == message["message_id"] and row["phase"] == "PREPARED" and
-                      row["result_state"] in ("APPLIED", "REPLAYED") and not row["reason"] and
+                      row["result_state"] in ("APPLIED", "REPLAYED") and
+                      row["reason"] == "H " + row["result_state"] and
                       request["schema"] == "gogoke.37.operations.v1" and
                       request["family"] == "K-SESSION" and request["domainId"] == domain and
                       request["targetId"] == recipe["sessionId"] and request["requestId"] == recipe[key] and
@@ -1171,9 +1172,26 @@ try:
             verify_case(db, journal, journal["rulesCases"][0], result)
         elif sys.argv[4] == "checkpoint":
             check(len(journal.get("rulesCases", [])) == 1, "One original exclusive V08 checkpoint case required")
-            check(journal["rulesCases"][0]["readerSha256"] == result["readerSha256"] and
-                  journal["rulesCases"][0]["driverSha256"] == digest(Path(__file__).with_name("m2-rules.mjs").read_bytes()),
-                  "Checkpoint reader/module differs from actual loaded bytes")
+            case = journal["rulesCases"][0]
+            check(case["driverSha256"] == digest(Path(__file__).with_name("m2-rules.mjs").read_bytes()),
+                  "Checkpoint module differs from actual loaded bytes")
+            original_before = [row for row in journal["readbacks"] if row["phase"] == "rules-before"]
+            check(len(original_before) == 1, "One original V08 baseline required")
+            baseline_ref = original_before[0]
+            check({name: baseline_ref[name] for name in ("file", "sha256")} == case["baselineReadback"],
+                  "Checkpoint baseline is not the actual case baseline")
+            check(Path(baseline_ref["file"]).name == baseline_ref["file"], "Original baseline path")
+            baseline_file = Path(sys.argv[3]).parent / baseline_ref["file"]
+            check(digest(baseline_file.read_bytes()) == baseline_ref["sha256"], "Original baseline bytes changed")
+            baseline = json.loads(baseline_file.read_text(encoding="utf-8-sig"))
+            check(baseline["schema"] == result["schema"] and baseline["phase"] == "before" and
+                  baseline["measurementPreservedDatabaseBytes"] and baseline["caseId"] == journal["caseId"] and
+                  baseline["sourceCommit"] == journal["sourceCommit"] and baseline["domainId"] == journal["domainId"] and
+                  baseline["databasePath"] == result["databasePath"] and baseline["rootIdentity"] == result["rootIdentity"] and
+                  baseline["readerSha256"] == case["readerSha256"] == journal["driverBytes"]["m2-rules-readback.py"],
+                  "Checkpoint original subject/reader differs")
+            result["originalReaderSha256"] = case["readerSha256"]
+            result["readerChangedSinceOriginalRun"] = result["readerSha256"] != case["readerSha256"]
             result["hostSnapshots"] = [host_snapshot(db, journal["domainId"], row)
                                        for row in journal["rulesCases"][0]["hostCases"] if row.get("causeEventId")]
             case = journal["rulesCases"][0]
