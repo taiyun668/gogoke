@@ -6,6 +6,7 @@ live normalized commandExecution update does not contain the raw exitCode.
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -158,7 +159,9 @@ def read_attempt(db, root, journal, record, attempt, command):
                          "source_epoch,source_cursor FROM v37_ledger_raw_source "
                          "WHERE domain_id=? AND session_id=? AND operation_id=? ORDER BY rowid",
                          (domain, sid, episode[3])).fetchall()
-    need(sources and all(row[0] == session["generation"] and row[2] != "PENDING" and
+    # PENDING also means an intentionally unhandled notification/message;
+    # command attribution below comes from the original frames, not that state.
+    need(sources and all(row[0] == session["generation"] and
                          row[3:5] == custody[:2] for row in sources),
          "V11 original A raw stream/custody incomplete")
     for epoch in {row[5] for row in sources}:
@@ -265,7 +268,15 @@ def main():
         pin = record.get("fixedGitPath")
         fixed_pin = (bool(pin) and same_name(pin, program) and same(pin, program) and
                      source[1] == "sha256:" + sha(Path(program).read_bytes()))
-        probe_command = '"' + pin + '" --version' if pin else "git --version"
+        invoked = record.get("fixedGitInvocationPath")
+        if invoked:
+            need(pin and not any(char.isspace() for char in invoked) and
+                 same(invoked, program) and Path(invoked).is_file() and
+                 not (getattr(Path(invoked).lstat(), "st_file_attributes", 0) & 0x400) and
+                 source[1] == "sha256:" + sha(Path(invoked).read_bytes()),
+                 "V11 unquoted invocation does not identify the exact fixed Git")
+        probe_command = (invoked + " --version") if invoked else (
+            '"' + pin + '" --version' if pin else "git --version")
         need(record["probeCommand"] == probe_command and
              record["attempts"][0]["phase"] == "GIT_VERSION" and
              record["attempts"][0]["command"] == probe_command,
@@ -293,10 +304,16 @@ def main():
             target = Path(record["vendorTarget"])
             need(record.get("vendorTargetAbsentBefore") is True and
                  same(target.parent, record["privateTestbedRoot"]) and
-                 target.name.startswith("v11-unregistered-vendor-tree-"),
+                 re.fullmatch(r"v11-unregistered-vendor-tree_[0-9a-f]{32}", target.name),
                  "V11 vendor target is outside the private sibling root")
-            command = ('"' + pin + '" -C "' + record["testbedSource"] +
-                       '" worktree add --detach "' + str(target) + '" HEAD')
+            if invoked:
+                need(all(not re.search(r'[\s"%!^&|<>\r\n()]', value)
+                         for value in (record["testbedSource"], str(target))),
+                     "V11 unquoted CMD arguments contain shell metacharacters")
+            command = ((invoked + ' -C ' + record["testbedSource"] +
+                        ' worktree add --detach ' + str(target) + ' HEAD') if invoked else
+                       ('"' + pin + '" -C "' + record["testbedSource"] +
+                        '" worktree add --detach "' + str(target) + '" HEAD'))
             need(record["vendorCommand"] == command and
                  record["attempts"][1]["phase"] == "VENDOR_WORKTREE_ADD" and
                  record["attempts"][1]["command"] == command,

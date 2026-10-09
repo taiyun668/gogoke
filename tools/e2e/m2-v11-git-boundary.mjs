@@ -58,6 +58,15 @@ function setup(config) {
      fs.lstatSync(c.fixedGitPath).isFile() &&
      same(c.fixedGitPath, fs.realpathSync.native(c.fixedGitPath))),
   'V11 optional fixed Git path must identify an existing ordinary absolute program');
+  if (c.fixedGitInvocationPath !== undefined) {
+    check(c.fixedGitPath && /^[A-Za-z]:\\[A-Za-z0-9_~.\\-]+$/.test(c.fixedGitInvocationPath),
+      'V11 invocation spelling must be an unquoted absolute Windows file name');
+    const pinned = fs.statSync(c.fixedGitPath, { bigint: true });
+    const invoked = fs.lstatSync(c.fixedGitInvocationPath, { bigint: true });
+    check(invoked.isFile() && !invoked.isSymbolicLink() && pinned.ino !== 0n &&
+      pinned.dev === invoked.dev && pinned.ino === invoked.ino,
+    'V11 invocation spelling does not identify the same fixed Git object');
+  }
   check(plain(c.worktreePath) && plain(config.testbedSource) &&
     plain(c.privateTestbedRoot), 'V11 CMD path has expansion or quoting characters');
   return c;
@@ -162,12 +171,14 @@ async function originalCommand(product, config, journal, record, phase, command)
 export async function runV11GitProbe(product, config, journal) {
   const c = setup(config);
   check(!journal.v11GitBoundary, 'V11 Git probe uses one fresh original case');
-  const command = c.fixedGitPath ? '"' + c.fixedGitPath + '" --version' : 'git --version';
+  const command = c.fixedGitInvocationPath ? c.fixedGitInvocationPath + ' --version' :
+    c.fixedGitPath ? '"' + c.fixedGitPath + '" --version' : 'git --version';
   const record = { state: 'PROBE_RUNNING', acceptance: false,
     sourceCommit: config.sourceCommit, candidateVersion: config.version,
     installedSha256: config.installedSha256, domainId: config.domainId,
     repositoryId: config.repositoryId, testbedSource: config.testbedSource,
     privateTestbedRoot: c.privateTestbedRoot, fixedGitPath: c.fixedGitPath ?? null,
+    fixedGitInvocationPath: c.fixedGitInvocationPath ?? null,
     probeCommand: command, attempts: [] };
   journal.v11GitBoundary = record; product.save();
   await originalCommand(product, config, journal, record, 'GIT_VERSION', command);
@@ -207,7 +218,14 @@ export async function runV11GitVendorAttempt(product, config, journal) {
   'V11 original fixed Git reachability was not proven by the closed reader');
   const target = path.join(c.privateTestbedRoot, id('v11-unregistered-vendor-tree'));
   check(!fs.existsSync(target), 'V11 private unregistered vendor target already exists');
-  const command = '"' + c.fixedGitPath + '" -C "' + config.testbedSource +
+  if (c.fixedGitInvocationPath) {
+    check([config.testbedSource, target].every(value =>
+      !/[\s"%!^&|<>\r\n()]/.test(value)),
+    'V11 unquoted CMD arguments require exact paths without shell metacharacters');
+  }
+  const command = c.fixedGitInvocationPath ? c.fixedGitInvocationPath +
+    ' -C ' + config.testbedSource + ' worktree add --detach ' + target + ' HEAD' :
+    '"' + c.fixedGitPath + '" -C "' + config.testbedSource +
     '" worktree add --detach "' + target + '" HEAD';
   record.probeReadbackPath = c.probeReadback;
   record.probeReadbackSha256 = sha(bytes);
