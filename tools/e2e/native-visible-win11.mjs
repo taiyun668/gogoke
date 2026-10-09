@@ -629,7 +629,7 @@ try {
     `Original H physical stop readback is incomplete: ${JSON.stringify(live)}`);
   hStopped = true;
   step('original-H-stop-readback', { stopFact: stopped.result.stopFact, live: live.live });
-  await hOutput(session);
+  // stop removes the live run; retained history is the original A source.
   const beforeStop = await nativeHistory(session.threadId);
   const beforeStopMetadata = structuredClone(nativeHistoryFacts.get(session.threadId));
   assertCurrentHistory(beforeStop, originalSend);
