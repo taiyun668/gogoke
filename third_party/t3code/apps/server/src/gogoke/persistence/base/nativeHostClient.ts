@@ -2189,11 +2189,16 @@ export class NativeHostClient {
     child.stderr?.on("data", (chunk: Buffer) => {
       stderrTail = Buffer.concat([stderrTail, chunk]).subarray(-4096);
     });
-    const spawnState: { error: Error | null } = { error: null };
-    const childClosed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-      child.once("error", (error) => { spawnState.error = error; });
-      child.once("close", (code, signal) => resolve({ code, signal }));
+    const childState: {
+      spawnError: Error | null;
+      processError: Error | null;
+      closed: { code: number | null; signal: NodeJS.Signals | null } | null;
+    } = { spawnError: null, processError: null, closed: null };
+    child.on("error", (error) => {
+      if (child.pid === undefined) childState.spawnError = error;
+      else childState.processError = error;
     });
+    child.once("close", (code, signal) => { childState.closed = { code, signal }; });
     let stdout: NodeReadline.Interface | null = null;
     let handshake: Awaited<ReturnType<typeof readStartupHandshake>>;
     try {
@@ -2204,20 +2209,35 @@ export class NativeHostClient {
       handshake = await readStartupHandshake(stdout);
     } catch (error) {
       stdout?.close();
-      child.kill();
-      const { code, signal } = await childClosed;
+      const exitCode = child.exitCode;
+      const exitSignal = child.signalCode;
+      let killResult: boolean | null = null;
+      let killError: unknown = null;
+      try { killResult = child.kill(); }
+      catch (failure) { killError = failure; }
       const original = error instanceof NativeHostClientError ? error
         : new NativeHostClientError("HOST_EOF", String(error), { cause: error });
       const detail = original.message.slice(original.code.length + 2);
       const facts = [detail];
-      if (spawnState.error !== null) {
-        const errorCode = (spawnState.error as NodeJS.ErrnoException).code;
-        facts.push(`SPAWN_ERROR:${errorCode ?? "UNKNOWN"}:${spawnState.error.message}`);
+      if (childState.spawnError !== null) {
+        const errorCode = (childState.spawnError as NodeJS.ErrnoException).code;
+        facts.push(`SPAWN_ERROR:${errorCode ?? "UNKNOWN"}:${childState.spawnError.message}`);
       }
+      if (childState.processError !== null) facts.push(`PROCESS_ERROR:${childState.processError.message}`);
+      if (killError !== null) facts.push(`KILL_ERROR:${String(killError)}`);
+      if (child.pid !== undefined && killResult === false) facts.push("KILL_RESULT:false");
       // A failed spawn can report a libuv close code without a child process.
-      if (spawnState.error === null && code !== null) facts.push(`EXIT_CODE:${code}`);
-      if (spawnState.error === null && signal !== null) facts.push(`CLOSE_SIGNAL_AFTER_KILL_REQUEST:${signal}`);
+      if (child.pid !== undefined && childState.spawnError === null) {
+        const code = childState.closed?.code ?? exitCode;
+        const signal = childState.closed?.signal ?? exitSignal;
+        if (code !== null) facts.push(`EXIT_CODE:${code}`);
+        if (signal !== null) facts.push(`${exitSignal !== null ? "EXIT_SIGNAL" : "CLOSE_SIGNAL_AFTER_KILL_REQUEST"}:${signal}`);
+      }
+      if (child.pid !== undefined && childState.closed === null) facts.push("CHILD_CLOSE_UNCONFIRMED");
       if (stderrTail.length > 0) facts.push(`STDERR_TAIL:${stderrTail.toString("utf8")}`);
+      if (child.pid !== undefined && child.stderr !== null && !child.stderr.readableEnded && childState.closed === null) {
+        facts.push("STDERR_DRAIN_UNCONFIRMED");
+      }
       throw new NativeHostClientError(original.code, facts.join(": "), { cause: original });
     }
     const { pipeLine, capabilityLine } = handshake;
