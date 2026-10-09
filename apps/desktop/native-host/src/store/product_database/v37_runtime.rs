@@ -2636,7 +2636,10 @@ impl<'root> ProductDatabase<'root> {
             OrchestrationError::V37StoreFailure(format!("original visible runtime exit observation: {error:?}")))?.is_some() {
             return Err(OrchestrationError::AccessDenied);
         }
-        failure(run.evidence.verify_active_in_transaction(&mut self.connection,self.root,&self.owner,Some(&run.operation_id)))?;
+        let claim=failure(runtime::observe_claim_bound(&self.connection,
+            &key.0,run.evidence.seat_id(),&key.1))?.ok_or(OrchestrationError::AccessDenied)?;
+        failure(run.evidence.verify_live_in_transaction(&mut self.connection,self.root,&self.owner,
+            &run.operation_id,claim.revision))?;
         Ok(())
     }
     /// The finite USER producer has committed its original request before

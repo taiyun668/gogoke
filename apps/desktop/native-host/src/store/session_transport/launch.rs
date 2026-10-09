@@ -574,6 +574,13 @@ impl LaunchEvidence {
             identity, VerificationPhase::Active)
     }
 
+    pub(crate) fn verify_live_in_transaction(&self, db: &mut VerifiedDatabaseConnection<'_>,
+        root: &RootLock, owner: &OwnerIssuer, operation: &str, revision: i64) -> Result<(), String> {
+        let identity = evidence(authority::read_product_identity_in_current_transaction(db, owner))?;
+        self.verify_snapshot(db, root, owner, Some(operation), revision,
+            identity, VerificationPhase::Active)
+    }
+
     pub(crate) fn adopt_resume(&mut self, db: &VerifiedDatabaseConnection<'_>,
         owner: &OwnerIssuer, operation: &str) -> Result<(),String> {
         if self.resume_old.is_none() {return Err("native resume evidence already adopted".into());}

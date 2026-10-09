@@ -95,6 +95,57 @@ fn health_control_rows(product:&ProductDatabase<'_>,sql:&str)->Vec<Vec<String>> 
 }
 
 #[test]
+fn visible_runtime_uses_current_h_revision_and_refuses_changed_claim() {
+    let mut observations=None;
+    health_control_product("codex",|product| {
+        let key=("projectA".to_owned(),"sessionA".to_owned());
+        let (thread,operation,association)={
+            let run=product.native_sessions.get(&key).unwrap();
+            let current_seat=seat::get(&product.connection,"projectA","seatA").unwrap().unwrap();
+            (run.thread_id.clone().unwrap(),run.operation_id.clone(),super::v37_visible_conversation::Association {
+                domain:key.0.clone(),session:key.1.clone(),seat:run.evidence.seat_id().into(),
+                incarnation:run.evidence.seat_incarnation().into(),
+                authorization:current_seat.generation.to_string(),
+                generation:run.custody.binding.generation.clone(),instance:run.evidence.instance_id().into(),
+            })
+        };
+        // The real fixed CLI has opened. This is only the USER authorization
+        // preflight, in its real transaction; it never sends a model input.
+        product.connection.execute("BEGIN IMMEDIATE").unwrap();
+        let revisions=health_control_rows(product,
+            "SELECT CAST(c.revision AS TEXT),CAST(o.previous_revision AS TEXT) FROM gogoke_v37_h_claim c JOIN gogoke_v37_h_operation o ON o.domain_id=c.domain_id AND o.session_id=c.session_id WHERE c.domain_id='projectA' AND c.session_id='sessionA' AND o.operation='open' AND o.status='APPLIED' AND c.revision=o.revision");
+        let current=health_control_rows(product,
+            "SELECT state,process_operation_id FROM gogoke_v37_h_claim WHERE domain_id='projectA' AND session_id='sessionA'");
+        let saved=product.native_sessions.get(&key).unwrap().evidence.verify_active_in_transaction(
+            &mut product.connection,product.root,&product.owner,Some(&operation));
+        let observed=product.verify_visible_runtime_target(&association,&thread,None,true);
+        product.connection.execute("ROLLBACK").unwrap();
+        let mut wrong=association.clone();
+        wrong.generation=association.generation.parse::<u64>().unwrap().checked_add(1).unwrap().to_string();
+        product.connection.execute("BEGIN IMMEDIATE").unwrap();
+        let wrong_generation=product.verify_visible_runtime_target(&wrong,&thread,None,true);
+        product.connection.execute("ROLLBACK").unwrap();
+        product.connection.execute("BEGIN IMMEDIATE").unwrap();
+        product.connection.execute("UPDATE gogoke_v37_h_claim SET process_operation_id='unrelatedOriginalOperation' WHERE domain_id='projectA' AND session_id='sessionA'").unwrap();
+        let wrong_operation=product.verify_visible_runtime_target(&association,&thread,None,true);
+        product.connection.execute("ROLLBACK").unwrap();
+        observations=Some((revisions,current,operation,saved,observed,wrong_generation,wrong_operation));
+    });
+    // Let the original helper stop/read back/close its real holder before
+    // a failed behavioral assertion, including when the repair is reverted.
+    let (revisions,current,operation,saved,observed,wrong_generation,wrong_operation)=observations.unwrap();
+    assert_eq!(revisions.len(),1,"current claim must match original APPLIED open: {revisions:?}");
+    assert!(revisions[0][0].parse::<u64>().unwrap()>revisions[0][1].parse::<u64>().unwrap(),
+        "the real open must have advanced its reservation revision");
+    assert_eq!(current,vec![vec!["COMMITTED".to_owned(),operation]]);
+    assert!(saved.as_ref().err().is_some_and(|error|error.contains("current reservation changed")),
+        "the saved activation revision must be stale in this real control: {saved:?}");
+    assert!(observed.is_ok(),"current H open revision must authorize the same original holder: {observed:?}");
+    assert!(wrong_generation.is_err());
+    assert!(wrong_operation.is_err(),"a current revision cannot replace the original H operation");
+}
+
+#[test]
 fn actual_pinned_codex_same_seat_work_and_side_resume_preserve_authorization_without_model_call() {
     health_control_product("codex",|product| {
         seat::initialize_policy(&mut product.connection,&product.owner,"projectA","draft").unwrap();
