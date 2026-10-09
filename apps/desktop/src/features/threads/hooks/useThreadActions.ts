@@ -2,6 +2,7 @@ import { useCallback, useRef } from "react";
 import type { Dispatch, MutableRefObject } from "react";
 import type {
   DebugEntry,
+  ConversationItem,
   ThreadListSortKey,
   ThreadSummary,
   WorkspaceInfo,
@@ -17,6 +18,7 @@ import {
   startThread as startThreadService,
 } from "@services/tauri";
 import {
+  buildItemsFromThread,
   getThreadTimestamp,
 } from "@utils/threadItems";
 import { extractThreadCodexMetadata } from "@threads/utils/threadCodexMetadata";
@@ -44,6 +46,97 @@ const THREAD_LIST_PAGE_SIZE = 100;
 const THREAD_LIST_MAX_PAGES_OLDER = 6;
 const THREAD_LIST_MAX_PAGES_DEFAULT = 6;
 const THREAD_LIST_CURSOR_PAGE_START = "__gogoke_page_start__";
+
+function nativeInterruptedItems(
+  response: Record<string, unknown> | null,
+  thread: Record<string, unknown>,
+): ConversationItem[] | null {
+  const result = (response?.result ?? response) as Record<string, unknown> | null;
+  const history = result?.nativeHistory as Record<string, unknown> | undefined;
+  if (!history || history.state !== "COMPLETE") {
+    throw new Error("Original native history is not completely source-qualified.");
+  }
+  const partials = history.partialMessages;
+  if (partials === undefined) return null;
+  if (!Array.isArray(partials)) throw new Error("Original interrupted partial metadata is invalid.");
+  if (partials.length === 0) return null;
+  const number = (value: unknown): bigint => {
+    if (typeof value !== "string" || !/^[1-9][0-9]*$/.test(value) || value.length > 20) {
+      throw new Error("Original partial source number is not canonical.");
+    }
+    const n = BigInt(value);
+    if (n > 18446744073709551615n) throw new Error("Original partial source number is outside u64.");
+    return n;
+  };
+  const high = number(history.highWater);
+  const source = (value: unknown) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Original partial source is missing.");
+    const fields = value as Record<string, unknown>;
+    const names = ["operationId", "generation", "sourceEpoch", "sourceCursor", "rawSourceId"];
+    if (Object.keys(fields).length !== names.length || names.some((name) => typeof fields[name] !== "string" || fields[name] === "")) {
+      throw new Error("Original partial source identity is invalid.");
+    }
+    number(fields.generation);
+    const cursor = number(fields.sourceCursor);
+    const raw = number(fields.rawSourceId);
+    if (raw > high) throw new Error("Original partial source exceeds the history high-water.");
+    return { stream: JSON.stringify(names.slice(0, 3).map((name) => fields[name])),
+      identity: JSON.stringify(names.map((name) => fields[name])), cursor, raw };
+  };
+  if (!Array.isArray(history.sourceRefs)) throw new Error("Original partial source pool is missing.");
+  const pool = new Map<string, string>();
+  for (const value of history.sourceRefs) {
+    const ref = source(value);
+    if (pool.has(ref.raw.toString())) throw new Error("Original history source pool repeats a raw source.");
+    pool.set(ref.raw.toString(), ref.identity);
+  }
+  const turns = thread.turns as Record<string, unknown>[];
+  const seen = new Set<string>();
+  const byTurn = new Map<string, { index: number; first: bigint; item: ConversationItem }[]>();
+  const vendorIds = new Set(turns.flatMap((turn) => (turn.items as Record<string, unknown>[]).map((item) => item.id)));
+  for (const value of partials) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Original partial message is invalid.");
+    const partial = value as Record<string, unknown>;
+    if (Object.keys(partial).length !== 6 || partial.kind !== "interruptedAgentMessage" ||
+      typeof partial.turnId !== "string" || !partial.turnId || typeof partial.itemId !== "string" || !partial.itemId ||
+      typeof partial.text !== "string" || !Array.isArray(partial.sourceRefs) || partial.sourceRefs.length < 2) {
+      throw new Error("Original partial message identity or source is invalid.");
+    }
+    const matching = turns.filter((turn) => turn.id === partial.turnId);
+    if (matching.length !== 1 || matching[0].status !== "interrupted" || matching[0].itemsView !== "notLoaded" ||
+      !Array.isArray(matching[0].items) || matching[0].items.some((item) => (item as Record<string, unknown>).id === partial.itemId) ||
+      typeof partial.itemIndex !== "number" || !Number.isSafeInteger(partial.itemIndex) ||
+      partial.itemIndex < 0 || partial.itemIndex > matching[0].items.length) {
+      throw new Error("Original partial conflicts with its turn, final item or position.");
+    }
+    const id = `gogoke-partial:${JSON.stringify([thread.id, partial.turnId, partial.itemId])}`;
+    if (seen.has(id) || vendorIds.has(id)) throw new Error("Original partial message is repeated.");
+    seen.add(id);
+    const refs = partial.sourceRefs.map(source);
+    refs.forEach((ref, index) => {
+      if (pool.get(ref.raw.toString()) !== ref.identity || (index > 0 &&
+        (ref.stream !== refs[index - 1].stream || ref.cursor <= refs[index - 1].cursor || ref.raw <= refs[index - 1].raw))) {
+        throw new Error("Original partial source order or source-pool membership is invalid.");
+      }
+    });
+    const group = byTurn.get(partial.turnId) ?? [];
+    group.push({ index: partial.itemIndex, first: refs[0].raw,
+      item: { id, kind: "message", role: "assistant",
+        text: partial.text ? `中断时的部分输出（未收到最终消息）\n\n${partial.text}` : "中断前尚未收到文本（未收到最终消息）" } });
+    byTurn.set(partial.turnId, group);
+  }
+  const items: ConversationItem[] = [];
+  for (const turn of turns) {
+    const group = byTurn.get(String(turn.id)) ?? [];
+    group.sort((a, b) => a.index - b.index || (a.first < b.first ? -1 : a.first > b.first ? 1 : 0));
+    const original = turn.items as Record<string, unknown>[];
+    for (let index = 0; index <= original.length; index += 1) {
+      items.push(...group.filter((partial) => partial.index === index).map((partial) => partial.item));
+      if (index < original.length) items.push(...buildItemsFromThread({ turns: [{ items: [original[index]] }] }));
+    }
+  }
+  return items;
+}
 
 type UseThreadActionsOptions = {
   dispatch: Dispatch<ThreadAction>;
@@ -287,6 +380,7 @@ export function useThreadActions({
             throw new Error("Newer conversation facts superseded this native history snapshot; full reconciliation remains incomplete.");
           }
         }
+        const interruptedItems = native && thread ? nativeInterruptedItems(response, thread) : null;
         if (thread) {
           dispatch({ type: "ensureThread", workspaceId, threadId });
           applyThreadMetadata(workspaceId, threadId, thread, {
@@ -309,6 +403,7 @@ export function useThreadActions({
             localActiveTurnId: activeTurnIdByThreadRef.current[threadId] ?? null,
             getCustomName,
           });
+          if (interruptedItems) hydrationPlan.mergedItems = interruptedItems;
           if (!hydrationPlan.shouldHydrate) {
             loadedThreadsRef.current[threadId] = true;
             return threadId;

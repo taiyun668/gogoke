@@ -551,6 +551,53 @@ pub(crate) async fn native_visible_request(
     }
 }
 
+fn native_partial_source(source: &Value, high: u64) -> Result<(String,String,String,u64,u64), String> {
+    let fields=source.as_object().ok_or("GOGOKE_NATIVE_PARTIAL_SOURCE_INVALID")?;
+    if fields.len()!=5 {return Err("GOGOKE_NATIVE_PARTIAL_SOURCE_FIELDS_INVALID".into());}
+    let text=|name: &str| fields.get(name).and_then(Value::as_str).filter(|s|!s.is_empty())
+        .ok_or_else(||format!("GOGOKE_NATIVE_PARTIAL_SOURCE_FIELD_INVALID:{name}"));
+    let number=|name: &str| -> Result<u64,String> {
+        let value=text(name)?;let n=value.parse::<u64>().map_err(|_|format!("GOGOKE_NATIVE_PARTIAL_SOURCE_NUMBER_INVALID:{name}"))?;
+        if n==0 || n.to_string()!=value {return Err(format!("GOGOKE_NATIVE_PARTIAL_SOURCE_NUMBER_INVALID:{name}"));}Ok(n)
+    };
+    let generation=text("generation")?;number("generation")?;
+    let raw=number("rawSourceId")?;
+    if raw>high {return Err("GOGOKE_NATIVE_PARTIAL_SOURCE_OUTSIDE_HIGHWATER".into());}
+    Ok((text("operationId")?.to_owned(),generation.to_owned(),text("sourceEpoch")?.to_owned(),number("sourceCursor")?,raw))
+}
+
+fn validate_native_partial_messages(messages: &[Value],turns: &[Value],pool: &[Value],high: u64) -> Result<(),String> {
+    let mut seen=HashSet::new();
+    for message in messages {
+        let fields=message.as_object().ok_or("GOGOKE_NATIVE_PARTIAL_MESSAGE_INVALID")?;
+        if fields.len()!=6 || message.get("kind").and_then(Value::as_str)!=Some("interruptedAgentMessage")
+            || message.get("text").and_then(Value::as_str).is_none() {return Err("GOGOKE_NATIVE_PARTIAL_MESSAGE_FIELDS_INVALID".into());}
+        let turn=message.get("turnId").and_then(Value::as_str).filter(|s|!s.is_empty()).ok_or("GOGOKE_NATIVE_PARTIAL_TURN_INVALID")?;
+        let item=message.get("itemId").and_then(Value::as_str).filter(|s|!s.is_empty()).ok_or("GOGOKE_NATIVE_PARTIAL_ITEM_INVALID")?;
+        if !seen.insert((turn,item)) {return Err("GOGOKE_NATIVE_PARTIAL_MESSAGE_REPEATED".into());}
+        let matches:Vec<_>=turns.iter().filter(|row|row.get("id").and_then(Value::as_str)==Some(turn)).collect();
+        if matches.len()!=1 || matches[0].get("status").and_then(Value::as_str)!=Some("interrupted")
+            || matches[0].get("itemsView").and_then(Value::as_str)!=Some("notLoaded")
+            || matches[0].get("items").and_then(Value::as_array).is_none_or(|items|items.iter().any(|row|row.get("id").and_then(Value::as_str)==Some(item))) {
+            return Err("GOGOKE_NATIVE_PARTIAL_TURN_OR_FINAL_ITEM_CONFLICT".into());
+        }
+        let index=message.get("itemIndex").and_then(Value::as_u64).ok_or("GOGOKE_NATIVE_PARTIAL_ITEM_POSITION_INVALID")?;
+        if index>matches[0]["items"].as_array().unwrap().len() as u64 {return Err("GOGOKE_NATIVE_PARTIAL_ITEM_POSITION_INVALID".into());}
+        let refs=message.get("sourceRefs").and_then(Value::as_array).filter(|refs|refs.len()>=2).ok_or("GOGOKE_NATIVE_PARTIAL_SOURCE_REFS_INVALID")?;
+        let mut prior:Option<(String,String,String,u64,u64)>=None;
+        for source in refs {
+            if pool.iter().filter(|original|*original==source).count()!=1 {return Err("GOGOKE_NATIVE_PARTIAL_SOURCE_NOT_IN_POOL".into());}
+            let next=native_partial_source(source,high)?;
+            if let Some(old)=&prior {
+                if (old.0.as_str(),old.1.as_str(),old.2.as_str())!=(next.0.as_str(),next.1.as_str(),next.2.as_str())
+                    || old.3>=next.3 || old.4>=next.4 {return Err("GOGOKE_NATIVE_PARTIAL_SOURCE_ORDER_OR_IDENTITY_INVALID".into());}
+            }
+            prior=Some(next);
+        }
+    }
+    Ok(())
+}
+
 async fn native_visible_history(
     app: &AppHandle,
     workspace_id: &str,
@@ -575,9 +622,12 @@ async fn native_visible_history(
     let mut thread_base: Option<Value> = None;
     let mut turns = Vec::new();
     let mut source_refs = Vec::new();
+    let mut partial_messages = Vec::new();
+    let mut partial_ids = HashSet::new();
     let mut seen_cursors = HashSet::new();
     let mut seen_turns = HashSet::new();
     let mut seen_sources = HashSet::new();
+    let mut seen_raw_sources = HashSet::new();
     loop {
         let reply = visible_read(
             app,
@@ -658,7 +708,21 @@ async fn native_visible_history(
             .get("sourceRefs")
             .and_then(Value::as_array)
             .ok_or("GOGOKE_NATIVE_HISTORY_SOURCE_REFS_INVALID")?;
+        let page_partials=match history.get("partialMessages") {
+            None=>Vec::new(),Some(Value::Array(messages))=>messages.clone(),
+            _=>return Err("GOGOKE_NATIVE_PARTIAL_MESSAGES_INVALID".into()),
+        };
+        let high=page_high_water.parse::<u64>().map_err(|_|"GOGOKE_NATIVE_HISTORY_HIGHWATER_INVALID")?;
+        if high.to_string()!=page_high_water {return Err("GOGOKE_NATIVE_HISTORY_HIGHWATER_INVALID".into());}
+        validate_native_partial_messages(&page_partials,page_turns,refs,high)?;
+        for message in &page_partials {
+            let identity=(message["turnId"].as_str().unwrap().to_owned(),message["itemId"].as_str().unwrap().to_owned());
+            if !partial_ids.insert(identity) {return Err("GOGOKE_NATIVE_PARTIAL_MESSAGE_REPEATED_ACROSS_PAGES".into());}
+        }
+        partial_messages.extend(page_partials);
         for source in refs {
+            let qualified=native_partial_source(source,high)?;
+            if !seen_raw_sources.insert(qualified.4) {return Err("GOGOKE_NATIVE_HISTORY_RAW_SOURCE_REPEATED".into());}
             let fields = source
                 .as_object()
                 .ok_or("GOGOKE_NATIVE_HISTORY_SOURCE_REF_INVALID")?;
@@ -725,6 +789,7 @@ async fn native_visible_history(
             .ok_or("GOGOKE_NATIVE_HISTORY_MARKER_MISSING")?;
         history.insert("state".to_string(), Value::String("COMPLETE".into()));
         history.insert("sourceRefs".to_string(), Value::Array(source_refs));
+        history.insert("partialMessages".to_string(),Value::Array(partial_messages));
         return Ok(response);
     }
 }

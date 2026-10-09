@@ -23,6 +23,90 @@ pub(super) fn copy_json(value: &Json) -> Json {
     }
 }
 pub(super) fn copy_array(values: &[Json]) -> Vec<Json> {values.iter().map(copy_json).collect()}
+
+type PartialStream = (String,String,String);
+type PartialCoverage = BTreeMap<PartialStream,std::collections::BTreeSet<i64>>;
+
+fn partial_source(source: &Json) -> Result<(PartialStream,i64)> {
+    let fields=object(source)?;
+    let operation=string_field(fields,"operationId")?;
+    let generation=string_field(fields,"generation")?;
+    let epoch=string_field(fields,"sourceEpoch")?;
+    let cursor=decimal(&string_field(fields,"sourceCursor")?)?;
+    let raw=decimal(&string_field(fields,"rawSourceId")?)?;
+    if operation.is_empty() || generation.is_empty() || epoch.is_empty() || cursor<=0 || raw<=0 {
+        return Err(OrchestrationError::Invalid("interrupted partial source identity"));
+    }
+    Ok(((operation,generation,epoch),cursor))
+}
+
+#[derive(Default)]
+struct InterruptedPartial {
+    started: bool,
+    invalid: bool,
+    text: String,
+    sources: Vec<Json>,
+    stream: Option<PartialStream>,
+    first: i64,
+    last: i64,
+}
+impl InterruptedPartial {
+    fn start(&mut self,item: &Json,source: Json) -> Result<()> {
+        let fields=object(item)?;
+        if self.started || !self.sources.is_empty() || !is_text(fields.get(&k("type")),"agentMessage")
+            || !is_text(fields.get(&k("text")),"") {self.invalid=true;}
+        let (stream,cursor)=partial_source(&source)?;
+        self.started=true;self.stream=Some(stream);self.first=cursor;self.last=cursor;
+        self.sources.push(source);Ok(())
+    }
+    fn delta(&mut self,text: &str,source: Json) -> Result<()> {
+        let (stream,cursor)=partial_source(&source)?;
+        if !self.started || self.stream.as_ref()!=Some(&stream) || cursor<=self.last {self.invalid=true;}
+        self.last=cursor;self.text.push_str(text);self.sources.push(source);Ok(())
+    }
+    fn finish(&self,turn: &str,item: &str,item_index: usize,terminal: &Json,terminal_source: &Json,
+        coverage: &PartialCoverage) -> Result<Option<Json>> {
+        let terminal=object(terminal)?;
+        if self.invalid || !self.started || turn.is_empty() || item.is_empty()
+            || !is_text(terminal.get(&k("id")),turn)
+            || !is_text(terminal.get(&k("status")),"interrupted")
+            || !is_text(terminal.get(&k("itemsView")),"notLoaded")
+            || !matches!(terminal.get(&k("items")),Some(Json::Array(items)) if items.is_empty()) {return Ok(None);}
+        let (stream,last)=partial_source(terminal_source)?;
+        if self.stream.as_ref()!=Some(&stream) || last<=self.last {return Ok(None);}
+        let Some(ordinals)=coverage.get(&stream) else {return Ok(None);};
+        // Coverage includes legitimate non-text notifications. Contribution
+        // references (started, deltas, terminal) need not themselves be adjacent.
+        let expected=last.checked_sub(self.first).and_then(|count|count.checked_add(1))
+            .ok_or(OrchestrationError::Invalid("interrupted partial source range"))?;
+        if ordinals.range(self.first..=last).count() as i64!=expected {return Ok(None);}
+        let mut sources=copy_array(&self.sources);sources.push(copy_json(terminal_source));
+        Ok(Some(Json::Object(BTreeMap::from([
+            (k("kind"),s("interruptedAgentMessage")),(k("turnId"),s(turn)),
+            (k("itemId"),s(item)),(k("text"),s(&self.text)),
+            (k("itemIndex"),Json::Number(item_index.to_string())),
+            (k("sourceRefs"),Json::Array(sources)),
+        ]))))
+    }
+}
+
+fn extend_source_pool(pool: &mut Vec<Json>,sources: &[Json]) -> Result<()> {
+    for source in sources {
+        let id=string_field(object(source)?,"rawSourceId")?;
+        if let Some(old)=pool.iter().find(|old|matches!(old,Json::Object(fields)
+            if is_text(fields.get(&k("rawSourceId")),&id))) {
+            if old.canonical()!=source.canonical() {return Err(OrchestrationError::OperationConflict);}
+        } else {pool.push(copy_json(source));}
+    }
+    Ok(())
+}
+
+fn add_partial_messages(envelope: &mut Json,messages: Vec<Json>) -> Result<()> {
+    let Json::Object(envelope)=envelope else {return Err(OrchestrationError::OperationConflict);};
+    let Some(Json::Object(result))=envelope.get_mut(&k("result")) else {return Err(OrchestrationError::OperationConflict);};
+    let Some(Json::Object(history))=result.get_mut(&k("nativeHistory")) else {return Err(OrchestrationError::OperationConflict);};
+    history.insert(k("partialMessages"),Json::Array(messages));Ok(())
+}
 pub(super) fn copy_fields(fields: &BTreeMap<JsonString,Json>) -> BTreeMap<JsonString,Json> {
     fields.iter().map(|(name,value)|(name.clone(),copy_json(value))).collect()
 }
@@ -787,12 +871,22 @@ impl<'root> ProductDatabase<'root> {
         let mut original_reason=None;
         let mut observed_items:BTreeMap<String,Vec<(String,Option<Json>,Option<Json>)>>=BTreeMap::new();
         let mut observed_turn_acks:Vec<(String,i64)>=Vec::new();
+        let mut partials:BTreeMap<(String,String),InterruptedPartial>=BTreeMap::new();
+        let mut terminals:BTreeMap<String,(Json,Json)>=BTreeMap::new();
+        let mut coverage=PartialCoverage::new();
+        let mut partial_messages:BTreeMap<String,Vec<Json>>=BTreeMap::new();
         while query.step_row()? {
             let row=decimal(&query.column_text(0)?)?;
             if query.column_text(7)?!=association.seat || query.column_text(8)?!=association.incarnation
                 || query.column_text(9)?!=association.instance || query.column_text(10)?!=query.column_text(11)?
                 || query.column_text(12)?!=query.column_text(13)? {
                 complete=false;original_reason=Some(format!("Original raw source {row} has no matching H generation/episode/custody identity."));continue;
+            }
+            let source_ref=self.visible_source_ref(row,selected)?;
+            let (stream,ordinal)=partial_source(&source_ref)?;
+            if query.column_text(5)?!=query.column_text(13)?
+                || !coverage.entry(stream).or_default().insert(ordinal) {
+                complete=false;original_reason=Some(format!("Original raw source {row} has a conflicting epoch or ordinal."));continue;
             }
             let source=source_json(&query.column_text(1)?)?;
             let envelope=object(&source)?;
@@ -836,7 +930,16 @@ impl<'root> ProductDatabase<'root> {
                 continue;
             };
             let method=method.to_well_formed_string().ok_or(OrchestrationError::Invalid("visible source method"))?;
-            let Some(Json::Object(params))=envelope.get(&k("params")) else {continue;};
+            if matches!(method.as_str(),"item/started"|"item/completed"|"item/agentMessage/delta"|"turn/completed")
+                && envelope.contains_key(&k("id")) {
+                complete=false;original_reason=Some(format!("Original item/turn notification {row} carries an RPC response identity."));continue;
+            }
+            let Some(Json::Object(params))=envelope.get(&k("params")) else {
+                if matches!(method.as_str(),"item/started"|"item/completed"|"item/agentMessage/delta"|"turn/completed") {
+                    complete=false;original_reason=Some(format!("Original item/turn notification {row} lacks its parameters."));
+                }
+                continue;
+            };
             if let Some(thread_id)=params.get(&k("threadId")) {
                 if !is_text(Some(thread_id),&selected.thread) {
                     complete=false;original_reason=Some(format!("Original A raw source {row} names another vendor thread."));continue;
@@ -848,6 +951,9 @@ impl<'root> ProductDatabase<'root> {
                 }
                 let Some(turn)=params.get(&k("turn")) else {return Err(OrchestrationError::OperationConflict);};
                 let fields=object(turn)?;let id=string_field(fields,"id")?;
+                if method=="turn/completed" {
+                    terminals.insert(id.clone(),(copy_json(turn),copy_json(&source_ref)));
+                }
                 let index=if let Some(index)=turn_ids.iter().position(|old|old==&id) {index}
                     else {turn_ids.push(id.clone());turns.push(copy_json(turn));turn_refs.push(Vec::new());turns.len()-1};
                 turns[index]=copy_json(turn);
@@ -857,14 +963,28 @@ impl<'root> ProductDatabase<'root> {
                 let turn=string_field(params,"turnId")?;
                 let item=params.get(&k("item")).ok_or(OrchestrationError::OperationConflict)?;
                 let id=string_field(object(item)?,"id")?;
+                if method=="item/started" && is_text(object(item)?.get(&k("type")),"agentMessage") {
+                    partials.entry((turn.clone(),id.clone())).or_default().start(item,copy_json(&source_ref))?;
+                }
                 let items=observed_items.entry(turn).or_default();
                 let index=if let Some(index)=items.iter().position(|(old,_,_)|old==&id) {index}
                     else {items.push((id,None,None));items.len()-1};
                 if method=="item/completed" {items[index].1=Some(copy_json(item));items[index].2=Some(self.visible_source_ref(row,selected)?);}
             } else if method.starts_with("item/") {
+                if method=="item/agentMessage/delta" {
+                    if !is_text(params.get(&k("threadId")),&selected.thread) {
+                        complete=false;original_reason=Some(format!("Original agent delta {row} lacks its exact vendor thread."));continue;
+                    }
+                    let turn=string_field(params,"turnId")?;let item=string_field(params,"itemId")?;
+                    let delta=string_field(params,"delta")?;
+                    partials.entry((turn,item)).or_default().delta(&delta,copy_json(&source_ref))?;
+                }
                 if let (Some(Json::String(turn)),Some(Json::String(item)))=(params.get(&k("turnId")),params.get(&k("itemId"))) {
                     let turn=turn.to_well_formed_string().ok_or(OrchestrationError::Invalid("visible turn id"))?;
                     let item=item.to_well_formed_string().ok_or(OrchestrationError::Invalid("visible item id"))?;
+                    if method!="item/agentMessage/delta" {
+                        partials.entry((turn.clone(),item.clone())).or_default().invalid=true;
+                    }
                     let items=observed_items.entry(turn).or_default();
                     if !items.iter().any(|(id,_,_)|id==&item) {items.push((item,None,None));}
                 }
@@ -885,6 +1005,13 @@ impl<'root> ProductDatabase<'root> {
                     else {projected.push(snapshot);}
                     turn_refs[index].push(source.ok_or(OrchestrationError::OperationConflict)?);
                 } else if !projected.iter().any(|item|matches!(item,Json::Object(fields) if is_text(fields.get(&k("id")),&id))) {
+                    if let (Some(partial),Some((terminal,source)))=(partials.get(&(turn.clone(),id.clone())),terminals.get(&turn)) {
+                        if terminal.canonical()==turns[index].canonical() {
+                            if let Some(message)=partial.finish(&turn,&id,projected.len(),terminal,source,&coverage)? {
+                                partial_messages.entry(turn.clone()).or_default().push(message);continue;
+                            }
+                        }
+                    }
                     complete=false;original_reason=Some(format!("Original item {id} in turn {turn} has no final vendor item snapshot."));
                 }
             }
@@ -901,16 +1028,24 @@ impl<'root> ProductDatabase<'root> {
             }
         }
         if after as usize>turns.len() {return Err(OrchestrationError::Invalid("visible page position"));}
-        let mut page=Vec::new();let mut refs=Vec::new();
+        let mut page=Vec::new();let mut refs=Vec::new();let mut page_partials=Vec::new();
         if after==0 {refs.push(self.visible_source_ref(selected.ack,selected)?);refs.push(self.visible_source_ref(selected.started,selected)?);}
         let mut index=after as usize;
         let Json::Object(ref mut metadata)=thread else {return Err(OrchestrationError::OperationConflict);};
         metadata.remove(&k("turns"));
         while index<turns.len() {
             let mut trial=copy_array(&page);trial.push(copy_json(&turns[index]));
-            let mut trial_refs=copy_array(&refs);trial_refs.extend(copy_array(&turn_refs[index]));
+            let mut trial_refs=copy_array(&refs);extend_source_pool(&mut trial_refs,&turn_refs[index])?;
+            let mut trial_partials=copy_array(&page_partials);
+            if let Some(messages)=partial_messages.get(&turn_ids[index]) {
+                for message in messages {
+                    let Some(Json::Array(sources))=object(message)?.get(&k("sourceRefs")) else {return Err(OrchestrationError::OperationConflict);};
+                    extend_source_pool(&mut trial_refs,sources)?;trial_partials.push(copy_json(message));
+                }
+            }
             let mut trial_thread=copy_fields(metadata);trial_thread.insert(k("turns"),Json::Array(copy_array(&trial)));
-            let shell=visible_read_envelope(Json::Object(trial_thread),high,Some("reserved-continuation-token"),copy_array(&trial_refs),"PARTIAL");
+            let mut shell=visible_read_envelope(Json::Object(trial_thread),high,Some("reserved-continuation-token"),copy_array(&trial_refs),"PARTIAL");
+            add_partial_messages(&mut shell,copy_array(&trial_partials))?;
             let mut trial_reply=copy_fields(reply);trial_reply.insert(k("response"),shell);
             // Reserve the full opaque continuation and possible original error.
             if Json::Object(trial_reply).canonical().len()+512>crate::ipc::MAX_FRAME_BYTES {
@@ -920,7 +1055,7 @@ impl<'root> ProductDatabase<'root> {
                 }
                 break;
             }
-            page=trial;refs=trial_refs;index+=1;
+            page=trial;refs=trial_refs;page_partials=trial_partials;index+=1;
         }
         let more=index<turns.len();
         let state=if !complete {"UNKNOWN"} else if more {"PARTIAL"} else {"APPLIED"};
@@ -930,7 +1065,9 @@ impl<'root> ProductDatabase<'root> {
         reply.insert(k("state"),s(state));
         if !complete {reply.insert(k("reason"),s(original_reason.as_deref().unwrap_or(
             "Original conversation sources cannot be completely projected.")));}
-        reply.insert(k("response"),visible_read_envelope(thread,high,cursor.as_deref(),refs,history_state));
+        let mut response=visible_read_envelope(thread,high,cursor.as_deref(),refs,history_state);
+        add_partial_messages(&mut response,page_partials)?;
+        reply.insert(k("response"),response);
         Ok(())
     }
 
@@ -1276,4 +1413,81 @@ mod tests {
         assert_eq!(visible_native_event_position(&params,0,scope).unwrap(),(0,0));
         assert_eq!(visible_native_event_position(&params,5,scope).unwrap(),(5,0));
     }
+    fn partial_test_source(cursor: i64) -> Json {
+        Json::Object(BTreeMap::from([(k("operationId"),s("processA")),(k("generation"),s("23")),
+            (k("sourceEpoch"),s("epochA")),(k("sourceCursor"),s(&cursor.to_string())),
+            (k("rawSourceId"),s(&(1000+cursor).to_string()))]))
+    }
+    fn partial_test_terminal() -> Json {
+        Parser::parse(r#"{"id":"turnInterrupted","status":"interrupted","itemsView":"notLoaded","items":[]}"#).unwrap()
+    }
+    fn partial_test_started() -> Json {
+        Parser::parse(r#"{"id":"agentInterrupted","type":"agentMessage","text":""}"#).unwrap()
+    }
+    fn partial_test_coverage(last: i64) -> PartialCoverage {
+        BTreeMap::from([(("processA".into(),"23".into(),"epochA".into()),(20..=last).collect())])
+    }
+    #[test]
+    fn interrupted_partial_preserves_real_golden_delta_bytes_and_source_coverage() {
+        // Actual fixed-CLI delta bytes; remapped identities for this isolated
+        // provenance control. This is not an installed-product observation.
+        let Json::Array(chunks)=Parser::parse(r#"["1","."," Interrupt","ing"," an"," active"," conversation"," changes"," its"," rhythm",","," even"," when"," the"," interruption"," lasts"," only"," a"," moment",".\n\n","2","."," Before"," speaking",","," consider"," whether"," your"," point"," needs"," attention"," now"," or"," can"," wait",".\n\n","3","."," A"," brief"," pause"," often"," offers"," a"," better"," opening"," than"," the"," middle"," of"," someone","’s"," sentence",".\n\n","4","."," Ur","gent"," safety"," information"," can"," justify"," interrupt","ing"," immediately",".\n\n","5","."," Ordinary"," disagreement"," usually"," benefits"," from"," letting"," the"," speaker"," finish",".\n\n","6","."," An"," interruption"," can"," express"," enthusiasm",","," concern",","," impat","ience",","," or"," confusion",".\n\n","7","."," Your"," intention"," matters",","," but"," the"," other"," person","’s"," experience"," matters"," too",".\n\n","8","."," Saying"," “","May"," I"," add"," something","?”"," gives"," the"," speaker"," a"," chance"," to"," yield",".\n\n","9","."," A"," raised"," hand"," can"," signal"," a"," wish"," to"," speak"," without"," adding"," competing"," noise",".\n\n","10","."," Eye"," contact"," may"," help"," you"," find"," an"," opening",","," though"," it"," does"," not"," guarantee"," one",".\n\n","11","."," Avoid"," assuming"]"#).unwrap() else {panic!("golden chunks");};
+        assert_eq!(chunks.len(),164);
+        let mut partial=InterruptedPartial::default();
+        partial.start(&partial_test_started(),partial_test_source(20)).unwrap();
+        for (index,chunk) in chunks.iter().enumerate() {
+            let Json::String(chunk)=chunk else {panic!("golden chunk");};
+            partial.delta(&chunk.to_well_formed_string().unwrap(),partial_test_source(21+index as i64)).unwrap();
+        }
+        let terminal=partial_test_terminal();let original=terminal.canonical();
+        let message=partial.finish("turnInterrupted","agentInterrupted",2,&terminal,&partial_test_source(188),&partial_test_coverage(188)).unwrap().unwrap();
+        assert_eq!(partial.text.as_bytes().len(),830);
+        assert_eq!(crate::store::digest::sha256_hex(partial.text.as_bytes()),"3a39d6eee54184a3ef7dac0322fc54f58760606540a99f1698f4888b477b16e7");
+        assert_eq!(terminal.canonical(),original,"partial must not rewrite the vendor Turn");
+        let fields=object(&message).unwrap();
+        assert!(is_text(fields.get(&k("kind")),"interruptedAgentMessage"));
+        assert!(matches!(fields.get(&k("sourceRefs")),Some(Json::Array(refs)) if refs.len()==166));
+        assert!(partial.finish("turnInterrupted","agentInterrupted",2,&terminal,&partial_test_source(188),&partial_test_coverage(188)).unwrap().unwrap().canonical()==message.canonical());
+        let mut missing=partial_test_coverage(188);missing.values_mut().next().unwrap().remove(&100);
+        assert!(partial.finish("turnInterrupted","agentInterrupted",2,&terminal,&partial_test_source(188),&missing).unwrap().is_none());
+    }
+    #[test]
+    fn interrupted_partial_refuses_duplicate_reordered_and_foreign_sources() {
+        for changed in 0..4 {
+            let mut partial=InterruptedPartial::default();
+            partial.start(&partial_test_started(),partial_test_source(20)).unwrap();
+            partial.delta("known",partial_test_source(21)).unwrap();
+            match changed {
+                0=>partial.start(&partial_test_started(),partial_test_source(22)).unwrap(),
+                1=>partial.delta("duplicate",partial_test_source(21)).unwrap(),
+                2=>partial.delta("before",partial_test_source(19)).unwrap(),
+                _=>{let mut source=copy_fields(object(&partial_test_source(22)).unwrap());source.insert(k("sourceEpoch"),s("foreign"));partial.delta("foreign",Json::Object(source)).unwrap();},
+            }
+            assert!(partial.finish("turnInterrupted","agentInterrupted",0,&partial_test_terminal(),&partial_test_source(24),&partial_test_coverage(24)).unwrap().is_none());
+        }
+        let mut early=InterruptedPartial::default();early.delta("before start",partial_test_source(19)).unwrap();
+        early.start(&partial_test_started(),partial_test_source(20)).unwrap();
+        assert!(early.finish("turnInterrupted","agentInterrupted",0,&partial_test_terminal(),&partial_test_source(24),&partial_test_coverage(24)).unwrap().is_none());
+    }
+    #[test]
+    fn interrupted_partial_requires_the_original_terminal_and_empty_start() {
+        let mut partial=InterruptedPartial::default();partial.start(&partial_test_started(),partial_test_source(20)).unwrap();
+        partial.delta("known",partial_test_source(21)).unwrap();
+        for (field,value) in [("status","completed"),("itemsView","full"),("id","otherTurn")] {
+            let mut terminal=copy_fields(object(&partial_test_terminal()).unwrap());terminal.insert(k(field),s(value));
+            assert!(partial.finish("turnInterrupted","agentInterrupted",0,&Json::Object(terminal),&partial_test_source(24),&partial_test_coverage(24)).unwrap().is_none());
+        }
+        assert!(partial.finish("turnInterrupted","agentInterrupted",0,&partial_test_terminal(),&partial_test_source(21),&partial_test_coverage(24)).unwrap().is_none());
+        let mut started=copy_fields(object(&partial_test_started()).unwrap());started.insert(k("text"),s("unmeasured initial text"));
+        let mut rejected=InterruptedPartial::default();rejected.start(&Json::Object(started),partial_test_source(20)).unwrap();
+        assert!(rejected.finish("turnInterrupted","agentInterrupted",0,&partial_test_terminal(),&partial_test_source(24),&partial_test_coverage(24)).unwrap().is_none());
+    }
+    #[test]
+    fn partial_source_pool_allows_shared_terminal_but_refuses_conflicting_identity() {
+        let terminal=partial_test_source(24);let mut pool=Vec::new();
+        extend_source_pool(&mut pool,&[copy_json(&terminal),copy_json(&terminal)]).unwrap();assert_eq!(pool.len(),1);
+        let mut foreign=copy_fields(object(&terminal).unwrap());foreign.insert(k("sourceEpoch"),s("foreign"));
+        assert!(extend_source_pool(&mut pool,&[Json::Object(foreign)]).is_err());
+    }
+
 }
