@@ -1189,7 +1189,11 @@ impl<'root> ProductDatabase<'root> {
                             return Ok(receipt(request,V37Status::Denied,
                                 prior_revision,prior_revision,BTreeMap::new()));
                         }
-                        let scope=Json::Object(request.payload.clone());
+                        let mut fields=BTreeMap::new();
+                        for (name,value) in &request.payload {
+                            fields.insert(name.clone(),Parser::parse(&value.canonical())?);
+                        }
+                        let scope=Json::Object(fields);
                         if seat::validate_new_scope(&scope).is_err() {
                             return Ok(receipt(request,V37Status::Denied,
                                 prior_revision,prior_revision,BTreeMap::new()));
@@ -2112,6 +2116,9 @@ mod tests {
     #[test]
     fn owner_orchestration_bounds_have_a_separate_receipt_and_preserve_project_cap() {
         fixture(|product| {
+            let config=|product:&mut ProductDatabase<'_>,frame:&str| {
+                product.configure_user_v37(frame.as_bytes()).unwrap()
+            };
             config(product,r#"{"schema":"gogoke.37.owner-configuration.v1","command":"project-parallel-cap","domainId":"projectA","value":7}"#);
             config(product,r#"{"schema":"gogoke.37.owner-configuration.v1","command":"seat-template","domainId":"projectA","requestId":"templateBounds","templateId":"boundsBase","settings":{"instruction":"default"}}"#);
             assert_eq!(status(product,&request("create-from-template","createBounds","boundsSeat",0,

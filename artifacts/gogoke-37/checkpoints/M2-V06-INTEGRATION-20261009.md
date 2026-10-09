@@ -6,6 +6,8 @@ Owner 已决定完整推进 M2/M3，不采用中间试用版。集成工人显�
 
 受影响原生云检新增枚举选择 seat-scope / ledger-scope；每个原测试过滤器至少完成一项，否则失败。其余原生门槛标 NOT_RUN，默认完整运行条件不变。签名 Node 类型检查及 YAML/作业条件检查通过；首次 Node 语法命令工作目录错误，纠正路径后通过。原生行为、真机及全量仍 NOT_RUN。
 
+首次受影响云编译失败原文：`E0599: BTreeMap<JsonString, Json> ... trait bounds were not satisfied`、两处 `E0425: cannot find function config in this scope`。Json 不实现 Clone，已沿用 canonical parse 复制经过验证的 payload 值；新安全控制补上现成局部配置调用。保留原失败，重跑同一受影响选择，不扩大到全量。
+
 下一步：读回受影响云端原件，集成空目录卸载修复、V10/V11 入口，再集中真机。当前冻结候选公开密钥验签与产品成员一致已通过；尚无新的安装或产品能力结论。
 
 参照：main PLAN 的 K-SEAT 五字段范围操作、E.2、V06；原 seat::tune 的请求指纹和 authorize_replay；工人 orchestration 与原 E/H/F 驱动。沿用已验证存储原件与事务，不用项目 cap 替代席位 cap。
