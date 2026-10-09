@@ -9,8 +9,8 @@ import type {
   WorkspaceInfo,
 } from "@/types";
 import { CHAT_SCROLLBACK_DEFAULT } from "@utils/chatScrollback";
-import { useAppServerEvents } from "@app/hooks/useAppServerEvents";
-import { getAppServerParams } from "@utils/appServerEvents";
+import { METHODS_ROUTED_IN_USE_APP_SERVER_EVENTS, useAppServerEvents } from "@app/hooks/useAppServerEvents";
+import { getAppServerParams, getAppServerRawMethod } from "@utils/appServerEvents";
 import { initialState, threadReducer, type ThreadAction } from "./useThreadsReducer";
 import { useThreadStorage } from "./useThreadStorage";
 import { useThreadLinking } from "./useThreadLinking";
@@ -117,6 +117,7 @@ export function useThreads({
     workspaceId: string;
     threadId: string;
     source: NativeProjectionSource | null;
+    hasSecondCallback: boolean;
   } | null>(null);
   const activeEventRef = useRef<typeof pendingEventRef.current>(null);
   const lifecycleShadowRef = useRef({
@@ -303,6 +304,11 @@ export function useThreads({
   }, [onMessageActivity]);
 
   const setThreadLoaded = useCallback((threadId: string, isLoaded: boolean) => {
+    // Closing or unloading invalidates a read even when its reducer status was
+    // already stopped. A prior snapshot cannot restore this cache entry.
+    if (!isLoaded) {
+      projectionReadsRef.current[threadId]?.forEach((read) => read.changes.push(null));
+    }
     loadedThreadsRef.current[threadId] = isLoaded;
   }, []);
 
@@ -656,12 +662,28 @@ export function useThreads({
         if (name === "onAppServerEvent" || typeof callback !== "function") return [name, callback];
         return [name, (...args: unknown[]) => {
           const previous = activeEventRef.current;
-          activeEventRef.current = pendingEventRef.current;
+          const event = pendingEventRef.current;
+          activeEventRef.current = event;
           try { return (callback as (...values: unknown[]) => unknown)(...args); }
-          finally { activeEventRef.current = previous; }
+          finally {
+            activeEventRef.current = previous;
+            if (pendingEventRef.current === event &&
+                !(name === "onItemCompleted" && event?.hasSecondCallback)) {
+              pendingEventRef.current = null;
+            }
+          }
         }];
       })) as typeof routed;
       wrapped.onAppServerEvent = (event: AppServerEvent) => {
+        // A previous event still awaiting its route could be nested here.
+        // With no router end callback, neither event can borrow its source.
+        const routeOverlap = pendingEventRef.current !== null;
+        const method = getAppServerRawMethod(event);
+        if (!method || !METHODS_ROUTED_IN_USE_APP_SERVER_EVENTS.some((routedMethod) => routedMethod === method)) {
+          pendingEventRef.current = null;
+          routed.onAppServerEvent?.(event);
+          return;
+        }
         const params = getAppServerParams(event);
         const thread = params.thread as Record<string, unknown> | undefined;
         const threadId = params.threadId ?? params.thread_id ?? thread?.threadId ?? thread?.thread_id ?? thread?.id;
@@ -669,12 +691,15 @@ export function useThreads({
         let source: NativeProjectionSource | null = null;
         try {
           const ref = nativeSourceRef(raw.nativeSourceRef);
-          if (raw.nativeAssociation && typeof raw.nativeAssociation === "object" && !Array.isArray(raw.nativeAssociation)) {
+          if (!routeOverlap && raw.nativeAssociation && typeof raw.nativeAssociation === "object" && !Array.isArray(raw.nativeAssociation)) {
             source = { identity: ref.identity, raw: ref.raw, association: JSON.stringify(raw.nativeAssociation) };
           }
         } catch { /* An unqualified event must not authorize replacement. */ }
+        const item = params.item as Record<string, unknown> | undefined;
         pendingEventRef.current = { workspaceId: event.workspace_id,
-          threadId: typeof threadId === "string" ? threadId : "", source };
+          threadId: typeof threadId === "string" ? threadId : "", source,
+          hasSecondCallback: method === "item/completed" &&
+            item?.type === "agentMessage" && Boolean(item.id) };
         routed.onAppServerEvent?.(event);
       };
       return wrapped;
