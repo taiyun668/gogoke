@@ -105,7 +105,8 @@ def read_attempt(db, root, journal, record, attempt, command):
          "V11 original F registered tree differs")
     tree_path = Path(tree[4]).resolve(strict=True)
     need(tree_path.is_dir() and not tree_path.is_symlink() and
-         (root / "v37-worktrees").resolve(strict=True) in tree_path.parents,
+         not (getattr(tree_path.lstat(), "st_file_attributes", 0) & 0x400) and
+         any(same(root / "v37-worktrees", ancestor) for ancestor in tree_path.parents),
          "V11 original F physical tree is outside candidate root")
     source = one(db, "SELECT source_path FROM gogoke_v37_worktree_sources "
                  "WHERE repository_id=?", (record["repositoryId"],))[0]
