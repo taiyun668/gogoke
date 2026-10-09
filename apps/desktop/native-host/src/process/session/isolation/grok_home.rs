@@ -53,6 +53,10 @@ pub(crate) struct GrokAclSnapshot {
 }
 
 fn snapshot(handle: Handle, profile: &AppContainerProfile) -> Result<GrokAclSnapshot, IsolationError> {
+    snapshot_optional(handle,Some(profile))
+}
+
+fn snapshot_optional(handle: Handle, profile: Option<&AppContainerProfile>) -> Result<GrokAclSnapshot, IsolationError> {
     let identity=file_identity(handle)?;
     let mut acl=ptr::null_mut();
     let mut descriptor=ptr::null_mut();
@@ -99,7 +103,7 @@ fn snapshot(handle: Handle, profile: &AppContainerProfile) -> Result<GrokAclSnap
             std::slice::from_raw_parts(sid_text,sid_len)});
         drop(sid_allocation);
         if sid_value.starts_with("S-1-15-2-") {package_sid_aces.push(sid_value);}
-        if unsafe{EqualSid(sid,profile.sid)}==0 {
+        if profile.is_none_or(|profile|unsafe{EqualSid(sid,profile.sid)}==0) {
             other_aces.push(raw);
         } else {
             target_positions.push(index as usize);
@@ -123,6 +127,15 @@ fn snapshot(handle: Handle, profile: &AppContainerProfile) -> Result<GrokAclSnap
 }
 
 impl GrokAclSnapshot {
+    pub(crate) fn observe_unbound_root(home:&Path,
+        expected:&RootIdentity)->Result<Self,IsolationError>{
+        let held=open_physical_object(home,true,READ_CONTROL)?;
+        let acl=snapshot_optional(held.0,None)?;
+        if acl.identity!=*expected ||!acl.canonical_dacl(){
+            return Err(IsolationError::AclWitnessMismatch);
+        }
+        Ok(acl)
+    }
     pub(crate) fn preserves_other_aces(&self,after:&Self)->bool {
         self.other_aces==after.other_aces &&self.other_aces_in_order==after.other_aces_in_order
     }

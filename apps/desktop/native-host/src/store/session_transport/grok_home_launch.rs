@@ -1437,7 +1437,62 @@ fn h_only_source(db:&VerifiedDatabaseConnection<'_>,instance_id:&str,
     Ok(source)
 }
 
+fn h_only_completed_source(db:&VerifiedDatabaseConnection<'_>,instance_id:&str,
+    home:&ResolvedDirectory,fields:&[String])->Result<(),String>{
+    if fields.len()!=17 ||fields[15]!="APPLIED" ||fields[16]!="2" ||
+        fields[6]!=db.root_identity().opaque() ||fields[7]!=home.identity.opaque(){
+        return Err("Grok H-only: completed header identity or revision changed".into());
+    }
+    let digest=sha256_hex(format!("{}\n{}\n{}\n{}\n{}",
+        db.root_identity().opaque(),fields[1],fields[2],fields[5],fields[3]).as_bytes());
+    if fields[0]!=format!("binding-{}",&digest[..40]) ||
+        fields[8]!=format!("Gogoke37.Session.{}",&digest[..40]){
+        return Err("Grok H-only: completed H binding derivation changed".into());
+    }
+    let profile=evidence("H-only completed profile",AppContainerProfile::derive_for_revocation(&fields[8]))?;
+    if evidence("H-only completed SID",profile.sid_identity())?!=fields[9]{
+        return Err("Grok H-only: completed SID changed".into());
+    }
+    if !h_only_sql(db,"SELECT 1 FROM main.gogoke_v37_h_claim h JOIN main.gogoke_v37_h_seat_binding b ON b.domain_id=h.domain_id AND b.session_id=h.session_id AND b.generation=h.generation JOIN main.gogoke_v37_h_owner_binding o ON o.binding_id=h.binding_id AND o.instance_id=h.instance_id AND o.domain_id=h.domain_id AND o.kind='SESSION' AND o.owner_id=h.session_id AND o.generation=h.generation WHERE h.instance_id=?1 AND h.binding_id=?2 AND h.domain_id=?3 AND h.session_id=?4 AND h.generation=?5 AND h.state='RELEASED' AND h.revision=3 AND h.process_operation_id IS NULL AND h.stop_fact_id IS NULL AND b.seat_id=?6 AND b.seat_incarnation=?7 LIMIT 1",&[
+        instance_id,&fields[0],&fields[1],&fields[2],&fields[3],&fields[4],&fields[5]])?{
+        return Err("Grok H-only: completed original no-attempt claim changed".into());
+    }
+    let ops=Statement::prepare(db.as_ptr(),"SELECT request_id,operation,status,previous_revision,revision FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND session_id=?2 ORDER BY revision")
+        .map_err(|e|format!("Grok H-only completed operations: {e:?}"))?;
+    ops.bind_text(1,&fields[1]).map_err(|e|format!("Grok H-only completed bind: {e:?}"))?;
+    ops.bind_text(2,&fields[2]).map_err(|e|format!("Grok H-only completed bind: {e:?}"))?;
+    let mut observed=Vec::new();
+    while ops.step_row().map_err(|e|format!("Grok H-only completed read: {e:?}"))?{
+        observed.push((0..5).map(|i|ops.column_text(i).unwrap_or_default()).collect::<Vec<_>>());
+    }
+    if observed!=vec![
+        vec![fields[10].as_str(),"admission-reserve","APPLIED","0","1"],
+        vec![fields[11].as_str(),"admission-commit","APPLIED","1","2"],
+        vec![fields[12].as_str(),"admission-release","APPLIED","2","3"]]{
+        return Err("Grok H-only: completed operation tuple changed".into());
+    }
+    for (sql,values) in [
+        ("SELECT 1 FROM main.gogoke_v37_h_process_episode WHERE domain_id=?1 AND session_id=?2 LIMIT 1",vec![fields[1].as_str(),fields[2].as_str()]),
+        ("SELECT 1 FROM main.gogoke_coordination_process_custody WHERE profile_id=?1 AND domain_id=?2 AND generation=?3 LIMIT 1",vec![instance_id,fields[1].as_str(),fields[3].as_str()]),
+        ("SELECT 1 FROM main.gogoke_v37_h_generation_change WHERE domain_id=?1 AND session_id=?2 LIMIT 1",vec![fields[1].as_str(),fields[2].as_str()]),
+        ("SELECT 1 FROM main.gogoke_v37_grok_home_grants WHERE binding_id=?1 OR profile_sid=?2 LIMIT 1",vec![fields[0].as_str(),fields[9].as_str()]),
+    ] {if h_only_sql(db,sql,&values)?{
+        return Err("Grok H-only: completed historical provenance changed".into());
+    }}
+    Ok(())
+}
+
 fn h_only_hex(bytes:&[u8])->String{bytes.iter().map(|b|format!("{b:02x}")).collect()}
+fn h_only_manifest(rows:&[Vec<String>])->String{
+    let mut bytes=Vec::new();
+    for row in rows {
+        for value in row {
+            bytes.extend_from_slice(&(value.len() as u64).to_be_bytes());
+            bytes.extend_from_slice(value.as_bytes());
+        }
+    }
+    sha256_hex(&bytes)
+}
 fn h_only_unhex(value:&str)->Result<Vec<u8>,String>{
     if value.len()%2!=0 ||!value.bytes().all(|b|b.is_ascii_hexdigit()){
         return Err("Grok H-only: invalid recorded ACL hex".into());
@@ -1488,6 +1543,7 @@ fn h_only_capture(profile:&AppContainerProfile,home:&ResolvedDirectory,
         let relative=object.relative_name.to_str().ok_or("Grok H-only: non-Unicode relative path")?.to_owned();
         objects.push((relative,object.identity,object.directory,acl));
     }
+    objects[1..].sort_by(|a,b|a.0.cmp(&b.0));
     Ok(objects)
 }
 
@@ -1496,6 +1552,12 @@ fn h_only_enroll(db:&mut VerifiedDatabaseConnection<'_>,instance_id:&str,
     pending:Option<(&str,&str)>)->Result<(),String>{
     let profile=evidence("H-only profile",AppContainerProfile::derive_for_revocation(&source.profile_name))?;
     let objects=h_only_capture(&profile,home,&source.profile_sid)?;
+    let records=objects.iter().map(|(relative,id,directory,acl)|vec![
+        relative.clone(),id.opaque(),(if *directory{"1"}else{"0"}).to_string(),
+        h_only_hex(&acl.ordered_aces_bytes()),
+        h_only_hex(&acl.ordered_without_target_bytes()),acl.dacl_control.to_string()])
+        .collect::<Vec<_>>();
+    let manifest=h_only_manifest(&records);
     db.execute("BEGIN IMMEDIATE").map_err(|e|format!("Grok H-only BEGIN: {e:?}"))?;
     let result=(||{
         if h_only_source(db,instance_id,&source.profile_sid,home,pending)?!=*source ||
@@ -1503,16 +1565,16 @@ fn h_only_enroll(db:&mut VerifiedDatabaseConnection<'_>,instance_id:&str,
             h_only_sql(db,"SELECT 1 FROM main.gogoke_v37_grok_home_h_only_retirement WHERE instance_id=?1 LIMIT 1",&[instance_id])?{
             return Err("Grok H-only: original source changed before intent".into());
         }
-        let header=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_grok_home_h_only_retirement VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,'INTENT',1)")
+        let header=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_grok_home_h_only_retirement VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,'INTENT',1)")
             .map_err(|e|format!("Grok H-only header: {e:?}"))?;
         let values=[instance_id,&source.binding,&source.domain,&source.session,&source.generation,
             &source.seat,&source.incarnation,&db.root_identity().opaque(),&home.identity.opaque(),
             &source.profile_name,&source.profile_sid,&source.reserve_request,
-            &source.commit_request,&source.release_request];
+            &source.commit_request,&source.release_request,&records.len().to_string(),&manifest];
         for (i,value) in values.iter().enumerate(){header.bind_text(i as i32+1,value)
             .map_err(|e|format!("Grok H-only header bind: {e:?}"))?;}
         header.step_done().map_err(|e|format!("Grok H-only header insert: {e:?}"))?;
-        for (relative,id,directory,acl) in &objects {
+        for ((relative,id,directory,acl),record) in objects.iter().zip(&records) {
             let current=if relative=="." {
                 evidence("H-only root recheck",grok_root_acl(&profile,&home.path,&home.identity))?
             }else{
@@ -1523,9 +1585,8 @@ fn h_only_enroll(db:&mut VerifiedDatabaseConnection<'_>,instance_id:&str,
             if &current!=acl {return Err("Grok H-only: ACL changed before durable intent".into());}
             let row=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_grok_home_h_only_retirement_objects VALUES(?1,?2,?3,?4,?5,?6,?7,'INTENT',1)")
                 .map_err(|e|format!("Grok H-only object: {e:?}"))?;
-            for (i,value) in [instance_id,relative.as_str(),&id.opaque(),
-                if *directory{"1"}else{"0"},&h_only_hex(&acl.ordered_aces_bytes()),
-                &h_only_hex(&acl.ordered_without_target_bytes()),&acl.dacl_control.to_string()].iter().enumerate(){
+            for (i,value) in [instance_id,record[0].as_str(),record[1].as_str(),
+                record[2].as_str(),record[3].as_str(),record[4].as_str(),record[5].as_str()].iter().enumerate(){
                 row.bind_text(i as i32+1,value).map_err(|e|format!("Grok H-only object bind: {e:?}"))?;
             }
             row.step_done().map_err(|e|format!("Grok H-only object insert: {e:?}"))?;
@@ -1538,66 +1599,14 @@ fn h_only_enroll(db:&mut VerifiedDatabaseConnection<'_>,instance_id:&str,
     }
 }
 
-/// Recover only an H-only, pre-F root ACE whose original no-attempt release
-/// and physical SID/FileID are proven. This never inserts a fictional F grant,
-/// ROOT effect, process episode, holder-gone receipt, or StopFact.
-pub(crate) fn retire_h_only_root(db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock,
-    instance_id:&str,pending:Option<(&str,&str)>)->Result<(),String>{
-    instance::initialize_grok_home_grant_schema(db)?;
-    let home=evidence("H-only registered HOME",instance::resolve_grok_original_home(db,root,instance_id))?;
-    let header=Statement::prepare(db.as_ptr(),"SELECT binding_id,domain_id,session_id,generation,seat_id,seat_incarnation,root_identity,home_identity,profile_name,profile_sid,reserve_request_id,commit_request_id,release_request_id,phase FROM main.gogoke_v37_grok_home_h_only_retirement WHERE instance_id=?1")
-        .map_err(|e|format!("Grok H-only journal: {e:?}"))?;
-    header.bind_text(1,instance_id).map_err(|e|format!("Grok H-only journal bind: {e:?}"))?;
-    let existing=if header.step_row().map_err(|e|format!("Grok H-only journal read: {e:?}"))?{
-        let fields=(0..14).map(|i|header.column_text(i).map_err(|e|format!("Grok H-only journal column: {e:?}")))
-            .collect::<Result<Vec<_>,_>>()?;
-        if header.step_row().map_err(|e|format!("Grok H-only journal duplicate: {e:?}"))?{
-            return Err("Grok H-only: duplicate journal".into());
-        }
-        Some(fields)
-    }else{None};
-    drop(header);
-    // Completion is a historical receipt. A later legitimate F grant can
-    // advance the anchor and introduce a new H claim; never replay a removal.
-    if existing.as_ref().is_some_and(|fields|fields[13]=="APPLIED") {
-        return Ok(());
+fn h_only_inventory(db:&VerifiedDatabaseConnection<'_>,instance_id:&str,
+    fields:&[String],completed:bool)->Result<Vec<Vec<String>>,String>{
+    if fields.len()!=17 ||fields[14].len()!=64 ||
+        !fields[14].bytes().all(|b|b.is_ascii_digit() ||(b'a'..=b'f').contains(&b)){
+        return Err("Grok H-only: invalid object manifest".into());
     }
-    let sid=if let Some(fields)=&existing {fields[9].clone()}else{
-        let observed=Statement::prepare(db.as_ptr(),"SELECT h.domain_id,h.session_id,h.generation,b.seat_incarnation FROM main.gogoke_v37_h_claim h JOIN main.gogoke_v37_h_seat_binding b ON b.domain_id=h.domain_id AND b.session_id=h.session_id AND b.generation=h.generation WHERE h.instance_id=?1 AND h.state='RELEASED' AND h.process_operation_id IS NULL ORDER BY h.session_id LIMIT 1")
-            .map_err(|e|format!("Grok H-only observer: {e:?}"))?;
-        observed.bind_text(1,instance_id).map_err(|e|format!("Grok H-only observer bind: {e:?}"))?;
-        if !observed.step_row().map_err(|e|format!("Grok H-only observer read: {e:?}"))?{
-            return Err("Grok H-only: no original H observation principal".into());
-        }
-        let parts=(0..4).map(|i|observed.column_text(i)
-            .map_err(|e|format!("Grok H-only observer column: {e:?}")))
-            .collect::<Result<Vec<_>,_>>()?;
-        let name=format!("Gogoke37.Session.{}",&sha256_hex(format!("{}\n{}\n{}\n{}\n{}",
-            db.root_identity().opaque(),parts[0],parts[1],parts[3],parts[2]).as_bytes())[..40]);
-        let observer=evidence("H-only H observer",AppContainerProfile::derive_for_revocation(&name))?;
-        let acl=evidence("H-only initial root",grok_root_acl(
-            &observer,
-            &home.path,&home.identity))?;
-        if acl.package_sid_aces().is_empty(){return Ok(());}
-        if acl.package_sid_aces().len()!=1 {
-            return Err("Grok H-only: unknown or duplicate root package SID".into());
-        }
-        acl.package_sid_aces()[0].clone()
-    };
-    let source=h_only_source(db,instance_id,&sid,&home,pending)?;
-    if let Some(fields)=&existing {
-        let expected=[source.binding.as_str(),source.domain.as_str(),source.session.as_str(),
-            source.generation.as_str(),source.seat.as_str(),source.incarnation.as_str(),
-            &db.root_identity().opaque(),&home.identity.opaque(),&source.profile_name,&source.profile_sid,
-            &source.reserve_request,&source.commit_request,&source.release_request];
-        if fields[..13].iter().map(String::as_str).collect::<Vec<_>>()!=expected ||
-            fields[13]=="UNKNOWN" ||!matches!(fields[13].as_str(),"INTENT"|"APPLIED"){
-            return Err("Grok H-only: journal source changed or UNKNOWN".into());
-        }
-    }else{
-        h_only_enroll(db,instance_id,&source,&home,root,pending)?;
-    }
-    let profile=evidence("H-only original profile",AppContainerProfile::derive_for_revocation(&source.profile_name))?;
+    let count:usize=fields[13].parse().map_err(|_|"Grok H-only: invalid object count")?;
+    if count==0 {return Err("Grok H-only: empty object manifest".into());}
     let rows=Statement::prepare(db.as_ptr(),"SELECT relative_name,object_identity,directory,before_acl_hex,after_acl_hex,acl_control,phase,revision FROM main.gogoke_v37_grok_home_h_only_retirement_objects WHERE instance_id=?1 ORDER BY CASE WHEN relative_name='.' THEN 0 ELSE 1 END,relative_name")
         .map_err(|e|format!("Grok H-only objects: {e:?}"))?;
     rows.bind_text(1,instance_id).map_err(|e|format!("Grok H-only objects bind: {e:?}"))?;
@@ -1607,11 +1616,106 @@ pub(crate) fn retire_h_only_root(db:&mut VerifiedDatabaseConnection<'_>,root:&Ro
             .map_err(|e|format!("Grok H-only object column: {e:?}")))
             .collect::<Result<Vec<_>,_>>()?);
     }
-    drop(rows);
-    if objects.is_empty() ||objects[0][0]!="." ||objects.iter().filter(|v|v[0]==".").count()!=1 {
-        return Err("Grok H-only: root intent absent".into());
+    if objects.len()!=count ||objects[0][0]!="." ||
+        objects.iter().filter(|row|row[0]==".").count()!=1 ||
+        h_only_manifest(&objects.iter().map(|row|row[..6].to_vec()).collect::<Vec<_>>())!=fields[14]{
+        return Err("Grok H-only: object count or sealed manifest changed".into());
     }
-    let completed=existing.as_ref().is_some_and(|fields|fields[13]=="APPLIED");
+    for row in &objects {
+        if (completed &&(row[6]!="APPLIED" ||row[7]!="2")) ||
+            (!completed && !((row[6]=="INTENT" &&row[7]=="1") ||
+                (row[6]=="APPLIED" &&row[7]=="2"))){
+            return Err("Grok H-only: object phase or revision changed".into());
+        }
+        h_only_identity(&row[1])?;
+        if !matches!(row[2].as_str(),"0"|"1") ||row[5].parse::<u16>().is_err(){
+            return Err("Grok H-only: object kind or control changed".into());
+        }
+        h_only_unhex(&row[3])?;h_only_unhex(&row[4])?;
+        if row[0]!="." {
+            let path=PathBuf::from(&row[0]);
+            if path.is_absolute() ||path.components().any(|c|!matches!(c,std::path::Component::Normal(_))){
+                return Err("Grok H-only: relative object changed".into());
+            }
+        }
+    }
+    Ok(objects)
+}
+
+fn h_only_header(db:&VerifiedDatabaseConnection<'_>,instance_id:&str)
+    ->Result<Option<Vec<String>>,String>{
+    let header=Statement::prepare(db.as_ptr(),"SELECT binding_id,domain_id,session_id,generation,seat_id,seat_incarnation,root_identity,home_identity,profile_name,profile_sid,reserve_request_id,commit_request_id,release_request_id,object_count,object_manifest_sha256,phase,revision FROM main.gogoke_v37_grok_home_h_only_retirement WHERE instance_id=?1")
+        .map_err(|e|format!("Grok H-only journal: {e:?}"))?;
+    header.bind_text(1,instance_id).map_err(|e|format!("Grok H-only journal bind: {e:?}"))?;
+    if !header.step_row().map_err(|e|format!("Grok H-only journal read: {e:?}"))?{
+        return Ok(None);
+    }
+    let fields=(0..17).map(|i|header.column_text(i)
+        .map_err(|e|format!("Grok H-only journal column: {e:?}")))
+        .collect::<Result<Vec<_>,_>>()?;
+    if header.step_row().map_err(|e|format!("Grok H-only journal duplicate: {e:?}"))?{
+        return Err("Grok H-only: duplicate journal".into());
+    }
+    Ok(Some(fields))
+}
+
+/// Recover only an H-only, pre-F root ACE whose original no-attempt release
+/// and physical SID/FileID are proven. This never inserts a fictional F grant,
+/// ROOT effect, process episode, holder-gone receipt, or StopFact.
+pub(crate) fn retire_h_only_root(db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock,
+    instance_id:&str,pending:Option<(&str,&str)>)->Result<(),String>{
+    instance::initialize_grok_home_grant_schema(db)?;
+    let home=evidence("H-only registered HOME",instance::resolve_grok_original_home(db,root,instance_id))?;
+    let existing=h_only_header(db,instance_id)?;
+    // Completion remains historical after later legitimate F ACL changes, but
+    // its H source and full sealed object journal must still be intact.
+    if let Some(fields)=existing.as_ref().filter(|fields|fields[15]=="APPLIED") {
+        h_only_completed_source(db,instance_id,&home,fields)?;
+        let objects=h_only_inventory(db,instance_id,fields,true)?;
+        if objects[0][1]!=home.identity.opaque() ||objects[0][2]!="1"{
+            return Err("Grok H-only: completed root object changed".into());
+        }
+        return Ok(());
+    }
+    let sid=if let Some(fields)=&existing {fields[9].clone()}else{
+        let acl=evidence("H-only initial physical root",
+            GrokAclSnapshot::observe_unbound_root(&home.path,&home.identity))?;
+        if acl.package_sid_aces().is_empty(){return Ok(());}
+        if acl.package_sid_aces().len()!=1 {
+            return Err("Grok H-only: unknown or duplicate root package SID".into());
+        }
+        acl.package_sid_aces()[0].clone()
+    };
+    if existing.as_ref().is_some_and(|fields|fields[15]!="INTENT" ||fields[16]!="1"){
+        return Err("Grok H-only: UNKNOWN or changed header".into());
+    }
+    let source=h_only_source(db,instance_id,&sid,&home,pending)?;
+    if let Some(fields)=&existing {
+        let expected=[source.binding.as_str(),source.domain.as_str(),source.session.as_str(),
+            source.generation.as_str(),source.seat.as_str(),source.incarnation.as_str(),
+            &db.root_identity().opaque(),&home.identity.opaque(),&source.profile_name,&source.profile_sid,
+            &source.reserve_request,&source.commit_request,&source.release_request];
+        if fields[..13].iter().map(String::as_str).collect::<Vec<_>>()!=expected {
+            return Err("Grok H-only: journal source changed or UNKNOWN".into());
+        }
+    }else{
+        h_only_enroll(db,instance_id,&source,&home,root,pending)?;
+    }
+    let persisted=h_only_header(db,instance_id)?
+        .ok_or("Grok H-only: durable intent absent")?;
+    let expected=[source.binding.as_str(),source.domain.as_str(),source.session.as_str(),
+        source.generation.as_str(),source.seat.as_str(),source.incarnation.as_str(),
+        &db.root_identity().opaque(),&home.identity.opaque(),&source.profile_name,&source.profile_sid,
+        &source.reserve_request,&source.commit_request,&source.release_request];
+    if persisted[..13].iter().map(String::as_str).collect::<Vec<_>>()!=expected ||
+        persisted[15]!="INTENT" ||persisted[16]!="1"{
+        return Err("Grok H-only: persisted intent source changed".into());
+    }
+    let objects=h_only_inventory(db,instance_id,&persisted,false)?;
+    if objects[0][1]!=home.identity.opaque() ||objects[0][2]!="1"{
+        return Err("Grok H-only: root object changed".into());
+    }
+    let profile=evidence("H-only original profile",AppContainerProfile::derive_for_revocation(&source.profile_name))?;
     for row in objects {
         let relative=&row[0];
         let id=h_only_identity(&row[1])?;
@@ -1621,9 +1725,7 @@ pub(crate) fn retire_h_only_root(db:&mut VerifiedDatabaseConnection<'_>,root:&Ro
         let control:u16=row[5].parse().map_err(|_|"Grok H-only: invalid ACL control")?;
         let phase=row[6].as_str();
         let revision:i64=row[7].parse().map_err(|_|"Grok H-only: invalid revision")?;
-        if phase=="UNKNOWN" ||!matches!(phase,"INTENT"|"APPLIED") ||
-            (completed &&phase!="APPLIED") ||
-            (id==home.identity)!=(relative==".") {
+        if (id==home.identity)!=(relative==".") {
             return Err("Grok H-only: object journal inconsistent".into());
         }
         let object=if relative=="." {None}else{
@@ -1686,14 +1788,12 @@ pub(crate) fn retire_h_only_root(db:&mut VerifiedDatabaseConnection<'_>,root:&Ro
         h_only_changed(db)?;
         return Err("Grok H-only: unrecorded SID residue; journal retained".into());
     }
-    if !completed {
-        let update=Statement::prepare(db.as_ptr(),"UPDATE main.gogoke_v37_grok_home_h_only_retirement SET phase='APPLIED',revision=revision+1 WHERE instance_id=?1 AND binding_id=?2 AND phase='INTENT'")
-            .map_err(|e|format!("Grok H-only final: {e:?}"))?;
-        update.bind_text(1,instance_id).map_err(|e|format!("Grok H-only final bind: {e:?}"))?;
-        update.bind_text(2,&source.binding).map_err(|e|format!("Grok H-only final bind: {e:?}"))?;
-        update.step_done().map_err(|e|format!("Grok H-only final write: {e:?}"))?;
-        h_only_changed(db)?;
-    }
+    let update=Statement::prepare(db.as_ptr(),"UPDATE main.gogoke_v37_grok_home_h_only_retirement SET phase='APPLIED',revision=revision+1 WHERE instance_id=?1 AND binding_id=?2 AND phase='INTENT' AND revision=1")
+        .map_err(|e|format!("Grok H-only final: {e:?}"))?;
+    update.bind_text(1,instance_id).map_err(|e|format!("Grok H-only final bind: {e:?}"))?;
+    update.bind_text(2,&source.binding).map_err(|e|format!("Grok H-only final bind: {e:?}"))?;
+    update.step_done().map_err(|e|format!("Grok H-only final write: {e:?}"))?;
+    h_only_changed(db)?;
     Ok(())
 }
 
@@ -1724,6 +1824,8 @@ mod tests {
         let mut db=open_existing(&root,&database).unwrap();
         instance::initialize_grok_home_grant_schema(&mut db).unwrap();
         let home=instance::resolve_grok_original_home(&db,&root,"grokA").unwrap();
+        // Ordinary new registration has no H history and no package SID.
+        retire_h_only_root(&mut db,&root,"grokA",None).unwrap();
         std::fs::write(home.path.join("auth.json"),b"synthetic non-secret fixture").unwrap();
         db.execute("INSERT INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('domainA','seatA','incA','USER','LONG','grokA','BUSY',1,1)").unwrap();
         db.execute("INSERT INTO main.gogoke_v37_h_owner_binding VALUES('oldBinding','grokA','domainA','SESSION','oldSession','1','ACTIVE')").unwrap();
@@ -1746,6 +1848,7 @@ mod tests {
             AdmissionResult::Applied(3));
         db.execute("DELETE FROM main.gogoke_v37_grok_home_root_anchor WHERE instance_id='grokA'").unwrap();
         db.execute("UPDATE main.gogoke_v37_seats SET state='IDLE',generation=2,revision=2 WHERE domain_id='domainA' AND seat_id='seatA'").unwrap();
+        retire_h_only_root(&mut db,&root,"grokA",None).unwrap();
         drop(old_launch);drop(old_profile);
         let child=home.path.join("old-child.txt");
         std::fs::write(&child,b"non-secret fixture").unwrap();
@@ -1762,12 +1865,13 @@ mod tests {
             ("releaseA","admission-release",2,3)] {
             db.execute(&format!("INSERT INTO main.gogoke_v37_h_operation VALUES('domainA','{request}','00','{operation}','sessionA','APPLIED',{previous},{revision})")).unwrap();
         }
-        // The old generic writer grants the root, then rejects the protected
-        // auth child without rolling that root grant back.
+        // Seed the exact historical root-first ACL shape. The current generic
+        // writer preflights protected children, so it cannot create this old
+        // residue; this fixture makes no claim that it can.
         let protected=observe_grok_auth_candidate(&home.path,&home.identity).unwrap();
         let protected_before=protected.candidate_acl(&profile).unwrap();
         assert!(protected_before.dacl_protected);
-        assert!(profile.grant_bound_tree(&home.path,&home.identity,true).is_err());
+        grant_grok_home_root(&profile,&home.path,&home.identity).unwrap();
         assert_eq!(protected.candidate_acl(&profile).unwrap(),protected_before);
         let sid=profile.sid_identity().unwrap();
         let original=evidence("test root",grok_root_acl(&profile,&home.path,&home.identity)).unwrap();
@@ -1802,23 +1906,29 @@ mod tests {
         db.execute("UPDATE main.gogoke_v37_grok_home_h_only_retirement_objects SET phase='INTENT' WHERE instance_id='grokA' AND relative_name='.'").unwrap();
         // Reproduce the crash cut after the held-object write but before the
         // object APPLIED commit: replay must accept only the recorded after.
-        let row=Statement::prepare(db.as_ptr(),"SELECT object_identity,directory,before_acl_hex,after_acl_hex,acl_control FROM main.gogoke_v37_grok_home_h_only_retirement_objects WHERE instance_id='grokA' AND relative_name='old-child.txt'").unwrap();
+        let row=Statement::prepare(db.as_ptr(),"SELECT object_identity,directory,before_acl_hex,after_acl_hex,acl_control FROM main.gogoke_v37_grok_home_h_only_retirement_objects WHERE instance_id='grokA' AND relative_name='.'").unwrap();
         assert!(row.step_row().unwrap());
-        let object=GrokHomeObject{relative_name:PathBuf::from("old-child.txt"),
-            identity:h_only_identity(&row.column_text(0).unwrap()).unwrap(),
-            directory:row.column_text(1).unwrap()=="1",protected_inherited:false};
+        assert_eq!(h_only_identity(&row.column_text(0).unwrap()).unwrap(),home.identity);
+        assert_eq!(row.column_text(1).unwrap(),"1");
         let before=h_only_unhex(&row.column_text(2).unwrap()).unwrap();
         let after=h_only_unhex(&row.column_text(3).unwrap()).unwrap();
         let control=row.column_text(4).unwrap().parse().unwrap();
         drop(row);
-        profile.retire_grok_h_only_object(&home.path,&home.identity,Some(&object),
+        profile.retire_grok_h_only_object(&home.path,&home.identity,None,
             &before,&after,control).unwrap();
+        assert!(grok_root_acl(&profile,&home.path,&home.identity).unwrap().target_aces.is_empty());
+        assert!(inspect_grok_home_residue(&profile,&home.path,&home.identity,&[],&[]).unwrap()
+            .iter().any(|object|object.relative_name==PathBuf::from("old-child.txt")));
         retire_h_only_root(&mut db,&root,"grokA",pending).unwrap();
         assert!(grok_root_acl(&profile,&home.path,&home.identity).unwrap().target_aces.is_empty());
         assert!(inspect_grok_home_residue(&profile,&home.path,&home.identity,&[],&[]).unwrap().is_empty());
         assert_eq!(protected.candidate_acl(&profile).unwrap(),protected_before);
         assert!(h_only_sql(&db,"SELECT 1 FROM main.gogoke_v37_grok_home_h_only_retirement_objects WHERE instance_id='grokA' AND relative_name='auth.json' AND before_acl_hex=after_acl_hex AND phase='APPLIED'",&[]).unwrap());
         assert!(h_only_sql(&db,"SELECT 1 FROM main.gogoke_v37_grok_home_h_only_retirement WHERE instance_id='grokA' AND phase='APPLIED'",&[]).unwrap());
+        retire_h_only_root(&mut db,&root,"grokA",pending).unwrap();
+        db.execute("UPDATE main.gogoke_v37_grok_home_h_only_retirement SET object_count=object_count+1 WHERE instance_id='grokA'").unwrap();
+        assert!(retire_h_only_root(&mut db,&root,"grokA",pending).is_err());
+        db.execute("UPDATE main.gogoke_v37_grok_home_h_only_retirement SET object_count=object_count-1 WHERE instance_id='grokA'").unwrap();
         retire_h_only_root(&mut db,&root,"grokA",pending).unwrap();
         db.close_checked().unwrap();drop(root);std::fs::remove_dir_all(path).unwrap();
     }
