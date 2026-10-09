@@ -73,7 +73,7 @@ def file_boundaries(root, output, journal_file):
                 (("db", dbfile), ("wal", wal), ("shm", shm))}
 
     before = files()
-    db = sqlite3.connect(f"file:{dbfile.as_posix()}?mode=ro&immutable=1", uri=True)
+    db = sqlite3.connect(dbfile.as_uri() + "?mode=ro&immutable=1", uri=True)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA query_only=ON")
     details = []
@@ -121,6 +121,15 @@ def file_boundaries(root, output, journal_file):
                               (episode[3],))
             require(custody[2] == "STOPPED" and custody[3] == item["stopFact"],
                     "V11 physical H custody has no original stop proof")
+            for key, operation in (("stopRequestId", "stop"),
+                                   ("releaseRequestId", "admission-release")):
+                original = operations[item[key]]
+                stored = exactly(db, "SELECT raw_hex,status FROM gogoke_v37_h_operation "
+                                 "WHERE domain_id=? AND request_id=? AND session_id=? AND operation=?",
+                                 (case["domainId"], item[key], item["sessionId"], operation))
+                require(bytes.fromhex(stored[0]).decode() == original["rawFrame"] and
+                        stored[1] == "APPLIED" and original["receipt"]["status"] == "APPLIED",
+                        "V11 original H stop/release request or receipt differs")
             stdin = exactly(db, "SELECT request_hex,receipt_hex,phase,receipt_status,process_operation_id,"
                             "generation,ticket,custodian_nonce FROM gogoke_v37_h_stdin_journal "
                             "WHERE domain_id=? AND request_id=? AND session_id=?",
@@ -211,7 +220,7 @@ def main():
                 (("db", dbfile), ("wal", wal), ("shm", shm))}
 
     before = files()
-    db = sqlite3.connect(f"file:{dbfile.as_posix()}?mode=ro&immutable=1", uri=True)
+    db = sqlite3.connect(dbfile.as_uri() + "?mode=ro&immutable=1", uri=True)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA query_only=ON")
     try:
