@@ -219,9 +219,13 @@ mod tests {
             &format!("\"maxConcurrent\":{value},\"maxPermissionTier\""));
         let valid=Parser::parse(&with("3")).unwrap();
         assert_eq!(validate_new_scope(&valid).unwrap().max_concurrent,Some(3));
-        for value in ["0","-1","1.5","\"3\"","null","9223372036854775808"] {
+        for value in ["0","-1","1.5","\"3\"","null"] {
             assert!(matches!(scope(&with(value)),Err(SeatError::Denied)),
                 "invalid maxConcurrent accepted: {value}");
+        }
+        for value in ["9007199254740992","9223372036854775808"] {
+            assert!(Parser::parse(&with(value)).is_err(),
+                "noncanonical integer reached scope parsing: {value}");
         }
         assert!(matches!(scope(&OLD.replace("\"maxPermissionTier\"",
             "\"unexpected\":1,\"maxPermissionTier\"")),Err(SeatError::Denied)));

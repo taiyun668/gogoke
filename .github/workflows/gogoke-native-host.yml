@@ -96,6 +96,7 @@ jobs:
           $evidence = Join-Path $env:RUNNER_TEMP "native-affected-$env:GITHUB_RUN_ID"
           New-Item -ItemType Directory -Path $evidence | Out-Null
           $results = @()
+          $failures = @()
           foreach ($filter in $filters) {
             $timer = [Diagnostics.Stopwatch]::StartNew()
             $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib $filter -- --nocapture --show-output 2>&1
@@ -105,13 +106,17 @@ jobs:
             $output | Write-Host
             $summary = @($output | Select-String -Pattern '^test result: ok\. ([0-9]+) passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out')
             if ($code -ne 0 -or $summary.Count -ne 1 -or [int]$summary[0].Matches[0].Groups[1].Value -lt 1) {
-              throw "Affected tests failed or no actual test completed: $filter (exit $code)"
+              $results += [ordered]@{ filter=$filter; state='FAILED'; exitCode=$code; seconds=$timer.Elapsed.TotalSeconds }
+              $failures += $filter
+              if ($output -match 'could not compile') { break }
+              continue
             }
             $results += [ordered]@{ filter=$filter; passed=[int]$summary[0].Matches[0].Groups[1].Value; seconds=$timer.Elapsed.TotalSeconds }
           }
           [ordered]@{ sourceCommit=$env:GITHUB_SHA; state='AFFECTED_CHECKS_ONLY'; results=$results; fullLibrary='NOT_RUN'; formalGates='NOT_RUN' } |
             ConvertTo-Json -Depth 6 | Set-Content (Join-Path $evidence 'result.json') -Encoding utf8NoBOM
           'Affected checks only; full library, LPAC, process, mutation and server gates: NOT_RUN' >> $env:GITHUB_STEP_SUMMARY
+          if ($failures.Count -gt 0) { throw "Affected checks failed or had no completed tests: $($failures -join ', ')" }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
