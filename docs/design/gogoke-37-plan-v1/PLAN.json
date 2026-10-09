@@ -979,7 +979,7 @@
    },
    {
     "path": "apps/desktop/src-tauri/src/codex/mod.rs",
-    "extension": "Forward Design37 conversation start/resume/read/list/send/steer/interrupt/approval/input and original events through that verified H session while preserving current Tauri command and event shapes; no legacy ID aliases or global CLI fallback. For first desktop workspace registration, start only the existing verified USER host and read the exact NEEDS_SETUP route; expose metadata-only registration solely when no original association exists. Unknown, malformed and legacy routes retain the original refusal; explicit native connection still requires the saved original USER selection.",
+    "extension": "Forward Design37 conversation start/resume/read/list/send/steer/interrupt/approval/input and original events through that verified H session while preserving current Tauri command and event shapes; no legacy ID aliases or global CLI fallback. For first desktop workspace registration, start only the existing verified USER host and read the exact NEEDS_SETUP route; expose metadata-only registration solely when no original association exists. Unknown, malformed and legacy routes retain the original refusal; explicit native connection still requires the saved original USER selection. Merge the original interrupted-partial read projection metadata over existing full-history pages, preserving raw Turn fields and exact ordered sourceRefs, rejecting duplicate/foreign/missing source claims. Do not replay historic live events on first attach, create an H input, or infer a final vendor item from deltas.",
     "serves": [
      "H",
      "A",
@@ -1063,7 +1063,7 @@
    },
    {
     "path": "apps/desktop/src/features/threads/hooks/useThreadActions.ts",
-    "extension": "Hydrate verified native conversations with the complete read-only native thread/read path on attachment change and reconnect; do not use thread/resume as a read or let a loaded-thread shortcut skip full reconciliation. Preserve original failures and legacy behavior.",
+    "extension": "Hydrate verified native conversations with the complete read-only native thread/read path on attachment change and reconnect; do not use thread/resume as a read or let a loaded-thread shortcut skip full reconciliation. Preserve original failures and legacy behavior. In existing native full hydration only, consume the original provenance-bearing interrupted-partial read metadata and clearly label it as partial output at interruption using the existing message representation. Preserve original vendor Turn/items, actual completed snapshots and legacy behaviour. No G component, shared type/event, command or persistent writer change; unavailable or invalid partial provenance remains an explicit original read failure.",
     "serves": [
      "H",
      "A",
@@ -1084,7 +1084,7 @@
    },
    {
     "path": "apps/desktop/native-host/src/store/product_database/v37_visible_conversation.rs",
-    "extension": "Change only the existing live-state read envelope: outer APPLIED only for an original reason-free H-proven LIVE or fully proven STOPPED observation; outer/inner UNKNOWN and original error remain for missing, uncertain, mismatched or failed proof. Preserve all existing exact E/F/H/A selection and physical holder/StopFact verification. No added command, field, capability, persistent writer, model process or forged proof.",
+    "extension": "The existing live-state read envelope: outer APPLIED only for an original reason-free H-proven LIVE or fully proven STOPPED observation; outer/inner UNKNOWN and original error remain for missing, uncertain, mismatched or failed proof. Preserve all existing exact E/F/H/A selection and physical holder/StopFact verification. No added command, identity/authority field, capability, persistent writer, model process or forged proof. Preserve the already-authorized read-only full native conversation hydration after a genuine interrupt: terminal itemsView=notLoaded with empty items is not a complete item list. Retain original vendor Turn/item snapshots unchanged; derive explicitly interrupted partial agent-message text only in the existing read projection metadata, from the exact selected H episode and A raw-source high-water, item/started, ordered original deltas and interrupted terminal. Preserve exact thread/turn/item/source identity and ordered sourceRefs; never assert vendor item completion or itemsView=full from deltas. Missing or inconsistent provenance remains UNKNOWN with the original reason. Final snapshots take precedence, with no duplicate partial. No new operation, authority, capability, persistent writer, ordinary model process or G/types/events edit.",
     "serves": [
      "H",
      "A",
