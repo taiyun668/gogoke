@@ -5,7 +5,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ActualProduct, id, readJson, sha256 } from './product-cdp.mjs';
-import { runHistoryBoundaryCases, runHistoryPeerReadCases } from './m2-history-boundaries.mjs';
+import { runHistoryBoundaryCases, runHistoryPeerReadCases,
+  runHistorySameDomainWorkerReadCase } from './m2-history-boundaries.mjs';
 
 process.env.E2E_TELEMETRY_DISABLED = '1';
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -14,6 +15,7 @@ const atom = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0
 const inside = (child, parent) => child === parent || child.startsWith(parent + path.sep);
 const check = (condition, reason) => { if (!condition) throw Error(reason); };
 const cases = config.historyBoundary?.cases;
+const sameDomain = config.historyBoundary?.sameDomainWorkerRead;
 const required = ['installed', 'installedSha256', 'version', 'sourceCommit', 'registryKey',
   'pwsh', 'python', 'stateRoot', 'evidenceDirectory', 'result', 'domainId', 'repositoryId', 'observers'];
 check(process.platform === 'win32' && process.argv[2] && required.every(key => config[key] !== undefined) &&
@@ -24,6 +26,12 @@ check(process.platform === 'win32' && process.argv[2] && required.every(key => c
   cases.every(row => ['codex', 'claude'].includes(row.driverId) && row.projectA?.domainId === config.domainId &&
     row.projectB?.domainId !== config.domainId && row.projectB?.domainId !== 'global' &&
     row.sideBinding?.domainId === config.domainId) &&
+  (!sameDomain || (['sourceSeatId', 'sourceIncarnation', 'workerSeatId', 'workerIncarnation']
+    .every(key => atom(sameDomain[key])) &&
+    cases.some(row => row.driverId === 'codex' &&
+      row.projectA.seatId === sameDomain.sourceSeatId &&
+      row.sideBinding.seatId === sameDomain.workerSeatId &&
+      sameDomain.sourceSeatId !== sameDomain.workerSeatId))) &&
   config.historyBoundary.peerRead === true &&
   config.historyBoundary.lifecycleOwnership === 'EXCLUSIVE_M2_HISTORY_SEATS' &&
   Array.isArray(config.observers) && ['formal', 'memory', 'ledger'].every(name =>
@@ -90,7 +98,10 @@ async function historyReadback(phase) {
     proof.measurementPreservedDatabaseBytes === true && proof.directFlowEvidence === true &&
     proof.acceptance === false && proof.databaseWrites === false && proof.credentialReads === false &&
     (phase !== 'final' || proof.directRefusalEvidence === true) &&
-    (phase !== 'peer-final' || typeof proof.directPeerReadEvidence === 'boolean'),
+    (!['peer-final', 'same-domain-final'].includes(phase) ||
+      typeof proof.directPeerReadEvidence === 'boolean') &&
+    (phase !== 'same-domain-final' ||
+      typeof proof.sameDomainWorkerRead?.directDeniedRead === 'boolean'),
   `${phase}: original H/A/F immutable facts are incomplete`);
   const ref = { phase: `history-${phase}`, file, sha256: sha256(output) };
   journal.readbacks.push(ref); product.save();
@@ -210,6 +221,20 @@ try {
   check(peerProof.phase === 'peer-final' && peerProof.directFlowEvidence === true &&
     typeof peerProof.directPeerReadEvidence === 'boolean',
   'Known prior test history has no original H/A/F readback');
+  let sameDomainProof = null;
+  if (sameDomain) {
+    await product.launch();
+    const worker = await runHistorySameDomainWorkerReadCase(product, config, journal);
+    check(worker.state === 'ORIGINAL_SAME_DOMAIN_WORKER_READ_REQUIRES_NORMAL_CLOSE',
+      'Same-domain original worker flow incomplete');
+    await product.closeNormally();
+    const ref = await historyReadback('same-domain-final');
+    sameDomainProof = readJson(path.join(config.evidenceDirectory, ref.file));
+    check(sameDomainProof.phase === 'same-domain-final' &&
+      sameDomainProof.directFlowEvidence === true &&
+      sameDomainProof.sameDomainWorkerRead?.state,
+    'Same-domain original worker source/tool readback missing');
+  }
   await snapshot('after');
   for (const observer of config.observers) {
     const before = snapshotValue(observer.name, 'before');
@@ -227,6 +252,8 @@ try {
   journal.v10 = 'NOT_RUN_FULL_V10_SCOPE';
   journal.v10PeerFileRead = peerProof.directPeerReadEvidence === true ?
     'DIRECT_CODEX_TOOL_DENIAL_REVIEW_REQUIRED' : peerProof.peerState;
+  journal.v10SameDomainWorkerFileRead = sameDomainProof?.sameDomainWorkerRead?.state ??
+    'NOT_RUN_SAME_DOMAIN_WORKER_FIXTURE_NOT_CONFIGURED';
   journal.v10NotRun = ['WORKER_OWNERLEAD_HISTORY_MODEL_QUERY',
     'PROJECT_GLOBAL_STORE_AND_EXPLICIT_CITED_DISTRIBUTION',
     'NON_CODEX_VENDOR_HISTORY_TOOL_RECEIPTS', 'ANTIGRAVITY'];

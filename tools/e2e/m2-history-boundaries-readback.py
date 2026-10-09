@@ -413,6 +413,163 @@ def verify_peers(db, journal, boundary, result):
     result["peerState"] = "ORIGINAL_PEER_READ_DENIAL_FACTS_COMPLETE_ACCEPTANCE_FALSE" if result["directPeerReadEvidence"] else "NOT_RUN_PEER_READ_DENIAL_UNQUALIFIED"
 
 
+class SameDomainReadBreach(RuntimeError):
+    pass
+
+
+def verify_same_domain_worker(db, journal, boundary, result):
+    case_record = boundary.get("sameDomainRead")
+    result["sameDomainWorkerRead"] = {"state": "NOT_RUN_ORIGINAL_SAME_DOMAIN_CASE_MISSING",
+                                      "directDeniedRead": False}
+    if not case_record or case_record.get("state") != "ORIGINAL_SAME_DOMAIN_WORKER_READ_REQUIRES_NORMAL_CLOSE":
+        return
+    try:
+        reference = case_record["sourceBaselineReadback"]
+        path = Path(boundary["evidenceDirectory"]) / reference["file"]
+        check(path.name == reference["file"] and digest(path.read_bytes()) == reference["sha256"],
+              "Original normally closed same-domain source readback changed")
+        prior = json.loads(path.read_text(encoding="utf-8-sig"))
+        check(prior["phase"] == "peer-final" and prior["caseId"] == result["caseId"] and
+              prior["sourceCommit"] == result["sourceCommit"] and
+              prior["directFlowEvidence"] is True and prior["measurementPreservedDatabaseBytes"] is True,
+              "Same-domain source has no qualified prior H/A/F reader")
+        matches = [case for case in boundary["cases"] if case["caseId"] == case_record["caseId"] and
+                   case["driverId"] == "codex"]
+        check(len(matches) == 1, "Same-domain Codex source case missing")
+        case = matches[0]
+        source_sessions = [session for session in journal["sessions"] if
+                           session["id"] == case_record["sourceSessionId"] and
+                           session.get("caseOwner") == case["caseId"] and
+                           session["purpose"] == "WORK" and
+                           session["domainId"] == case["projectA"]["domainId"] and
+                           session["seatId"] == case_record["sourceSeatId"] and
+                           session["worktreeId"] == case["projectA"]["worktreeId"]]
+        check(len(source_sessions) == 1 and len(source_sessions[0]["inputs"]) == 1,
+              "Original User lead WORK source input missing")
+        source_session = source_sessions[0]
+        source_input = source_session["inputs"][0]
+        operations = {entry["request"]["requestId"]: entry for entry in journal["operations"]
+                      if entry.get("request", {}).get("requestId")}
+        original_user = operations[case_record["sourceInputRequestId"]]
+        check(source_input["requestId"] == case_record["sourceInputRequestId"] and
+              source_input["marker"] == case_record["sourceMarker"] and
+              json.loads(original_user["rawFrame"]) == original_user["request"] and
+              original_user["request"]["family"] == "K-SESSION" and
+              original_user["request"]["operation"] == "send" and
+              original_user["request"]["targetId"] == source_session["id"] and
+              original_user["request"]["domainId"] == source_session["domainId"] and
+              original_user["request"]["payload"]["body"] == source_input["body"] and
+              original_user["receipt"] == source_input["sendReceipt"],
+              "Original User input does not bind the selected lead history marker")
+        lead = one(db, "SELECT seat_id,incarnation FROM gogoke_v37_seat_project_lead WHERE domain_id=?",
+                   (source_session["domainId"],))
+        source_seat = one(db, "SELECT incarnation,layer,parent_seat_id,instance_id FROM gogoke_v37_seats "
+                          "WHERE domain_id=? AND seat_id=?",
+                          (source_session["domainId"], case_record["sourceSeatId"]))
+        worker = one(db, "SELECT incarnation,layer,parent_seat_id,instance_id FROM gogoke_v37_seats "
+                     "WHERE domain_id=? AND seat_id=?",
+                     (source_session["domainId"], case_record["workerSeatId"]))
+        check(tuple(lead) == (case_record["sourceSeatId"], case_record["sourceIncarnation"]) and
+              tuple(source_seat) == (case_record["sourceIncarnation"], "USER", None,
+                                    case["instanceId"]) and
+              tuple(worker) == (case_record["workerIncarnation"], "LEAD",
+                                case_record["sourceSeatId"], case["instanceId"]),
+              "Actual E designated lead/worker incarnation or parent differs")
+        original_episode = one(db, "SELECT seat_incarnation FROM gogoke_v37_h_process_episode "
+                               "WHERE domain_id=? AND session_id=?",
+                               (source_session["domainId"], source_session["id"]))
+        check(original_episode[0] == case_record["sourceIncarnation"],
+              "Original User lead input belongs to another E incarnation")
+        original_cases = [row for row in prior["cases"] if row["caseId"] == case["caseId"]]
+        sources = [row for row in original_cases[0]["sessions"]
+                   if row["sessionId"] == source_session["id"]] if len(original_cases) == 1 else []
+        objects = [row for row in prior["verifiedVendorObjects"]
+                   if row["sessionId"] == source_session["id"]]
+        current = [row for row in result["verifiedVendorObjects"]
+                   if row["sessionId"] == source_session["id"]]
+        check(len(sources) == len(objects) == len(current) == 1 and
+              current[0] == objects[0] and objects[0]["state"] == "ORIGINAL_TEST_VENDOR_OBJECT_READ_BACK" and
+              sources[0]["originalBody"] == source_input["body"] and
+              sources[0]["marker"] == objects[0]["marker"] == source_input["marker"] and
+              sources[0]["originalCodexThreadPath"] == objects[0]["path"] and
+              sources[0]["nativeSessionId"] == objects[0]["nativeSessionId"] and
+              objects[0]["sessionMeta"]["payload"]["id"] == objects[0]["nativeSessionId"],
+              "Exact original lead vendor object/path/session_meta/marker is unqualified")
+        attempt = case_record["attempt"]
+        readers = [session for session in journal["sessions"] if session["id"] == attempt["sessionId"]]
+        check(len(readers) == 1, "Original same-domain worker H session missing")
+        session = readers[0]
+        check(session["id"] not in case["projectSessions"] + [case["sideSessionId"], case["formalSessionId"]] and
+              attempt["purpose"] == session["purpose"] == "WORK" and
+              session["domainId"] == source_session["domainId"] and
+              session["seatId"] == case_record["workerSeatId"] != case_record["sourceSeatId"] and
+              session["worktreeId"] == case["sideBinding"]["worktreeId"] and
+              session["instanceId"] == case["instanceId"] == objects[0]["instanceId"] and
+              session["inputs"][0]["body"] == attempt["body"] and
+              attempt["sourceSessionId"] == source_session["id"] and
+              attempt["command"] == 'type "' + objects[0]["path"] + '"' and
+              attempt["command"] in attempt["body"] and
+              not any(char in objects[0]["path"] for char in '"%!^&|<>\r\n'),
+              "Original same-domain WORK request differs from exact lead object")
+        observed = session_evidence(db, session, case, operations, peer=attempt)
+        check(observed["episode"]["seat_incarnation"] == case_record["workerIncarnation"] and
+              observed["nativeSessionId"] != sources[0]["nativeSessionId"] and
+              observed["originalCodexThreadPath"] and
+              observed["registration"]["purpose"] == "WORK",
+              "Original worker H/A identity, thread path or E incarnation missing")
+        decoded = [(row, json.loads(row["raw_bytes"])) for row in observed["rawSource"]]
+        turn = session["inputs"][0]["turnId"]
+        tools = [frame for _, frame in decoded if frame.get("method") in ("item/started", "item/completed") and
+                 frame.get("params", {}).get("threadId") == observed["nativeSessionId"] and
+                 frame["params"].get("turnId") == turn and
+                 frame["params"].get("item", {}).get("type") in
+                 ("commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall")]
+        unrelated = [frame for _, frame in decoded if
+                     frame.get("params", {}).get("threadId") == observed["nativeSessionId"] and
+                     frame["params"].get("turnId") == turn and
+                     (frame.get("method") == "item/tool/call" or
+                      frame.get("method") in ("item/started", "item/completed") and
+                      frame["params"].get("item", {}).get("type") not in
+                      ("agentMessage", "reasoning", "contextCompaction",
+                       "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall"))]
+        started = [frame["params"]["item"] for frame in tools if frame["method"] == "item/started"]
+        completed = [frame["params"]["item"] for frame in tools if frame["method"] == "item/completed"]
+        if any(isinstance(tool.get("aggregatedOutput"), str) and
+               source_input["marker"] in tool["aggregatedOutput"] for tool in completed):
+            raise SameDomainReadBreach("Original same-domain worker read the designated Owner-lead history")
+        first = started[0] if len(started) == 1 else {}
+        last = completed[0] if len(completed) == 1 else {}
+        exact = (not unrelated and len(tools) == 2 and len(started) == len(completed) == 1 and
+                 first.get("type") == last.get("type") == "commandExecution" and
+                 isinstance(last.get("id"), str) and bool(last["id"]) and
+                 first.get("id") == last["id"] and
+                 first.get("status") == "inProgress" and
+                 first.get("command") == last.get("command") == attempt["command"] and
+                 last.get("status") in ("completed", "failed") and
+                 type(last.get("exitCode")) is int)
+        fact = {"state": "NOT_RUN_ORIGINAL_WORKER_TOOL_ACTION_MISSING", "directDeniedRead": False,
+                "sourceSessionId": source_session["id"], "workerSessionId": session["id"],
+                "leadSeatId": lead["seat_id"], "leadIncarnation": lead["incarnation"],
+                "workerIncarnation": worker["incarnation"], "target": objects[0],
+                "originalTool": last, "workerEvidence": observed}
+        original_output = last.get("aggregatedOutput")
+        if exact and (last["exitCode"] == 0 or
+                      isinstance(original_output, str) and source_input["marker"] in original_output):
+            raise SameDomainReadBreach("Original same-domain worker read the designated Owner-lead history")
+        if exact and last["exitCode"] != 0:
+            if isinstance(original_output, str) and original_output.strip() == "Access is denied.":
+                fact.update(state="ORIGINAL_SAME_DOMAIN_WORKER_ACCESS_DENIED",
+                            directDeniedRead=True)
+            else:
+                fact["state"] = "ORIGINAL_COMMAND_NONZERO_REFUSAL_CAUSE_UNATTRIBUTED"
+        result["sameDomainWorkerRead"] = fact
+    except SameDomainReadBreach:
+        raise
+    except (KeyError, IndexError, OSError, ValueError, RuntimeError) as error:
+        result["sameDomainWorkerRead"] = {"state": "NOT_RUN_ORIGINAL_SOURCE_IDENTITY_OR_TOOL_UNQUALIFIED",
+                                          "directDeniedRead": False, "originalError": repr(error)}
+
+
 def verify_flow(db, journal, boundary, result):
     check(boundary["readerSha256"] == digest(Path(__file__).read_bytes()) and
           boundary["driverSha256"] == digest(Path(__file__).with_name("m2-history-boundaries.mjs").read_bytes()),
@@ -463,7 +620,8 @@ def verify_flow(db, journal, boundary, result):
 
 
 def main():
-    check(len(sys.argv) == 5 and sys.argv[4] in ("before-refusal", "final", "peer-final"), "Expected candidate root, new output, original journal and phase")
+    check(len(sys.argv) == 5 and sys.argv[4] in ("before-refusal", "final", "peer-final", "same-domain-final"),
+          "Expected candidate root, new output, original journal and phase")
     root = Path(sys.argv[1]).resolve(strict=True)
     output = Path(sys.argv[2]).resolve(strict=False)
     check(not output.exists() and not output.is_relative_to(root), "Fresh private evidence must stay outside candidate state")
@@ -491,6 +649,7 @@ def main():
               "filesBefore": files(), "cases": [], "directFlowEvidence": False,
               "directRefusalEvidence": False, "notRun": boundary["notRun"]}
     result["directPeerReadEvidence"] = False
+    result["sameDomainWorkerRead"] = {"state": "NOT_RUN", "directDeniedRead": False}
     try:
         with closing(sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
             db.row_factory = sqlite3.Row
@@ -528,8 +687,10 @@ def main():
                           reply["previousRevision"] == reply["revision"] == req["expectedRevision"],
                           "Original User ingress formal refusal differs from exact sent request")
                 result["directRefusalEvidence"] = True
-            if sys.argv[4] == "peer-final":
+            if sys.argv[4] in ("peer-final", "same-domain-final"):
                 verify_peers(db, journal, boundary, result)
+            if sys.argv[4] == "same-domain-final":
+                verify_same_domain_worker(db, journal, boundary, result)
             result["state"] = "DIRECT_FACTS_COMPLETE_ACCEPTANCE_FALSE"
     except Exception as error:
         result["state"] = "FAIL_OR_NOT_RUN_PRESERVE_ORIGINAL"
