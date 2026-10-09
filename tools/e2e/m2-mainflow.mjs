@@ -1,6 +1,8 @@
 // V11's existing installed-product merge step, extracted for the M2 runner.
 // Importing this module has no effects. The caller owns the original H lifecycle.
 import { id } from './product-cdp.mjs';
+import fs from 'node:fs';
+import path from 'node:path';
 
 export async function runV11Merge(product, config, journal, {
   lead, captured, check, leadTurn, sessionOp, stopUser,
@@ -88,4 +90,125 @@ export async function runV11Merge(product, config, journal, {
   record.graph = graph; record.state = 'LIVE_MERGE_REQUIRES_NORMAL_CLOSE_DIRECT_READBACK'; product.save();
   await stopUser(lead, true);
   return { graph, record };
+}
+
+// Original User F graph setup for V11's two-project layout case. Both
+// repositories and both IDLE seats must already be Owner-registered in the
+// private testbed. Physical separation remains for a normal-close reader.
+export async function runV11GraphFacts(product, config, journal) {
+  const c = config.v11Graph;
+  const atom = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
+  const requireFact = (condition, message) => { if (!condition) throw Error(message); };
+  requireFact(process.platform === 'win32' && config.repositoryId === 'gogokeSeatTestbed' &&
+    c?.ownership === 'EXCLUSIVE_V11_GRAPH_TWO_PROJECTS' &&
+    atom(c.secondaryRepositoryId) && c.secondaryRepositoryId !== config.repositoryId &&
+    [config.stateRoot, config.testbedSource, c.secondarySource].every(value =>
+      typeof value === 'string' && path.isAbsolute(value) && fs.existsSync(value) &&
+      fs.statSync(value).isDirectory()) &&
+    path.resolve(c.secondarySource) !== path.resolve(config.testbedSource) &&
+    Array.isArray(c.groups) && c.groups.length === 2 && !journal.v11Graph,
+  'V11 graph requires two exclusive project domains and an Owner-registered second test repository');
+  const identities = new Set(), trees = new Set();
+  for (const group of c.groups) {
+    requireFact(atom(group.domainId) && atom(group.seatId) && atom(group.instanceId) &&
+      group.domainId !== config.domainId && !identities.has(group.domainId) &&
+      ['singleTreeId', 'mixedPrimaryId', 'mixedSiblingId'].every(key => atom(group[key]) && !trees.has(group[key])),
+    'V11 graph groups require distinct fresh domains and worktree IDs outside mainflow');
+    identities.add(group.domainId);
+    for (const key of ['singleTreeId', 'mixedPrimaryId', 'mixedSiblingId']) trees.add(group[key]);
+  }
+  requireFact(c.groups[0].seatId !== c.groups[1].seatId &&
+    ![config.seatId, config.childSeatId].includes(c.groups[0].seatId) &&
+    ![config.seatId, config.childSeatId].includes(c.groups[1].seatId),
+  'V11 graph must not reuse a mainflow seat');
+  const record = { state: 'RUNNING', acceptance: false,
+    sourceCommit: config.sourceCommit, candidateVersion: config.version,
+    installedSha256: config.installedSha256, stateRoot: config.stateRoot,
+    sources: { [config.repositoryId]: config.testbedSource,
+      [c.secondaryRepositoryId]: c.secondarySource },
+    repositoryIds: [config.repositoryId, c.secondaryRepositoryId],
+    operations: [], graphs: [], notRun: ['PHYSICAL_SEPARATION_CLOSED_READER', 'MODEL_H_WRITE_SCOPE'] };
+  journal.v11Graph = record; product.save();
+  const operation = async (domainId, family, verb, targetId, payload, revision, allowed = ['APPLIED']) => {
+    const request = { schema: 'gogoke.37.operations.v1', family, operation: verb,
+      requestId: id('v11Graph'), domainId, targetId, expectedRevision: revision, payload };
+    const rawFrame = JSON.stringify(request);
+    const entry = { kind: 'V11_ORIGINAL_USER_GRAPH', request, rawFrame, receipt: null };
+    journal.operations.push(entry); record.operations.push(request.requestId); product.save();
+    try {
+      entry.rawReceipt = await product.evaluate(
+        `window.__TAURI_INTERNALS__.invoke('gogoke_design37_user_operation',{frame:${JSON.stringify(rawFrame)}})`);
+      entry.receipt = JSON.parse(entry.rawReceipt); product.save();
+      requireFact(entry.receipt.schema === request.schema && entry.receipt.requestId === request.requestId &&
+        entry.receipt.domainId === domainId && entry.receipt.family === family &&
+        entry.receipt.operation === verb && entry.receipt.targetId === targetId &&
+        allowed.includes(entry.receipt.status),
+      `V11 original ${domainId}/${family}/${verb} result=${entry.receipt.status}; preserve without replay`);
+      return entry.receipt;
+    } catch (error) { entry.originalError = String(error.stack ?? error); product.save(); throw error; }
+  };
+  const graph = async (domainId, tree) => {
+    let receipt = await operation(domainId, 'K-WORKTREE', 'graph-query', tree, {}, '0', ['APPLIED', 'STALE']);
+    if (receipt.status === 'STALE') receipt = await operation(domainId, 'K-WORKTREE', 'graph-query', tree, {}, receipt.revision);
+    return receipt;
+  };
+  for (const group of c.groups) {
+    let card = await operation(group.domainId, 'K-SEAT', 'state-card', group.seatId, {}, '0', ['APPLIED', 'STALE']);
+    if (card.status === 'STALE') card = await operation(group.domainId, 'K-SEAT', 'state-card', group.seatId, {}, card.revision);
+    requireFact(card.result.state === 'IDLE' && card.result.instanceId === group.instanceId,
+      'V11 original graph seat must be IDLE on its bound instance');
+    for (const [tree, repository, layout] of [
+      [group.singleTreeId, config.repositoryId, 'single'],
+      [group.mixedPrimaryId, config.repositoryId, 'mixed'],
+      [group.mixedSiblingId, c.secondaryRepositoryId, 'mixed'],
+    ]) {
+      const created = await operation(group.domainId, 'K-WORKTREE', 'create', tree,
+        { repositoryId: repository, seatId: group.seatId, layout }, '0');
+      requireFact(created.result.worktreeId === tree && created.result.repositoryId === repository &&
+        created.result.seatId === group.seatId && created.result.state === 'CREATED' &&
+        created.result.classification === layout.toUpperCase(),
+      'V11 original F create receipt differs from requested layout');
+      const registered = await operation(group.domainId, 'K-WORKTREE', 'register', tree, {}, '1');
+      requireFact(registered.result.worktreeId === tree, 'V11 original F registration differs');
+      const current = await graph(group.domainId, tree);
+      requireFact(current.result.state === 'REGISTERED' &&
+        current.result.classification === layout.toUpperCase() &&
+        current.result.members?.some(row => row.worktreeId === tree && row.repositoryId === repository &&
+          row.domainId === group.domainId && row.seatId === group.seatId &&
+          row.instanceId === group.instanceId),
+      'V11 original F graph did not report its actual member');
+      record.graphs.push({ domainId: group.domainId, seatId: group.seatId,
+        instanceId: group.instanceId, worktreeId: tree, repositoryId: repository,
+        layout, spaceId: current.result.spaceId, graphRequestId: journal.operations.at(-1).request.requestId,
+        graph: current.result }); product.save();
+    }
+    // The first MIXED graph was observed before its second member existed.
+    // Read both original members again after registration; never treat that
+    // earlier one-member page as the final native space state.
+    for (const tree of [group.mixedPrimaryId, group.mixedSiblingId]) {
+      const current = await graph(group.domainId, tree);
+      const fact = record.graphs.find(row => row.worktreeId === tree);
+      requireFact(fact && current.result.spaceId === fact.spaceId &&
+        current.result.state === 'REGISTERED' && current.result.members?.length === 2,
+      'V11 original final MIXED graph lacks its registered second member');
+      fact.graphRequestId = journal.operations.at(-1).request.requestId;
+      fact.graph = current.result; product.save();
+    }
+  }
+  const [a, b] = c.groups.map(group => ({
+    single: record.graphs.find(row => row.worktreeId === group.singleTreeId),
+    primary: record.graphs.find(row => row.worktreeId === group.mixedPrimaryId),
+    sibling: record.graphs.find(row => row.worktreeId === group.mixedSiblingId),
+  }));
+  for (const row of [a, b]) requireFact(row.primary.spaceId === row.sibling.spaceId &&
+    row.single.spaceId !== row.primary.spaceId && row.primary.graph.members.length === 2 &&
+    row.sibling.graph.members.length === 2,
+  'V11 each project must have one distinct SINGLE and a two-repository MIXED group');
+  requireFact(a.primary.spaceId !== b.primary.spaceId && a.single.spaceId !== b.single.spaceId &&
+    [a.primary, b.primary].every(row => row.repositoryId === config.repositoryId) &&
+    [a.primary, a.sibling].every(row => row.graph.members.every(member => member.domainId === a.primary.domainId)) &&
+    [b.primary, b.sibling].every(row => row.graph.members.every(member => member.domainId === b.primary.domainId)),
+  'V11 one repository serves two projects without crossing their MIXED spaces');
+  record.state = 'ORIGINAL_USER_F_GRAPHS_RECORDED_PHYSICAL_READBACK_REQUIRED'; product.save();
+  return record;
 }
