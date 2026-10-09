@@ -10,6 +10,8 @@ pub(crate) struct OrchestrationScope {
     pub(crate) models:BTreeSet<String>,
     pub(crate) reasoning_efforts:BTreeSet<String>,
     pub(crate) max_permission_tier:PermissionTier,
+    /// None is an old four-field record, never an inferred Owner bound.
+    pub(crate) max_concurrent:Option<i64>,
 }
 
 fn string_field(fields:&std::collections::BTreeMap<JsonString,Json>,key:&str)
@@ -78,15 +80,29 @@ pub(super) fn validate_template_scope(settings:&Json)->Result<(),SeatError> {
 
 fn parse_scope(value:&Json)->Result<OrchestrationScope,SeatError> {
     let Json::Object(fields)=value else {return Err(SeatError::Denied);};
-    if fields.len()!=4 {return Err(SeatError::Denied);}
+    if fields.len()!=4 && fields.len()!=5 {return Err(SeatError::Denied);}
     let instances=names(fields,"instanceIds")?;
     if instances.iter().any(|value|!valid_id(value)) {return Err(SeatError::Denied);}
     let models=names(fields,"models")?;
     let efforts=names(fields,"reasoningEfforts")?;
     let tier=fields.get(&JsonString::from_str("maxPermissionTier"))
         .ok_or(SeatError::Denied).and_then(PermissionTier::from_json)?;
+    let max_concurrent=match fields.get(&JsonString::from_str("maxConcurrent")) {
+        Some(Json::Number(value))=>Some(value.parse::<i64>().ok()
+            .filter(|value|*value>0).ok_or(SeatError::Denied)?),
+        None if fields.len()==4=>None,
+        _=>return Err(SeatError::Denied),
+    };
     Ok(OrchestrationScope {instance_ids:instances,models,
-        reasoning_efforts:efforts,max_permission_tier:tier})
+        reasoning_efforts:efforts,max_permission_tier:tier,max_concurrent})
+}
+
+/// A new User-set bound must name its own seat cap. The project-wide Owner
+/// cap is a different fact and must never be copied into this field.
+pub(crate) fn validate_new_scope(value:&Json)->Result<OrchestrationScope,SeatError> {
+    let scope=parse_scope(value)?;
+    if scope.max_concurrent.is_none() {return Err(SeatError::Denied);}
+    Ok(scope)
 }
 
 pub(crate) fn orchestration_scope(seat:&Seat)->Result<OrchestrationScope,SeatError> {
@@ -100,6 +116,7 @@ pub(crate) fn orchestration_scope(seat:&Seat)->Result<OrchestrationScope,SeatErr
 pub(super) fn child_within_scope(parent:&Seat,child_settings:&str,
     child_instance_id:&str)->Result<(),SeatError> {
     let scope=orchestration_scope(parent)?;
+    if scope.max_concurrent.is_none() {return Err(SeatError::Denied);}
     if !scope.instance_ids.contains(child_instance_id) {return Err(SeatError::Denied);}
     let Json::Object(fields)=Parser::parse(child_settings)? else {return Err(SeatError::Denied);};
     let model=string_field(&fields,"model")?;
@@ -159,4 +176,51 @@ pub(crate) fn render_codex_instruction(seat:&Seat)->Result<RenderedInstruction,S
     if !valid_id(template_id) {return Err(SeatError::Denied);}
     Ok(RenderedInstruction {file_name:"AGENTS.md",contents:format!("{instruction}\n"),
         template_id:template_id.into()})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const OLD:&str=r#"{"instanceIds":["instanceA"],"models":["modelA"],"reasoningEfforts":["high"],"maxPermissionTier":"READ_ONLY"}"#;
+
+    fn scope(raw:&str)->Result<OrchestrationScope,SeatError> {
+        parse_scope(&Parser::parse(raw).unwrap())
+    }
+
+    #[test]
+    fn old_scope_remains_readable_but_is_not_a_new_user_bound() {
+        let old=scope(OLD).unwrap();
+        assert_eq!(old.max_concurrent,None);
+        assert!(matches!(validate_new_scope(&Parser::parse(OLD).unwrap()),
+            Err(SeatError::Denied)));
+    }
+
+    #[test]
+    fn new_scope_requires_exact_positive_i64_concurrency_fact() {
+        let with=|value:&str| OLD.replace("\"maxPermissionTier\"",
+            &format!("\"maxConcurrent\":{value},\"maxPermissionTier\""));
+        let valid=Parser::parse(&with("3")).unwrap();
+        assert_eq!(validate_new_scope(&valid).unwrap().max_concurrent,Some(3));
+        for value in ["0","-1","1.5","\"3\"","null","9223372036854775808"] {
+            assert!(matches!(scope(&with(value)),Err(SeatError::Denied)),
+                "invalid maxConcurrent accepted: {value}");
+        }
+        assert!(matches!(scope(&OLD.replace("\"maxPermissionTier\"",
+            "\"unexpected\":1,\"maxPermissionTier\"")),Err(SeatError::Denied)));
+    }
+
+    #[test]
+    fn old_scope_cannot_authorize_a_model_child() {
+        let mut parent=Seat {domain_id:"projectA".into(),seat_id:"lead".into(),
+            incarnation:"incarnationA".into(),layer:Layer::User,parent_seat_id:None,
+            kind:Kind::Long,instance_id:"instanceA".into(),template_id:None,
+            settings_json:Some(format!(r#"{{"orchestrationScope":{OLD}}}"#)),
+            state:State::Idle,generation:1,revision:1};
+        let child=r#"{"model":"modelA","effort":"high","permissionTier":"READ_ONLY"}"#;
+        assert!(matches!(child_within_scope(&parent,child,"instanceA"),Err(SeatError::Denied)));
+        parent.settings_json=Some(format!(r#"{{"orchestrationScope":{}}}"#,
+            OLD.replace("\"maxPermissionTier\"","\"maxConcurrent\":2,\"maxPermissionTier\"")));
+        assert!(child_within_scope(&parent,child,"instanceA").is_ok());
+    }
 }
