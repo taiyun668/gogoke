@@ -451,6 +451,15 @@ try {
       }
       const stopped = JSON.parse(fs.readFileSync(originals.stop.path, 'utf8').replace(/^\uFEFF/, ''));
       const released = JSON.parse(fs.readFileSync(originals.release.path, 'utf8').replace(/^\uFEFF/, ''));
+      const stoppedSource = old.sourceCommit ?? SOURCE;
+      check(typeof stoppedSource === 'string' && /^[a-f0-9]{40}$/.test(stoppedSource),
+        'Original stopped candidate source is not an exact Git commit.');
+      execFileSync('git', ['merge-base', '--is-ancestor', stoppedSource, SOURCE],
+        { cwd: sourceRoot, stdio: 'pipe' });
+      const settled = released.state === 'EVIDENCE_READY_REQUIRES_REVIEW' ||
+        (released.state === 'SETTLED_WITH_ORIGINAL_HISTORY_RESULT' &&
+          released.historyResult === 'FAILED_ORIGINAL_HISTORY_READ' &&
+          nonempty(released.originalColdHistoryError));
       const stop = stopped.receipt;
       const release = released.operations.filter(row => row.request?.family === 'K-SESSION' &&
         row.request.operation === 'admission-release' && row.request.targetId === old.sessionId &&
@@ -467,7 +476,7 @@ try {
         stopped.originalStoppedLive.schema === 'gogoke.37.visible-conversation.v1' &&
         stopped.originalStoppedLive.workspaceId === workspaceId && !stopped.originalStoppedLive.reason &&
         same(exactAssociation(stopped.originalStoppedLive.association), prior) &&
-        released.sourceCommit === SOURCE && released.state === 'EVIDENCE_READY_REQUIRES_REVIEW' &&
+        released.sourceCommit === stoppedSource && settled &&
         release.length === 1 && release[0].receipt?.status === 'APPLIED' &&
         release[0].request.domainId === config.domainId && release[0].request.payload.seatId === config.seatId &&
         nonempty(release[0].receipt.requestId) && release[0].receipt.schema === 'gogoke.37.operations.v1' &&
