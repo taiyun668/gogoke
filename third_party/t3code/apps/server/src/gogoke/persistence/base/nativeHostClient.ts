@@ -21,8 +21,8 @@ export class NativeHostClientError extends Error {
   override readonly name = "NativeHostClientError";
   readonly code: string;
 
-  constructor(code: string, detail: string) {
-    super(`${code}: ${detail}`);
+  constructor(code: string, detail: string, options?: ErrorOptions) {
+    super(`${code}: ${detail}`, options);
     this.code = code;
   }
 }
@@ -2185,18 +2185,40 @@ export class NativeHostClient {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
-    if (child.stdout === null) {
-      child.kill();
-      throw new NativeHostClientError("HOST_STDIO", "native-host stdout was not created");
-    }
-    const stdout = NodeReadline.createInterface({ input: child.stdout });
+    let stderrTail = Buffer.alloc(0);
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderrTail = Buffer.concat([stderrTail, chunk]).subarray(-4096);
+    });
+    const spawnState: { error: Error | null } = { error: null };
+    const childClosed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      child.once("error", (error) => { spawnState.error = error; });
+      child.once("close", (code, signal) => resolve({ code, signal }));
+    });
+    let stdout: NodeReadline.Interface | null = null;
     let handshake: Awaited<ReturnType<typeof readStartupHandshake>>;
     try {
+      if (child.stdout === null) {
+        throw new NativeHostClientError("HOST_STDIO", "native-host stdout was not created");
+      }
+      stdout = NodeReadline.createInterface({ input: child.stdout });
       handshake = await readStartupHandshake(stdout);
     } catch (error) {
-      stdout.close();
+      stdout?.close();
       child.kill();
-      throw error;
+      const { code, signal } = await childClosed;
+      const original = error instanceof NativeHostClientError ? error
+        : new NativeHostClientError("HOST_EOF", String(error), { cause: error });
+      const detail = original.message.slice(original.code.length + 2);
+      const facts = [detail];
+      if (spawnState.error !== null) {
+        const errorCode = (spawnState.error as NodeJS.ErrnoException).code;
+        facts.push(`SPAWN_ERROR:${errorCode ?? "UNKNOWN"}:${spawnState.error.message}`);
+      }
+      // A failed spawn can report a libuv close code without a child process.
+      if (spawnState.error === null && code !== null) facts.push(`EXIT_CODE:${code}`);
+      if (spawnState.error === null && signal !== null) facts.push(`CLOSE_SIGNAL_AFTER_KILL_REQUEST:${signal}`);
+      if (stderrTail.length > 0) facts.push(`STDERR_TAIL:${stderrTail.toString("utf8")}`);
+      throw new NativeHostClientError(original.code, facts.join(": "), { cause: original });
     }
     const { pipeLine, capabilityLine } = handshake;
     stdout.close();
@@ -2953,14 +2975,14 @@ export function readStartupHandshake(stdout: NodeReadline.Interface): Promise<{
       if (stage === 0) {
         if (!line.startsWith("LOCKED")) {
           cleanup();
-          reject(new NativeHostClientError("HOST_LOCK", line));
+          reject(new NativeHostClientError("HOST_LOCK", "native-host did not report lock status"));
         } else {
           stage = 1;
         }
       } else if (stage === 1) {
         if (!line.startsWith("PIPE\t")) {
           cleanup();
-          reject(new NativeHostClientError("HOST_PIPE", line));
+          reject(new NativeHostClientError("HOST_PIPE", "native-host did not report service pipe"));
         } else {
           pipeLine = line;
           stage = 2;
