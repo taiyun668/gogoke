@@ -7,7 +7,7 @@ use super::*;
 use super::v37_secretary_routine_model::ResolvedRoutineSchedule;
 use crate::process::{NativeBinding, OriginBoundFrame, PrepareRequest, PreparedCustody,
     ProcessCustodian, ProcessLaunch};
-use crate::store::{ledger, seat};
+use crate::store::{inbox, ledger, seat};
 use crate::store::digest::{content_hash, sha256_hex};
 use crate::store::same_open::route_b_test_guard;
 use crate::store::session_transport::{self as h, codex_rpc, model_call};
@@ -21,6 +21,8 @@ const THREAD: &str = r#"{"id":3,"result":{"thread":{"id":"threadS","cwd":"fixtur
 const TURN: &str = r#"{"id":4,"result":{"turn":{"id":"turnS","status":"inProgress"}}}"#;
 const STARTED: &str = r#"{"method":"turn/started","params":{"threadId":"threadS","turn":{"id":"turnS","status":"inProgress"}}}"#;
 const CALL: &str = r#"{"id":91,"method":"item/tool/call","params":{"callId":"callS","threadId":"threadS","turnId":"turnS","tool":"gogoke_routine","arguments":{"operation":"create","scheduleSpan":"in 10 minutes","timezone":"HOST_DEFAULT"}}}"#;
+const TAKEOVER_QUESTION: &str = r#"{"id":44,"method":"item/tool/requestUserInput","params":{"threadId":"threadS","turnId":"turnS","itemId":"itemS","questions":[{"id":"q","header":"Scope","question":"Which scope?","isOther":true,"isSecret":false,"options":null}]}}"#;
+const TAKEOVER_CALL: &str = r#"{"id":92,"method":"item/tool/call","params":{"callId":"takeoverS","threadId":"threadS","turnId":"turnS","tool":"gogoke_takeover","arguments":{"operation":"takeover-answers"}}}"#;
 
 fn hex(bytes: &[u8]) -> String { bytes.iter().map(|byte| format!("{byte:02x}")).collect() }
 
@@ -82,7 +84,9 @@ fn user_request() -> Vec<u8> {
     format!(r#"{{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send","requestId":"sendS","targetId":"sessionS","domainId":"global","expectedRevision":"1","payload":{{"body":"{BODY}","generation":"1"}}}}"#).into_bytes()
 }
 
-fn fixture(extra: &[&str], action: impl FnOnce(&mut ProductDatabase<'_>, &PreparedCustody,
+fn fixture_with_wire(fourth: &str, extra: &[&str], captured: usize,
+    purpose: ledger::SessionPurpose,
+    action: impl FnOnce(&mut ProductDatabase<'_>, &PreparedCustody,
     &[OriginBoundFrame], &[ledger::RawSourceKey], &[u8])) {
     let _guard = route_b_test_guard();
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
@@ -90,7 +94,7 @@ fn fixture(extra: &[&str], action: impl FnOnce(&mut ProductDatabase<'_>, &Prepar
     fs::create_dir(&folder).unwrap();
     let root = RootLock::acquire(&folder).unwrap();
     let mut product = ProductDatabase::open(&root, &folder.join("state.sqlite")).unwrap();
-    let lines = [vec![THREAD, TURN, STARTED, CALL], extra.to_vec()].concat();
+    let lines = [vec![THREAD, TURN, STARTED, fourth], extra.to_vec()].concat();
     let (mut custodian, custody) = process(&folder, &lines);
     authority::record_prepared_process(&mut product.connection, "processS", &custody).unwrap();
     // Synthetic H admission and E configuration facts are scoped to the
@@ -104,10 +108,12 @@ fn fixture(extra: &[&str], action: impl FnOnce(&mut ProductDatabase<'_>, &Prepar
     instance.step_done().unwrap(); drop(instance);
     product.connection.execute("INSERT INTO gogoke_v37_instance_homes(home_id,instance_id,domain_id,kind,owner_id,generation,state,revision) VALUES('homeS','instanceS','global','SESSION','sessionS','1','ACTIVE',1)").unwrap();
     product.connection.execute("INSERT INTO gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('global','seatS','incarnationS','USER','LONG','instanceS','BUSY',1,1)").unwrap();
-    product.connection.execute("INSERT INTO gogoke_v37_seat_secretary(singleton,domain_id,seat_id,incarnation,request_id,fingerprint) VALUES(1,'global','seatS','incarnationS','designationS','fixture-fingerprint')").unwrap();
+    if purpose==ledger::SessionPurpose::Secretary {
+        product.connection.execute("INSERT INTO gogoke_v37_seat_secretary(singleton,domain_id,seat_id,incarnation,request_id,fingerprint) VALUES(1,'global','seatS','incarnationS','designationS','fixture-fingerprint')").unwrap();
+    }
     ledger::register_session(&mut product.connection, &ledger::SessionRegistration {
         domain_id:"global".into(),seat_id:"seatS".into(),session_id:"sessionS".into(),
-        purpose:ledger::SessionPurpose::Secretary,side_id:None,
+        purpose,side_id:None,
     }).unwrap();
     product.connection.execute("INSERT INTO gogoke_v37_h_owner_binding VALUES('bindingS','instanceS','global','SESSION','sessionS','1','ACTIVE')").unwrap();
     product.connection.execute("INSERT INTO gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id) VALUES('global','sessionS','instanceS','homeS','bindingS','1','COMMITTED',1,'processS')").unwrap();
@@ -123,7 +129,7 @@ fn fixture(extra: &[&str], action: impl FnOnce(&mut ProductDatabase<'_>, &Prepar
     for (frame, line) in frames.iter().zip(&lines) {
         assert_eq!(frame.bytes(), format!("{line}\n").as_bytes());
     }
-    let keys: Vec<_> = frames[..4].iter().enumerate()
+    let keys: Vec<_> = frames[..captured].iter().enumerate()
         .map(|(index, frame)| capture(&mut product, frame, index + 1)).collect();
     observed(&product, &custody, &keys[0], "thread-start",
         &codex_rpc::Command::ThreadStart {cwd:"fixture-directory".into(),model:"m".into()},
@@ -146,6 +152,11 @@ fn fixture(extra: &[&str], action: impl FnOnce(&mut ProductDatabase<'_>, &Prepar
         &codex_rpc::RpcId::Number(4), &command, "threadS").unwrap();
     action(&mut product, &custody, &frames, &keys, &user);
     drop(custodian); drop(product); drop(root); fs::remove_dir_all(folder).unwrap();
+}
+
+fn fixture(extra: &[&str], action: impl FnOnce(&mut ProductDatabase<'_>, &PreparedCustody,
+    &[OriginBoundFrame], &[ledger::RawSourceKey], &[u8])) {
+    fixture_with_wire(CALL,extra,4,ledger::SessionPurpose::Secretary,action);
 }
 
 fn caller(product: &ProductDatabase<'_>, custody: &PreparedCustody,
@@ -275,5 +286,127 @@ fn model_extra_authority_or_unanchored_time_and_bad_host_resolution_do_not_write
         let applied = product.dispatch_model_secretary_routine(&sealed, future).unwrap();
         assert!(String::from_utf8_lossy(&applied).contains("\"APPLIED\""),
             "the rolled-back attempt must not be mistaken for replay or UNKNOWN");
+    });
+}
+
+// Synthetic C/H rows exercise the production takeover dispatcher. The CMD pipe
+// supplies original A frames; this fixture does not prove a provider consumed
+// the answer or that a real model made the call.
+fn native_takeover_fixture(card_session: &str,
+    action: impl FnOnce(&mut ProductDatabase<'_>, &seat::NativeSeatCall, &V37Request, &str, &str)) {
+    fixture_with_wire(TAKEOVER_QUESTION,&[TAKEOVER_CALL],3,ledger::SessionPurpose::Work,
+        |product,custody,frames,_,_| {
+        product.connection.execute("INSERT INTO main.gogoke_v37_seat_settings(domain_id,seat_id,template_id,settings_json) VALUES('global','seatS','templateS','{\"model\":\"m\",\"effort\":\"high\",\"permissionTier\":\"READ_ONLY\",\"orchestrationScope\":{\"instanceIds\":[\"instanceS\"],\"models\":[\"m\"],\"reasoningEfforts\":[\"high\"],\"maxPermissionTier\":\"READ_ONLY\"},\"takeoverQuestions\":[{\"id\":\"q\",\"prompt\":\"Which scope?\"}]}')").unwrap();
+        let question=ledger::capture_raw_source(&mut product.connection,&frames[3],"processS",
+            &custody.custodian_nonce,"4").expect("original native question frame in A");
+        let source=&question.key;
+        let digest=sha256_hex(format!("global\n{card_session}\n{}\n{}\n{}",
+            source.operation_id,source.source_epoch,source.source_cursor).as_bytes());
+        let card_id=format!("card{digest}");
+        let raise_id=format!("raise{digest}");
+        let descriptor=Json::Object(BTreeMap::from([
+            (JsonString::from_str("operationId"),Json::String(JsonString::from_str(&source.operation_id))),
+            (JsonString::from_str("sourceEpoch"),Json::String(JsonString::from_str(&source.source_epoch))),
+            (JsonString::from_str("sourceCursor"),Json::String(JsonString::from_str(&source.source_cursor))),
+            (JsonString::from_str("frameSha256"),Json::String(JsonString::from_str(&sha256_hex(&question.raw_bytes)))),
+        ])).canonical();
+        let Json::Object(question_json)=Parser::parse(std::str::from_utf8(&question.raw_bytes).unwrap()).unwrap()
+            else {panic!("native question frame must decode");};
+        let payload=question_json.get(&JsonString::from_str("params")).unwrap().canonical();
+        let card=inbox::NativeQuestion {vendor_request_id:"44",vendor_thread_id:"threadS",
+            vendor_item_id:"itemS",auto_resolution_ms:"",question_payload:&payload,
+            question_id:"q",header:"Scope",question:"Which scope?",
+            answer_shape:inbox::NativeAnswerShape::FreeText,options:&[],seat_id:"seatS",
+            turn_id:"turnS",generation:"1"};
+        let raise=inbox::CardEnvelope {domain_id:"global",card_id:&card_id,request_id:&raise_id,
+            request_bytes:descriptor.as_bytes(),expected_revision:0};
+        assert_eq!(inbox::raise_native_card(&mut product.connection,&raise,&card,|_|Ok(true))
+            .unwrap().phase,"RAISED");
+        let answer_bytes=format!(r#"{{"schema":"gogoke.37.operations.v1","family":"K-QCARD","operation":"answer","requestId":"answerS","targetId":"{card_id}","domainId":"global","expectedRevision":"1","payload":{{"generation":"1","answers":{{"q":["Private testbed only"]}}}}}}"#);
+        let answer=inbox::CardEnvelope {domain_id:"global",card_id:&card_id,request_id:"answerS",
+            request_bytes:answer_bytes.as_bytes(),expected_revision:1};
+        let command=codex_rpc::Command::QuestionAnswer {request_id:codex_rpc::RpcId::Number(44),
+            answers:BTreeMap::from([("q".into(),vec!["Private testbed only".into()])])};
+        let wire=command.encode(None).unwrap();
+        let wire_text=std::str::from_utf8(wire.strip_suffix(b"\n").unwrap()).unwrap();
+        assert_eq!(inbox::begin_native_answer_intent(&mut product.connection,&answer,"44",
+            "seatS","turnS","1",inbox::NativeAnswer::Wire(wire_text),|_|Ok(true))
+            .unwrap().disposition,inbox::NativeAnswerDisposition::New);
+        let written=Statement::prepare(product.connection.as_ptr(),
+            "INSERT INTO main.gogoke_v37_rpc_steps(domain_id,session_id,open_request_id,
+             step_id,process_operation_id,ticket,custodian_nonce,pid,creation_time,image_path,
+             binary_digest,profile_id,generation,command_hex,requires_response,phase)
+             VALUES('global','sessionS','openS','qanswerS','processS',?1,?2,?3,?4,?5,?6,?7,'1',?8,0,'WRITTEN')").unwrap();
+        for (index,value) in [custody.ticket.opaque(),custody.custodian_nonce.as_str(),
+            &custody.identity.pid.to_string(),&custody.identity.creation_time_100ns.to_string(),
+            custody.identity.image_path.to_str().unwrap(),custody.binding.binary_digest_sha256.as_str(),
+            custody.binding.profile_id.as_str(),&hex(&wire)].iter().enumerate() {
+            written.bind_text((index+1) as i32,value).unwrap();
+        }
+        written.step_done().unwrap();drop(written);
+        let settled=inbox::settle_native_answer_written(&mut product.connection,&product.owner,
+            &answer,"sessionS","qanswerS").expect("production C settles exact H WRITTEN proof");
+        assert_eq!(settled.phase,"ANSWERED");
+        let call_key=capture(product,&frames[4],5);
+        let sealed=caller(product,custody,&frames[4],&call_key);
+        assert_eq!(sealed.tool(),Some("gogoke_takeover"));
+        let request_bytes=format!(r#"{{"schema":"gogoke.37.operations.v1","family":"K-SEAT","operation":"takeover-answers","requestId":"takeoverS","targetId":"seatS","domainId":"global","expectedRevision":"1","payload":{{"cardId":"{card_id}","cardAnswerRequestId":"answerS","answerRevision":"0"}}}}"#);
+        let request=h::decode_request(request_bytes.as_bytes()).unwrap();
+        action(product,&sealed,&request,&card_id,&settled.native_receipt_id);
+    });
+}
+
+fn native_takeover_stored_answer(product: &ProductDatabase<'_>) -> Option<(String,String,String)> {
+    let row=Statement::prepare(product.connection.as_ptr(),
+        "SELECT answer,source_ref,CAST(revision AS TEXT) FROM main.gogoke_v37_seat_takeover_answers WHERE domain_id='global' AND seat_id='seatS' AND question_id='q'").unwrap();
+    let result=if row.step_row().unwrap() {Some((row.column_text(0).unwrap(),row.column_text(1).unwrap(),row.column_text(2).unwrap()))}
+        else {None};
+    assert!(!row.step_row().unwrap(),"one takeover answer per question");
+    result
+}
+
+fn native_takeover_operation_count(product: &ProductDatabase<'_>) -> String {
+    let row=Statement::prepare(product.connection.as_ptr(),
+        "SELECT CAST(count(*) AS TEXT) FROM main.gogoke_v37_seat_continuity_operations WHERE domain_id='global' AND request_id='takeoverS'").unwrap();
+    assert!(row.step_row().unwrap());
+    row.column_text(0).unwrap()
+}
+
+#[test]
+fn native_takeover_original_answer_applies_and_exact_raw_replays() {
+    native_takeover_fixture("sessionS",|product,caller,request,card_id,receipt_id| {
+        let applied=h::decode_receipt(&product.dispatch_native_takeover_answer(request,caller).unwrap()).unwrap();
+        assert_eq!(applied.status,V37Status::Applied);
+        assert_eq!(native_takeover_stored_answer(product),Some(("Private testbed only".into(),
+            format!("C-QCARD:{card_id}:answerS:{receipt_id}"),"1".into())));
+        assert_eq!(native_takeover_operation_count(product),"1");
+        let replay=h::decode_receipt(&product.dispatch_native_takeover_answer(request,caller).unwrap()).unwrap();
+        assert_eq!(replay.status,V37Status::Replayed,"only the original raw request may replay");
+        assert_eq!(native_takeover_stored_answer(product),Some(("Private testbed only".into(),
+            format!("C-QCARD:{card_id}:answerS:{receipt_id}"),"1".into())));
+        assert_eq!(native_takeover_operation_count(product),"1");
+    });
+}
+
+#[test]
+fn native_takeover_rejects_another_session_card_identity() {
+    native_takeover_fixture("sessionOther",|product,caller,request,_,_| {
+        assert_eq!(caller.session_id(),Some("sessionS"));
+        let denied=h::decode_receipt(&product.dispatch_native_takeover_answer(request,caller).unwrap()).unwrap();
+        assert_eq!(denied.status,V37Status::Denied);
+        assert_eq!(native_takeover_stored_answer(product),None);
+        assert_eq!(native_takeover_operation_count(product),"0");
+    });
+}
+
+#[test]
+fn native_takeover_rejects_a_receipt_that_does_not_match_written_h() {
+    native_takeover_fixture("sessionS",|product,caller,request,_,receipt_id| {
+        assert!(receipt_id.starts_with("h-qanswer-"));
+        product.connection.execute("UPDATE main.gogoke_v37_qcard_native_operations SET native_receipt_id='h-qanswer-wrong' WHERE domain_id='global' AND request_id='answerS'").unwrap();
+        let denied=h::decode_receipt(&product.dispatch_native_takeover_answer(request,caller).unwrap()).unwrap();
+        assert_eq!(denied.status,V37Status::Denied);
+        assert_eq!(native_takeover_stored_answer(product),None);
+        assert_eq!(native_takeover_operation_count(product),"0");
     });
 }
