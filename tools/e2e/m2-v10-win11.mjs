@@ -18,10 +18,12 @@ const required = ['installed', 'installedSha256', 'version', 'sourceCommit', 're
   'pwsh', 'python', 'stateRoot', 'evidenceDirectory', 'result', 'domainId', 'repositoryId', 'observers'];
 check(process.platform === 'win32' && process.argv[2] && required.every(key => config[key] !== undefined) &&
   config.testerArmy !== false && config.repositoryId === 'gogokeSeatTestbed' && atom(config.domainId) &&
+  config.domainId !== 'global' &&
   /^[a-f0-9]{40}$/.test(config.sourceCommit) && Array.isArray(cases) && cases.length >= 1 && cases.length <= 2 &&
   new Set(cases.map(row => row.driverId)).size === cases.length &&
   cases.every(row => ['codex', 'claude'].includes(row.driverId) && row.projectA?.domainId === config.domainId &&
-    row.projectB?.domainId !== config.domainId && row.sideBinding?.domainId === config.domainId) &&
+    row.projectB?.domainId !== config.domainId && row.projectB?.domainId !== 'global' &&
+    row.sideBinding?.domainId === config.domainId) &&
   config.historyBoundary.peerRead === true &&
   config.historyBoundary.lifecycleOwnership === 'EXCLUSIVE_M2_HISTORY_SEATS' &&
   Array.isArray(config.observers) && ['formal', 'memory', 'ledger'].every(name =>
@@ -95,6 +97,82 @@ async function historyReadback(phase) {
   return ref;
 }
 
+async function projectGlobalDenial() {
+  // Use a fresh, live original H WORK reader: a released or nonexistent reader
+  // would also be denied and would not measure the project/global boundary.
+  const source = journal.historyBoundary.cases.find(row =>
+    row.state === 'FLOW_COMPLETE_DIRECT_READBACK_REQUIRED');
+  check(source?.projectSessions?.[0] && source.projectA.domainId !== 'global',
+    'Original project WORK session required for global-scope refusal');
+  const read = async (family, verb, target) => {
+    let reply = await product.operation(family, verb, target, {}, '0', ['APPLIED', 'STALE']);
+    if (reply.status === 'STALE') reply = await product.operation(family, verb, target, {}, reply.revision);
+    return reply;
+  };
+  const binding = source.projectA;
+  const card = await read('K-SEAT', 'state-card', binding.seatId);
+  const graph = await read('K-WORKTREE', 'graph-query', binding.worktreeId);
+  check(card.result.state === 'IDLE' && card.result.instanceId === source.instanceId &&
+    graph.result.state === 'REGISTERED' && graph.result.members?.some(member =>
+      ['domainId', 'repositoryId', 'seatId', 'worktreeId'].every(key => member[key] === binding[key]) &&
+      member.instanceId === source.instanceId),
+  'Original project reader F/E binding is not idle and registered');
+  const session = { id: id('v10ProjectReader'), domainId: binding.domainId,
+    seatId: binding.seatId, instanceId: source.instanceId,
+    worktreeId: binding.worktreeId, generation: (BigInt(card.result.generation) + 1n).toString(),
+    revision: '0', purpose: 'WORK', caseOwner: source.caseId };
+  journal.sessions.push(session); journal.v10GlobalProbe = { sessionId: session.id,
+    state: 'RUNNING', acceptance: false }; product.save();
+  const step = async (verb, payload = {}) => {
+    const reply = await product.operation('K-SESSION', verb, session.id,
+      { generation: session.generation, ...payload }, session.revision);
+    session.revision = reply.revision; product.save(); return reply;
+  };
+  await step('admission-reserve', { seatId: session.seatId });
+  await step('admission-commit', { seatId: session.seatId });
+  await step('open', { seatId: session.seatId, repositoryId: binding.repositoryId,
+    worktreeId: session.worktreeId });
+  const pin = await step('capability-probe');
+  check(pin.result.driverId === source.driverId && pin.result.version === source.version &&
+    pin.result.binaryDigest === `sha256:${source.sha256}`,
+  'Original live project reader fixed CLI pin differs');
+  const ledger = async (scope, revision, allowed) => {
+    const req = { schema: 'gogoke.37.operations.v1', family: 'K-LEDGER',
+      operation: 'scoped-query', requestId: id('v10LedgerScope'),
+      domainId: binding.domainId, targetId: 'ledger', expectedRevision: revision,
+      payload: { readerSessionId: session.id, scope, epoch: 'unselected', afterCursor: '0' } };
+    const entry = { request: req, rawFrame: JSON.stringify(req),
+      startedAt: new Date().toISOString(), receipt: null };
+    journal.operations.push(entry); product.save();
+    try {
+      const raw = await product.evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_design37_user_operation',{frame:${JSON.stringify(entry.rawFrame)}})`);
+      entry.rawReceipt = raw; entry.receipt = JSON.parse(raw); product.save();
+    } catch (error) { entry.originalError = String(error.stack ?? error); product.save(); throw error; }
+    const reply = entry.receipt;
+    check(reply.schema === req.schema && reply.family === req.family &&
+      reply.operation === req.operation && reply.requestId === req.requestId &&
+      reply.targetId === req.targetId && allowed.includes(reply.status),
+    `Original live project ${scope} reader returned ${reply.status}; preserve receipt`);
+    return reply;
+  };
+  // Existing history events make the global A cursor nonzero. This STALE is
+  // reached only after the current original WORK reader passes native custody.
+  const project = await ledger('PROJECT', '0', ['STALE']);
+  check(BigInt(project.revision) > 0n && project.previousRevision === project.revision,
+    'Live project reader positive control did not reach original A cursor');
+  const global = await ledger('GLOBAL', project.revision, ['DENIED']);
+  check(global.previousRevision === project.revision && global.revision === project.revision,
+    'Original live project reader acquired global ledger or changed revision');
+  const stopped = await step('stop', { seatId: session.seatId });
+  check(typeof stopped.result.stopFact === 'string' && stopped.result.stopFact,
+    'Original project reader physical stop fact missing');
+  session.stopFact = stopped.result.stopFact;
+  await step('admission-release', { seatId: session.seatId });
+  journal.v10ProjectGlobalUserRoute = 'ORIGINAL_PROJECT_SCOPE_DENIED_REVIEW_REQUIRED';
+  journal.v10GlobalProbe.state = 'ORIGINAL_LIVE_PROJECT_CONTROL_AND_GLOBAL_DENIAL';
+  product.save();
+}
+
 try {
   await snapshot('before');
   await product.launch();
@@ -122,6 +200,7 @@ try {
     row.actualHInputIsolation === true && row.projectDomains.length === 2),
   'Both configured live same-instance project inputs need direct proof');
   await product.launch();
+  await projectGlobalDenial();
   const peer = await runHistoryPeerReadCases(product, config, journal);
   check(peer.state === 'PEER_FLOW_COMPLETE_DIRECT_READBACK_REQUIRED',
     'Original V10 peer flow incomplete');
