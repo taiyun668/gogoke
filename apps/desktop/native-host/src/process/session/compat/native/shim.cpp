@@ -20,9 +20,65 @@ using FinalPath = DWORD (WINAPI *)(HANDLE, LPWSTR, DWORD, DWORD);
 FinalPath g_original = nullptr;
 using NamedPipeA = HANDLE (WINAPI *)(LPCSTR, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, LPSECURITY_ATTRIBUTES);
 using NamedPipeW = HANDLE (WINAPI *)(LPCWSTR, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, LPSECURITY_ATTRIBUTES);
+using OpenFileA = HANDLE (WINAPI *)(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
 NamedPipeA g_pipe_a = nullptr;
 NamedPipeW g_pipe_w = nullptr;
+OpenFileA g_file_a = nullptr;
 volatile LONG g_pipe_capture = 0;
+
+// libuv's fixed uv__unique_pipe_name uses a 64-byte buffer and the form
+// \\?\pipe\uv\<decimal>-<pid>. Both ends of its private pair use that name.
+constexpr char kUvPairPrefix[] = "\\\\?\\pipe\\uv\\";
+constexpr char kLocalPairPrefix[] = "\\\\.\\pipe\\LOCAL\\uv\\";
+constexpr size_t kUvPairNameCap = 64;
+constexpr size_t kLocalPairNameCap = kUvPairNameCap + sizeof(kLocalPairPrefix);
+
+bool local_uv_pair_name(const char* name, char (&local)[kLocalPairNameCap]) {
+    if (!name) return false;
+    constexpr size_t prefix_len = sizeof(kUvPairPrefix) - 1;
+    for (size_t i = 0; i < prefix_len; ++i)
+        if (name[i] != kUvPairPrefix[i]) return false;
+    size_t i = prefix_len;
+    const size_t first = i;
+    while (i < kUvPairNameCap && name[i] >= '0' && name[i] <= '9') ++i;
+    if (i == first || i >= kUvPairNameCap || name[i++] != '-') return false;
+    const size_t second = i;
+    unsigned long long pid = 0;
+    while (i < kUvPairNameCap && name[i] >= '0' && name[i] <= '9') {
+        pid = pid * 10 + static_cast<unsigned>(name[i++] - '0');
+        if (pid > 0xffffffffULL) return false;
+    }
+    if (i == second || i >= kUvPairNameCap || name[i] != '\0' ||
+        pid != GetCurrentProcessId()) return false;
+    constexpr size_t local_prefix_len = sizeof(kLocalPairPrefix) - 1;
+    for (size_t j = 0; j < local_prefix_len; ++j) local[j] = kLocalPairPrefix[j];
+    for (size_t j = prefix_len; j <= i; ++j)
+        local[local_prefix_len + j - prefix_len] = name[j];
+    return true;
+}
+
+bool uv_pair_server_call(DWORD open_mode, DWORD pipe_mode, DWORD instances,
+    DWORD out_size, DWORD in_size, DWORD timeout, LPSECURITY_ATTRIBUTES security) {
+    constexpr DWORD allowed = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED |
+        FILE_FLAG_FIRST_PIPE_INSTANCE | WRITE_DAC;
+    const DWORD access = open_mode & PIPE_ACCESS_DUPLEX;
+    return (open_mode & ~allowed) == 0 &&
+        (open_mode & (FILE_FLAG_FIRST_PIPE_INSTANCE | WRITE_DAC)) ==
+            (FILE_FLAG_FIRST_PIPE_INSTANCE | WRITE_DAC) &&
+        access >= PIPE_ACCESS_INBOUND && access <= PIPE_ACCESS_DUPLEX &&
+        pipe_mode == (PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT) &&
+        instances == 1 && out_size == 65536 && in_size == 65536 &&
+        timeout == 0 && security == nullptr;
+}
+
+bool uv_pair_client_call(DWORD access, DWORD share, LPSECURITY_ATTRIBUTES security,
+    DWORD disposition, DWORD flags, HANDLE template_file) {
+    constexpr DWORD allowed_access = GENERIC_READ | GENERIC_WRITE |
+        FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | WRITE_DAC;
+    return (access & WRITE_DAC) != 0 && (access & ~allowed_access) == 0 &&
+        share == 0 && security != nullptr && disposition == OPEN_EXISTING &&
+        (flags == 0 || flags == FILE_FLAG_OVERLAPPED) && template_file == nullptr;
+}
 
 bool uv_pipe_prefix(const char* name) {
     constexpr char prefix[] = "\\\\?\\pipe\\uv\\";
@@ -74,12 +130,29 @@ void report_pipe_failure(const char* api, DWORD error) {
 
 HANDLE WINAPI observed_pipe_a(LPCSTR name, DWORD open_mode, DWORD pipe_mode,
     DWORD instances, DWORD out_size, DWORD in_size, DWORD timeout, LPSECURITY_ATTRIBUTES security) {
-    const HANDLE result = g_pipe_a(name, open_mode, pipe_mode, instances,
+    char local[kLocalPairNameCap] = {};
+    const char* target = uv_pair_server_call(open_mode, pipe_mode, instances,
+        out_size, in_size, timeout, security) && local_uv_pair_name(name, local)
+            ? local : name;
+    const HANDLE result = g_pipe_a(target, open_mode, pipe_mode, instances,
         out_size, in_size, timeout, security);
     const DWORD error = GetLastError();
     if (result == INVALID_HANDLE_VALUE && uv_pipe_prefix(name) &&
         InterlockedCompareExchange(&g_pipe_capture, 1, 0) == 0)
         report_pipe_failure("CreateNamedPipeA", error);
+    SetLastError(error);
+    return result;
+}
+
+HANDLE WINAPI observed_file_a(LPCSTR name, DWORD access, DWORD share,
+    LPSECURITY_ATTRIBUTES security, DWORD disposition, DWORD flags, HANDLE template_file) {
+    char local[kLocalPairNameCap] = {};
+    const char* target = uv_pair_client_call(access, share, security,
+        disposition, flags, template_file) && local_uv_pair_name(name, local)
+            ? local : name;
+    const HANDLE result = g_file_a(target, access, share, security,
+        disposition, flags, template_file);
+    const DWORD error = GetLastError();
     SetLastError(error);
     return result;
 }
@@ -339,15 +412,22 @@ bool patch_exact_claude_imports() {
     ImportSlots slots = {};
     if (!exact_main_import_slots(image, "CreateNamedPipeA", "CreateNamedPipeW", &slots))
         return false;
+    ImportSlots file_slots = {};
+    if (!exact_main_import_slots(image, "CreateFileA", nullptr, &file_slots))
+        return false;
     const auto original_a = reinterpret_cast<NamedPipeA>(*slots.first);
     const auto original_w = reinterpret_cast<NamedPipeW>(*slots.second);
+    const auto original_file_a = reinterpret_cast<OpenFileA>(*file_slots.first);
     g_pipe_a = original_a;
     g_pipe_w = original_w;
-    // A failed second patch prevents DLL initialization and child activation.
+    g_file_a = original_file_a;
+    // Any failed patch prevents DLL initialization and child activation.
     if (!patch_slot(slots.first, reinterpret_cast<void*>(original_a),
                     reinterpret_cast<void*>(&observed_pipe_a)) ||
         !patch_slot(slots.second, reinterpret_cast<void*>(original_w),
-                    reinterpret_cast<void*>(&observed_pipe_w))) return false;
+                    reinterpret_cast<void*>(&observed_pipe_w)) ||
+        !patch_slot(file_slots.first, reinterpret_cast<void*>(original_file_a),
+                    reinterpret_cast<void*>(&observed_file_a))) return false;
     return true;
 }
 
