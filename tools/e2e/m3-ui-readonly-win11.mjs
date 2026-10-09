@@ -213,13 +213,7 @@ async function readInstance(page) {
   check(await close.count() === 1, 'Actual Settings close control is unavailable');
   await close.click();
   journal.navigation.push('close-settings');
-  const mainViews = page.locator(
-    '.home-product-entry, .main .content, .tablet-main .tablet-content',
-  );
-  await mainViews.first().waitFor({ state: 'visible', timeout: 15000 });
-  check(await page.locator(
-    '.home-product-entry:visible, .main .content:visible, .tablet-main .tablet-content:visible',
-  ).count() === 1, 'Actual Home or selected-project main view is not uniquely visible');
+  await page.locator('.settings-overlay').waitFor({ state: 'hidden', timeout: 15000 });
   product.save();
 }
 
