@@ -705,39 +705,12 @@ try {
   await product.instances();
   check(Boolean(product.tester) && journal.connectionBackend?.agentActs === 0,
     'Resumed original e2e hard locator without agent.act');
-  const decision = captured.controllerMergeDecision;
-  check(decision?.decision === 'MERGE_EXACT_PRIVATE_TEST_MARKER_ONLY' &&
-    decision.scope === config.repositoryId && decision.childHead === captured.worktree.childHeadBeforeSeal &&
-    decision.markerSha256 === captured.worktree.markerSha256 &&
-    JSON.stringify(decision.changedPaths) === JSON.stringify([journal.markerFile]) &&
-    /^[1-9][0-9]*$/.test(decision.policyRevision), 'Controller narrow private testbed merge decision');
-  const grant = { schema: 'gogoke.37.owner-configuration.v1', command: 'policy-call-grant',
-    domainId: config.domainId, requestId: id('m2MergeGrant'), callerSeatId: config.seatId,
-    targetId: 'MAIN', action: 'MERGE', expiresAtMs: String(Date.now() + 3600000),
-    expectedRevision: decision.policyRevision };
-  const entry = { kind: 'CONTROLLER_TESTBED_MERGE_CONFIGURATION', request: grant,
-    rawFrame: JSON.stringify(grant), decision, receipt: null };
-  journal.operations.push(entry); product.save();
-  entry.rawReceipt = await product.evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_design37_user_operation',{frame:${JSON.stringify(entry.rawFrame)}})`);
-  entry.receipt = JSON.parse(entry.rawReceipt); product.save();
-  check(entry.receipt.status === 'APPLIED' && entry.receipt.requestId === grant.requestId &&
-    entry.receipt.command === grant.command && entry.receipt.revision ===
-    (BigInt(decision.policyRevision) + 1n).toString(), 'Original narrow MERGE grant CAS receipt');
-  const resumed = await sessionOp(lead, 'resume');
-  check(resumed.result.state === 'RUNNING' && resumed.result.newGeneration,
-    'Original lead H session resumed after normal close');
-  lead.cursor = '0'; product.save();
-  await leadTurn(lead, `Owner-authorized M2 merge of the exact registered testbed worktree ${captured.worktree.id}. ` +
-    `Call native gogoke_worktree merge with targetId ${captured.worktree.id}, expectedRevision ${captured.worktree.revision}, ` +
-    `payload decision MERGE and reason "M2 original child file ${journal.markerFile}". ` +
-    `Only this original worktree; no User substitute, new create, push or remote operation.`, false);
-  let graph = await product.operation('K-WORKTREE', 'graph-query', captured.worktree.id, {},
-    captured.worktree.revision.toString(), ['APPLIED', 'STALE']);
-  if (graph.status === 'STALE') graph = await product.operation('K-WORKTREE', 'graph-query',
-    captured.worktree.id, {}, graph.revision);
-  check(graph.result.state === 'MERGED' && /^[a-f0-9]{40}$/.test(graph.result.mergeTargetCommit),
-    'Actual F graph reports merged original worktree');
-  await stopUser(lead, true);
+  const { runV11Merge } = await import('./m2-mainflow.mjs');
+  journal.driverBytes['m2-mainflow.mjs'] = sha256(path.join(here, 'm2-mainflow.mjs'));
+  product.save();
+  const { graph } = await runV11Merge(product, config, journal, {
+    lead, captured, check, leadTurn, sessionOp, stopUser,
+  });
   await runSideChat();
   await runRules();
   const latest = await product.instances();
