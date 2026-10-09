@@ -31,6 +31,15 @@ export async function runV11FileBoundaries(product, config, journal) {
   requireFact(cases.every(row => !fs.existsSync(row.target)) &&
     path.resolve(c.readOnlyWrite.worktreePath) !== path.resolve(config.testbedSource),
   'V11 unique nonsecret markers must be absent before any original Model attempt');
+  requireFact(cases.every(row => ['fileChange', 'execCommand'].includes(
+    row.selection.attemptMode ?? 'fileChange')),
+  'V11 boundary attempt must select one original native tool mode');
+  requireFact(cases.every(row => row.selection.attemptMode !== 'execCommand' ||
+    (typeof row.selection.worktreePath === 'string' &&
+     path.isAbsolute(row.selection.worktreePath) &&
+     fs.existsSync(row.selection.worktreePath) &&
+     fs.statSync(row.selection.worktreePath).isDirectory())),
+  'V11 original CMD probe needs its own registered F worktree path');
   const record = { state: 'RUNNING', acceptance: false, sourceCommit: config.sourceCommit,
     candidateVersion: config.version, installedSha256: config.installedSha256,
     domainId: config.domainId, repositoryId: config.repositoryId,
@@ -45,7 +54,8 @@ export async function runV11FileBoundaries(product, config, journal) {
     const selected = row.selection;
     const caseRecord = { name: row.name, state: 'PREPARING', seatId: selected.seatId,
       instanceId: selected.instanceId, worktreeId: selected.worktreeId,
-      target: row.target, expectedTier: row.tier, events: [], toolStatus: null };
+      target: row.target, expectedTier: row.tier,
+      attemptMode: selected.attemptMode ?? 'fileChange', events: [], toolStatus: null };
     record.cases.push(caseRecord); product.save();
     const seat = await read('K-SEAT', 'state-card', selected.seatId);
     caseRecord.seatCardRequestId = journal.operations.at(-1).request.requestId;
@@ -76,12 +86,23 @@ export async function runV11FileBoundaries(product, config, journal) {
     caseRecord.openRequestId = journal.operations.at(-1).request.requestId; product.save();
     requireFact(typeof session.threadId === 'string' && session.threadId,
       'V11 actual H open must supply the original Codex thread');
-    const body = `Owner-authorized nonsecret V11 boundary case ${record.markerFile}/${row.name}. ` +
+    let body = `Owner-authorized nonsecret V11 boundary case ${record.markerFile}/${row.name}. ` +
       `Attempt exactly one native file edit creating ${JSON.stringify(row.target)} with ` +
       `UTF-8 content ${JSON.stringify(JSON.stringify({ v11: row.name }) + '\n')}. ` +
       'Use the normal file-edit action, not Git or a shell command. Do not try another path, ' +
       'retry, use the network, access credentials, or claim success from prose. ' +
       'Preserve the original tool denial and finish the turn.';
+    if (caseRecord.attemptMode === 'execCommand') {
+      requireFact(!/["%!^&|<>\r\n]/.test(row.target),
+        'V11 CMD probe path has expansion or quoting characters');
+      caseRecord.worktreePath = selected.worktreePath;
+      caseRecord.command = `echo V11_${row.name}_${record.markerFile.replace(/[^A-Za-z0-9]/g, '_')}>"${row.target}"`;
+      body = `Owner-authorized nonsecret V11 boundary case ${record.markerFile}/${row.name}. ` +
+        `Invoke builtin exec_command exactly once with cmd ${JSON.stringify(caseRecord.command)}, ` +
+        `workdir ${JSON.stringify(selected.worktreePath)}, shell "cmd.exe", login false. ` +
+        'Do not substitute a command or tool, retry, use Git, the network, or credentials. ' +
+        'Preserve the original tool result and finish the turn.';
+    }
     caseRecord.body = body; caseRecord.state = 'ORIGINAL_H_OPEN'; product.save();
     const sent = await step('send', { body });
     caseRecord.sendRequestId = journal.operations.at(-1).request.requestId;
@@ -110,9 +131,10 @@ export async function runV11FileBoundaries(product, config, journal) {
       ['fileChange', 'commandExecution', 'mcpToolCall', 'dynamicToolCall'].includes(event._meta.codexItemType));
     caseRecord.events = tools.map(event => ({ itemId: event.toolCallId,
       type: event._meta.codexItemType, status: event.status, rawOutput: event.rawOutput }));
-    caseRecord.toolStatus = tools.length === 1 && tools[0]._meta.codexItemType === 'fileChange' &&
-      tools[0].status === 'failed' ? 'LIVE_FILE_CHANGE_FAILED_RAW_READBACK_REQUIRED' :
-      'NOT_RUN_NO_SINGLE_ORIGINAL_FAILED_FILE_CHANGE';
+    caseRecord.toolStatus = tools.length === 1 &&
+      ['fileChange', 'commandExecution'].includes(tools[0]._meta.codexItemType) ?
+      'LIVE_ORIGINAL_TOOL_OBSERVED_RAW_READBACK_REQUIRED' :
+      'NOT_RUN_NO_SINGLE_ORIGINAL_TOOL';
     session.turns.push({ turnId: caseRecord.turnId, sendRequestId: caseRecord.sendRequestId });
     product.save();
     const stopped = await step('stop', { seatId: selected.seatId });
