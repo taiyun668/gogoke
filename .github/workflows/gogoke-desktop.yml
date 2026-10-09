@@ -77,7 +77,7 @@ jobs:
               '| Clean Windows build (frozen) and original artifact byte verification | See the frozen job''s actual result |'
               '| Clean Windows build (repro) | NOT_RUN |'
               '| Compare independent Windows executable bytes | NOT_RUN |'
-              '| Compiled failing mutation and CI-only negative installer | NOT_RUN |'
+              '| Unaffected native trust library tests and CI-only negative installer | NOT_RUN |'
               ''
               'This run is a lightweight experiment and cannot satisfy the complete stable integration gate; experimental resource signing remains subject to its trusted main verifier.'
             ) -join [Environment]::NewLine
@@ -412,6 +412,7 @@ jobs:
           node ../../tools/ci/gogoke-package-service.mjs verify src-tauri/resources generated/gogoke-package-hashes.json
           if ($LASTEXITCODE -ne 0) { throw "staged resources failed byte check: $LASTEXITCODE" }
       - name: Test native release and resource trust paths
+        if: github.event_name != 'workflow_dispatch' || !inputs.experimental_candidate
         shell: pwsh
         env:
           GOGOKE_BUILD_LANE: ${{ matrix.lane }}
