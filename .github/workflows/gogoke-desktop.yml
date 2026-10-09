@@ -443,6 +443,7 @@ jobs:
           cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_uninstall --lib
           if ($LASTEXITCODE -ne 0) { throw "gogoke uninstall tests failed: $LASTEXITCODE" }
       - name: Upload one-shot task deletion receipt
+        if: github.event_name != 'workflow_dispatch' || !inputs.experimental_candidate
         uses: actions/upload-artifact@v4
         with:
           name: gogoke-job-custody-delete-${{ matrix.lane }}-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}
