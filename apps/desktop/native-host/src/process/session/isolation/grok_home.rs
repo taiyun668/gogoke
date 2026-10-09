@@ -629,6 +629,25 @@ pub(crate) fn grok_residue_acl(profile:&AppContainerProfile,home:&Path,
 }
 
 impl AppContainerProfile {
+    /// Metadata-only snapshot of every HOME child, including protected files
+    /// that must remain byte-for-byte unchanged during parent retirement.
+    pub(crate) fn observe_grok_h_only_tree(&self,home:&Path,
+        home_identity:&RootIdentity)->Result<Vec<(GrokHomeObject,GrokAclSnapshot)>,IsolationError>{
+        require_bound_path(home,home_identity,true)?;
+        let mut result=Vec::new();
+        for (path,identity,directory) in collect_tree(home)? {
+            let held=open_physical_object(&path,directory,READ_CONTROL)?;
+            let acl=snapshot(held.0,self)?;
+            if acl.identity!=identity{return Err(IsolationError::AclWitnessMismatch);}
+            let relative=path.strip_prefix(home).map_err(|error|IsolationError::Acl(
+                io::Error::new(io::ErrorKind::InvalidData,error.to_string())))?.to_path_buf();
+            result.push((GrokHomeObject{relative_name:relative,identity,directory,
+                protected_inherited:false},acl));
+        }
+        require_bound_path(home,home_identity,true)?;
+        Ok(result)
+    }
+
     /// Retire one previously journaled H-only ACE. The held object's complete
     /// ordered ACL must be the recorded before or after state; no new baseline
     /// is sampled here. The Native writer does not propagate to descendants.

@@ -1473,15 +1473,16 @@ fn h_only_capture(profile:&AppContainerProfile,home:&ResolvedDirectory,
         return Err("Grok H-only: root has unknown SID or ACL shape".into());
     }
     let mut objects=vec![(".".into(),home.identity.clone(),true,root)];
-    let descendants=evidence("H-only inherited inventory",inspect_grok_home_residue(profile,
-        &home.path,&home.identity,&[],&[]))?;
-    for object in descendants {
-        let acl=evidence("H-only descendant ACL",grok_residue_acl(profile,
-            &home.path,&home.identity,&object))?;
+    let descendants=evidence("H-only complete HOME inventory",profile.observe_grok_h_only_tree(
+        &home.path,&home.identity))?;
+    for (object,acl) in descendants {
         let flags=if object.directory {19}else{16};
-        if acl.identity!=object.identity ||!acl.canonical_dacl() ||acl.dacl_protected ||
+        if acl.identity!=object.identity ||!acl.canonical_dacl() {
+            return Err("Grok H-only: child FileID or ACL order changed".into());
+        }
+        if !acl.target_aces.is_empty() &&(acl.dacl_protected ||
             acl.target_aces!=format!("1:{RIGHTS}:{flags}") ||
-            acl.package_sid_aces()!=[sid.to_string()]{
+            acl.package_sid_aces()!=[sid.to_string()]){
             return Err("Grok H-only: inherited ACL has unknown or duplicate SID".into());
         }
         let relative=object.relative_name.to_str().ok_or("Grok H-only: non-Unicode relative path")?.to_owned();
@@ -1621,7 +1622,7 @@ pub(crate) fn retire_h_only_root(db:&mut VerifiedDatabaseConnection<'_>,root:&Ro
         let phase=row[6].as_str();
         let revision:i64=row[7].parse().map_err(|_|"Grok H-only: invalid revision")?;
         if phase=="UNKNOWN" ||!matches!(phase,"INTENT"|"APPLIED") ||
-            (completed &&phase!="APPLIED") ||before==after ||
+            (completed &&phase!="APPLIED") ||
             (id==home.identity)!=(relative==".") {
             return Err("Grok H-only: object journal inconsistent".into());
         }
@@ -1641,8 +1642,13 @@ pub(crate) fn retire_h_only_root(db:&mut VerifiedDatabaseConnection<'_>,root:&Ro
             return Err("Grok H-only: APPLIED ACL or FileID changed".into());
         }
         if phase=="APPLIED" {continue;}
-        let result=evidence("H-only exact SID retirement",profile.retire_grok_h_only_object(
-            &home.path,&home.identity,object.as_ref(),&before,&after,control));
+        let result=if before==after {
+            if physical.ordered_aces_bytes()==after &&physical.target_aces.is_empty(){Ok(())}
+            else{Err("Grok H-only: protected or unaffected child changed".into())}
+        }else{
+            evidence("H-only exact SID retirement",profile.retire_grok_h_only_object(
+                &home.path,&home.identity,object.as_ref(),&before,&after,control))
+        };
         if let Err(error)=result {
             let update=Statement::prepare(db.as_ptr(),"UPDATE main.gogoke_v37_grok_home_h_only_retirement_objects SET phase='UNKNOWN',revision=revision+1 WHERE instance_id=?1 AND relative_name=?2 AND phase='INTENT' AND revision=?3")
                 .map_err(|e|format!("Grok H-only UNKNOWN: {e:?}"))?;
@@ -1756,8 +1762,13 @@ mod tests {
             ("releaseA","admission-release",2,3)] {
             db.execute(&format!("INSERT INTO main.gogoke_v37_h_operation VALUES('domainA','{request}','00','{operation}','sessionA','APPLIED',{previous},{revision})")).unwrap();
         }
-        // The old generic writer granted the root before checking its child.
-        profile.grant_bound_tree(&home.path,&home.identity,true).unwrap();
+        // The old generic writer grants the root, then rejects the protected
+        // auth child without rolling that root grant back.
+        let protected=observe_grok_auth_candidate(&home.path,&home.identity).unwrap();
+        let protected_before=protected.candidate_acl(&profile).unwrap();
+        assert!(protected_before.dacl_protected);
+        assert!(profile.grant_bound_tree(&home.path,&home.identity,true).is_err());
+        assert_eq!(protected.candidate_acl(&profile).unwrap(),protected_before);
         let sid=profile.sid_identity().unwrap();
         let original=evidence("test root",grok_root_acl(&profile,&home.path,&home.identity)).unwrap();
         assert_eq!(original.package_sid_aces(),[sid.clone()]);
@@ -1805,6 +1816,8 @@ mod tests {
         retire_h_only_root(&mut db,&root,"grokA",pending).unwrap();
         assert!(grok_root_acl(&profile,&home.path,&home.identity).unwrap().target_aces.is_empty());
         assert!(inspect_grok_home_residue(&profile,&home.path,&home.identity,&[],&[]).unwrap().is_empty());
+        assert_eq!(protected.candidate_acl(&profile).unwrap(),protected_before);
+        assert!(h_only_sql(&db,"SELECT 1 FROM main.gogoke_v37_grok_home_h_only_retirement_objects WHERE instance_id='grokA' AND relative_name='auth.json' AND before_acl_hex=after_acl_hex AND phase='APPLIED'",&[]).unwrap());
         assert!(h_only_sql(&db,"SELECT 1 FROM main.gogoke_v37_grok_home_h_only_retirement WHERE instance_id='grokA' AND phase='APPLIED'",&[]).unwrap());
         retire_h_only_root(&mut db,&root,"grokA",pending).unwrap();
         db.close_checked().unwrap();drop(root);std::fs::remove_dir_all(path).unwrap();
