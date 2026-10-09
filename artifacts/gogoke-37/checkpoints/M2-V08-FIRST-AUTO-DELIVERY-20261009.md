@@ -6,6 +6,8 @@
 
 边界：仅该 checkpoint 片段通过。`directCaseEvidence=false`、`acceptance=false`；final 尚未核完整 Host case 的原 A typed ACK、H/F 身份、释放及无额外工具效果。完整 V08 未通过，其余排队、路由更改、取消和其他边界仍未执行。旧候选结果不替代新候选及稳定点复测。
 
-下一步：按原 StopFact 释放这三份已停止 claim 并正常关闭，再继续剩余真实场景。系统准入受阻的新候选原字节保留，不重发原投递、不改原记录。V10 前提与 M3 只读 UI 工具并行推进；后者的私有期望文字不能替代原宿主事实，夹具按独立意见修正。
+续记：三份原停止 claim 已经由原 User admission-release 逐项释放，正常关闭退出 0；闭库确认原三个 claim 的 RELEASED 状态与修订对应。四个全新测试 USER 席已通过原宿主准备，使用同一已登录实例、权限和模型，正常关闭退出 0。原失败请求与旧席记录保留，新一轮四场景正在实际运行，未把运行中计为通过。
+
+下一步：结清新一轮的真实 H stop、释放、正常关闭与 final 读回。系统准入受阻的新候选原字节保留，不重发原投递、不改原记录。独占工人正实现可选 busy-to-idle 场景，沿原 C 回答、A completed/idle 和同一 H custody 证明，不用 stop/resume 代替空闲；V10 前提与 M3 宿主读取根因并行推进。
 
 参照：既有 `inbox/host_rule.rs::record_host_stage_result`、`m2-rules.mjs`、`m2-rules-readback.py` 的 final 原仪器引用链、现成 H stop / release 和正常关闭。未加入产品补偿、恢复 API 或新 Owner 操作。
