@@ -150,7 +150,7 @@ async function readInstanceFacts(page) {
     instance.state === 'NOT_INSTALLED' ? '它要用的 CLI 还没装' :
     instance.loginState === 'PENDING' && instance.loginSettled !== true ? '正在登录' :
     instance.loginState === 'ERROR' ? '这次没登上' :
-    instance.loginState === 'UNKNOWN' ? '没能确认登没上' :
+    instance.loginState === 'UNKNOWN' ? '没能确认登没登上' :
     profile.programSourceErrorPresent || instance.state === 'ERROR' ? '出错了' :
     instance.state === 'LOGGED_IN' && profile.enabled === true && profile.capPresent ? '可以用' :
     instance.state === 'LOGGED_IN' ? '登上了，但名字、启用或并发上限还没设好' :
@@ -213,7 +213,13 @@ async function readInstance(page) {
   check(await close.count() === 1, 'Actual Settings close control is unavailable');
   await close.click();
   journal.navigation.push('close-settings');
-  await page.locator('.home-product-entry').waitFor({ state: 'visible', timeout: 15000 });
+  const mainViews = page.locator(
+    '.home-product-entry, .main .content, .tablet-main .tablet-content',
+  );
+  await mainViews.first().waitFor({ state: 'visible', timeout: 15000 });
+  check(await page.locator(
+    '.home-product-entry:visible, .main .content:visible, .tablet-main .tablet-content:visible',
+  ).count() === 1, 'Actual Home or selected-project main view is not uniquely visible');
   product.save();
 }
 
