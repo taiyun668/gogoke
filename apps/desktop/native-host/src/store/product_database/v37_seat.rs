@@ -152,7 +152,7 @@ fn status_for(error: &SeatError, request: &V37Request, present: Option<&Seat>) -
         SeatError::Unknown => V37Status::Conflict,
         SeatError::Store(_) | SeatError::Open(_) | SeatError::CommitUnknown(_)
         | SeatError::RollbackUnknown(_) | SeatError::HostResourceObservation(_) | SeatError::HostHealthObservation(_)
-        | SeatError::InstanceManagement(_) | SeatError::SchemaDrift => V37Status::Unknown,
+        | SeatError::InstanceManagement(_) | SeatError::NativeAnswerSource(_) | SeatError::SchemaDrift => V37Status::Unknown,
     }
 }
 
@@ -880,7 +880,7 @@ impl<'root> ProductDatabase<'root> {
             return Ok(receipt(request,V37Status::Stale,seat_revision,seat_revision,BTreeMap::new()));
         }
         let q=Statement::prepare(self.connection.as_ptr(),
-            "SELECT c.question_id,c.answer,c.seat_id,c.turn_id,c.generation,o.native_receipt_id,c.vendor_thread_id,c.session_id FROM main.gogoke_v37_qcard_native c JOIN main.gogoke_v37_qcard_native_operations o ON o.domain_id=c.domain_id AND o.card_id=c.card_id WHERE c.domain_id=?1 AND c.card_id=?2 AND o.request_id=?3 AND c.state='ANSWERED' AND o.state='ANSWERED' AND c.answer_kind='WIRE'")?;
+            "SELECT c.question_id,c.answer,c.seat_id,c.turn_id,c.generation,o.native_receipt_id,c.vendor_thread_id FROM main.gogoke_v37_qcard_native c JOIN main.gogoke_v37_qcard_native_operations o ON o.domain_id=c.domain_id AND o.card_id=c.card_id WHERE c.domain_id=?1 AND c.card_id=?2 AND o.request_id=?3 AND c.state='ANSWERED' AND o.state='ANSWERED' AND c.answer_kind='WIRE'")?;
         q.bind_text(1,&request.domain_id)?;q.bind_text(2,&card_id)?;
         q.bind_text(3,&answer_request)?;
         if !q.step_row()? {
@@ -890,13 +890,18 @@ impl<'root> ProductDatabase<'root> {
         let source_seat=q.column_text(2)?;let source_turn=q.column_text(3)?;
         let source_generation=q.column_text(4)?;let source_receipt=q.column_text(5)?;
         let source_thread=q.column_text(6)?;
-        let source_session=q.column_text(7)?;
         if q.step_row()? {return Err(OrchestrationError::OperationConflict);}
         drop(q);
+        // C binds the physical session in its card ID and immutable RAISED
+        // descriptor; its stored card schema has no session_id column.
+        let session=caller.session_id().ok_or(OrchestrationError::AccessDenied)?;
+        let (source_key,_)=super::v37_qcard::read_source_descriptor(
+            &self.connection,&request.domain_id,&card_id)?;
         if source_seat!=caller.seat_id() || source_turn!=caller.turn_id() ||
             present.generation!=caller.generation() || source_receipt.is_empty()
             || caller.model_proof().map(|proof|proof.physical_generation())!=Some(source_generation.as_str())
-            || caller.thread_id()!=Some(source_thread.as_str()) || caller.session_id()!=Some(source_session.as_str()) {
+            || caller.thread_id()!=Some(source_thread.as_str())
+            || super::v37_qcard::card_identity(&request.domain_id,session,&source_key).0!=card_id {
             return Ok(receipt(request,V37Status::Denied,seat_revision,seat_revision,BTreeMap::new()));
         }
         let Json::Object(wire)=Parser::parse(&answer_wire)? else {return Err(OrchestrationError::Invalid("C answer wire"));};
@@ -918,6 +923,13 @@ impl<'root> ProductDatabase<'root> {
             &question_id,&text,seat::AnswerBasis::Cited {source_ref},present.revision,
             answer_revision,&request.request_id,&request.raw_bytes,|db| {
                 let session=caller.session_id().ok_or(SeatError::Denied)?;
+                let (current_source,_)=super::v37_qcard::read_source_descriptor(
+                    db,&request.domain_id,&card_id).map_err(|error|
+                        SeatError::NativeAnswerSource(format!("takeover C descriptor: {error:?}")))?;
+                if current_source!=source_key ||
+                    super::v37_qcard::card_identity(&request.domain_id,session,&current_source).0!=card_id {
+                    return Err(SeatError::Denied);
+                }
                 let q=Statement::prepare(db.as_ptr(),
                     "SELECT c.question_id,c.answer,c.seat_id,c.turn_id,c.generation,c.vendor_thread_id,o.native_receipt_id,o.request_hex FROM main.gogoke_v37_qcard_native c JOIN main.gogoke_v37_qcard_native_operations o ON o.domain_id=c.domain_id AND o.card_id=c.card_id WHERE c.domain_id=?1 AND c.card_id=?2 AND o.request_id=?3 AND c.state='ANSWERED' AND o.state='ANSWERED' AND c.answer_kind='WIRE'")?;
                 q.bind_text(1,&request.domain_id)?;q.bind_text(2,&card_id)?;q.bind_text(3,&answer_request)?;

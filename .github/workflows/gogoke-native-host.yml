@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       focused_library:
-        description: Affected checks only (seat-scope or ledger-scope); all full and formal gates are NOT_RUN
+        description: Affected checks only (seat-scope, ledger-scope or native-takeover); all full and formal gates are NOT_RUN
         type: string
         default: ""
       secretary_routine_fixture_only:
@@ -89,6 +89,7 @@ jobs:
               'store::product_database::v37_seat::tests::owner_orchestration_bounds_have_a_separate_receipt_and_preserve_project_cap') }
             'ledger-scope' { @('work_source_cannot_mint_a_secretary_global_reader',
               'native_user_ledger_scopes_replay_and_subscription_survive_reopen') }
+            'native-takeover' { @('native_takeover_') }
             default { throw 'Unknown affected-check selection; no arbitrary shell or test filter is accepted.' }
           }
           $node = Get-Command node.exe -CommandType Application | Select-Object -First 1 -ExpandProperty Source

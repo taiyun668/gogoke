@@ -90,7 +90,7 @@ pub(super) fn read_source_descriptor(db:&VerifiedDatabaseConnection<'_>,domain:&
         source_cursor:json_text(&fields,"sourceCursor")?},
         json_text(&fields,"frameSha256")?))
 }
-fn card_identity(domain:&str,session:&str,source:&RawSourceKey)->(String,String) {
+pub(super) fn card_identity(domain:&str,session:&str,source:&RawSourceKey)->(String,String) {
     let basis=format!("{domain}\n{session}\n{}\n{}\n{}",source.operation_id,source.source_epoch,source.source_cursor);
     let digest=sha256_hex(basis.as_bytes());
     (format!("card{digest}"),format!("raise{digest}"))

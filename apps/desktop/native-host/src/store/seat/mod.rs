@@ -69,6 +69,7 @@ pub(crate) enum SeatError {
     Invalid(&'static str),
     HostResourceObservation(String),
     HostHealthObservation(String),
+    NativeAnswerSource(String),
     InstanceManagement(String),
     Denied,
     Conflict,
