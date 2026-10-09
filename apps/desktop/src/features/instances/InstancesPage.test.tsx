@@ -103,4 +103,22 @@ describe("InstancesPage", () => {
       vi.useRealTimers();
     }
   });
+
+  it("refuses every entry once only an earlier read is on screen, including Enter in an open form", async () => {
+    let failing = false;
+    const read = async () => {
+      if (failing) throw new Error("宿主没有响应");
+      return page();
+    };
+    const create = vi.fn(async () => {});
+    render(<InstancesPage source={{ read, actions: { create } }} />);
+    fireEvent.click(await screen.findByRole("button", { name: "新建 Codex 实例" }));
+    const name = screen.getByLabelText("名字");
+    fireEvent.change(name, { target: { value: "Plus 2 号" } });
+    failing = true;
+    expect(await screen.findByText(/读不到最新状态/, undefined, { timeout: 2500 })).toBeTruthy();
+    fireEvent.keyDown(name, { key: "Enter" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(create).not.toHaveBeenCalled();
+  }, 8000);
 });
