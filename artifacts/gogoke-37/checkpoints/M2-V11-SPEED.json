@@ -4,31 +4,35 @@
   "acceptance": false,
   "change": [
     "Added tools/e2e/m2-mainflow.mjs with the bounded V11 original installed-product merge step: a User-only K-WORKTREE merge must return UNSUPPORTED and leave F graph unchanged; the existing narrow Owner testbed MERGE grant then precedes one real Model merge, Host graph read and actual lead stop/release.",
-    "Added tools/e2e/m2-v11-win11.md with the exact integration seam in the existing M2 runner. It retains the shared m2-readback.py final evidence path and does not create a new product or database test framework."
+    "Added callable original H/Model private-marker boundary attempts in tools/e2e/m2-v11-boundaries.mjs for main-source direct write and READ_ONLY worktree write. A missing exact native fileChange permission refusal remains NOT_RUN.",
+    "Added callable two-project F graph construction in m2-mainflow.mjs and separate normally closed RO/immutable m2-v11-readback.py modes for original F request/physical layout and H/A file-refusal facts. The graph mode never claims Model scope; the file mode requires an exact original failed fileChange and absence of its target marker.",
+    "Expanded tools/e2e/m2-v11-win11.md with private fixture templates and Root integration/readback commands. Shared m2-readback.py, native H/F/G, CI and scope digest remain untouched."
   ],
   "result": {
     "base": "cf1d89978abd87abf88d8e5a3e6b535e9ee8e514",
     "direct_installed_history": "The original installed 0.1.33 main/child flow, original native child stop, worktree MERGE, and immutable producer readback are recorded in M2-INTEGRATED-DIRECT-EVIDENCE.json. Earlier installed 0.1.32 source-status refusal and Git committer-identity MERGE_UNKNOWN with its child commit are preserved in M2-WIN11-32-MERGE-DIRECT-CAUSES.json. Neither is whole V11 PASS.",
     "current_producer": "F merge checks the original registered physical worktree/repository and Git pin, source cleanliness, full overlapping H StopFacts and no active reservation before durable request-bound child-seal INTENT. Host Git seals stopped child files with project/seat/instance/native-turn provenance, records the exact child commit, then merges. Any uncertain post-intent effect is MERGE_UNKNOWN; same and new request IDs refuse re-execution.",
     "current_reader": "The existing m2-readback.py capture verifies only the original uncommitted test marker and clean source after H stop/release. Its final phase binds A Model merge call, H native reply, F request/intent/child commit, original StopFacts, fixed Git program, commit ancestry and merged source bytes. The new User-only control is separate from that Model merge.",
-    "validation": "Signed Node syntax check for m2-mainflow.mjs passed; static integration seam checked. No native compilation, cloud, Win11 installed run, model call, or acceptance was performed in this branch.",
+    "validation": "Signed Node syntax checks for m2-mainflow.mjs and m2-v11-boundaries.mjs, Python in-memory AST parse for the independent reader, JSON parse and diff whitespace checks passed. No native compilation, cloud, Win11 installed run, model call, or acceptance was performed in this branch.",
     "remaining_not_run": [
       "New module integrated and run against the exact installed candidate",
-      "V11 direct main-tree write refusal under actual model/H boundary",
+      "V11 direct main-tree write refusal under actual model/H boundary on installed candidate",
+      "V11 READ_ONLY exact native file-edit refusal on installed candidate",
       "V11 vendor-native worktree escape refusal",
-      "V11 unavailable read-only/no-network tier refusal or unavailable presentation",
-      "V11 SINGLE and MIXED physical separation including one repository in two projects",
+      "V11 NO_NETWORK effective boundary",
+      "V11 SINGLE and MIXED physical separation including one repository in two projects on installed candidate",
       "New branch affected cloud filters, full library, signature, dual independent review and Owner acceptance"
     ]
   },
-  "next": "Root replaces only the existing inline V11 merge block in tools/e2e/m2-win11.mjs with the documented import/call, records the loaded module hash, and keeps the original final close/readback. Root separately owns the missing V11 negative installed-product cases and shared reader changes; a denied User control or the old positive merge cannot promote them. Run only affected cloud filters during construction, then the exact installed candidate at the stable point.",
-  "remaining_effective_construction_days": "0-1 for this bounded V11 module and integration correction after Root review; approximately 1-3 more for the still missing V11 negative case driver/readback work if the existing testbed, qualified instance and candidate are available. Actual Win11/model completion and external prerequisites have no defensible fixed upper bound from this source branch.",
+  "next": "Root connects the independent V11 exports to its installed-candidate runner, supplies the precreated real E/F test seats, the second Owner-registered private source, original physical F path and normal-close boundary, and runs the signed independent reader. On absent/mismatched raw fileChange or H custody, retain NOT_RUN/UNKNOWN and original failures. Vendor-native worktree escape and NO_NETWORK remain separate real cases. A denied User control, F graph or old positive merge cannot promote whole V11. Run only affected cloud filters during construction, then exact installed bytes at the stable point.",
+  "remaining_effective_construction_days": "0-1 for bounded integration/reader shape corrections after exact candidate observation; approximately 1-3 further effective days for vendor-native worktree and NO_NETWORK cases if a reachable fixed-vendor operation and qualified test instance exist. Their actual external readiness gives no defensible fixed upper bound from this source branch.",
   "reference": [
     "AGENTS.md, docs/model-routing.md, docs/governance/gogoke-build-and-release.md",
     "docs/design/gogoke-37-plan-v1/PLAN.json V11 and F.2; PLAN.md F.2 child-seal decision",
     "apps/desktop/native-host/src/store/worktree/f2.rs and host_seal.rs",
     "apps/desktop/native-host/src/store/product_database/v37_session.rs",
     "tools/e2e/m2-win11.mjs and m2-readback.py",
+    "tools/e2e/m2-history-boundaries.mjs and m2-stop-worktree-prepare.mjs original User/F entry patterns",
     "artifacts/gogoke-37/checkpoints/M2-INTEGRATED-DIRECT-EVIDENCE.json and M2-WIN11-32-MERGE-DIRECT-CAUSES.json",
     "Historical gogo-party packages/room/src/server.ts commitForSeat: Host wraps seat files in a commit; design-37 additionally binds original H/F authority and UNKNOWN."
   ]
