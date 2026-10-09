@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SeatsPanel, type SeatsSource } from "./SeatsPanel";
 import type { SeatsPage } from "./seatsPageModel";
@@ -185,5 +185,23 @@ describe("SeatsPanel", () => {
     expect(screen.queryByRole("button", { name: "调整" })).toBeNull();
     expect(screen.queryByRole("button", { name: "删除席位" })).toBeNull();
     expect(screen.queryByRole("button", { name: "添加直属席位" })).toBeNull();
+  });
+
+  it("waits for a slow read instead of discarding it on every poll", async () => {
+    vi.useFakeTimers();
+    try {
+      const read = vi.fn(() => new Promise<SeatsPage>((resolve) => setTimeout(() => resolve(page()), 4500)));
+      render(<SeatsPanel source={source({}, read)} />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4400);
+      });
+      expect(read).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(200);
+      });
+      expect(screen.getAllByText("审计").length).toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
