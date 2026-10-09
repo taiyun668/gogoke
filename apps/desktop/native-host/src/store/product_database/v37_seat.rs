@@ -835,11 +835,10 @@ impl<'root> ProductDatabase<'root> {
                     seat::PermissionTier::IsolatedWrite => "ISOLATED_WRITE",
                     seat::PermissionTier::NetworkedWrite => "NETWORKED_WRITE",
                 };
-                range = Some(Json::Object(BTreeMap::from([
+                range = scope.max_concurrent.map(|cap| Json::Object(BTreeMap::from([
                     (key("instanceIds"), Json::Array(scope.instance_ids.iter().map(|id| string(id)).collect())),
                     (key("maxPermission"), string(permission)),
-                    (key("maxConcurrent"), scope.max_concurrent.map(|cap|
-                        Json::Number(cap.to_string())).unwrap_or(Json::Null)),
+                    (key("maxConcurrent"), Json::Number(cap.to_string())),
                 ])));
             }
             rows.push(Json::Object(row));
@@ -2136,11 +2135,14 @@ mod tests {
                 &fields.replace("\"maxConcurrent\":2","\"maxConcurrent\":0"))),V37Status::Denied);
             assert_eq!(seat::get(&product.connection,"projectA","boundsSeat").unwrap().unwrap(),row);
             assert_eq!(status(product,&request("set-orchestration-bounds","setBounds","boundsSeat",1,
-                &fields.replace("\"maxConcurrent\":2","\"maxConcurrent\":3"))),V37Status::Conflict);
+                &fields.replace("\"maxConcurrent\":2","\"maxConcurrent\":3"))),V37Status::Stale);
+            assert_eq!(seat::get(&product.connection,"projectA","boundsSeat").unwrap().unwrap(),row);
             assert_eq!(status(product,&request("set-orchestration-bounds","laterBounds","boundsSeat",2,
                 &fields.replace("\"maxConcurrent\":2","\"maxConcurrent\":3"))),V37Status::Applied);
-            assert_eq!(status(product,&set),V37Status::Conflict,
+            assert_eq!(status(product,&set),V37Status::Stale,
                 "historical receipt cannot restore the later target configuration");
+            assert_eq!(seat::orchestration_scope(&seat::get(&product.connection,
+                "projectA","boundsSeat").unwrap().unwrap()).unwrap().max_concurrent,Some(3));
             assert_eq!(seat::read_project_parallel_cap(&product.connection,"projectA").unwrap(),7);
         });
     }

@@ -10,6 +10,8 @@ Owner 已决定完整推进 M2/M3，不采用中间试用版。集成工人显�
 
 第二次云编译通过，范围安全控制实际 2 过 / 1 失败；原文 `NonCanonicalJson("JSON integer exceeds JS safe range")`。夹具错把 canonical parser 先拒绝的大整数交给 scope parser 的 unwrap；改为分别断言两个真实入口的拒绝，不改生产限制。受影响选择继续收集已成功编译后的互不依赖测试，集中报告失败；编译失败则保留后续依赖项未跑，不追加完整门槛。
 
+第三次云控实际解析 3 项、子席位计数 1 项、原子席位授权 1 项通过；范围回执控制的断言误把存储层 Conflict 当成 wire Conflict。原 wire 在旧 expectedRevision 下明确映射为 STALE（原文 `left: Stale, right: Conflict`）；已按原语义改夹具并核拒绝后原行/后来 cap 保全，不改生产结果。缺 cap 的范围读模型不输出不符合 G 类型的 null 数值，也不拿项目 cap 填空。
+
 下一步：读回受影响云端原件，集成空目录卸载修复、V10/V11 入口，再集中真机。当前冻结候选公开密钥验签与产品成员一致已通过；尚无新的安装或产品能力结论。
 
 参照：main PLAN 的 K-SEAT 五字段范围操作、E.2、V06；原 seat::tune 的请求指纹和 authorize_replay；工人 orchestration 与原 E/H/F 驱动。沿用已验证存储原件与事务，不用项目 cap 替代席位 cap。
