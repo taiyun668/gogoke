@@ -63,7 +63,7 @@ fn change_status(error: &SeatError) -> &'static str {
         SeatError::Unknown | SeatError::Store(_) | SeatError::Open(_)
         | SeatError::CommitUnknown(_) | SeatError::RollbackUnknown(_)
         | SeatError::HostResourceObservation(_) | SeatError::HostHealthObservation(_)
-        | SeatError::InstanceManagement(_) | SeatError::SchemaDrift => "UNKNOWN",
+        | SeatError::InstanceManagement(_) | SeatError::NativeAnswerSource(_) | SeatError::SchemaDrift => "UNKNOWN",
     }
 }
 

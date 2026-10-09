@@ -4,6 +4,7 @@
 //! No CLI, login, model execution or LPAC admission is claimed here.
 
 use super::*;
+use crate::store::atomic::Parser;
 use super::v37_secretary_routine_model::ResolvedRoutineSchedule;
 use crate::process::{NativeBinding, OriginBoundFrame, PrepareRequest, PreparedCustody,
     ProcessCustodian, ProcessLaunch};

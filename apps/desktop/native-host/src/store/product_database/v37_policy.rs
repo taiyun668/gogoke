@@ -28,7 +28,7 @@ fn error_status(error:&SeatError)->V37Status {
         SeatError::Unknown|SeatError::Store(_)|SeatError::Open(_)|
         SeatError::CommitUnknown(_)|SeatError::RollbackUnknown(_)|
         SeatError::HostResourceObservation(_)|SeatError::HostHealthObservation(_)|
-        SeatError::InstanceManagement(_)|SeatError::SchemaDrift=>V37Status::Unknown,
+        SeatError::InstanceManagement(_)|SeatError::NativeAnswerSource(_)|SeatError::SchemaDrift=>V37Status::Unknown,
     }
 }
 
