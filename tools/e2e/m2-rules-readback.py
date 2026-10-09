@@ -631,6 +631,12 @@ def verify_host(db, domain, case, host, operations, result):
         check(prior[0]["message"]["state"] == "DELIVERED" and prior[0]["autoBinding"] and
               len(prior[0]["deliveries"]) == len(prior[0]["sends"]) == len(prior[0]["commands"]) == 1,
               "Checkpoint did not capture genuine automatic Host delivery")
+    elif host["kind"] == "BUSY_TO_IDLE_DELIVERY":
+        check(prior[0]["message"]["state"] == "DELIVERED" and prior[0]["recipient"] is None and
+              len(prior[0]["deliveries"]) == len(prior[0]["sends"]) == len(prior[0]["commands"]) == 1 and
+              prior[0]["message"]["turn_id"] == host["existingObservation"]["turnId"] and
+              prior[0]["message"]["generation"] == host["busy"]["binding"]["generation"],
+              "Answered existing recipient did not receive original C/H delivery before stop")
     else:
         check(prior[0]["message"]["state"] == ("CANCELLED" if host["kind"] == "CANCELLED" else "PENDING") and
               prior[0]["message"]["turn_id"] == "" and
@@ -720,6 +726,67 @@ def verify_host(db, domain, case, host, operations, result):
               original["recipientTerminal"] == final["recipientTerminal"],
               "Separate original Host recipient CLI completion absent")
         final["nativeDelivery"] = observed
+    elif host["kind"] == "BUSY_TO_IDLE_DELIVERY":
+        check(len(final["deliveries"]) == len(final["sends"]) == len(final["commands"]) == 1 and
+              final["recipient"] is None and final["recipientOperation"] is None and
+              not final["recipientStages"] and final["message"]["state"] == "DELIVERED" and
+              final["intent"]["state"] == "DELIVERED" and
+              final["message"] == original["message"] and
+              final["deliveries"] == original["deliveries"] and final["sends"] == original["sends"] and
+              final["commands"] == original["commands"],
+              "Original queued C notice must deliver once to the retained existing H session")
+        target = host["busy"]["binding"]
+        delivery = final["deliveries"][0]
+        observed = original_start(db, domain, final["sends"][0], target,
+                                  final["message"]["body"], host["existingObservation"]["turnId"])
+        check({key: value for key, value in delivery["request"].items()
+               if key not in ("sessionId", "ticket", "generation", "hSendRequestId", "operation")} ==
+              {key: value for key, value in final["enqueueRequest"].items() if key != "operation"} and
+              delivery["request"]["operation"] == "deliver" and
+              final["commands"][0] == observed["step"] and
+              delivery["operation"]["phase"] == "APPLIED" and
+              delivery["operation"]["result_state"] == "DELIVERED" and
+              delivery["operation"]["previous_revision"] == "1" and
+              delivery["operation"]["revision"] == final["message"]["revision"] == "2" and
+              final["intent"]["revision"] == 2 and
+              final["intent"]["delivery_receipt_id"] == delivery["operation"]["native_receipt_id"] ==
+              observed["receipt"]["result"]["receiptId"] and
+              final["message"]["turn_id"] == observed["turnId"] and
+              final["message"]["generation"] == target["generation"] and
+              delivery["request"]["sessionId"] == target["id"] and
+              delivery["request"]["generation"] == target["generation"] and
+              delivery["request"]["hSendRequestId"] == final["sends"][0]["request_id"] and
+              delivery["request"]["ticket"] == final["sends"][0]["ticket"],
+              "Existing recipient delivery lacks exact original C/H/RPC result")
+        live = operations[host["existingObservation"]["outputReadRequestId"]]
+        stored_live = one(db, "SELECT request_bytes,receipt_bytes FROM v37_ledger_receipt WHERE family='K-SESSION' "
+                          "AND domain_id=? AND request_id=?", (domain, host["existingObservation"]["outputReadRequestId"]))
+        native_input = host["existingObservation"]["nativeInputReceipt"]
+        check(bytes(stored_live["request_bytes"]).decode() == live["rawFrame"] and
+              json.loads(bytes(stored_live["receipt_bytes"])) == live["receipt"] and
+              live["request"]["operation"] == "output-stream" and
+              live["request"]["targetId"] == target["id"] and
+              native_input in live["receipt"]["result"]["nativeInputReceipts"] and
+              native_input["requestId"] == final["sends"][0]["request_id"] and
+              native_input["receipt"] == observed["receipt"] and
+              host["existingObservation"]["sessionId"] == target["id"] and
+              host["existingObservation"]["generation"] == target["generation"] and
+              host["existingObservation"]["threadId"] == target["threadId"],
+              "Live original H read did not observe the one Host send on the same recipient")
+        source = select(db, "SELECT * FROM v37_ledger_raw_source WHERE operation_id=?",
+                        (observed["stdin"]["process_operation_id"],))
+        decoded = [(row, json.loads(bytes(row["raw_bytes"]))) for row in source]
+        items, calls, questions = turn_activity(decoded, target["threadId"], observed["turnId"],
+                                                expected_input=final["message"]["body"])
+        completed = [(row, frame) for row, frame in decoded if frame.get("method") == "turn/completed" and
+                     frame.get("params", {}).get("threadId") == target["threadId"] and
+                     frame["params"].get("turn", {}).get("id") == observed["turnId"]]
+        check(not items and not calls and not questions and len(completed) == 1 and
+              completed[0][0]["state"] != "PENDING" and
+              completed[0][1]["params"]["turn"]["status"] == "completed",
+              "Original delivered CLI turn did not complete without another tool")
+        final["nativeDelivery"] = observed
+        final["originalRecipientCompletion"] = bytes(completed[0][0]["raw_bytes"]).decode()
     else:
         state = "PENDING" if host["kind"] == "ROUTE_CHANGED" else "CANCELLED"
         check(final["message"]["state"] == state and not final["message"]["turn_id"] and not final["message"]["generation"] and
@@ -774,16 +841,82 @@ def verify_host(db, domain, case, host, operations, result):
               frame["params"]["questions"][0]["id"] == busy["question"]["questionId"] and
               any(row["label"] == busy["question"]["optionLabel"] for row in frame["params"]["questions"][0]["options"]),
               "Native busy card has no original A question source")
-        check(not select(db, "SELECT 1 FROM gogoke_v37_qcard_native_operations WHERE domain_id=? AND card_id=? AND state IN ('ANSWERED','UNKNOWN')",
-                         (domain, busy["cardId"])), "Busy source was answered/replayed instead of held")
+        if host["kind"] == "BUSY_TO_IDLE_DELIVERY":
+            answer = operations[busy["answerRequestId"]]
+            answered = one(db, "SELECT * FROM gogoke_v37_qcard_native_operations WHERE domain_id=? AND request_id=?",
+                           (domain, busy["answerRequestId"]))
+            check(answer["request"] == {"schema": "gogoke.37.operations.v1", "family": "K-QCARD",
+                  "operation": "answer", "requestId": busy["answerRequestId"], "targetId": busy["cardId"],
+                  "domainId": domain, "expectedRevision": busy["cardRevision"],
+                  "payload": {"generation": busy["binding"]["generation"],
+                              "answers": {busy["question"]["questionId"]: [busy["question"]["optionLabel"]]}}} and
+                  bytes.fromhex(answered["request_hex"]).decode() == answer["rawFrame"] and
+                  answered["state"] == answer["receipt"]["result"]["state"] == "ANSWERED" and
+                  answered["revision"] == answer["receipt"]["revision"] and
+                  answered["native_receipt_id"] == answer["receipt"]["result"]["nativeReceiptId"] and
+                  answer["receipt"]["status"] == "APPLIED" and
+                  answer["receipt"]["result"]["deliveryBasis"] == "NATIVE_EXACT_WRITE_RECEIPT" and
+                  answer["receipt"]["result"]["vendorConsumptionConfirmed"] is False and
+                  len(select(db, "SELECT 1 FROM gogoke_v37_qcard_native_operations WHERE domain_id=? AND card_id=? AND state='ANSWERED'",
+                             (domain, busy["cardId"]))) == 1,
+                  "One original nonsecret native answer write is required; vendor acceptance is not inferred")
+            pending = operations[host["pendingReadRequestId"]]
+            check(pending["request"]["family"] == "K-INBOX" and
+                  pending["request"]["operation"] == "check-unknown" and
+                  pending["request"]["targetId"] == host["messageId"] and
+                  pending["receipt"]["result"]["state"] == "PENDING" and
+                  pending["receipt"]["revision"] == "1" and
+                  list(operations).index(host["pendingReadRequestId"]) <
+                  list(operations).index(busy["answerRequestId"]),
+                  "Original C notice was not observed pending before the question answer")
+        else:
+            check(not select(db, "SELECT 1 FROM gogoke_v37_qcard_native_operations WHERE domain_id=? AND card_id=? AND state IN ('ANSWERED','UNKNOWN')",
+                             (domain, busy["cardId"])), "Busy source was answered/replayed instead of held")
         incoming = select(db, "SELECT * FROM v37_ledger_raw_source WHERE operation_id=?", (stdin["process_operation_id"],))
+        decoded_busy = [(row, json.loads(bytes(row["raw_bytes"]))) for row in incoming]
         items, calls, questions = turn_activity(
-            [(row, json.loads(bytes(row["raw_bytes"]))) for row in incoming],
-            busy["binding"]["threadId"], busy["turnId"], allow_question=True,
+            decoded_busy, busy["binding"]["threadId"], busy["turnId"], allow_question=True,
             expected_input=busy["askBytes"])
         check(not items and not calls and len(questions) == 1 and
               bytes(questions[0][0]["raw_bytes"]) == raw,
               "Busy question used unrequested additional tool work")
+        if host["kind"] == "BUSY_TO_IDLE_DELIVERY":
+            completed = [(row, frame) for row, frame in decoded_busy if frame.get("method") == "turn/completed" and
+                         frame.get("params", {}).get("threadId") == busy["binding"]["threadId"] and
+                         frame["params"].get("turn", {}).get("id") == busy["turnId"]]
+            idle = [(row, frame) for row, frame in decoded_busy if frame.get("method") == "thread/status/changed" and
+                    frame.get("params", {}).get("threadId") == busy["binding"]["threadId"] and
+                    frame["params"].get("status", {}).get("type") == "idle"]
+            for request_id, method in ((busy["completedReadRequestId"], "turn/completed"),
+                                       (busy["idleReadRequestId"], "thread/status/changed")):
+                observed = operations[request_id]
+                stored = one(db, "SELECT request_bytes,receipt_bytes FROM v37_ledger_receipt WHERE family='K-SESSION' AND domain_id=? AND request_id=?",
+                             (domain, request_id))
+                check(bytes(stored["request_bytes"]).decode() == observed["rawFrame"] and
+                      json.loads(bytes(stored["receipt_bytes"])) == observed["receipt"] and
+                      observed["request"]["operation"] == "output-stream" and
+                      observed["request"]["targetId"] == busy["binding"]["id"] and
+                      observed["receipt"]["result"]["generation"] == busy["binding"]["generation"] and
+                      any(event.get("_meta", {}).get("codexMethod") == method and
+                          event["_meta"].get("threadId") == busy["binding"]["threadId"] and
+                          (event["_meta"].get("turnId") == busy["turnId"] if method == "turn/completed"
+                           else event["_meta"].get("threadStatus", {}).get("type") == "idle")
+                          for event in observed["receipt"]["result"]["events"]),
+                      "Original live H output did not carry the CLI completion and positive idle sources")
+            delivered = final["nativeDelivery"]["stdin"]
+            check(len(completed) == 1 and completed[0][0]["state"] != "PENDING" and
+                  completed[0][1]["params"]["turn"]["status"] == "completed" and
+                  busy["completedTurnId"] == busy["turnId"] and
+                  any(int(completed[0][0]["source_cursor"]) < int(row["source_cursor"]) <
+                      int(final["nativeDelivery"]["step"]["source_cursor"])
+                      for row, _ in idle) and
+                  delivered["process_operation_id"] == stdin["process_operation_id"] and
+                  delivered["ticket"] == stdin["ticket"] and
+                  delivered["custodian_nonce"] == stdin["custodian_nonce"] and
+                  delivered["generation"] == stdin["generation"],
+                  "Original C/H positive idle must follow answered turn completion on the same live custody before Host send")
+            final["busyCompletion"] = bytes(completed[0][0]["raw_bytes"]).decode()
+            final["busyIdle"] = [bytes(row["raw_bytes"]).decode() for row, _ in idle]
         final["busyOriginalA"] = raw.decode()
     result["hostSnapshots"].append(final)
     return final
@@ -856,7 +989,10 @@ def verify_case(db, journal, case, result):
     ]
     host_cases = case.get("hostCases", [])
     if host_cases:
-        check([row["kind"] for row in host_cases] == ["DELIVERED", "BUSY_QUEUED", "ROUTE_CHANGED", "CANCELLED"] and
+        host_kinds = [row["kind"] for row in host_cases]
+        check(host_kinds == case.get("hostKinds", host_kinds) and host_kinds in (
+              ["DELIVERED", "BUSY_QUEUED", "ROUTE_CHANGED", "CANCELLED"],
+              ["BUSY_TO_IDLE_DELIVERY"]) and
               case["hostOwnership"] == "EXCLUSIVE_V08_HOST_RECIPIENTS" and
               len({row["causeEventId"] for row in host_cases}) == len(host_cases) and
               len({row["gateId"] for row in host_cases}) == len(host_cases), "Distinct original Host cases/causes required")
@@ -1143,7 +1279,15 @@ def verify_case(db, journal, case, result):
     required_not_run = {"V08_MODEL_SUBORDINATE_OWNER", "V08_STALL_CHAIN"}
     if not foreign:
         required_not_run.add("V08_MODEL_CROSS_PROJECT")
-    required_not_run |= {"V08_HOST_LATE_ACK_AFTER_ROUTE_CHANGE", "V08_HOST_BUSY_TO_IDLE_DELIVERY"} if host_cases else {"V08_REJECT_CAP_DELIVERY"}
+    if host_cases:
+        required_not_run.add("V08_HOST_LATE_ACK_AFTER_ROUTE_CHANGE")
+        if [row["kind"] for row in host_cases] == ["BUSY_TO_IDLE_DELIVERY"]:
+            required_not_run.update("V08_HOST_" + name for name in
+                                    ("DELIVERED", "BUSY_QUEUED", "ROUTE_CHANGED", "CANCELLED"))
+        else:
+            required_not_run.add("V08_HOST_BUSY_TO_IDLE_DELIVERY")
+    else:
+        required_not_run.add("V08_REJECT_CAP_DELIVERY")
     check({row["caseId"] for row in result["notRun"]} == required_not_run, "Unimplemented boundaries must remain explicit")
     result["verifiedCaseId"] = case["caseId"]
     result["directCaseEvidence"] = True

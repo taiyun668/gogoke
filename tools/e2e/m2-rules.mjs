@@ -227,6 +227,7 @@ export async function runRulesCase(product, config, journal) {
     if (c.host) {
       const h = c.host;
       requireFact(h.lifecycleOwnership === 'EXCLUSIVE_V08_HOST_RECIPIENTS' &&
+        (h.busyToIdleOnly === undefined || typeof h.busyToIdleOnly === 'boolean') &&
         ['hostCheckpoint', 'openHostSession', 'resumeRulesSession', 'stopRulesSession',
           'releaseStoppedRulesSession'].every(name => typeof c[name] === 'function'),
       'Host cases require scoped real runner lifecycle/checkpoint callbacks');
@@ -294,6 +295,11 @@ export async function runRulesCase(product, config, journal) {
             original.message.generation === original.autoBinding.generation &&
             original.recipientTerminal?.status === 'completed' &&
             original.recipientTerminal.source.state !== 'PENDING' :
+          host.kind === 'BUSY_TO_IDLE_DELIVERY' ?
+          original.message.state === 'DELIVERED' && original.recipient === null &&
+            original.deliveries.length === 1 && original.sends.length === 1 &&
+            original.commands.length === 1 && original.message.turn_id === host.existingObservation.turnId &&
+            original.message.generation === host.busy.binding.generation :
           original.message.state === (host.kind === 'CANCELLED' ? 'CANCELLED' : 'PENDING') &&
             original.message.turn_id === '' &&
             original.message.generation === '' && original.deliveries.length === 0 &&
@@ -376,6 +382,37 @@ export async function runRulesCase(product, config, journal) {
           reply.result.nativeQuestion.questions[0].options.some(row => row.label === h.busyQuestion.optionLabel),
         'Busy precondition is original live native question custody, not a BUSY table claim');
         host.busy.readRequestIds.push(journal.operations.at(-1).request.requestId); product.save();
+        return reply;
+      };
+      const completeBusy = async (host, session, recovered) => {
+        const answered = await product.operation('K-QCARD', 'answer', host.busy.cardId,
+          { generation: session.generation,
+            answers: { [h.busyQuestion.questionId]: [h.busyQuestion.optionLabel] } }, recovered.revision);
+        host.busy.answerRequestId = journal.operations.at(-1).request.requestId;
+        requireFact(answered.status === 'APPLIED' && answered.result.state === 'ANSWERED' &&
+          answered.result.deliveryBasis === 'NATIVE_EXACT_WRITE_RECEIPT',
+        'Original nonsecret K-QCARD answer must have its exact native write receipt');
+        const deadline = Date.now() + 600000;
+        while (Date.now() < deadline) {
+          await output(session);
+          const readRequestId = journal.operations.at(-1).request.requestId;
+          const completed = session.events.find(row => row._meta?.codexMethod === 'turn/completed' &&
+            row._meta.threadId === session.threadId && row._meta.turnId === host.busy.turnId);
+          const completedIndex = session.events.indexOf(completed);
+          const idle = session.events.slice(completedIndex + 1).find(row =>
+            row._meta?.codexMethod === 'thread/status/changed' &&
+            row._meta.threadId === session.threadId && row._meta.threadStatus?.type === 'idle');
+          if (completed && !host.busy.completedReadRequestId) host.busy.completedReadRequestId = readRequestId;
+          if (idle && !host.busy.idleReadRequestId) host.busy.idleReadRequestId = readRequestId;
+          product.save();
+          if (completed && idle) {
+            requireFact(completed._meta.turnStatus === 'completed', 'Original answered CLI turn must complete');
+            host.busy.completedTurnId = completed._meta.turnId;
+            product.save(); return;
+          }
+          await delay(300);
+        }
+        throw Error('Original answered H/A turn did not reach positive idle; preserve without stop/resume');
       };
       const observeAutomatic = async host => {
         const locator = hostSessionLocator(config.domainId, host.causeEventId, host.policyRevision);
@@ -429,7 +466,37 @@ export async function runRulesCase(product, config, journal) {
         journal.sessions.push(target);
         product.save();
       };
-      for (const kind of ['DELIVERED', 'BUSY_QUEUED', 'ROUTE_CHANGED', 'CANCELLED']) {
+      const observeExisting = async (host, session) => {
+        const deadline = Date.now() + 600000;
+        while (Date.now() < deadline) {
+          const page = await output(session);
+          const matches = page.nativeInputReceipts.filter(row => row.phase === 'RECEIPTED' &&
+            row.receipt?.family === 'K-SESSION' && row.receipt.operation === 'send' &&
+            row.receipt.targetId === session.id && row.receipt.status === 'APPLIED' &&
+            row.receipt.result?.createdTurn === true && row.receipt.result?.generation === session.generation &&
+            row.requestId?.startsWith('hostsend-'));
+          if (matches.length === 0) { await delay(300); continue; }
+          requireFact(matches.length === 1, 'One original Host H send to existing idle recipient required');
+          const turnId = matches[0].receipt.result.turnId;
+          host.existingObservation = { sessionId: session.id, generation: session.generation,
+            threadId: session.threadId, turnId, nativeInputReceipt: matches[0],
+            outputReadRequestId: journal.operations.at(-1).request.requestId };
+          product.save();
+          const completed = session.events.find(row => row._meta?.codexMethod === 'turn/completed' &&
+            row._meta.threadId === session.threadId && row._meta.turnId === turnId);
+          if (completed) {
+            requireFact(completed._meta.turnStatus === 'completed', 'Original Host-delivered CLI turn failed');
+            host.existingObservation.completedReadRequestId = journal.operations.at(-1).request.requestId;
+            product.save(); return;
+          }
+          await delay(300);
+        }
+        throw Error('Original Host delivery to the same idle H turn did not complete; preserve without resend');
+      };
+      const hostKinds = h.busyToIdleOnly === true ? ['BUSY_TO_IDLE_DELIVERY'] :
+        ['DELIVERED', 'BUSY_QUEUED', 'ROUTE_CHANGED', 'CANCELLED'];
+      record.hostKinds = hostKinds; product.save();
+      for (const kind of hostKinds) {
         const host = { caseId: id(`V08_HOST_${kind}`), kind, gateId: id('v08HostGate'),
           toStage: id('v08HostStage'), reason: id('v08HostReason'), sourceSeatId: submitter.seatId,
           destination: h.destination, readRequestIds: [], targetSessions: [], state: 'PREPARING' };
@@ -449,17 +516,24 @@ export async function runRulesCase(product, config, journal) {
         const rejected = await call(`${host.caseId}_REJECT`, reviewer, 'gate-decide', host.gateId, '2',
           { decision: 'REJECT', reason: host.reason }, 'APPLIED', 'ESCALATION_REQUIRED', host.reason);
         host.causeEventId = rejected.receipt.requestId; host.state = 'ORIGINAL_CAP_OBSERVED'; product.save();
-        if (busySession) await readBusy(host, busySession);
+        const latestBusy = busySession ? await readBusy(host, busySession) : null;
         if (kind === 'DELIVERED') await observeAutomatic(host);
         if (kind === 'ROUTE_CHANGED') {
           await configure('policy-escalation-route', { fromSeatId: submitter.seatId,
             reason: 'REJECT_CAP', toSeatId: h.alternateDestination.seatId });
           host.changedRouteRevision = policyRevision; product.save();
         }
-        if (kind === 'CANCELLED') {
+        if (kind === 'CANCELLED' || kind === 'BUSY_TO_IDLE_DELIVERY') {
           host.messageId = hostSessionLocator(config.domainId, host.causeEventId, host.policyRevision).messageId;
           host.queuedRevision = '1'; product.save();
-          await cancel(host);
+          if (kind === 'CANCELLED') await cancel(host);
+          else {
+            const pending = await inbox(host);
+            requireFact(pending.result.state === 'PENDING', 'Original C notice must remain pending while native question is unanswered');
+            host.pendingReadRequestId = host.readRequestIds.at(-1); product.save();
+            await completeBusy(host, busySession, latestBusy);
+            await observeExisting(host, busySession);
+          }
         }
         await checkpoint(host);
         if (kind === 'BUSY_QUEUED') await cancel(host);
@@ -472,8 +546,10 @@ export async function runRulesCase(product, config, journal) {
         host.state = 'FLOW_COMPLETE_DIRECT_LEDGER_READBACK_REQUIRED'; product.save();
       }
       record.notRun = record.notRun.filter(row => row.caseId !== 'V08_REJECT_CAP_DELIVERY');
-      record.notRun.push({ caseId: 'V08_HOST_LATE_ACK_AFTER_ROUTE_CHANGE', reason: 'No real deterministic UNKNOWN/late-ACK occurrence is available here; synthetic ACK/faults and input replay are not used.' },
-        { caseId: 'V08_HOST_BUSY_TO_IDLE_DELIVERY', reason: 'Busy is proved by the native unanswered question; original H stop-only, immutable checkpoint, User cancellation and release preserve that separate cause. Its old vendor turn is never presumed idle on resume.' });
+      record.notRun.push({ caseId: 'V08_HOST_LATE_ACK_AFTER_ROUTE_CHANGE', reason: 'No real deterministic UNKNOWN/late-ACK occurrence is available here; synthetic ACK/faults and input replay are not used.' });
+      if (!h.busyToIdleOnly) record.notRun.push({ caseId: 'V08_HOST_BUSY_TO_IDLE_DELIVERY', reason: 'The optional answered-question flow was not selected; stopped busy controls do not prove idle.' });
+      else for (const skipped of ['DELIVERED', 'BUSY_QUEUED', 'ROUTE_CHANGED', 'CANCELLED'])
+        record.notRun.push({ caseId: `V08_HOST_${skipped}`, reason: 'The optional busy-to-idle-only flow did not execute this separate Host case.' });
     }
     record.state = 'FLOW_COMPLETE_DIRECT_LEDGER_READBACK_REQUIRED'; product.save();
     return record;
