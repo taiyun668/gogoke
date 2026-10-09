@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SideChatPanel, type SideChatSource } from "./SideChatPanel";
 import type { SideChat, SideChatPage } from "./sideChatModel";
@@ -211,5 +211,23 @@ describe("SideChatPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "旁聊的更多操作" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "旁聊信息" }));
     expect(screen.getByText(/旁聊不是正式审查/)).toBeTruthy();
+  });
+
+  it("waits for a slow read instead of discarding it on every poll", async () => {
+    vi.useFakeTimers();
+    try {
+      const read = vi.fn(() => new Promise<SideChatPage>((resolve) => setTimeout(() => resolve(page()), 3500)));
+      render(<SideChatPanel source={{ read, actions: {} }} />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3400);
+      });
+      expect(read).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(200);
+      });
+      expect(screen.getAllByText("实例卡片还能看到报错吗").length).toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
