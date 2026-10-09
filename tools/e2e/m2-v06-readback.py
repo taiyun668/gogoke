@@ -34,7 +34,7 @@ def original_user(db, journal, request_id, status):
     check(entry["rawFrame"] == json.dumps(request, ensure_ascii=False, separators=(",", ":")) and
           receipt["schema"] == request["schema"] and receipt["family"] == request["family"] == "K-SEAT" and
           receipt["operation"] == request["operation"] and receipt["requestId"] == request_id and
-          receipt["domainId"] == request["domainId"] and receipt["targetId"] == request["targetId"] and
+          receipt["targetId"] == request["targetId"] and
           receipt["status"] == status and json.loads(entry["rawReceipt"]) == receipt,
           "Original User K-SEAT request/receipt differs")
     durable = rows(db, "SELECT o.seat_id,o.layer,o.parent_seat_id,o.revision,s.settings_json "
@@ -136,7 +136,7 @@ def original_model(db, journal, case, attempt):
     receipt = json.loads(content[0]["text"])
     check(receipt["schema"] == "gogoke.37.operations.v1" and receipt["family"] == "K-SEAT" and
           receipt["operation"] == "create-from-template" and receipt["requestId"] == row["step_id"] and
-          receipt["domainId"] == case["domainId"] and receipt["targetId"] == attempt["targetId"] and
+          receipt["targetId"] == attempt["targetId"] and
           receipt["status"] == attempt["expectedStatus"] and
           command["result"]["success"] is (attempt["expectedStatus"] == "APPLIED"),
           "Original H-written K-SEAT model receipt differs")

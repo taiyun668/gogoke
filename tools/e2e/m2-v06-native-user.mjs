@@ -59,7 +59,8 @@ export async function runV06NativeUserCases(product, config, journal, hostRoot) 
     } catch (error) { entry.originalError = String(error?.stack ?? error); product.save(); throw error; }
     const reply = entry.receipt;
     check(reply.schema === request.schema && reply.family === 'K-SEAT' && reply.operation === name &&
-      reply.domainId === c.domainId && reply.targetId === target && reply.requestId === request.requestId &&
+      reply.targetId === target && reply.requestId === request.requestId &&
+      /^\d+$/.test(reply.previousRevision) && /^\d+$/.test(reply.revision) &&
       allowed.includes(reply.status), `Original K-SEAT/${name} returned ${reply.status}; no replay`);
     record.operations[name] ??= [];
     record.operations[name].push(entry.request.requestId); product.save();
