@@ -98,6 +98,7 @@ export function useThreadActions({
 }: UseThreadActionsOptions) {
   const resumeInFlightByThreadRef = useRef<Record<string, number>>({});
   const nativeHydratedAssociationRef = useRef<Record<string, string>>({});
+  const nativeReadInvocationRef = useRef<Record<string, number>>({});
   const nativeReadSequenceRef = useRef<Record<string, number>>({});
   const threadStatusByIdRef = useRef(threadStatusById);
   const activeTurnIdByThreadRef = useRef(activeTurnIdByThread);
@@ -203,6 +204,9 @@ export function useThreadActions({
       if (!threadId) {
         return null;
       }
+      // Preserve invocation order across the asynchronous attachment lookup.
+      const readSequence = (nativeReadInvocationRef.current[threadId] ?? 0) + 1;
+      nativeReadInvocationRef.current[threadId] = readSequence;
       let native: Awaited<ReturnType<typeof nativeConversationAssociation>>;
       try {
         native = "__TAURI_INTERNALS__" in window
@@ -234,6 +238,11 @@ export function useThreadActions({
         });
         return threadId;
       }
+      // Cache hits and failed lookups must not supersede an in-flight read.
+      if ((nativeReadSequenceRef.current[threadId] ?? 0) > readSequence) {
+        return null;
+      }
+      nativeReadSequenceRef.current[threadId] = readSequence;
       onDebug?.({
         id: `${Date.now()}-client-thread-resume`,
         timestamp: Date.now(),
@@ -247,8 +256,6 @@ export function useThreadActions({
       if (inFlightCount === 1) {
         dispatch({ type: "setThreadResumeLoading", threadId, isLoading: true });
       }
-      const readSequence = (nativeReadSequenceRef.current[threadId] ?? 0) + 1;
-      nativeReadSequenceRef.current[threadId] = readSequence;
       const projectionRevision = getThreadProjectionRevision?.(threadId);
       try {
         if (native && projectionRevision === undefined) {
@@ -486,8 +493,12 @@ export function useThreadActions({
       }
       threadIds.forEach((threadId) => {
         loadedThreadsRef.current[threadId] = false;
-        nativeReadSequenceRef.current[threadId] =
-          (nativeReadSequenceRef.current[threadId] ?? 0) + 1;
+        const resetSequence = Math.max(
+          nativeReadInvocationRef.current[threadId] ?? 0,
+          nativeReadSequenceRef.current[threadId] ?? 0,
+        ) + 1;
+        nativeReadInvocationRef.current[threadId] = resetSequence;
+        nativeReadSequenceRef.current[threadId] = resetSequence;
         delete nativeHydratedAssociationRef.current[`${workspaceId}:${threadId}`];
       });
     },
