@@ -13,6 +13,10 @@ const SCHEMA: [(&str, &str); 3] = [
     ("gogoke_v37_grok_home_effects", "CREATE TABLE gogoke_v37_grok_home_effects(effect_id TEXT PRIMARY KEY,binding_id TEXT NOT NULL REFERENCES gogoke_v37_grok_home_grants(binding_id),action TEXT NOT NULL CHECK(action IN ('GRANT_ROOT','GRANT_AUTH','REVOKE_ROOT','REVOKE_AUTH','REVOKE_RESIDUE')),object_identity TEXT NOT NULL,relative_name TEXT NOT NULL,rights INTEGER NOT NULL CHECK(rights=1245631),flags INTEGER NOT NULL CHECK(flags IN (0,3)),before_aces TEXT NOT NULL,after_aces TEXT NOT NULL,before_control INTEGER NOT NULL,after_control INTEGER NOT NULL,other_aces_sha256 TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('INTENT','APPLIED','UNKNOWN')),revision INTEGER NOT NULL CHECK(revision>=1)) STRICT"),
 ];
 const ROOT_ANCHOR_SQL: &str = "CREATE TABLE gogoke_v37_grok_home_root_anchor(instance_id TEXT PRIMARY KEY REFERENCES gogoke_v37_grok_home_domains(instance_id),root_identity TEXT NOT NULL,home_identity TEXT NOT NULL,program_digest TEXT NOT NULL,version TEXT NOT NULL,registration_revision INTEGER NOT NULL,baseline_acl_hex TEXT NOT NULL,baseline_control INTEGER NOT NULL,baseline_effect_id TEXT NOT NULL,acl_hex TEXT NOT NULL,acl_control INTEGER NOT NULL,source_effect_id TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>=1)) STRICT";
+// H-only retirement is deliberately separate from F grants and effects: the
+// original generic HOME writer had no F intent, process, or StopFact.
+const H_ONLY_RETIREMENT_SQL: &str = "CREATE TABLE gogoke_v37_grok_home_h_only_retirement(instance_id TEXT PRIMARY KEY REFERENCES gogoke_v37_grok_home_domains(instance_id),binding_id TEXT NOT NULL UNIQUE,domain_id TEXT NOT NULL,session_id TEXT NOT NULL,generation TEXT NOT NULL,seat_id TEXT NOT NULL,seat_incarnation TEXT NOT NULL,root_identity TEXT NOT NULL,home_identity TEXT NOT NULL,profile_name TEXT NOT NULL,profile_sid TEXT NOT NULL,reserve_request_id TEXT NOT NULL,commit_request_id TEXT NOT NULL,release_request_id TEXT NOT NULL,object_count INTEGER NOT NULL CHECK(object_count>=1),object_manifest_sha256 TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('INTENT','APPLIED','UNKNOWN')),revision INTEGER NOT NULL CHECK(revision>=1)) STRICT";
+const H_ONLY_OBJECT_SQL: &str = "CREATE TABLE gogoke_v37_grok_home_h_only_retirement_objects(instance_id TEXT NOT NULL REFERENCES gogoke_v37_grok_home_h_only_retirement(instance_id),relative_name TEXT NOT NULL,object_identity TEXT NOT NULL,directory INTEGER NOT NULL CHECK(directory IN (0,1)),before_acl_hex TEXT NOT NULL,after_acl_hex TEXT NOT NULL,acl_control INTEGER NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('INTENT','APPLIED','UNKNOWN')),revision INTEGER NOT NULL CHECK(revision>=1),PRIMARY KEY(instance_id,relative_name)) STRICT";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct GrokRootAnchor {
@@ -121,16 +125,26 @@ pub(crate) fn initialize_grok_home_grant_schema(db:&mut VerifiedDatabaseConnecti
     let mut expected=old.clone();
     expected.push(("gogoke_v37_grok_home_root_anchor".into(),ROOT_ANCHOR_SQL.into()));
     expected.sort();
+    let anchored=expected.clone();
+    expected.push(("gogoke_v37_grok_home_h_only_retirement".into(),H_ONLY_RETIREMENT_SQL.into()));
+    expected.push(("gogoke_v37_grok_home_h_only_retirement_objects".into(),H_ONLY_OBJECT_SQL.into()));
+    expected.sort();
     if observed==expected {return Ok(());}
     // A pre-anchor database is allowed to acquire the empty table. Its old
     // effects do not become an ordered baseline by this schema transition.
-    if observed==old {
-        return tx(db,|db|db.execute(ROOT_ANCHOR_SQL).map_err(db_error));
+    if observed==old ||observed==anchored {
+        return tx(db,|db|{
+            if observed==old {db.execute(ROOT_ANCHOR_SQL).map_err(db_error)?;}
+            db.execute(H_ONLY_RETIREMENT_SQL).map_err(db_error)?;
+            db.execute(H_ONLY_OBJECT_SQL).map_err(db_error)
+        });
     }
     if !observed.is_empty(){return Err("grok F journal: changed or partial schema".into());}
     tx(db,|db|{
         for (_,sql) in SCHEMA {db.execute(sql).map_err(db_error)?;}
         db.execute(ROOT_ANCHOR_SQL).map_err(db_error)?;
+        db.execute(H_ONLY_RETIREMENT_SQL).map_err(db_error)?;
+        db.execute(H_ONLY_OBJECT_SQL).map_err(db_error)?;
         Ok(())
     })
 }

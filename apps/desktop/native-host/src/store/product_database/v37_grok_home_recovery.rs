@@ -237,13 +237,18 @@ impl<'root> ProductDatabase<'root> {
         // Live peers continue through their original H custodian. Cold
         // recovery must never take their shared domain away from them.
         if self.native_sessions.values().any(|run|run.custody.binding.profile_id==instance_id){return Ok(());}
+        let pending=incoming.filter(|request|request.family=="K-SESSION" &&request.operation=="open")
+            .map(|request|(request.domain_id.as_str(),request.target_id.as_str()));
         let inventory=evidence(grok_home_launch::cold_inventory(&self.connection,instance_id))?;
         let mut allowed:Vec<String>=inventory.iter().filter_map(|g|g.process_operation_id.clone()).collect();
         let mut grants=Vec::new();
         for grant in inventory{
             if !self.grok_fully_retired(&grant)?{grants.push(grant);}
         }
-        if grants.is_empty(){return Ok(());}
+        if grants.is_empty(){
+            return evidence(grok_home_launch::retire_h_only_root(
+                &mut self.connection,self.root,instance_id,pending));
+        }
         let mut prepared=BTreeMap::new();
         for grant in grants.iter().filter(|g|g.phase=="GRANTED_UNCREATED"){
             let holder=evidence(grok_home_launch::prepared_holder_for_recovery(&self.connection,grant))?
@@ -321,6 +326,7 @@ impl<'root> ProductDatabase<'root> {
             self.release_grok_disappeared_claim(&retired,&original,&proof,&allowed,incoming)?;
         }
         self.gone_scope(instance_id,&allowed,incoming,false)?;
-        evidence(grok_home_launch::finalize_quiescent(&mut self.connection,self.root,instance_id))
+        evidence(grok_home_launch::finalize_quiescent(&mut self.connection,self.root,instance_id))?;
+        evidence(grok_home_launch::retire_h_only_root(&mut self.connection,self.root,instance_id,pending))
     }
 }
