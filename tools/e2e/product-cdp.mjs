@@ -114,7 +114,16 @@ export class ActualProduct {
     // this observes the one launch and never repeats a mutation.
     const deadline = Date.now() + 180000;
     let target;
+    let diagnosticConnected = false;
+    let startupConsoleFailure = null;
+    const failOriginalStartup = () => {
+      if (!startupConsoleFailure) return;
+      const original = startupConsoleFailure.args.slice(1)
+        .map(arg => arg.value ?? arg.description ?? arg.type).join('\n');
+      throw Error(`Actual product startup failed: ${original}`);
+    };
     while (Date.now() < deadline) {
+      failOriginalStartup();
       if (this.childError || this.child.exitCode !== null) throw Error(`Installed product launch failed: ${this.childError ?? this.child.exitCode}; ${this.stderr}`);
       // Read-only readiness sampling. A launch or mutation is never retried.
       try {
@@ -131,6 +140,23 @@ export class ActualProduct {
           cause: error.cause && { name: error.cause.name, message: error.cause.message,
             code: error.cause.code, address: error.cause.address, port: error.cause.port } });
       }
+      if (target && !diagnosticConnected) {
+        this.endpoint.url = target.url;
+        await this.custody();
+        await this.connectDiagnostic(target);
+        diagnosticConnected = true;
+        this.socket.addEventListener('message', event => {
+          const message = JSON.parse(event.data);
+          if (message.method !== 'Runtime.consoleAPICalled' ||
+              message.params?.args?.[0]?.value !== 'Failed to signal gogoke update readiness') return;
+          // Capture the producer's buffered startup error. Never replay readiness.
+          startupConsoleFailure = message.params;
+          this.journal.startupConsoleFailure = { pid: child.pid, ...message.params };
+          this.save();
+        });
+        this.socket.send(JSON.stringify({ id: ++this.sequence, method: 'Runtime.enable' }));
+      }
+      failOriginalStartup();
       if (target && fs.existsSync(ready)) break;
       await delay(200);
     }
@@ -144,17 +170,8 @@ export class ActualProduct {
     }
     this.endpoint.url = target.url;
     await this.custody();
-    const socketUrl = new URL(target.webSocketDebuggerUrl);
-    if (socketUrl.protocol !== 'ws:' || !['127.0.0.1', 'localhost'].includes(socketUrl.hostname) || Number(socketUrl.port) !== port) {
-      throw Error('Unexpected diagnostic endpoint');
-    }
-    this.socket = new WebSocket(socketUrl);
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(Error('Diagnostic connection deadline')), 5000);
-      this.socket.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
-      this.socket.addEventListener('error', () => { clearTimeout(timer); reject(Error('Diagnostic connection failed')); }, { once: true });
-    });
     const ui = await this.evaluate('({url:location.href,home:!!document.querySelector(".home-product-entry"),conversation:document.querySelectorAll(".composer").length===1,tauri:!!window.__TAURI_INTERNALS__})');
+    failOriginalStartup();
     if (ui.url !== target.url || (!ui.home && !ui.conversation) || !ui.tauri) throw Error('Actual Home/conversation User bridge is absent');
     this.journal.launches.push({ ...this.endpoint, sourceCommit: this.config.sourceCommit, bootstrap: receipt, ui }); this.save();
     if (this.config.testerArmy !== false) {
@@ -163,6 +180,18 @@ export class ActualProduct {
       this.journal.connectionBackend = { name: 'tester-army/e2e', telemetryDisabled: true, agentActs: 0 };
       this.save();
     }
+  }
+  async connectDiagnostic(target) {
+    const socketUrl = new URL(target.webSocketDebuggerUrl);
+    if (socketUrl.protocol !== 'ws:' || !['127.0.0.1', 'localhost'].includes(socketUrl.hostname) || Number(socketUrl.port) !== this.endpoint.port) {
+      throw Error('Unexpected diagnostic endpoint');
+    }
+    this.socket = new WebSocket(socketUrl);
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(Error('Diagnostic connection deadline')), 5000);
+      this.socket.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
+      this.socket.addEventListener('error', () => { clearTimeout(timer); reject(Error('Diagnostic connection failed')); }, { once: true });
+    });
   }
   evaluate(expression) {
     if (this.tester) {
