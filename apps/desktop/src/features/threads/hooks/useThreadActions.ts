@@ -47,6 +47,64 @@ const THREAD_LIST_MAX_PAGES_OLDER = 6;
 const THREAD_LIST_MAX_PAGES_DEFAULT = 6;
 const THREAD_LIST_CURSOR_PAGE_START = "__gogoke_page_start__";
 
+export type NativeProjectionSource = {
+  identity: string;
+  raw: bigint;
+  association: string;
+};
+
+export type NativeProjectionRead = {
+  changes: Array<NativeProjectionSource | null>;
+  release: () => void;
+};
+
+function nativeSourceNumber(value: unknown): bigint {
+  if (typeof value !== "string" || !/^[1-9][0-9]*$/.test(value) || value.length > 20) {
+    throw new Error("Original partial source number is not canonical.");
+  }
+  const number = BigInt(value);
+  if (number > 18446744073709551615n) throw new Error("Original partial source number is outside u64.");
+  return number;
+}
+
+export function nativeSourceRef(value: unknown, high?: bigint) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Original partial source is missing.");
+  const fields = value as Record<string, unknown>;
+  const names = ["operationId", "generation", "sourceEpoch", "sourceCursor", "rawSourceId"];
+  if (Object.keys(fields).length !== names.length || names.some((name) => typeof fields[name] !== "string" || fields[name] === "")) {
+    throw new Error("Original partial source identity is invalid.");
+  }
+  nativeSourceNumber(fields.generation);
+  const cursor = nativeSourceNumber(fields.sourceCursor);
+  const raw = nativeSourceNumber(fields.rawSourceId);
+  if (high !== undefined && raw > high) throw new Error("Original partial source exceeds the history high-water.");
+  return { stream: JSON.stringify(names.slice(0, 3).map((name) => fields[name])),
+    identity: JSON.stringify(names.map((name) => fields[name])), cursor, raw };
+}
+
+function nativeHistoryCoversChanges(
+  response: Record<string, unknown> | null,
+  association: string,
+  changes: Array<NativeProjectionSource | null>,
+): boolean {
+  if (changes.length === 0) return true;
+  const result = (response?.result ?? response) as Record<string, unknown> | null;
+  const history = result?.nativeHistory as Record<string, unknown> | undefined;
+  if (history?.state !== "COMPLETE" || !Array.isArray(history.sourceRefs)) return false;
+  let high: bigint;
+  try { high = nativeSourceNumber(history.highWater); } catch { return false; }
+  const pool = new Map<string, string>();
+  try {
+    for (const value of history.sourceRefs) {
+      const ref = nativeSourceRef(value, high);
+      if (pool.has(ref.raw.toString())) return false;
+      pool.set(ref.raw.toString(), ref.identity);
+    }
+  } catch { return false; }
+  return changes.every((change) => change !== null && change.association === association &&
+    change.raw <= high && pool.get(change.raw.toString()) === change.identity);
+}
+
 function nativeInterruptedItems(
   response: Record<string, unknown> | null,
   thread: Record<string, unknown>,
@@ -60,29 +118,8 @@ function nativeInterruptedItems(
   if (partials === undefined) return null;
   if (!Array.isArray(partials)) throw new Error("Original interrupted partial metadata is invalid.");
   if (partials.length === 0) return null;
-  const number = (value: unknown): bigint => {
-    if (typeof value !== "string" || !/^[1-9][0-9]*$/.test(value) || value.length > 20) {
-      throw new Error("Original partial source number is not canonical.");
-    }
-    const n = BigInt(value);
-    if (n > 18446744073709551615n) throw new Error("Original partial source number is outside u64.");
-    return n;
-  };
-  const high = number(history.highWater);
-  const source = (value: unknown) => {
-    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Original partial source is missing.");
-    const fields = value as Record<string, unknown>;
-    const names = ["operationId", "generation", "sourceEpoch", "sourceCursor", "rawSourceId"];
-    if (Object.keys(fields).length !== names.length || names.some((name) => typeof fields[name] !== "string" || fields[name] === "")) {
-      throw new Error("Original partial source identity is invalid.");
-    }
-    number(fields.generation);
-    const cursor = number(fields.sourceCursor);
-    const raw = number(fields.rawSourceId);
-    if (raw > high) throw new Error("Original partial source exceeds the history high-water.");
-    return { stream: JSON.stringify(names.slice(0, 3).map((name) => fields[name])),
-      identity: JSON.stringify(names.map((name) => fields[name])), cursor, raw };
-  };
+  const high = nativeSourceNumber(history.highWater);
+  const source = (value: unknown) => nativeSourceRef(value, high);
   if (!Array.isArray(history.sourceRefs)) throw new Error("Original partial source pool is missing.");
   const pool = new Map<string, string>();
   for (const value of history.sourceRefs) {
@@ -149,7 +186,7 @@ type UseThreadActionsOptions = {
   threadStatusById: ThreadState["threadStatusById"];
   threadSortKey: ThreadListSortKey;
   onDebug?: (entry: DebugEntry) => void;
-  getThreadProjectionRevision?: (threadId: string) => number;
+  beginNativeProjectionRead?: (threadId: string) => NativeProjectionRead;
   getCustomName: (workspaceId: string, threadId: string) => string | undefined;
   threadActivityRef: MutableRefObject<Record<string, Record<string, number>>>;
   loadedThreadsRef: MutableRefObject<Record<string, boolean>>;
@@ -179,7 +216,7 @@ export function useThreadActions({
   threadStatusById,
   threadSortKey,
   onDebug,
-  getThreadProjectionRevision,
+  beginNativeProjectionRead,
   getCustomName,
   threadActivityRef,
   loadedThreadsRef,
@@ -349,9 +386,9 @@ export function useThreadActions({
       if (inFlightCount === 1) {
         dispatch({ type: "setThreadResumeLoading", threadId, isLoading: true });
       }
-      const projectionRevision = getThreadProjectionRevision?.(threadId);
+      const projectionRead = native ? beginNativeProjectionRead?.(threadId) : null;
       try {
-        if (native && projectionRevision === undefined) {
+        if (native && !projectionRead) {
           throw new Error("Native full history reconciliation has no projection ordering source.");
         }
         const response =
@@ -376,7 +413,7 @@ export function useThreadActions({
             throw new Error("The original native attachment changed during full history reconciliation.");
           }
           if (nativeReadSequenceRef.current[threadId] !== readSequence) return null;
-          if (getThreadProjectionRevision?.(threadId) !== projectionRevision) {
+          if (!nativeHistoryCoversChanges(response, JSON.stringify(native), projectionRead!.changes)) {
             throw new Error("Newer conversation facts superseded this native history snapshot; full reconciliation remains incomplete.");
           }
         }
@@ -479,6 +516,7 @@ export function useThreadActions({
         });
         return null;
       } finally {
+        projectionRead?.release();
         const nextCount = Math.max(
           0,
           (resumeInFlightByThreadRef.current[threadId] ?? 1) - 1,
@@ -497,7 +535,7 @@ export function useThreadActions({
       dispatchPreviewMessage,
       dispatch,
       getCustomName,
-      getThreadProjectionRevision,
+      beginNativeProjectionRead,
       itemsByThread,
       loadedThreadsRef,
       onDebug,
