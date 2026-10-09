@@ -25,6 +25,11 @@ on:
         description: Frozen artifact ID on main; signed artifact ID on the branch
         required: true
         type: number
+      experimental_candidate:
+        description: Experimental desktop runs may be resource-signed; installed smoke remains NOT_RUN
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -62,19 +67,50 @@ jobs:
           if ($checkedOut -cne $env:GITHUB_SHA) {
             throw 'Trusted verifier checkout is not the exact main workflow revision.'
           }
+      - name: Record experimental installed smoke scope
+        if: github.event_name == 'workflow_dispatch' && inputs.experimental_candidate
+        shell: pwsh
+        run: |
+          $summary = @(
+            '## Experimental candidate resource signing'
+            ''
+            '| Check | Evidence status |'
+            '| --- | --- |'
+            '| Trusted main resource signing | This job''s actual result |'
+            '| Branch candidate-installed-smoke | NOT_RUN |'
+          ) -join [Environment]::NewLine
+          $summary >> $env:GITHUB_STEP_SUMMARY
       - name: Resolve exact controlled source run and artifact identity
         id: identity
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPERIMENTAL_CANDIDATE: ${{ inputs.experimental_candidate }}
         run: |
           $event = Get-Content -LiteralPath $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json
           $sourceCommit = [string]$event.inputs.source_commit
           $runId = [long]$event.inputs.run_id
           $runAttempt = [int]$event.inputs.run_attempt
           $artifactId = [long]$event.inputs.artifact_id
+          $experimentalInput = [string]$env:EXPERIMENTAL_CANDIDATE
+          if ($experimentalInput -notmatch '^(?i:true|false)$') {
+            throw 'Candidate signing mode input is malformed.'
+          }
+          $isExperimental = $experimentalInput -ieq 'true'
           if ($sourceCommit -cnotmatch '^[0-9a-f]{40}$' -or $runId -le 0 -or $artifactId -le 0) {
             throw 'Candidate signing identity is malformed.'
+          }
+          if ($isExperimental) {
+            $workflowPath = '.github/workflows/gogoke-desktop.yml'
+            $mainWorkflowBlob = (git rev-parse "HEAD:$workflowPath").Trim()
+            if ($mainWorkflowBlob -cnotmatch '^[0-9a-f]{40}$') {
+              throw 'Trusted main desktop workflow blob identity is unavailable.'
+            }
+            $sourceWorkflow = gh api "repos/taiyun668/gogoke/contents/$workflowPath`?ref=$sourceCommit" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or $sourceWorkflow.type -cne 'file' -or
+                $sourceWorkflow.encoding -cne 'base64' -or $sourceWorkflow.sha -cne $mainWorkflowBlob) {
+              throw 'Source desktop workflow blob differs from the trusted main workflow.'
+            }
           }
           # Candidate PLAN.json is data; only main's verifier executes.
           $receiptBlob = '5412734c8ea0626464344c3bfda3add4ed4f65c6'
@@ -97,6 +133,13 @@ jobs:
           $currentMain = gh api 'repos/taiyun668/gogoke/commits/main' | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or $currentMain.sha -cne $env:GITHUB_SHA) {
             throw 'Trusted signing workflow checkout is not current main.'
+          }
+          if ($isExperimental) {
+            $controlledHead = gh api 'repos/taiyun668/gogoke/git/ref/heads/codex/gogoke-37-l0' | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or $controlledHead.ref -cne 'refs/heads/codex/gogoke-37-l0' -or
+                $controlledHead.object.type -cne 'commit' -or $controlledHead.object.sha -cne $sourceCommit) {
+              throw 'Candidate source is not the current HEAD of the controlled branch.'
+            }
           }
           $introducing = $null
           foreach ($commit in @(git log --first-parent --format=%H HEAD -- $receiptPath)) {
@@ -165,19 +208,45 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $jobs.total_count -gt 100) {
             throw 'Candidate source build job inventory is unavailable or unbounded.'
           }
-          foreach ($requiredName in @(
+          $formalJobNames = @(
             'Browser build and tests',
             'Generate locked dependency notices',
             'Clean Windows build (frozen)',
             'Clean Windows build (repro)',
             'Compare independent Windows executable bytes'
-          )) {
-            $jobMatches = @($jobs.jobs | Where-Object {
-              $_.name -ceq $requiredName -and $_.status -ceq 'completed' -and
-              $_.conclusion -ceq 'success' -and $_.run_attempt -eq $runAttempt
+          )
+          if ($isExperimental) {
+            $experimentalJobNames = @(
+              'Experimental candidate Browser build and tests',
+              'Experimental candidate dependency notices',
+              'Experimental candidate Windows build (frozen)'
+            )
+            $successfulNames = @($jobs.jobs | Where-Object {
+              $_.status -ceq 'completed' -and $_.conclusion -ceq 'success' -and $_.run_attempt -eq $runAttempt
+            } | ForEach-Object { [string]$_.name } | Sort-Object)
+            if ($successfulNames.Count -ne $experimentalJobNames.Count -or
+                ($successfulNames -join "`n") -cne (($experimentalJobNames | Sort-Object) -join "`n")) {
+              throw 'Experimental source build does not have exactly the three successful candidate jobs.'
+            }
+            $forbiddenSuccesses = @($jobs.jobs | Where-Object {
+              $_.run_attempt -eq $runAttempt -and $_.status -ceq 'completed' -and
+              $_.conclusion -ceq 'success' -and $_.name -cin @(
+                'Clean Windows build (repro)',
+                'Compare independent Windows executable bytes'
+              )
             })
-            if ($jobMatches.Count -ne 1) {
-              throw "Required successful source build job is missing or ambiguous: $requiredName"
+            if ($forbiddenSuccesses.Count -ne 0) {
+              throw 'Experimental source build unexpectedly succeeded in repro or compare.'
+            }
+          } else {
+            foreach ($requiredName in $formalJobNames) {
+              $jobMatches = @($jobs.jobs | Where-Object {
+                $_.name -ceq $requiredName -and $_.status -ceq 'completed' -and
+                $_.conclusion -ceq 'success' -and $_.run_attempt -eq $runAttempt
+              })
+              if ($jobMatches.Count -ne 1) {
+                throw "Required successful source build job is missing or ambiguous: $requiredName"
+              }
             }
           }
           $expectedName = "gogoke-windows-frozen-$sourceCommit-$runId"
@@ -189,6 +258,11 @@ jobs:
             $_.id -eq $artifactId -and $_.name -ceq $expectedName -and -not $_.expired -and
             $_.size_in_bytes -gt 0 -and $_.size_in_bytes -le 1073741824
           })
+          if ($isExperimental) {
+            $matches = @($matches | Where-Object {
+              $_.workflow_run.id -eq $runId -and $_.workflow_run.head_sha -ceq $sourceCommit
+            })
+          }
           if ($matches.Count -ne 1) { throw 'Candidate frozen artifact identity or size is invalid.' }
           "source_commit=$sourceCommit" >> $env:GITHUB_OUTPUT
           "run_id=$runId" >> $env:GITHUB_OUTPUT
@@ -302,7 +376,7 @@ jobs:
 
   candidate-installed-smoke:
     name: Verify and install signed candidate on an isolated Windows runner
-    if: github.repository == 'taiyun668/gogoke' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/gogoke-37-l0'
+    if: github.repository == 'taiyun668/gogoke' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/gogoke-37-l0' && !inputs.experimental_candidate
     timeout-minutes: 60
     runs-on: windows-latest
     env:

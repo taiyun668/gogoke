@@ -8,6 +8,11 @@ on:
         type: boolean
         required: false
         default: false
+      experimental_candidate:
+        description: "Light candidate: Browser, notices and one frozen build; repro, compare and compile mutations are NOT_RUN"
+        type: boolean
+        required: false
+        default: false
   push:
     branches:
       - main
@@ -44,31 +49,54 @@ concurrency:
 
 jobs:
   web:
-    name: Browser build and tests
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.experimental_candidate && 'Experimental candidate Browser build and tests' || 'Browser build and tests' }}
     timeout-minutes: 30
     runs-on: windows-latest
     defaults:
       run:
         working-directory: apps/desktop
     steps:
+      - name: Reject incompatible workflow modes
+        if: github.event_name == 'workflow_dispatch' && inputs.web_only && inputs.experimental_candidate
+        working-directory: .
+        shell: pwsh
+        run: throw 'web_only and experimental_candidate are mutually exclusive.'
       - name: Record selected check scope
-        if: github.event_name == 'workflow_dispatch' && inputs.web_only
+        if: github.event_name == 'workflow_dispatch' && (inputs.web_only || inputs.experimental_candidate)
         working-directory: .
         shell: pwsh
         run: |
-          @'
-          ## Browser iteration only
-
-          | Check | Evidence status |
-          | --- | --- |
-          | Browser build and tests | See this job's actual result |
-          | Generate locked dependency notices | NOT_RUN |
-          | Clean Windows build (frozen) | NOT_RUN |
-          | Clean Windows build (repro) | NOT_RUN |
-          | Compare independent Windows executable bytes | NOT_RUN |
-
-          This run cannot satisfy the complete integration or candidate build gate. Run again with web_only=false at the integration point or before producing a candidate.
-          '@ >> $env:GITHUB_STEP_SUMMARY
+          $summary = if ('${{ inputs.experimental_candidate }}' -eq 'true') {
+            @(
+              '## Experimental candidate lightweight checks'
+              ''
+              '| Check | Evidence status |'
+              '| --- | --- |'
+              '| Browser build and tests | See this job''s actual result |'
+              '| Generate locked dependency notices | See the notices job''s actual result |'
+              '| Clean Windows build (frozen) and original artifact byte verification | See the frozen job''s actual result |'
+              '| Clean Windows build (repro) | NOT_RUN |'
+              '| Compare independent Windows executable bytes | NOT_RUN |'
+              '| Compiled failing mutation and CI-only negative installer | NOT_RUN |'
+              ''
+              'This run is a lightweight experiment and cannot satisfy the complete stable integration gate; experimental resource signing remains subject to its trusted main verifier.'
+            ) -join [Environment]::NewLine
+          } else {
+            @(
+              '## Browser iteration only'
+              ''
+              '| Check | Evidence status |'
+              '| --- | --- |'
+              '| Browser build and tests | See this job''s actual result |'
+              '| Generate locked dependency notices | NOT_RUN |'
+              '| Clean Windows build (frozen) | NOT_RUN |'
+              '| Clean Windows build (repro) | NOT_RUN |'
+              '| Compare independent Windows executable bytes | NOT_RUN |'
+              ''
+              'This run cannot satisfy the complete integration or candidate build gate. Run again with web_only=false at the integration point or before producing a candidate.'
+            ) -join [Environment]::NewLine
+          }
+          $summary >> $env:GITHUB_STEP_SUMMARY
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -134,7 +162,7 @@ jobs:
       - run: npm run build
 
   licenses:
-    name: Generate locked dependency notices
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.experimental_candidate && 'Experimental candidate dependency notices' || 'Generate locked dependency notices' }}
     if: github.event_name != 'workflow_dispatch' || !inputs.web_only
     timeout-minutes: 45
     runs-on: windows-latest
@@ -211,7 +239,7 @@ jobs:
           retention-days: 30
 
   windows-build:
-    name: Clean Windows build (${{ matrix.lane }})
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.experimental_candidate && format('Experimental candidate Windows build ({0})', matrix.lane) || format('Clean Windows build ({0})', matrix.lane) }}
     if: github.event_name != 'workflow_dispatch' || !inputs.web_only
     timeout-minutes: 75
     needs: [web, licenses]
@@ -219,7 +247,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lane: [frozen, repro]
+        lane: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.experimental_candidate && '["frozen"]' || '["frozen","repro"]') }}
     env:
       RUSTUP_TOOLCHAIN: 1.89.0
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
@@ -534,7 +562,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Build separate CI-barrier installer for negative installation axes
-        if: matrix.lane == 'frozen' && github.event_name == 'workflow_dispatch'
+        if: matrix.lane == 'frozen' && github.event_name == 'workflow_dispatch' && !inputs.experimental_candidate
         shell: pwsh
         run: |
           $sysroot = (& rustc +1.89.0 --print sysroot).Trim()
@@ -566,7 +594,7 @@ jobs:
           [ordered]@{schema='gogoke.r2-06a.nsis-negative-instrument.v1';sourceCommit='${{ github.event.pull_request.head.sha || github.sha }}';runId='${{ github.run_id }}';runAttempt='${{ github.run_attempt }}';setupSha256=$testHash;productionShellSha256=$expectedShell;barrier='CI_ONLY'} |
             ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $directory 'instrument.json') -Encoding utf8
       - name: Upload separate CI-barrier installer
-        if: matrix.lane == 'frozen' && github.event_name == 'workflow_dispatch'
+        if: matrix.lane == 'frozen' && github.event_name == 'workflow_dispatch' && !inputs.experimental_candidate
         uses: actions/upload-artifact@v4
         with:
           name: gogoke-nsis-negative-${{ github.sha }}-${{ github.run_id }}
@@ -576,7 +604,7 @@ jobs:
 
   windows-reproducibility:
     name: Compare independent Windows executable bytes
-    if: github.event_name != 'workflow_dispatch' || !inputs.web_only
+    if: github.event_name != 'workflow_dispatch' || (!inputs.web_only && !inputs.experimental_candidate)
     timeout-minutes: 15
     needs: [windows-build]
     runs-on: windows-latest
