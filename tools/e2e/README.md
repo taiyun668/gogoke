@@ -36,8 +36,10 @@ product custody, signed runtimes and original observers. Its private config adds
 `cliVersion`, `askPrompt`, `steerPrompt` and the original `observerTools` bindings.
 Evidence must be a new child directory of the private config directory.
 An already released prior admission may be identified by `settledRelease` with
-`alreadyReleased: true`; the retained choice must still read as physically STOPPED
-and the current seat must be IDLE. The runner does not repeat that release.
+`alreadyReleased: true` and `evidence.stop` / `evidence.release` path/SHA256 pairs.
+The retained choice must match the original physical STOPPED and later release
+request/receipt pairs; its current live projection is no longer a valid active
+candidate. The current seat must be IDLE. The runner does not repeat that release.
 
 The native runner waits for the exact React thread/workspace row and hydration,
 then identifies each new UI effect by its original request ID. Old rejections are

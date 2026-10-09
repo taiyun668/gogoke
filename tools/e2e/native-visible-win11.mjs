@@ -397,16 +397,59 @@ try {
   check(beforeChoiceTransport?.state === 'DISCONNECTED',
     `Target transport is not disconnected before explicit choice: ${JSON.stringify(beforeChoiceTransport)}`);
   const beforeChoiceRoute = await visible('visible-conversation-route');
+  if (config.settledRelease?.alreadyReleased) {
+    check(beforeChoiceRoute.state === 'NATIVE',
+      'The previously released original USER selection must still be identifiable.');
+  }
   if (beforeChoiceRoute.state === 'NATIVE') {
     const old = config.settledRelease;
     const prior = exactAssociation(beforeChoiceRoute.association);
     check(old && prior.sessionId === old.sessionId && prior.domainId === config.domainId &&
       prior.seatId === config.seatId && prior.instanceId === config.instanceId &&
       prior.bindingGeneration === old.generation, 'Retained selection differs from original stopped session.');
-    const live = await visible('visible-conversation-read', { expectedAssociation: prior, method: 'live-state' });
-    check(live.schema === 'gogoke.37.visible-conversation.v1' && live.workspaceId === workspaceId && !live.reason && live.state === 'APPLIED' && live.live?.state === 'STOPPED' &&
-      same(exactAssociation(live.association), prior), 'Retained selection is not original H-proven STOPPED.');
-    step('retained-selection-original-H-STOPPED', { sessionId: prior.sessionId });
+    if (old.alreadyReleased) {
+      const originals = old.evidence;
+      for (const reference of [originals?.stop, originals?.release]) {
+        check(reference && path.isAbsolute(reference.path) && hex64(reference.sha256) &&
+          digest(reference.path) === reference.sha256, 'Original stop/release evidence is absent or changed.');
+      }
+      const stopped = JSON.parse(fs.readFileSync(originals.stop.path, 'utf8').replace(/^\uFEFF/, ''));
+      const released = JSON.parse(fs.readFileSync(originals.release.path, 'utf8').replace(/^\uFEFF/, ''));
+      const stop = stopped.receipt;
+      const release = released.operations.filter(row => row.request?.family === 'K-SESSION' &&
+        row.request.operation === 'admission-release' && row.request.targetId === old.sessionId &&
+        row.request.payload.generation === old.generation);
+      check(stop?.family === 'K-SESSION' && stop.operation === 'stop' &&
+        stop.targetId === old.sessionId && stop.status === 'APPLIED' && nonempty(stop.result?.stopFact) &&
+        nonempty(stop.requestId) && stop.schema === 'gogoke.37.operations.v1' &&
+        stop.requestId === stopped.request?.requestId && stopped.request.domainId === config.domainId &&
+        stopped.request.family === 'K-SESSION' && stopped.request.operation === 'stop' &&
+        stopped.request.expectedRevision === stop.previousRevision &&
+        stopped.request.targetId === old.sessionId && stopped.request.payload.seatId === config.seatId &&
+        stopped.request?.payload?.generation === old.generation &&
+        stopped.originalStoppedLive?.state === 'APPLIED' && stopped.originalStoppedLive.live?.state === 'STOPPED' &&
+        stopped.originalStoppedLive.schema === 'gogoke.37.visible-conversation.v1' &&
+        stopped.originalStoppedLive.workspaceId === workspaceId && !stopped.originalStoppedLive.reason &&
+        same(exactAssociation(stopped.originalStoppedLive.association), prior) &&
+        released.sourceCommit === SOURCE && released.state === 'EVIDENCE_READY_REQUIRES_REVIEW' &&
+        release.length === 1 && release[0].receipt?.status === 'APPLIED' &&
+        release[0].request.domainId === config.domainId && release[0].request.payload.seatId === config.seatId &&
+        nonempty(release[0].receipt.requestId) && release[0].receipt.schema === 'gogoke.37.operations.v1' &&
+        release[0].receipt.requestId === release[0].request.requestId &&
+        release[0].receipt.targetId === old.sessionId && release[0].receipt.family === 'K-SESSION' &&
+        release[0].receipt.operation === 'admission-release' &&
+        release[0].request.expectedRevision === release[0].receipt.previousRevision &&
+        release[0].receipt.previousRevision === stop.revision && release[0].receipt.revision === old.revision &&
+        released.closes.length === 1 && released.closes[0].exitCode === 0 && released.closes[0].forceKill === false,
+        'Original physical stop and later admission release do not match the retained selection.');
+      step('retained-selection-original-stop-and-release', { sessionId: prior.sessionId,
+        stopFact: stop.result.stopFact, releaseRevision: old.revision });
+    } else {
+      const live = await visible('visible-conversation-read', { expectedAssociation: prior, method: 'live-state' });
+      check(live.schema === 'gogoke.37.visible-conversation.v1' && live.workspaceId === workspaceId && !live.reason && live.state === 'APPLIED' && live.live?.state === 'STOPPED' &&
+        same(exactAssociation(live.association), prior), 'Retained selection is not original H-proven STOPPED.');
+      step('retained-selection-original-H-STOPPED', { sessionId: prior.sessionId });
+    }
   }
   if (config.settledRelease && !config.settledRelease.alreadyReleased) {
     const old = config.settledRelease;
