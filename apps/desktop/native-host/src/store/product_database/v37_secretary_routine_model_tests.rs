@@ -299,7 +299,11 @@ fn native_takeover_fixture(card_session: &str,
     action: impl FnOnce(&mut ProductDatabase<'_>, &seat::NativeSeatCall, &V37Request, &str, &str)) {
     fixture_with_wire(TAKEOVER_QUESTION,&[TAKEOVER_CALL],3,ledger::SessionPurpose::Work,
         |product,custody,frames,_,_| {
-        product.connection.execute("INSERT INTO main.gogoke_v37_seat_settings(domain_id,seat_id,template_id,settings_json) VALUES('global','seatS','templateS','{\"model\":\"m\",\"effort\":\"high\",\"permissionTier\":\"READ_ONLY\",\"orchestrationScope\":{\"instanceIds\":[\"instanceS\"],\"models\":[\"m\"],\"reasoningEfforts\":[\"high\"],\"maxPermissionTier\":\"READ_ONLY\"},\"takeoverQuestions\":[{\"id\":\"q\",\"prompt\":\"Which scope?\"}]}')").unwrap();
+        let settings=Parser::parse(r#"{"model":"m","effort":"high","permissionTier":"READ_ONLY","orchestrationScope":{"instanceIds":["instanceS"],"models":["m"],"reasoningEfforts":["high"],"maxPermissionTier":"READ_ONLY","maxConcurrent":4},"takeoverQuestions":[{"id":"q","prompt":"Which scope?"}]}"#).unwrap().canonical();
+        let configured=Statement::prepare(product.connection.as_ptr(),
+            "INSERT INTO main.gogoke_v37_seat_settings(domain_id,seat_id,template_id,settings_json) VALUES('global','seatS','templateS',?1)").unwrap();
+        configured.bind_text(1,&settings).unwrap();configured.step_done().unwrap();drop(configured);
+        seat::get(&product.connection,"global","seatS").expect("canonical configured work seat");
         let question=ledger::capture_raw_source(&mut product.connection,&frames[3],"processS",
             &custody.custodian_nonce,"4").expect("original native question frame in A");
         let source=&question.key;
