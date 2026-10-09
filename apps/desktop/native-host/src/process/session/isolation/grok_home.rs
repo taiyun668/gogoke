@@ -986,8 +986,34 @@ mod tests {
                 assert_ne!(unsafe{AddAce(built,4,u32::MAX,target.as_ptr().cast(),target.len() as u32)},0);
             }
         }
-        assert_eq!(unsafe{SetSecurityInfo(held.0,FILE_OBJECT,DACL_SECURITY_INFORMATION,
-            ptr::null_mut(),ptr::null_mut(),built,ptr::null_mut())},0);
+        let mut built_size=AclSizeInformation{ace_count:0,acl_bytes_in_use:0,acl_bytes_free:0};
+        assert_ne!(unsafe{GetAclInformation(built,(&mut built_size as *mut AclSizeInformation).cast(),
+            size_of::<AclSizeInformation>() as u32,ACL_SIZE_INFORMATION_CLASS)},0);
+        assert_eq!(built_size.ace_count,size.ace_count+1);
+        let mut built_target_count=0;
+        for i in 0..built_size.ace_count {
+            let mut ace=ptr::null_mut();assert_ne!(unsafe{GetAce(built,i,&mut ace)},0);
+            if unsafe{EqualSid(ace.cast::<u8>().add(8).cast(),profile.sid)}!=0 {
+                built_target_count+=1;
+            }
+        }
+        assert_eq!(built_target_count,2);
+        let before_write=snapshot(held.0,&profile).unwrap();
+        assert_eq!(before_write.target_aces,format!("1:{}:3",directory_rights(true)));
+        // Win32 SetSecurityInfo merges this ACL and drops the duplicate. Use
+        // the same-handle Native writer so the negative fixture has two ACEs.
+        let mut sd=GrokDaclDescriptor{revision:0,reserved:0,control:0,
+            owner:ptr::null_mut(),group:ptr::null_mut(),sacl:ptr::null_mut(),dacl:ptr::null_mut()};
+        let security_descriptor=(&mut sd as *mut GrokDaclDescriptor).cast();
+        let control_mask=0x0100|0x0400|0x1000;
+        let control=(before_write.dacl_control&control_mask)|
+            if before_write.dacl_control&0x0400!=0{0x0100}else{0};
+        assert_ne!(unsafe{InitializeSecurityDescriptor(security_descriptor,1)},0);
+        assert_ne!(unsafe{SetSecurityDescriptorDacl(security_descriptor,1,built,
+            i32::from(before_write.dacl_control&0x0008!=0))},0);
+        assert_ne!(unsafe{SetSecurityDescriptorControl(security_descriptor,control_mask,control)},0);
+        let status=unsafe{NtSetSecurityObject(held.0,DACL_SECURITY_INFORMATION,security_descriptor)};
+        assert!(status>=0,"duplicate fixture NTSTATUS=0x{:08x}",status as u32);
         let duplicate=snapshot(held.0,&profile).unwrap();
         assert_eq!(duplicate.target_aces.split(',').count(),2);
         let before=duplicate.ordered_aces_bytes();
