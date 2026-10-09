@@ -1,4 +1,4 @@
-# Fixed LPAC compatibility and Claude startup observation
+# Fixed LPAC compatibility and Claude startup pipe mapping
 
 The path mode is only for the native x64 Codex CLI 0.160.0 launched by H inside
 its verified LPAC profile. The official npm platform archive binary is PE machine `0x8664`,
@@ -9,23 +9,35 @@ its own program identity checks at every launch. The original 0.149.0 failure
 was flags `0` returning `0` / Win32 `5` after an LPAC-denied open of
 `\??\MountPointManager`, although the exact F home metadata handle opened.
 
-The same embedded DLL has a separate observation mode for the exact Claude
+The same embedded DLL has a separate pipe mode for the exact Claude
 2.1.196 x64 image, SHA-256
 `180d7b279455e8b89d4353a5146447be2f80b80fb0db14bdc6dd9cb98c0aef09`.
 H constructs `GOGOKE_LPAC_COMPAT_MODE=CLAUDE_PIPE_V1` only for that pinned
 digest and checks the actual suspended child digest again before injection.
-The DLL requires one `CreateNamedPipeA` and one `CreateNamedPipeW` main-image
-import from `kernel32.dll`, then patches only those two IAT slots. Codex keeps
-its existing path mode with no mode variable. The host does not accept a
+The DLL requires one each of `CreateNamedPipeA`, `CreateNamedPipeW`, and
+`CreateFileA` main-image imports from `kernel32.dll`, then patches only those
+three exact IAT slots. Codex keeps its existing path mode with no mode
+variable. The host does not accept a
 caller or inherited mode value and supplies no Codex path mappings to Claude.
 
-Each Claude wrapper calls the original API once with unchanged arguments. On
-the first failed matching libuv pipe call per process it emits one stderr line
-containing the API name, exact Win32 error number and `uv` prefix class.
-It never emits the pipe name, payload, credential or private path. Return
-handle and LastError remain the original values even if stderr writing fails.
-Successes, unrelated names and later failures pass through without logging.
-This does not map names, retry, wait, or change CLI bytes or pipe rights.
+The fixed libuv `uv__unique_pipe_name` creates a private pair name in a 64-byte
+buffer as `\\?\pipe\uv\<decimal>-<pid>`. Only an exact decimal form ending in
+the current process ID, with libuv's fixed server or client call parameters,
+maps to `\\.\pipe\LOCAL\uv\<same suffix>`. The `CreateNamedPipeA` server
+and its following `CreateFileA` client receive the same mapped name. Every
+other argument and each API's return handle and LastError pass through. The
+`CreateNamedPipeW` wrapper remains observation-only; other pipe names and
+calls remain unmapped. No retry, wait, CLI byte change, token/Job change, pipe
+ACL change, or additional capability is introduced.
+[Microsoft's IPC guidance](https://learn.microsoft.com/en-us/windows/apps/develop/communication/interprocess-communication)
+states that `LOCAL` limits the name to the login session; the name is not an
+authorization check. Both mapped ends are in the same verified LPAC process,
+not a User helper.
+
+On the first failed matching `uv` `CreateNamedPipeA` or W call per process,
+the wrapper emits one stderr line with the API, Win32 error and prefix class.
+It never emits the pipe name, payload, credential or private path. Stderr
+writing cannot replace the API's LastError. Subsequent failures are not logged.
 Loading the host-owned embedded DLL for Claude uses the existing exact-file
 LPAC read/execute grant and verification. That grant writes the DLL ACL for
 the Claude profile; no CLI, worktree, or pipe object rights are added. The
@@ -36,10 +48,14 @@ profile-specific RX withdrawal at stop or release is claimed.
 The target follows the fixed-image PE metadata and the pinned
 [oven-sh/libuv Windows pipe implementation](https://github.com/oven-sh/libuv/blob/4dcfac4780d394e0dc2d3fb30335ca01b553eb46/src/win/pipe.c),
 whose `uv__pipe_server` retries `ERROR_PIPE_BUSY` and `ERROR_ACCESS_DENIED`
-after `CreateNamedPipeA`. The original installed 0.1.38 Claude attempts had
-no stdout, stderr or debug file; sampled syscall PCs are not returned error
-codes. An installed-product attempt can establish the Win32 result when a
-matching main-image call fails and its stderr is captured.
+after `CreateNamedPipeA`, then opens the same pair name with `CreateFileA`.
+The original installed 0.1.38 attempts had no stdout, stderr or debug file;
+sampled syscall PCs were not returned error codes. The installed 0.1.49
+attempt recorded a first matching A failure with Win32 `5`, followed by an
+initialize frame deadline. That first error does not establish the return
+of every later retry or exclude a first-instance name collision. The mapping
+follows [Microsoft's documented AppContainer `\\.\pipe\LOCAL\` syntax](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createnamedpipea);
+installed same-byte startup must still establish the outcome.
 
 The DLL is built at cloud build time and embedded in Rust as `MODULE_BYTES`.
 `MODULE_SHA256`, `SHIM_SOURCE_SHA256`, and `DETOURS_COMMIT` give the host and
@@ -73,11 +89,16 @@ Root integration:
 On normal startup the injected DLL calls `DetourRestoreAfterWith` and checks
 the main image PE import directory. It refuses loader initialization unless
 there is exactly one `kernel32.dll` import by name for
-`GetFinalPathNameByHandleW` and no import of that name from another DLL. It
-patches only that main-image IAT slot, preserving the original pointer; it does
-not patch system DLL code or scan other modules. It creates no thread, loads
-no library, and waits for nothing from `DllMain`. Any missing import or patch
-failure makes the CLI unusable rather than starting with unproved behavior.
+`GetFinalPathNameByHandleW` in Codex path mode, or the three named imports above
+in Claude pipe mode, with no duplicate or foreign-DLL match. It patches only
+those main-image IAT slots, preserving original pointers; it does not patch
+system DLL code or scan other modules. It creates no thread, loads no library,
+and waits for nothing from `DllMain`. The host uses
+`DetourUpdateProcessWithDll` on the verified suspended image, so the injected
+DLL is a startup import. A missing slot or partial IAT patch makes `DllMain`
+return `FALSE`: loader initialization fails and the CLI cannot continue. This
+startup failure is the fail-closed condition; no runtime patch rollback is
+claimed.
 
 The wrapper first calls the original API. Only when flags are `0` and the
 original returns `0` with `ERROR_ACCESS_DENIED` does it query the **same
@@ -100,7 +121,8 @@ binary build or run is part of this package.
 `cargo test --manifest-path .../compat/Cargo.toml` on cloud Windows runs the
 same-source C++ shim test for buffer, mapping, LastError and PE import guards;
 the same-source fixture also checks Claude argument/return/LastError
-passthrough, bounded stderr text, unrelated calls and exact A/W import shape.
+passthrough, identical mapped A server/client names, unrelated calls, bounded
+stderr text and exact A/W/`CreateFileA` import shape.
 The installed CLI remains the definitive behavior check.
 
 ## Dependency provenance

@@ -29,7 +29,16 @@ DWORD observed_open_mode = 0, observed_pipe_mode = 0, observed_instances = 0;
 DWORD observed_out_size = 0, observed_in_size = 0, observed_timeout = 0;
 LPSECURITY_ATTRIBUTES observed_security = nullptr;
 const char* observed_name_a = nullptr;
+char observed_name_a_copy[80] = {};
 const wchar_t* observed_name_w = nullptr;
+const char* observed_file_name = nullptr;
+char observed_file_name_copy[80] = {};
+DWORD observed_file_access = 0, observed_file_share = 0;
+DWORD observed_file_disposition = 0, observed_file_flags = 0;
+LPSECURITY_ATTRIBUTES observed_file_security = nullptr;
+HANDLE observed_file_template = nullptr;
+HANDLE mock_file_result = INVALID_HANDLE_VALUE;
+DWORD mock_file_error = ERROR_ACCESS_DENIED;
 char captured_stderr[112] = {};
 DWORD captured_length = 0;
 int stderr_calls = 0;
@@ -37,11 +46,23 @@ int stderr_calls = 0;
 HANDLE WINAPI mock_named_pipe_a(LPCSTR name, DWORD open_mode, DWORD pipe_mode,
     DWORD instances, DWORD out_size, DWORD in_size, DWORD timeout, LPSECURITY_ATTRIBUTES security) {
     observed_name_a = name;
+    strcpy_s(observed_name_a_copy, name);
     observed_open_mode = open_mode; observed_pipe_mode = pipe_mode;
     observed_instances = instances; observed_out_size = out_size;
     observed_in_size = in_size; observed_timeout = timeout; observed_security = security;
     SetLastError(mock_pipe_error);
     return mock_pipe_result;
+}
+
+HANDLE WINAPI mock_file_a(LPCSTR name, DWORD access, DWORD share,
+    LPSECURITY_ATTRIBUTES security, DWORD disposition, DWORD flags, HANDLE template_file) {
+    observed_file_name = name;
+    strcpy_s(observed_file_name_copy, name);
+    observed_file_access = access; observed_file_share = share;
+    observed_file_security = security; observed_file_disposition = disposition;
+    observed_file_flags = flags; observed_file_template = template_file;
+    SetLastError(mock_file_error);
+    return mock_file_result;
 }
 
 HANDLE WINAPI mock_named_pipe_w(LPCWSTR name, DWORD open_mode, DWORD pipe_mode,
@@ -395,6 +416,69 @@ void test_claude_pipe_observation() {
     g_test_stderr = nullptr;
 }
 
+void test_claude_local_uv_pair() {
+    g_pipe_a = mock_named_pipe_a;
+    g_file_a = mock_file_a;
+    g_test_stderr = mock_stderr;
+    g_pipe_capture = 0;
+    stderr_calls = 0;
+    mock_pipe_result = reinterpret_cast<HANDLE>(0x1234);
+    mock_pipe_error = 71;
+    mock_file_result = reinterpret_cast<HANDLE>(0x5678);
+    mock_file_error = 72;
+    char source[64] = {};
+    char local[80] = {};
+    sprintf_s(source, "\\\\?\\pipe\\uv\\123456789-%lu", GetCurrentProcessId());
+    sprintf_s(local, "\\\\.\\pipe\\LOCAL\\uv\\123456789-%lu", GetCurrentProcessId());
+    constexpr DWORD server_mode = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED |
+        FILE_FLAG_FIRST_PIPE_INSTANCE | WRITE_DAC;
+    constexpr DWORD client_access = GENERIC_READ | FILE_WRITE_ATTRIBUTES | WRITE_DAC;
+    SECURITY_ATTRIBUTES security = {sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+    HANDLE result = observed_pipe_a(source, server_mode, 0, 1, 65536, 65536, 0, nullptr);
+    CHECK(result == mock_pipe_result && GetLastError() == 71);
+    CHECK(strcmp(observed_name_a_copy, local) == 0 && observed_open_mode == server_mode &&
+        observed_pipe_mode == 0 && observed_instances == 1 && observed_out_size == 65536 &&
+        observed_in_size == 65536 && observed_timeout == 0 && observed_security == nullptr);
+    CHECK(stderr_calls == 0);
+    result = observed_file_a(source, client_access, 0, &security, OPEN_EXISTING,
+        FILE_FLAG_OVERLAPPED, nullptr);
+    CHECK(result == mock_file_result && GetLastError() == 72);
+    CHECK(strcmp(observed_file_name_copy, local) == 0 && observed_file_access == client_access &&
+        observed_file_share == 0 && observed_file_security == &security &&
+        observed_file_disposition == OPEN_EXISTING &&
+        observed_file_flags == FILE_FLAG_OVERLAPPED && observed_file_template == nullptr);
+
+    mock_pipe_result = INVALID_HANDLE_VALUE;
+    mock_pipe_error = ERROR_ACCESS_DENIED;
+    result = observed_pipe_a(source, server_mode, 0, 1, 65536, 65536, 0, nullptr);
+    CHECK(result == INVALID_HANDLE_VALUE && GetLastError() == ERROR_ACCESS_DENIED);
+    CHECK(strcmp(observed_name_a_copy, local) == 0 && stderr_calls == 1);
+    mock_file_result = INVALID_HANDLE_VALUE;
+    mock_file_error = ERROR_FILE_NOT_FOUND;
+    result = observed_file_a(source, client_access, 0, &security, OPEN_EXISTING, 0, nullptr);
+    CHECK(result == INVALID_HANDLE_VALUE && GetLastError() == ERROR_FILE_NOT_FOUND);
+    CHECK(strcmp(observed_file_name_copy, local) == 0);
+
+    constexpr char foreign[] = "\\\\?\\pipe\\other\\123456789-2468";
+    constexpr char malformed[] = "\\\\?\\pipe\\uv\\private-random-name";
+    result = observed_pipe_a(foreign, server_mode, 0, 1, 65536, 65536, 0, nullptr);
+    CHECK(observed_name_a == foreign && strcmp(observed_name_a_copy, foreign) == 0);
+    result = observed_pipe_a(malformed, server_mode, 0, 1, 65536, 65536, 0, nullptr);
+    CHECK(observed_name_a == malformed && strcmp(observed_name_a_copy, malformed) == 0);
+    constexpr char wrong_pid[] = "\\\\?\\pipe\\uv\\123456789-0";
+    result = observed_pipe_a(wrong_pid, server_mode, 0, 1, 65536, 65536, 0, nullptr);
+    CHECK(observed_name_a == wrong_pid && strcmp(observed_name_a_copy, wrong_pid) == 0);
+    result = observed_pipe_a(source, server_mode, 0, 2, 65536, 65536, 0, nullptr);
+    CHECK(observed_name_a == source && strcmp(observed_name_a_copy, source) == 0);
+    result = observed_file_a(foreign, client_access, 0, &security, OPEN_EXISTING, 0, nullptr);
+    CHECK(observed_file_name == foreign && strcmp(observed_file_name_copy, foreign) == 0);
+    result = observed_file_a(malformed, client_access, 0, &security, OPEN_EXISTING, 0, nullptr);
+    CHECK(observed_file_name == malformed && strcmp(observed_file_name_copy, malformed) == 0);
+    result = observed_file_a(source, client_access, 0, &security, CREATE_NEW, 0, nullptr);
+    CHECK(observed_file_name == source && strcmp(observed_file_name_copy, source) == 0);
+    g_test_stderr = nullptr;
+}
+
 void test_claude_iat_shape() {
     alignas(8) BYTE image[4096] = {};
     auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(image);
@@ -433,6 +517,13 @@ void test_claude_iat_shape() {
     names[1].u1.AddressOfData = 0x940;
     memcpy(image + 0x600, "kernelbase.dll", 15);
     CHECK(!exact_main_import_slots(image, "CreateNamedPipeA", "CreateNamedPipeW", &slots));
+    memcpy(image + 0x600, "KERNEL32.dll", 13);
+    CHECK(!exact_main_import_slots(image, "CreateFileA", nullptr, &slots));
+    names[2].u1.AddressOfData = 0x980;
+    values[2].u1.Function = 0x9abc;
+    memcpy(image + 0x982, "CreateFileA", 12);
+    CHECK(exact_main_import_slots(image, "CreateFileA", nullptr, &slots));
+    CHECK(slots.first == reinterpret_cast<void**>(&values[2].u1.Function));
 }
 
 void test_mode_selection() {
@@ -454,6 +545,7 @@ int main() {
     test_passthrough_and_invalid_mapping();
     test_iat_shape();
     test_claude_pipe_observation();
+    test_claude_local_uv_pair();
     test_claude_iat_shape();
     test_mode_selection();
     if (failures) fprintf(stderr, "%d fixed shim tests failed\n", failures);
