@@ -127,3 +127,11 @@ SAC 本次重新读回为 0；所有新临时与证据直接 D 盘。正式保�
 - V10 原库闭库核对成功：两测试域都没有 policy head，失败 child 与其 F 均不存在；原 source/peer incarnation、两已注册 F、原 NativeV2/H STOPPED/RELEASED 和数据库/旁文件字节一致。E generation/revision 是 stop/release 后的新值，不能拿 pre-H 值要求相等；读取仪器已据真实生命周期改正，旧原件保留。
 - 新续例已通过原 USER `policy-initialize`，仅在 source 域创建 OPEN revision 1；不重建 profile、域、USER/lead、两棵 F，不重放 DENIED。新 H 已启动，原生创建及剩余流程仍在跑，尚不能计创建或 V10 通过。
 - 原闭库读取任务已按确切主体/action/脚本逐项清理并回读不存在；原 XML、输入、输出和所有失败保留。参照是原 policy head 生产者、原缺头拒绝测试、原同事务 journal 和已验证的关闭后 immutable 元数据读取，不用提示词冒充模型实际参数。
+
+### Owner 合并 #85 后：原策略头只读与 V10 直接证据
+
+- main 上 Owner 合并身份、v2 回执 `e1197ca2`、范围摘要 `593b8be6…`、MANIFEST 及三处固定回执逐项精确读回一致，才施工新增共享路径。原策略头 API 与 USER/TS 只读入口已接：同一已验证数据库的显式事务、当前 Owner；缺行如实返回 ABSENT，其他异常保留原错误，已有 revision/stage 不修改。全新 Sol 聚焦静态复核无阻塞；本机开发编译通过，受影响云检待执行，尚未接通首次项目配置或装入候选。
+- 初始阶段尚无生产输入：原设计要求阶段由用户定义，已有 USER 项目登记/席位创建不含 stage。测试案例 OPEN 是案例明确输入，不能变成产品默认；本包不自动初始化、不给默认授权。下一步接真实 USER 初始阶段输入，已有策略保持原样。
+- 秘书长原定向云端发布构建、32 项测试和两项真实来源比较变异通过；全量原生库、稳定候选链及真机秘书长仍 NOT_RUN。
+- 已装候选 56 的原策略续例实际创建 LEAD、登记原 F，真实 stop/release、正常退出零、闭库 E/F/H 及正式保护读回通过。完整 V10 新例实际运行四个 H 会话并取得原 stopFact，正常退出零；原回读在 PENDING 分支被历史 source 限定拒绝，失败保留，不能写 V10 通过。正在普通视图补正式保护及原帧方法/item/RPC 关联元数据，以直接事实判断测量或产品缺陷，不扩大 PENDING 成功判据。
+- 参照：采用原 E Owner 校验/事务、原 USER pipe 与配置入口；现有 policy-initialize 和原设计的用户定义阶段保持。V10 取原 H/A raw source 与原 RPC step，不造新成功回执、不复制凭据、不重放模型。所有新临时与证据直接写 D；没有为仪器问题重签或换装。秘书长接线、E 只读接口和 V10 真机诊断并行；G 仍由 Claude 负责。

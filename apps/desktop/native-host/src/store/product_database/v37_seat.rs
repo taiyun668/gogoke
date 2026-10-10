@@ -1397,6 +1397,38 @@ impl<'root> ProductDatabase<'root> {
                 },
             };
         }
+        if command == "policy-head-read" && fields.len() == 3 {
+            let domain = string_field(&fields, "domainId")?;
+            self.connection.execute("BEGIN").map_err(OrchestrationError::CommitUnknownWithCause)?;
+            let observed = seat::read_owner_policy_head_in_transaction(
+                &self.connection, &self.owner, &domain);
+            let head = match observed {
+                Ok(head) => head,
+                Err(error) => {
+                    return match self.connection.execute("ROLLBACK") {
+                        Ok(()) => Err(OrchestrationError::V37StoreFailure(
+                            format!("Owner policy head read: {error:?}"))),
+                        Err(rollback) => Err(OrchestrationError::V37StoreFailure(
+                            format!("Owner policy head read: {error:?}; rollback: {rollback:?}"))),
+                    };
+                },
+            };
+            self.connection.execute("COMMIT").map_err(OrchestrationError::CommitUnknownWithCause)?;
+            let text = |value: &str| Json::String(JsonString::from_str(value));
+            let mut result = BTreeMap::from([
+                (key("schema"), text("gogoke.37.project-policy-head.v1")),
+                (key("domainId"), text(&domain)),
+            ]);
+            match head {
+                seat::OwnerPolicyHead::Absent => {result.insert(key("state"), text("ABSENT"));},
+                seat::OwnerPolicyHead::Present {revision,current_stage} => {
+                    result.insert(key("state"), text("PRESENT"));
+                    result.insert(key("revision"), text(&revision.to_string()));
+                    result.insert(key("currentStage"), text(&current_stage));
+                },
+            }
+            return Ok(Json::Object(result).canonical().into_bytes());
+        }
         if command == "seats-page-read" && fields.len() == 3 {
             let domain = string_field(&fields, "domainId")?;
             self.connection.execute("BEGIN").map_err(OrchestrationError::CommitUnknownWithCause)?;

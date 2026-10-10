@@ -948,6 +948,25 @@ export async function design37UserConfiguration<T>(
   return result as T;
 }
 
+export type Design37ProjectPolicyHead =
+  | { state: "ABSENT" }
+  | { state: "PRESENT"; revision: string; currentStage: string };
+
+/** Reads the original Owner policy without initializing a stage or granting calls. */
+export async function readDesign37ProjectPolicyHead(domainId: string): Promise<Design37ProjectPolicyHead> {
+  const reply: unknown = await design37UserConfiguration("policy-head-read", { domainId });
+  if (!record(reply) || reply.schema !== "gogoke.37.project-policy-head.v1" || reply.domainId !== domainId) {
+    throw new Error(`Native project policy head identity is invalid: ${JSON.stringify(reply)}`);
+  }
+  if (reply.state === "ABSENT" && !Object.hasOwn(reply, "revision") && !Object.hasOwn(reply, "currentStage")) {
+    return { state: "ABSENT" };
+  }
+  if (reply.state === "PRESENT" && decimal(reply.revision) && reply.revision !== "0" && nonempty(reply.currentStage)) {
+    return { state: "PRESENT", revision: reply.revision, currentStage: reply.currentStage };
+  }
+  throw new Error(`Native project policy head is malformed: ${JSON.stringify(reply)}`);
+}
+
 type NativeSeatPageRow = {
   id: string;
   isLead?: boolean;
