@@ -35,9 +35,10 @@ if (process.platform !== 'win32' || required.some(key => config[key] === undefin
     c.mainWrite.worktreeId === c.readOnlyWrite.worktreeId ||
     config.v11OutsideTree?.ownership !== 'EXCLUSIVE_V11_OUTSIDE_TREE' ||
     !path.isAbsolute(config.v11OutsideTree.outsideRoot ?? '') ||
-    !fs.existsSync(config.v11OutsideTree.outsideRoot) ||
-    !fs.statSync(config.v11OutsideTree.outsideRoot).isDirectory() ||
-    fs.readdirSync(config.v11OutsideTree.outsideRoot).length !== 0 ||
+    (c.onlyMainWrite !== true &&
+      (!fs.existsSync(config.v11OutsideTree.outsideRoot) ||
+       !fs.statSync(config.v11OutsideTree.outsideRoot).isDirectory() ||
+       fs.readdirSync(config.v11OutsideTree.outsideRoot).length !== 0)) ||
     !['installed', 'pwsh', 'python', 'stateRoot', 'testbedSource', 'evidenceDirectory', 'result']
       .every(key => typeof config[key] === 'string' && path.isAbsolute(config[key])) ||
     !fs.existsSync(config.evidenceDirectory) || !fs.existsSync(config.testbedSource) ||
@@ -172,18 +173,19 @@ try {
   // census checks no exact installed candidate is live before immutable IO.
   await product.custody(true); product.verifyBytes();
   await requireClosedCandidate();
-  await preflightOutside();
+  if (c.onlyMainWrite !== true) await preflightOutside();
   await requireClosedCandidate();
   await product.launch();
   await product.custody(); product.verifyBytes();
   const ui = await product.evaluate('({url:location.href,home:!!document.querySelector(".home-product-entry"),tauri:!!window.__TAURI_INTERNALS__})');
   check(ui.url === product.endpoint.url && ui.home && ui.tauri,
     'Actual installed Home/User bridge identity missing');
-  const instanceIds = [c.mainWrite.instanceId, c.readOnlyWrite.instanceId];
+  const instanceIds = c.onlyMainWrite === true ? [c.mainWrite.instanceId] :
+    [c.mainWrite.instanceId, c.readOnlyWrite.instanceId];
   const instances = await product.instances();
   check(instanceIds.every(instanceId => instances.instances.some(row =>
     row.instanceId === instanceId && row.state === 'LOGGED_IN')),
-  'V11 both original test instances must be logged in');
+  'V11 selected original test instances must be logged in');
   await runV11FileBoundaries(product, config, journal);
   if (c.onlyMainWrite !== true) {
   check(sha256(path.join(config.evidenceDirectory, journal.v11OutsidePreflight.file)) ===

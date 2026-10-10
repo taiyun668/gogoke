@@ -18,7 +18,8 @@ export async function runV11FileBoundaries(product, config, journal) {
     ![config.seatId, config.childSeatId].includes(c.mainWrite.seatId) &&
     ![config.seatId, config.childSeatId].includes(c.readOnlyWrite.seatId) &&
     typeof c.readOnlyWrite.worktreePath === 'string' && path.isAbsolute(c.readOnlyWrite.worktreePath) &&
-    fs.existsSync(c.readOnlyWrite.worktreePath) && fs.statSync(c.readOnlyWrite.worktreePath).isDirectory() &&
+    (c.onlyMainWrite === true ||
+      (fs.existsSync(c.readOnlyWrite.worktreePath) && fs.statSync(c.readOnlyWrite.worktreePath).isDirectory())) &&
     path.isAbsolute(config.testbedSource) && fs.statSync(config.testbedSource).isDirectory(),
   'V11 needs two exclusive real H seats/F trees and private physical testbed roots');
   requireFact(c.onlyMainWrite === undefined || typeof c.onlyMainWrite === 'boolean',
