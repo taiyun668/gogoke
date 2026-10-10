@@ -8,6 +8,7 @@ after registered-home and H/A/F checks. No credentials or active WAL. No DB writ
 import hashlib
 import json
 import os
+import re
 import shlex
 import sqlite3
 import sys
@@ -34,6 +35,23 @@ def exact_peer_command(display, attempt):
     else:
         expected = [attempt["shell"], "-NoProfile", "-Command", attempt["command"]]
     return argv == expected
+
+
+def exact_original_read_request(attempt, target):
+    alias = attempt.get("readTarget")
+    if alias is not None:
+        value = alias.get("path") if isinstance(alias, dict) else None
+        if (attempt.get("shell") is not None or not isinstance(value, str) or
+                re.fullmatch(r"[A-Za-z]:\\[A-Za-z0-9_~.\\-]+", value) is None or
+                attempt.get("command") != "type " + value):
+            return False
+        stat = os.stat(value)
+        return (os.path.samefile(value, target["path"]) and
+                [str(stat.st_dev), str(stat.st_ino)] == alias["fileIdentity"] == target["fileIdentity"] and
+                digest(Path(value).read_bytes()) == alias["sha256"] == target["sha256"])
+    return (attempt.get("shell") is None and attempt.get("command") == 'type "' + target["path"] + '"' or
+            attempt.get("shell") == os.path.join(os.environ["SystemRoot"], "System32", "WindowsPowerShell", "v1.0", "powershell.exe") and
+            attempt.get("command") == "[System.IO.File]::ReadAllText('" + target["path"] + "') | Out-Null")
 
 
 def digest(data):
@@ -63,7 +81,7 @@ PENDING_UNMAPPED_CODEX_METHODS = frozenset((
     "remoteControl/status/changed", "warning", "mcpServer/startupStatus/updated",
     "account/updated", "account/rateLimits/updated", "thread/settings/updated",
 ))
-PENDING_UNMAPPED_CODEX_ITEMS = frozenset(("userMessage", "agentMessage"))
+PENDING_UNMAPPED_CODEX_ITEMS = frozenset(("userMessage", "agentMessage", "reasoning"))
 PENDING_CLASSIFICATION = "PRESERVED_UNRESOLVED_RAW_SOURCE_NO_SUCCESS_CREDIT"
 
 
@@ -444,9 +462,7 @@ def verify_peers(db, journal, boundary, result):
               all(session[key] == (case["projectB"] if attempt["purpose"] == "WORK" else case["sideBinding"])[key]
                   for key in ("domainId", "repositoryId", "seatId", "worktreeId")), "Peer is not an independent original test H/F session")
         check(not any(char in target["path"] for char in '\x00\'"%!^&|<>\r\n') and
-              (attempt.get("shell") is None and attempt["command"] == 'type "' + target["path"] + '"' or
-               attempt.get("shell") == os.path.join(os.environ["SystemRoot"], "System32", "WindowsPowerShell", "v1.0", "powershell.exe") and
-               attempt["command"] == "[System.IO.File]::ReadAllText('" + target["path"] + "') | Out-Null") and
+              exact_original_read_request(attempt, target) and
               session["inputs"][0]["body"] == attempt["body"] and attempt["command"] in attempt["body"],
               "Peer H input does not request the ordinary exact-object read")
         observed = session_evidence(db, session, case, operations, journal["sourceCommit"], peer=attempt)
@@ -599,9 +615,7 @@ def verify_same_domain_worker(db, journal, boundary, result):
               session["instanceId"] == case["instanceId"] == objects[0]["instanceId"] and
               session["inputs"][0]["body"] == attempt["body"] and
               attempt["sourceSessionId"] == source_session["id"] and
-              (attempt.get("shell") is None and attempt["command"] == 'type "' + objects[0]["path"] + '"' or
-               attempt.get("shell") == os.path.join(os.environ["SystemRoot"], "System32", "WindowsPowerShell", "v1.0", "powershell.exe") and
-               attempt["command"] == "[System.IO.File]::ReadAllText('" + objects[0]["path"] + "') | Out-Null") and
+              exact_original_read_request(attempt, objects[0]) and
               attempt["command"] in attempt["body"] and
               not any(char in objects[0]["path"] for char in '\x00\'"%!^&|<>\r\n'),
               "Original same-domain WORK request differs from exact lead object")
@@ -760,7 +774,9 @@ def main():
         else:
             check(boundary["state"] == "FLOW_COMPLETE_DIRECT_READBACK_REQUIRED" and
                   boundary.get("peerRead", {}).get("state") == "PEER_FLOW_COMPLETE_DIRECT_READBACK_REQUIRED" and
-                  "Peer performed an unrelated tool action; preserve original run" in journal.get("originalError", "") and
+                  any(reason in journal.get("originalError", "") for reason in (
+                      "Peer performed an unrelated tool action; preserve original run",
+                      "Pending Codex item is not a verified Unhandled lifecycle type")) and
                   len(boundary["refusals"]) == 5 and len(journal["readbacks"]) == 2,
                   "Supplementary peer case is not the preserved instrument failure")
     launch, close = journal["launches"][-1], journal["closes"][-1]

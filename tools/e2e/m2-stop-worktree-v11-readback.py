@@ -1,10 +1,16 @@
 """Read one closed original V11 outside-F write attempt; never infer ACL cause from prose."""
 import hashlib
+import importlib.util
 import json
 import os
 import sqlite3
 import sys
 from pathlib import Path
+
+_history_spec = importlib.util.spec_from_file_location(
+    "v11_outside_original_history_rules", Path(__file__).with_name("m2-history-boundaries-readback.py"))
+_history_rules = importlib.util.module_from_spec(_history_spec)
+_history_spec.loader.exec_module(_history_rules)
 
 
 def require(value, reason):
@@ -111,6 +117,8 @@ def main():
     require(not output.exists() and output.parent == journal_path.parent and
             not output.is_relative_to(root), "V11 fresh private output required")
     journal = json.loads(journal_path.read_text(encoding="utf-8-sig"))
+    require(journal.get("driverBytes", {}).get("m2-history-boundaries-readback.py") ==
+            digest(Path(_history_spec.origin)), "V11 loaded history rule bytes differ")
     case = journal.get("v11OutsideTree")
     require(case and case.get("state") == "ORIGINAL_OUTSIDE_ATTEMPT_REQUIRES_IMMUTABLE_READBACK" and
             case.get("acceptance") is False and case.get("domainId") == journal.get("domainId") and
@@ -234,7 +242,7 @@ def main():
                          "source_epoch,source_cursor FROM v37_ledger_raw_source "
                          "WHERE domain_id=? AND session_id=? AND operation_id=? ORDER BY rowid",
                          (case["domainId"], case["sessionId"], episode[3])).fetchall()
-        require(raw and all(row[0] == case["generation"] and row[2] != "PENDING" and
+        require(raw and all(row[0] == case["generation"] and
                             row[3:5] == custody[:2] for row in raw),
                 "V11 original A raw source/custody incomplete")
         for epoch in {row[5] for row in raw}:
@@ -249,6 +257,18 @@ def main():
         require(steps and all(row[1] in ("WRITTEN", "OBSERVED") and
                               row[4] == case["generation"] and row[5:7] == custody[:2]
                               for row in steps), "V11 original H RPC steps differ")
+        rpc_sources = {(row[2], row[3]) for row in steps
+                       if row[2] is not None and row[3] is not None}
+        unresolved = []
+        for row, frame in zip(raw, frames):
+            if row[2] != "PENDING":
+                continue
+            require((row[5], row[6]) not in rpc_sources,
+                    "V11 pending outside source is associated with an H RPC receipt")
+            method, item_type = _history_rules.pending_unhandled_codex_frame(frame, case["threadId"])
+            unresolved.append({"sourceEpoch": row[5], "sourceCursor": row[6],
+                "method": method, "itemType": item_type, "state": "PENDING",
+                "classification": _history_rules.PENDING_CLASSIFICATION})
         commands = [(row, json.loads(bytes.fromhex(row[0]).decode())) for row in steps
                     if row[1] == "OBSERVED"]
         native_starts = [(row, frame) for row, frame in commands
@@ -284,7 +304,7 @@ def main():
                      (frame.get("method") == "item/tool/call" or
                       (frame.get("method") in ("item/started", "item/completed") and
                        frame["params"].get("item", {}).get("type") not in
-                       ("agentMessage", "reasoning", "contextCompaction", "fileChange",
+                       ("userMessage", "agentMessage", "reasoning", "contextCompaction", "fileChange",
                         "commandExecution", "mcpToolCall", "dynamicToolCall")))]
         started = [frame["params"]["item"] for frame in tools if frame["method"] == "item/started"]
         completed = [frame["params"]["item"] for frame in tools if frame["method"] == "item/completed"]
@@ -296,7 +316,8 @@ def main():
         exact = not unrelated and len(tools) == 2 and len(started) == len(completed) == 1 and \
             started[0].get("id") == completed[0].get("id") and \
             started[0].get("type") == completed[0].get("type") == "commandExecution" and \
-            started[0].get("command") == completed[0].get("command") == case["command"] and \
+            started[0].get("command") == completed[0].get("command") and \
+            _history_rules.exact_peer_command(completed[0].get("command"), case) and \
             ("cwd" not in started[0] or os.path.samefile(started[0]["cwd"], tree[4])) and \
             ("cwd" not in completed[0] or os.path.samefile(completed[0]["cwd"], tree[4])) and \
             completed[0].get("status") in ("completed", "failed") and \
@@ -306,6 +327,7 @@ def main():
                   "sessionId": case["sessionId"], "turnId": case["turnId"],
                   "stopFact": case["stopFact"], "outsideTarget": str(target),
                   "exactFailedOriginalTool": exact,
+                  "unresolvedOriginalSources": unresolved,
                   "originalToolStatus": completed[0].get("status") if len(completed) == 1 else None,
                   "originalExitCode": completed[0].get("exitCode") if len(completed) == 1 else None,
                   "originalError": completed[0].get("error") if len(completed) == 1 else None,

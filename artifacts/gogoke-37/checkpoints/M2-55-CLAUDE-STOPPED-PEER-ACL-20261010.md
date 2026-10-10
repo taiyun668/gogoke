@@ -173,3 +173,12 @@ SAC 本次重新读回为 0；所有新临时与证据直接 D 盘。正式保�
 - 调整上段“只续缺项”的走法：原完整入口已能直接使用新 reader。拼接旧 journal 需要另加来源/仪器代际证明，成本和出错点高于四轮源会话，因此复用完整入口跑一份新测量；不得回写旧 FAIL 或拿新结果代替旧请求。旧构建 source 与新仪器字节分别封存。新任务已起，结果未回，不计通过。
 - Windows 完整流水线更新库测试启动前出现 STATUS_ENTRYPOINT_NOT_FOUND；测试正文未执行，缺失符号/DLL 尚未知。独立线仅在临时云端 runner 取加载器原文；Root 同时跑 V10，另席位准备 V11 已有证据。无新 Owner 登录/重启触点，稳定前仍须开启 SAC。
 - 参照：原完整 V10 入口、已验证的精确 argv 正对照和单次 commandExecution 原事实；沿原生 E/H/A/F 与普通视图，不引入旧日志拼接门槛，不以一般路径错误充当权限结果。
+
+### 本次 CMD 约定核对与原测量纠正
+
+- 新原例七个 H 全部取得真实 stopFact/release，三次正常关闭零；十三个正式/记忆/账本保护字段等值。原 reader 拒绝四个 reasoning 生命周期 PENDING，源头 `codex_output::tool_item` 确将其留为 Unhandled；仅按原 thread/turn/id/时间和无 RPC 关联分类，仍 PENDING、不计成功。旧 reader、失败 journal、数据库字节保全；独立 Sol 核四帧及两行改动无阻塞。
+- 补读仍不能记 peer 拒绝：两模型回合没有 commandExecution。冻结产品的 `CODEX_WINDOWS_SHELL_ENVIRONMENT` 明确要求 CMD 且禁止未配置 PowerShell；Root 测试请求与该原约定冲突，是仪器错误。普通视图 PowerShell 能读不是模型可执行该请求的依据；不改产品指令、CLI、能力或系统设置去迎合测试。
+- CMD 长路径/引号的旧错误不算权限拒绝。沿现有 Win32 GetShortPathNameW 做法取得同一 JSONL 对象的原别名，独立 samefile、文件身份和 SHA 校验；普通视图精确 CMD 参数 `type` 加无引号别名读取成功、原字节不变。新测量请求只用该 CMD 形式；reader 独立核别名与原物理对象，再逐项解码原工具 argv。零码判越界，原 Access is denied 非零才计直接拒绝，其他原因继续未知。
+- V11 旧 reader 的全量“非 PENDING”和内层命令代替完整 argv 判据也与生产事实不符；现复用同一已验证分类/argv 函数，导入文件字节封入 journal 并读回，已知未知保持未知，RPC 关联的 PENDING 拒绝。目标缺失、完整 A/H 游标、真实停止、释放及拒绝原因不归属条件保留。独立静态复核与语法通过，真机 V11 未跑。
+- 所有完成的一次性测量任务按确切主体/action/原脚本逐项清理并回读不存在，原 XML/输入/输出和失败不删除。V10 新 CMD 实测继续；Windows 加载器诊断在独立云端线跑，V11 缺精确只读测试配对，将补原 USER/E/F 事实。没有新 Owner 触点。
+- 参照：冻结产品原 Windows shell 指令、原 Codex 归一化分支、已有 V11 GetShortPathNameW/物理身份法、原工具 argv 与同对象普通视图正对照。先看生效指令再选请求；本次 Root 漏读这项导致两模型回合浪费，下一次工具请求同时核实际允许的 shell 与可执行资产。

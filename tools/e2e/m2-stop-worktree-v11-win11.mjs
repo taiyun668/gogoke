@@ -61,6 +61,7 @@ const product = new ActualProduct(config, journal);
 journal.driverBytes['m2-stop-worktree-v11-win11.mjs'] = sha256(path.join(here, 'm2-stop-worktree-v11-win11.mjs'));
 journal.driverBytes['m2-v11-boundaries.mjs'] = sha256(path.join(here, 'm2-v11-boundaries.mjs'));
 journal.driverBytes['m2-v11-readback.py'] = sha256(path.join(here, 'm2-v11-readback.py'));
+journal.driverBytes['m2-history-boundaries-readback.py'] = sha256(path.join(here, 'm2-history-boundaries-readback.py'));
 journal.driverBytes['m2-stop-worktree-v11-outside.mjs'] = sha256(path.join(here, 'm2-stop-worktree-v11-outside.mjs'));
 journal.driverBytes['m2-stop-worktree-v11-readback.py'] = sha256(path.join(here, 'm2-stop-worktree-v11-readback.py'));
 journal.driverBytes['m2-stop-worktree-v11-census.ps1'] = sha256(path.join(here, 'm2-stop-worktree-v11-census.ps1'));

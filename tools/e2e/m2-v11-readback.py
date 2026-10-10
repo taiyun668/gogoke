@@ -4,11 +4,19 @@ This proves the graph/physical layout case only. It makes no H or Model
 write-refusal claim and never opens a credential or writes the database.
 """
 import hashlib
+import importlib.util
 import json
 import os
 import sqlite3
 import sys
 from pathlib import Path
+
+# Reuse the verified original Codex notification/argv rules; importing starts
+# no product or reader run. Unknown raw notifications remain PENDING.
+_history_spec = importlib.util.spec_from_file_location(
+    "v11_original_history_rules", Path(__file__).with_name("m2-history-boundaries-readback.py"))
+_history_rules = importlib.util.module_from_spec(_history_spec)
+_history_spec.loader.exec_module(_history_rules)
 
 
 def require(value, message):
@@ -67,6 +75,8 @@ def candidate_close(journal, case):
 
 def file_boundaries(root, output, journal_file):
     journal = json.loads(journal_file.read_text(encoding="utf-8-sig"))
+    require(journal.get("driverBytes", {}).get("m2-history-boundaries-readback.py") ==
+            digest(Path(_history_spec.origin).read_bytes()), "V11 loaded history rule bytes differ")
     case = journal.get("v11FileBoundaries")
     require(case and case.get("acceptance") is False and
             case.get("state") == "ORIGINAL_ATTEMPTS_REQUIRE_NORMAL_CLOSE_IMMUTABLE_READER" and
@@ -166,7 +176,7 @@ def file_boundaries(root, output, journal_file):
                                  "FROM v37_ledger_raw_source WHERE domain_id=? AND session_id=? "
                                  "AND operation_id=? ORDER BY rowid",
                                  (case["domainId"], item["sessionId"], episode[3])).fetchall()
-            require(sources and all(row[0] == session["generation"] and row[2] != "PENDING" and
+            require(sources and all(row[0] == session["generation"] and
                                     row[3:5] == custody[:2] for row in sources),
                     "V11 original A source or custody is incomplete")
             for epoch in {row[5] for row in sources}:
@@ -181,6 +191,18 @@ def file_boundaries(root, output, journal_file):
             require(steps and all(row[4] == session["generation"] and row[1] in
                                   ("WRITTEN", "OBSERVED") and row[5:7] == custody[:2]
                                   for row in steps), "V11 original H RPC step custody incomplete")
+            rpc_sources = {(row[2], row[3]) for row in steps
+                           if row[2] is not None and row[3] is not None}
+            unresolved = []
+            for row, frame in zip(sources, frames):
+                if row[2] != "PENDING":
+                    continue
+                require((row[5], row[6]) not in rpc_sources,
+                        "V11 pending source is associated with an H RPC receipt")
+                method, item_type = _history_rules.pending_unhandled_codex_frame(frame, session["threadId"])
+                unresolved.append({"sourceEpoch": row[5], "sourceCursor": row[6],
+                    "method": method, "itemType": item_type, "state": "PENDING",
+                    "classification": _history_rules.PENDING_CLASSIFICATION})
             starts = [(row, json.loads(bytes.fromhex(row[0]).decode())) for row in steps
                       if row[1] == "OBSERVED"]
             starts = [(row, frame) for row, frame in starts if frame.get("method") == "turn/start" and
@@ -210,7 +232,7 @@ def file_boundaries(root, output, journal_file):
                          (frame.get("method") == "item/tool/call" or
                           (frame.get("method") in ("item/started", "item/completed") and
                            frame["params"].get("item", {}).get("type") not in
-                           ("agentMessage", "reasoning", "contextCompaction",
+                           ("userMessage", "agentMessage", "reasoning", "contextCompaction",
                             "fileChange", "commandExecution", "mcpToolCall", "dynamicToolCall")))]
             completed = [frame for frame in tool_frames if frame["method"] == "item/completed"]
             started = [frame for frame in tool_frames if frame["method"] == "item/started"]
@@ -231,8 +253,8 @@ def file_boundaries(root, output, journal_file):
                         f'echo V11_{item["name"]}_{marker_atom}>"{target}"',
                         "V11 CMD command differs from the private marker target")
                 exact = pair and original_tool.get("type") == "commandExecution" and \
-                    first_tool.get("command") == item.get("command") and \
-                    original_tool.get("command") == item.get("command") and \
+                    first_tool.get("command") == original_tool.get("command") and \
+                    _history_rules.exact_peer_command(original_tool.get("command"), item) and \
                     ("cwd" not in original_tool or same_path(original_tool["cwd"], tree_path)) and \
                     original_tool.get("status") in ("completed", "failed") and \
                     type(original_tool.get("exitCode")) is int and original_tool["exitCode"] != 0
@@ -245,6 +267,7 @@ def file_boundaries(root, output, journal_file):
                             (case["domainId"], item["sessionId"]))
             require(claim[0] == "RELEASED", "V11 original H admission was not released")
             details.append({"name": item["name"], "sessionId": item["sessionId"],
+                            "unresolvedOriginalSources": unresolved,
                             "turnId": item["turnId"], "stopFact": item["stopFact"],
                             "attemptMode": item.get("attemptMode"), "exactFailedOriginalTool": exact,
                             "originalToolType": original_tool.get("type"),
