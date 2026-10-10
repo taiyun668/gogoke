@@ -285,7 +285,7 @@ fn exact_old_policy_head_schema_migrates_without_rewriting_policy_facts() {
 fn unset_stage_refuses_gate_and_transition_without_recording_events() {
     fixture(|db,owner| {
         let lead=create_e2_lead(db,owner);
-        let reviewer=create_user(db,owner,"reviewer","createReviewerUnset");
+        let reviewer=create_user(db,owner,"reviewer","reviewerCreate");
         let lead=set_dispatch_state(db,&lead,true).unwrap();
         let reviewer=set_dispatch_state(db,&reviewer,true).unwrap();
         let submitter=NativeSeatCall::from_verified_h_turn(&lead,"turnUnset").unwrap();
