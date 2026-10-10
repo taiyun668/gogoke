@@ -109,6 +109,24 @@ fn jsonl(value: Json) -> Result<Vec<u8>, EncodeError> {
     Ok(bytes)
 }
 
+/// A reply to one H-bound original Grok server request. The caller must
+/// derive `option_id` from that request's options, never from a label or tier.
+pub(crate) fn encode_grok_permission_reply(
+    id: &RpcId, option_id: Option<&str>,
+) -> Result<Vec<u8>, EncodeError> {
+    let outcome = if let Some(option) = option_id {
+        nonempty(option, "permission option id")?;
+        object([("outcome", string("selected")), ("optionId", string(option))])
+    } else {
+        object([("outcome", string("cancelled"))])
+    };
+    jsonl(object([
+        ("jsonrpc", string("2.0")),
+        ("id", rpc_id(id)?),
+        ("result", object([("outcome", outcome)])),
+    ]))
+}
+
 /// Encode one ACP JSON-RPC request or notification. `id` must be the original
 /// H journal ID for requests and absent for cancel notifications. The returned
 /// bytes say nothing about vendor receipt, authority, permission or delivery.

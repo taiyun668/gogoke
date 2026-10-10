@@ -6,14 +6,15 @@
 //! original command and source key; it does not copy provider output.
 
 use super::codex_rpc::{self, Command, Reply, RpcId};
-use super::provider_evidence::{acp, claude_question, commands, stream_json};
+use super::provider_evidence::{acp, claude_question, commands, permission, stream_json};
 use crate::process::{OriginBoundFrame, PreparedCustody};
 use crate::store::atomic::{AtomicError, Json, JsonString, Parser, Statement};
 use crate::store::authority::{check_owner_in_current_transaction, OwnerIssuer};
 use crate::store::ledger::{self, RawSourceKey, RawSourceState};
+use crate::store::seat::{self,PermissionTier};
 use crate::store::same_open::{SameOpenError, VerifiedDatabaseConnection};
 
-const SCHEMA: &str = "CREATE TABLE gogoke_v37_rpc_steps(domain_id TEXT NOT NULL,session_id TEXT NOT NULL,open_request_id TEXT NOT NULL,step_id TEXT NOT NULL,process_operation_id TEXT NOT NULL,ticket TEXT NOT NULL,custodian_nonce TEXT NOT NULL,pid TEXT NOT NULL,creation_time TEXT NOT NULL,image_path TEXT NOT NULL,binary_digest TEXT NOT NULL,profile_id TEXT NOT NULL,generation TEXT NOT NULL,command_hex TEXT NOT NULL,requires_response INTEGER NOT NULL CHECK(requires_response IN (0,1)),phase TEXT NOT NULL CHECK(phase IN ('INTENT','WRITTEN','OBSERVED','UNKNOWN')),source_epoch TEXT,source_cursor TEXT,original_error TEXT,CHECK((phase IN ('INTENT','WRITTEN') AND source_epoch IS NULL AND source_cursor IS NULL AND original_error IS NULL) OR (phase='UNKNOWN' AND source_epoch IS NULL AND source_cursor IS NULL AND original_error IS NOT NULL AND length(original_error)>0) OR (phase='OBSERVED' AND source_epoch IS NOT NULL AND source_cursor IS NOT NULL AND original_error IS NULL)),PRIMARY KEY(domain_id,session_id,step_id)) STRICT";
+const SCHEMA: &str = "CREATE TABLE gogoke_v37_rpc_steps(domain_id TEXT NOT NULL,session_id TEXT NOT NULL,open_request_id TEXT NOT NULL,step_id TEXT NOT NULL,process_operation_id TEXT NOT NULL,ticket TEXT NOT NULL,custodian_nonce TEXT NOT NULL,pid TEXT NOT NULL,creation_time TEXT NOT NULL,image_path TEXT NOT NULL,binary_digest TEXT NOT NULL,profile_id TEXT NOT NULL,generation TEXT NOT NULL,command_hex TEXT NOT NULL,requires_response INTEGER NOT NULL CHECK(requires_response IN (0,1)),phase TEXT NOT NULL CHECK(phase IN ('INTENT','WRITTEN','OBSERVED','UNKNOWN')),source_epoch TEXT,source_cursor TEXT,original_error TEXT, permission_evidence TEXT,CHECK((phase IN ('INTENT','WRITTEN') AND source_epoch IS NULL AND source_cursor IS NULL AND original_error IS NULL) OR (phase='UNKNOWN' AND source_epoch IS NULL AND source_cursor IS NULL AND original_error IS NOT NULL AND length(original_error)>0) OR (phase='OBSERVED' AND source_epoch IS NOT NULL AND source_cursor IS NOT NULL AND original_error IS NULL)),PRIMARY KEY(domain_id,session_id,step_id)) STRICT";
 const FAMILY: &str = "gogoke_v37_rpc_";
 
 #[derive(Debug)]
@@ -145,9 +146,20 @@ fn no_shadow(db: &VerifiedDatabaseConnection<'_>) -> Result<()> {
 pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Result<()> {
     no_shadow(db)?;
     let expected = vec![(format!("{FAMILY}steps"), SCHEMA.to_owned())];
+    let legacy=vec![(format!("{FAMILY}steps"),
+        SCHEMA.replacen(", permission_evidence TEXT", "", 1))];
     let prior = observed_schema(db)?;
     if prior == expected {
         return Ok(());
+    }
+    if prior==legacy {
+        return transact(db,|db| {
+            no_shadow(db)?;
+            if observed_schema(db)?!=legacy {return Err(RpcJournalError::Denied);}
+            db.execute("ALTER TABLE main.gogoke_v37_rpc_steps ADD COLUMN permission_evidence TEXT")?;
+            if observed_schema(db)?!=expected {return Err(RpcJournalError::Denied);}
+            Ok(())
+        });
     }
     if !prior.is_empty() {
         return Err(RpcJournalError::Denied);
@@ -215,6 +227,42 @@ pub(crate) struct ClaudeQuestionStep<'a> {
     pub(crate) answer_request_id:&'a str,
     pub(crate) source:&'a RawSourceKey,
     pub(crate) wire:&'a [u8],
+}
+
+/// One H-derived reply to one original A-captured Grok server request.
+/// It is not a User answer or a grant. The source, current scope witness,
+/// original prompt and reply bytes are all rechecked before a physical write.
+pub(crate) struct GrokPermissionStep<'a> {
+    pub(crate) domain_id:&'a str,
+    pub(crate) session_id:&'a str,
+    pub(crate) open_request_id:&'a str,
+    pub(crate) open_request_bytes:&'a [u8],
+    pub(crate) step_id:&'a str,
+    pub(crate) custody:&'a PreparedCustody,
+    pub(crate) source:&'a RawSourceKey,
+    pub(crate) prompt_step_id:&'a str,
+    pub(crate) prompt_rpc_id:&'a acp::RpcId,
+    pub(crate) prompt_request_bytes:&'a [u8],
+    pub(crate) native_session_id:&'a str,
+    pub(crate) typed_id:&'a acp::RpcId,
+    pub(crate) tool_call_id:&'a str,
+    pub(crate) seat_id:&'a str,
+    pub(crate) seat_incarnation:&'a str,
+    pub(crate) seat_generation:i64,
+    pub(crate) seat_revision:i64,
+    pub(crate) permission_tier:&'a str,
+    pub(crate) claim_revision:i64,
+    pub(crate) decision:&'a str,
+    pub(crate) reason:&'a str,
+    pub(crate) scope:Option<&'a super::launch::GrokPermissionScope>,
+    pub(crate) wire:&'a [u8],
+}
+impl<'a> GrokPermissionStep<'a> {
+    fn fields(&self)->StepFields<'a> {
+        StepFields {domain_id:self.domain_id,session_id:self.session_id,
+            open_request_id:self.open_request_id,open_request_bytes:self.open_request_bytes,
+            step_id:self.step_id,custody:self.custody}
+    }
 }
 impl<'a> ClaudeQuestionStep<'a> {
     fn fields(&self)->StepFields<'a> {
@@ -2379,6 +2427,282 @@ pub(crate) fn mark_claude_question_unknown(db:&mut VerifiedDatabaseConnection<'_
     transition_claude_question(db,owner,step,Phase::Unknown,Some(original_error))
 }
 
+fn permission_evidence(step:&GrokPermissionStep<'_>,raw:&[u8])->Result<String> {
+    let request=permission::decode_grok(raw).ok_or(RpcJournalError::Denied)?;
+    if request.id!=*step.typed_id || request.session_id!=step.native_session_id
+        || request.tool_call_id!=step.tool_call_id {return Err(RpcJournalError::Denied);}
+    let selected=match step.decision {
+        "allow-bound-f-write" if step.scope.is_some()
+            && request.write_path.as_deref()==step.scope.map(|scope|scope.target())=>
+                request.allow_once.as_deref(),
+        "reject-unqualified" if step.scope.is_none()=>request.reject_once.as_deref(),
+        "cancel-no-reject" if step.scope.is_none() && request.reject_once.is_none()=>None,
+        _=>return Err(RpcJournalError::Denied),
+    };
+    if step.decision=="allow-bound-f-write" && selected.is_none() {return Err(RpcJournalError::Denied);}
+    let typed=|id:&acp::RpcId|match id {
+        acp::RpcId::Number(value)=>Json::Number(value.to_string()),
+        acp::RpcId::String(value)=>Json::String(JsonString::from_str(value)),
+    };
+    let string=|value:&str|Json::String(JsonString::from_str(value));
+    let nullable=|value:Option<&str>|value.map(&string).unwrap_or(Json::Null);
+    let path_hash=request.write_path.as_ref().map(|path|
+        crate::store::digest::sha256_hex(path.as_bytes()));
+    Ok(Json::Object(std::collections::BTreeMap::from([
+        (JsonString::from_str("version"),Json::Number("1".into())),
+        (JsonString::from_str("sourceOperation"),string(&step.source.operation_id)),
+        (JsonString::from_str("sourceEpoch"),string(&step.source.source_epoch)),
+        (JsonString::from_str("sourceCursor"),string(&step.source.source_cursor)),
+        (JsonString::from_str("sourceSha256"),string(&crate::store::digest::sha256_hex(raw))),
+        (JsonString::from_str("domainId"),string(step.domain_id)),
+        (JsonString::from_str("sessionId"),string(step.session_id)),
+        (JsonString::from_str("nativeSessionId"),string(step.native_session_id)),
+        (JsonString::from_str("promptStepId"),string(step.prompt_step_id)),
+        (JsonString::from_str("promptRpcId"),typed(step.prompt_rpc_id)),
+        (JsonString::from_str("promptRequestSha256"),string(&crate::store::digest::sha256_hex(step.prompt_request_bytes))),
+        (JsonString::from_str("permissionRpcId"),typed(step.typed_id)),
+        (JsonString::from_str("toolCallId"),string(step.tool_call_id)),
+        (JsonString::from_str("writePathSha256"),nullable(path_hash.as_deref())),
+        (JsonString::from_str("seatId"),string(step.seat_id)),
+        (JsonString::from_str("seatIncarnation"),string(step.seat_incarnation)),
+        (JsonString::from_str("seatGeneration"),Json::Number(step.seat_generation.to_string())),
+        (JsonString::from_str("seatRevision"),Json::Number(step.seat_revision.to_string())),
+        (JsonString::from_str("permissionTier"),string(step.permission_tier)),
+        (JsonString::from_str("claimGeneration"),string(&step.custody.binding.generation)),
+        (JsonString::from_str("claimRevision"),Json::Number(step.claim_revision.to_string())),
+        (JsonString::from_str("scopeBasis"),nullable(step.scope.map(|scope|scope.basis()))),
+        (JsonString::from_str("decision"),string(step.decision)),
+        (JsonString::from_str("reason"),string(step.reason)),
+        (JsonString::from_str("selectedOptionId"),nullable(selected)),
+        (JsonString::from_str("replySha256"),string(&crate::store::digest::sha256_hex(step.wire))),
+    ])).canonical())
+}
+
+pub(crate) fn permission_step_id(step:&GrokPermissionStep<'_>,raw:&[u8])->Result<String> {
+    let evidence=permission_evidence(step,raw)?;
+    Ok(format!("gperm-{}-{}-{}",step.source.source_cursor,step.decision,
+        &crate::store::digest::sha256_hex(evidence.as_bytes())[..40]))
+}
+
+fn grok_permission_bound(db:&VerifiedDatabaseConnection<'_>,step:&GrokPermissionStep<'_>,
+    operation:&str)->Result<()> {
+    if step.source.operation_id!=operation || step.source.source_epoch!=step.custody.custodian_nonce
+        || step.wire.is_empty() || step.wire.len()>65_536 || !step.wire.ends_with(b"\n") {
+        return Err(RpcJournalError::Denied);
+    }
+    let raw=ledger::read_pending_raw_source(db,operation,&step.source.source_epoch,
+        &step.source.source_cursor)?.ok_or(RpcJournalError::Denied)?;
+    if raw.domain_id!=step.domain_id || raw.session_id!=step.session_id
+        || raw.generation!=step.custody.binding.generation
+        || raw.process_ticket!=step.custody.ticket.opaque()
+        || raw.custodian_nonce!=step.custody.custodian_nonce {
+        return Err(RpcJournalError::Denied);
+    }
+    let parsed=permission::decode_grok(&raw.raw_bytes).ok_or(RpcJournalError::Denied)?;
+    if parsed.id!=*step.typed_id || parsed.session_id!=step.native_session_id
+        || parsed.tool_call_id!=step.tool_call_id {return Err(RpcJournalError::Denied);}
+    let selected=match step.decision {
+        "allow-bound-f-write" if step.scope.is_some()
+            && parsed.write_path.as_deref()==step.scope.map(|scope|scope.target())=>
+            parsed.allow_once.as_deref(),
+        "reject-unqualified" if step.scope.is_none()=>parsed.reject_once.as_deref(),
+        "cancel-no-reject" if step.scope.is_none() && parsed.reject_once.is_none()=>None,
+        _=>return Err(RpcJournalError::Denied),
+    };
+    if step.decision=="allow-bound-f-write" && selected.is_none() {
+        return Err(RpcJournalError::Denied);
+    }
+    let reason=if step.scope.is_some() {"REGISTERED_F_WRITE"}
+        else if parsed.write_path.is_none() {"NOT_FIXED_WRITE"}
+        else if parsed.allow_once.is_none() {"ALLOW_ONCE_ABSENT"}
+        else {"NO_CURRENT_F_WRITE_QUALIFICATION"};
+    if step.reason!=reason {return Err(RpcJournalError::Denied);}
+    let expected=commands::encode_grok_permission_reply(step.typed_id,selected)
+        .map_err(RpcJournalError::AcpEncode)?;
+    if expected!=step.wire || permission_step_id(step,&raw.raw_bytes)?!=step.step_id {
+        return Err(RpcJournalError::Denied);
+    }
+    let current_seat=seat::get(db,step.domain_id,step.seat_id)
+        .map_err(|_|RpcJournalError::Denied)?.ok_or(RpcJournalError::Denied)?;
+    let current_tier=match seat::permission_tier(&current_seat).map_err(|_|RpcJournalError::Denied)? {
+        PermissionTier::ReadOnly=>"READ_ONLY",
+        PermissionTier::NoNetwork=>"NO_NETWORK",
+        PermissionTier::IsolatedWrite=>"ISOLATED_WRITE",
+        PermissionTier::NetworkedWrite=>"NETWORKED_WRITE",
+    };
+    if current_seat.incarnation!=step.seat_incarnation
+        || current_seat.generation!=step.seat_generation
+        || current_seat.revision!=step.seat_revision
+        || current_tier!=step.permission_tier {return Err(RpcJournalError::Denied);}
+    let claim=super::runtime::observe_claim_bound(db,step.domain_id,step.seat_id,step.session_id)
+        .map_err(|_|RpcJournalError::Denied)?.ok_or(RpcJournalError::Denied)?;
+    if claim.revision!=step.claim_revision || claim.generation!=step.custody.binding.generation
+        || claim.process_operation_id.as_deref()!=Some(operation) {return Err(RpcJournalError::Denied);}
+    let prompt=Statement::prepare(db.as_ptr(),
+        "SELECT command_hex FROM main.gogoke_v37_rpc_steps WHERE domain_id=?1 AND session_id=?2
+          AND process_operation_id=?3 AND step_id=?4 AND ticket=?5 AND custodian_nonce=?6
+          AND generation=?7 AND phase='WRITTEN' AND requires_response=1")?;
+    for (index,value) in [step.domain_id,step.session_id,operation,step.prompt_step_id,
+        step.custody.ticket.opaque(),step.custody.custodian_nonce.as_str(),
+        step.custody.binding.generation.as_str()].iter().enumerate() {
+        prompt.bind_text((index+1) as i32,value)?;
+    }
+    if !prompt.step_row()? {return Err(RpcJournalError::Denied);}
+    let command=unhex(&prompt.column_text(0)?)?;
+    if prompt.step_row()? {return Err(RpcJournalError::Denied);}drop(prompt);
+    let Json::Object(fields)=Parser::parse(std::str::from_utf8(&command).map_err(|_|RpcJournalError::Denied)?)?
+        else {return Err(RpcJournalError::Denied)};
+    let Some(Json::String(method))=fields.get(&JsonString::from_str("method")) else {return Err(RpcJournalError::Denied)};
+    let Some(Json::Object(params))=fields.get(&JsonString::from_str("params")) else {return Err(RpcJournalError::Denied)};
+    let expected_prompt_id=match step.prompt_rpc_id {
+        acp::RpcId::Number(value)=>Json::Number(value.to_string()),
+        acp::RpcId::String(value)=>Json::String(JsonString::from_str(value)),
+    };
+    if method.to_well_formed_string().as_deref()!=Some("session/prompt")
+        || fields.get(&JsonString::from_str("id"))!=Some(&expected_prompt_id)
+        || !matches!(params.get(&JsonString::from_str("sessionId")),
+            Some(Json::String(session)) if session.to_well_formed_string().as_deref()==Some(step.native_session_id)) {
+        return Err(RpcJournalError::Denied);
+    }
+    let request=super::decode_request(step.prompt_request_bytes).map_err(|_|RpcJournalError::Denied)?;
+    if request.family!="K-SESSION" || request.operation!="send" || request.domain_id!=step.domain_id
+        || request.target_id!=step.session_id {return Err(RpcJournalError::Denied);}
+    let h=Statement::prepare(db.as_ptr(),
+        "SELECT request_hex FROM main.gogoke_v37_h_stdin_journal WHERE domain_id=?1 AND session_id=?2
+          AND request_id=?3 AND process_operation_id=?4 AND ticket=?5 AND custodian_nonce=?6
+          AND generation=?7 AND operation='send' AND phase='PREPARED'")?;
+    for (index,value) in [step.domain_id,step.session_id,request.request_id.as_str(),operation,
+        step.custody.ticket.opaque(),step.custody.custodian_nonce.as_str(),
+        step.custody.binding.generation.as_str()].iter().enumerate() {h.bind_text((index+1) as i32,value)?;}
+    if !h.step_row()? || h.column_text(0)?!=hex(step.prompt_request_bytes) || h.step_row()? {
+        return Err(RpcJournalError::Denied);
+    }drop(h);
+    // A later source must not reuse either the typed ID or the same toolCallId.
+    let prior=Statement::prepare(db.as_ptr(),
+        "SELECT source_cursor FROM main.v37_ledger_raw_source WHERE operation_id=?1 AND source_epoch=?2
+          AND source_cursor<>?3")?;
+    prior.bind_text(1,operation)?;prior.bind_text(2,&step.source.source_epoch)?;
+    prior.bind_text(3,&step.source.source_cursor)?;
+    while prior.step_row()? {
+        let other=ledger::read_captured_raw_source(db,operation,&step.source.source_epoch,
+            &prior.column_text(0)?)?.ok_or(RpcJournalError::Denied)?;
+        if let Some(other)=permission::decode_grok(&other.raw_bytes) {
+            if other.id==parsed.id || other.tool_call_id==parsed.tool_call_id {
+                return Err(RpcJournalError::Conflict);
+            }
+        }
+    }
+    permission_unresolved_shape(db,step.domain_id,step.session_id,operation,
+        step.prompt_step_id,step.step_id)
+}
+
+fn permission_unresolved_shape(db:&VerifiedDatabaseConnection<'_>,domain:&str,session:&str,
+    operation:&str,prompt_step_id:&str,permission_step_id:&str)->Result<()> {
+    let unresolved=Statement::prepare(db.as_ptr(),
+        "SELECT step_id FROM main.gogoke_v37_rpc_steps WHERE domain_id=?1 AND session_id=?2
+          AND process_operation_id=?3 AND (phase IN ('INTENT','UNKNOWN')
+            OR (phase='WRITTEN' AND requires_response=1))")?;
+    unresolved.bind_text(1,domain)?;unresolved.bind_text(2,session)?;
+    unresolved.bind_text(3,operation)?;
+    let mut prompt_count=0;
+    while unresolved.step_row()? {
+        let id=unresolved.column_text(0)?;
+        if id==prompt_step_id {prompt_count+=1;}
+        else if id!=permission_step_id {return Err(RpcJournalError::Unknown);}
+    }
+    if prompt_count!=1 {return Err(RpcJournalError::Unknown);}
+    Ok(())
+}
+
+fn exact_permission_evidence(db:&VerifiedDatabaseConnection<'_>,step:&GrokPermissionStep<'_>,
+    operation:&str,evidence:&str)->Result<()> {
+    let row=Statement::prepare(db.as_ptr(),
+        "SELECT permission_evidence FROM main.gogoke_v37_rpc_steps
+          WHERE domain_id=?1 AND session_id=?2 AND step_id=?3 AND process_operation_id=?4")?;
+    for (index,value) in [step.domain_id,step.session_id,step.step_id,operation].iter().enumerate() {
+        row.bind_text((index+1) as i32,value)?;
+    }
+    if !row.step_row()? || row.column_text(0)?!=evidence || row.step_row()? {
+        return Err(RpcJournalError::Conflict);
+    }
+    Ok(())
+}
+
+fn unique_permission_source(db:&VerifiedDatabaseConnection<'_>,domain:&str,session:&str,
+    operation:&str,cursor:&str,step_id:&str)->Result<()> {
+    let prefix=format!("gperm-{cursor}-");
+    let prior=Statement::prepare(db.as_ptr(),
+        "SELECT step_id FROM main.gogoke_v37_rpc_steps WHERE domain_id=?1 AND session_id=?2
+          AND process_operation_id=?3 AND substr(step_id,1,?4)=?5")?;
+    prior.bind_text(1,domain)?;prior.bind_text(2,session)?;
+    prior.bind_text(3,operation)?;
+    prior.bind_text(4,&prefix.len().to_string())?;prior.bind_text(5,&prefix)?;
+    while prior.step_row()? {
+        if prior.column_text(0)?!=step_id {return Err(RpcJournalError::Conflict);}
+    }
+    Ok(())
+}
+
+pub(crate) fn prepare_grok_permission(db:&mut VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,step:&GrokPermissionStep<'_>)->Result<PreparedStep> {
+    transact(db,|db| {
+        check_owner_in_current_transaction(db,owner)?;
+        original_open(db,&step.fields())?;
+        let (operation,driver)=assert_current_binding(db,&step.fields(),&["ACTIVE"],false)?;
+        if driver!="grok" {return Err(RpcJournalError::Denied);}
+        grok_permission_bound(db,step,&operation)?;
+        unique_permission_source(db,step.domain_id,step.session_id,&operation,
+            &step.source.source_cursor,step.step_id)?;
+        if let Some(phase)=same_row(db,&step.fields(),&operation,step.wire)? {
+            let raw=ledger::read_pending_raw_source(db,&operation,&step.source.source_epoch,
+                &step.source.source_cursor)?.ok_or(RpcJournalError::Denied)?;
+            let evidence=permission_evidence(step,&raw.raw_bytes)?;
+            exact_permission_evidence(db,step,&operation,&evidence)?;
+            return Ok(PreparedStep {bytes:step.wire.to_vec(),disposition:Disposition::Existing(phase)});
+        }
+        insert_intent(db,&step.fields(),&operation,step.wire,false)?;
+        let raw=ledger::read_pending_raw_source(db,&operation,&step.source.source_epoch,
+            &step.source.source_cursor)?.ok_or(RpcJournalError::Denied)?;
+        let evidence=permission_evidence(step,&raw.raw_bytes)?;
+        let update=Statement::prepare(db.as_ptr(),
+            "UPDATE main.gogoke_v37_rpc_steps SET permission_evidence=?1
+              WHERE domain_id=?2 AND session_id=?3 AND step_id=?4
+                AND process_operation_id=?5 AND phase='INTENT' AND permission_evidence IS NULL")?;
+        update.bind_text(1,&evidence)?;
+        for (index,value) in [step.domain_id,step.session_id,step.step_id,operation.as_str()].iter().enumerate() {
+            update.bind_text((index+2) as i32,value)?;
+        }
+        update.step_done()?;drop(update);
+        exact_permission_evidence(db,step,&operation,&evidence)?;
+        Ok(PreparedStep {bytes:step.wire.to_vec(),disposition:Disposition::NewWrite})
+    })
+}
+fn transition_grok_permission(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,
+    step:&GrokPermissionStep<'_>,phase:Phase,error:Option<&str>)->Result<()> {
+    transact(db,|db| {
+        check_owner_in_current_transaction(db,owner)?;
+        original_open(db,&step.fields())?;
+        let states=if phase==Phase::Unknown {&["ACTIVE","UNKNOWN"][..]} else {&["ACTIVE"][..]};
+        let (operation,driver)=assert_current_binding(db,&step.fields(),states,phase==Phase::Unknown)?;
+        if driver!="grok" {return Err(RpcJournalError::Denied);}
+        grok_permission_bound(db,step,&operation)?;
+        let raw=ledger::read_pending_raw_source(db,&operation,&step.source.source_epoch,
+            &step.source.source_cursor)?.ok_or(RpcJournalError::Denied)?;
+        let evidence=permission_evidence(step,&raw.raw_bytes)?;
+        exact_permission_evidence(db,step,&operation,&evidence)?;
+        transition_row(db,&step.fields(),&operation,step.wire,phase,error)
+    })
+}
+pub(crate) fn mark_grok_permission_written(db:&mut VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,step:&GrokPermissionStep<'_>)->Result<()> {
+    transition_grok_permission(db,owner,step,Phase::Written,None)
+}
+pub(crate) fn mark_grok_permission_unknown(db:&mut VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,step:&GrokPermissionStep<'_>,original_error:&str)->Result<()> {
+    if original_error.is_empty() || original_error.len()>4096 {return Err(RpcJournalError::Invalid("original error"));}
+    transition_grok_permission(db,owner,step,Phase::Unknown,Some(original_error))
+}
+
 /// Persist original Claude stdin intent before the physical writer. An
 /// existing row is readback only; neither replay nor UNKNOWN permits resend.
 pub(crate) fn prepare_claude(db: &mut VerifiedDatabaseConnection<'_>,
@@ -3023,6 +3347,35 @@ mod tests {
     }
 
     #[test]
+    fn grok_permission_schema_migrates_exact_legacy_rows_without_evidence_invention() {
+        let _guard=route_b_test_guard();
+        let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("gogoke-grok-permission-schema-{}-{stamp}",std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let mut db=create_new(&root,&path.join("state.sqlite")).unwrap();
+        let old=SCHEMA.replacen(", permission_evidence TEXT","",1);
+        db.execute(&old).unwrap();
+        db.execute("INSERT INTO gogoke_v37_rpc_steps(domain_id,session_id,open_request_id,step_id,
+            process_operation_id,ticket,custodian_nonce,pid,creation_time,image_path,binary_digest,
+            profile_id,generation,command_hex,requires_response,phase)
+            VALUES('domain','session','open','old-step','operation','ticket','nonce','1','2',
+            'image','digest','profile','1','7b7d',0,'WRITTEN')").unwrap();
+        initialize_schema(&mut db).unwrap();
+        assert_eq!(observed_schema(&db).unwrap(),vec![("gogoke_v37_rpc_steps".into(),SCHEMA.into())]);
+        assert_eq!(scalar(&db,"SELECT command_hex FROM gogoke_v37_rpc_steps WHERE step_id='old-step'"),"7b7d");
+        assert_eq!(scalar(&db,"SELECT CAST(permission_evidence IS NULL AS TEXT) FROM gogoke_v37_rpc_steps WHERE step_id='old-step'"),"1");
+        initialize_schema(&mut db).unwrap();
+        db.close_checked().unwrap();
+        let mut altered=create_new(&root,&path.join("altered.sqlite")).unwrap();
+        let wrong=old.replace("command_hex TEXT NOT NULL","command_hex BLOB NOT NULL");
+        altered.execute(&wrong).unwrap();
+        assert!(initialize_schema(&mut altered).is_err());
+        assert_eq!(observed_schema(&altered).unwrap(),vec![("gogoke_v37_rpc_steps".into(),wrong)]);
+        altered.close_checked().unwrap();drop(root);fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn stopped_generation_can_confirm_original_turn_end_without_writer_step() {
         let _guard=route_b_test_guard();
         let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
@@ -3265,5 +3618,45 @@ mod tests {
         db.close_checked().unwrap();
         drop(root);
         fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn grok_permission_exception_is_exactly_one_written_prompt_only() {
+        let _guard=route_b_test_guard();
+        let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("gogoke-grok-permission-shape-{}-{stamp}",std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let mut db=create_new(&root,&path.join("state.sqlite")).unwrap();
+        initialize_schema(&mut db).unwrap();
+        let add=|db:&VerifiedDatabaseConnection<'_>,id:&str,phase:&str,response:i64| {
+            let row=Statement::prepare(db.as_ptr(),
+                "INSERT INTO gogoke_v37_rpc_steps(domain_id,session_id,open_request_id,step_id,
+                 process_operation_id,ticket,custodian_nonce,pid,creation_time,image_path,
+                 binary_digest,profile_id,generation,command_hex,requires_response,phase)
+                 VALUES('domain','session','open',?1,'operation','ticket','nonce','1','2',
+                 'image','digest','profile','1','7b7d',?2,?3)").unwrap();
+            row.bind_text(1,id).unwrap();row.bind_i64(2,response).unwrap();
+            row.bind_text(3,phase).unwrap();row.step_done().unwrap();
+        };
+        assert!(permission_unresolved_shape(&db,"domain","session","operation","prompt","reply").is_err());
+        add(&db,"prompt","WRITTEN",1);
+        assert!(permission_unresolved_shape(&db,"domain","session","operation","prompt","reply").is_ok());
+        assert!(has_unresolved(&db,"domain","session","operation").unwrap(),
+            "global unresolved gate remains closed");
+        add(&db,"reply","INTENT",0);
+        assert!(permission_unresolved_shape(&db,"domain","session","operation","prompt","reply").is_ok());
+        add(&db,"other","INTENT",0);
+        assert!(matches!(permission_unresolved_shape(&db,"domain","session","operation","prompt","reply"),
+            Err(RpcJournalError::Unknown)));
+        db.execute("UPDATE gogoke_v37_rpc_steps SET phase='UNKNOWN',original_error='synthetic failure' WHERE step_id='other'").unwrap();
+        assert!(matches!(permission_unresolved_shape(&db,"domain","session","operation","prompt","reply"),
+            Err(RpcJournalError::Unknown)));
+        add(&db,"gperm-71-reject-unqualified-old","WRITTEN",0);
+        assert!(unique_permission_source(&db,"domain","session","operation","71",
+            "gperm-71-reject-unqualified-old").is_ok());
+        assert!(matches!(unique_permission_source(&db,"domain","session","operation","71",
+            "gperm-71-allow-bound-f-write-new"),Err(RpcJournalError::Conflict)));
+        db.close_checked().unwrap();drop(root);fs::remove_dir_all(path).unwrap();
     }
 }

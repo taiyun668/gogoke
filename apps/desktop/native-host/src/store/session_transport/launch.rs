@@ -14,6 +14,7 @@ use crate::store::inbox::host_rule::{self as host_rule, HostRecipient};
 use crate::store::worktree::{self, ResolvedBinding};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::os::windows::fs::MetadataExt;
 
 // Model guidance only: LPAC and the bound native assets still enforce access.
 // Keep the official base instructions and the original tool failure evidence.
@@ -59,6 +60,105 @@ pub(crate) struct LaunchEvidence {
     resume_request_id: Option<String>,
     launch_admission: Option<seat::NativeLeadAdmission>,
     host_guard: Option<(HostEscalationProof,HostRecipient)>,
+}
+
+/// Constructed only after the current E/F/H physical write check.
+pub(crate) struct GrokPermissionScope { basis: String, target: String }
+impl GrokPermissionScope {
+    pub(crate) fn basis(&self) -> &str { &self.basis }
+    pub(crate) fn target(&self) -> &str { &self.target }
+}
+
+fn physical_grok_write_target(root:&RootLock,profile:&AppContainerProfile,
+    worktree:&Path,identity:&RootIdentity,target:&Path)->bool {
+    let Some(spelling)=target.to_str() else {return false};
+    let local=spelling.strip_prefix(r"\\?\").unwrap_or(spelling);
+    let bytes=local.as_bytes();
+    if bytes.len()<4 || !bytes[0].is_ascii_alphabetic() || bytes[1]!=b':'
+        || bytes[2]!=b'\\' || local.contains('/') {return false;}
+    let normalized=if spelling.starts_with(r"\\?\") {target.to_path_buf()}
+        else {PathBuf::from(format!(r"\\?\{spelling}"))};
+    let target=normalized.as_path();
+    if !target.is_absolute() || target.components().any(|component| match component {
+        std::path::Component::CurDir|std::path::Component::ParentDir=>true,
+        std::path::Component::Normal(name)=>name.to_string_lossy().eq_ignore_ascii_case(".git")
+            || name.to_string_lossy().contains(':'),
+        _=>false,
+    }) {return false;}
+    let Ok(relative)=target.strip_prefix(worktree) else {return false};
+    if relative.as_os_str().is_empty() {return false;}
+    let Some(parent)=target.parent() else {return false};
+    let Some(leaf)=target.file_name() else {return false};
+    let Some(relative_parent)=relative.parent() else {return false};
+    let Ok(canonical_root)=std::fs::canonicalize(worktree) else {return false};
+    let Ok(canonical_parent)=std::fs::canonicalize(parent) else {return false};
+    if canonical_parent!=canonical_root.join(relative_parent)
+        || !canonical_parent.starts_with(&canonical_root) {return false;}
+    // This existing verifier rejects a changed F FileID, inherited ACL
+    // mismatch, existing reparse descendants and multiply linked files.
+    if profile.verify_bound_tree_grant(worktree,identity,true).is_err() {return false;}
+    let Ok(parent_identity)=crate::root::inspect_root(parent) else {return false};
+    let Ok(_held_parent)=DirectoryRoots::prepare(root,
+        &[(parent.to_path_buf(),parent_identity.identity)]) else {return false};
+    match std::fs::symlink_metadata(target) {
+        Ok(meta) => {
+            if !meta.is_file() || meta.file_attributes() & 0x400 != 0 {return false;}
+            let Ok(actual)=std::fs::canonicalize(target) else {return false};
+            actual==canonical_parent.join(leaf)
+        },
+        Err(error) if error.kind()==std::io::ErrorKind::NotFound=>true,
+        Err(_)=>false,
+    }
+}
+
+#[cfg(all(test,windows))]
+mod grok_permission_tests {
+    use super::*;
+    use std::time::{SystemTime,UNIX_EPOCH};
+
+    #[test]
+    fn grok_permission_write_target_stays_in_the_bound_physical_f_tree() {
+        let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let base=std::env::temp_dir().join(format!("gogoke-grok-permission-{stamp}-{}",std::process::id()));
+        std::fs::create_dir(&base).unwrap();
+        let root=RootLock::acquire(&base).unwrap();
+        let base=root.canonical_root().canonical_path.clone();
+        let f=base.join("registered-f");
+        let peer=base.join("peer-f");
+        let home=base.join("private-home");
+        std::fs::create_dir(&f).unwrap();
+        std::fs::create_dir(&peer).unwrap();
+        std::fs::create_dir(&home).unwrap();
+        let existing=f.join("source.txt");
+        std::fs::write(&existing,b"synthetic source").unwrap();
+        std::fs::write(f.join(".git"),b"synthetic pointer").unwrap();
+        let profile=AppContainerProfile::derived_for_test("Gogoke37.GrokPermissionPhysical").unwrap();
+        let identity=crate::root::inspect_root(&f).unwrap().identity;
+        profile.grant_bound_tree(&f,&identity,true).unwrap();
+        assert!(physical_grok_write_target(&root,&profile,&f,&identity,&existing));
+        let dos=existing.to_string_lossy().strip_prefix(r"\\?\").unwrap().to_owned();
+        assert!(physical_grok_write_target(&root,&profile,&f,&identity,Path::new(&dos)));
+        assert!(physical_grok_write_target(&root,&profile,&f,&identity,&f.join("new-source.txt")));
+        for denied in [peer.join("source.txt"),home.join("auth.json"),
+            f.join(".git"),f.join(".git").join("config"),f.join("source.txt:stream"),
+            base.join("registered-f-peer").join("source.txt")] {
+            assert!(!physical_grok_write_target(&root,&profile,&f,&identity,&denied),
+                "outside, git and alternate stream paths are not F writes");
+        }
+        let outside=peer.join("outside.txt");
+        std::fs::write(&outside,b"synthetic peer").unwrap();
+        let hardlink=f.join("hardlink.txt");
+        std::fs::hard_link(&outside,&hardlink).unwrap();
+        assert!(!physical_grok_write_target(&root,&profile,&f,&identity,&hardlink));
+        std::fs::remove_file(&hardlink).unwrap();
+        let link=f.join("reparse.txt");
+        if std::os::windows::fs::symlink_file(&outside,&link).is_ok() {
+            assert!(!physical_grok_write_target(&root,&profile,&f,&identity,&link));
+            std::fs::remove_file(&link).unwrap();
+        }
+        drop(root);
+        std::fs::remove_dir_all(base).unwrap();
+    }
 }
 
 /// Project source access and the global secretary's private cwd are different
@@ -581,6 +681,31 @@ impl LaunchEvidence {
             identity, VerificationPhase::Active)
     }
 
+    /// Permission for one pinned Grok Write target, derived only from the
+    /// current E/H witness and F's registered physical worktree group.
+    /// `None` is a host denial, never an alternate HOME or source grant.
+    pub(crate) fn grok_write_target(&self, db: &mut VerifiedDatabaseConnection<'_>,
+        root: &RootLock, owner: &OwnerIssuer, operation: &str, revision: i64,
+        raw_path: &str) -> Result<Option<GrokPermissionScope>, String> {
+        self.verify_live(db,root,owner,operation,revision)?;
+        if self.pin.driver_id!="grok" || !matches!(self.tier,
+            PermissionTier::IsolatedWrite|PermissionTier::NetworkedWrite) {
+            return Ok(None);
+        }
+        let LaunchDirectory::ProjectWorktrees {group,..}=&self.directory else {return Ok(None)};
+        let target=Path::new(raw_path);
+        for member in group {
+            if !physical_grok_write_target(root,&self.profile,&member.path,&member.identity,target) {
+                continue;
+            }
+            return Ok(Some(GrokPermissionScope { basis:format!("{}\n{}\n{:?}\n{}",
+                member.worktree_id,member.identity.opaque(),self.tier,
+                crate::store::digest::sha256_hex(raw_path.as_bytes())),
+                target:raw_path.to_owned() }));
+        }
+        Ok(None)
+    }
+
     pub(crate) fn adopt_resume(&mut self, db: &VerifiedDatabaseConnection<'_>,
         owner: &OwnerIssuer, operation: &str) -> Result<(),String> {
         if self.resume_old.is_none() {return Err("native resume evidence already adopted".into());}
@@ -860,6 +985,16 @@ impl LaunchEvidence {
     pub(crate) fn clear_host_guard(&mut self) {self.host_guard=None;}
     pub(crate) fn seat_id(&self) -> &str { &self.seat.seat_id }
     pub(crate) fn seat_incarnation(&self) -> &str { &self.seat.incarnation }
+    pub(crate) fn permission_seat_generation(&self)->i64 {self.seat.generation}
+    pub(crate) fn permission_seat_revision(&self)->i64 {self.seat.revision}
+    pub(crate) fn permission_tier_name(&self)->&'static str {
+        match self.tier {
+            PermissionTier::ReadOnly=>"READ_ONLY",
+            PermissionTier::NoNetwork=>"NO_NETWORK",
+            PermissionTier::IsolatedWrite=>"ISOLATED_WRITE",
+            PermissionTier::NetworkedWrite=>"NETWORKED_WRITE",
+        }
+    }
 
     pub(crate) fn verify_observed_cwd(&self, observed: &str) -> Result<(), String> {
         let path=Path::new(observed);

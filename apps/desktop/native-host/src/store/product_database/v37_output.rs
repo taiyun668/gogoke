@@ -5,6 +5,8 @@ use crate::store::atomic::Parser;
 use crate::store::ledger::{self, EventInput, Tier};
 use crate::store::session_transport::codex_output::{self, Output};
 use crate::store::session_transport::provider_evidence::normalize as vendor_output;
+use crate::store::session_transport::provider_evidence::{commands as provider_commands, permission};
+use crate::store::session_transport::rpc_journal as rpc;
 use crate::process::{OriginBoundFrame, PreparedCustody, ProcessCustodian};
 
 #[derive(Default)]
@@ -162,6 +164,122 @@ impl NativeRawCapture {
 }
 
 impl<'root> ProductDatabase<'root> {
+    /// Reply on the held H pipe only to the original captured Grok request.
+    /// A prior INTENT/UNKNOWN is never a retry permission.
+    fn reply_to_grok_permission(&mut self,key:&(String,String),
+        raw:&ledger::RawSourceRecord)->Result<bool> {
+        use crate::store::seat::NativeOrigin;
+        use crate::store::session_transport::runtime;
+        let Some(request)=permission::decode_grok(&raw.raw_bytes) else {return Ok(false)};
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        let Some((prompt_bytes,prompt_identity))=run.pending_acp.clone() else {
+            // No original H User prompt is still held. Keep A's source raw.
+            return Ok(true);
+        };
+        let native_session_id=run.thread_id.clone().ok_or(OrchestrationError::OperationConflict)?;
+        if request.session_id!=native_session_id {return Err(OrchestrationError::OperationConflict);}
+        let custody=run.custody.clone();
+        let operation=run.operation_id.clone();
+        let open_id=run.open_request_id.clone();
+        let open_bytes=run.open_request_bytes.clone();
+        let seat=run.evidence.seat_id().to_owned();
+        let claim=runtime::observe_claim(&self.connection,&NativeOrigin::user(&self.owner),
+            &key.0,&seat,&key.1).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("Grok permission claim: {error:?}")))?
+            .ok_or(OrchestrationError::AccessDenied)?;
+        if claim.generation!=custody.binding.generation {return Err(OrchestrationError::OperationConflict);}
+        let scope=if request.allow_once.is_some() {
+            if let Some(path)=request.write_path.as_deref() {
+                run.evidence.grok_write_target(&mut self.connection,self.root,&self.owner,
+                    &operation,claim.revision,path)
+                    .map_err(OrchestrationError::V37StoreFailure)?
+            } else {
+                run.evidence.verify_live(&mut self.connection,self.root,&self.owner,
+                    &operation,claim.revision).map_err(OrchestrationError::V37StoreFailure)?;
+                None
+            }
+        } else {
+            run.evidence.verify_live(&mut self.connection,self.root,&self.owner,
+                &operation,claim.revision).map_err(OrchestrationError::V37StoreFailure)?;
+            None
+        };
+        let decision=if scope.is_some() {"allow-bound-f-write"}
+            else if request.reject_once.is_some() {"reject-unqualified"}
+            else {"cancel-no-reject"};
+        let reason=if scope.is_some() {"REGISTERED_F_WRITE"}
+            else if request.write_path.is_none() {"NOT_FIXED_WRITE"}
+            else if request.allow_once.is_none() {"ALLOW_ONCE_ABSENT"}
+            else {"NO_CURRENT_F_WRITE_QUALIFICATION"};
+        let selected=if scope.is_some() {request.allow_once.as_deref()}
+            else {request.reject_once.as_deref()};
+        let wire=provider_commands::encode_grok_permission_reply(&request.id,selected)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!("Grok permission response encoding: {error:?}")))?;
+        let mut step=rpc::GrokPermissionStep {domain_id:&key.0,session_id:&key.1,
+            open_request_id:&open_id,open_request_bytes:&open_bytes,
+            step_id:"",custody:&custody,source:&raw.key,
+            prompt_step_id:&prompt_identity.step_id,prompt_rpc_id:&prompt_identity.rpc_id,
+            prompt_request_bytes:&prompt_bytes,native_session_id:&native_session_id,
+            typed_id:&request.id,tool_call_id:&request.tool_call_id,
+            seat_id:&seat,seat_incarnation:run.evidence.seat_incarnation(),
+            seat_generation:run.evidence.permission_seat_generation(),
+            seat_revision:run.evidence.permission_seat_revision(),
+            permission_tier:run.evidence.permission_tier_name(),claim_revision:claim.revision,
+            decision,reason,scope:scope.as_ref(),wire:&wire};
+        let step_id=rpc::permission_step_id(&step,&raw.raw_bytes)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!("Grok permission identity: {error:?}")))?;
+        step.step_id=&step_id;
+        let prepared=rpc::prepare_grok_permission(&mut self.connection,&self.owner,&step)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!("Grok permission intent: {error:?}")))?;
+        match prepared.disposition {
+            rpc::Disposition::Existing(rpc::Phase::Written)=>{
+                ledger::resolve_raw_source_no_event(&mut self.connection,&operation,
+                    &custody.custodian_nonce,&raw.key.source_cursor,"GROK_PERMISSION_REPLY_WRITTEN")?;
+                return Ok(true);
+            },
+            rpc::Disposition::Existing(_)=>return Ok(true),
+            rpc::Disposition::NewWrite=>{},
+        }
+        // Repeat current H/E/F verification after durable intent and before
+        // the single physical write. No changed source receives a reply.
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        let current=runtime::observe_claim(&self.connection,&NativeOrigin::user(&self.owner),
+            &key.0,&seat,&key.1).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("Grok permission current claim: {error:?}")))?
+            .ok_or(OrchestrationError::AccessDenied)?;
+        if current!=claim {return Err(OrchestrationError::OperationConflict);}
+        if let Some(path)=request.write_path.as_deref().filter(|_|scope.is_some()) {
+            let refreshed=run.evidence.grok_write_target(&mut self.connection,self.root,&self.owner,
+                &operation,current.revision,path).map_err(OrchestrationError::V37StoreFailure)?;
+            if refreshed.as_ref().map(|scope|scope.basis())!=scope.as_ref().map(|scope|scope.basis()) {
+                return Err(OrchestrationError::OperationConflict);
+            }
+        } else {
+            run.evidence.verify_live(&mut self.connection,self.root,&self.owner,
+                &operation,current.revision).map_err(OrchestrationError::V37StoreFailure)?;
+        }
+        let process=self.process_custodian.active(&custody.ticket)
+            .ok_or(OrchestrationError::AccessDenied)?;
+        if let Err(error)=process.write_persistent_frame(&prepared.bytes) {
+            let original=self.process_custodian.protocol_error_with_stderr(&custody.ticket,
+                crate::process::ProcessCustodyError::ProtocolPipe(error));
+            let marked=rpc::mark_grok_permission_unknown(&mut self.connection,&self.owner,
+                &step,&original.to_string());
+            let unknown=crate::store::authority::mark_process_unknown(&mut self.connection,
+                &operation,&custody);
+            return Err(OrchestrationError::NativeRecipientFailure(format!(
+                "Grok permission stdin write: {original}; reply UNKNOWN: {marked:?}; custody UNKNOWN: {unknown:?}")));
+        }
+        if let Err(error)=rpc::mark_grok_permission_written(&mut self.connection,&self.owner,&step) {
+            let unknown=crate::store::authority::mark_process_unknown(&mut self.connection,
+                &operation,&custody);
+            return Err(OrchestrationError::V37StoreFailure(format!(
+                "Grok permission written commit UNKNOWN: {error:?}; custody UNKNOWN: {unknown:?}")));
+        }
+        ledger::resolve_raw_source_no_event(&mut self.connection,&operation,
+            &custody.custodian_nonce,&raw.key.source_cursor,"GROK_PERMISSION_REPLY_WRITTEN")?;
+        Ok(true)
+    }
+
     /// Run on the existing authority thread even when no UI is subscribed.
     /// Poll held pipes into A first, then run the Owner-authorized health and
     /// rule effects through their original E/C/H reservations. These internal
@@ -484,6 +602,7 @@ impl<'root> ProductDatabase<'root> {
                     continue;
                 }
             }
+            if driver=="grok" && self.reply_to_grok_permission(key,&raw)? {continue;}
             if driver=="codex" && self.dispatch_captured_model_tool(key,&raw)? {continue;}
             if driver=="claude" {
                 use crate::store::session_transport::provider_evidence::{claude_question, stream_json};
