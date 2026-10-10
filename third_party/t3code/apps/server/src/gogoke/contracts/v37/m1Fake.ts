@@ -10,7 +10,8 @@ interface Card {
   answer?: string;
 }
 interface Seat {
-  revision: bigint; layer: "USER" | "LEAD"; lifecycle: "SHORT" | "LONG" | "RECLAIMED";
+  revision: bigint; layer: "USER" | "LEAD"; kind: "SHORT" | "LONG";
+  state: "IDLE" | "RECLAIMED";
   settings: JsonObject; instanceId?: string;
   takeover?: { epoch: string; takerSeatId: string; instanceId: string | null;
     questionIds: readonly string[]; answers: JsonObject };
@@ -99,7 +100,7 @@ const validContext = (context: V37TakeoverContext | null | undefined,
     !["__proto__", "constructor", "prototype"].includes(id));
 
 const currentTakeover = (seat: Seat, context: V37TakeoverContext | null | undefined,
-  isLead: boolean): boolean => seat.lifecycle !== "RECLAIMED" && isLead &&
+  isLead: boolean): boolean => seat.state !== "RECLAIMED" && isLead &&
   validContext(context, seat.instanceId) &&
   seat.takeover !== undefined && seat.takeover.epoch === context.epoch &&
   seat.takeover.takerSeatId === context.takerSeatId &&
@@ -242,13 +243,16 @@ export class V37M1FakePort implements V37Port {
         if (seat) return encodeV37Receipt(reply("CONFLICT"));
         const layer = nonempty(request.payload, "layer");
         if (layer !== "USER" && layer !== "LEAD") throw new Error("V37_M1_INVALID: layer");
-        if (caller.role === "lead" && (layer !== "LEAD" || caller.seatId === request.targetId)) {
+        if (caller.role === "lead" && (layer !== "LEAD" || caller.seatId === request.targetId) ||
+            caller.role === "user" && layer !== "USER" ||
+            caller.role !== "lead" && caller.role !== "user") {
           return encodeV37Receipt(reply("DENIED"));
         }
         const template = this.store.templates.get(nonempty(request.payload, "templateId"));
         if (!template) return encodeV37Receipt(reply("CONFLICT"));
-        this.store.seats.set(key, { revision: 1n, layer, lifecycle: "SHORT", settings: copy(template) });
-        return committed(reply("APPLIED", 1n, { state: "SHORT", layer }));
+        const kind = caller.role === "lead" ? "SHORT" : "LONG";
+        this.store.seats.set(key, { revision: 1n, layer, kind, state: "IDLE", settings: copy(template) });
+        return committed(reply("APPLIED", 1n, { state: "IDLE", kind, layer }));
       }
       if (!seat) return encodeV37Receipt(reply("CONFLICT"));
       if (caller.role === "lead" && (seat.layer !== "LEAD" || caller.seatId === request.targetId)) {
@@ -256,13 +260,13 @@ export class V37M1FakePort implements V37Port {
       }
       if (request.operation === "state-card") {
         const ready = currentTakeover(seat, observedTakeover, observedLead);
-        return committed(reply("APPLIED", current, { state: seat.lifecycle,
+        return committed(reply("APPLIED", current, { state: seat.state, kind: seat.kind,
           layer: seat.layer, settings: copy(seat.settings), instanceId: seat.instanceId ?? null,
           takeoverReady: ready,
           takeoverEpoch: ready ? seat.takeover!.epoch : null,
           takeoverAnswers: ready ? copy(seat.takeover!.answers) : null }));
       }
-      if (seat.lifecycle === "RECLAIMED") return encodeV37Receipt(reply("CONFLICT"));
+      if (seat.state === "RECLAIMED") return encodeV37Receipt(reply("CONFLICT"));
       if (request.operation === "takeover-answers") {
         if (this.options.isTakeoverLead?.(request.targetId) !== true) {
           return encodeV37Receipt(reply("DENIED"));
@@ -321,14 +325,14 @@ export class V37M1FakePort implements V37Port {
         seat.instanceId = nonempty(request.payload, "instanceId");
         delete seat.takeover;
       } else if (request.operation === "reclaim") {
-        seat.lifecycle = "RECLAIMED";
+        seat.state = "RECLAIMED";
         delete seat.takeover;
       } else if (request.operation === "short-to-long") {
-        if (seat.lifecycle !== "SHORT") return encodeV37Receipt(reply("CONFLICT"));
-        seat.lifecycle = "LONG";
+        if (seat.kind !== "SHORT") return encodeV37Receipt(reply("CONFLICT"));
+        seat.kind = "LONG";
       } else return encodeV37Receipt(reply("UNSUPPORTED"));
       seat.revision += 1n;
-      return committed(reply("APPLIED", seat.revision, { state: seat.lifecycle }));
+      return committed(reply("APPLIED", seat.revision, { state: seat.state, kind: seat.kind }));
     }
 
     if (request.operation === "home-lifecycle") {
