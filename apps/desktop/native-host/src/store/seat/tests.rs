@@ -250,34 +250,90 @@ fn owner_unset_stage_requires_explicit_metadata_and_one_cas_stage_setting() {
 
 #[test]
 fn exact_old_policy_head_schema_migrates_without_rewriting_policy_facts() {
+    fn facts(db:&VerifiedDatabaseConnection<'_>)->Vec<Vec<String>> {
+        [
+            ("SELECT domain_id,CAST(revision AS TEXT),current_stage FROM main.gogoke_v37_seat_policy_head ORDER BY domain_id",3),
+            ("SELECT caller_seat_id,target_id,action,CAST(expires_at_ms AS TEXT),CAST(revision AS TEXT) FROM main.gogoke_v37_seat_policy_grants WHERE domain_id='projectA' ORDER BY caller_seat_id,target_id,action",5),
+            ("SELECT gate_id,from_stage,to_stage,state,CAST(revision AS TEXT) FROM main.gogoke_v37_seat_policy_gates WHERE domain_id='projectA' ORDER BY gate_id",5),
+            ("SELECT from_seat_id,reason,to_seat_id,CAST(revision AS TEXT) FROM main.gogoke_v37_seat_policy_routes WHERE domain_id='projectA' ORDER BY from_seat_id,reason",4),
+            ("SELECT event_id,operation,fingerprint,target_id,CAST(policy_revision AS TEXT),state,detail FROM main.gogoke_v37_seat_policy_events WHERE domain_id='projectA' ORDER BY event_id",7),
+            ("SELECT revocation_head,policy_revision FROM main.gogoke_authority_profile WHERE singleton=1",2),
+        ].iter().map(|(sql,width)| {
+            let q=Statement::prepare(db.as_ptr(),sql).unwrap();
+            let mut rows=Vec::new();
+            while q.step_row().unwrap() {
+                rows.push((0..*width).map(|index|q.column_text(index).unwrap())
+                    .collect::<Vec<_>>().join("\u{1f}"));
+            }
+            rows
+        }).collect()
+    }
+    fn old_shape(db:&mut VerifiedDatabaseConnection<'_>,shape:&[(String,String)]) {
+        db.execute("PRAGMA foreign_keys=OFF").unwrap();
+        transact(db,|db| {
+            for (name,_) in expected_schema() {
+                if !shape.iter().any(|(retained,_)|retained==&name) {
+                    db.execute(&format!("DROP TABLE main.{name}"))?;
+                }
+            }
+            db.execute("CREATE TABLE gogoke_v37_seat_policy_head_v2(domain_id TEXT PRIMARY KEY,revision INTEGER NOT NULL CHECK(revision>0),current_stage TEXT NOT NULL) STRICT")?;
+            db.execute("INSERT INTO gogoke_v37_seat_policy_head_v2 SELECT domain_id,revision,current_stage FROM gogoke_v37_seat_policy_head")?;
+            db.execute("DROP TABLE gogoke_v37_seat_policy_head")?;
+            db.execute(policy::OLD_POLICY_HEAD)?;
+            db.execute("INSERT INTO gogoke_v37_seat_policy_head SELECT domain_id,revision,current_stage FROM gogoke_v37_seat_policy_head_v2")?;
+            db.execute("DROP TABLE gogoke_v37_seat_policy_head_v2")?;
+            Ok(())
+        }).unwrap();
+        db.execute("PRAGMA foreign_keys=ON").unwrap();
+        assert_eq!(schema(db).unwrap(),old_policy_head_schema(shape.to_vec()));
+    }
+    for (version,shape) in [expected_schema(),prior_secretary_routines_schema(),
+        secretary_only_schema(),pre_secretary_schema(),e2_schema()].into_iter().enumerate() {
+        fixture(|db,owner| {
+            create_e2_lead(db,owner);
+            create_user(db,owner,"reviewer","reviewerCreate");
+            let apply=|db:&mut VerifiedDatabaseConnection<'_>,id:&str,raw:&[u8],command:OwnerPolicyCommand<'_>| {
+                apply_owner_policy_configuration(db,owner,"projectA",id,raw,command).unwrap().0
+            };
+            assert_eq!(apply(db,"namedStage",b"original named stage",OwnerPolicyCommand::Initialize{stage:"REVIEW"}),1);
+            assert_eq!(apply(db,"grant",b"original review grant",OwnerPolicyCommand::Grant{
+                caller:"lead",target:"reviewer",action:CallAction::Review,expires_at_ms:Some(i64::MAX),expected_revision:1}),2);
+            assert_eq!(apply(db,"gate",b"original gate",OwnerPolicyCommand::Gate{
+                gate_id:"gateA",submitter:"lead",reviewer:"reviewer",from_stage:"REVIEW",to_stage:"DONE",
+                reject_cap:2,expected_revision:2}),3);
+            assert_eq!(apply(db,"route",b"original route",OwnerPolicyCommand::Route{
+                from_seat:"lead",reason:"REJECT_CAP",to_seat:"reviewer",expected_revision:3}),4);
+            assert_eq!(apply(db,"revoke",b"original expired grant",OwnerPolicyCommand::Grant{
+                caller:"lead",target:"reviewer",action:CallAction::Review,expires_at_ms:Some(1),expected_revision:4}),5);
+            assert_eq!(apply(db,"message",b"original message",OwnerPolicyCommand::Grant{
+                caller:"lead",target:"reviewer",action:CallAction::Message,expires_at_ms:Some(1),expected_revision:5}),6);
+            assert_eq!(apply(db,"stallRoute",b"original stall route",OwnerPolicyCommand::Route{
+                from_seat:"lead",reason:"STALL",to_seat:"reviewer",expected_revision:6}),7);
+            old_shape(db,&shape);
+            let before=facts(db);
+            assert_eq!(before[0],vec!["projectA\u{1f}7\u{1f}REVIEW".to_string()],"shape {version}");
+            assert!(before[1].iter().any(|row|row.contains("\u{1f}REVIEW\u{1f}1\u{1f}5")),"expired grant at revision 5");
+            initialize_schema(db).unwrap();
+            assert_eq!(schema(db).unwrap(),expected_schema(),"shape {version}");
+            assert_eq!(facts(db),before,"migration changed original policy facts in shape {version}");
+            assert_eq!(apply_owner_policy_configuration(db,owner,"projectA","namedStage",
+                b"original named stage",OwnerPolicyCommand::Initialize{stage:"REVIEW"}).unwrap(),(1,true));
+            assert_eq!(apply_owner_policy_configuration(db,owner,"projectA","revoke",
+                b"original expired grant",OwnerPolicyCommand::Grant{caller:"lead",target:"reviewer",
+                    action:CallAction::Review,expires_at_ms:Some(1),expected_revision:4}).unwrap(),(5,true));
+            assert_eq!(facts(db),before,"historical replay mutated shape {version}");
+        });
+    }
     fixture(|db,owner| {
-        assert_eq!(apply_owner_policy_configuration(db,owner,"projectA","namedStage",
-            b"original named stage",OwnerPolicyCommand::Initialize{stage:"REVIEW"}).unwrap(),(1,false));
-        db.execute("INSERT INTO main.gogoke_v37_seat_policy_grants(domain_id,caller_seat_id,target_id,action,expires_at_ms,revision) VALUES('projectA','lead','worker','DISPATCH',0,1)").unwrap();
-        db.execute("BEGIN IMMEDIATE").unwrap();
-        db.execute("CREATE TABLE gogoke_v37_seat_policy_head_v2(domain_id TEXT PRIMARY KEY,revision INTEGER NOT NULL CHECK(revision>0),current_stage TEXT NOT NULL) STRICT").unwrap();
-        db.execute("INSERT INTO gogoke_v37_seat_policy_head_v2 SELECT domain_id,revision,current_stage FROM gogoke_v37_seat_policy_head").unwrap();
-        db.execute("DROP TABLE gogoke_v37_seat_policy_head").unwrap();
-        db.execute(policy::OLD_POLICY_HEAD).unwrap();
-        db.execute("INSERT INTO gogoke_v37_seat_policy_head SELECT domain_id,revision,current_stage FROM gogoke_v37_seat_policy_head_v2").unwrap();
-        db.execute("DROP TABLE gogoke_v37_seat_policy_head_v2").unwrap();
-        db.execute("COMMIT").unwrap();
-        assert_eq!(schema(db).unwrap(),old_policy_head_schema(expected_schema()));
-        initialize_schema(db).unwrap();
-        assert_eq!(schema(db).unwrap(),expected_schema());
-        db.execute("BEGIN").unwrap();
-        assert_eq!(read_owner_policy_head_in_transaction(db,owner,"projectA").unwrap(),
-            OwnerPolicyHead::Present{revision:1,current_stage:Some("REVIEW".into())});
-        db.execute("COMMIT").unwrap();
-        let q=Statement::prepare(db.as_ptr(),"SELECT target_id,revision FROM main.gogoke_v37_seat_policy_grants WHERE domain_id='projectA'").unwrap();
-        assert!(q.step_row().unwrap());
-        assert_eq!((q.column_text(0).unwrap(),q.column_text(1).unwrap()),("worker".into(),"1".into()));
-        drop(q);
-        assert_eq!(apply_owner_policy_configuration(db,owner,"projectA","namedStage",
-            b"original named stage",OwnerPolicyCommand::Initialize{stage:"REVIEW"}).unwrap(),(1,true),
-            "old exact request replays its original event after migration");
-        assert!(matches!(apply_owner_policy_configuration(db,owner,"projectA","newMetadata",
-            b"new metadata",OwnerPolicyCommand::MetadataInitialize),Err(SeatError::Conflict)));
+        apply_owner_policy_configuration(db,owner,"projectA","namedStage",b"original named stage",
+            OwnerPolicyCommand::Initialize{stage:"REVIEW"}).unwrap();
+        old_shape(db,&expected_schema());
+        db.execute("CREATE TABLE gogoke_v37_seat_policy_head_v2(blocker TEXT) STRICT").unwrap();
+        let before_schema=schema(db).unwrap();
+        let before=facts(db);
+        assert!(matches!(initialize_schema(db),Err(SeatError::SchemaDrift)));
+        assert_eq!(schema(db).unwrap(),before_schema,"unknown schema was modified");
+        assert_eq!(facts(db),before,"failed migration rewrote original rows");
     });
 }
 
