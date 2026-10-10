@@ -442,7 +442,9 @@ jobs:
             try { $_ | ConvertFrom-Json -ErrorAction Stop } catch { $null }
           } | Where-Object {
             $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'gogoke_desktop_lib' -and
-            $_.target.kind -contains 'lib' -and $_.profile.test -eq $true -and $_.executable
+            $_.target.kind.Count -eq 3 -and $_.target.kind -contains 'staticlib' -and
+            $_.target.kind -contains 'cdylib' -and $_.target.kind -contains 'rlib' -and
+            $_.profile.test -eq $true -and $_.executable
           } | ForEach-Object { $_.executable } | Select-Object -Unique)
           if ($images.Count -ne 1) { throw "Expected one actual desktop lib test image; found $($images.Count)" }
           $image = (Resolve-Path -LiteralPath $images[0]).Path
