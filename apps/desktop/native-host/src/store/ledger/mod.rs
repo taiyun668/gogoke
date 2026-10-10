@@ -1551,8 +1551,9 @@ pub(crate) fn query_secretary_history(
     if limit == 0 || limit > 1000 {
         return Err(AtomicError::InvalidRecord("limit"));
     }
-    // Scope and original-source eligibility precede LIMIT. In particular a
-    // global project event cannot consume a slot in the conversation page.
+    // Scope and original-source eligibility precede LIMIT. The original raw
+    // ordinal is not the normalized event cursor, and the episode generation
+    // is not the current H claim generation after resume.
     let statement = Statement::prepare(connection.as_ptr(), &format!(
         "SELECT {EVENT_COLUMNS} {EVENT_SOURCE}
          JOIN main.v37_ledger_session src ON src.session_id=i.session_id
@@ -1561,19 +1562,26 @@ pub(crate) fn query_secretary_history(
          JOIN main.gogoke_v37_session_binding_v2 v ON v.domain_id=src.domain_id
            AND v.session_id=src.session_id AND v.seat_id=src.seat_id
            AND v.seat_incarnation=?2 AND v.provenance='NATIVE_V2'
-         JOIN main.gogoke_v37_h_claim h ON h.domain_id=v.domain_id
-           AND h.session_id=v.session_id AND h.instance_id=v.selected_instance_id
-           AND h.state IN ('COMMITTED','STOPPED','RELEASED')
-         JOIN main.gogoke_v37_h_owner_binding owner ON owner.binding_id=h.binding_id
-           AND owner.domain_id=h.domain_id AND owner.instance_id=h.instance_id
-           AND owner.kind='SESSION' AND owner.owner_id=h.session_id
-           AND owner.generation=h.generation
-         JOIN main.gogoke_v37_instance_homes home ON home.home_id=h.home_id
-           AND home.domain_id=h.domain_id AND home.instance_id=h.instance_id
-           AND home.kind='SESSION' AND home.owner_id=h.session_id
-           AND home.generation=h.generation
          WHERE i.cursor>?3 AND i.source_kind='v37'
            AND i.domain_id='global' AND i.tier='GLOBAL' AND i.side_id IS NULL
+           AND EXISTS (
+             SELECT 1 FROM main.v37_ledger_raw_source r
+             JOIN main.gogoke_v37_h_process_episode episode
+               ON episode.process_operation_id=r.operation_id
+               AND episode.domain_id=r.domain_id AND episode.session_id=r.session_id
+               AND episode.generation=r.generation
+               AND episode.instance_id=v.selected_instance_id
+               AND episode.seat_id=v.seat_id
+               AND episode.seat_incarnation=v.seat_incarnation
+             JOIN main.gogoke_coordination_process_custody custody
+               ON custody.operation_id=episode.process_operation_id
+               AND custody.domain_id=r.domain_id AND custody.generation=r.generation
+               AND custody.ticket=r.process_ticket
+               AND custody.custodian_nonce=r.custodian_nonce
+             WHERE r.state='RESOLVED' AND r.no_event_reason IS NULL
+               AND r.resolved_event_id=i.source_event_id
+               AND r.domain_id=i.domain_id AND r.session_id=i.session_id
+               AND r.source_epoch=i.source_epoch)
          ORDER BY i.cursor LIMIT ?4"
     ))?;
     statement.bind_text(1, &reader.seat_id)?;
@@ -2029,27 +2037,26 @@ pub(crate) mod tests {
             (sequence INTEGER PRIMARY KEY, event_id TEXT UNIQUE, stream_id TEXT,
              occurred_at TEXT, event_type TEXT, payload_json TEXT)").expect("legacy table");
         let start = initialize_schema(&mut connection).expect("schema");
-        // This fixture models only persisted relationships needed by the read.
-        // It does not stand in for native H admission or an installed product.
-        exec(&mut connection, "CREATE TABLE gogoke_v37_seat_secretary
-            (singleton INTEGER, domain_id TEXT, seat_id TEXT, incarnation TEXT);
-            CREATE TABLE gogoke_v37_seats
-            (domain_id TEXT, seat_id TEXT, incarnation TEXT, layer TEXT, kind TEXT, state TEXT);
-            CREATE TABLE gogoke_v37_session_binding_v2
-            (domain_id TEXT, session_id TEXT, seat_id TEXT, seat_incarnation TEXT,
-             selected_instance_id TEXT, provenance TEXT);
-            CREATE TABLE gogoke_v37_h_claim
-            (domain_id TEXT, session_id TEXT, instance_id TEXT, binding_id TEXT,
-             home_id TEXT, generation TEXT, state TEXT);
-            CREATE TABLE gogoke_v37_h_owner_binding
-            (binding_id TEXT, domain_id TEXT, instance_id TEXT, kind TEXT,
-             owner_id TEXT, generation TEXT);
-            CREATE TABLE gogoke_v37_instance_homes
-            (home_id TEXT, domain_id TEXT, instance_id TEXT, kind TEXT,
-             owner_id TEXT, generation TEXT);
-            INSERT INTO gogoke_v37_seat_secretary VALUES(1,'global','secretary','current');
-            INSERT INTO gogoke_v37_seats VALUES('global','secretary','current','USER','LONG','BUSY')"
-        ).expect("identity fixture");
+        crate::store::instance::initialize_schema(&mut connection).expect("F schema");
+        crate::store::seat::initialize_schema(&mut connection).expect("E schema");
+        crate::store::session_transport::initialize_admission_schema(&mut connection)
+            .expect("H schema");
+        crate::store::session_transport::session_binding::initialize_schema(&mut connection)
+            .expect("NativeV2 schema");
+        authority::initialize_process_custody_schema(&mut connection).expect("custody schema");
+        exec(&mut connection, "INSERT INTO gogoke_v37_instances
+            (instance_id,driver_id,home_ref,home_identity,program_digest,version,
+             install_state,login_state,revision)
+            VALUES('instance','codex','history-home','history-identity','sha256:fixture',
+                   'fixture','INSTALLED','LOGGED_OUT',1);
+            INSERT INTO gogoke_v37_seats
+            (domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision)
+            VALUES('global','secretary','current','USER','LONG','instance','BUSY',1,1),
+                  ('global','other','other-incarnation','USER','LONG','instance','BUSY',1,1);
+            INSERT INTO gogoke_v37_seat_secretary
+            (singleton,domain_id,seat_id,incarnation,request_id,fingerprint)
+            VALUES(1,'global','secretary','current','designate','fixture')"
+        ).expect("real E/F identity schema");
         let entries = [
             ("reader", "secretary", "current", "NATIVE_V2", "COMMITTED", SessionPurpose::Secretary),
             ("foreign", "other", "current", "NATIVE_V2", "COMMITTED", SessionPurpose::Secretary),
@@ -2057,28 +2064,99 @@ pub(crate) mod tests {
             ("legacy", "secretary", "current", "LEGACY_V1", "RELEASED", SessionPurpose::Secretary),
             ("work", "secretary", "current", "NATIVE_V2", "COMMITTED", SessionPurpose::Work),
             ("unbound", "secretary", "current", "NATIVE_V2", "COMMITTED", SessionPurpose::Secretary),
+            ("unresolved", "secretary", "current", "NATIVE_V2", "COMMITTED", SessionPurpose::Secretary),
             ("good-old", "secretary", "current", "NATIVE_V2", "RELEASED", SessionPurpose::Secretary),
         ];
+        let mut custodians = Vec::new();
         for (id, seat, incarnation, provenance, state, purpose) in entries {
             let registration = session("global", seat, id, purpose, None);
             register_session(&mut connection, &registration).expect("register");
+            let exact_source = id != "unbound" && id != "unresolved";
+            let mut prepared_source = None;
+            if exact_source {
+                let command = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
+                    .join("System32").join("cmd.exe");
+                let mut launch = ProcessLaunch::new(command.clone());
+                launch.arguments = vec!["/D".into(), "/C".into(), format!("echo {id}")];
+                launch.protocol_stdio = true;
+                launch.persistent_protocol_stdio = true;
+                let mut custodian = ProcessCustodian::new().expect("native custodian");
+                let prepared = custodian.prepare(&PrepareRequest {
+                    binding: NativeBinding {
+                        binary_digest_sha256: content_hash(&fs::read(&command).expect("cmd bytes")),
+                        profile_id: format!("history-{id}"), domain_id: "global".into(),
+                        generation: "1".into(),
+                    }, launch,
+                }).expect("prepare original process");
+                authority::record_prepared_process(&mut connection, &format!("operation-{id}"), &prepared)
+                    .expect("original custody");
+                prepared_source = Some((custodian, prepared));
+            }
             if id != "unbound" {
                 exec(&mut connection, &format!(
-                    "INSERT INTO gogoke_v37_session_binding_v2 VALUES
-                     ('global','{id}','{seat}','{incarnation}','instance','{provenance}');
-                     INSERT INTO gogoke_v37_h_claim VALUES
-                     ('global','{id}','instance','binding-{id}','home-{id}','1','{state}');
-                     INSERT INTO gogoke_v37_h_owner_binding VALUES
-                     ('binding-{id}','global','instance','SESSION','{id}','1');
-                     INSERT INTO gogoke_v37_instance_homes VALUES
-                     ('home-{id}','global','instance','SESSION','{id}','1')"
+                    "INSERT INTO gogoke_v37_session_binding_v2
+                     (domain_id,session_id,seat_id,seat_incarnation,
+                      seat_authorization_generation,selected_instance_id,provenance)
+                     VALUES('global','{id}','{seat}','{incarnation}',1,'instance','{provenance}');
+                     INSERT INTO gogoke_v37_h_owner_binding
+                     (binding_id,instance_id,domain_id,kind,owner_id,generation,state)
+                     VALUES('binding-{id}','instance','global','SESSION','{id}','1','ACTIVE');
+                     INSERT INTO gogoke_v37_instance_homes
+                     (home_id,instance_id,domain_id,kind,owner_id,generation,state,revision)
+                     VALUES('home-{id}','instance','global','SESSION','{id}','1','ACTIVE',1);
+                     INSERT INTO gogoke_v37_h_claim
+                     (domain_id,session_id,instance_id,home_id,binding_id,generation,
+                      state,revision,process_operation_id)
+                     VALUES('global','{id}','instance','home-{id}','binding-{id}',
+                            '1','COMMITTED',2,{});{}",
+                    if exact_source {format!("'operation-{id}'")} else {"NULL".into()},
+                    if exact_source {format!(
+                        "INSERT INTO gogoke_v37_h_process_episode
+                         (domain_id,request_id,session_id,generation,raw_hex,
+                          previous_revision,result_revision,process_operation_id,
+                          instance_id,home_id,binding_id,seat_id,seat_incarnation,phase)
+                         VALUES('global','open-{id}','{id}','1','6f70656e',1,2,
+                                'operation-{id}','instance','home-{id}','binding-{id}',
+                                '{seat}','{incarnation}','ACTIVE')"
+                    )} else {String::new()}
                 )).expect("original H relationship");
+            }
+            if let Some((mut custodian, prepared)) = prepared_source {
+                custodian.activate(&prepared).expect("activate source");
+                authority::mark_process_active(&mut connection, &format!("operation-{id}"), &prepared)
+                    .expect("active custody");
+                let frame = custodian.read_persistent_child_frame(&prepared.ticket,
+                    Duration::from_secs(5)).expect("original frame");
+                capture_raw_source(&mut connection, &frame, &format!("operation-{id}"),
+                    "source-epoch", "1").expect("capture exact source");
+                custodians.push(custodian);
             }
             let mut input = event(id, &registration, Tier::Global);
             if id == "good-old" {
                 input.update_json = r#"{"sessionUpdate":"agent_message_chunk","text":"UNKNOWN"}"#.into();
             }
             record(&mut connection, &input).expect("source event");
+            if exact_source {
+                let before = query_secretary_history(&connection,
+                    &Reader {domain_id:"global".into(),seat_id:"secretary".into(),session_id:"reader".into()},
+                    &start, 100).expect("unresolved source excluded");
+                assert!(!before.events.iter().any(|event| event.input.event_id == id));
+                resolve_raw_source(&mut connection, &format!("operation-{id}"),
+                    "source-epoch", "1", id).expect("resolve original source");
+                if state == "RELEASED" {
+                    exec(&mut connection, &format!(
+                        "INSERT INTO gogoke_v37_h_owner_binding
+                         (binding_id,instance_id,domain_id,kind,owner_id,generation,state)
+                         VALUES('binding-{id}-2','instance','global','SESSION','{id}','2','ACTIVE');
+                         INSERT INTO gogoke_v37_instance_homes
+                         (home_id,instance_id,domain_id,kind,owner_id,generation,state,revision)
+                         VALUES('home-{id}-2','instance','global','SESSION','{id}','2','ACTIVE',1);
+                         UPDATE gogoke_v37_h_claim SET state='RELEASED',generation='2',
+                           binding_id='binding-{id}-2',home_id='home-{id}-2',
+                           process_operation_id=NULL WHERE session_id='{id}'"
+                    )).expect("released historical session");
+                }
+            }
         }
         let reader = Reader {domain_id:"global".into(),seat_id:"secretary".into(),session_id:"reader".into()};
         let first = query_secretary_history(&connection, &reader, &start, 1).expect("first page");
@@ -2090,7 +2168,22 @@ pub(crate) mod tests {
         assert_eq!(second.events[0].input.source_cursor, "1");
         assert!(second.events[0].input.update_json.contains("UNKNOWN"));
         assert_eq!(second.position.epoch, start.epoch);
-        assert_eq!(second.position.cursor, 7);
+        assert_eq!(second.position.cursor, 8);
+        assert_eq!(query_secretary_history(&connection, &reader, &start, 100)
+            .expect("only original secretary sources").events.len(), 2);
+        exec(&mut connection,
+            "UPDATE v37_ledger_raw_source SET process_ticket='wrong-ticket'
+             WHERE resolved_event_id='good-old'"
+        ).expect("break original raw custody link");
+        assert!(query_secretary_history(&connection, &reader,
+            &LedgerPosition {epoch:start.epoch.clone(),cursor:first.events[0].cursor}, 1)
+            .expect("broken original source excluded").events.is_empty());
+        exec(&mut connection,
+            "UPDATE v37_ledger_raw_source
+             SET process_ticket=(SELECT ticket FROM gogoke_coordination_process_custody
+                                 WHERE operation_id='operation-good-old')
+             WHERE resolved_event_id='good-old'"
+        ).expect("restore original raw custody link");
         assert!(query(&connection, &reader, &start, 1).is_err());
         for denied in [
             Reader {session_id:"foreign".into(),seat_id:"other".into(),..reader.clone()},
@@ -2104,7 +2197,7 @@ pub(crate) mod tests {
             &LedgerPosition {epoch:"wrong".into(),cursor:0}, 1).is_err());
         assert!(query_secretary_history(&connection, &reader, &start, 1001).is_err());
         exec(&mut connection,
-            "DELETE FROM gogoke_v37_h_owner_binding WHERE owner_id='reader'"
+            "UPDATE gogoke_v37_h_owner_binding SET kind='CALL' WHERE owner_id='reader'"
         ).expect("break original reader association");
         assert!(query_secretary_history(&connection, &reader, &start, 1).is_err());
         connection.close_checked().expect("close");
