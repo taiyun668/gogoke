@@ -2559,7 +2559,8 @@ fn grok_permission_bound(db:&VerifiedDatabaseConnection<'_>,step:&GrokPermission
         acp::RpcId::String(value)=>Json::String(JsonString::from_str(value)),
     };
     if method.to_well_formed_string().as_deref()!=Some("session/prompt")
-        || fields.get(&JsonString::from_str("id"))!=Some(&expected_prompt_id)
+        || fields.get(&JsonString::from_str("id")).map(Json::canonical)
+            !=Some(expected_prompt_id.canonical())
         || !matches!(params.get(&JsonString::from_str("sessionId")),
             Some(Json::String(session)) if session.to_well_formed_string().as_deref()==Some(step.native_session_id)) {
         return Err(RpcJournalError::Denied);

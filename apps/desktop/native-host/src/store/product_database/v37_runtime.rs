@@ -32,7 +32,7 @@ pub(super) struct NativeSession {
     pub(super) raw_capture: super::v37_output::NativeRawCapture,
     stop_proof: Option<NativeStopProof>,
     next_rpc_id: u64,
-    pending_acp: Option<(Vec<u8>,h::AcpSendIdentity)>,
+    pub(super) pending_acp: Option<(Vec<u8>,h::AcpSendIdentity)>,
     pub(super) pending_claude: Option<(Vec<u8>,h::ClaudeSendIdentity)>,
     host_recipient: Option<(HostEscalationProof,HostRecipient)>,
     startup_observed: StartupObservationTimes,
