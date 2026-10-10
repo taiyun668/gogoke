@@ -61,13 +61,19 @@ pub(crate) use crate::store::seat::PermissionTier;
 
 const CODEX_READ_ONLY_UNAVAILABLE: &str =
     "fixed Codex 0.160.0 READ_ONLY LPAC unavailable: app-server initialize exited after gethostname-1.1.0 panic: GetComputerNameExW did not provide buffer size; Win32 GetLastError was not captured";
+const CODEX_NO_NETWORK_UNAVAILABLE: &str =
+    "fixed Codex 0.160.0 NO_NETWORK LPAC unavailable: app-server initialize exited after gethostname-1.1.0 panic: GetComputerNameExW did not provide buffer size; Win32 GetLastError was not captured";
 
 pub(super) fn require_new_reservation_supported(pin: &InstancePin, new_reservation: bool,
     tier: impl FnOnce() -> Result<PermissionTier, AdmissionError>) -> Result<(), AdmissionError> {
     if new_reservation && pin.driver_id == "codex" && pin.version == "0.160.0"
         && pin.digest == "sha256:fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d"
-        && tier()? == PermissionTier::ReadOnly {
-            return Err(AdmissionError::Invalid(CODEX_READ_ONLY_UNAVAILABLE));
+    {
+        match tier()? {
+            PermissionTier::ReadOnly => return Err(AdmissionError::Invalid(CODEX_READ_ONLY_UNAVAILABLE)),
+            PermissionTier::NoNetwork => return Err(AdmissionError::Invalid(CODEX_NO_NETWORK_UNAVAILABLE)),
+            _ => {}
+        }
     }
     Ok(())
 }
