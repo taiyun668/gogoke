@@ -171,7 +171,7 @@ jobs:
 
   licenses:
     name: ${{ github.event_name == 'workflow_dispatch' && inputs.experimental_candidate && 'Experimental candidate dependency notices' || 'Generate locked dependency notices' }}
-    if: github.event_name != 'workflow_dispatch' || !inputs.web_only
+    if: github.event_name != 'workflow_dispatch' || !inputs.web_only || inputs.update_loader_only
     timeout-minutes: 45
     runs-on: windows-latest
     defaults:
@@ -181,6 +181,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Reject incompatible loader diagnostic modes before notices
+        if: github.event_name == 'workflow_dispatch' && inputs.update_loader_only && (inputs.web_only || inputs.experimental_candidate)
+        shell: pwsh
+        run: throw 'update_loader_only cannot be combined with web_only or experimental_candidate.'
       - uses: actions/setup-node@v4
         with:
           node-version: "24.13.1"
@@ -235,7 +239,7 @@ jobs:
           if ($negative.Count -ne 1) { throw "Rust notice coverage negative control did not fail" }
           Write-Output "Rust notice coverage: $($expected.Count) Windows dependency identities covered; negative control rejected"
       - name: Upload generated license evidence for review
-        if: always()
+        if: always() && !(github.event_name == 'workflow_dispatch' && inputs.update_loader_only && (inputs.web_only || inputs.experimental_candidate))
         uses: actions/upload-artifact@v4
         with:
           name: gogoke-license-notices-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}
@@ -248,7 +252,7 @@ jobs:
 
   windows-build:
     name: ${{ github.event_name == 'workflow_dispatch' && inputs.update_loader_only && 'Update test image loader diagnostic (frozen)' || (github.event_name == 'workflow_dispatch' && inputs.experimental_candidate && format('Experimental candidate Windows build ({0})', matrix.lane) || format('Clean Windows build ({0})', matrix.lane)) }}
-    if: always() && ((github.event_name == 'workflow_dispatch' && inputs.update_loader_only && needs.licenses.result == 'success') || ((github.event_name != 'workflow_dispatch' || (!inputs.web_only && !inputs.update_loader_only)) && needs.web.result == 'success' && needs.licenses.result == 'success'))
+    if: ${{ !cancelled() && ((github.event_name == 'workflow_dispatch' && inputs.update_loader_only && needs.licenses.result == 'success') || ((github.event_name != 'workflow_dispatch' || (!inputs.web_only && !inputs.update_loader_only)) && needs.web.result == 'success' && needs.licenses.result == 'success')) }}
     timeout-minutes: 75
     needs: [web, licenses]
     runs-on: windows-latest
