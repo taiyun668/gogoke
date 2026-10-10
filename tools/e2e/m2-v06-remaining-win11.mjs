@@ -89,7 +89,8 @@ const childAlive=()=>product.child&&product.child.exitCode===null&&product.child
 const live=()=>childAlive()&&product.socket?.readyState===WebSocket.OPEN;
 const runChild=(runtime,args,label)=>{
   const p=spawnSync(runtime,args,{windowsHide:true,encoding:'utf8',maxBuffer:1024*1024});
-  check(p.status===0,`${label} exit=${p.status}: ${p.stderr}`);
+  check(p.status===0,`${label} exit=${p.status} signal=${p.signal} `+
+    `spawnError=${p.error?.stack??p.error??'none'} stderr=${p.stderr??'none'}`);
 };
 const snapshot=phase=>{
   for(const o of c.observers){

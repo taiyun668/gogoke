@@ -172,7 +172,7 @@ def h_stop_release(db,j,s):
     check([r["operation"] for r in operations]==["stop","admission-release"] and
           all(r["status"]=="APPLIED" for r in operations),
           "Original H durable stop/release operations differ")
-    claim=one(db,"SELECT state,process_operation_id FROM gogoke_v37_h_claim "
+    claim=one(db,"SELECT state,process_operation_id,stop_fact_id FROM gogoke_v37_h_claim "
                  "WHERE domain_id=? AND session_id=?",(f["domainId"],s["id"]))
     episode=one(db,"SELECT phase,stop_fact_id FROM gogoke_v37_h_process_episode "
                    "WHERE domain_id=? AND session_id=? AND process_operation_id=?",
@@ -181,7 +181,9 @@ def h_stop_release(db,j,s):
                    "WHERE operation_id=?",(claim["process_operation_id"],))
     check(claim["state"]=="RELEASED" and
           episode["phase"]==custody["state"]=="STOPPED" and
-          episode["stop_fact_id"]==custody["stop_proof_hash"] and
+          s["stopFact"]==stop["receipt"]["result"]["stopFact"]==
+            claim["stop_fact_id"]==episode["stop_fact_id"]==
+            custody["stop_proof_hash"] and
           s["processOperationId"]==claim["process_operation_id"],
           "Original physical H episode is not stopped and released")
     return {"sessionId":s["id"],"stopRequestId":s["stopRequestId"],
@@ -304,6 +306,35 @@ def main():
                   "Original H model attempt count differs")
             native=[model_tool(db,j,attempts[0],"APPLIED"),
                     model_tool(db,j,attempts[1],"DENIED")]
+            check(len(j["sessions"])==2 and
+                  [s["seatId"] for s in j["sessions"]]==
+                    [f["parentSeatId"],f["childSeatId"]],
+                  "Original H parent/child session identities differ")
+            parent_session,child_session=j["sessions"]
+            child_admission=[]
+            for operation in ("admission-reserve","admission-commit","open"):
+                found=[e for e in j["operations"] if
+                       e.get("request",{}).get("family")=="K-SESSION" and
+                       e["request"].get("operation")==operation and
+                       e["request"].get("targetId")==child_session["id"]]
+                check(len(found)==1,"Original child H admission/open count differs")
+                e=journal_entry(j,found[0]["request"]["requestId"],
+                                "K-SESSION",operation,child_session["id"])
+                check(e["receipt"]["status"]=="APPLIED",
+                      "Original child H admission/open was not applied")
+                child_admission.append(e)
+            parent_stop=journal_entry(j,parent_session["stopRequestId"],
+                                      "K-SESSION","stop",parent_session["id"])
+            parent_release=journal_entry(j,parent_session["releaseRequestId"],
+                                         "K-SESSION","admission-release",parent_session["id"])
+            order=[j["operations"].index(e) for e in
+                   [parent_stop,parent_release,*child_admission]]
+            check(child_session["openRequestId"]==
+                    child_admission[2]["request"]["requestId"] and
+                  parent_stop["receipt"]["status"]==
+                    parent_release["receipt"]["status"]=="APPLIED" and
+                  all(a<b for a,b in zip(order,order[1:])),
+                  "Original parent stop/release did not precede child admission/open")
             h=[h_stop_release(db,j,s) for s in j["sessions"]]
             sends=[x for x in j["operations"] if x.get("request",{}).get("family")=="K-SESSION" and
                    x["request"]["operation"]=="send"]
