@@ -1,5 +1,7 @@
-//! Cloud security composition, with one explicit synthetic fact:
+//! Cloud security composition, with explicit synthetic facts:
 //! `SYNTHETIC_LOGIN_PRESENCE_NOT_AUTHENTICATION` marks instance registry login metadata only.
+//! The UNKNOWN-open regression projects the observed persisted failure shape;
+//! it does not claim that its successful initialize fixture reproduced a timeout.
 //! No account, credential, User model turn or vendor session is invented.
 //! E/F/H, fixed Claude initialize ACK, LPAC process identities and ACL effects
 //! come from their production producers. This is not installed Owner recovery.
@@ -36,6 +38,103 @@ fn operation(
         .as_bytes(),
     )
     .unwrap()
+}
+
+fn original_opens(product: &ProductDatabase<'_>) -> Vec<Vec<String>> {
+    rows(
+        product,
+        "SELECT domain_id,request_id,raw_hex,operation,session_id,status
+         FROM main.gogoke_v37_h_operation WHERE operation='open'
+         AND domain_id IN ('projectA','projectB') ORDER BY domain_id,request_id",
+        &[],
+        6,
+    )
+}
+
+#[test]
+fn claude_holder_unknown_open_keeps_originals_and_rejects_captured_status_drift() {
+    cold_two_claude(|mut product, _root, cold| {
+        // Synthetic persisted failure shape, not a fabricated authentication,
+        // initialize failure or installed recovery result. Exact original H/E/F,
+        // native process disappearance and ACLs still come from their producers.
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_h_operation SET status='UNKNOWN'
+             WHERE operation='open' AND domain_id IN ('projectA','projectB');
+             UPDATE main.gogoke_v37_h_process_episode SET phase='PREPARED'
+             WHERE instance_id='instanceA' AND domain_id IN ('projectA','projectB')",
+        ).unwrap();
+        let opens_before = original_opens(&product);
+        let custody_before = custody(&product);
+        let episodes_before = episodes(&product);
+        let rpc_before = rpc(&product);
+        assert_eq!(opens_before.len(), 2);
+        assert!(opens_before.iter().all(|row| row[5] == "UNKNOWN"));
+        assert!(custody_before.iter().all(|row| row[10] == "UNKNOWN" && row[12] == "1"));
+        assert!(episodes_before.iter().all(|row| row[15] == "PREPARED" && row[16] == "NULL"));
+        NativeProcessHoldersGone::observe(&cold.pairs).unwrap().validate(&cold.pairs).unwrap();
+        assert_eq!(occupancy(&mut product), None);
+        product.connection.execute(
+            "CREATE TEMP TRIGGER claude_holder_unknown_second_release_cut
+             BEFORE INSERT ON main.gogoke_v37_h_operation
+             WHEN NEW.operation='claude-holder-gone-release' AND NEW.session_id='sessionB'
+             BEGIN SELECT RAISE(FAIL,'controlled UNKNOWN second H release cut'); END",
+        ).unwrap();
+        let cut = product.recover_disappeared_claude_resources(INSTANCE, None).unwrap_err();
+        assert!(format!("{cut:?}").contains("controlled UNKNOWN second H release cut"), "{cut:?}");
+        let partial = journal(&product);
+        assert_eq!(partial.len(), 2);
+        assert_eq!(partial[0][7], "APPLIED");
+        assert_eq!(partial[1][7], "PREPARED");
+        let partial_claims = claims(&product);
+        assert_eq!(partial_claims[0][6], "RELEASED");
+        assert_eq!(partial_claims[1][6], "COMMITTED");
+        assert!(partial_claims.iter().all(|row| row[10] == "1"));
+        assert_eq!(occupancy(&mut product), None);
+        assert_eq!(original_opens(&product), opens_before);
+        assert_eq!(custody(&product), custody_before);
+        assert_eq!(episodes(&product), episodes_before);
+        assert_eq!(rpc(&product), rpc_before);
+
+        // Even another otherwise legal open status cannot replace the status
+        // captured by this intent. Reject it before releasing the second claim.
+        product.connection.execute(
+            "DROP TRIGGER temp.claude_holder_unknown_second_release_cut;
+             UPDATE main.gogoke_v37_h_operation SET status='APPLIED'
+             WHERE domain_id='projectB' AND operation='open' AND session_id='sessionB'",
+        ).unwrap();
+        let drift = product.recover_disappeared_claude_resources(INSTANCE, None).unwrap_err();
+        assert!(format!("{drift:?}").contains("Claude original H tuple changed"), "{drift:?}");
+        assert_eq!(claims(&product), partial_claims);
+        assert_eq!(journal(&product)[1][7], "PREPARED");
+        assert_eq!(custody(&product), custody_before);
+        assert_eq!(episodes(&product), episodes_before);
+        assert_eq!(rpc(&product), rpc_before);
+
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_h_operation SET status='UNKNOWN'
+             WHERE domain_id='projectB' AND operation='open' AND session_id='sessionB'",
+        ).unwrap();
+        product.recover_disappeared_claude_resources(INSTANCE, None).unwrap();
+        let completed = journal(&product);
+        assert!(completed.iter().all(|row| row[7] == "APPLIED"));
+        let mut expected = cold.claims.clone();
+        for claim in &mut expected {
+            claim[6] = "RELEASED".into();
+            claim[7] = (claim[7].parse::<u64>().unwrap() + 1).to_string();
+        }
+        assert_eq!(claims(&product), expected, "independent release keeps StopFact NULL");
+        for (domain, seat_id, _, _) in SCOPES {
+            assert_eq!(seat::get(&product.connection, domain, seat_id).unwrap().unwrap().state, seat::State::Idle);
+        }
+        assert_eq!(occupancy(&mut product), Some(0));
+        product.recover_disappeared_claude_resources(INSTANCE, None).unwrap();
+        assert_eq!(journal(&product), completed);
+        assert_eq!(original_opens(&product), opens_before, "UNKNOWN is never rewritten to successful open");
+        assert_eq!(custody(&product), custody_before, "no invented STOPPED or StopFact");
+        assert_eq!(episodes(&product), episodes_before);
+        assert_eq!(rpc(&product), rpc_before);
+        product.close_checked().unwrap();
+    });
 }
 fn applied(product: &mut ProductDatabase<'_>, request: &V37Request) {
     let raw = product

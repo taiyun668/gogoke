@@ -181,15 +181,18 @@ impl<'root> ProductDatabase<'root> {
                 &[&r[0], &r[9]],
                 4,
             )?;
-            if open_effect
-                != vec![vec![
-                    r[10].clone(),
-                    "open".into(),
-                    r[1].clone(),
-                    "APPLIED".into(),
-                ]]
+            let [effect] = open_effect.as_slice() else {
+                return Err(denied("Claude original open effect missing or duplicated"));
+            };
+            // UNKNOWN records the original admitted launch whose outcome was
+            // not confirmed. It is not a successful open, nor a StopFact. Its
+            // exact tuple still identifies the old holder being retired.
+            if effect[0] != r[10]
+                || effect[1] != "open"
+                || effect[2] != r[1]
+                || !matches!(effect[3].as_str(), "APPLIED" | "UNKNOWN")
             {
-                return Err(denied("Claude original open effect absent"));
+                return Err(denied("Claude original open effect tuple/status changed"));
             }
             let relationship = evidence(
                 crate::store::session_transport::session_binding::current_relationship(
@@ -243,6 +246,7 @@ impl<'root> ProductDatabase<'root> {
                 put(&mut facts, key, &r[index]);
             }
             put(&mut facts, "instance", instance);
+            put(&mut facts, "openStatus", &effect[3]);
             put(&mut facts, "repository", &repository);
             put(&mut facts, "worktree", &worktree);
             put(&mut facts, "profile", &profile_name);
@@ -409,6 +413,7 @@ impl<'root> ProductDatabase<'root> {
             "operation",
             "openRequest",
             "openRaw",
+            "openStatus",
             "episodePhase",
             "seat",
             "incarnation",
