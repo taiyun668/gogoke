@@ -419,3 +419,11 @@ Tauri 不改变首次附着丢弃历史实时事件的规则；冷读合页保�
 实际 ProductDatabase 的 connection、issuer 和活动 H 会话均为私有；main.rs 属独立 binary crate，E/H 是 store 下的兄弟模块。现有 `store/mod.rs` 注册职责和 main.rs 的公开调用均不能单独完成同库事务组合。直接在既有 product_database.rs 增窄方法即可，不新增模块注册或其他共享路径。所依据的静态准备是私有 `g37-secretary-scheduler-preparation-20261010/scope-amendment.md`；它不构成产品证据或授权。
 
 本次只有该共享路径进入范围摘要；需求、阶段、角色、E/H 写域、契约持久写方和 Owner 触点不变。参照 main `d91c9aa2` 已生效的 PR83 治理，仅将 `PLAN.json.sources` 中 `AGENTS.md` 与 `docs/governance/gogoke-build-and-release.md` 两个来源 blob 同步到当前 main；其余来源与映射保持，不新增治理要求。同 PR 更新 v2 授权回执、MANIFEST 和三处固定回执 blob。Owner 合并并精确读回新摘要前不得施工该路径；本提案不宣称定时任务已能运行、V14 通过或候选验收。
+
+## 2026-10-10：项目 policy head 显式创建前只读判定（范围提案，待 Owner 合并）
+
+真实 V10 隔离测试域缺原 policy head 时，原生 LEAD `create-from-template` 被拒；经已有 Owner `policy-initialize` 建立该域 head 后，原 LEAD 创建获得 APPLIED。这说明该次拒绝是测试前置缺失，不能据此判定模型创建逻辑有缺陷。静态产品源又表明普通 UI 的 USER 席位创建只调用原 create/bind/rename/tune，既有 `seats-page-read` 不返回 head、revision 或 stage；原生 `call-permission-table` 要求已存在 head 和活动 H 调用者，也不提供初次项目创建的缺行事实。读取不得偷偷初始化，更不能由模型创建子席位时补 head。
+
+只新增 INTEGRATOR 共享路径 `apps/desktop/native-host/src/store/product_database/v37_seat.rs`：在既有 Owner 配置只读入口及同一已验证 ProductDatabase 快照中明确返回 head **absent** 或原 `{revision,currentStage}`，保留原错误，不写入、不自动修复、不授予 call grant、gate、route 或任何模型权限。G 已列共享 `apps/desktop/src/services/tauri.ts` 仅在显式新建项目或 USER 席位流程中消费该事实；确证 absent 才提交现有 Owner `policy-initialize`，既有 head 的 revision/stage、撤销和 grants 原样保留。原命令的 request bytes、精确重放及冲突规则保持；并发冲突只重读当前事实，不覆盖。初始 stage 的实际取值仍待按原项目创建语义确认；历史测试夹具使用 `OPEN` 不单独授予产品默认值。本提案不改变原政策表、持久写方、默认 grant、模型工具、契约或 Owner 触点。
+
+只读定位依据为当前施工源 `2d700a5b` 的该文件 blob `633b3d29e918202700f2a1391ccca6eaf376c3a2`；它尚不存在于 `origin/main`，不是已生效实现或授权。现有 `seat/policy.rs` 只有 Owner initialize 写者、缺 head 的 native 读为 Denied；现有 UI transport 无自动 initialize。新增这个唯一共享文件是提供缺行与当前 stage 可信只读事实的最小生产接线。Owner 只审阅并合并本次范围 PR 一次；Controller 精确读回新 v2 回执、main 摘要及新路径后才可施工。当前测试 APPLIED 不证明普通 UI 项目 intake 已接通，也不代替云检、候选和真实安装验收。
