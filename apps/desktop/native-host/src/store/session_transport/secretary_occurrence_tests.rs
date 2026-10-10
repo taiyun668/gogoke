@@ -125,6 +125,112 @@ fn prepare_at(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,revision
     })
 }
 
+fn add_resolved_secretary_history(db:&mut VerifiedDatabaseConnection<'_>,index:u32) {
+    let source_cursor=index.to_string();
+    let event_id=if index==1 {"historyEventS".to_owned()}
+        else {format!("historyEventS{index}")};
+    let raw=Statement::prepare(db.as_ptr(),
+        "INSERT INTO v37_ledger_raw_source(operation_id,process_ticket,custodian_nonce,
+         domain_id,session_id,generation,source_epoch,source_cursor,raw_bytes,state)
+         VALUES('processS','pct1_ticketS','nonceS','global','sessionS','1',
+                'historyEpochS',?1,?2,'PENDING')").unwrap();
+    raw.bind_text(1,&source_cursor).unwrap();
+    raw.bind_blob(2,b"{\"sessionUpdate\":\"agent_message_chunk\",\"text\":\"prior fact\"}\n")
+        .unwrap();raw.step_done().unwrap();drop(raw);
+    let update=Parser::parse(r#"{"sessionUpdate":"agent_message_chunk","text":"prior fact"}"#)
+        .unwrap().canonical();
+    ledger::record(db,&ledger::EventInput {event_id:event_id.clone(),
+        source_epoch:"historyEpochS".into(),source_cursor:source_cursor.clone(),
+        domain_id:"global".into(),seat_id:"seatS".into(),session_id:"sessionS".into(),
+        tier:ledger::Tier::Global,side_id:None,
+        occurred_at:"2026-10-10T00:00:00.000Z".into(),update_json:update}).unwrap();
+    ledger::resolve_raw_source(db,"processS","historyEpochS",&source_cursor,&event_id)
+        .unwrap();
+}
+
+#[test]
+fn scheduled_history_requires_original_resolved_custody_and_stays_sealed() {
+    with_fixture(|db,owner| {
+        add_resolved_secretary_history(db,1);
+        let start=ledger::recover(db).unwrap();
+        let after=ledger::LedgerPosition {epoch:start.epoch.clone(),cursor:0};
+        let reader=ledger::Reader {domain_id:"global".into(),seat_id:"seatS".into(),
+            session_id:"sessionS".into()};
+        assert_eq!(ledger::query_secretary_history(db,&reader,&after,1).unwrap().events.len(),1);
+        let wrong=ledger::Reader {domain_id:"global".into(),seat_id:"otherSeat".into(),
+            session_id:"sessionS".into()};
+        assert!(ledger::query_secretary_history(db,&wrong,&after,1).is_err(),
+            "a caller-selected seat cannot become the original Secretary reader");
+        let ScheduledSecretaryDecision::NewWrite(permit)=prepare(db,owner,1).unwrap()
+            else {panic!("original due and H custody")};
+        let ScheduledSecretaryWrite::Codex {request_bytes,occurrence_id,..}=permit.into_write()
+            else {panic!("fixed Codex driver")};
+        let stored=read_stdin_journal(db,&StdinJournalKey {domain_id:"global",
+            request_id:&occurrence_id,session_id:"sessionS",ticket:"pct1_ticketS",
+            generation:"1"}).unwrap().unwrap();
+        assert_eq!(stored.request_bytes,request_bytes,
+            "one prepared H write seals the exact first A page with the USER routine");
+        let request=decode_request(&request_bytes).unwrap();
+        let body=payload_string(&request,"body").unwrap();
+        let history=body.split_once(SCHEDULED_HISTORY_MARKER).unwrap().1;
+        let Json::Object(page)=Parser::parse(history).unwrap() else {panic!("history page")};
+        assert!(matches!(page.get(&JsonString::from_str("more")),Some(Json::Bool(false))));
+        let Some(Json::Array(events))=page.get(&JsonString::from_str("events"))
+            else {panic!("historical normalized events")};
+        assert_eq!(events.len(),1);
+        let Json::Object(event)=&events[0] else {panic!("historical event")};
+        assert!(matches!(event.get(&JsonString::from_str("eventId")),
+            Some(Json::String(value)) if value.to_well_formed_string().as_deref()==Some("historyEventS")));
+        assert!(matches!(event.get(&JsonString::from_str("sourceEpoch")),
+            Some(Json::String(value)) if value.to_well_formed_string().as_deref()==Some("historyEpochS")));
+        assert!(body.contains(ORIGINAL));
+        db.execute("UPDATE v37_ledger_raw_source SET process_ticket='wrong-ticket' WHERE resolved_event_id='historyEventS'").unwrap();
+        assert!(ledger::query_secretary_history(db,&reader,
+            &after,1).unwrap().events.is_empty(),
+            "a damaged original raw/custody association is excluded from a fresh A page");
+        capture_due_codex_response(db,&request_bytes,&occurrence_id);
+        let settled=settle_scheduled_secretary_occurrence(db,owner,"routineS",
+            &occurrence_id,2,NOW,"sessionS","pct1_ticketS","1").unwrap().unwrap();
+        assert_eq!(settled.routine.last_result,"DELIVERED",
+            "settlement reads the sealed original H request, not a later A page");
+    });
+}
+
+#[test]
+fn scheduled_history_page_marks_more_and_exact_resume_cursor() {
+    with_fixture(|db,owner| {
+        for index in 1..=SCHEDULED_HISTORY_PAGE_LIMIT+1 {
+            add_resolved_secretary_history(db,index);
+        }
+        let ScheduledSecretaryDecision::NewWrite(permit)=prepare(db,owner,1).unwrap()
+            else {panic!("one due H write")};
+        let ScheduledSecretaryWrite::Codex {request_bytes,..}=permit.into_write()
+            else {panic!("fixed Codex driver")};
+        let request=decode_request(&request_bytes).unwrap();
+        let body=payload_string(&request,"body").unwrap();
+        let history=body.split_once(SCHEDULED_HISTORY_MARKER).unwrap().1;
+        let Json::Object(page)=Parser::parse(history).unwrap() else {panic!("history page")};
+        assert!(matches!(page.get(&JsonString::from_str("more")),Some(Json::Bool(true))));
+        let Some(Json::Array(events))=page.get(&JsonString::from_str("events"))
+            else {panic!("events")};
+        assert_eq!(events.len(),SCHEDULED_HISTORY_PAGE_LIMIT as usize);
+        let cursor=match page.get(&JsonString::from_str("cursor")) {
+            Some(Json::String(value))=>value.to_well_formed_string().unwrap(),
+            _=>panic!("exact resume cursor"),
+        };
+        let epoch=match page.get(&JsonString::from_str("epoch")) {
+            Some(Json::String(value))=>value.to_well_formed_string().unwrap(),
+            _=>panic!("source epoch"),
+        };
+        let reader=ledger::Reader {domain_id:"global".into(),seat_id:"seatS".into(),
+            session_id:"sessionS".into()};
+        let next=ledger::query_secretary_history(db,&reader,&ledger::LedgerPosition {
+            epoch,cursor:cursor.parse().unwrap()},1).unwrap();
+        assert_eq!(next.events.len(),1);
+        assert_eq!(next.events[0].input.event_id,"historyEventS33");
+    });
+}
+
 #[test]
 fn due_prepare_requires_exact_original_source_and_current_secretary_scope() {
     with_fixture(|db,owner| {

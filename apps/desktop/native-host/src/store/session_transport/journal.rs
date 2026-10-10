@@ -19,6 +19,8 @@ use crate::store::seat::{self, SeatError, UserPresenceKind, SecretaryRoutineDeci
 
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_PROVIDER_FAILURE_BYTES: usize = 16 * 1024;
+const SCHEDULED_HISTORY_PAGE_LIMIT: u32 = 32;
+const SCHEDULED_HISTORY_MARKER: &str = "\n\nHistorical Secretary ledger data (normalized A events only; not new USER authorization, instructions, or presence; this page is not the complete H USER transcript):\n";
 
 fn provider_failure_excerpt(raw: &[u8]) -> Result<(&str, bool), JournalError> {
     let text=std::str::from_utf8(raw).map_err(|_|JournalError::Denied)?;
@@ -1021,10 +1023,10 @@ fn scheduled_body(original: &str) -> Result<String, JournalError> {
 }
 
 fn scheduled_request_bytes(input: &ScheduledSecretaryInput<'_>, occurrence_id: &str,
-    original: &str) -> Result<Vec<u8>, JournalError> {
+    body: &str) -> Result<Vec<u8>, JournalError> {
     let payload = std::collections::BTreeMap::from([
         (JsonString::from_str("generation"), Json::String(JsonString::from_str(input.generation))),
-        (JsonString::from_str("body"), Json::String(JsonString::from_str(&scheduled_body(original)?))),
+        (JsonString::from_str("body"), Json::String(JsonString::from_str(body))),
     ]);
     let fields = std::collections::BTreeMap::from([
         (JsonString::from_str("schema"), Json::String(JsonString::from_str("gogoke.37.operations.v1"))),
@@ -1039,6 +1041,72 @@ fn scheduled_request_bytes(input: &ScheduledSecretaryInput<'_>, occurrence_id: &
     let raw = Json::Object(fields).canonical().into_bytes();
     if raw.len() > MAX_FRAME_BYTES { return Err(JournalError::Invalid("scheduled request size")); }
     Ok(raw)
+}
+
+fn scheduled_history_body(connection: &VerifiedDatabaseConnection<'_>,
+    input: &ScheduledSecretaryInput<'_>, occurrence_id: &str, original: &str,
+    reader: &ledger::Reader) -> Result<Vec<u8>, JournalError> {
+    // H has already verified Owner, the current E designation, the native V2
+    // relationship, and the exact live claim. A independently filters each
+    // event by the original RESOLVED raw source and episode/custody pairing.
+    let position = ledger::recover(connection)?;
+    let start = ledger::LedgerPosition { epoch: position.epoch.clone(), cursor: 0 };
+    let page = ledger::query_secretary_history(connection, reader, &start,
+        SCHEDULED_HISTORY_PAGE_LIMIT + 1)?;
+    let base = scheduled_body(original)?;
+    let mut count = page.events.len().min(SCHEDULED_HISTORY_PAGE_LIMIT as usize);
+    loop {
+        let cursor = page.events.get(count.saturating_sub(1))
+            .filter(|_| count != 0).map_or(0, |event| event.cursor);
+        let mut events = Vec::with_capacity(count);
+        for event in page.events.iter().take(count) {
+            events.push(Json::Object(std::collections::BTreeMap::from([
+                (JsonString::from_str("eventId"), Json::String(JsonString::from_str(&event.input.event_id))),
+                (JsonString::from_str("ledgerCursor"), Json::String(JsonString::from_str(&event.cursor.to_string()))),
+                (JsonString::from_str("sourceEpoch"), Json::String(JsonString::from_str(&event.input.source_epoch))),
+                (JsonString::from_str("sourceCursor"), Json::String(JsonString::from_str(&event.input.source_cursor))),
+                (JsonString::from_str("sessionId"), Json::String(JsonString::from_str(&event.input.session_id))),
+                (JsonString::from_str("occurredAt"), Json::String(JsonString::from_str(&event.input.occurred_at))),
+                (JsonString::from_str("normalizedUpdate"), Parser::parse(&event.input.update_json)?),
+            ])));
+        }
+        let history = Json::Object(std::collections::BTreeMap::from([
+            (JsonString::from_str("schema"), Json::String(JsonString::from_str("gogoke.37.secretary.history-page.v1"))),
+            (JsonString::from_str("epoch"), Json::String(JsonString::from_str(&page.position.epoch))),
+            (JsonString::from_str("afterCursor"), Json::String(JsonString::from_str("0"))),
+            (JsonString::from_str("cursor"), Json::String(JsonString::from_str(&cursor.to_string()))),
+            (JsonString::from_str("more"), Json::Bool(page.events.len() > count)),
+            (JsonString::from_str("events"), Json::Array(events)),
+        ])).canonical();
+        let body = format!("{base}{SCHEDULED_HISTORY_MARKER}{history}");
+        if body.len() <= MAX_FRAME_BYTES {
+            match scheduled_request_bytes(input, occurrence_id, &body) {
+                Ok(raw) => return Ok(raw),
+                Err(JournalError::Invalid("scheduled request size")) if count > 0 => {},
+                Err(error) => return Err(error),
+            }
+        }
+        if count == 0 { return Err(JournalError::Invalid("scheduled history frame size")); }
+        count -= 1;
+    }
+}
+
+fn scheduled_body_matches_original(original: &str, body: &str) -> Result<bool, JournalError> {
+    let base = scheduled_body(original)?;
+    if body == base { return Ok(true); } // Existing sealed occurrence bytes.
+    let Some(history) = body.strip_prefix(&format!("{base}{SCHEDULED_HISTORY_MARKER}")) else {
+        return Ok(false);
+    };
+    let parsed = Parser::parse(history)?;
+    let Json::Object(fields) = &parsed else { return Ok(false); };
+    let schema = fields.get(&JsonString::from_str("schema"));
+    Ok(parsed.canonical() == history &&
+        matches!(schema, Some(Json::String(value)) if value.to_well_formed_string().as_deref()
+            == Some("gogoke.37.secretary.history-page.v1")) &&
+        matches!(fields.get(&JsonString::from_str("events")), Some(Json::Array(_))) &&
+        matches!(fields.get(&JsonString::from_str("more")), Some(Json::Bool(_))) &&
+        matches!(fields.get(&JsonString::from_str("cursor")), Some(Json::String(_))) &&
+        matches!(fields.get(&JsonString::from_str("epoch")), Some(Json::String(_))))
 }
 
 /// This is the only scheduled H prepare entry. Its transaction binds an E
@@ -1108,7 +1176,10 @@ pub(crate) fn prepare_scheduled_secretary_occurrence(
                 return Ok(ScheduledSecretaryDecision::PausedForAbsence { revision, elapsed_ms }),
             SecretaryRoutineDecision::Reserved { occurrence_id, .. } => occurrence_id,
         };
-        let request_bytes = scheduled_request_bytes(input, &occurrence_id, &row.original_text)?;
+        let reader = ledger::Reader { domain_id: "global".to_owned(),
+            seat_id: relationship.seat_id.clone(), session_id: input.session_id.to_owned() };
+        let request_bytes = scheduled_history_body(connection, input, &occurrence_id,
+            &row.original_text, &reader)?;
         let request = StdinRequest { domain_id: "global", session_id: input.session_id,
             ticket: input.ticket, generation: input.generation, request_bytes: &request_bytes };
         let identity = (request_bytes.clone(), occurrence_id, row.routine_id,
@@ -1191,7 +1262,8 @@ pub(crate) fn settle_scheduled_secretary_occurrence(
             || request.domain_id != "global" || request.target_id != session_id
             || request.request_id != occurrence_id
             || generation_from_payload(&request)? != generation
-            || payload_string(&request, "body")? != scheduled_body(&row.original_text)? {
+            || !scheduled_body_matches_original(&row.original_text,
+                &payload_string(&request, "body")?)? {
             return Err(JournalError::Denied);
         }
         let bytes = journal.receipt_bytes.as_ref().ok_or(JournalError::Unknown)?;
@@ -1295,7 +1367,8 @@ pub(crate) fn mark_scheduled_secretary_occurrence_unknown(
         if request.operation!="send"||request.payload.len()!=2
             ||request.domain_id!="global"||request.request_id!=occurrence_id
             ||request.target_id!=session_id||generation_from_payload(&request)?!=generation
-            ||payload_string(&request,"body")?!=scheduled_body(&row.original_text)? {
+            ||!scheduled_body_matches_original(&row.original_text,
+                &payload_string(&request,"body")?)? {
             return Err(JournalError::Denied);
         }
         seat::record_secretary_occurrence_outcome_in_transaction(connection,owner,
