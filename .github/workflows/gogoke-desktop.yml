@@ -13,6 +13,11 @@ on:
         type: boolean
         required: false
         default: false
+      update_loader_only:
+        description: "Diagnose the native update test image loader on one frozen Windows runner; no candidate artifacts or stable gate"
+        type: boolean
+        required: false
+        default: false
   push:
     branches:
       - main
@@ -50,6 +55,7 @@ concurrency:
 jobs:
   web:
     name: ${{ github.event_name == 'workflow_dispatch' && inputs.experimental_candidate && 'Experimental candidate Browser build and tests' || 'Browser build and tests' }}
+    if: github.event_name != 'workflow_dispatch' || !inputs.update_loader_only
     timeout-minutes: 30
     runs-on: windows-latest
     defaults:
@@ -163,7 +169,7 @@ jobs:
 
   licenses:
     name: ${{ github.event_name == 'workflow_dispatch' && inputs.experimental_candidate && 'Experimental candidate dependency notices' || 'Generate locked dependency notices' }}
-    if: github.event_name != 'workflow_dispatch' || !inputs.web_only
+    if: github.event_name != 'workflow_dispatch' || !inputs.web_only || inputs.update_loader_only
     timeout-minutes: 45
     runs-on: windows-latest
     defaults:
@@ -173,6 +179,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Reject incompatible loader diagnostic modes before notices
+        if: github.event_name == 'workflow_dispatch' && inputs.update_loader_only && (inputs.web_only || inputs.experimental_candidate)
+        shell: pwsh
+        run: throw 'update_loader_only cannot be combined with web_only or experimental_candidate.'
       - uses: actions/setup-node@v4
         with:
           node-version: "24.13.1"
@@ -227,7 +237,7 @@ jobs:
           if ($negative.Count -ne 1) { throw "Rust notice coverage negative control did not fail" }
           Write-Output "Rust notice coverage: $($expected.Count) Windows dependency identities covered; negative control rejected"
       - name: Upload generated license evidence for review
-        if: always()
+        if: always() && !(github.event_name == 'workflow_dispatch' && inputs.update_loader_only && (inputs.web_only || inputs.experimental_candidate))
         uses: actions/upload-artifact@v4
         with:
           name: gogoke-license-notices-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}
@@ -239,15 +249,15 @@ jobs:
           retention-days: 30
 
   windows-build:
-    name: ${{ github.event_name == 'workflow_dispatch' && inputs.experimental_candidate && format('Experimental candidate Windows build ({0})', matrix.lane) || format('Clean Windows build ({0})', matrix.lane) }}
-    if: github.event_name != 'workflow_dispatch' || !inputs.web_only
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.update_loader_only && 'Update test image loader diagnostic (frozen)' || (github.event_name == 'workflow_dispatch' && inputs.experimental_candidate && format('Experimental candidate Windows build ({0})', matrix.lane) || format('Clean Windows build ({0})', matrix.lane)) }}
+    if: ${{ !cancelled() && ((github.event_name == 'workflow_dispatch' && inputs.update_loader_only && needs.licenses.result == 'success') || ((github.event_name != 'workflow_dispatch' || (!inputs.web_only && !inputs.update_loader_only)) && needs.web.result == 'success' && needs.licenses.result == 'success')) }}
     timeout-minutes: 75
     needs: [web, licenses]
     runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
-        lane: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.experimental_candidate && '["frozen"]' || '["frozen","repro"]') }}
+        lane: ${{ fromJSON(github.event_name == 'workflow_dispatch' && (inputs.experimental_candidate || inputs.update_loader_only) && '["frozen"]' || '["frozen","repro"]') }}
     env:
       RUSTUP_TOOLCHAIN: 1.89.0
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
@@ -256,6 +266,10 @@ jobs:
       run:
         working-directory: apps/desktop
     steps:
+      - name: Reject incompatible loader diagnostic modes
+        if: github.event_name == 'workflow_dispatch' && inputs.update_loader_only && (inputs.web_only || inputs.experimental_candidate)
+        shell: pwsh
+        run: throw 'update_loader_only cannot be combined with web_only or experimental_candidate.'
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -355,6 +369,7 @@ jobs:
       - run: npm ci
       - run: npm run prepare:gogoke-icons
       - name: Test deterministic resource pack instrumentation
+        if: github.event_name != 'workflow_dispatch' || !inputs.update_loader_only
         shell: pwsh
         run: |
           Push-Location ../..
@@ -416,9 +431,76 @@ jobs:
         shell: pwsh
         env:
           GOGOKE_BUILD_LANE: ${{ matrix.lane }}
+          GOGOKE_UPDATE_LOADER_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.update_loader_only }}
         run: |
-          cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_update --lib
-          if ($LASTEXITCODE -ne 0) { throw "gogoke update tests failed: $LASTEXITCODE" }
+          $PSNativeCommandUseErrorActionPreference = $false
+          $dependency = "/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
+          $env:CARGO_ENCODED_RUSTFLAGS = @(
+            '-C', 'link-arg=/Brepro',
+            '-C', 'link-arg=/MANIFEST:EMBED,ID=1',
+            '-C', "link-arg=$dependency"
+          ) -join [char]0x1f
+          $diagnostic = $env:GOGOKE_UPDATE_LOADER_ONLY -ceq 'true'
+          $evidence = Join-Path $env:RUNNER_TEMP 'gogoke-update-loader-diagnostic'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $updateOut = Join-Path $evidence 'cargo-update-stdout.txt'
+          $updateErr = Join-Path $evidence 'cargo-update-stderr.txt'
+          cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_update --lib -vv 1> $updateOut 2> $updateErr
+          $updateExit = $LASTEXITCODE
+          Get-Content -LiteralPath $updateOut -Tail 60 | Out-Host
+          if ($updateExit -ne 0) {
+            Get-Content -LiteralPath $updateErr -Tail 60 | Out-Host
+            throw "gogoke update tests failed: $updateExit"
+          }
+          $result = [regex]::Match((Get-Content -LiteralPath $updateOut -Raw), '(?m)^test result: ok\. ([1-9][0-9]*) passed; 0 failed; 0 ignored;')
+          if (-not $result.Success) { throw 'Original gogoke_update test did not execute a nonzero number of passing tests' }
+          $images = @(Get-ChildItem -LiteralPath 'src-tauri/target/debug/deps' -Filter 'gogoke_desktop_lib-*.exe' -File)
+          if ($images.Count -ne 1) { throw "Expected exactly one Cargo lib test image; found $($images.Count)" }
+          $image = $images[0].FullName
+          $running = @(Get-Content -LiteralPath $updateErr | Where-Object {
+            $_ -match '^\s+Running ' -and $_.Contains("$image gogoke_update", [StringComparison]::OrdinalIgnoreCase)
+          })
+          if ($running.Count -ne 1) { throw "Cargo Running did not bind exactly one actual lib test image: $($running.Count)" }
+          $imageHash = (Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLowerInvariant()
+          $mt = Join-Path $env:WindowsSdkDir 'bin/10.0.26100.0/x64/mt.exe'
+          if (-not (Test-Path -LiteralPath $mt -PathType Leaf)) { throw "Pinned Windows SDK manifest tool missing: $mt" }
+          $manifestPath = Join-Path $evidence 'actual-test-image-rt-manifest.xml'
+          & $mt "-inputresource:$image;#1" "-out:$manifestPath" -nologo
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw "Actual Cargo test image lacks extractable RT_MANIFEST #1: $LASTEXITCODE"
+          }
+          [xml]$manifest = Get-Content -LiteralPath $manifestPath -Raw
+          $identities = @($manifest.SelectNodes("//*[local-name()='dependency']/*[local-name()='dependentAssembly']/*[local-name()='assemblyIdentity' and @name='Microsoft.Windows.Common-Controls']"))
+          if ($identities.Count -ne 1) { throw "Actual test image has $($identities.Count) Common Controls manifest dependencies" }
+          $identity = $identities[0]
+          $expected = [ordered]@{
+            type='win32'; name='Microsoft.Windows.Common-Controls'; version='6.0.0.0'
+            processorArchitecture='*'; publicKeyToken='6595b64144ccf1df'; language='*'
+          }
+          foreach ($field in $expected.Keys) {
+            if ($identity.GetAttribute($field) -cne $expected[$field]) {
+              throw "Actual test image manifest $field differs from Tauri default"
+            }
+          }
+          [ordered]@{
+            schema='gogoke.update-test-manifest-diagnostic.v1'
+            sourceCommit=(git rev-parse HEAD).Trim()
+            diagnosticOnly=$diagnostic
+            cargoTestExitCode=$updateExit
+            testsPassed=[int]$result.Groups[1].Value
+            imagePath=$image
+            imageSha256=$imageHash
+            cargoRunningBoundCount=$running.Count
+            mtPath=$mt
+            mtSha256=(Get-FileHash -LiteralPath $mt -Algorithm SHA256).Hash.ToLowerInvariant()
+            manifestResourceId=1
+            commonControlsIdentity=$expected
+          } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $evidence 'direct-facts.json') -Encoding utf8
+          Write-Output "Actual Cargo lib test: $($result.Groups[1].Value) passed; EXE $image; SHA-256 $imageHash; RT_MANIFEST #1 Common Controls v6"
+          if ($diagnostic) {
+            'Loader repair diagnostic only: original gogoke_update lib test and actual test EXE RT_MANIFEST checked; Browser, reproducibility, candidate signing and installation are NOT_RUN.' >> $env:GITHUB_STEP_SUMMARY
+            return
+          }
           cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml resource_trust --lib
           if ($LASTEXITCODE -ne 0) { throw "resource trust tests failed: $LASTEXITCODE" }
           $custody = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml cancelled_reply_retains_job_and_lease_until_accounted_settlement --lib 2>&1
@@ -442,8 +524,16 @@ jobs:
           }
           cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_uninstall --lib
           if ($LASTEXITCODE -ne 0) { throw "gogoke uninstall tests failed: $LASTEXITCODE" }
+      - name: Upload native update test manifest diagnostic evidence
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.update_loader_only
+        uses: actions/upload-artifact@v4
+        with:
+          name: gogoke-update-loader-only-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/gogoke-update-loader-diagnostic/*
+          if-no-files-found: error
+          retention-days: 30
       - name: Upload one-shot task deletion receipt
-        if: github.event_name != 'workflow_dispatch' || !inputs.experimental_candidate
+        if: github.event_name != 'workflow_dispatch' || (!inputs.experimental_candidate && !inputs.update_loader_only)
         uses: actions/upload-artifact@v4
         with:
           name: gogoke-job-custody-delete-${{ matrix.lane }}-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}
@@ -451,6 +541,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Build unsigned shell and NSIS installer
+        if: github.event_name != 'workflow_dispatch' || !inputs.update_loader_only
         shell: pwsh
         run: |
           $sysroot = (& rustc +1.89.0 --print sysroot).Trim()
@@ -464,6 +555,7 @@ jobs:
           npm run tauri:build:win:unsigned
           if ($LASTEXITCODE -ne 0) { throw "shell or installer build failed: $LASTEXITCODE" }
       - name: Freeze resource pack, index, and executable identities
+        if: github.event_name != 'workflow_dispatch' || !inputs.update_loader_only
         shell: pwsh
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
@@ -527,7 +619,7 @@ jobs:
             --output frozen-artifact
           if ($LASTEXITCODE -ne 0) { throw "frozen artifact staging failed: $LASTEXITCODE" }
       - name: Package formal unsigned portable ZIP from frozen shell
-        if: matrix.lane == 'frozen'
+        if: matrix.lane == 'frozen' && (github.event_name != 'workflow_dispatch' || !inputs.update_loader_only)
         shell: pwsh
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
@@ -539,7 +631,7 @@ jobs:
             --run-attempt '${{ github.run_attempt }}' --output $portable
           if ($LASTEXITCODE -ne 0) { throw "portable ZIP packaging failed: $LASTEXITCODE" }
       - name: Upload formal unsigned portable ZIP
-        if: matrix.lane == 'frozen'
+        if: matrix.lane == 'frozen' && (github.event_name != 'workflow_dispatch' || !inputs.update_loader_only)
         uses: actions/upload-artifact@v4
         with:
           name: gogoke-windows-portable-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}
@@ -547,6 +639,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Select immutable artifact name
+        if: github.event_name != 'workflow_dispatch' || !inputs.update_loader_only
         id: artifact-name
         shell: pwsh
         run: |
@@ -557,6 +650,7 @@ jobs:
           }
           "name=$name" >> $env:GITHUB_OUTPUT
       - name: Upload immutable build lane
+        if: github.event_name != 'workflow_dispatch' || !inputs.update_loader_only
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.artifact-name.outputs.name }}
@@ -564,7 +658,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Build separate CI-barrier installer for negative installation axes
-        if: matrix.lane == 'frozen' && github.event_name == 'workflow_dispatch' && !inputs.experimental_candidate
+        if: matrix.lane == 'frozen' && github.event_name == 'workflow_dispatch' && !inputs.experimental_candidate && !inputs.update_loader_only
         shell: pwsh
         run: |
           $sysroot = (& rustc +1.89.0 --print sysroot).Trim()
@@ -596,7 +690,7 @@ jobs:
           [ordered]@{schema='gogoke.r2-06a.nsis-negative-instrument.v1';sourceCommit='${{ github.event.pull_request.head.sha || github.sha }}';runId='${{ github.run_id }}';runAttempt='${{ github.run_attempt }}';setupSha256=$testHash;productionShellSha256=$expectedShell;barrier='CI_ONLY'} |
             ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $directory 'instrument.json') -Encoding utf8
       - name: Upload separate CI-barrier installer
-        if: matrix.lane == 'frozen' && github.event_name == 'workflow_dispatch' && !inputs.experimental_candidate
+        if: matrix.lane == 'frozen' && github.event_name == 'workflow_dispatch' && !inputs.experimental_candidate && !inputs.update_loader_only
         uses: actions/upload-artifact@v4
         with:
           name: gogoke-nsis-negative-${{ github.sha }}-${{ github.run_id }}
@@ -606,7 +700,7 @@ jobs:
 
   windows-reproducibility:
     name: Compare independent Windows executable bytes
-    if: github.event_name != 'workflow_dispatch' || (!inputs.web_only && !inputs.experimental_candidate)
+    if: github.event_name != 'workflow_dispatch' || (!inputs.web_only && !inputs.experimental_candidate && !inputs.update_loader_only)
     timeout-minutes: 15
     needs: [windows-build]
     runs-on: windows-latest
