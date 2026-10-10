@@ -128,13 +128,16 @@ export class ActualProduct {
       // Read-only readiness sampling. A launch or mutation is never retried.
       try {
         const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(2000) });
-        if (response.ok) target = (await response.json()).find(page => {
+        if (response.ok) {
+          this.lastReadinessError = null;
+          target = (await response.json()).find(page => {
           if (page.type !== 'page') return false;
           const url = new URL(page.url);
           return ['http:', 'https:', 'gogoke-resource:'].includes(url.protocol) &&
             ['gogoke-resource.localhost', 'localhost'].includes(url.hostname) &&
             url.pathname === `/${setId}/index.html`;
-        });
+          });
+        }
       } catch (error) {
         this.lastReadinessError = JSON.stringify({ name: error.name, message: error.message,
           cause: error.cause && { name: error.cause.name, message: error.cause.message,
@@ -161,8 +164,21 @@ export class ActualProduct {
       await delay(200);
     }
     if (!target || !fs.existsSync(ready)) {
+      this.journal.startupReadiness = {
+        targetUrl: target?.url ?? null,
+        diagnosticConnected,
+        readyReceiptPresent: fs.existsSync(ready),
+        lastTransportError: this.lastReadinessError ?? null,
+      };
+      if (diagnosticConnected) {
+        try {
+          this.journal.startupUi = await this.evaluate('({url:location.href,home:!!document.querySelector(".home-product-entry"),conversation:document.querySelectorAll(".composer").length===1,tauri:!!window.__TAURI_INTERNALS__})');
+        } catch (error) {
+          this.journal.startupUiError = String(error?.stack ?? error);
+        }
+      }
       this.journal.startupStderr = this.stderr; this.save();
-      throw Error(`Actual product readiness missing: ${this.lastReadinessError ?? 'no target or ready receipt'}; original stderr=${this.stderr}`);
+      throw Error(`Actual product readiness missing: ${JSON.stringify(this.journal.startupReadiness)}; original stderr=${this.stderr}`);
     }
     const receipt = readJson(ready);
     if (receipt.version !== this.config.version || receipt.setId !== setId || receipt.generationId !== index.generationId) {

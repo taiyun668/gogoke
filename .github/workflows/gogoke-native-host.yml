@@ -260,7 +260,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Secretary release build failed: $LASTEXITCODE" }
           $results = @()
           $failures = @()
-          foreach ($filter in @('v37_secretary_routine_model_tests','secretary_scheduled_occurrence','secretary_schedule::tests','secretary_routines_replay_absence_and_unknown_are_fail_closed','secretary_thread_registers_only_global_read_and_user_routine_and_rejects_tool_substitution','only_exact_live_user_input_adds_an_atomic_fixed_presence_witness','secretary_configuration_ingress_preserves_unset_and_exact_owner_bytes','secretary_routine_user_commands_read_original_rows_and_preserve_history','secretary_original_user_pages_preserve_historical_provenance_and_gaps')) {
+          foreach ($filter in @('v37_secretary_routine_model_tests','secretary_scheduled_occurrence','secretary_schedule::tests','due_qualification_tests','read_snapshot_tests','secretary_history_filters_original_identity_before_paging','secretary_routines_replay_absence_and_unknown_are_fail_closed','secretary_thread_registers_only_global_read_and_user_routine_and_rejects_tool_substitution','only_exact_live_user_input_adds_an_atomic_fixed_presence_witness','secretary_configuration_ingress_preserves_unset_and_exact_owner_bytes','secretary_routine_user_commands_read_original_rows_and_preserve_history','secretary_original_user_pages_preserve_historical_provenance_and_gaps')) {
             $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib $filter -- --nocapture --show-output 2>&1
             $exitCode = $LASTEXITCODE
             $label = $filter.Replace('::','-')

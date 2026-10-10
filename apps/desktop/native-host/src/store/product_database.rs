@@ -1274,6 +1274,27 @@ fn scheduled_failure<T, E: std::fmt::Debug>(value: std::result::Result<T, E>) ->
     value.map_err(|error| OrchestrationError::V37StoreFailure(format!("secretary original source: {error:?}")))
 }
 
+fn secretary_current_time_ms() -> Result<i64> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|error|
+        OrchestrationError::V37StoreFailure(format!("secretary system clock: {error}")))?;
+    i64::try_from(now.as_millis()).map_err(|error|
+        OrchestrationError::V37StoreFailure(format!("secretary system clock range: {error}")))
+}
+
+fn secretary_recovery_refused(error: &OrchestrationError) -> bool {
+    match error {
+        // Existing recovery returns these fixed native refusal categories.
+        // Keep their full original reason in the routine diagnostic. Database,
+        // durability and unexpected OS errors still propagate.
+        OrchestrationError::Invalid(reason) =>
+            reason.starts_with("holder ") || reason.starts_with("Claude "),
+        OrchestrationError::V37StoreFailure(reason) =>
+            reason.starts_with("disappeared credential holder: ExactHolderAlive")
+                || reason.starts_with("Claude disappeared holder: ExactHolderAlive"),
+        _ => false,
+    }
+}
+
 enum ScheduledWriteError {
     Physical(String),
     Provider(Vec<u8>),
@@ -1284,6 +1305,129 @@ impl From<OrchestrationError> for ScheduledWriteError {
 }
 
 impl ProductDatabase<'_> {
+    /// Internal Secretary bootstrap from the original persisted USER
+    /// designation. These H envelopes are not USER input: no UserOriginProof,
+    /// presence marker, old grant, or model turn is constructed here.
+    fn ensure_due_secretary_session(&mut self) -> Result<Option<String>> {
+        use super::seat::{self, SecretaryConfiguration, State};
+        use super::session_transport::{decode_receipt, decode_request, V37Status};
+        for (key, _) in &self.native_sessions {
+            if key.0 == "global" && scheduled_failure(super::ledger::read_registered_session(
+                &self.connection, &key.1))?.is_some_and(|row|
+                    row.purpose == super::ledger::SessionPurpose::Secretary) {
+                return Ok(Some("Original held Secretary session is not idle; no replacement started".into()));
+            }
+        }
+        let SecretaryConfiguration::Designated { instance_id: Some(instance), .. } =
+            scheduled_failure(seat::read_secretary_configuration_in_transaction(&self.connection, &self.owner))?
+            else { return Ok(Some("Original Secretary configuration is incomplete".into())); };
+        // Both routines require the original exact physical root, holders,
+        // Job lifecycle, captures and actual revocation. Ok is not a release
+        // fact: the original claim is read again below.
+        if let Err(error) = self.recover_disappeared_credential_resources(&instance, None) {
+            if secretary_recovery_refused(&error) {
+                return Ok(Some(format!("Original Secretary holder recovery refused: {error:?}")));
+            }
+            return Err(error);
+        }
+        if let Err(error) = self.recover_disappeared_claude_resources(&instance, None) {
+            if secretary_recovery_refused(&error) {
+                return Ok(Some(format!("Original Secretary holder recovery refused: {error:?}")));
+            }
+            return Err(error);
+        }
+        let SecretaryConfiguration::Designated { seat_id, incarnation, .. } =
+            scheduled_failure(seat::read_secretary_configuration_in_transaction(&self.connection, &self.owner))?
+            else { return Ok(Some("Original Secretary designation is no longer current".into())); };
+        let seat = match seat::require_secretary_session(&self.connection,
+            &self.owner, &seat_id, &incarnation) {
+            Ok(seat) => seat,
+            Err(error @ (seat::SeatError::Denied | seat::SeatError::Busy | seat::SeatError::Conflict)) =>
+                return Ok(Some(format!("Original Secretary designation or instance is not currently eligible: {error:?}"))),
+            Err(error) => return scheduled_failure(Err(error)),
+        };
+        let generation = match seat.state {
+            State::Idle => seat.generation.checked_add(1).ok_or(OrchestrationError::OperationConflict)?,
+            State::Busy => seat.generation,
+            _ => return Ok(Some("Original Secretary seat is not runnable".into())),
+        };
+        let identity = format!("secretary-resident\n{}\n{}\n{}\n{}",
+            self.root.canonical_root().identity.opaque(), seat_id, incarnation, generation);
+        let suffix = super::digest::sha256_hex(identity.as_bytes());
+        let session_id = format!("resident-secretary-{}", &suffix[..40]);
+        let query = Statement::prepare(self.connection.as_ptr(),
+            "SELECT c.session_id,c.state,CAST(b.seat_authorization_generation AS TEXT)
+             FROM main.gogoke_v37_h_claim c JOIN main.gogoke_v37_native_selection b
+               ON b.domain_id=c.domain_id AND b.session_id=c.session_id
+             WHERE c.domain_id='global' AND b.seat_id=?1 AND b.seat_incarnation=?2
+               AND c.state<>'RELEASED'")?;
+        query.bind_text(1, &seat_id)?; query.bind_text(2, &incarnation)?;
+        let mut count = 0;
+        while query.step_row()? {
+            count += 1;
+            let existing = query.column_text(0)?;
+            let phase = query.column_text(1)?;
+            if existing != session_id || !matches!(phase.as_str(), "RESERVED" | "COMMITTED")
+                || query.column_text(2)? != generation.to_string() {
+                return Ok(Some(format!("Original Secretary claim still requires reconciliation: session={existing}; state={phase}")));
+            }
+        }
+        drop(query);
+        if count > 1 { return Err(OrchestrationError::OperationConflict); }
+        if count == 0 && seat.state != State::Idle {
+            return Ok(Some("Original busy Secretary seat has no qualified preparation".into()));
+        }
+        // Reuse the exact native admission/open machinery. Deterministic
+        // envelopes have separate IDs and fixed original revisions; journal
+        // replays read prior bytes and UNKNOWN never becomes a new launch.
+        for (operation, revision, tag) in [
+            ("admission-reserve", "0", "reserve"),
+            ("admission-commit", "1", "commit"), ("open", "2", "open"),
+        ] {
+            let key = |name| JsonString::from_str(name);
+            let text = |value: &str| Json::String(JsonString::from_str(value));
+            let frame = Json::Object(BTreeMap::from([
+                (key("schema"), text("gogoke.37.operations.v1")), (key("family"), text("K-SESSION")),
+                (key("operation"), text(operation)), (key("requestId"), text(&format!("resident-{tag}-{}", &suffix[..40]))),
+                (key("domainId"), text("global")), (key("targetId"), text(&session_id)),
+                (key("expectedRevision"), text(revision)), (key("payload"), Json::Object(BTreeMap::new())),
+            ])).canonical().into_bytes();
+            let request = scheduled_failure(decode_request(&frame))?;
+            let raw = self.dispatch_user_session(&request)?;
+            let receipt = scheduled_failure(decode_receipt(&raw))?;
+            if receipt.request_id != request.request_id || receipt.target_id != session_id
+                || receipt.family != "K-SESSION" || receipt.operation != operation {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            if !matches!(receipt.status, V37Status::Applied | V37Status::Replayed) {
+                return Ok(Some(format!("Original Secretary {operation} result: {}", String::from_utf8_lossy(&raw))));
+            }
+        }
+        Ok(None)
+    }
+
+    // E may reduce due eligibility without a live process. This transaction
+    // never reserves an occurrence or writes an H journal entry.
+    fn qualify_secretary_due(&mut self, routine: &str, revision: i64, now: i64)
+        -> Result<super::seat::SecretaryRoutineDueQualification> {
+        self.connection.execute("BEGIN IMMEDIATE").map_err(OrchestrationError::CommitUnknownWithCause)?;
+        let result = super::seat::qualify_secretary_routine_due_in_transaction(
+            &self.connection, &self.owner, routine, revision, now);
+        match result {
+            Ok(value) => {
+                self.connection.execute("COMMIT").map_err(OrchestrationError::CommitUnknownWithCause)?;
+                Ok(value)
+            }
+            Err(primary) => {
+                if let Err(rollback) = self.connection.execute("ROLLBACK") {
+                    return Err(OrchestrationError::V37StoreFailure(format!(
+                        "secretary due qualification: {primary:?}; rollback: {rollback:?}")));
+                }
+                scheduled_failure(Err::<super::seat::SecretaryRoutineDueQualification, _>(primary))
+            }
+        }
+    }
+
     /// Attach E's separate scheduling diagnostic to the already authenticated
     /// USER read. It is not the provider result and supplies no made-up time.
     fn append_secretary_schedule_readback(&mut self, frame: &[u8], reply: Vec<u8>) -> Result<Vec<u8>> {
@@ -1348,10 +1492,7 @@ impl ProductDatabase<'_> {
     pub fn pump_secretary_routines(&mut self) -> Result<()> {
         use super::seat::{self, NativeOrigin};
         use super::session_transport::{self as h, runtime};
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|error|
-            OrchestrationError::V37StoreFailure(format!("secretary system clock: {error}")))?;
-        let now = i64::try_from(now.as_millis()).map_err(|error|
-            OrchestrationError::V37StoreFailure(format!("secretary system clock range: {error}")))?;
+        let now = secretary_current_time_ms()?;
         // Select locators only. H rechecks the current E designation, original
         // USER source, A purpose and exact receipt inside its own transaction.
         let query = Statement::prepare(self.connection.as_ptr(),
@@ -1375,6 +1516,7 @@ impl ProductDatabase<'_> {
         drop(query);
         self.secretary_due_blocked.retain(|routine, _| rows.iter().any(|row| &row.0 == routine));
         for (routine, revision, state, occurrence, session, ticket, generation) in rows {
+            let now = secretary_current_time_ms()?;
             if !session.is_empty() {
                 self.secretary_due_blocked.remove(&routine);
                 scheduled_failure(h::settle_scheduled_secretary_occurrence(&mut self.connection,
@@ -1382,6 +1524,19 @@ impl ProductDatabase<'_> {
                 continue;
             }
             if state != "ACTIVE" { continue; }
+            match self.qualify_secretary_due(&routine, revision, now)? {
+                seat::SecretaryRoutineDueQualification::NotDue
+                | seat::SecretaryRoutineDueQualification::PausedForAbsence { .. } => {
+                    self.secretary_due_blocked.remove(&routine);
+                    continue;
+                }
+                seat::SecretaryRoutineDueQualification::MissingFacts => {
+                    self.secretary_due_blocked.insert(routine,
+                        "Original secretary configuration, absence policy, presence or current clock qualification is missing".into());
+                    continue;
+                }
+                seat::SecretaryRoutineDueQualification::NeedsLiveH { .. } => {},
+            }
             let mut candidates = Vec::new();
             for (key, run) in &self.native_sessions {
                 if key.0 != "global" || !run.allows_input() || run.turn_id.is_some()
@@ -1393,7 +1548,11 @@ impl ProductDatabase<'_> {
                 }
             }
             if candidates.is_empty() {
-                self.secretary_due_blocked.insert(routine, "No idle held SECRETARY H session qualified for this due occurrence".into());
+                let reason = self.ensure_due_secretary_session()?;
+                if let Some(reason) = reason { self.secretary_due_blocked.insert(routine, reason); }
+                else { self.secretary_due_blocked.remove(&routine); }
+                // A fresh session is observed through the original live H
+                // qualifications on the next authority turn, with fresh time.
                 continue;
             }
             if candidates.len() != 1 { return Err(OrchestrationError::OperationConflict); }
@@ -1433,6 +1592,9 @@ impl ProductDatabase<'_> {
             };
             let expected_h_revision = u64::try_from(claim.revision).map_err(|error|
                 OrchestrationError::V37StoreFailure(format!("secretary H revision: {error}")))?;
+            // Prior reads/handshakes and previous routines may have consumed
+            // time. H must recheck absence with the current prepare time.
+            let now = secretary_current_time_ms()?;
             let decision = scheduled_failure(h::prepare_scheduled_secretary_occurrence(
                 &mut self.connection, &h::ScheduledSecretaryInput { owner: &self.owner,
                     routine_id: &routine, expected_routine_revision: revision, now_ms: now,

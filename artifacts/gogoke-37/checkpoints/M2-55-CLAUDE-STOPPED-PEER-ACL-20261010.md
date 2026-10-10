@@ -108,3 +108,15 @@ SAC 本次重新读回为 0；所有新临时与证据直接 D 盘。正式保�
 - V10 已闭库逐项核对已建立的两 USER/lead/profile，计划 F 均未创建，原数据库与旁文件字节不变；续跑使用原绑定、新请求和正确小写 wire，不重新配置或建域。读取任务完成后精确删除并保留 XML。模型原输出支持原 contentItems 形状，不以缺失数组误判原 native 回执。
 - 并行：工人提取原 E absence 减资格判断，让 no-live/busy 时也能持久暂停；Root 续跑 V10。独立 specialist 核对驻留恢复与长期账本，旧 UNKNOWN 不伪造 STOPPED。
 - 参照：原生产 SQL、现有 USER-marker 变异脚本、原 V06 native contentItems 读回与现有 E presence/policy/CAS；仪器修正不改产品字节或授权。
+
+## 到期恢复、历史原来源与 V10 拒绝核对
+
+- 原定向云检重跑成功：发布构建、24 项测试及两个 USER 来源比较变异均通过；变异各为原测试通过、撤原比较后行为断言失败、恢复后通过。只覆盖该次定向源，不算完整原生库、真机秘书长或稳定链通过。
+- E 的到期减资格已独立于活跃 H：无 H 或忙碌时也能用原 presence/policy 判断缺席暂停，不创建 occurrence。E 读取采用原同库快照，借用已有事务或自行打开/结束只读快照；不在外层包住已自行开事务的准入流程。
+- A 秘书长历史读取先按同一指定席位/incarnation、NATIVE_V2、原 RESOLVED raw 与原 episode/custody 关联过滤，再分页。独立复核发现初稿漏了原 raw 关联，已补；原历史 episode 不因后来 H generation 更新而消失。仅归一化账本历史，不宣称完整 USER/H 对话或 provider 原帧。
+- Root 已接驻留准备：仅沿原指定秘书长、原资源恢复和原 H 准入/打开流程；原 held/busy/unknown 不换进程，不造 USER presence 或 STOPPED。资格不足保留原因，系统/数据库异常仍返回原错误；准备前重新取原时钟。本机检查退出零，仅开发诊断。当前未安装该改动，真机恢复及完整 V14 未运行。
+- V10 续例已有两棵真实注册 F、原 H、接管问答和一次原生创建调用；该调用返回 `K-SEAT/create-from-template: DENIED`，子席位未确认创建。真实 H stop/release、正常产品退出零和正式保护通过，原失败不改成通过。直接冻结源码要求已有 policy head；用例没有 policy-initialize，正在关闭后的原库核对，尚不把缺前置条件推定为产品根因。
+- 启动仪器已分开保存实际 CDP 连接、ready receipt、原 transport 错误和读取到的页面形状；成功连接后清掉早期连接错误，避免把缺 ready receipt 写成当前端口不通。不增加等待、启动或模型重试。
+- 并行：H 工人接原 A 历史到首次 occurrence 的固定请求；V10 仪器工人准备缺策略头的闭库核对；Root 组合与受影响云检继续。G 的无日期结果读模型仍交 Claude，主动查看 PR 后暂无新交付。
+- 本机卫生：A 工人的已完成源码工作树保留；其忽略的开发产物清理被工具自动审批拒绝，原对象保留，未改命令绕过。所有新产物与证据在独立开发位置。
+- 参照：原 E presence/absence、原 H native admission/recovery/journal、A 原 raw resolution/episode、冻结源 `native_child_create_requires_existing_policy_head` 和已有 CDP readiness；在已授权写域内组合原机制，不新增权限、调度服务或 Owner 触点。下一步核原策略头、完成 H 历史拼接并跑受影响云检，再续真机 M2。
