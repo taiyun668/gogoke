@@ -26,6 +26,7 @@ if (process.platform !== 'win32' || required.some(key => config[key] === undefin
     !['gogoke.exe', 'gogoke-native-host.exe', 'resource-index.json']
       .every(name => /^[a-f0-9]{64}$/.test(config.installedSha256[name] ?? '')) ||
     c?.ownership !== 'EXCLUSIVE_V11_FILE_BOUNDARIES' ||
+    (c.onlyMainWrite !== undefined && typeof c.onlyMainWrite !== 'boolean') ||
     !['mainWrite', 'readOnlyWrite'].every(name => c[name] &&
       ['seatId', 'instanceId', 'worktreeId'].every(key => atom(c[name][key])) &&
       c[name].attemptMode === 'execCommand' && path.isAbsolute(c[name].worktreePath ?? '') &&
@@ -129,7 +130,8 @@ async function readback() {
     proof.sourceCommit === config.sourceCommit &&
     proof.normalClosePid === journal.closes.at(-1)?.pid &&
     proof.measurementPreservedDatabaseBytes === true && proof.acceptance === false &&
-    proof.directCaseEvidence === false && Array.isArray(proof.cases) && proof.cases.length === 2,
+    proof.directCaseEvidence === false && Array.isArray(proof.cases) &&
+    proof.cases.length === (c.onlyMainWrite === true ? 1 : 2),
   'V11 immutable readback is not bound to the original normal close');
   journal.readbacks.push({ phase: 'file', file, sha256: sha256(output), acceptance: false });
   product.save();
@@ -183,6 +185,7 @@ try {
     row.instanceId === instanceId && row.state === 'LOGGED_IN')),
   'V11 both original test instances must be logged in');
   await runV11FileBoundaries(product, config, journal);
+  if (c.onlyMainWrite !== true) {
   check(sha256(path.join(config.evidenceDirectory, journal.v11OutsidePreflight.file)) ===
     journal.v11OutsidePreflight.sha256,
   'V11 closed F/source preflight changed before the outside request');
@@ -192,15 +195,18 @@ try {
     ownership: config.v11OutsideTree.ownership,
     outsideRoot: config.v11OutsideTree.outsideRoot,
   } }, journal);
+  }
   await product.custody(); product.verifyBytes();
   await product.closeNormally();
   const proof = await readback();
-  const outsideProof = await readbackOutside();
-  journal.state = proof.directAttemptEvidence === true && outsideProof.directAttemptEvidence === true
+  const outsideProof = c.onlyMainWrite === true ? null : await readbackOutside();
+  journal.state = proof.directAttemptEvidence === true &&
+    (c.onlyMainWrite === true || outsideProof.directAttemptEvidence === true)
     ? 'ORIGINAL_TOOL_ATTEMPTS_READ_BACK_CAUSES_REQUIRE_REVIEW'
     : 'NOT_RUN_NO_EXACT_FAILED_ORIGINAL_TOOL';
   journal.notRun = ['V11_NO_NETWORK_EFFECTIVE_BOUNDARY', 'V11_MIXED_TWO_PROJECTS',
-    'V11_HOST_SEALED_MERGE'];
+    'V11_HOST_SEALED_MERGE', ...(c.onlyMainWrite === true ?
+      ['V11_READ_ONLY_NOT_SELECTED', 'V11_OUTSIDE_NOT_SELECTED'] : [])];
   product.save();
 } catch (error) {
   journal.state = 'FAIL_ORIGINAL_REQUESTS_RETAINED';

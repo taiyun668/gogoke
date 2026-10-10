@@ -21,13 +21,15 @@ export async function runV11FileBoundaries(product, config, journal) {
     fs.existsSync(c.readOnlyWrite.worktreePath) && fs.statSync(c.readOnlyWrite.worktreePath).isDirectory() &&
     path.isAbsolute(config.testbedSource) && fs.statSync(config.testbedSource).isDirectory(),
   'V11 needs two exclusive real H seats/F trees and private physical testbed roots');
+  requireFact(c.onlyMainWrite === undefined || typeof c.onlyMainWrite === 'boolean',
+    'V11 onlyMainWrite must be an explicit boolean');
   const marker = `${id('v11-denied')}.json`;
   const cases = [
     { name: 'MAIN_WRITE', selection: c.mainWrite,
       target: path.join(config.testbedSource, marker), tier: 'NETWORKED_WRITE' },
     { name: 'READ_ONLY_WRITE', selection: c.readOnlyWrite,
       target: path.join(c.readOnlyWrite.worktreePath, marker), tier: 'READ_ONLY' },
-  ];
+  ].filter(row => !c.onlyMainWrite || row.name === 'MAIN_WRITE');
   requireFact(cases.every(row => !fs.existsSync(row.target)) &&
     path.resolve(c.readOnlyWrite.worktreePath) !== path.resolve(config.testbedSource),
   'V11 unique nonsecret markers must be absent before any original Model attempt');
@@ -43,7 +45,9 @@ export async function runV11FileBoundaries(product, config, journal) {
   const record = { state: 'RUNNING', acceptance: false, sourceCommit: config.sourceCommit,
     candidateVersion: config.version, installedSha256: config.installedSha256,
     domainId: config.domainId, repositoryId: config.repositoryId,
-    markerFile: marker, cases: [], notRun: ['VENDOR_NATIVE_WORKTREE_ESCAPE', 'NO_NETWORK_EFFECTIVE_BOUNDARY'] };
+    markerFile: marker, onlyMainWrite: c.onlyMainWrite === true, cases: [],
+    notRun: ['VENDOR_NATIVE_WORKTREE_ESCAPE', 'NO_NETWORK_EFFECTIVE_BOUNDARY',
+      ...(c.onlyMainWrite ? ['READ_ONLY_WRITE_NOT_SELECTED', 'OUTSIDE_TREE_NOT_SELECTED'] : [])] };
   journal.v11FileBoundaries = record; journal.sessions ??= []; product.save();
   const read = async (family, operation, target, payload = {}, revision = '0') => {
     let reply = await product.operation(family, operation, target, payload, revision, ['APPLIED', 'STALE']);

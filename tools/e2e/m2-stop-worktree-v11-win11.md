@@ -18,6 +18,14 @@ v11FileBoundaries: {
 }
 ```
 
+For a fresh MAIN_WRITE attempt when the READ_ONLY CLI is unavailable or an outside
+attempt has already been preserved, set `v11FileBoundaries.onlyMainWrite: true`.
+Both original preparation bindings are still required; only MAIN_WRITE opens a
+new H and sends a new turn. READ_ONLY and outside remain explicitly NOT_RUN in
+this journal and the immutable reader. The default still runs all three attempts;
+neither selection mode grants whole V11 or acceptance credit. Do not reuse a result
+path or reissue an old input to fill missing evidence.
+
 `seatId`, `instanceId`, `worktreeId` and `worktreePath` must come from each original final preparation proof and its state-card/F graph, not a display label or guessed path. Supply the workdir in its ordinary DOS spelling for the original CLI tool; the reader verifies that it is the exact registered F object even when the host record uses extended-length spelling. The script generates a fresh nonsecret marker and uses one exact native `exec_command` per case; unexpected tools, failed H custody, an unchanged or mismatched original receipt, target creation or readback failure stop the run without replay. Preserve the original journal and process on failure.
 
 The same run then reuses the stopped and released `mainWrite` seat/F tree for one separate original H turn against a new **empty private D directory** outside the candidate, source, evidence, repository and all registered F worktrees. Add:

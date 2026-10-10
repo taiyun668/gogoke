@@ -78,13 +78,17 @@ def file_boundaries(root, output, journal_file):
     require(journal.get("driverBytes", {}).get("m2-history-boundaries-readback.py") ==
             digest(Path(_history_spec.origin).read_bytes()), "V11 loaded history rule bytes differ")
     case = journal.get("v11FileBoundaries")
+    require(not case or "onlyMainWrite" not in case or type(case["onlyMainWrite"]) is bool,
+            "V11 case selection must be an explicit boolean")
+    expected_names = ["MAIN_WRITE"] if case and case.get("onlyMainWrite") is True else \
+        ["MAIN_WRITE", "READ_ONLY_WRITE"]
     require(case and case.get("acceptance") is False and
             case.get("state") == "ORIGINAL_ATTEMPTS_REQUIRE_NORMAL_CLOSE_IMMUTABLE_READER" and
             case.get("sourceCommit") == journal.get("sourceCommit") and
-            len(case.get("cases", [])) == 2,
-            "V11 two original H boundary cases required")
+            len(case.get("cases", [])) == len(expected_names),
+            "V11 declared original H boundary cases required")
     require({item.get("name") for item in case["cases"]} ==
-            {"MAIN_WRITE", "READ_ONLY_WRITE"}, "V11 boundary names changed")
+            set(expected_names), "V11 declared boundary names changed")
     close = candidate_close(journal, case)
     dbfile, wal, shm = root / "state.sqlite", root / "state.sqlite-wal", root / "state.sqlite-shm"
     require(dbfile.is_file() and (not wal.exists() or wal.stat().st_size == 0),
@@ -287,7 +291,9 @@ def file_boundaries(root, output, journal_file):
               "directAttemptEvidence": all(row["exactFailedOriginalTool"] for row in details),
               "directCaseEvidence": False,
               "mainTreeFileWriteRefusal": next(row["state"] for row in details if row["name"] == "MAIN_WRITE"),
-              "readOnlyFileWriteRefusal": next(row["state"] for row in details if row["name"] == "READ_ONLY_WRITE"),
+              "readOnlyFileWriteRefusal": next((row["state"] for row in details if row["name"] == "READ_ONLY_WRITE"),
+                                                "NOT_RUN_NOT_SELECTED"),
+              "outsideTree": "NOT_RUN_NOT_SELECTED" if case.get("onlyMainWrite") is True else "SEPARATE_ORIGINAL_READER_REQUIRED",
               "vendorNativeWorktreeEscape": "NOT_RUN", "noNetworkBoundary": "NOT_RUN",
               "acceptance": False, "measurementPreservedDatabaseBytes": True}
     output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
