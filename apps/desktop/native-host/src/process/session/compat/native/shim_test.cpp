@@ -551,7 +551,7 @@ void test_original_pair_call_diagnostics_preserve_api_semantics() {
 
 void test_first_non_uv_a_w_calls_and_stderr_delivery_failure() {
     CHECK(strcmp(target_class("CONOUT$", false), "console") == 0 &&
-        strcmp(target_class("D:\\private\\auth.json", false), "disk-root") == 0 &&
+        strcmp(target_class("D:\\tmp\\seat\\auth.json", false), "disk-root") == 0 &&
         strcmp(target_class(static_cast<const char*>(nullptr), false), "other") == 0);
     g_pipe_a = mock_named_pipe_a;
     g_pipe_w = mock_named_pipe_w;
@@ -585,7 +585,7 @@ void test_first_non_uv_a_w_calls_and_stderr_delivery_failure() {
         strstr(captured_pipe_observations[3], "target=pipe-other qualified=0") &&
         strstr(captured_pipe_observations[3], "win32=231") &&
         strstr(captured_pipe_observations[3], "private-wide-name") == nullptr);
-    constexpr char disk_path[] = "C:\\private\\auth.json";
+    constexpr char disk_path[] = "C:\\tmp\\seat\\auth.json";
     mock_file_result = INVALID_HANDLE_VALUE;
     mock_file_error = ERROR_FILE_NOT_FOUND;
     SetLastError(813);
