@@ -12,6 +12,12 @@
 
 Grok 原权限回包的六项受影响云端原生检查和卫生通过，产物及成员哈希已独立回读，代码集成到施工树。它尚未安装，不记为 53 的真机能力。完整 M2/M3、稳定链及最终验收未执行或未完成。
 
+Claude 有限资源恢复的三项聚焦发现已修，独立复核未发现相关新阻塞；相同提交的五项 helper/journal 原生检查及卫生通过，原产物已独立回读。真实多 H/E 组合及原 Win11 实例恢复仍未执行。已集成施工树，未换装。
+
+另在云端以同一官方固定 Claude、真实 LPAC/兼容 DLL/持久 stdio 和空凭据目录执行唯一 initialize，已取得匹配原请求的 success ACK。按生产式 stdin close 后自然退出零、Job 空、停止错误空。它是直接组件对比，不能作为 Win11 恢复或模型调用通过。原 stderr 的 `CreateNamedPipeA failed win32=231 prefix=uv` 保留，未因它单独宣布失败。合成目录/journal、真实组件及真实安装的证据分别保留。
+
+Win11 本次原 initialize/stop 时间窗内的 Code Integrity 日志启用，未见 3077/3033；仅是该时间窗观察，不据此排除全部系统差异。
+
 53 的受影响云检仅证明 EOF/reader/shim 检查；找到的固定 Claude 云端启动只运行 `--version`，不证明真实 initialize 路径。空 hook 日志不能区分未加载、未调用或日志投递失败，未据此改 CLI、权限或等待参数。
 
 ## 下一步
@@ -19,6 +25,8 @@ Grok 原权限回包的六项受影响云端原生检查和卫生通过，产物
 Sol 独立分支实现普通 Claude 原两 HOME 和可证明原 SINGLE 工作树的精确 SID 退休及 H/E CAS，主控负责共享接线。封存原值/目标值及各子对象身份，保留全部内容、其他 SID、UNKNOWN、RPC 和 episode，不伪造 STOPPED。公开 CLI/DLL 的原 RX ACE 保留为既有残余，不声明全部 ACL 已清。
 
 main 计划要求真实 StopFact 后才能关闭候选；当前 stop 失败阻止换装。已一次请求 Owner 裁决是否允许这次正常关闭并保全，再以原生持有者消失路径恢复。答复前继续云端实现，不自行关闭或请求登录、Windows 重启。PR #54 已续报，同一次心跳不重复计数。
+
+集成后以同一静态受影响选择同时运行 Grok、Claude 退休、固定 Claude initialize 及原 EOF/reader 检查，复用一次编译；完整库、全部变异与正式门保持未执行，不扩大为验收。
 
 C 盘专项已完成 389 项逐项保全至 D，22 项因真实引用留原位；当前约 43.35 GiB 可用。所有新 scratch 与候选证据直接写 D，正式版未改。保全清单仍在既有 D 归档。
 
