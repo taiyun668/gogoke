@@ -32,6 +32,77 @@ def disjoint(left, right):
     return left != right and left not in right.parents and right not in left.parents
 
 
+def object_fact(path, required):
+    original = Path(path)
+    if not original.exists():
+        require(not required, "V11 registered F/source object is missing")
+        return {"path": str(original), "identity": None}
+    resolved = original.resolve(strict=True)
+    stat = resolved.stat()
+    return {"path": str(original), "resolved": str(resolved),
+            "identity": [str(stat.st_dev), str(stat.st_ino)]}
+
+
+def inventory(db, root, outside):
+    trees = []
+    for row in db.execute("SELECT worktree_id,repository_id,domain_id,seat_id,instance_id,"
+                          "worktree_path,state FROM gogoke_v37_worktrees ORDER BY worktree_id"):
+        path, state = row[5], row[6]
+        fact = object_fact(path, state == "REGISTERED")
+        # Even an old non-registered path must not be reused as this test target.
+        require(disjoint(outside, path) if fact["identity"] is not None else
+                Path(outside).resolve(strict=True) != Path(path) and
+                Path(path) not in Path(outside).parents and
+                Path(outside) not in Path(path).parents,
+                "V11 outside target overlaps an original F path")
+        trees.append({"row": list(row), "object": fact})
+    sources = []
+    for row in db.execute("SELECT repository_id,source_path,source_identity,common_path,"
+                          "common_identity,baseline_commit,git_digest FROM "
+                          "gogoke_v37_worktree_sources ORDER BY repository_id"):
+        source, common = object_fact(row[1], True), object_fact(row[3], True)
+        require(disjoint(outside, row[1]) and disjoint(outside, row[3]),
+                "V11 outside target overlaps an original F source/common object")
+        sources.append({"row": list(row), "source": source, "common": common})
+    require(trees and sources and disjoint(outside, root),
+            "V11 F/source inventory or isolated outside target is missing")
+    return {"trees": trees, "sources": sources}
+
+
+def preflight():
+    require(len(sys.argv) == 5,
+            "usage: m2-stop-worktree-v11-readback.py preflight STATE_ROOT OUTPUT OUTSIDE_ROOT")
+    root = Path(sys.argv[2]).resolve(strict=True)
+    output = Path(sys.argv[3]).resolve()
+    outside = Path(sys.argv[4]).resolve(strict=True)
+    require(not output.exists() and not output.is_relative_to(root) and
+            outside.is_dir() and not outside.is_symlink() and not list(outside.iterdir()) and
+            disjoint(outside, output.parent), "V11 fresh closed preflight/output required")
+    dbfile = root / "state.sqlite"
+    wal, shm = root / "state.sqlite-wal", root / "state.sqlite-shm"
+    require(dbfile.is_file() and (not wal.exists() or wal.stat().st_size == 0),
+            "V11 preflight needs a closed database and empty/absent WAL")
+    paths = (dbfile, wal, shm)
+    before = [digest(path) for path in paths]
+    db = sqlite3.connect(dbfile.as_uri() + "?mode=ro&immutable=1", uri=True)
+    db.execute("PRAGMA query_only=ON")
+    try:
+        facts = inventory(db, root, outside)
+    finally:
+        db.close()
+    require(before == [digest(path) for path in paths] and
+            (not wal.exists() or wal.stat().st_size == 0),
+            "V11 preflight changed original DB/WAL/SHM bytes")
+    result = {"schema": "gogoke.37.private-v11-outside-preflight.v1",
+              "stateRoot": str(root), "root": object_fact(root, True),
+              "database": object_fact(dbfile, True),
+              "outsideRoot": str(outside), "outside": object_fact(outside, True),
+              "inventory": facts, "databaseSha256": before[0],
+              "measurementPreservedDatabaseBytes": True, "acceptance": False}
+    output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps({"preflight": "CLOSED_INVENTORY_DISJOINT", "acceptance": False}))
+
+
 def main():
     require(len(sys.argv) == 4, "usage: m2-stop-worktree-v11-readback.py STATE_ROOT OUTPUT JOURNAL")
     root = Path(sys.argv[1]).resolve(strict=True)
@@ -63,10 +134,28 @@ def main():
         return {name: digest(path) for name, path in (("db", dbfile), ("wal", wal), ("shm", shm))}
 
     before = files()
+    reference = journal.get("v11OutsidePreflight")
+    require(reference and Path(reference.get("file", "")).name == reference.get("file") and
+            len(reference.get("sha256", "")) == 64,
+            "V11 original closed preflight reference missing")
+    baseline_file = journal_path.parent / reference["file"]
+    require(digest(baseline_file) == reference["sha256"],
+            "V11 original closed preflight bytes changed")
+    baseline = json.loads(baseline_file.read_text(encoding="utf-8-sig"))
+    require(baseline.get("schema") == "gogoke.37.private-v11-outside-preflight.v1" and
+            baseline.get("acceptance") is False and baseline.get("stateRoot") == str(root) and
+            baseline.get("databaseSha256") and baseline.get("outsideRoot") ==
+            str(Path(case["outsideRoot"]).resolve(strict=True)),
+            "V11 original closed preflight does not bind this outside target")
     db = sqlite3.connect(dbfile.as_uri() + "?mode=ro&immutable=1", uri=True)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA query_only=ON")
     try:
+        require(baseline["root"] == object_fact(root, True) and
+                baseline["database"] == object_fact(dbfile, True) and
+                baseline["outside"] == object_fact(case["outsideRoot"], True) and
+                baseline["inventory"] == inventory(db, root, Path(case["outsideRoot"])),
+                "V11 original F/source/outside object inventory drifted since closed preflight")
         operations = {row["request"]["requestId"]: row for row in journal["operations"]
                       if row.get("request", {}).get("requestId")}
         sessions = [row for row in journal["sessions"] if row.get("id") == case["sessionId"]]
@@ -234,4 +323,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    preflight() if len(sys.argv) > 1 and sys.argv[1] == "preflight" else main()

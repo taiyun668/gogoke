@@ -29,7 +29,9 @@ v11OutsideTree: {
 }
 ```
 
-The outside attempt asks for one exact native `exec_command` to create a new marker. `m2-stop-worktree-v11-readback.py` checks original E tier and F registration, H input/turn/StopFact/release, A thread/start, turn/start, typed ACK and matched original tool pair, all registered F/source paths, absence of any outside file, and unchanged database/WAL/SHM bytes. A failed original command is evidence of that attempt; its error and exit code remain visible for Controller to attribute. `directCaseEvidence` and `permissionCause` remain false/unattributed until that review.
+Before candidate launch or any model input, the runner verifies no active candidate process and calls `m2-stop-worktree-v11-readback.py preflight` on the closed, empty-WAL database. That immutable read seals the complete existing F worktree and repository-source rows with their physical identities and refuses an `outsideRoot` overlapping any of them. Its private file hash is bound into the journal before launch. This package creates no F/source registration; the final closed read repeats the same inventory and requires exact equality.
+
+The outside attempt asks for one exact native `exec_command` to create a new marker. The final reader checks original E tier and F registration, H input/turn/StopFact/release, A thread/start, turn/start, typed ACK and matched original tool pair, absence of any outside file, and unchanged database/WAL/SHM bytes. A failed original command is evidence of that attempt; its error and exit code remain visible for Controller to attribute. `directCaseEvidence` and `permissionCause` remain false/unattributed until that review.
 
 The existing `m2-mainflow.mjs` host-sealed merge and two-project MIXED graph exports remain their own entries. This script does not exercise NO_NETWORK, and its original failed command results alone cannot attribute a permission cause. The output always has `acceptance: false`; a nonzero readback or a missing original tool is `NOT_RUN` or failure, never PASS.
 

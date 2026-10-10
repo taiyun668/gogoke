@@ -65,6 +65,32 @@ journal.driverBytes['m2-stop-worktree-v11-outside.mjs'] = sha256(path.join(here,
 journal.driverBytes['m2-stop-worktree-v11-readback.py'] = sha256(path.join(here, 'm2-stop-worktree-v11-readback.py'));
 const check = (condition, reason) => { if (!condition) throw Error(reason); };
 
+async function preflightOutside() {
+  const file = 'm2-v11-outside-closed-preflight.json';
+  const output = path.join(config.evidenceDirectory, file);
+  check(!fs.existsSync(output), 'V11 closed preflight output already exists');
+  await new Promise((resolve, reject) => {
+    const child = spawn(config.python, [path.join(here, 'm2-stop-worktree-v11-readback.py'),
+      'preflight', config.stateRoot, output, config.v11OutsideTree.outsideRoot],
+      { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', bytes => { stdout = (stdout + bytes).slice(-8192); });
+    child.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-8192); });
+    child.once('error', reject);
+    child.once('exit', code => code === 0 ? resolve() :
+      reject(Error(`V11 closed outside preflight exit=${code}; stdout=${stdout}; stderr=${stderr}`)));
+  });
+  const proof = readJson(output);
+  check(proof.schema === 'gogoke.37.private-v11-outside-preflight.v1' &&
+    proof.stateRoot === path.resolve(config.stateRoot) &&
+    proof.outsideRoot === path.resolve(config.v11OutsideTree.outsideRoot) &&
+    proof.measurementPreservedDatabaseBytes === true && proof.acceptance === false &&
+    proof.inventory?.trees?.length > 0 && proof.inventory?.sources?.length > 0,
+  'V11 closed F/source object preflight differs from this private run');
+  journal.v11OutsidePreflight = { file, sha256: sha256(output) };
+  product.save();
+}
+
 async function readback() {
   const file = 'm2-v11-file-boundaries-readback.json';
   const output = path.join(config.evidenceDirectory, file);
@@ -122,6 +148,10 @@ async function readbackOutside() {
 }
 
 try {
+  // Candidate custody confirms there is no active product writer before an
+  // immutable read. The reader itself checks absent/empty WAL and byte stability.
+  await product.custody(true); product.verifyBytes();
+  await preflightOutside();
   await product.launch();
   await product.custody(); product.verifyBytes();
   const ui = await product.evaluate('({url:location.href,home:!!document.querySelector(".home-product-entry"),tauri:!!window.__TAURI_INTERNALS__})');
@@ -133,6 +163,9 @@ try {
     row.instanceId === instanceId && row.state === 'LOGGED_IN')),
   'V11 both original test instances must be logged in');
   await runV11FileBoundaries(product, config, journal);
+  check(sha256(path.join(config.evidenceDirectory, journal.v11OutsidePreflight.file)) ===
+    journal.v11OutsidePreflight.sha256,
+  'V11 closed F/source preflight changed before the outside request');
   await runV11OutsideTree(product, { ...config, v11OutsideTree: {
     seatId: c.mainWrite.seatId, instanceId: c.mainWrite.instanceId,
     worktreeId: c.mainWrite.worktreeId, worktreePath: c.mainWrite.worktreePath,

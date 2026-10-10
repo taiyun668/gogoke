@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { id, delay } from './product-cdp.mjs';
+import { id, delay, readJson, sha256 } from './product-cdp.mjs';
 
 const atom = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
 const check = (value, reason) => { if (!value) throw Error(reason); };
@@ -13,6 +13,22 @@ const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 
 export async function runV11OutsideTree(product, config, journal) {
   const c = config.v11OutsideTree;
+  check(c?.ownership === 'EXCLUSIVE_V11_OUTSIDE_TREE' &&
+    typeof c.outsideRoot === 'string' && path.isAbsolute(c.outsideRoot),
+  'V11 outside target configuration is absent');
+  const ref = journal.v11OutsidePreflight;
+  const sealed = ref?.file && path.basename(ref.file) === ref.file &&
+    path.join(config.evidenceDirectory, ref.file);
+  check(sealed && /^[a-f0-9]{64}$/.test(ref.sha256 ?? '') &&
+    sha256(sealed) === ref.sha256,
+  'V11 original closed F/source preflight must be sealed before outside H writes');
+  const baseline = readJson(sealed);
+  check(baseline.schema === 'gogoke.37.private-v11-outside-preflight.v1' &&
+    baseline.acceptance === false && baseline.measurementPreservedDatabaseBytes === true &&
+    baseline.stateRoot === path.resolve(config.stateRoot) &&
+    baseline.outsideRoot === path.resolve(c.outsideRoot) &&
+    baseline.inventory?.trees?.length > 0 && baseline.inventory?.sources?.length > 0,
+  'V11 original closed F/source inventory does not bind this outside target');
   check(c?.ownership === 'EXCLUSIVE_V11_OUTSIDE_TREE' && !journal.v11OutsideTree &&
     ['seatId', 'instanceId', 'worktreeId'].every(key => atom(c[key])) &&
     typeof c.worktreePath === 'string' && path.isAbsolute(c.worktreePath) &&
