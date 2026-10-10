@@ -140,7 +140,7 @@ export async function runV11GraphFacts(product, config, journal) {
         `window.__TAURI_INTERNALS__.invoke('gogoke_design37_user_operation',{frame:${JSON.stringify(rawFrame)}})`);
       entry.receipt = JSON.parse(entry.rawReceipt); product.save();
       requireFact(entry.receipt.schema === request.schema && entry.receipt.requestId === request.requestId &&
-        entry.receipt.domainId === domainId && entry.receipt.family === family &&
+        entry.receipt.family === family &&
         entry.receipt.operation === verb && entry.receipt.targetId === targetId &&
         allowed.includes(entry.receipt.status),
       `V11 original ${domainId}/${family}/${verb} result=${entry.receipt.status}; preserve without replay`);

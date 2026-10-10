@@ -32,8 +32,13 @@ def rpc_id(value):
 
 
 def same_path(left, right):
-    return os.path.normcase(str(Path(left).resolve(strict=True))) == os.path.normcase(
-        str(Path(right).resolve(strict=True)))
+    # Native Windows paths retain \\?\ spelling; compare their actual object.
+    return os.path.samefile(left, right)
+
+
+def ordinary_directory(path):
+    return path.is_dir() and not path.is_symlink() and not (
+        getattr(path.lstat(), "st_file_attributes", 0) & 0x400)
 
 
 def ordinary(path):
@@ -356,10 +361,13 @@ def main():
             path = Path(row[4])
             physical = path.resolve(strict=True)
             layout_root = root / "v37-worktrees" / graph["layout"]
-            require(same_path(path, physical) and layout_root.resolve(strict=True) in physical.parents and
-                    physical.is_dir() and not physical.is_symlink() and str(physical) not in paths,
+            physical_id = (physical.stat().st_dev, physical.stat().st_ino)
+            require(ordinary_directory(path) and ordinary_directory(layout_root) and
+                    same_path(path, physical) and
+                    any(same_path(layout_root, parent) for parent in physical.parents) and
+                    ordinary_directory(physical) and physical_id not in paths,
                     "V11 registered F tree is replaced, duplicated or outside its native layout")
-            paths.add(str(physical))
+            paths.add(physical_id)
             pointer = physical / ".git"
             require(ordinary(pointer) and row[5] == "sha256:" + digest(pointer.read_bytes()),
                     "V11 original F Git pointer differs")
@@ -371,9 +379,11 @@ def main():
                 space = exactly(db, "SELECT classification,state,path_id FROM gogoke_v37_worktree_spaces "
                                 "WHERE space_id=?", (graph["spaceId"],))
                 require(space[0] == "MIXED" and space[1] == "ACTIVE" and
-                        physical.parent == layout_root / space[2],
+                        ordinary_directory(layout_root / space[2]) and
+                        same_path(physical.parent, layout_root / space[2]),
                         "V11 mixed physical parent differs from original F space")
-                groups.setdefault(domain, []).append((graph["spaceId"], physical.parent, repository))
+                parent_id = (physical.parent.stat().st_dev, physical.parent.stat().st_ino)
+                groups.setdefault(domain, []).append((graph["spaceId"], parent_id, repository))
             else:
                 require(not members and graph["spaceId"] == tree_id,
                         "V11 single tree entered a mixed native space")
