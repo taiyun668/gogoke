@@ -6,7 +6,7 @@ use crate::store::atomic::Parser;
 use crate::store::digest::sha256_hex;
 
 const TABLE: &str = "gogoke_v37_claude_holder_recovery";
-const SCHEMA:&str="CREATE TABLE gogoke_v37_claude_holder_recovery(process_operation_id TEXT PRIMARY KEY REFERENCES gogoke_coordination_process_custody(operation_id),instance_id TEXT NOT NULL,domain_id TEXT NOT NULL,session_id TEXT NOT NULL,request_id TEXT NOT NULL UNIQUE,snapshot_hex TEXT NOT NULL,snapshot_digest TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('PREPARED','APPLIED','UNKNOWN')),revision INTEGER NOT NULL CHECK(revision>=1)) STRICT";
+const SCHEMA:&str="CREATE TABLE gogoke_v37_claude_holder_recovery(process_operation_id TEXT PRIMARY KEY REFERENCES gogoke_coordination_process_custody(operation_id),instance_id TEXT NOT NULL,domain_id TEXT NOT NULL,session_id TEXT NOT NULL,request_id TEXT NOT NULL UNIQUE,snapshot_hex TEXT NOT NULL,snapshot_digest TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('PREPARED','APPLIED','UNKNOWN')),original_error TEXT,revision INTEGER NOT NULL CHECK(revision>=1)) STRICT";
 const MAX_BYTES: usize = 2_097_152;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -25,6 +25,7 @@ pub(super) struct Record {
     pub(super) snapshot_hex: String,
     pub(super) snapshot_digest: String,
     pub(super) phase: String,
+    pub(super) original_error: String,
     pub(super) revision: i64,
 }
 
@@ -276,9 +277,12 @@ pub(super) fn read(db: &VerifiedDatabaseConnection<'_>, operation: &str) -> Resu
     if !schema_state(db)? {
         return Err(denied("Claude holder schema absent"));
     }
-    let q=Statement::prepare(db.as_ptr(),
-        "SELECT instance_id,domain_id,session_id,request_id,snapshot_hex,snapshot_digest,phase,revision
-         FROM main.gogoke_v37_claude_holder_recovery WHERE process_operation_id=?1")?;
+    let q = Statement::prepare(
+        db.as_ptr(),
+        "SELECT instance_id,domain_id,session_id,request_id,snapshot_hex,snapshot_digest,phase,
+                COALESCE(original_error,''),revision
+         FROM main.gogoke_v37_claude_holder_recovery WHERE process_operation_id=?1",
+    )?;
     q.bind_text(1, operation)?;
     if !q.step_row()? {
         return Ok(None);
@@ -290,8 +294,9 @@ pub(super) fn read(db: &VerifiedDatabaseConnection<'_>, operation: &str) -> Resu
     let snapshot_hex = q.column_text(4)?;
     let snapshot_digest = q.column_text(5)?;
     let phase = q.column_text(6)?;
+    let original_error = q.column_text(7)?;
     let revision = q
-        .column_text(7)?
+        .column_text(8)?
         .parse::<i64>()
         .map_err(|_| denied("Claude holder journal revision"))?;
     if q.step_row()?
@@ -320,6 +325,8 @@ pub(super) fn read(db: &VerifiedDatabaseConnection<'_>, operation: &str) -> Resu
     if request_id != format!("claude-gone-{}", &operation_digest[..40])
         || (phase == "PREPARED" && revision != 1)
         || (phase == "APPLIED" && revision != 2)
+        || (phase == "UNKNOWN" && (revision != 2 || original_error.is_empty()))
+        || (phase != "UNKNOWN" && !original_error.is_empty())
     {
         return Err(denied("Claude holder journal phase/request binding"));
     }
@@ -333,6 +340,7 @@ pub(super) fn read(db: &VerifiedDatabaseConnection<'_>, operation: &str) -> Resu
         snapshot_hex,
         snapshot_digest,
         phase,
+        original_error,
         revision,
     }))
 }
@@ -383,6 +391,7 @@ pub(super) fn insert_in_transaction(
         snapshot_hex,
         snapshot_digest,
         phase: "PREPARED".into(),
+        original_error: String::new(),
         revision: 1,
     })
 }
@@ -407,6 +416,38 @@ pub(super) fn applied_in_transaction(
     let changes = Statement::prepare(db.as_ptr(), "SELECT changes()")?;
     if !changes.step_row()? || changes.column_text(0)? != "1" {
         return Err(denied("Claude holder journal CAS"));
+    }
+    Ok(())
+}
+
+/// A third ACL image, changed physical inventory, or lost original authority
+/// permanently fences this captured intent. The original error is retained;
+/// no later caller can recapture or restore an earlier before image.
+pub(super) fn unknown_in_transaction(
+    db: &VerifiedDatabaseConnection<'_>,
+    record: &Record,
+    error: &str,
+) -> Result<()> {
+    if record.phase != "PREPARED" || error.is_empty() {
+        return Err(denied("Claude holder UNKNOWN transition"));
+    }
+    let bounded: String = error.chars().take(2048).collect();
+    let q = Statement::prepare(
+        db.as_ptr(),
+        "UPDATE main.gogoke_v37_claude_holder_recovery
+         SET phase='UNKNOWN',original_error=?1,revision=revision+1
+         WHERE process_operation_id=?2 AND snapshot_hex=?3 AND snapshot_digest=?4
+           AND phase='PREPARED' AND revision=?5 AND original_error IS NULL",
+    )?;
+    q.bind_text(1, &bounded)?;
+    q.bind_text(2, &record.operation)?;
+    q.bind_text(3, &record.snapshot_hex)?;
+    q.bind_text(4, &record.snapshot_digest)?;
+    q.bind_i64(5, record.revision)?;
+    q.step_done()?;
+    let changes = Statement::prepare(db.as_ptr(), "SELECT changes()")?;
+    if !changes.step_row()? || changes.column_text(0)? != "1" {
+        return Err(denied("Claude holder UNKNOWN CAS"));
     }
     Ok(())
 }

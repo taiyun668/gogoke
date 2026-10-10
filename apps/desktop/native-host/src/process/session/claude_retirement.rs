@@ -268,6 +268,36 @@ fn expected_flags(root: bool, directory: bool) -> u32 {
 }
 
 impl ClaudeAclRetirement {
+    /// Read-only crash classification. PREPARED may resume only while every
+    /// sealed object is still exactly its before or after image.
+    pub(crate) fn verify_progress(
+        profile: &AppContainerProfile,
+        roots: &[(PathBuf, RootIdentity, bool)],
+        objects: &[ClaudeAclObject],
+        known_sids: &[String],
+    ) -> Result<(), IsolationError> {
+        Self::verify_inventory(roots, objects)?;
+        for object in objects {
+            let (root, identity, _) = roots.get(object.root_index).ok_or_else(mismatch)?;
+            require_bound_path(root, identity, true)?;
+            let relative = decoded_relative(&object.relative_utf16_hex)?;
+            let held = open_physical_object(&root.join(relative), object.directory, READ_CONTROL)?;
+            let current = read_image(held.0, profile)?;
+            let before = unhex(&object.before_hex)?;
+            let after = unhex(&object.after_hex)?;
+            if current.identity.opaque() != object.identity
+                || current.control != object.control
+                || current
+                    .package_sids
+                    .iter()
+                    .any(|sid| !known_sids.contains(sid))
+                || !(current.ordered == before || current.ordered == after)
+            {
+                return Err(mismatch());
+            }
+        }
+        Ok(())
+    }
     pub(crate) fn readback_target(
         profile: &AppContainerProfile,
         roots: &[(PathBuf, RootIdentity, bool)],
@@ -301,6 +331,16 @@ impl ClaudeAclRetirement {
         objects: &[ClaudeAclObject],
     ) -> Result<(), IsolationError> {
         if roots.len() != 3 || objects.is_empty() {
+            return Err(mismatch());
+        }
+        if roots.iter().enumerate().any(|(i, (path, identity, _))| {
+            roots
+                .iter()
+                .enumerate()
+                .any(|(j, (other, other_identity, _))| {
+                    i != j && (identity == other_identity || path.starts_with(other))
+                })
+        }) {
             return Err(mismatch());
         }
         let mut observed = Vec::new();
@@ -340,6 +380,16 @@ impl ClaudeAclRetirement {
         known_sids: &[String],
     ) -> Result<Vec<ClaudeAclObject>, IsolationError> {
         if roots.len() != 3 || !roots[0].2 || !roots[1].2 {
+            return Err(mismatch());
+        }
+        if roots.iter().enumerate().any(|(i, (path, identity, _))| {
+            roots
+                .iter()
+                .enumerate()
+                .any(|(j, (other, other_identity, _))| {
+                    i != j && (identity == other_identity || path.starts_with(other))
+                })
+        }) {
             return Err(mismatch());
         }
         let sid = profile.package_sid_string()?;
@@ -546,7 +596,50 @@ fn write_exact_after(handle: Handle, before: &Image, after: &[u8]) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::windows::io::AsRawHandle;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[repr(C)]
+    struct FileTime {
+        low: u32,
+        high: u32,
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetProcessTimes(
+            process: Handle,
+            creation: *mut FileTime,
+            exit: *mut FileTime,
+            kernel: *mut FileTime,
+            user: *mut FileTime,
+        ) -> i32;
+    }
+    fn exited_real_child() -> (std::process::Child, (u32, u64)) {
+        let mut child = std::process::Command::new("cmd.exe")
+            .args(["/C", "exit", "/B", "0"])
+            .spawn()
+            .expect("ordinary cloud child");
+        let pid = child.id();
+        child.wait().expect("ordinary child exit");
+        let mut creation = FileTime { low: 0, high: 0 };
+        let mut exit = FileTime { low: 0, high: 0 };
+        let mut kernel = FileTime { low: 0, high: 0 };
+        let mut user = FileTime { low: 0, high: 0 };
+        assert_ne!(
+            unsafe {
+                GetProcessTimes(
+                    child.as_raw_handle().cast(),
+                    &mut creation,
+                    &mut exit,
+                    &mut kernel,
+                    &mut user,
+                )
+            },
+            0
+        );
+        let created = (u64::from(creation.high) << 32) | u64::from(creation.low);
+        (child, (pid, created))
+    }
 
     fn fixture() -> (
         PathBuf,
@@ -609,6 +702,30 @@ mod tests {
         );
         std::fs::write(roots[2].0.join("new-leaf.txt"), b"synthetic fixture").unwrap();
         assert!(ClaudeAclRetirement::verify_inventory(&roots, &sealed).is_err());
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn claude_holder_two_exact_original_processes_require_the_full_gone_set() {
+        let (first, one) = exited_real_child();
+        let (second, two) = exited_real_child();
+        let _held = (first, second);
+        let pairs = [one, two];
+        let gone =
+            NativeProcessHoldersGone::observe(&pairs).expect("both actual exact children exited");
+        let (base, roots, profile) = fixture();
+        let known = vec![profile.sid_identity().unwrap()];
+        let sealed = ClaudeAclRetirement::capture(&profile, &roots, &known).unwrap();
+        assert!(
+            ClaudeAclRetirement::apply(&profile, &roots, &sealed[0], &known, &gone, &[one])
+                .is_err(),
+            "a single H identity cannot discharge a two-holder original proof"
+        );
+        for object in &sealed {
+            ClaudeAclRetirement::apply(&profile, &roots, object, &known, &gone, &pairs).unwrap();
+            ClaudeAclRetirement::readback_target(&profile, &roots, object, &known, &gone, &pairs)
+                .unwrap();
+        }
         std::fs::remove_dir_all(base).unwrap();
     }
 }

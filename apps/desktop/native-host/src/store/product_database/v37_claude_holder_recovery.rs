@@ -113,6 +113,9 @@ impl<'root> ProductDatabase<'root> {
                 AND c.domain_id=e.domain_id AND c.generation=e.generation AND c.profile_id=e.instance_id
              WHERE a.instance_id=?1 AND a.state IN ('COMMITTED','UNKNOWN','RELEASED')
                AND a.process_operation_id IS NOT NULL AND e.old_generation IS NULL
+               AND NOT (a.state='RELEASED' AND a.stop_fact_id IS NOT NULL
+                 AND e.phase='STOPPED' AND e.stop_fact_id=a.stop_fact_id
+                 AND c.state='STOPPED' AND c.stop_proof_hash=a.stop_fact_id)
              ORDER BY a.domain_id,a.session_id";
         let mut originals = Vec::new();
         for r in rows(&self.connection, sql, &[instance], 28)? {
@@ -430,13 +433,12 @@ impl<'root> ProductDatabase<'root> {
             return Err(denied("Claude original root/database/SID set changed"));
         }
         if released {
-            if original.claim_state != "RELEASED"
-                || original.claim_revision
-                    != fact(saved, "claimRevision")?
-                        .parse::<i64>()
-                        .map_err(|_| denied("Claude captured revision"))?
-                        + 1
-            {
+            let expected_revision = fact(saved, "claimRevision")?
+                .parse::<i64>()
+                .map_err(|_| denied("Claude captured revision"))?
+                .checked_add(1)
+                .ok_or_else(|| denied("Claude captured revision overflow"))?;
+            if original.claim_state != "RELEASED" || original.claim_revision != expected_revision {
                 return Err(denied("Claude H release receipt changed"));
             }
             return Ok(Vec::new());
@@ -474,6 +476,7 @@ impl<'root> ProductDatabase<'root> {
         record: &journal::Record,
         known_sids: &[String],
         proof: &NativeProcessHoldersGone,
+        original_pairs: &[(u32, u64)],
         allowed: &[String],
         incoming: Option<&V37Request>,
     ) -> Result<()> {
@@ -483,7 +486,7 @@ impl<'root> ProductDatabase<'root> {
             .map_err(OrchestrationError::CommitUnknownWithCause)?;
         let result = (|| -> Result<()> {
             self.gone_scope_in_current_transaction(&instance, allowed, incoming, false)?;
-            evidence(proof.validate(&[original.pair]))?;
+            evidence(proof.validate(original_pairs))?;
             let current = self
                 .claude_originals(&instance)?
                 .into_iter()
@@ -509,7 +512,7 @@ impl<'root> ProductDatabase<'root> {
                     object,
                     known_sids,
                     proof,
-                    &[current.pair],
+                    original_pairs,
                 ))?;
             }
             let q = Statement::prepare(
@@ -644,6 +647,30 @@ impl<'root> ProductDatabase<'root> {
             ]])
     }
 
+    fn claude_fence_unknown(
+        &mut self,
+        record: &journal::Record,
+        original_error: &OrchestrationError,
+    ) -> Result<()> {
+        self.connection
+            .execute("BEGIN IMMEDIATE")
+            .map_err(OrchestrationError::CommitUnknownWithCause)?;
+        let result = (|| -> Result<()> {
+            authority::check_owner_in_current_transaction(&self.connection, &self.owner)?;
+            let current = journal::read(&self.connection, &record.operation)?
+                .ok_or_else(|| denied("Claude holder captured intent vanished"))?;
+            if current != *record {
+                return Err(denied("Claude holder captured intent changed"));
+            }
+            journal::unknown_in_transaction(
+                &self.connection,
+                record,
+                &format!("{original_error:?}"),
+            )
+        })();
+        self.finish_native_transaction(result)
+    }
+
     pub(super) fn recover_disappeared_claude_resources(
         &mut self,
         instance: &str,
@@ -665,6 +692,16 @@ impl<'root> ProductDatabase<'root> {
         let originals = self.claude_originals(instance)?;
         if originals.is_empty() {
             return Ok(());
+        }
+        for old in originals.iter().filter(|old| old.claim_state == "RELEASED") {
+            if !self.completed_claude_holder_release(
+                instance,
+                &fact(&old.facts, "domain")?,
+                &fact(&old.facts, "session")?,
+                &fact(&old.facts, "operation")?,
+            )? {
+                return Err(denied("Claude prior disappeared holder release unverified"));
+            }
         }
         let active: Vec<_> = originals
             .iter()
@@ -727,38 +764,95 @@ impl<'root> ProductDatabase<'root> {
                 }
             };
             if record.phase != "PREPARED" {
-                return Err(denied("Claude holder recovery journal unresolved"));
+                return Err(OrchestrationError::V37StoreFailure(format!(
+                    "Claude holder recovery journal {}: {}",
+                    record.phase, record.original_error
+                )));
             }
-            let roots = self.claude_validate_capture(original, &record, &known_sids, false)?;
-            let profile = evidence(AppContainerProfile::derive_for_revocation(
-                &original.profile_name,
-            ))?;
-            for object in &record.capture.objects {
+            let settled = (|| -> Result<()> {
+                let roots = self.claude_validate_capture(original, &record, &known_sids, false)?;
+                let profile = evidence(AppContainerProfile::derive_for_revocation(
+                    &original.profile_name,
+                ))?;
+                for object in &record.capture.objects {
+                    self.gone_scope(instance, &allowed, incoming, false)?;
+                    evidence(all_gone.validate(&pairs))?;
+                    evidence(ClaudeAclRetirement::verify_inventory(
+                        &roots,
+                        &record.capture.objects,
+                    ))?;
+                    evidence(ClaudeAclRetirement::apply(
+                        &profile,
+                        &roots,
+                        object,
+                        &known_sids,
+                        &all_gone,
+                        &pairs,
+                    ))?;
+                }
                 self.gone_scope(instance, &allowed, incoming, false)?;
                 evidence(all_gone.validate(&pairs))?;
-                evidence(ClaudeAclRetirement::verify_inventory(
-                    &roots,
-                    &record.capture.objects,
-                ))?;
-                evidence(ClaudeAclRetirement::apply(
-                    &profile,
-                    &roots,
-                    object,
+                self.claude_release(
+                    original,
+                    &record,
                     &known_sids,
                     &all_gone,
                     &pairs,
-                ))?;
+                    &allowed,
+                    incoming,
+                )
+            })();
+            if let Err(original_error) = settled {
+                let current_record = journal::read(&self.connection, &operation)?
+                    .ok_or_else(|| denied("Claude captured intent vanished after failure"))?;
+                if current_record.phase == "APPLIED" {
+                    if self.completed_claude_holder_release(
+                        instance,
+                        &fact(&original.facts, "domain")?,
+                        &fact(&original.facts, "session")?,
+                        &operation,
+                    )? {
+                        continue;
+                    }
+                    return Err(denied("Claude applied release lacks exact receipt"));
+                }
+                if current_record != record {
+                    return Err(denied("Claude captured intent changed after failure"));
+                }
+                let progress = (|| -> Result<()> {
+                    self.gone_scope(instance, &allowed, incoming, false)?;
+                    evidence(all_gone.validate(&pairs))?;
+                    let current = self
+                        .claude_originals(instance)?
+                        .into_iter()
+                        .find(|o| {
+                            o.pair == original.pair
+                                && o.facts.get("operation") == original.facts.get("operation")
+                        })
+                        .ok_or_else(|| denied("Claude original holder vanished during failure"))?;
+                    if current.facts != original.facts {
+                        return Err(denied("Claude original holder changed during failure"));
+                    }
+                    let roots =
+                        self.claude_validate_capture(&current, &record, &known_sids, false)?;
+                    let profile = evidence(AppContainerProfile::derive_for_revocation(
+                        &current.profile_name,
+                    ))?;
+                    evidence(ClaudeAclRetirement::verify_progress(
+                        &profile,
+                        &roots,
+                        &record.capture.objects,
+                        &known_sids,
+                    ))
+                })();
+                if let Err(progress_error) = progress {
+                    if let Err(fence_error) = self.claude_fence_unknown(&record, &original_error) {
+                        return Err(OrchestrationError::V37StoreFailure(format!(
+                            "Claude holder original failure: {original_error:?}; drift: {progress_error:?}; UNKNOWN journal CAS failed: {fence_error:?}")));
+                    }
+                }
+                return Err(original_error);
             }
-            self.gone_scope(instance, &allowed, incoming, false)?;
-            evidence(all_gone.validate(&pairs))?;
-            self.claude_release(
-                original,
-                &record,
-                &known_sids,
-                &all_gone,
-                &allowed,
-                incoming,
-            )?;
         }
         Ok(())
     }
