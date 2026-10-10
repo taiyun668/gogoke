@@ -39,11 +39,12 @@ LPSECURITY_ATTRIBUTES observed_file_security = nullptr;
 HANDLE observed_file_template = nullptr;
 HANDLE mock_file_result = INVALID_HANDLE_VALUE;
 DWORD mock_file_error = ERROR_ACCESS_DENIED;
-char captured_stderr[112] = {};
+char captured_stderr[160] = {};
 DWORD captured_length = 0;
 int stderr_calls = 0;
-char captured_pipe_observations[4][256] = {};
+char captured_pipe_observations[12][320] = {};
 int pipe_observation_calls = 0;
+bool fail_pipe_observation = false;
 DWORD original_file_entry_error = 0;
 
 HANDLE WINAPI mock_named_pipe_a(LPCSTR name, DWORD open_mode, DWORD pipe_mode,
@@ -85,17 +86,17 @@ bool mock_stderr(const char* line, DWORD len) {
     memcpy(captured_stderr, line, len);
     captured_stderr[len] = 0;
     SetLastError(999); // Failed stderr must not replace the original API code.
-    return false;
+    return true;
 }
 
 bool mock_pipe_observation(const char* line, DWORD len) {
-    if (pipe_observation_calls < 4 && len < 256) {
+    if (pipe_observation_calls < 12 && len < 320) {
         memcpy(captured_pipe_observations[pipe_observation_calls], line, len);
         captured_pipe_observations[pipe_observation_calls][len] = 0;
     }
     ++pipe_observation_calls;
     SetLastError(997);
-    return false;
+    return !fail_pipe_observation;
 }
 
 DWORD WINAPI mock_final_path(HANDLE handle, LPWSTR out, DWORD cap, DWORD flags) {
@@ -392,7 +393,13 @@ void test_claude_pipe_observation() {
     g_pipe_a = mock_named_pipe_a;
     g_pipe_w = mock_named_pipe_w;
     g_test_stderr = mock_stderr;
+    g_test_pipe_observation = mock_pipe_observation;
     g_pipe_capture = 0;
+    g_server_observation = 0;
+    g_server_w_observation = 0;
+    g_diagnostic_write_error = 0;
+    fail_pipe_observation = false;
+    pipe_observation_calls = 0;
     stderr_calls = 0;
     mock_pipe_result = INVALID_HANDLE_VALUE;
     mock_pipe_error = ERROR_ACCESS_DENIED;
@@ -428,13 +435,20 @@ void test_claude_pipe_observation() {
     CHECK(stderr_calls == 1 &&
         strcmp(captured_stderr, "gogoke Claude CreateNamedPipeW failed win32=231 prefix=uv\n") == 0);
     g_test_stderr = nullptr;
+    g_test_pipe_observation = nullptr;
 }
 
 void test_claude_local_uv_pair() {
     g_pipe_a = mock_named_pipe_a;
     g_file_a = mock_file_a;
     g_test_stderr = mock_stderr;
+    g_test_pipe_observation = mock_pipe_observation;
     g_pipe_capture = 0;
+    g_server_observation = 0;
+    g_client_observation = 0;
+    g_diagnostic_write_error = 0;
+    fail_pipe_observation = false;
+    pipe_observation_calls = 0;
     stderr_calls = 0;
     mock_pipe_result = reinterpret_cast<HANDLE>(0x1234);
     mock_pipe_error = 71;
@@ -491,6 +505,7 @@ void test_claude_local_uv_pair() {
     result = observed_file_a(source, client_access, 0, &security, CREATE_NEW, 0, nullptr);
     CHECK(observed_file_name == source && strcmp(observed_file_name_copy, source) == 0);
     g_test_stderr = nullptr;
+    g_test_pipe_observation = nullptr;
 }
 
 void test_original_pair_call_diagnostics_preserve_api_semantics() {
@@ -498,7 +513,10 @@ void test_original_pair_call_diagnostics_preserve_api_semantics() {
     g_file_a = mock_file_a;
     g_test_pipe_observation = mock_pipe_observation;
     g_server_observation = 0;
+    g_server_w_observation = 0;
     g_client_observation = 0;
+    g_diagnostic_write_error = 0;
+    fail_pipe_observation = false;
     pipe_observation_calls = 0;
     char source[64] = {};
     sprintf_s(source, "\\\\?\\pipe\\uv\\123456789-%lu", GetCurrentProcessId());
@@ -511,6 +529,7 @@ void test_original_pair_call_diagnostics_preserve_api_semantics() {
     CHECK(pipe_observation_calls == 2);
     CHECK(strstr(captured_pipe_observations[0], "api=CreateNamedPipeA event=enter mapped=1 outcome=pending") != nullptr);
     CHECK(strstr(captured_pipe_observations[1], "event=return mapped=1 outcome=succeeded win32=0 filetime_100ns=") != nullptr);
+    CHECK(strstr(captured_pipe_observations[1], " target=pipe-qualified qualified=1") != nullptr);
     CHECK(strstr(captured_pipe_observations[0], source) == nullptr);
     SECURITY_ATTRIBUTES security = {};
     mock_file_result = INVALID_HANDLE_VALUE;
@@ -522,10 +541,83 @@ void test_original_pair_call_diagnostics_preserve_api_semantics() {
     CHECK(original_file_entry_error == 812 && pipe_observation_calls == 4);
     CHECK(strstr(captured_pipe_observations[2], "api=CreateFileA event=enter mapped=1 outcome=pending") != nullptr);
     CHECK(strstr(captured_pipe_observations[3], "event=return mapped=1 outcome=failed win32=2 filetime_100ns=") != nullptr);
+    CHECK(strstr(captured_pipe_observations[3], " target=pipe-qualified qualified=1") != nullptr);
     CHECK(strstr(captured_pipe_observations[3], source) == nullptr);
     result = observed_file_a(source, GENERIC_READ | GENERIC_WRITE | WRITE_DAC,
         0, &security, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
     CHECK(result == INVALID_HANDLE_VALUE && GetLastError() == ERROR_FILE_NOT_FOUND && pipe_observation_calls == 4);
+    g_test_pipe_observation = nullptr;
+}
+
+void test_first_non_uv_a_w_calls_and_stderr_delivery_failure() {
+    CHECK(strcmp(target_class("CONOUT$", false), "console") == 0 &&
+        strcmp(target_class("D:\\private\\auth.json", false), "disk-root") == 0 &&
+        strcmp(target_class(static_cast<const char*>(nullptr), false), "other") == 0);
+    g_pipe_a = mock_named_pipe_a;
+    g_pipe_w = mock_named_pipe_w;
+    g_file_a = mock_file_a;
+    g_test_pipe_observation = mock_pipe_observation;
+    g_server_observation = 0;
+    g_server_w_observation = 0;
+    g_client_observation = 0;
+    g_diagnostic_write_error = 0;
+    fail_pipe_observation = false;
+    pipe_observation_calls = 0;
+    mock_pipe_result = INVALID_HANDLE_VALUE;
+    mock_pipe_error = ERROR_ACCESS_DENIED;
+    SECURITY_ATTRIBUTES security = {};
+    constexpr char other_pipe[] = "\\\\?\\pipe\\other\\private-name";
+    SetLastError(811);
+    HANDLE result = observed_pipe_a(other_pipe, 1, 2, 3, 4, 5, 6, &security);
+    CHECK(result == INVALID_HANDLE_VALUE && GetLastError() == ERROR_ACCESS_DENIED);
+    CHECK(pipe_observation_calls == 2 &&
+        strstr(captured_pipe_observations[0], "api=CreateNamedPipeA event=enter mapped=0 outcome=pending") &&
+        strstr(captured_pipe_observations[1], "target=pipe-other qualified=0") &&
+        strstr(captured_pipe_observations[1], "pid=") &&
+        strstr(captured_pipe_observations[1], other_pipe) == nullptr);
+    constexpr wchar_t wide_pipe[] = L"\\\\?\\pipe\\other\\private-wide-name";
+    mock_pipe_error = ERROR_PIPE_BUSY;
+    SetLastError(812);
+    result = observed_pipe_w(wide_pipe, 7, 8, 9, 10, 11, 12, &security);
+    CHECK(result == INVALID_HANDLE_VALUE && GetLastError() == ERROR_PIPE_BUSY);
+    CHECK(pipe_observation_calls == 4 &&
+        strstr(captured_pipe_observations[2], "api=CreateNamedPipeW event=enter mapped=0 outcome=pending") &&
+        strstr(captured_pipe_observations[3], "target=pipe-other qualified=0") &&
+        strstr(captured_pipe_observations[3], "win32=231") &&
+        strstr(captured_pipe_observations[3], "private-wide-name") == nullptr);
+    constexpr char disk_path[] = "C:\\private\\auth.json";
+    mock_file_result = INVALID_HANDLE_VALUE;
+    mock_file_error = ERROR_FILE_NOT_FOUND;
+    SetLastError(813);
+    result = observed_file_a(disk_path, GENERIC_READ, 0, &security,
+        OPEN_EXISTING, 0, nullptr);
+    CHECK(result == INVALID_HANDLE_VALUE && GetLastError() == ERROR_FILE_NOT_FOUND &&
+        original_file_entry_error == 813);
+    CHECK(pipe_observation_calls == 6 &&
+        strstr(captured_pipe_observations[4], "api=CreateFileA event=enter mapped=0 outcome=pending") &&
+        strstr(captured_pipe_observations[5], "target=disk-root qualified=0") &&
+        strstr(captured_pipe_observations[5], "private") == nullptr);
+    observed_pipe_a(other_pipe, 1, 2, 3, 4, 5, 6, &security);
+    observed_pipe_w(wide_pipe, 7, 8, 9, 10, 11, 12, &security);
+    observed_file_a(disk_path, GENERIC_READ, 0, &security, OPEN_EXISTING, 0, nullptr);
+    CHECK(pipe_observation_calls == 6);
+
+    // A failed diagnostic write cannot change the wrapped API's LastError.
+    // Its first failure code is retained for a later successful stderr line.
+    g_server_observation = 0;
+    fail_pipe_observation = true;
+    SetLastError(814);
+    result = observed_pipe_a(other_pipe, 1, 2, 3, 4, 5, 6, &security);
+    CHECK(result == INVALID_HANDLE_VALUE && GetLastError() == ERROR_PIPE_BUSY &&
+        g_diagnostic_write_error == 997 && pipe_observation_calls == 8);
+    g_client_observation = 0;
+    fail_pipe_observation = false;
+    result = observed_file_a(disk_path, GENERIC_READ, 0, &security,
+        OPEN_EXISTING, 0, nullptr);
+    CHECK(result == INVALID_HANDLE_VALUE && GetLastError() == ERROR_FILE_NOT_FOUND &&
+        pipe_observation_calls == 10 &&
+        strstr(captured_pipe_observations[8], "prior_stderr_write_failure_win32=997") &&
+        strstr(captured_pipe_observations[9], "prior_stderr_write_failure_win32=997"));
     g_test_pipe_observation = nullptr;
 }
 
@@ -597,6 +689,7 @@ int main() {
     test_claude_pipe_observation();
     test_claude_local_uv_pair();
     test_original_pair_call_diagnostics_preserve_api_semantics();
+    test_first_non_uv_a_w_calls_and_stderr_delivery_failure();
     test_claude_iat_shape();
     test_mode_selection();
     if (failures) fprintf(stderr, "%d fixed shim tests failed\n", failures);
