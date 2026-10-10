@@ -1592,6 +1592,18 @@ pub(crate) fn completed_h_only_root_peer_bridge(
             return Err("Grok H-only bridge: descendant FileID or after ACL changed".into());
         }
     }
+    // The sealed journal names only objects present when H-only retirement
+    // began. A later legitimate child may exist, but it cannot bring a new
+    // package SID into the first F anchor. Inspect the complete current HOME
+    // before any F grant is written; the old objects remain exact-ACL checked
+    // above, while new objects have no historical ACL to compare against.
+    for (object,acl) in evidence("H-only bridge current HOME inventory",
+        profile.observe_grok_h_only_tree(&home.path,&home.identity))? {
+        if acl.identity!=object.identity ||!acl.canonical_dacl() ||
+            !acl.target_aces.is_empty() ||!acl.package_sid_aces().is_empty() {
+            return Err("Grok H-only bridge: current descendant has unknown package SID or ACL shape".into());
+        }
+    }
     let before=h_only_recorded_aces(&root_row[3])?;
     let after=h_only_recorded_aces(&root_row[4])?;
     if before.len()!=after.len()+1 {
@@ -2066,6 +2078,22 @@ mod tests {
         assert!(completed_h_only_root_peer_bridge(&db,&root,"grokA",
             &root.canonical_root().identity,&home.identity,
             &(current_ordered.clone()+"00"),current.dacl_control).is_err());
+        // A descendant created after the sealed H-only inventory is valid
+        // when clean. A foreign package grant on that same new FileID must
+        // fail before the first F anchor, even though every old row is intact.
+        let late_child=home.path.join("late-clean-child");
+        std::fs::create_dir(&late_child).unwrap();
+        let late_identity=RootLock::acquire(&late_child).unwrap().canonical_root().identity.clone();
+        let foreign=AppContainerProfile::derived_for_test("Gogoke37.HOnlyBridgeForeign").unwrap();
+        grant_grok_home_root(&foreign,&late_child,&late_identity).unwrap();
+        assert!(completed_h_only_root_peer_bridge(&db,&root,"grokA",
+            &root.canonical_root().identity,&home.identity,
+            &current_ordered,current.dacl_control).is_err());
+        revoke_grok_home_root(&foreign,&late_child,&late_identity).unwrap();
+        assert_eq!(completed_h_only_root_peer_bridge(&db,&root,"grokA",
+            &root.canonical_root().identity,&home.identity,
+            &current_ordered,current.dacl_control).unwrap().as_deref(),Some(bridged.as_str()));
+        drop(foreign);
         // Model the archived pre-fix F effect's exact peer set when the H-only
         // SID still existed. The current writer cannot create this old shape:
         // its first-anchor preflight correctly refuses an unknown package SID.
