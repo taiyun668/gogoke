@@ -10,8 +10,9 @@ $originalHash=(Get-FileHash -LiteralPath $source).Hash.ToLowerInvariant()
 $text=[Text.Encoding]::UTF8.GetString($original)
 # Use a literal production SQL locator. Keep the parameter in the query so
 # removing its source comparison cannot fail only through a bind-range error.
-$needle='AND source_cursor=?4'
-if ([regex]::Matches($text,[regex]::Escape($needle)).Count -ne 1) { throw 'Original USER marker source locator is not unique' }
+$locators=[regex]::Matches($text,'SELECT CAST\(occurred_at_ms AS TEXT\),CAST\(observed_at_ms AS TEXT\)[^"]*AND source_cursor=\?4')
+if ($locators.Count -ne 1) { throw 'Original USER timed marker query locator is not unique' }
+$needle=$locators[0].Value
 $filter=if($History){'secretary_original_user_pages_preserve_historical_provenance_and_gaps'}else{'changed_user_marker_h_response_and_current_authority_never_write'}
 $prefix=if($History){'history-marker'}else{'marker'}
 function Observe([string]$label) {
@@ -28,7 +29,7 @@ try {
     $baseline=Observe "$prefix-baseline"
     if ($baseline.exitCode -ne 0 -or $baseline.passed -ne 1 -or $baseline.failed -ne 0 -or $baseline.ignored -ne 0) { throw 'Original marker boundary baseline failed' }
     $results+=$baseline
-    $mutated=$text.Replace($needle,'AND (?4 IS NOT NULL)')
+    $mutated=$text.Replace($needle,$needle.Replace('AND source_cursor=?4','AND (?4 IS NOT NULL)'))
     [IO.File]::WriteAllText($source,$mutated,[Text.UTF8Encoding]::new($false))
     $mutation=Observe "$prefix-source-comparison-removed"
     if ($mutation.exitCode -ne 101 -or $mutation.passed -ne 0 -or $mutation.failed -ne 1 -or $mutation.ignored -ne 0 -or -not $mutation.originalMarkerAssertion) { throw 'Production source comparison mutation did not fail its original assertion' }

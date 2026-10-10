@@ -102,3 +102,9 @@ SAC 本次重新读回为 0；所有新临时与证据直接 D 盘。正式保�
 - V10 原新例：测试 profile 首次 USER 配置已成功读回、两域两 USER/LEAD 建立；未启动模型。其 F create 被拒绝是仪器把 wire 小写 `single` 错改成内部枚举 `SINGLE`，Root 接受这一错误前提是本次返工原因；实际 USER 解析器与冻结源一致，只接受小写。原 DENIED、请求、正常关闭和保护原件保留，不改成通过。下一步从已建立原绑定闭库读回后续 F，不重做首次配置、不重放拒绝请求。
 - 边界：当前秘书长接线只支持已持有且空闲的原 SECRETARY H；重启后驻留恢复、无 H 时的缺席持久暂停和完整 V14 仍未完成，不能外推验收。G 结果读模型与新诊断展示继续由 Claude 负责。
 - 参照：原 USER 席位/实例/F 解析器，原 NativeSession/RPC/StdinJournal/RawCapture 的写入及错误路径，E 已有 UNKNOWN/暂停/删除语义；迁移仅从原 exact E schema 增独立诊断表，不改变原行、权限或持久写方。以原读取和错误类别替代猜测，未添加重试或等待补偿。
+## 秘书长定向云检与 V10 续跑
+
+- 云端发布构建及九个过滤器的 24 项原测试全部通过，随后原变异仪器以 `Original USER marker source locator is not unique` 退出。直接源码证实新增历史核对查询与原查询共享尾部条件，泛化定位已不唯一；改为原带时间的完整 SELECT 查询，仅撤其 source_cursor 比较，保留参数、测试和恢复原件。两个源各唯一定位与 PowerShell 语法已核对，正式 mutation 结果待云端重跑。原失败不算通过。
+- V10 已闭库逐项核对已建立的两 USER/lead/profile，计划 F 均未创建，原数据库与旁文件字节不变；续跑使用原绑定、新请求和正确小写 wire，不重新配置或建域。读取任务完成后精确删除并保留 XML。模型原输出支持原 contentItems 形状，不以缺失数组误判原 native 回执。
+- 并行：工人提取原 E absence 减资格判断，让 no-live/busy 时也能持久暂停；Root 续跑 V10。独立 specialist 核对驻留恢复与长期账本，旧 UNKNOWN 不伪造 STOPPED。
+- 参照：原生产 SQL、现有 USER-marker 变异脚本、原 V06 native contentItems 读回与现有 E presence/policy/CAS；仪器修正不改产品字节或授权。
