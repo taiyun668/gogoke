@@ -1174,11 +1174,14 @@ mod tests {
         use crate::store::seat::PermissionTier;
         let fixed=InstancePin {driver_id:"codex".into(),version:"0.160.0".into(),
             digest:"sha256:fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d".into()};
-        let refused=require_new_reservation_supported(&fixed,true,||Ok(PermissionTier::ReadOnly));
-        assert!(matches!(refused,Err(AdmissionError::Invalid(reason))
-            if reason.contains("READ_ONLY LPAC unavailable")
-                && reason.contains("GetComputerNameExW did not provide buffer size")
-                && reason.contains("GetLastError was not captured")));
+        for (tier, label) in [(PermissionTier::ReadOnly,"READ_ONLY"),
+            (PermissionTier::NoNetwork,"NO_NETWORK")] {
+            let refused=require_new_reservation_supported(&fixed,true,||Ok(tier));
+            assert!(matches!(refused,Err(AdmissionError::Invalid(reason))
+                if reason.contains(&format!("{label} LPAC unavailable"))
+                    && reason.contains("GetComputerNameExW did not provide buffer size")
+                    && reason.contains("GetLastError was not captured")));
+        }
         assert!(require_new_reservation_supported(&fixed,false,||panic!("old replay read E tier")).is_ok());
         for changed in [InstancePin {driver_id:"claude".into(),..fixed.clone()},
             InstancePin {version:"0.160.1".into(),..fixed.clone()},
@@ -1188,8 +1191,7 @@ mod tests {
             assert!(require_new_reservation_supported(&changed,true,
                 ||Err(AdmissionError::Denied)).is_ok());
         }
-        for tier in [PermissionTier::NoNetwork,PermissionTier::IsolatedWrite,
-            PermissionTier::NetworkedWrite] {
+        for tier in [PermissionTier::IsolatedWrite,PermissionTier::NetworkedWrite] {
             assert!(require_new_reservation_supported(&fixed,true,||Ok(tier)).is_ok());
         }
         assert!(matches!(require_new_reservation_supported(&fixed,true,
@@ -1198,6 +1200,8 @@ mod tests {
 
     #[test]
     fn one_boundary_survives_reopen_unknown_replay_and_home_fence_unavailable_reserve_rolls_back() {
+        for (tier,label) in [(crate::store::seat::PermissionTier::ReadOnly,"READ_ONLY"),
+            (crate::store::seat::PermissionTier::NoNetwork,"NO_NETWORK")] {
         owner_unstarted_fixture(|_root,db,_owner,_busy| {
             db.execute("CREATE TABLE test_reserve_side_effect(value TEXT) STRICT").unwrap();
             let reserve=AdmissionRequest {domain_id:"projectA",session_id:"unavailableSession",
@@ -1210,11 +1214,11 @@ mod tests {
                 assert!(new);
                 db.execute("INSERT INTO test_reserve_side_effect VALUES('would-be-selection')")?;
                 super::super::runtime::require_new_reservation_supported(&pin,new,
-                    || Ok(crate::store::seat::PermissionTier::ReadOnly))?;
+                    || Ok(tier))?;
                 one_capacity(db)
             });
             assert!(matches!(result,Err(AdmissionError::Invalid(reason))
-                if reason.contains("READ_ONLY LPAC unavailable")
+                if reason.contains(&format!("{label} LPAC unavailable"))
                     && reason.contains("GetComputerNameExW did not provide buffer size")));
             for sql in ["SELECT COUNT(*) FROM test_reserve_side_effect",
                 "SELECT COUNT(*) FROM gogoke_v37_h_claim WHERE session_id='unavailableSession'",
@@ -1244,6 +1248,7 @@ mod tests {
             });
             assert_eq!(replay.unwrap(),AdmissionResult::Replayed(1));
         });
+        }
     }
 
     #[test]
