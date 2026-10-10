@@ -1075,7 +1075,9 @@ jobs:
           retention-days: 30
 
   native-host-windows-security-mutations:
-    if: ${{ !inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only && (!inputs.full_library_only || inputs.security_remainder_source) && !inputs.focused_library }}
+    # These two directed runs execute their relevant checks and Grok mutation
+    # in real-process-axes; the separate core job only adds unrelated tests.
+    if: ${{ !inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only && (!inputs.full_library_only || inputs.security_remainder_source) && !inputs.focused_library && !inputs.job_descendant_fixture_only && !inputs.private_history_fixture_only }}
     name: Native host Windows security mutations (${{ matrix.group }})
     # Keep unchanged mutation commands, but separate compile-heavy groups.
     # A remainder run tests the explicitly checked-out ancestor, not workflow SHA.
