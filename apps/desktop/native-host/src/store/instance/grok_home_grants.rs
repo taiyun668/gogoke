@@ -1,7 +1,7 @@
 //! Private F journal for one pinned Grok instance HOME and its original
 //! per-generation SID. No credential contents, path supplied by wire, or CLI
 //! command is stored here. An ACL effect is never made before its intent.
-use crate::root::RootIdentity;
+use crate::root::{RootIdentity,RootLock};
 use crate::process::AppContainerProfile;
 use crate::store::atomic::Statement;
 use crate::store::digest::sha256_hex;
@@ -255,15 +255,15 @@ pub(crate) fn advance_grok_root_anchor_registration(
 
 pub(crate) fn begin_grok_grant(db:&mut VerifiedDatabaseConnection<'_>,
     domain:&GrokDomain,grant:&GrokGrant)->Result<GrokGrant,String>{
-    begin_grok_grant_with_catalog_and_anchor(db,domain,grant,&current_domain,None)
+    begin_grok_grant_with_catalog_and_anchor(db,domain,grant,&current_domain,None,None)
 }
 
 pub(crate) fn begin_grok_grant_with_root_anchor(db:&mut VerifiedDatabaseConnection<'_>,
-    domain:&GrokDomain,grant:&GrokGrant,acl_hex:&str,acl_control:u16,
+    root:&RootLock,domain:&GrokDomain,grant:&GrokGrant,acl_hex:&str,acl_control:u16,
     other_aces_sha256:&str)
     ->Result<GrokGrant,String>{
     begin_grok_grant_with_catalog_and_anchor(db,domain,grant,&current_domain,
-        Some((acl_hex,acl_control,other_aces_sha256)))
+        Some(root),Some((acl_hex,acl_control,other_aces_sha256)))
 }
 
 fn settled_grok_holder_gone_release(db:&VerifiedDatabaseConnection<'_>,
@@ -360,8 +360,12 @@ fn settled_stopped_h_release(db:&VerifiedDatabaseConnection<'_>,
 /// canonical root matches a settled original ROOT effect's complete
 /// non-package multiset/control. This does not recover the old ACE order.
 fn settled_legacy_root_baseline(db:&VerifiedDatabaseConnection<'_>,
-    domain:&GrokDomain,candidate:&GrokGrant,old_grants:&[GrokGrant],control:u16,
+    root:&RootLock,domain:&GrokDomain,candidate:&GrokGrant,
+    old_grants:&[GrokGrant],acl_hex:&str,control:u16,
     other_hash:&str)->Result<String,String>{
+    let h_only_old_peer_hash=crate::store::session_transport::grok_home_launch::
+        completed_h_only_root_peer_bridge(db,root,&domain.instance_id,
+            &domain.root_identity,&domain.home_identity,acl_hex,control)?;
     let blocked=|sql:&str,value:&str|->Result<(),String>{
         let row=stmt(db,sql)?;
         bind(&row,&[value])?;
@@ -445,7 +449,9 @@ fn settled_legacy_root_baseline(db:&VerifiedDatabaseConnection<'_>,
         }
         if source.is_none() {
             source=effects.iter().find(|e|e.action=="REVOKE_ROOT" &&
-                e.after_control==control &&e.other_aces_sha256==other_hash)
+                e.after_control==control &&
+                (e.other_aces_sha256==other_hash ||
+                 h_only_old_peer_hash.as_deref()==Some(e.other_aces_sha256.as_str())))
                 .map(|e|e.effect_id.clone());
         }
     }
@@ -492,12 +498,13 @@ fn settled_legacy_root_baseline(db:&VerifiedDatabaseConnection<'_>,
 fn begin_grok_grant_with_catalog(db:&mut VerifiedDatabaseConnection<'_>,
     domain:&GrokDomain,grant:&GrokGrant,
     observe:&impl Fn(&VerifiedDatabaseConnection<'_>,&str)->Result<GrokDomain,String>)->Result<GrokGrant,String>{
-    begin_grok_grant_with_catalog_and_anchor(db,domain,grant,observe,None)
+    begin_grok_grant_with_catalog_and_anchor(db,domain,grant,observe,None,None)
 }
 
 fn begin_grok_grant_with_catalog_and_anchor(db:&mut VerifiedDatabaseConnection<'_>,
     domain:&GrokDomain,grant:&GrokGrant,
     observe:&impl Fn(&VerifiedDatabaseConnection<'_>,&str)->Result<GrokDomain,String>,
+    root:Option<&RootLock>,
     root_acl:Option<(&str,u16,&str)>)->Result<GrokGrant,String>{
     tx(db,|db|{
         if observe(db,&domain.instance_id)?!=*domain {return Err("grok F journal: current F pin/revision changed".into());}
@@ -555,8 +562,10 @@ fn begin_grok_grant_with_catalog_and_anchor(db:&mut VerifiedDatabaseConnection<'
                 }
             } else {
                 let baseline_effect_id=if prior_grants.is_empty() {String::new()} else {
-                    settled_legacy_root_baseline(db,domain,grant,&prior_grants,
-                        acl_control,other_aces_sha256)?
+                    settled_legacy_root_baseline(db,
+                        root.ok_or("grok F journal: ordered root physical witness absent")?,
+                        domain,grant,&prior_grants,acl_hex,acl_control,
+                        other_aces_sha256)?
                 };
                 let row=stmt(db,"INSERT INTO main.gogoke_v37_grok_home_root_anchor VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'',1)")?;
                 bind(&row,&[&domain.instance_id,&domain.root_identity.opaque(),
