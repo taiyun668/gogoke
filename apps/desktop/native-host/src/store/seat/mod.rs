@@ -25,6 +25,8 @@ pub(crate) use secretary_routines::{create_secretary_routine,change_secretary_ro
     configure_absence_policy,
     read_secretary_presence_in_transaction,SecretaryPresenceFact,SecretaryAbsencePolicyFact,
     read_secretary_occurrences_in_transaction,SecretaryOccurrenceFact,
+    record_secretary_schedule_error_in_transaction,read_secretary_schedule_errors_in_transaction,
+    SecretaryScheduleErrorFact,
     take_due_secretary_routine_in_transaction,record_secretary_occurrence_outcome_in_transaction,
     SecretaryOccurrenceOutcome,SecretaryRoutine,SecretaryRoutineCreate,
     SecretaryRoutineChange,SecretaryRoutineCommand,SecretaryRoutineDecision,
@@ -354,6 +356,13 @@ fn expected_schema() -> Vec<(String, String)> {
     entries.sort_by(|left, right| left.0.cmp(&right.0));
     entries
 }
+fn prior_secretary_routines_schema() -> Vec<(String,String)> {
+    let mut entries=pre_secretary_schema();
+    entries.push(("gogoke_v37_seat_secretary".into(),secretary::DESIGNATION.into()));
+    entries.extend(secretary_routines::PRIOR_SCHEMA.iter().map(|(name,sql)|(name.to_string(),sql.to_string())));
+    entries.sort_by(|left,right|left.0.cmp(&right.0));
+    entries
+}
 fn secretary_only_schema() -> Vec<(String, String)> {
     let mut entries = pre_secretary_schema();
     entries.push(("gogoke_v37_seat_secretary".into(),secretary::DESIGNATION.into()));
@@ -429,6 +438,14 @@ pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Resu
     let observed = schema(db)?;
     if observed == expected_schema() {
         return Ok(());
+    }
+    if observed == prior_secretary_routines_schema() {
+        return transact(db,|db| {
+            if schema(db)? != prior_secretary_routines_schema() {return Err(SeatError::SchemaDrift);}
+            secretary_routines::create_schedule_errors(db)?;
+            if schema(db)? != expected_schema() {return Err(SeatError::SchemaDrift);}
+            Ok(())
+        });
     }
     if observed == secretary_only_schema() {
         return transact(db,|db| {

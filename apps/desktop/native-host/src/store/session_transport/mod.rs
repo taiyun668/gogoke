@@ -38,8 +38,9 @@ pub(crate) use journal::{complete_stdin_request, mark_stdin_write_unknown,
     prepare_stdin_request, read_stdin_journal, JournalDecision, JournalError,
     JournalState, PrepareDisposition, StdinJournalKey, StdinJournalRecord, StdinRequest,
     ScheduledSecretaryInput, ScheduledSecretaryProvider, ScheduledSecretaryDecision,
-    ScheduledSecretaryPermit, ScheduledSecretaryWrite,
-    prepare_scheduled_secretary_occurrence,settle_scheduled_secretary_occurrence};
+    ScheduledSecretaryPermit, ScheduledSecretaryWrite, ScheduledSecretarySettlement,
+    prepare_scheduled_secretary_occurrence,settle_scheduled_secretary_occurrence,
+    mark_scheduled_secretary_occurrence_unknown};
 pub(crate) use seat_io::{run_seat_io, SeatChannelId, SeatIoAdmission, SeatIoError,
     SeatIoEvent, SeatIoReply};
 pub(crate) use admission::{initialize_admission_schema, bind_owner_in_transaction,

@@ -10,8 +10,9 @@ use crate::store::seat::SecretaryRoutine;
 use crate::store::ledger::{self,SessionPurpose};
 
 #[derive(Debug)]
-pub(crate) enum UserTurnError {Denied,Ambiguous,Store(AtomicError)}
+pub(crate) enum UserTurnError {Denied,Ambiguous,Store(AtomicError),Wire(super::V37WireError)}
 impl From<AtomicError> for UserTurnError {fn from(error:AtomicError)->Self {Self::Store(error)}}
+impl From<super::V37WireError> for UserTurnError {fn from(error:super::V37WireError)->Self {Self::Wire(error)}}
 
 pub(crate) struct OriginalSecretaryUserTurn {
     pub(crate) body:String,
@@ -198,8 +199,8 @@ pub(crate) fn verify_original_routine_source_in_transaction(
         let generation=journal.column_text(4)?;
         let raw=unhex(&journal.column_text(5)?)?;
         let receipt_raw=unhex(&journal.column_text(6)?)?;
-        let request=decode_request(&raw).map_err(|_|UserTurnError::Denied)?;
-        let receipt=decode_receipt(&receipt_raw).map_err(|_|UserTurnError::Denied)?;
+        let request=decode_request(&raw)?;
+        let receipt=decode_receipt(&receipt_raw)?;
         if request.family!="K-SESSION" || request.operation!="send"
             || request.payload.len()!=2 || request.domain_id!="global"
             || request.target_id!=session || request.request_id!=request_id

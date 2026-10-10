@@ -10,14 +10,26 @@ const OPERATIONS: &str = "CREATE TABLE gogoke_v37_seat_secretary_routine_operati
 const OCCURRENCES: &str = "CREATE TABLE gogoke_v37_seat_secretary_occurrences(occurrence_id TEXT PRIMARY KEY,routine_id TEXT NOT NULL,due_ms INTEGER NOT NULL CHECK(due_ms>0),state TEXT NOT NULL CHECK(state IN ('UNKNOWN','FAILED','DELIVERED')),h_receipt_id TEXT NOT NULL,original_reason TEXT NOT NULL,UNIQUE(routine_id,due_ms),FOREIGN KEY(routine_id) REFERENCES gogoke_v37_seat_secretary_routines(routine_id)) STRICT";
 const PRESENCE: &str = "CREATE TABLE gogoke_v37_seat_secretary_presence(source_id TEXT PRIMARY KEY,kind TEXT NOT NULL CHECK(kind IN ('FOREGROUND','OPEN','INPUT')),source_operation_id TEXT NOT NULL,source_epoch TEXT NOT NULL,source_cursor TEXT NOT NULL,occurred_at_ms INTEGER NOT NULL CHECK(occurred_at_ms>0),observed_at_ms INTEGER NOT NULL CHECK(observed_at_ms>0),CHECK(observed_at_ms>=occurred_at_ms)) STRICT";
 const ABSENCE_POLICY: &str = "CREATE TABLE gogoke_v37_seat_secretary_absence_policy(singleton INTEGER PRIMARY KEY CHECK(singleton=1),revision INTEGER NOT NULL CHECK(revision>0),max_absent_ms INTEGER NOT NULL CHECK(max_absent_ms>0),source_id TEXT NOT NULL) STRICT";
+const SCHEDULE_ERRORS: &str = "CREATE TABLE gogoke_v37_seat_secretary_schedule_errors(occurrence_id TEXT PRIMARY KEY,routine_id TEXT NOT NULL,diagnostic TEXT NOT NULL CHECK(length(diagnostic)>0),FOREIGN KEY(occurrence_id) REFERENCES gogoke_v37_seat_secretary_occurrences(occurrence_id),FOREIGN KEY(routine_id) REFERENCES gogoke_v37_seat_secretary_routines(routine_id)) STRICT";
 
-pub(super) const SCHEMA: &[(&str,&str)] = &[
+pub(super) const PRIOR_SCHEMA: &[(&str,&str)] = &[
     ("gogoke_v37_seat_secretary_routines",ROUTINES),
     ("gogoke_v37_seat_secretary_routine_operations",OPERATIONS),
     ("gogoke_v37_seat_secretary_occurrences",OCCURRENCES),
     ("gogoke_v37_seat_secretary_presence",PRESENCE),
     ("gogoke_v37_seat_secretary_absence_policy",ABSENCE_POLICY),
 ];
+pub(super) const SCHEMA: &[(&str,&str)] = &[
+    ("gogoke_v37_seat_secretary_routines",ROUTINES),
+    ("gogoke_v37_seat_secretary_routine_operations",OPERATIONS),
+    ("gogoke_v37_seat_secretary_occurrences",OCCURRENCES),
+    ("gogoke_v37_seat_secretary_presence",PRESENCE),
+    ("gogoke_v37_seat_secretary_absence_policy",ABSENCE_POLICY),
+    ("gogoke_v37_seat_secretary_schedule_errors",SCHEDULE_ERRORS),
+];
+pub(super) fn create_schedule_errors(db:&mut VerifiedDatabaseConnection<'_>)->Result<(),SeatError> {
+    db.execute(SCHEDULE_ERRORS)?; Ok(())
+}
 pub(super) fn create_tables(db:&mut VerifiedDatabaseConnection<'_>)->Result<(),SeatError> {
     for (_,sql) in SCHEMA {db.execute(sql)?;}
     Ok(())
@@ -140,6 +152,52 @@ pub(crate) struct SecretaryOccurrenceFact {
     pub(crate) state:String,
     pub(crate) h_receipt_id:String,
     pub(crate) original_reason:String,
+}
+#[derive(Clone,Debug,Eq,PartialEq)]
+pub(crate) struct SecretaryScheduleErrorFact {
+    pub(crate) occurrence_id:String,
+    pub(crate) routine_id:String,
+    pub(crate) diagnostic:String,
+}
+
+/// E keeps the precise original time-rule failure alongside the settled H
+/// occurrence. This is separate from `original_reason`, which stays the
+/// original provider reason and is never overwritten by scheduling.
+pub(crate) fn record_secretary_schedule_error_in_transaction(
+    db:&VerifiedDatabaseConnection<'_>,issuer:&OwnerIssuer,routine_id:&str,
+    occurrence_id:&str,error:&super::secretary_schedule::ScheduleError,
+) -> Result<(),SeatError> {
+    check_current_owner(db,issuer)?;
+    if !valid_id(routine_id)||!valid_id(occurrence_id) {return Err(SeatError::Invalid("schedule_error_key"));}
+    let seat=current_secretary(db)?;
+    let row=routine(db,routine_id)?.ok_or(SeatError::Denied)?;
+    if row.seat_id!=seat.seat_id||row.incarnation!=seat.incarnation
+        || row.last_occurrence_id!=occurrence_id||row.last_result=="UNKNOWN" {
+        return Err(SeatError::Denied);
+    }
+    let q=Statement::prepare(db.as_ptr(),"SELECT state FROM main.gogoke_v37_seat_secretary_occurrences WHERE occurrence_id=?1 AND routine_id=?2")?;
+    q.bind_text(1,occurrence_id)?;q.bind_text(2,routine_id)?;
+    if !q.step_row()?||q.column_text(0)?=="UNKNOWN" {return Err(SeatError::Denied);}
+    if q.step_row()? {return Err(SeatError::SchemaDrift);}
+    let diagnostic=format!("{error:?}");
+    let q=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_seat_secretary_schedule_errors(occurrence_id,routine_id,diagnostic) VALUES(?1,?2,?3)")?;
+    q.bind_text(1,occurrence_id)?;q.bind_text(2,routine_id)?;q.bind_text(3,&diagnostic)?;
+    q.step_done()?;Ok(())
+}
+
+pub(crate) fn read_secretary_schedule_errors_in_transaction(
+    db:&VerifiedDatabaseConnection<'_>,issuer:&OwnerIssuer,routine_id:&str,
+) -> Result<Vec<SecretaryScheduleErrorFact>,SeatError> {
+    check_current_owner(db,issuer)?;
+    let seat=current_secretary(db)?;
+    let row=routine(db,routine_id)?.ok_or(SeatError::Denied)?;
+    if row.seat_id!=seat.seat_id||row.incarnation!=seat.incarnation {return Err(SeatError::Denied);}
+    let q=Statement::prepare(db.as_ptr(),"SELECT occurrence_id,routine_id,diagnostic FROM main.gogoke_v37_seat_secretary_schedule_errors WHERE routine_id=?1 ORDER BY occurrence_id")?;
+    q.bind_text(1,routine_id)?;
+    let mut result=Vec::new();
+    while q.step_row()? {result.push(SecretaryScheduleErrorFact {occurrence_id:q.column_text(0)?,
+        routine_id:q.column_text(1)?,diagnostic:q.column_text(2)?});}
+    Ok(result)
 }
 
 fn positive(value:i64,name:&'static str)->Result<(),SeatError> {

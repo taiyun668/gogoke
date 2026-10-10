@@ -27,6 +27,10 @@ fn provider_failure_excerpt(raw: &[u8]) -> Result<(&str, bool), JournalError> {
     Ok((&text[..end],end<text.len()))
 }
 
+#[cfg(all(test, windows))]
+#[path = "secretary_occurrence_tests.rs"]
+mod secretary_scheduled_occurrence_tests;
+
 #[derive(Debug)]
 pub(crate) enum JournalError {
     Invalid(&'static str),
@@ -42,6 +46,10 @@ pub(crate) enum JournalError {
     RemoteError(Vec<u8>),
     UserOrigin(crate::ipc::PrivateIpcError),
     Seat(SeatError),
+    SecretaryUserTurn(super::secretary_user_turn::UserTurnError),
+    SecretarySchedule(seat::secretary_schedule::ScheduleError),
+    SessionBinding(super::session_binding::BindingError),
+    Wire(super::V37WireError),
 }
 
 impl From<AtomicError> for JournalError {
@@ -57,6 +65,18 @@ impl From<SameOpenError> for JournalError {
 }
 impl From<SeatError> for JournalError {
     fn from(error: SeatError) -> Self { Self::Seat(error) }
+}
+impl From<super::secretary_user_turn::UserTurnError> for JournalError {
+    fn from(error: super::secretary_user_turn::UserTurnError) -> Self { Self::SecretaryUserTurn(error) }
+}
+impl From<seat::secretary_schedule::ScheduleError> for JournalError {
+    fn from(error: seat::secretary_schedule::ScheduleError) -> Self { Self::SecretarySchedule(error) }
+}
+impl From<super::session_binding::BindingError> for JournalError {
+    fn from(error: super::session_binding::BindingError) -> Self { Self::SessionBinding(error) }
+}
+impl From<super::V37WireError> for JournalError {
+    fn from(error: super::V37WireError) -> Self { Self::Wire(error) }
 }
 
 impl From<codex_rpc::RpcError> for JournalError {
@@ -141,6 +161,14 @@ pub(crate) enum ScheduledSecretaryDecision {
     MissingFacts,
     PausedForAbsence { revision: i64, elapsed_ms: i64 },
     NewWrite(ScheduledSecretaryPermit),
+}
+
+pub(crate) struct ScheduledSecretarySettlement {
+    pub(crate) routine: SecretaryRoutine,
+    /// The original H terminal remains settled. This is the exact E schedule
+    /// diagnostic when a further due cannot be determined under the original
+    /// time rule; it is never an invitation to retry the prior occurrence.
+    pub(crate) next_schedule_error: Option<seat::secretary_schedule::ScheduleError>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1026,7 +1054,7 @@ pub(crate) fn prepare_scheduled_secretary_occurrence(
             return Err(JournalError::Denied);
         }
         let relationship = super::session_binding::current_relationship(connection,
-            "global", input.session_id).map_err(|_| JournalError::Denied)?
+            "global", input.session_id)?
             .ok_or(JournalError::Denied)?;
         if !relationship.native_v2 || relationship.session_generation != input.generation
             || relationship.seat_id != registration.seat_id {
@@ -1070,7 +1098,7 @@ pub(crate) fn prepare_scheduled_secretary_occurrence(
         if row.seat_id != relationship.seat_id || row.incarnation != relationship.seat_incarnation
             || row.revision != input.expected_routine_revision { return Err(JournalError::Conflict); }
         super::secretary_user_turn::verify_original_routine_source_in_transaction(connection,
-            &row).map_err(|_| JournalError::Denied)?;
+            &row)?;
         let decision = seat::take_due_secretary_routine_in_transaction(connection,
             input.owner, input.routine_id, input.expected_routine_revision, input.now_ms)?;
         let occurrence_id = match decision {
@@ -1120,6 +1148,20 @@ pub(crate) fn prepare_scheduled_secretary_occurrence(
     })
 }
 
+fn scheduled_failure_reason(status: V37Status,
+    result: &std::collections::BTreeMap<JsonString,Json>) -> Result<String,JournalError> {
+    let field=|name|result.get(&JsonString::from_str(name))
+        .and_then(|value| match value {Json::String(value)=>value.to_well_formed_string(),_=>None});
+    if let Some(excerpt)=field("providerFailureRawExcerpt") {
+        let truncated=match result.get(&JsonString::from_str("providerFailureTruncated")) {
+            Some(Json::Bool(value))=>*value,_=>return Err(JournalError::Unknown),
+        };
+        return Ok(format!("providerFailureTruncated={truncated}\n{excerpt}"));
+    }
+    Ok(["stopReason","resultSubtype","reason"].iter()
+        .find_map(|name|field(name)).unwrap_or_else(||status.wire().to_owned()))
+}
+
 /// A pending provider response is not an outcome. Only the original H
 /// RECEIPTED row, with its correlated receipt, can advance E. The E revision
 /// check gives an intervening USER pause/delete priority over rescheduling.
@@ -1127,7 +1169,7 @@ pub(crate) fn settle_scheduled_secretary_occurrence(
     connection: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
     routine_id: &str, occurrence_id: &str, expected_routine_revision: i64,
     now_ms: i64, session_id: &str, ticket: &str, generation: &str,
-) -> Result<Option<SecretaryRoutine>, JournalError> {
+) -> Result<Option<ScheduledSecretarySettlement>, JournalError> {
     in_transaction(connection, |connection| {
         let routines = seat::read_secretary_routines_in_transaction(connection, owner)?;
         let row = routines.into_iter().find(|row| row.routine_id == routine_id)
@@ -1144,7 +1186,7 @@ pub(crate) fn settle_scheduled_secretary_occurrence(
             session_id, ticket, generation };
         let journal = read_stdin_journal(connection, &key)?.ok_or(JournalError::Denied)?;
         if journal.state != JournalState::Receipted { return Ok(None); }
-        let request = decode_request(&journal.request_bytes).map_err(|_| JournalError::Unknown)?;
+        let request = decode_request(&journal.request_bytes)?;
         if request.operation != "send" || request.payload.len() != 2
             || request.domain_id != "global" || request.target_id != session_id
             || request.request_id != occurrence_id
@@ -1153,7 +1195,7 @@ pub(crate) fn settle_scheduled_secretary_occurrence(
             return Err(JournalError::Denied);
         }
         let bytes = journal.receipt_bytes.as_ref().ok_or(JournalError::Unknown)?;
-        let receipt = decode_receipt(bytes).map_err(|_| JournalError::Unknown)?;
+        let receipt = decode_receipt(bytes)?;
         if Some(receipt.status) != journal.receipt_status || receipt.status == V37Status::Unknown {
             return Err(JournalError::Unknown);
         }
@@ -1202,18 +1244,64 @@ pub(crate) fn settle_scheduled_secretary_occurrence(
         let original_reason = if outcome == SecretaryOccurrenceOutcome::Delivered {
             String::new()
         } else {
-            ["stopReason","resultSubtype","reason"].iter()
-                .find_map(|name| result.get(&JsonString::from_str(name))
-                    .and_then(|value| match value {Json::String(value)=>value.to_well_formed_string(),_=>None}))
-                .unwrap_or_else(|| journal.receipt_status.expect("checked receipt status").wire().to_owned())
+            scheduled_failure_reason(journal.receipt_status.expect("checked receipt status"),&result)?
         };
-        let next_due = seat::secretary_schedule::next_due_after(&row.original_text,
-            &row.schedule_raw, &row.timezone, occurrence.due_ms, now_ms)
-            .map_err(|_| JournalError::Denied)?;
+        let (next_due,next_schedule_error)=if row.state=="WAITING_NEXT" {
+            match seat::secretary_schedule::next_due_after(&row.original_text,
+                &row.schedule_raw, &row.timezone, occurrence.due_ms, now_ms) {
+                Ok(due)=>(due,None), Err(error)=>(None,Some(error)),
+            }
+        } else {(None,None)};
         let updated = seat::record_secretary_occurrence_outcome_in_transaction(connection,
             owner, routine_id, occurrence_id, expected_routine_revision, outcome,
             &h_receipt_id, &original_reason, next_due, now_ms)?;
-        Ok(Some(updated))
+        if let Some(error)=&next_schedule_error {
+            seat::record_secretary_schedule_error_in_transaction(connection,owner,
+                routine_id,occurrence_id,error)?;
+        }
+        Ok(Some(ScheduledSecretarySettlement {routine:updated,next_schedule_error}))
+    })
+}
+
+/// A typed physical or provider-remote failure can leave the original H
+/// delivery unresolved. Preserve that original reason in E without forging a
+/// receipt, a StopFact, another due time, or another write permission.
+pub(crate) fn mark_scheduled_secretary_occurrence_unknown(
+    connection:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,
+    routine_id:&str,occurrence_id:&str,expected_routine_revision:i64,
+    session_id:&str,ticket:&str,generation:&str,original_reason:&str,now_ms:i64,
+) -> Result<SecretaryRoutine,JournalError> {
+    in_transaction(connection,|connection| {
+        let routines=seat::read_secretary_routines_in_transaction(connection,owner)?;
+        let row=routines.into_iter().find(|row|row.routine_id==routine_id)
+            .ok_or(JournalError::Denied)?;
+        if row.revision!=expected_routine_revision||row.last_occurrence_id!=occurrence_id {
+            return Err(JournalError::Conflict);
+        }
+        let occurrences=seat::read_secretary_occurrences_in_transaction(connection,owner,routine_id)?;
+        let occurrence=occurrences.into_iter().find(|fact|fact.occurrence_id==occurrence_id)
+            .ok_or(JournalError::Denied)?;
+        if occurrence.state!="UNKNOWN"||!occurrence.original_reason.is_empty()
+            ||!occurrence.h_receipt_id.is_empty() {return Err(JournalError::Conflict);}
+        super::secretary_user_turn::verify_original_routine_source_in_transaction(connection,&row)?;
+        let key=StdinJournalKey {domain_id:"global",request_id:occurrence_id,
+            session_id,ticket,generation};
+        let journal=read_stdin_journal(connection,&key)?.ok_or(JournalError::Denied)?;
+        if !matches!(journal.state,JournalState::Prepared|JournalState::Unknown)
+            ||journal.receipt_bytes.is_some()||journal.receipt_status.is_some() {
+            return Err(JournalError::Conflict);
+        }
+        let request=decode_request(&journal.request_bytes)?;
+        if request.operation!="send"||request.payload.len()!=2
+            ||request.domain_id!="global"||request.request_id!=occurrence_id
+            ||request.target_id!=session_id||generation_from_payload(&request)?!=generation
+            ||payload_string(&request,"body")?!=scheduled_body(&row.original_text)? {
+            return Err(JournalError::Denied);
+        }
+        seat::record_secretary_occurrence_outcome_in_transaction(connection,owner,
+            routine_id,occurrence_id,expected_routine_revision,
+            SecretaryOccurrenceOutcome::Unknown,"",original_reason,None,now_ms)
+            .map_err(JournalError::from)
     })
 }
 
@@ -2564,6 +2652,7 @@ mod tests {
     use crate::store::same_open::{create_new, open_existing, route_b_test_guard};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
 
     const REQUEST: &[u8] = br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send","requestId":"sendA","targetId":"sessionA","domainId":"projectA","expectedRevision":"3","payload":{"body":"hello","generation":"1"}}
 "#;
