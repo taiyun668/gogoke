@@ -68,19 +68,39 @@ def original_model(db, journal, case, attempt):
           sent[0]["request"]["targetId"] == attempt["sessionId"] and
           sent[0]["request"]["payload"]["body"] == attempt["prompt"],
           "Original H send was not the requested model tool turn")
-    stored_send = one(db, "SELECT request_bytes,receipt_bytes FROM v37_ledger_receipt "
-                      "WHERE family='K-SESSION' AND domain_id=? AND request_id=?",
-                      (case["domainId"], attempt["sendRequestId"]))
-    check(bytes(stored_send["request_bytes"]).decode() == sent[0]["rawFrame"] and
-          bytes(stored_send["receipt_bytes"]).decode() == sent[0]["rawReceipt"],
-          "Original H send ledger bytes differ")
+    # H send's direct durable source is h_stdin_journal below. The generic
+    # v37_ledger_receipt contains K-SEAT card reads, not these H sends.
     binding = one(db, "SELECT seat_id,selected_instance_id FROM gogoke_v37_native_selection "
                   "WHERE domain_id=? AND session_id=?", (case["domainId"], attempt["sessionId"]))
     check(binding["seat_id"] == fixture["parentSeatId"] and
           binding["selected_instance_id"] == fixture["instanceId"],
           "Original H session was not bound to the exact USER parent and instance")
-    claim = one(db, "SELECT process_operation_id,thread_id,generation FROM gogoke_v37_h_claim "
+    claim = one(db, "SELECT process_operation_id,generation FROM gogoke_v37_h_claim "
                 "WHERE domain_id=? AND session_id=?", (case["domainId"], attempt["sessionId"]))
+    opens = [row for row in journal["operations"]
+             if row.get("request", {}).get("family") == "K-SESSION" and
+             row["request"].get("operation") == "open" and
+             row["request"].get("targetId") == attempt["sessionId"]]
+    check(len(opens) == 1, "Original H open frame is missing or duplicated")
+    opened = opens[0]
+    sessions = [row for row in journal["sessions"] if row.get("id") == attempt["sessionId"]]
+    check(len(sessions) == 1, "Original H session journal is missing or duplicated")
+    check(opened["rawFrame"] == json.dumps(opened["request"], ensure_ascii=False,
+                                            separators=(",", ":")) and
+          json.loads(opened["rawReceipt"]) == opened["receipt"] and
+          opened["receipt"]["requestId"] == opened["request"]["requestId"] and
+          opened["receipt"]["status"] == "APPLIED" and
+          opened["receipt"]["previousRevision"] == "2" and
+          opened["receipt"]["revision"] == "3" and
+          opened["receipt"]["result"].get("threadId") == sessions[0].get("threadId"),
+          "Original H open receipt or thread identity differs")
+    thread_id = opened["receipt"]["result"]["threadId"]
+    open_operation = one(db, "SELECT operation,status,previous_revision,revision "
+                         "FROM gogoke_v37_h_operation WHERE domain_id=? AND request_id=?",
+                         (case["domainId"], opened["request"]["requestId"]))
+    check(open_operation == {"operation": "open", "status": "APPLIED",
+                             "previous_revision": 2, "revision": 3},
+          "Original H open durable operation differs")
     stdin = one(db, "SELECT phase,receipt_status,request_hex,receipt_hex,session_id,generation,"
                 "process_operation_id,operation FROM gogoke_v37_h_stdin_journal "
                 "WHERE domain_id=? AND request_id=?", (case["domainId"], attempt["sendRequestId"]))
@@ -96,12 +116,14 @@ def original_model(db, journal, case, attempt):
           send_ack["result"]["createdTurn"] is True and
           send_ack["result"]["turnId"] == attempt["turnId"],
           "Original H stdin receipt did not authorize this exact turn")
-    episode = one(db, "SELECT phase,stop_fact_id FROM gogoke_v37_h_process_episode "
+    episode = one(db, "SELECT phase,stop_fact_id,request_id FROM gogoke_v37_h_process_episode "
                   "WHERE domain_id=? AND session_id=? AND process_operation_id=?",
                   (case["domainId"], attempt["sessionId"], claim["process_operation_id"]))
     custody = one(db, "SELECT state,stop_proof_hash FROM gogoke_coordination_process_custody "
                   "WHERE operation_id=?", (claim["process_operation_id"],))
-    check(episode["phase"] == custody["state"] == "STOPPED" and episode["stop_fact_id"] and
+    check(episode["phase"] == custody["state"] == "STOPPED" and
+          episode["request_id"] == opened["request"]["requestId"] and
+          episode["stop_fact_id"] and
           episode["stop_fact_id"] == custody["stop_proof_hash"],
           "Original H physical episode lacks its StopFact before readback")
     source = rows(db, "SELECT raw_bytes FROM v37_ledger_raw_source WHERE domain_id=? AND session_id=? "
@@ -112,11 +134,11 @@ def original_model(db, journal, case, attempt):
         frame = json.loads(bytes(row["raw_bytes"]))
         params = frame.get("params", {})
         if (frame.get("method") == "item/tool/call" and params.get("tool") == "gogoke_seat" and
-                params.get("threadId") == claim["thread_id"] and
+                params.get("threadId") == thread_id and
                 params.get("turnId") == attempt["turnId"] and
                 params.get("arguments") == attempt["expectedArguments"]):
             calls.append(frame)
-        if (frame.get("method") == "turn/completed" and params.get("threadId") == claim["thread_id"] and
+        if (frame.get("method") == "turn/completed" and params.get("threadId") == thread_id and
                 params.get("turn", {}).get("id") == attempt["turnId"] and
                 params.get("turn", {}).get("status") == "completed"):
             completed.append(frame)
