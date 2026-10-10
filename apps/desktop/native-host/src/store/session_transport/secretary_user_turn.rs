@@ -6,6 +6,8 @@ use crate::store::atomic::{AtomicError,Json,JsonString,Parser,Statement};
 use crate::store::digest::sha256_hex;
 use crate::store::same_open::VerifiedDatabaseConnection;
 use crate::store::seat::NativeSeatCall;
+use crate::store::seat::SecretaryRoutine;
+use crate::store::ledger::{self,SessionPurpose};
 
 #[derive(Debug)]
 pub(crate) enum UserTurnError {Denied,Ambiguous,Store(AtomicError)}
@@ -168,4 +170,110 @@ pub(crate) fn read_original_user_turn_in_transaction(
             source_epoch:epoch,source_cursor:cursor,request_id,request_bytes:original,user_input_ms});
     }
     found.ok_or(UserTurnError::Denied)
+}
+
+/// Re-read the exact historical USER source on every due prepare. A later H
+/// generation may legitimately execute the routine, so this checks the
+/// original receipt and A response rather than requiring its old process to
+/// remain active. No model or caller-supplied body is an authority source.
+pub(crate) fn verify_original_routine_source_in_transaction(
+    db:&VerifiedDatabaseConnection<'_>, row:&SecretaryRoutine,
+) -> Result<(),UserTurnError> {
+    let journal=Statement::prepare(db.as_ptr(),
+        "SELECT session_id,request_id,ticket,custodian_nonce,generation,request_hex,receipt_hex
+         FROM main.gogoke_v37_h_stdin_journal
+         WHERE domain_id='global' AND process_operation_id=?1
+           AND operation='send' AND phase='RECEIPTED' AND receipt_status='APPLIED'")?;
+    journal.bind_text(1,&row.source_operation_id)?;
+    let mut matched=false;
+    while journal.step_row()? {
+        let session=journal.column_text(0)?;
+        let registered=ledger::read_registered_session(db,&session)?
+            .ok_or(UserTurnError::Denied)?;
+        if registered.domain_id!="global" || registered.purpose!=SessionPurpose::Secretary
+            || registered.seat_id!=row.seat_id {continue;}
+        let request_id=journal.column_text(1)?;
+        let ticket=journal.column_text(2)?;
+        let nonce=journal.column_text(3)?;
+        let generation=journal.column_text(4)?;
+        let raw=unhex(&journal.column_text(5)?)?;
+        let receipt_raw=unhex(&journal.column_text(6)?)?;
+        let request=decode_request(&raw).map_err(|_|UserTurnError::Denied)?;
+        let receipt=decode_receipt(&receipt_raw).map_err(|_|UserTurnError::Denied)?;
+        if request.family!="K-SESSION" || request.operation!="send"
+            || request.payload.len()!=2 || request.domain_id!="global"
+            || request.target_id!=session || request.request_id!=request_id
+            || field(&request.payload,"body")?!=row.original_text
+            || receipt.status!=V37Status::Applied || receipt.family!="K-SESSION"
+            || receipt.operation!="send" || receipt.request_id!=request_id
+            || receipt.target_id!=session
+            || receipt.previous_revision!=request.expected_revision
+            || receipt.revision!=request.expected_revision.checked_add(1).ok_or(UserTurnError::Denied)? {
+            continue;
+        }
+        let result=receipt.into_result();
+        let Some(Json::String(turn_id))=result.get(&JsonString::from_str("turnId")) else {continue};
+        let turn_id=turn_id.to_well_formed_string().ok_or(UserTurnError::Denied)?;
+        if !matches!(result.get(&JsonString::from_str("createdTurn")),Some(Json::Bool(true))) {
+            continue;
+        }
+        let marker_id=format!("H-USER:global:{session}:{request_id}");
+        let marker=Statement::prepare(db.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_seat_secretary_presence
+             WHERE source_id=?1 AND kind='INPUT' AND source_operation_id=?2
+               AND source_epoch=?3 AND source_cursor=?4")?;
+        for (index,value) in [marker_id.as_str(),row.source_operation_id.as_str(),
+            nonce.as_str(),request_id.as_str()].iter().enumerate() {
+            marker.bind_text((index+1) as i32,value)?;
+        }
+        if !marker.step_row()? {continue;}
+        if marker.step_row()? {return Err(UserTurnError::Ambiguous);}
+        let step_id=format!("send-{}",&sha256_hex(&raw)[..40]);
+        let observed=Statement::prepare(db.as_ptr(),
+            "SELECT s.command_hex,hex(r.raw_bytes) FROM main.gogoke_v37_rpc_steps s
+             JOIN main.v37_ledger_raw_source r
+               ON r.operation_id=s.process_operation_id AND r.source_epoch=s.source_epoch
+              AND r.source_cursor=s.source_cursor AND r.process_ticket=s.ticket
+              AND r.custodian_nonce=s.custodian_nonce AND r.domain_id=s.domain_id
+              AND r.session_id=s.session_id AND r.generation=s.generation
+             WHERE s.domain_id='global' AND s.session_id=?1 AND s.process_operation_id=?2
+               AND s.ticket=?3 AND s.custodian_nonce=?4 AND s.generation=?5
+               AND s.step_id=?6 AND s.source_epoch=?7 AND s.source_cursor=?8
+               AND s.phase='OBSERVED' AND r.state='NO_EVENT'
+               AND r.no_event_reason='CODEX_RPC_RESPONSE'")?;
+        for (index,value) in [session.as_str(),row.source_operation_id.as_str(),
+            ticket.as_str(),nonce.as_str(),generation.as_str(),step_id.as_str(),
+            row.source_epoch.as_str(),row.source_cursor.as_str()].iter().enumerate() {
+            observed.bind_text((index+1) as i32,value)?;
+        }
+        if !observed.step_row()? {continue;}
+        let command=unhex(&observed.column_text(0)?)?;
+        let response=unhex(&observed.column_text(1)?)?;
+        if observed.step_row()? {return Err(UserTurnError::Ambiguous);}
+        let command_fields=object(&command)?;
+        if field(&command_fields,"method")?!="turn/start" {return Err(UserTurnError::Denied);}
+        let command_id=rpc_id(&command_fields)?;
+        let params=fields(&command_fields,"params")?;
+        let Some(Json::Array(input))=params.get(&JsonString::from_str("input")) else {return Err(UserTurnError::Denied)};
+        let [Json::Object(message)]=input.as_slice() else {return Err(UserTurnError::Denied)};
+        if field(message,"type")?!="text" || field(message,"text")?!=row.original_text {
+            return Err(UserTurnError::Denied);
+        }
+        let response_fields=object(&response)?;
+        if rpc_id(&response_fields)?!=command_id {return Err(UserTurnError::Denied);}
+        let turn=fields(fields(&response_fields,"result")?,"turn")?;
+        if field(turn,"id")?!=turn_id || field(turn,"status")?!="inProgress" {
+            return Err(UserTurnError::Denied);
+        }
+        let receipt_identity=format!("{}\n{}\n{}\n{}",sha256_hex(&raw),
+            sha256_hex(&command),row.source_operation_id,nonce);
+        let expected=format!("rpc-{}",&sha256_hex(receipt_identity.as_bytes())[..40]);
+        if !matches!(result.get(&JsonString::from_str("receiptId")),
+            Some(Json::String(value)) if value.to_well_formed_string().as_deref()==Some(expected.as_str())) {
+            return Err(UserTurnError::Denied);
+        }
+        if matched {return Err(UserTurnError::Ambiguous);}
+        matched=true;
+    }
+    if matched {Ok(())} else {Err(UserTurnError::Denied)}
 }

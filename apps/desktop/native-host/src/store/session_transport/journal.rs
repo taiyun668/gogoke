@@ -11,10 +11,11 @@ use super::provider_evidence::{acp, commands, stream_json};
 use crate::process::{OriginBoundFrame, PreparedCustody};
 use crate::store::atomic::{AtomicError, Json, JsonString, Parser, Statement};
 use crate::store::authority::OwnerIssuer;
-use crate::store::ledger::{self, RawSourceKey, RawSourceState};
+use crate::store::ledger::{self, RawSourceKey, RawSourceState, SessionPurpose};
 use crate::store::same_open::{SameOpenError, VerifiedDatabaseConnection};
 use crate::store::product_database::VerifiedDirectUserInput;
-use crate::store::seat::{self, SeatError, UserPresenceKind};
+use crate::store::seat::{self, SeatError, UserPresenceKind, SecretaryRoutineDecision,
+    SecretaryOccurrenceOutcome, SecretaryRoutine};
 
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_PROVIDER_FAILURE_BYTES: usize = 16 * 1024;
@@ -91,6 +92,55 @@ pub(crate) struct ClaudeSendInput<'a> {
     pub(crate) custody: &'a PreparedCustody,
     pub(crate) open_request_id: &'a str,
     pub(crate) open_request_bytes: &'a [u8],
+}
+
+/// The native coordinator supplies its exact live H custody. It supplies no
+/// scheduled body or request ID: those come from the original E USER routine
+/// and E's deterministic due occurrence inside the same transaction.
+pub(crate) struct ScheduledSecretaryInput<'a> {
+    pub(crate) owner: &'a OwnerIssuer,
+    pub(crate) routine_id: &'a str,
+    pub(crate) expected_routine_revision: i64,
+    pub(crate) now_ms: i64,
+    pub(crate) session_id: &'a str,
+    pub(crate) ticket: &'a str,
+    pub(crate) generation: &'a str,
+    pub(crate) expected_h_revision: u64,
+    pub(crate) provider: ScheduledSecretaryProvider<'a>,
+}
+
+pub(crate) enum ScheduledSecretaryProvider<'a> {
+    Codex,
+    Claude { custody: &'a PreparedCustody, open_request_id: &'a str,
+        open_request_bytes: &'a [u8] },
+    Acp { custody: &'a PreparedCustody, open_request_id: &'a str,
+        open_request_bytes: &'a [u8] },
+}
+
+/// A permit exists only after E Reserved and the one original H intent have
+/// committed together. It cannot be cloned or constructed outside this file.
+pub(crate) struct ScheduledSecretaryPermit { write: ScheduledSecretaryWrite }
+
+pub(crate) enum ScheduledSecretaryWrite {
+    Codex { request_bytes: Vec<u8>, occurrence_id: String, routine_id: String,
+        session_id: String, ticket: String, generation: String },
+    Claude { request_bytes: Vec<u8>, occurrence_id: String, routine_id: String,
+        session_id: String, ticket: String, generation: String,
+        provider_bytes: Vec<u8>, identity: ClaudeSendIdentity },
+    Acp { request_bytes: Vec<u8>, occurrence_id: String, routine_id: String,
+        session_id: String, ticket: String, generation: String,
+        provider_bytes: Vec<u8>, identity: AcpSendIdentity },
+}
+
+impl ScheduledSecretaryPermit {
+    pub(crate) fn into_write(self) -> ScheduledSecretaryWrite { self.write }
+}
+
+pub(crate) enum ScheduledSecretaryDecision {
+    NotDue,
+    MissingFacts,
+    PausedForAbsence { revision: i64, elapsed_ms: i64 },
+    NewWrite(ScheduledSecretaryPermit),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -733,6 +783,19 @@ pub(crate) fn prepare_codex_request(
     prepare_decoded(connection, input, &request, None)
 }
 
+/// The caller owns BEGIN IMMEDIATE and must commit the E occurrence and this
+/// exact H intent together. A returned PREPARED is the only fresh write
+/// disposition; replay never grants another physical stdin write.
+fn prepare_codex_request_in_transaction(
+    connection: &mut VerifiedDatabaseConnection<'_>, input: &StdinRequest<'_>,
+) -> Result<JournalDecision, JournalError> {
+    let request = parse_operation(input, false)?;
+    if request.operation != "send" || request.payload.len() != 2 {
+        return Err(JournalError::Invalid("scheduled Codex send operation"));
+    }
+    prepare_decoded_in_transaction(connection, input, &request, None)
+}
+
 /// Only the authenticated User pipe can supply this borrowed proof. It is
 /// checked against the exact H request again inside the prepare transaction.
 pub(crate) fn prepare_codex_request_with_user_input(
@@ -805,8 +868,17 @@ pub(crate) fn prepare_claude_send_request(
     connection: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
     input: &ClaudeSendInput<'_>, user_input: Option<&VerifiedDirectUserInput<'_>>,
 ) -> Result<ClaudeSendPrepared, JournalError> {
+    in_transaction(connection, |connection|
+        prepare_claude_send_request_in_transaction(connection, owner, input, user_input))
+}
+
+/// Compose with an E occurrence in the caller's existing transaction. A
+/// scheduled input passes None for user_input; it never borrows USER origin.
+fn prepare_claude_send_request_in_transaction(
+    connection: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+    input: &ClaudeSendInput<'_>, user_input: Option<&VerifiedDirectUserInput<'_>>,
+) -> Result<ClaudeSendPrepared, JournalError> {
     let (request, text, identity) = claude_send_request(&input.user)?;
-    in_transaction(connection, |connection| {
         claude_initialize_observed_in_transaction(connection, owner, input)?;
         if read_row(connection, input.user.domain_id, &request.request_id)?.is_none() {
             let current = h_binding(connection, input.user.domain_id,
@@ -848,7 +920,6 @@ pub(crate) fn prepare_claude_send_request(
         }
         Ok(ClaudeSendPrepared { user, identity: identity.clone(),
             bytes: rpc.bytes, write_permitted: true })
-    })
 }
 
 /// One atomic H User intent plus ACP prompt intent. The caller writes the
@@ -857,8 +928,17 @@ pub(crate) fn prepare_acp_send_request(
     connection: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
     input: &AcpSendInput<'_>, user_input: Option<&VerifiedDirectUserInput<'_>>,
 ) -> Result<AcpSendPrepared, JournalError> {
+    in_transaction(connection, |connection|
+        prepare_acp_send_request_in_transaction(connection, owner, input, user_input))
+}
+
+/// Same H prompt intent as the USER path, without a nested transaction. The
+/// caller must supply the already verified live ACP open custody.
+fn prepare_acp_send_request_in_transaction(
+    connection: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+    input: &AcpSendInput<'_>, user_input: Option<&VerifiedDirectUserInput<'_>>,
+) -> Result<AcpSendPrepared, JournalError> {
     let (request, text, identity) = acp_send_request(&input.user)?;
-    in_transaction(connection, |connection| {
       if read_row(connection, input.user.domain_id, &request.request_id)?.is_none() {
         let current = h_binding(connection, input.user.domain_id,
             input.user.session_id, input.user.ticket, input.user.generation,
@@ -901,6 +981,239 @@ pub(crate) fn prepare_acp_send_request(
         }
         Ok(AcpSendPrepared { user, identity: identity.clone(),
             bytes: rpc.bytes, write_permitted: true })
+}
+
+fn scheduled_body(original: &str) -> Result<String, JournalError> {
+    if original.is_empty() || original.contains('\0') {
+        return Err(JournalError::Denied);
+    }
+    let body = format!("This is a scheduled occurrence of an existing USER routine. Execute the task in the original request now. The time rule has already been scheduled; do not create, change, or cancel a routine from it.\nOriginal USER request:\n{original}");
+    if body.len() > MAX_FRAME_BYTES { return Err(JournalError::Invalid("scheduled body size")); }
+    Ok(body)
+}
+
+fn scheduled_request_bytes(input: &ScheduledSecretaryInput<'_>, occurrence_id: &str,
+    original: &str) -> Result<Vec<u8>, JournalError> {
+    let payload = std::collections::BTreeMap::from([
+        (JsonString::from_str("generation"), Json::String(JsonString::from_str(input.generation))),
+        (JsonString::from_str("body"), Json::String(JsonString::from_str(&scheduled_body(original)?))),
+    ]);
+    let fields = std::collections::BTreeMap::from([
+        (JsonString::from_str("schema"), Json::String(JsonString::from_str("gogoke.37.operations.v1"))),
+        (JsonString::from_str("family"), Json::String(JsonString::from_str("K-SESSION"))),
+        (JsonString::from_str("operation"), Json::String(JsonString::from_str("send"))),
+        (JsonString::from_str("requestId"), Json::String(JsonString::from_str(occurrence_id))),
+        (JsonString::from_str("targetId"), Json::String(JsonString::from_str(input.session_id))),
+        (JsonString::from_str("domainId"), Json::String(JsonString::from_str("global"))),
+        (JsonString::from_str("expectedRevision"), Json::String(JsonString::from_str(&input.expected_h_revision.to_string()))),
+        (JsonString::from_str("payload"), Json::Object(payload)),
+    ]);
+    let raw = Json::Object(fields).canonical().into_bytes();
+    if raw.len() > MAX_FRAME_BYTES { return Err(JournalError::Invalid("scheduled request size")); }
+    Ok(raw)
+}
+
+/// This is the only scheduled H prepare entry. Its transaction binds an E
+/// Reserved occurrence to exactly one H send intent. A direct USER proof is
+/// deliberately absent, and no caller can choose the body or request ID.
+pub(crate) fn prepare_scheduled_secretary_occurrence(
+    connection: &mut VerifiedDatabaseConnection<'_>, input: &ScheduledSecretaryInput<'_>,
+) -> Result<ScheduledSecretaryDecision, JournalError> {
+    in_transaction(connection, |connection| {
+        let registration = ledger::read_registered_session(connection, input.session_id)?
+            .ok_or(JournalError::Denied)?;
+        if registration.domain_id != "global" || registration.purpose != SessionPurpose::Secretary {
+            return Err(JournalError::Denied);
+        }
+        let relationship = super::session_binding::current_relationship(connection,
+            "global", input.session_id).map_err(|_| JournalError::Denied)?
+            .ok_or(JournalError::Denied)?;
+        if !relationship.native_v2 || relationship.session_generation != input.generation
+            || relationship.seat_id != registration.seat_id {
+            return Err(JournalError::Denied);
+        }
+        let seat = seat::require_secretary_session(connection, input.owner,
+            &relationship.seat_id, &relationship.seat_incarnation)?;
+        if seat.instance_id != relationship.instance_id { return Err(JournalError::Denied); }
+        let binding = h_binding(connection, "global", input.session_id,
+            input.ticket, input.generation, BindingUse::Prepare)?;
+        let claim=Statement::prepare(connection.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_h_claim WHERE domain_id='global'
+             AND session_id=?1 AND generation=?2 AND process_operation_id=?3
+             AND state='COMMITTED' AND revision=?4")?;
+        claim.bind_text(1,input.session_id)?;
+        claim.bind_text(2,input.generation)?;
+        claim.bind_text(3,&binding.process_operation_id)?;
+        claim.bind_i64(4,i64::try_from(input.expected_h_revision)
+            .map_err(|_|JournalError::Invalid("scheduled H revision"))?)?;
+        if !claim.step_row()? || claim.step_row()? { return Err(JournalError::Conflict); }
+        let driver = Statement::prepare(connection.as_ptr(),
+            "SELECT i.driver_id FROM main.gogoke_v37_h_process_episode e
+             JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
+             WHERE e.domain_id='global' AND e.session_id=?1
+               AND e.generation=?2 AND e.instance_id=?3 AND e.phase='ACTIVE'")?;
+        driver.bind_text(1,input.session_id)?;
+        driver.bind_text(2,input.generation)?;
+        driver.bind_text(3,&relationship.instance_id)?;
+        if !driver.step_row()? { return Err(JournalError::Denied); }
+        let driver_id=driver.column_text(0)?;
+        if driver.step_row()? { return Err(JournalError::Conflict); }
+        let provider_matches=match &input.provider {
+            ScheduledSecretaryProvider::Codex => driver_id=="codex",
+            ScheduledSecretaryProvider::Claude {..} => driver_id=="claude",
+            ScheduledSecretaryProvider::Acp {..} => matches!(driver_id.as_str(),"grok"|"opencode"),
+        };
+        if !provider_matches { return Err(JournalError::Denied); }
+        let routines = seat::read_secretary_routines_in_transaction(connection, input.owner)?;
+        let row = routines.into_iter().find(|row| row.routine_id == input.routine_id)
+            .ok_or(JournalError::Denied)?;
+        if row.seat_id != relationship.seat_id || row.incarnation != relationship.seat_incarnation
+            || row.revision != input.expected_routine_revision { return Err(JournalError::Conflict); }
+        super::secretary_user_turn::verify_original_routine_source_in_transaction(connection,
+            &row).map_err(|_| JournalError::Denied)?;
+        let decision = seat::take_due_secretary_routine_in_transaction(connection,
+            input.owner, input.routine_id, input.expected_routine_revision, input.now_ms)?;
+        let occurrence_id = match decision {
+            SecretaryRoutineDecision::NotDue => return Ok(ScheduledSecretaryDecision::NotDue),
+            SecretaryRoutineDecision::MissingFacts => return Ok(ScheduledSecretaryDecision::MissingFacts),
+            SecretaryRoutineDecision::PausedForAbsence { revision, elapsed_ms } =>
+                return Ok(ScheduledSecretaryDecision::PausedForAbsence { revision, elapsed_ms }),
+            SecretaryRoutineDecision::Reserved { occurrence_id, .. } => occurrence_id,
+        };
+        let request_bytes = scheduled_request_bytes(input, &occurrence_id, &row.original_text)?;
+        let request = StdinRequest { domain_id: "global", session_id: input.session_id,
+            ticket: input.ticket, generation: input.generation, request_bytes: &request_bytes };
+        let identity = (request_bytes.clone(), occurrence_id, row.routine_id,
+            input.session_id.to_owned(), input.ticket.to_owned(), input.generation.to_owned());
+        let write = match &input.provider {
+            ScheduledSecretaryProvider::Codex => {
+                let decision = prepare_codex_request_in_transaction(connection, &request)?;
+                if decision.disposition != PrepareDisposition::Prepared { return Err(JournalError::Conflict); }
+                ScheduledSecretaryWrite::Codex { request_bytes: identity.0,
+                    occurrence_id: identity.1, routine_id: identity.2,
+                    session_id: identity.3, ticket: identity.4, generation: identity.5 }
+            }
+            ScheduledSecretaryProvider::Claude { custody, open_request_id, open_request_bytes } => {
+                let prepared = prepare_claude_send_request_in_transaction(connection, input.owner,
+                    &ClaudeSendInput { user: request, custody, open_request_id, open_request_bytes }, None)?;
+                if !prepared.write_permitted || prepared.user.disposition != PrepareDisposition::Prepared {
+                    return Err(JournalError::Conflict);
+                }
+                ScheduledSecretaryWrite::Claude { request_bytes: identity.0,
+                    occurrence_id: identity.1, routine_id: identity.2,
+                    session_id: identity.3, ticket: identity.4, generation: identity.5,
+                    provider_bytes: prepared.bytes, identity: prepared.identity }
+            }
+            ScheduledSecretaryProvider::Acp { custody, open_request_id, open_request_bytes } => {
+                let prepared = prepare_acp_send_request_in_transaction(connection, input.owner,
+                    &AcpSendInput { user: request, custody, open_request_id, open_request_bytes }, None)?;
+                if !prepared.write_permitted || prepared.user.disposition != PrepareDisposition::Prepared {
+                    return Err(JournalError::Conflict);
+                }
+                ScheduledSecretaryWrite::Acp { request_bytes: identity.0,
+                    occurrence_id: identity.1, routine_id: identity.2,
+                    session_id: identity.3, ticket: identity.4, generation: identity.5,
+                    provider_bytes: prepared.bytes, identity: prepared.identity }
+            }
+        };
+        Ok(ScheduledSecretaryDecision::NewWrite(ScheduledSecretaryPermit { write }))
+    })
+}
+
+/// A pending provider response is not an outcome. Only the original H
+/// RECEIPTED row, with its correlated receipt, can advance E. The E revision
+/// check gives an intervening USER pause/delete priority over rescheduling.
+pub(crate) fn settle_scheduled_secretary_occurrence(
+    connection: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
+    routine_id: &str, occurrence_id: &str, expected_routine_revision: i64,
+    now_ms: i64, session_id: &str, ticket: &str, generation: &str,
+) -> Result<Option<SecretaryRoutine>, JournalError> {
+    in_transaction(connection, |connection| {
+        let routines = seat::read_secretary_routines_in_transaction(connection, owner)?;
+        let row = routines.into_iter().find(|row| row.routine_id == routine_id)
+            .ok_or(JournalError::Denied)?;
+        if row.revision != expected_routine_revision || row.last_occurrence_id != occurrence_id {
+            return Err(JournalError::Conflict);
+        }
+        let occurrences = seat::read_secretary_occurrences_in_transaction(connection,
+            owner, routine_id)?;
+        let occurrence = occurrences.into_iter().find(|fact| fact.occurrence_id == occurrence_id)
+            .ok_or(JournalError::Denied)?;
+        if occurrence.state != "UNKNOWN" { return Err(JournalError::Conflict); }
+        let key = StdinJournalKey { domain_id: "global", request_id: occurrence_id,
+            session_id, ticket, generation };
+        let journal = read_stdin_journal(connection, &key)?.ok_or(JournalError::Denied)?;
+        if journal.state != JournalState::Receipted { return Ok(None); }
+        let request = decode_request(&journal.request_bytes).map_err(|_| JournalError::Unknown)?;
+        if request.operation != "send" || request.payload.len() != 2
+            || request.domain_id != "global" || request.target_id != session_id
+            || request.request_id != occurrence_id
+            || generation_from_payload(&request)? != generation
+            || payload_string(&request, "body")? != scheduled_body(&row.original_text)? {
+            return Err(JournalError::Denied);
+        }
+        let bytes = journal.receipt_bytes.as_ref().ok_or(JournalError::Unknown)?;
+        let receipt = decode_receipt(bytes).map_err(|_| JournalError::Unknown)?;
+        if Some(receipt.status) != journal.receipt_status || receipt.status == V37Status::Unknown {
+            return Err(JournalError::Unknown);
+        }
+        let result = receipt.into_result();
+        let driver=Statement::prepare(connection.as_ptr(),
+            "SELECT i.driver_id FROM main.gogoke_v37_h_process_episode e
+             JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
+             WHERE e.domain_id='global' AND e.session_id=?1 AND e.generation=?2
+               AND e.process_operation_id=?3")?;
+        driver.bind_text(1,session_id)?;
+        driver.bind_text(2,generation)?;
+        driver.bind_text(3,&journal.process_operation_id)?;
+        if !driver.step_row()? {return Err(JournalError::Denied);}
+        let driver_id=driver.column_text(0)?;
+        if driver.step_row()? {return Err(JournalError::Conflict);}
+        let original_input=StdinRequest {domain_id:"global",session_id,ticket,generation,
+            request_bytes:&journal.request_bytes};
+        match driver_id.as_str() {
+            "codex" => {},
+            "claude" => {
+                if read_original_claude_send_completed(connection,&original_input)?.is_none() {
+                    return Err(JournalError::Unknown);
+                }
+            }
+            "grok"|"opencode" => {
+                let field=|name|match result.get(&JsonString::from_str(name)) {
+                    Some(Json::String(value))=>value.to_well_formed_string(),_=>None,
+                };
+                let source=RawSourceKey {operation_id:journal.process_operation_id.clone(),
+                    source_epoch:field("sourceEpoch").ok_or(JournalError::Unknown)?,
+                    source_cursor:field("sourceCursor").ok_or(JournalError::Unknown)?};
+                if read_acp_send_completed(connection,&original_input,&source)?.is_none() {
+                    return Err(JournalError::Unknown);
+                }
+            }
+            _ => return Err(JournalError::Denied),
+        }
+        let h_receipt_id = match result.get(&JsonString::from_str("receiptId")) {
+            Some(Json::String(id)) => id.to_well_formed_string().ok_or(JournalError::Unknown)?,
+            _ => return Err(JournalError::Unknown),
+        };
+        require_id(&h_receipt_id, "original H receipt id")?;
+        let outcome = if journal.receipt_status == Some(V37Status::Applied) {
+            SecretaryOccurrenceOutcome::Delivered
+        } else { SecretaryOccurrenceOutcome::Failed };
+        let original_reason = if outcome == SecretaryOccurrenceOutcome::Delivered {
+            String::new()
+        } else {
+            ["stopReason","resultSubtype","reason"].iter()
+                .find_map(|name| result.get(&JsonString::from_str(name))
+                    .and_then(|value| match value {Json::String(value)=>value.to_well_formed_string(),_=>None}))
+                .unwrap_or_else(|| journal.receipt_status.expect("checked receipt status").wire().to_owned())
+        };
+        let next_due = seat::secretary_schedule::next_due_after(&row.original_text,
+            &row.schedule_raw, &row.timezone, occurrence.due_ms, now_ms)
+            .map_err(|_| JournalError::Denied)?;
+        let updated = seat::record_secretary_occurrence_outcome_in_transaction(connection,
+            owner, routine_id, occurrence_id, expected_routine_revision, outcome,
+            &h_receipt_id, &original_reason, next_due, now_ms)?;
+        Ok(Some(updated))
     })
 }
 

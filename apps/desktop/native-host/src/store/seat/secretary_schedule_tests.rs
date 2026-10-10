@@ -468,3 +468,31 @@ fn invalid_or_ambiguous_clock_never_rolls_forward() {
         Err(ScheduleError::InvalidTime)
     );
 }
+
+#[test]
+fn recurring_next_due_skips_missed_intervals_without_a_catch_up_burst() {
+    let original="每1小时提醒我检查队列";
+    let first=stamp("2026-10-07T12:00:00Z");
+    assert_eq!(next_due_after(original,"每1小时","UTC",first,
+        stamp("2026-10-07T15:30:00Z")),
+        Ok(Some(stamp("2026-10-07T16:00:00Z"))));
+    assert_eq!(next_due_after(original,"每1小时","UTC",first,first),
+        Ok(Some(stamp("2026-10-07T13:00:00Z"))));
+    assert_eq!(next_due_after(original,"每1小时","UTC",first,
+        stamp("2026-10-07T16:00:00Z")),
+        Ok(Some(stamp("2026-10-07T17:00:00Z"))));
+}
+
+#[test]
+fn one_shot_is_consumed_and_recurring_dst_uses_the_original_zone_rules() {
+    let once="10分钟后提醒我检查队列";
+    assert_eq!(next_due_after(once,"10分钟后","UTC",
+        stamp("2026-10-07T12:10:00Z"),stamp("2026-10-07T12:10:00Z")),Ok(None));
+    let daily="每天 02:30 提醒我检查队列";
+    assert_eq!(next_due_after(daily,"每天 02:30","America/Los_Angeles",
+        stamp("2026-03-07T10:30:00Z"),stamp("2026-03-07T11:00:00Z")),
+        Err(ScheduleError::NonexistentLocalTime));
+    assert_eq!(next_due_after(daily,"每天 02:30","America/Los_Angeles",
+        stamp("2026-03-07T10:30:00Z"),stamp("2026-03-09T12:00:00Z")),
+        Ok(Some(stamp("2026-03-10T09:30:00Z"))));
+}

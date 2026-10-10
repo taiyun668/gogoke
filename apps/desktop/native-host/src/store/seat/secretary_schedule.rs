@@ -691,6 +691,66 @@ pub(crate) fn resolve_user_schedule(
     })
 }
 
+/// Advance an already authenticated routine after its exact prior occurrence.
+/// The stored canonical zone and original USER rule are the only schedule
+/// inputs. Missed intervals are skipped; there is never a burst of catch-up
+/// occurrences or a clock allowance around `now_ms`.
+pub(crate) fn next_due_after(
+    original_user: &str,
+    exact_rule: &str,
+    canonical_timezone: &str,
+    prior_due_ms: i64,
+    now_ms: i64,
+) -> Result<Option<i64>, ScheduleError> {
+    if prior_due_ms <= 0 || now_ms <= 0 {
+        return Err(ScheduleError::TimeOutOfRange);
+    }
+    if original_user.match_indices(exact_rule).count() != 1
+        || command_rule(original_user)? != exact_rule
+    {
+        return Err(ScheduleError::SourceMismatch);
+    }
+    let (tz, canonical) = zone(canonical_timezone)?;
+    if canonical != canonical_timezone {
+        return Err(ScheduleError::ConflictingTimezone);
+    }
+    let explicit = explicit_zones(original_user)?;
+    if explicit.iter().any(|name| zone(name).map(|(_, value)| value != canonical).unwrap_or(true)) {
+        return Err(ScheduleError::ConflictingTimezone);
+    }
+    let normalized = exact_rule.trim().trim_matches(|c: char| matches!(c, '，' | ',' | '。' | '.'));
+    let end = rule_prefix(normalized).ok_or(ScheduleError::UnsupportedRule)?;
+    let rule = &normalized[..end];
+    let period = interval(rule, "每", "")
+        .or_else(|| english_interval(rule, "every "));
+    if let Some(period) = period {
+        let period = period?;
+        let elapsed = now_ms.max(prior_due_ms).checked_sub(prior_due_ms)
+            .ok_or(ScheduleError::TimeOutOfRange)?;
+        let steps = elapsed.checked_div(period).and_then(|n| n.checked_add(1))
+            .ok_or(ScheduleError::TimeOutOfRange)?;
+        return prior_due_ms.checked_add(steps.checked_mul(period)
+            .ok_or(ScheduleError::TimeOutOfRange)?)
+            .map(Some).ok_or(ScheduleError::TimeOutOfRange);
+    }
+    let lower = rule.to_ascii_lowercase();
+    if rule.starts_with("每天") || rule.starts_with("每周")
+        || rule.starts_with("每星期") || lower.starts_with("daily at ")
+        || lower.starts_with("weekly on ")
+    {
+        let source = DateTime::<Utc>::from_timestamp_millis(now_ms.max(prior_due_ms))
+            .ok_or(ScheduleError::TimeOutOfRange)?;
+        let due = calendar(rule, tz, source, false)?;
+        if due <= now_ms || due <= prior_due_ms {
+            return Err(ScheduleError::DueNotAfterSource);
+        }
+        return Ok(Some(due));
+    }
+    // Absolute dates, tomorrow and relative "in/后" rules each authorize one
+    // occurrence only. The already reserved occurrence consumes that rule.
+    Ok(None)
+}
+
 #[cfg(test)]
 #[path = "secretary_schedule_tests.rs"]
 mod tests;
