@@ -95,24 +95,8 @@ fn claude_holder_unknown_open_keeps_originals_and_rejects_captured_status_drift(
         assert_eq!(episodes(&product), episodes_before);
         assert_eq!(rpc(&product), rpc_before);
 
-        // Even another otherwise legal open status cannot replace the status
-        // captured by this intent. Reject it before releasing the second claim.
         product.connection.execute(
-            "DROP TRIGGER temp.claude_holder_unknown_second_release_cut;
-             UPDATE main.gogoke_v37_h_operation SET status='APPLIED'
-             WHERE domain_id='projectB' AND operation='open' AND session_id='sessionB'",
-        ).unwrap();
-        let drift = product.recover_disappeared_claude_resources(INSTANCE, None).unwrap_err();
-        assert!(format!("{drift:?}").contains("Claude original H tuple changed"), "{drift:?}");
-        assert_eq!(claims(&product), partial_claims);
-        assert_eq!(journal(&product)[1][7], "PREPARED");
-        assert_eq!(custody(&product), custody_before);
-        assert_eq!(episodes(&product), episodes_before);
-        assert_eq!(rpc(&product), rpc_before);
-
-        product.connection.execute(
-            "UPDATE main.gogoke_v37_h_operation SET status='UNKNOWN'
-             WHERE domain_id='projectB' AND operation='open' AND session_id='sessionB'",
+            "DROP TRIGGER temp.claude_holder_unknown_second_release_cut",
         ).unwrap();
         product.recover_disappeared_claude_resources(INSTANCE, None).unwrap();
         let completed = journal(&product);
@@ -127,6 +111,24 @@ fn claude_holder_unknown_open_keeps_originals_and_rejects_captured_status_drift(
             assert_eq!(seat::get(&product.connection, domain, seat_id).unwrap().unwrap().state, seat::State::Idle);
         }
         assert_eq!(occupancy(&mut product), Some(0));
+        // The completed receipt still compares the captured original status.
+        // Drift during a pending intent instead fences it UNKNOWN permanently;
+        // do not invent a reset-and-resume path for that different case.
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_h_operation SET status='APPLIED'
+             WHERE domain_id='projectB' AND operation='open' AND session_id='sessionB'",
+        ).unwrap();
+        let drift = product.recover_disappeared_claude_resources(INSTANCE, None).unwrap_err();
+        assert!(format!("{drift:?}").contains("Claude original H tuple changed"), "{drift:?}");
+        assert_eq!(claims(&product), expected);
+        assert_eq!(journal(&product), completed);
+        assert_eq!(custody(&product), custody_before);
+        assert_eq!(episodes(&product), episodes_before);
+        assert_eq!(rpc(&product), rpc_before);
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_h_operation SET status='UNKNOWN'
+             WHERE domain_id='projectB' AND operation='open' AND session_id='sessionB'",
+        ).unwrap();
         product.recover_disappeared_claude_resources(INSTANCE, None).unwrap();
         assert_eq!(journal(&product), completed);
         assert_eq!(original_opens(&product), opens_before, "UNKNOWN is never rewritten to successful open");
