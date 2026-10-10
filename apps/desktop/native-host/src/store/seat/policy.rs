@@ -117,6 +117,32 @@ fn head_revision(db:&VerifiedDatabaseConnection<'_>,domain:&str)->Result<i64,Sea
     Ok(rev)
 }
 
+#[derive(Clone,Debug,Eq,PartialEq)]
+pub(crate) enum OwnerPolicyHead {
+    Absent,
+    Present {revision:i64,current_stage:String},
+}
+
+/// Owner-only head read inside the caller's already-open verified snapshot.
+/// An absent row is a fact for explicit project intake, never a default grant
+/// or an instruction to initialize from this read.
+pub(crate) fn read_owner_policy_head_in_transaction(
+    db:&VerifiedDatabaseConnection<'_>,issuer:&OwnerIssuer,domain:&str,
+)->Result<OwnerPolicyHead,SeatError> {
+    check_current_owner(db,issuer)?;
+    if !valid_id(domain) {return Err(SeatError::Invalid("policy domain"));}
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT revision,current_stage FROM main.gogoke_v37_seat_policy_head WHERE domain_id=?1")?;
+    q.bind_text(1,domain)?;
+    if !q.step_row()? {return Ok(OwnerPolicyHead::Absent);}
+    let revision=q.column_text(0)?.parse::<i64>().map_err(|_|SeatError::SchemaDrift)?;
+    let current_stage=q.column_text(1)?;
+    if revision<=0 || !valid_id(&current_stage) || q.step_row()? {
+        return Err(SeatError::SchemaDrift);
+    }
+    Ok(OwnerPolicyHead::Present {revision,current_stage})
+}
+
 pub(crate) fn current_policy_revision(db:&VerifiedDatabaseConnection<'_>,
     caller:&NativeSeatCall)->Result<i64,SeatError> {
     current_caller(db,caller)?;

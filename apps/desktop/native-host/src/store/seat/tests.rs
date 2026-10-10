@@ -168,6 +168,42 @@ fn fixture(run: impl FnOnce(&mut VerifiedDatabaseConnection<'_>, &OwnerIssuer)) 
     }
 }
 
+#[test]
+fn owner_policy_head_read_requires_current_owner_and_preserves_absent_or_existing_fact() {
+    fixture(|db,owner| {
+        assert!(matches!(read_owner_policy_head_in_transaction(db,owner,"projectA"),
+            Err(SeatError::Denied)),"the strict API does not start a transaction");
+        db.execute("BEGIN").unwrap();
+        assert_eq!(read_owner_policy_head_in_transaction(db,owner,"projectA").unwrap(),
+            OwnerPolicyHead::Absent);
+        db.execute("COMMIT").unwrap();
+        let count=Statement::prepare(db.as_ptr(),
+            "SELECT count(*) FROM main.gogoke_v37_seat_policy_head WHERE domain_id='projectA'")
+            .unwrap();
+        assert!(count.step_row().unwrap());
+        assert_eq!(count.column_text(0).unwrap(),"0","absent read never initializes");
+        drop(count);
+        assert_eq!(initialize_policy(db,owner,"projectA","OPEN").unwrap(),1);
+        db.execute("UPDATE main.gogoke_v37_seat_policy_head SET revision=7,current_stage='REVIEW' WHERE domain_id='projectA'").unwrap();
+        db.execute("BEGIN").unwrap();
+        assert_eq!(read_owner_policy_head_in_transaction(db,owner,"projectA").unwrap(),
+            OwnerPolicyHead::Present {revision:7,current_stage:"REVIEW".into()});
+        db.execute("COMMIT").unwrap();
+        let current=Statement::prepare(db.as_ptr(),
+            "SELECT revision,current_stage FROM main.gogoke_v37_seat_policy_head WHERE domain_id='projectA'")
+            .unwrap();
+        assert!(current.step_row().unwrap());
+        assert_eq!((current.column_text(0).unwrap(),current.column_text(1).unwrap()),
+            ("7".into(),"REVIEW".into()),"existing policy head is never reset");
+        drop(current);
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        db.execute("UPDATE main.gogoke_authority_profile SET issuer_id='forged-issuer' WHERE singleton=1").unwrap();
+        assert!(matches!(read_owner_policy_head_in_transaction(db,owner,"projectA"),
+            Err(SeatError::Denied)),"a stale Owner issuer cannot read the head");
+        db.execute("ROLLBACK").unwrap();
+    });
+}
+
 fn create_user(
     db: &mut VerifiedDatabaseConnection<'_>,
     owner: &OwnerIssuer,
