@@ -2333,8 +2333,15 @@ impl<'root> ProductDatabase<'root> {
         // the H binding or releasing any guard. A quiet reader is not EOF:
         // retain the same stop proof for readback, without another OS stop.
         self.drain_native_output(&key)?;
-        if !self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?.raw_capture.source_exhausted() {
-            return Err(OrchestrationError::Invalid("native stopped stdout terminal boundary not yet observed; custody retained"));
+        let raw_capture=&self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?.raw_capture;
+        if !raw_capture.source_exhausted() {
+            return Err(OrchestrationError::V37StoreFailure(format!(
+                "native stopped stdout terminal boundary not yet observed; custody retained; original stop state: parent_exited={}, active_job_processes={:?}, identity_status={}, process_handle_present={}, job_handle_present={}, kill_attempted={}, kill_succeeded={}, writer_fence_verified={}, exit_code={:?}, deadline_exceeded={}, errors_count={}; original reader: source_eof={}, has_pending={}, source_error_present={}, source_error_kind={:?}, source_os_error={:?}",
+                proof.parent_exited,proof.active_job_processes,proof.identity_status,
+                proof.process_handle_present,proof.job_handle_present,proof.kill_attempted,
+                proof.kill_succeeded,proof.writer_fence_verified,proof.exit_code,
+                proof.deadline_exceeded,proof.errors.len(),raw_capture.source_exhausted(),
+                raw_capture.has_pending(),raw_capture.source_failed(),raw_capture.source_error_kind(),raw_capture.source_os_error())));
         }
         authority::mark_process_stopped(&mut self.connection, &operation, &proof)?;
         failure(self.connection.execute("BEGIN IMMEDIATE"))?;

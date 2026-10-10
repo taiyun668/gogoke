@@ -122,7 +122,7 @@ if len(sys.argv) == 4 and sys.argv[1] == "--process-identity":
     print(json.dumps(observed, separators=(",", ":")))
     raise SystemExit(0)
 
-if len(sys.argv) != 4:
+if len(sys.argv) not in (4, 7):
     raise RuntimeError("Expected state root, fresh private output, and original provider journal")
 
 def fail(message):
@@ -139,9 +139,19 @@ output = Path(sys.argv[2])
 journal_path = Path(sys.argv[3]).resolve(strict=True)
 if output.exists():
     fail("Private provider readback output already exists")
-journal = json.loads(journal_path.read_text(encoding="utf-8-sig"))
+journal_bytes = journal_path.read_bytes()
+journal = json.loads(journal_bytes.decode("utf-8-sig"))
+supplement = len(sys.argv) == 7 and sys.argv[4] == "--original-failure-supplement"
+if len(sys.argv) not in (4, 7) or (len(sys.argv) == 7 and not supplement):
+    fail("Unexpected provider readback arguments")
+if supplement and (sha(journal_bytes) != sys.argv[5] or
+        journal.get("driverBytes", {}).get("m2-provider-capture-readback.py") != sys.argv[6] or
+        journal.get("state") != "FAIL_ORIGINAL_REQUEST_RETAINED" or
+        journal.get("protection") != "PASS_FORMAL_MEMORY_LEDGER_FIELDS_UNCHANGED"):
+    fail("Supplement must bind the unchanged original failure and executed reader")
+expected_phase = "FAIL_ORIGINAL_REQUEST_RETAINED" if supplement else "DIRECT_PROVIDER_H_RECEIPTS_A_READBACK_REQUIRED"
 if journal.get("schema") != "gogoke.37.m2-provider-win11-e2e.v1" or \
-        journal.get("state") != "DIRECT_PROVIDER_H_RECEIPTS_A_READBACK_REQUIRED" or \
+        journal.get("state") != expected_phase or \
         journal.get("acceptance") is not False or journal.get("observerDatabaseWrites") is not False or \
         journal.get("hostOperationsWriteCandidateDatabase") is not True or \
         journal.get("credentialReads") is not False or not 1 <= len(journal.get("cases", [])) <= 3 or \
@@ -174,6 +184,10 @@ result = {"schema": "gogoke.37.private-m2-readback.v1", "phase": "provider-final
           "acceptance": False, "rootIdentity": [str(root.stat().st_dev), str(root.stat().st_ino)],
           "filesBefore": before, "frames": [], "commands": [], "unknownFrames": [],
           "sessions": [], "providerWorktrees": [], "directProviderEvidence": False}
+if supplement:
+    result.update({"state": "SUPPLEMENTARY_DIRECT_PROVIDER_READBACK_ORIGINAL_FAILURE_RETAINED",
+                   "originalFailureRetained": True, "originalJournalSha256": sys.argv[5],
+                   "originalReaderSha256": sys.argv[6], "readerSha256": sha(Path(__file__).read_bytes())})
 domain = journal["domainId"]
 
 def nested_text(value, parts):
@@ -298,7 +312,7 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             "FROM gogoke_v37_instances WHERE instance_id=?", (case["instanceId"],))
         observed_instance = case.get("loggedInInstance", {})
         if instance[:2] != (driver, case["fixedVersion"]) or \
-                instance[2] != "sha256:" + case["fixedSha256"] or instance[3:] != ("INSTALLED", "LOGGED_IN") or \
+                instance[2] != "sha256:" + case["fixedSha256"] or instance[4] != "LOGGED_IN" or \
                 observed_instance != {"instanceId": case["instanceId"], "driverId": driver,
                     "version": case["fixedVersion"], "state": "LOGGED_IN"}:
             fail(f"{driver}: original configured instance was not the logged-in fixed executable")
@@ -306,9 +320,18 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                 cap_result.get("requestedEffort") != expected_settings.get("effort")):
             fail("Claude original H capability settings differ from bound E model/effort")
         binding = exact_one(db,
-            "SELECT seat_id,seat_incarnation,generation FROM gogoke_v37_h_seat_binding "
+            "SELECT seat_id,seat_incarnation,generation,seat_authorization_generation,selected_instance_id,provenance "
+            "FROM gogoke_v37_effective_seat "
             "WHERE domain_id=? AND session_id=?", (domain, session_id))
-        if binding[0] != case["seatId"] or binding[2] != send[4]:
+        relation = (case["seatId"], seat[0], int(send[4]), case["instanceId"])
+        selection = exact_one(db,
+            "SELECT seat_id,seat_incarnation,seat_authorization_generation,selected_instance_id "
+            "FROM gogoke_v37_native_selection WHERE domain_id=? AND session_id=?", (domain, session_id))
+        immutable_binding = exact_one(db,
+            "SELECT seat_id,seat_incarnation,seat_authorization_generation,selected_instance_id,provenance "
+            "FROM gogoke_v37_session_binding_v2 WHERE domain_id=? AND session_id=?", (domain, session_id))
+        if binding != (relation[0], relation[1], send[4], relation[2], relation[3], "NATIVE_V2") or \
+                selection != relation or immutable_binding != (*relation, "NATIVE_V2"):
             fail(f"{driver}: original H episode is not bound to the configured E generation")
         episodes = db.execute(
             "SELECT generation,process_operation_id,phase,stop_fact_id,seat_id,seat_incarnation,instance_id,request_id "
@@ -610,6 +633,7 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
         result["sessions"].append({"sessionId": session_id, "seatId": case["seatId"],
             "instanceId": case["instanceId"], "worktreeId": case["worktreeId"],
             "driverId": pins[0][0], "version": pins[0][1], "binarySha256": pins[0][2],
+            "persistedInstallState": instance[3], "installObservationCredit": False,
             "episodes": episodes, "normalized": updates, "missingNormalized": False,
             "rawFrameCount": len(incoming), "unknownFrameCount": sum(row[5] == "PENDING" for row in incoming),
             "allEpisodesStopped": True, "claimState": claim[0], "providerPromptObserved": prompt_echo,

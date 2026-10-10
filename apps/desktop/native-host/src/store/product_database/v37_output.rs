@@ -12,6 +12,8 @@ pub(super) struct NativeRawCapture {
     cursor: u64,
     pending: Option<OriginBoundFrame>,
     source_error: Option<String>,
+    source_error_kind: Option<std::io::ErrorKind>,
+    source_os_error: Option<i32>,
     source_eof: bool,
 }
 
@@ -95,16 +97,21 @@ impl NativeRawCapture {
     pub(super) fn has_pending(&self) -> bool { self.pending.is_some() }
     pub(super) fn source_failed(&self) -> bool { self.source_error.is_some() }
     pub(super) fn source_exhausted(&self) -> bool { self.source_eof }
+    pub(super) fn source_error_kind(&self) -> Option<std::io::ErrorKind> { self.source_error_kind }
+    pub(super) fn source_os_error(&self) -> Option<i32> { self.source_os_error }
 
     fn record_source_error(&mut self,error:crate::process::ProcessCustodyError) {
-        fn is_eof(error:&crate::process::ProcessCustodyError)->bool {
+        fn pipe_error(error:&crate::process::ProcessCustodyError)->Option<&std::io::Error> {
             match error {
-                crate::process::ProcessCustodyError::ProtocolPipe(source)=>source.kind()==std::io::ErrorKind::UnexpectedEof,
-                crate::process::ProcessCustodyError::ProtocolEvidence {cause,..}=>is_eof(cause),
-                _=>false,
+                crate::process::ProcessCustodyError::ProtocolPipe(source)=>Some(source),
+                crate::process::ProcessCustodyError::ProtocolEvidence {cause,..}=>pipe_error(cause),
+                _=>None,
             }
         }
-        self.source_eof=is_eof(&error);
+        let source=pipe_error(&error);
+        self.source_error_kind=source.map(|source|source.kind());
+        self.source_os_error=source.and_then(|source|source.raw_os_error());
+        self.source_eof=self.source_error_kind==Some(std::io::ErrorKind::UnexpectedEof);
         self.source_error=Some(error.to_string());
     }
 

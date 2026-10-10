@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       focused_library:
-        description: Affected checks only (seat-scope, ledger-scope or native-takeover); all full and formal gates are NOT_RUN
+        description: Affected checks only (seat-scope, ledger-scope, native-takeover or pipe-evidence); all full and formal gates are NOT_RUN
         type: string
         default: ""
       secretary_routine_fixture_only:
@@ -90,6 +90,8 @@ jobs:
             'ledger-scope' { @('work_source_cannot_mint_a_secretary_global_reader',
               'native_user_ledger_scopes_replay_and_subscription_survive_reopen') }
             'native-takeover' { @('native_takeover_') }
+            'pipe-evidence' { @('stop_requires_clean_original_eof_not_a_generic_source_error',
+              'persistent_reader_keeps_eof_unknown_after_exact_child_exit') }
             default { throw 'Unknown affected-check selection; no arbitrary shell or test filter is accepted.' }
           }
           $node = Get-Command node.exe -CommandType Application | Select-Object -First 1 -ExpandProperty Source
@@ -116,7 +118,18 @@ jobs:
           }
           [ordered]@{ sourceCommit=$env:GITHUB_SHA; state='AFFECTED_CHECKS_ONLY'; results=$results; fullLibrary='NOT_RUN'; formalGates='NOT_RUN' } |
             ConvertTo-Json -Depth 6 | Set-Content (Join-Path $evidence 'result.json') -Encoding utf8NoBOM
-          'Affected checks only; full library, LPAC, process, mutation and server gates: NOT_RUN' >> $env:GITHUB_STEP_SUMMARY
+          if ($env:FOCUSED_LIBRARY -eq 'pipe-evidence') {
+            $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml -p gogoke-lpac-path-compat --lib -- --nocapture 2>&1
+            $code = $LASTEXITCODE
+            $output | Set-Content (Join-Path $evidence 'lpac-path-shim.log') -Encoding utf8NoBOM
+            $output | Write-Host
+            $summary = @($output | Select-String -Pattern '^test result: ok\. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out')
+            $shimPassed = $code -eq 0 -and $summary.Count -eq 1
+            [ordered]@{ sourceCommit=$env:GITHUB_SHA; scope='PIPE_EVIDENCE_SAME_SOURCE_SHIM'; state=$(if ($shimPassed) { 'PASS' } else { 'FAIL' }); passed=$(if ($shimPassed) { 2 } else { 0 }); exitCode=$code; fullLibrary='NOT_RUN'; formalGates='NOT_RUN' } |
+              ConvertTo-Json | Set-Content (Join-Path $evidence 'lpac-path-shim-result.json') -Encoding utf8NoBOM
+            if (-not $shimPassed) { $failures += 'lpac-path-shim' }
+          }
+          'Affected checks only; full library, full LPAC, process, mutation and server gates: NOT_RUN. The pipe-evidence selection also runs the two focused same-source shim tests.' >> $env:GITHUB_STEP_SUMMARY
           if ($failures.Count -gt 0) { throw "Affected checks failed or had no completed tests: $($failures -join ', ')" }
       - uses: actions/upload-artifact@v4
         if: always()
