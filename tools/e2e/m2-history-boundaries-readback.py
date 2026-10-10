@@ -577,16 +577,17 @@ def verify_same_domain_worker(db, journal, boundary, result):
         worker = one(db, "SELECT incarnation,layer,parent_seat_id,instance_id FROM gogoke_v37_seats "
                      "WHERE domain_id=? AND seat_id=?",
                      (source_session["domainId"], case_record["workerSeatId"]))
-        check(tuple(lead) == (case_record["sourceSeatId"], case_record["sourceIncarnation"]) and
-              tuple(source_seat) == (case_record["sourceIncarnation"], "USER", None,
-                                    case["instanceId"]) and
-              tuple(worker) == (case_record["workerIncarnation"], "LEAD",
-                                case_record["sourceSeatId"], case["instanceId"]),
+        check((lead["seat_id"], lead["incarnation"]) ==
+                (case_record["sourceSeatId"], case_record["sourceIncarnation"]) and
+              (source_seat["incarnation"], source_seat["layer"], source_seat["parent_seat_id"], source_seat["instance_id"]) ==
+                (case_record["sourceIncarnation"], "USER", None, case["instanceId"]) and
+              (worker["incarnation"], worker["layer"], worker["parent_seat_id"], worker["instance_id"]) ==
+                (case_record["workerIncarnation"], "LEAD", case_record["sourceSeatId"], case["instanceId"]),
               "Actual E designated lead/worker incarnation or parent differs")
         original_episode = one(db, "SELECT seat_incarnation FROM gogoke_v37_h_process_episode "
                                "WHERE domain_id=? AND session_id=?",
                                (source_session["domainId"], source_session["id"]))
-        check(original_episode[0] == case_record["sourceIncarnation"],
+        check(original_episode["seat_incarnation"] == case_record["sourceIncarnation"],
               "Original User lead input belongs to another E incarnation")
         original_cases = [row for row in prior["cases"] if row["caseId"] == case["caseId"]]
         sources = [row for row in original_cases[0]["sessions"]
