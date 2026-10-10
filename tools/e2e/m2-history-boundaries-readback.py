@@ -444,7 +444,7 @@ def verify_peers(db, journal, boundary, result):
         item_ids = {frame["params"]["item"].get("id") for _, frame in exact}
         check(not any(frame.get("method") == "item/tool/call" or
               (frame.get("method") in ("item/started", "item/completed") and frame.get("params", {}).get("turnId") == turn and
-               frame["params"].get("item", {}).get("type") not in ("agentMessage", "reasoning", "commandExecution"))
+               frame["params"].get("item", {}).get("type") not in ("userMessage", "agentMessage", "reasoning", "commandExecution"))
               for _, frame in decoded), "Peer performed an unrelated tool action; preserve original run")
         check(len(items) <= 1, "Peer repeated or substituted an ordinary file read")
         commands = [frame["params"]["item"] for _, frame in decoded if frame.get("method") in ("item/started", "item/completed")
@@ -694,7 +694,7 @@ def verify_flow(db, journal, boundary, result, original_reader_sha=None):
 
 
 def main():
-    supplementary = (len(sys.argv) == 7 and sys.argv[4] == "before-refusal" and
+    supplementary = (len(sys.argv) == 7 and sys.argv[4] in ("before-refusal", "peer-final") and
                      sys.argv[5] == "--supplementary-original-reader")
     check(supplementary or len(sys.argv) == 5 and
           sys.argv[4] in ("before-refusal", "final", "peer-final", "same-domain-final"),
@@ -720,16 +720,23 @@ def main():
               "Supplementary original reader must be a preserved external file")
         original_reader_sha = digest(original_reader.read_bytes())
         check(len(boundary["cases"]) == 1 and
-              boundary["cases"][0]["state"] == "FLOW_COMPLETE_BEFORE_REFUSALS" and
               journal["state"] == "FAIL_OR_NOT_RUN_PRESERVE_ORIGINAL" and
-              boundary["state"] == "FAIL" and
-              "Pending original source has unqualified provider or RPC response custody" in journal.get("originalError", "") and
-              "Pending original source has unqualified provider or RPC response custody" in boundary.get("originalError", "") and
-              not boundary["refusals"] and not journal["readbacks"] and
               original_reader_sha == boundary["readerSha256"] ==
                 journal["driverBytes"]["m2-history-boundaries-readback.py"] and
               boundary["driverSha256"] == journal["driverBytes"]["m2-history-boundaries.mjs"],
               "Supplementary readback lacks the exact failed original case and instrument bytes")
+        if sys.argv[4] == "before-refusal":
+            check(boundary["cases"][0]["state"] == "FLOW_COMPLETE_BEFORE_REFUSALS" and
+                  boundary["state"] == "FAIL" and not boundary["refusals"] and not journal["readbacks"] and
+                  "Pending original source has unqualified provider or RPC response custody" in journal.get("originalError", "") and
+                  "Pending original source has unqualified provider or RPC response custody" in boundary.get("originalError", ""),
+                  "Supplementary notification case is not the preserved instrument failure")
+        else:
+            check(boundary["state"] == "FLOW_COMPLETE_DIRECT_READBACK_REQUIRED" and
+                  boundary.get("peerRead", {}).get("state") == "PEER_FLOW_COMPLETE_DIRECT_READBACK_REQUIRED" and
+                  "Peer performed an unrelated tool action; preserve original run" in journal.get("originalError", "") and
+                  len(boundary["refusals"]) == 5 and len(journal["readbacks"]) == 2,
+                  "Supplementary peer case is not the preserved instrument failure")
     launch, close = journal["launches"][-1], journal["closes"][-1]
     check(launch["pid"] == close["pid"] == journal["currentEndpoint"]["pid"] and close["exitCode"] == 0 and
           close["forceKill"] is False and launch["sourceCommit"] == journal["sourceCommit"],
