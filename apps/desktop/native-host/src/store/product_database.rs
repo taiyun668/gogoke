@@ -64,6 +64,8 @@ mod v37_holder_disappearance;
 mod v37_claude_holder_recovery;
 mod v37_grok_home_recovery;
 #[cfg(all(test, windows))]
+mod v37_claude_holder_recovery_tests;
+#[cfg(all(test, windows))]
 mod v37_holder_disappearance_tests;
 #[cfg(all(test, windows))]
 mod managed_cli_test_setup;
