@@ -453,6 +453,10 @@ jobs:
             $_ -match '^\s+Running ' -and $_.Contains("$image gogoke_update", [StringComparison]::OrdinalIgnoreCase)
           })
           if ($running.Count -ne 1) { throw "Original Cargo Running line did not bind exactly one test image: $($running.Count)" }
+          $originalPathMatch = [regex]::Match($running[0], 'set PATH="([^"]+)"')
+          if (-not $originalPathMatch.Success) { throw 'Original Cargo Running line omitted child PATH' }
+          $originalPathSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData(
+            [Text.Encoding]::UTF8.GetBytes($originalPathMatch.Groups[1].Value))).ToLowerInvariant()
           $imageHash = (Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLowerInvariant()
           [ordered]@{
             schema='gogoke.update-loader-diagnostic.v1'
@@ -462,6 +466,7 @@ jobs:
             originalCargoExitCode=$originalExit
             originalImagePath=$image
             originalImageSha256=$imageHash
+            originalChildPathSha256=$originalPathSha256
             cargoPath=$cargo
             cargoSha256=(Get-FileHash -LiteralPath $cargo -Algorithm SHA256).Hash.ToLowerInvariant()
             cargoVersion=$cargoVersion
@@ -488,53 +493,91 @@ jobs:
             }
             Write-Output "Debugging tool: $tool; version $((Get-Item -LiteralPath $tool).VersionInfo.FileVersion); SHA-256 $((Get-FileHash -LiteralPath $tool -Algorithm SHA256).Hash); signer $($signature.SignerCertificate.Subject)"
           }
-          'Loader diagnostic only: original Cargo child then CDB child tracking; Browser, reproducibility, candidate signing and installation are NOT_RUN.' >> $env:GITHUB_STEP_SUMMARY
+          'Loader diagnostic only: original Cargo child then Cargo runner on the same target; Browser, reproducibility, candidate signing and installation are NOT_RUN.' >> $env:GITHUB_STEP_SUMMARY
           $imageName = [IO.Path]::GetFileName($image)
           $diagnosticError = $null
           $cleanupError = $null
           try {
             & $gflags /i $imageName +sls
             if ($LASTEXITCODE -ne 0) { throw "Loader snaps enable failed: $LASTEXITCODE" }
+            $runner = Join-Path $evidence 'cargo-test-runner.ps1'
+            Set-Content -LiteralPath $runner -Encoding utf8 -Value @'
+          param([string]$Image, [string]$Filter)
+          $ErrorActionPreference = 'Stop'
+          if ($args.Count -ne 0 -or $Filter -cne 'gogoke_update' -or
+              -not [string]::Equals([IO.Path]::GetFullPath($Image), $env:GOGOKE_LOADER_EXPECTED_IMAGE,
+                [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Cargo runner received a different test target or filter'
+          }
+          $actualPathSha = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData(
+            [Text.Encoding]::UTF8.GetBytes($env:PATH))).ToLowerInvariant()
+          $actualImageSha = (Get-FileHash -LiteralPath $Image -Algorithm SHA256).Hash.ToLowerInvariant()
+          $facts = [ordered]@{
+            imagePath = [IO.Path]::GetFullPath($Image)
+            imageSha256 = $actualImageSha
+            originalImageSha256 = $env:GOGOKE_LOADER_ORIGINAL_IMAGE_SHA
+            sameOriginalImageBytes = ($actualImageSha -ceq $env:GOGOKE_LOADER_ORIGINAL_IMAGE_SHA)
+            workingDirectory = (Get-Location).Path
+            expectedWorkingDirectory = $env:GOGOKE_LOADER_EXPECTED_CWD
+            cargoPathSha256 = $actualPathSha
+            originalCargoPathSha256 = $env:GOGOKE_LOADER_ORIGINAL_PATH_SHA
+            sameOriginalCargoPath = ($actualPathSha -ceq $env:GOGOKE_LOADER_ORIGINAL_PATH_SHA)
+            filter = $Filter
+          }
+          $facts | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $env:GOGOKE_LOADER_EVIDENCE 'runner-facts.json') -Encoding utf8
+          if (-not [string]::Equals($facts.workingDirectory, $facts.expectedWorkingDirectory,
+              [StringComparison]::OrdinalIgnoreCase)) { throw 'Cargo runner working directory differs from package root' }
+          $log = Join-Path $env:GOGOKE_LOADER_EVIDENCE 'cdb-loader-snaps.log'
+          $info = [Diagnostics.ProcessStartInfo]::new($env:GOGOKE_LOADER_CDB)
+          foreach ($argument in @('-g', '-G', '-logo', $log, $Image, $Filter)) {
+            [void]$info.ArgumentList.Add($argument)
+          }
+          $info.WorkingDirectory = (Get-Location).Path
+          $info.UseShellExecute = $false
+          $info.CreateNoWindow = $true
+          $info.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+          $info.RedirectStandardOutput = $true
+          $info.RedirectStandardError = $true
+          $debugger = [Diagnostics.Process]::Start($info)
+          if (-not $debugger) { throw 'Microsoft CDB did not start for Cargo test target' }
+          $stdout = $debugger.StandardOutput.ReadToEndAsync()
+          $stderr = $debugger.StandardError.ReadToEndAsync()
+          $timedOut = -not $debugger.WaitForExit(45000)
+          if ($timedOut) {
+            $debugger.Kill($true)
+            $debugger.WaitForExit()
+          }
+          [IO.File]::WriteAllText((Join-Path $env:GOGOKE_LOADER_EVIDENCE 'cdb-stdout.txt'), $stdout.GetAwaiter().GetResult())
+          [IO.File]::WriteAllText((Join-Path $env:GOGOKE_LOADER_EVIDENCE 'cdb-stderr.txt'), $stderr.GetAwaiter().GetResult())
+          [ordered]@{debuggerExitCode=$debugger.ExitCode;debuggerTimedOut=$timedOut} |
+            ConvertTo-Json | Set-Content -LiteralPath (Join-Path $env:GOGOKE_LOADER_EVIDENCE 'cdb-exit.json') -Encoding utf8
+          if ($timedOut) { throw 'CDB stopped at target loader failure; raw log retained after 45 seconds' }
+          exit $debugger.ExitCode
+          '@
+            $env:GOGOKE_LOADER_EXPECTED_IMAGE = $image
+            $env:GOGOKE_LOADER_EXPECTED_CWD = (Resolve-Path -LiteralPath 'src-tauri').Path
+            $env:GOGOKE_LOADER_ORIGINAL_IMAGE_SHA = $imageHash
+            $env:GOGOKE_LOADER_ORIGINAL_PATH_SHA = $originalPathSha256
+            $env:GOGOKE_LOADER_EVIDENCE = $evidence
+            $env:GOGOKE_LOADER_CDB = $cdb
+            $oldRunner = $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER
+            $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER = "pwsh -NoProfile -File $runner"
+            try {
+              $runnerOut = Join-Path $evidence 'runner-cargo-stdout.txt'
+              $runnerErr = Join-Path $evidence 'runner-cargo-stderr.txt'
+              & $cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_update --lib -vv 1> $runnerOut 2> $runnerErr
+              $runnerExit = $LASTEXITCODE
+            } finally {
+              $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER = $oldRunner
+            }
+            Write-Output "Cargo runner exit: $runnerExit"
+            if (-not (Test-Path -LiteralPath (Join-Path $evidence 'runner-facts.json') -PathType Leaf)) {
+              Get-Content -LiteralPath $runnerErr -Tail 35 | Out-Host
+              throw 'Cargo did not invoke the exact test runner'
+            }
+            Get-Content -LiteralPath (Join-Path $evidence 'runner-facts.json') | Out-Host
             $log = Join-Path $evidence 'cdb-loader-snaps.log'
-            $info = [Diagnostics.ProcessStartInfo]::new($cdb)
-            foreach ($argument in @('-o', '-g', '-G', '-v', '-logo', $log, $cargo, '+1.89.0', 'test', '--locked', '--manifest-path', 'src-tauri/Cargo.toml', 'gogoke_update', '--lib', '-vv')) {
-              [void]$info.ArgumentList.Add($argument)
-            }
-            $info.WorkingDirectory = (Get-Location).Path
-            $info.UseShellExecute = $false
-            $info.CreateNoWindow = $true
-            $info.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
-            $info.RedirectStandardOutput = $true
-            $info.RedirectStandardError = $true
-            $debugger = [Diagnostics.Process]::Start($info)
-            if (-not $debugger) { throw 'Microsoft CDB did not start' }
-            $stdout = $debugger.StandardOutput.ReadToEndAsync()
-            $stderr = $debugger.StandardError.ReadToEndAsync()
-            $timedOut = -not $debugger.WaitForExit(120000)
-            if ($timedOut) {
-              $debugger.Kill($true)
-              $debugger.WaitForExit()
-            }
-            $cdbStdout = $stdout.GetAwaiter().GetResult()
-            $cdbStderr = $stderr.GetAwaiter().GetResult()
-            [IO.File]::WriteAllText((Join-Path $evidence 'cdb-stdout.txt'), $cdbStdout)
-            [IO.File]::WriteAllText((Join-Path $evidence 'cdb-stderr.txt'), $cdbStderr)
-            $cdbRunning = @($cdbStderr -split "`n" | Where-Object {
-              $_ -match '^\s+Running ' -and $_.Contains("$image gogoke_update", [StringComparison]::OrdinalIgnoreCase)
-            })
-            $cdbImageHash = (Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLowerInvariant()
-            [ordered]@{
-              imagePath=$image
-              imageSha256=$cdbImageHash
-              originalImageSha256=$imageHash
-              sameImageBytes=($cdbImageHash -ceq $imageHash)
-              cargoRunningLineBound=($cdbRunning.Count -eq 1)
-              debuggerTimedOut=$timedOut
-            } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence 'cdb-image.json') -Encoding utf8
-            Write-Output "CDB Cargo image SHA-256 $cdbImageHash; same original bytes $($cdbImageHash -ceq $imageHash); Running line bound $($cdbRunning.Count -eq 1)"
-            if ($timedOut) { throw 'Microsoft CDB loader diagnosis timed out; raw log retained' }
-            Write-Output "Microsoft CDB exit: $($debugger.ExitCode)"
-            if (-not (Test-Path -LiteralPath $log -PathType Leaf)) { throw 'CDB did not write loader snaps' }
+            if (-not (Test-Path -LiteralPath $log -PathType Leaf)) { throw 'CDB did not write target loader snaps' }
             Get-Content -LiteralPath $log | Select-String -Pattern 'gogoke_desktop_lib|ModLoad|c0000139|entry point|procedure|LdrpSnapThunk|ERROR' -Context 2,2 |
               Select-Object -Last 50 | Out-Host
           } catch {
