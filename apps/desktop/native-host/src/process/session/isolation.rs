@@ -16,6 +16,9 @@ use super::credential_binding::{CredentialAlias, CredentialAliasScope,
 #[path = "legacy_acl.rs"]
 mod legacy_acl;
 mod grok_home;
+#[path = "claude_retirement.rs"]
+mod claude_retirement;
+pub(crate) use claude_retirement::{ClaudeAclRetirement, ClaudeAclObject};
 pub(crate) use grok_home::{GrokAuthMetadata, GrokHomeObject, GrokAclSnapshot, grok_root_acl,
     grok_residue_acl,
     observe_grok_auth, observe_grok_auth_candidate, observe_grok_recorded_auth,

@@ -4,6 +4,14 @@ use super::runtime::{self, ClaimObservation, InstancePin, SessionPhase};
 use super::provider_evidence::commands;
 use super::session_binding::{self, Provenance, SessionBinding};
 use crate::process::{AppContainerProfile, CompatModule, DirectoryRoots, NativeBinding, PrepareRequest, ProcessLaunch};
+
+/// The existing session SID derivation, shared with native holder retirement.
+pub(crate) fn original_session_profile_name(root_id: &str, domain: &str,
+    session: &str, incarnation: &str, generation: &str) -> String {
+    let suffix = crate::store::digest::sha256_hex(format!("{}\n{}\n{}\n{}\n{}",
+        root_id, domain, session, incarnation, generation).as_bytes());
+    format!("Gogoke37.Session.{}", &suffix[..40])
+}
 use crate::root::{RootIdentity, RootLock};
 use crate::store::authority::{self, OwnerIssuer, ProductIdentitySnapshot};
 use crate::store::instance::{self, InstanceLaunchHomes, ResolvedDirectory};
@@ -499,10 +507,9 @@ impl LaunchEvidence {
         if !supported_driver_version(&pin) {
             return Err("native session launch: unsupported pinned driver/version".into());
         }
-        let suffix = crate::store::digest::sha256_hex(format!("{}\n{}\n{}\n{}\n{}",
-            root.canonical_root().identity.opaque(), domain_id, session_id,
-            seat.incarnation, claim.generation).as_bytes());
-        let profile_name = format!("Gogoke37.Session.{}", &suffix[..40]);
+        let profile_name = original_session_profile_name(
+            &root.canonical_root().identity.opaque(), domain_id, session_id,
+            &seat.incarnation, &claim.generation);
         verify_host_guard(db,owner,host_guard)?;
         let profile = evidence(AppContainerProfile::ensure_for_cli(&profile_name,
             tier == PermissionTier::NetworkedWrite))?;

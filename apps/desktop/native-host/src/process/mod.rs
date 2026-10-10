@@ -17,6 +17,7 @@ pub use windows::*;
 pub(crate) use session::holder_gone_acl_write_count_for_test;
 #[cfg(windows)]
 pub(crate) use session::{AppContainerProfile, CompatModule, DirectoryRoots, IsolationError,
+    ClaudeAclRetirement, ClaudeAclObject,
     CredentialAlias, CredentialAliasScope, CredentialBinding, CredentialError,
     NativeBootIdentity, NativeBootIdentityError,
     native_boot_start, NativeLegacyHoldersGone, NativeLegacyHoldersGoneError,

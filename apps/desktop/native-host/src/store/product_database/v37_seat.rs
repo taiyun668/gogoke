@@ -571,6 +571,7 @@ impl<'root> ProductDatabase<'root> {
                         let recovered = match driver.as_ref().map(|instance|instance.driver_id.as_str()) {
                             Some("codex") => self.completed_codex_holder_release(instance_id,&domain,&session,&operation)?,
                             Some("grok") => self.completed_grok_holder_release(instance_id,&domain,&session,&operation)?,
+                            Some("claude") => self.completed_claude_holder_release(instance_id,&domain,&session,&operation)?,
                             _ => false,
                         };
                         if !recovered { unknown = true; }

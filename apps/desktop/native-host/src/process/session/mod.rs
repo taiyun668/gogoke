@@ -7,6 +7,7 @@ mod boot_identity;
 mod legacy_holders_gone;
 
 pub(crate) use isolation::{AppContainerProfile, IsolationError, SecurityCapabilities,
+    ClaudeAclRetirement, ClaudeAclObject,
     LegacyAclInventory, LegacyHomeReceipt, LegacySourceReceipt,
     NativeCredentialAclRecoveryStep, adopt_holder_gone_source_baseline};
 pub(crate) use isolation::{GrokAuthMetadata, GrokHomeObject, GrokAclSnapshot, grok_root_acl,

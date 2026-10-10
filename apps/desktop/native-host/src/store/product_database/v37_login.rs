@@ -814,6 +814,7 @@ impl<'root> ProductDatabase<'root> {
         let mut instances = Vec::with_capacity(ids.len());
         for instance_id in ids {
             self.recover_disappeared_credential_resources(&instance_id, None)?;
+            self.recover_disappeared_claude_resources(&instance_id, None)?;
             self.recover_grok_home_resources(&instance_id, None)?;
             let row = self.read_registered_instance(&instance_id)?
                 .ok_or(OrchestrationError::Invalid("owner instance list row"))?;
@@ -2350,6 +2351,7 @@ impl<'root> ProductDatabase<'root> {
         let registered=self.read_registered_instance(instance_id)?
             .ok_or(OrchestrationError::AccessDenied)?;
         self.recover_grok_home_resources(instance_id, Some(original_request))?;
+        self.recover_disappeared_claude_resources(instance_id, Some(original_request))?;
         if registered.driver_id!="codex" || registered.login_state!="LOGGED_IN" {return Ok(());}
         self.recover_disappeared_credential_resources(instance_id, Some(original_request))?;
         match instance::read_usable_credential_backend(&self.connection,instance_id) {

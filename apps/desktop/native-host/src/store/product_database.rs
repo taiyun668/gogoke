@@ -61,6 +61,7 @@ mod v37_capability;
 mod v37_models;
 mod v37_login;
 mod v37_holder_disappearance;
+mod v37_claude_holder_recovery;
 mod v37_grok_home_recovery;
 #[cfg(all(test, windows))]
 mod v37_holder_disappearance_tests;
@@ -261,6 +262,7 @@ impl<'root> ProductDatabase<'root> {
             .map_err(|error| OrchestrationError::V37StoreFailure(format!("native RPC schema: {error:?}")))?;
         v37_visible_conversation::initialize_schema(&mut connection)?;
         v37_visible_effect::initialize_schema(&mut connection)?;
+        v37_claude_holder_recovery::initialize_claude_holder_recovery_schema(&mut connection)?;
         // F owns the private Grok HOME ACL journal in this same verified DB.
         // Opening the DB initializes records only; it is not holder retirement.
         instance::initialize_grok_home_grant_schema(&mut connection)

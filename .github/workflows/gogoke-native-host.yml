@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       focused_library:
-        description: Affected checks only (seat-scope, ledger-scope, native-takeover, pipe-evidence or grok-permission); all full and formal gates are NOT_RUN
+        description: Affected checks only (seat-scope, ledger-scope, native-takeover, pipe-evidence, grok-permission or claude-holder); all full and formal gates are NOT_RUN
         type: string
         default: ""
       secretary_routine_fixture_only:
@@ -91,6 +91,7 @@ jobs:
               'native_user_ledger_scopes_replay_and_subscription_survive_reopen') }
             'native-takeover' { @('native_takeover_') }
             'grok-permission' { @('grok_permission') }
+            'claude-holder' { @('claude_holder') }
             'pipe-evidence' { @('stop_requires_clean_original_eof_not_a_generic_source_error',
               'persistent_reader_keeps_eof_unknown_after_exact_child_exit') }
             default { throw 'Unknown affected-check selection; no arbitrary shell or test filter is accepted.' }
