@@ -1,6 +1,6 @@
 # M2：53 安装与两条直接复现线
 
-已完成：53 的单路冻结构建、Browser/许可证、卫生检查及受影响原生 reader/EOF/shim 检查通过；受信签名和冻结字节逐项一致。普通 Win11 实际卸载52的 finalizer 返回 DELETED，安装53及真实登记、资源来源回读通过。正式文件、数据、登记、快捷方式，以及实例/root/home 身份未变。原五条 UNKNOWN 完整保留，新增 Claude52 UNKNOWN 保留；未补造 STOPPED。
+已完成：53 的单路冻结构建、Browser/许可证、卫生检查及受影响原生 reader/EOF/shim 检查通过；受信签名和冻结字节逐项一致。普通 Win11 实际卸载52的 finalizer 返回 DELETED，安装53及真实登记、资源来源回读通过。正式文件、数据、登记、快捷方式，以及实例、物理根和 home 身份未变。原五条 UNKNOWN 完整保留，新增 Claude52 UNKNOWN 保留；未补造 STOPPED。
 
 本体失败：Grok52 V11 的原 prompt 没有终结，原权限请求已采集但宿主没有回复。原失败未重发；实际 H stop/release、正常关闭和保护回读通过。Host 权限拒绝与 LPAC 实际 I/O 拒绝必须分开取证。53 的 Claude 单家真实复现已启动，结果尚未结算；H stop/release失败时保留产品和 custody。
 
