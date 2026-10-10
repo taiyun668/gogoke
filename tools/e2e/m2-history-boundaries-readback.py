@@ -635,8 +635,9 @@ def verify_same_domain_worker(db, journal, boundary, result):
                                           "directDeniedRead": False, "originalError": repr(error)}
 
 
-def verify_flow(db, journal, boundary, result):
-    check(boundary["readerSha256"] == digest(Path(__file__).read_bytes()) and
+def verify_flow(db, journal, boundary, result, original_reader_sha=None):
+    reader_sha = original_reader_sha or digest(Path(__file__).read_bytes())
+    check(boundary["readerSha256"] == reader_sha and
           boundary["driverSha256"] == digest(Path(__file__).with_name("m2-history-boundaries.mjs").read_bytes()),
           "Readback must inspect the actual loaded history driver/reader bytes")
     cases = [case for case in boundary["cases"] if case["state"] in
@@ -687,7 +688,10 @@ def verify_flow(db, journal, boundary, result):
 
 
 def main():
-    check(len(sys.argv) == 5 and sys.argv[4] in ("before-refusal", "final", "peer-final", "same-domain-final"),
+    supplementary = (len(sys.argv) == 7 and sys.argv[4] == "before-refusal" and
+                     sys.argv[5] == "--supplementary-original-reader")
+    check(supplementary or len(sys.argv) == 5 and
+          sys.argv[4] in ("before-refusal", "final", "peer-final", "same-domain-final"),
           "Expected candidate root, new output, original journal and phase")
     root = Path(sys.argv[1]).resolve(strict=True)
     output = Path(sys.argv[2]).resolve(strict=False)
@@ -699,6 +703,29 @@ def main():
           journal["acceptance"] is False and Path(boundary["stateRoot"]).resolve(strict=True) == root and
           output.parent == journal_file.parent == Path(boundary["evidenceDirectory"]).resolve(strict=True),
           "Original M2 testbed journal must explicitly bind the candidate state root")
+    original_reader_sha = None
+    if supplementary:
+        original_reader = Path(sys.argv[6])
+        check(original_reader.is_absolute() and original_reader.drive.lower() == "d:",
+              "Supplementary original reader must be an absolute D path")
+        original_reader = original_reader.resolve(strict=True)
+        check(original_reader.is_file() and original_reader.drive.lower() == "d:" and
+              not original_reader.is_relative_to(root),
+              "Supplementary original reader must be a preserved external file")
+        original_reader_sha = digest(original_reader.read_bytes())
+        check(journal["sourceCommit"] == "b0b2f31edf409fdc627d4b1558a50c29f319a697" and
+              journal["caseId"] == "m2V10_53c4a66968554d9db64d64472b61ee16" and
+              len(boundary["cases"]) == 1 and
+              boundary["cases"][0]["caseId"] == "history_47e8b299763a45f8a5ad56218af01b3f" and
+              boundary["cases"][0]["state"] == "FLOW_COMPLETE_BEFORE_REFUSALS" and
+              journal["state"] == "FAIL_OR_NOT_RUN_PRESERVE_ORIGINAL" and
+              boundary["state"] == "FAIL" and
+              bool(journal.get("originalError")) and bool(boundary.get("originalError")) and
+              not boundary["refusals"] and not journal["readbacks"] and
+              original_reader_sha == boundary["readerSha256"] ==
+                journal["driverBytes"]["m2-history-boundaries-readback.py"] and
+              boundary["driverSha256"] == journal["driverBytes"]["m2-history-boundaries.mjs"],
+              "Supplementary readback lacks the exact failed original case and instrument bytes")
     launch, close = journal["launches"][-1], journal["closes"][-1]
     check(launch["pid"] == close["pid"] == journal["currentEndpoint"]["pid"] and close["exitCode"] == 0 and
           close["forceKill"] is False and launch["sourceCommit"] == journal["sourceCommit"],
@@ -709,19 +736,25 @@ def main():
     def files():
         return {file.name: {"length": file.stat().st_size, "sha256": digest(file.read_bytes())}
                 for file in (database, wal, shm) if file.exists()}
+    original_journal_sha = digest(journal_file.read_bytes()) if supplementary else None
     result = {"schema": "gogoke.37.private-m2-history-readback.v1", "phase": sys.argv[4],
               "caseId": journal["caseId"], "sourceCommit": journal["sourceCommit"], "domainId": journal["domainId"],
               "readerSha256": digest(Path(__file__).read_bytes()), "normalClose": close,
               "acceptance": False, "databaseWrites": False, "credentialReads": False,
               "filesBefore": files(), "cases": [], "directFlowEvidence": False,
               "directRefusalEvidence": False, "notRun": boundary["notRun"]}
+    if supplementary:
+        result.update({"supplementary": True, "originalReaderSha256": original_reader_sha,
+                       "currentReaderSha256": result["readerSha256"],
+                       "originalFailureRetained": True,
+                       "originalJournalSha256": original_journal_sha})
     result["directPeerReadEvidence"] = False
     result["sameDomainWorkerRead"] = {"state": "NOT_RUN", "directDeniedRead": False}
     try:
         with closing(sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA query_only=ON")
-            verify_flow(db, journal, boundary, result)
+            verify_flow(db, journal, boundary, result, original_reader_sha)
             # Original vendor metadata readback is independent of the optional peer-read control.
             result["verifiedVendorObjects"], result["vendorObjectNotRun"] = vendor_objects(root, result["cases"])
             if sys.argv[4] == "final":
@@ -758,7 +791,8 @@ def main():
                 verify_peers(db, journal, boundary, result)
             if sys.argv[4] == "same-domain-final":
                 verify_same_domain_worker(db, journal, boundary, result)
-            result["state"] = "DIRECT_FACTS_COMPLETE_ACCEPTANCE_FALSE"
+            result["state"] = ("SUPPLEMENTARY_DIRECT_FLOW_READBACK_ORIGINAL_FAIL_RETAINED"
+                               if supplementary else "DIRECT_FACTS_COMPLETE_ACCEPTANCE_FALSE")
     except Exception as error:
         result["state"] = "FAIL_OR_NOT_RUN_PRESERVE_ORIGINAL"
         result["directFlowEvidence"] = False
@@ -771,10 +805,23 @@ def main():
         if not result["measurementPreservedDatabaseBytes"]:
             result["directFlowEvidence"] = result["directRefusalEvidence"] = False
             result["directPeerReadEvidence"] = False
+            if supplementary:
+                result["state"] = "FAIL_OR_NOT_RUN_PRESERVE_ORIGINAL"
+        if supplementary:
+            result["originalReaderSha256After"] = digest(original_reader.read_bytes())
+            result["originalJournalSha256After"] = digest(journal_file.read_bytes())
+            result["originalFailureRetained"] = (
+                result["originalReaderSha256After"] == original_reader_sha and
+                result["originalJournalSha256After"] == original_journal_sha)
+            if not result["originalFailureRetained"]:
+                result["state"] = "FAIL_OR_NOT_RUN_PRESERVE_ORIGINAL"
+                result["directFlowEvidence"] = False
         with output.open("x", encoding="utf-8", newline="\n") as stream:
             json.dump(serializable(result), stream, ensure_ascii=False, indent=2)
             stream.write("\n")
     check(result["measurementPreservedDatabaseBytes"], "Immutable readback changed database bytes")
+    if supplementary:
+        check(result["originalFailureRetained"], "Original failed journal or reader bytes changed")
 
 
 if __name__ == "__main__":
