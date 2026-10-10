@@ -424,186 +424,81 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "package seal failed: $LASTEXITCODE" }
           node ../../tools/ci/gogoke-package-service.mjs verify src-tauri/resources generated/gogoke-package-hashes.json
           if ($LASTEXITCODE -ne 0) { throw "staged resources failed byte check: $LASTEXITCODE" }
-      - name: Reproduce native update test image loader failure
-        if: github.event_name == 'workflow_dispatch' && inputs.update_loader_only
-        shell: pwsh
-        run: |
-          $PSNativeCommandUseErrorActionPreference = $false
-          $evidence = Join-Path $env:RUNNER_TEMP 'gogoke-update-loader-diagnostic'
-          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
-          $cargo = (Get-Command cargo -ErrorAction Stop).Source
-          if ([IO.Path]::GetExtension($cargo) -cne '.exe') { throw "Cargo is not an executable: $cargo" }
-          $cargoVersion = (& $cargo +1.89.0 --version).Trim()
-          if ($LASTEXITCODE -ne 0 -or $cargoVersion -notmatch '^cargo 1\.89\.0 ') { throw "Unexpected Cargo toolchain: $cargoVersion" }
-          $originalOut = Join-Path $evidence 'original-cargo-stdout.txt'
-          $originalErr = Join-Path $evidence 'original-cargo-stderr.txt'
-          & $cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_update --lib -vv 1> $originalOut 2> $originalErr
-          $originalExit = $LASTEXITCODE
-          $originalText = (Get-Content -LiteralPath $originalOut -Raw) + (Get-Content -LiteralPath $originalErr -Raw)
-          [ordered]@{cargoExitCode=$originalExit;entrypointStatusRecorded=($originalText -match '0xc0000139|STATUS_ENTRYPOINT_NOT_FOUND')} |
-            ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence 'original-cargo-exit.json') -Encoding utf8
-          Get-Content -LiteralPath $originalErr -Tail 50 | Out-Host
-          if ($originalExit -eq 0 -or $originalText -notmatch '0xc0000139|STATUS_ENTRYPOINT_NOT_FOUND') {
-            throw "Original Cargo child loader failure did not reproduce: cargo exit $originalExit"
-          }
-          $images = @(Get-ChildItem -LiteralPath 'src-tauri/target/debug/deps' -Filter 'gogoke_desktop_lib-*.exe' -File)
-          if ($images.Count -ne 1) { throw "Expected one original Cargo desktop lib test image; found $($images.Count)" }
-          $image = $images[0].FullName
-          $running = @(Get-Content -LiteralPath $originalErr | Where-Object {
-            $_ -match '^\s+Running ' -and $_.Contains("$image gogoke_update", [StringComparison]::OrdinalIgnoreCase)
-          })
-          if ($running.Count -ne 1) { throw "Original Cargo Running line did not bind exactly one test image: $($running.Count)" }
-          $originalPathMatch = [regex]::Match($running[0], 'set PATH="([^"]+)"')
-          if (-not $originalPathMatch.Success) { throw 'Original Cargo Running line omitted child PATH' }
-          $originalPathSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData(
-            [Text.Encoding]::UTF8.GetBytes($originalPathMatch.Groups[1].Value))).ToLowerInvariant()
-          $imageHash = (Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLowerInvariant()
-          [ordered]@{
-            schema='gogoke.update-loader-diagnostic.v1'
-            sourceCommit=(git rev-parse HEAD).Trim()
-            originalFailedRun='38079237420'
-            diagnosticOnly=$true
-            originalCargoExitCode=$originalExit
-            originalImagePath=$image
-            originalImageSha256=$imageHash
-            originalChildPathSha256=$originalPathSha256
-            cargoPath=$cargo
-            cargoSha256=(Get-FileHash -LiteralPath $cargo -Algorithm SHA256).Hash.ToLowerInvariant()
-            cargoVersion=$cargoVersion
-            filter='gogoke_update'
-          } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence 'identity.json') -Encoding utf8
-          Write-Output "Original Cargo test image: $image; SHA-256 $imageHash"
-          $dumpbin = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x64/dumpbin.exe'
-          if (Test-Path -LiteralPath $dumpbin -PathType Leaf) {
-            $imports = Join-Path $evidence 'test-image-imports.txt'
-            & $dumpbin /imports $image 1> $imports
-            if ($LASTEXITCODE -ne 0) { Write-Warning "Supplemental import table unavailable: $LASTEXITCODE" }
-          } else {
-            Write-Warning 'Supplemental pinned MSVC dumpbin unavailable; continue to loader snaps'
-          }
-
-          $debuggers = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10/Debuggers/x64'
-          $gflags = Join-Path $debuggers 'gflags.exe'
-          $cdb = Join-Path $debuggers 'cdb.exe'
-          foreach ($tool in @($gflags, $cdb)) {
-            if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) { throw "Microsoft Debugging Tools missing on this runner: $tool" }
-            $signature = Get-AuthenticodeSignature -LiteralPath $tool
-            if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Microsoft') {
-              throw "Microsoft Debugging Tool signature invalid: $tool"
-            }
-            Write-Output "Debugging tool: $tool; version $((Get-Item -LiteralPath $tool).VersionInfo.FileVersion); SHA-256 $((Get-FileHash -LiteralPath $tool -Algorithm SHA256).Hash); signer $($signature.SignerCertificate.Subject)"
-          }
-          'Loader diagnostic only: original Cargo child then Cargo runner on the same target; Browser, reproducibility, candidate signing and installation are NOT_RUN.' >> $env:GITHUB_STEP_SUMMARY
-          $imageName = [IO.Path]::GetFileName($image)
-          $diagnosticError = $null
-          $cleanupError = $null
-          try {
-            & $gflags /i $imageName +sls
-            if ($LASTEXITCODE -ne 0) { throw "Loader snaps enable failed: $LASTEXITCODE" }
-            $runner = Join-Path $evidence 'cargo-test-runner.ps1'
-            Set-Content -LiteralPath $runner -Encoding utf8 -Value @'
-          param([string]$Image, [string]$Filter)
-          $ErrorActionPreference = 'Stop'
-          if ($args.Count -ne 0 -or $Filter -cne 'gogoke_update' -or
-              -not [string]::Equals([IO.Path]::GetFullPath($Image), $env:GOGOKE_LOADER_EXPECTED_IMAGE,
-                [StringComparison]::OrdinalIgnoreCase)) {
-            throw 'Cargo runner received a different test target or filter'
-          }
-          $actualPathSha = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData(
-            [Text.Encoding]::UTF8.GetBytes($env:PATH))).ToLowerInvariant()
-          $actualImageSha = (Get-FileHash -LiteralPath $Image -Algorithm SHA256).Hash.ToLowerInvariant()
-          $facts = [ordered]@{
-            imagePath = [IO.Path]::GetFullPath($Image)
-            imageSha256 = $actualImageSha
-            originalImageSha256 = $env:GOGOKE_LOADER_ORIGINAL_IMAGE_SHA
-            sameOriginalImageBytes = ($actualImageSha -ceq $env:GOGOKE_LOADER_ORIGINAL_IMAGE_SHA)
-            workingDirectory = (Get-Location).Path
-            expectedWorkingDirectory = $env:GOGOKE_LOADER_EXPECTED_CWD
-            cargoPathSha256 = $actualPathSha
-            originalCargoPathSha256 = $env:GOGOKE_LOADER_ORIGINAL_PATH_SHA
-            sameOriginalCargoPath = ($actualPathSha -ceq $env:GOGOKE_LOADER_ORIGINAL_PATH_SHA)
-            filter = $Filter
-          }
-          $facts | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $env:GOGOKE_LOADER_EVIDENCE 'runner-facts.json') -Encoding utf8
-          if (-not [string]::Equals($facts.workingDirectory, $facts.expectedWorkingDirectory,
-              [StringComparison]::OrdinalIgnoreCase)) { throw 'Cargo runner working directory differs from package root' }
-          $log = Join-Path $env:GOGOKE_LOADER_EVIDENCE 'cdb-loader-snaps.log'
-          $info = [Diagnostics.ProcessStartInfo]::new($env:GOGOKE_LOADER_CDB)
-          foreach ($argument in @('-g', '-G', '-logo', $log, $Image, $Filter)) {
-            [void]$info.ArgumentList.Add($argument)
-          }
-          $info.WorkingDirectory = (Get-Location).Path
-          $info.UseShellExecute = $false
-          $info.CreateNoWindow = $true
-          $info.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
-          $info.RedirectStandardOutput = $true
-          $info.RedirectStandardError = $true
-          $debugger = [Diagnostics.Process]::Start($info)
-          if (-not $debugger) { throw 'Microsoft CDB did not start for Cargo test target' }
-          $stdout = $debugger.StandardOutput.ReadToEndAsync()
-          $stderr = $debugger.StandardError.ReadToEndAsync()
-          $timedOut = -not $debugger.WaitForExit(45000)
-          if ($timedOut) {
-            $debugger.Kill($true)
-            $debugger.WaitForExit()
-          }
-          [IO.File]::WriteAllText((Join-Path $env:GOGOKE_LOADER_EVIDENCE 'cdb-stdout.txt'), $stdout.GetAwaiter().GetResult())
-          [IO.File]::WriteAllText((Join-Path $env:GOGOKE_LOADER_EVIDENCE 'cdb-stderr.txt'), $stderr.GetAwaiter().GetResult())
-          [ordered]@{debuggerExitCode=$debugger.ExitCode;debuggerTimedOut=$timedOut} |
-            ConvertTo-Json | Set-Content -LiteralPath (Join-Path $env:GOGOKE_LOADER_EVIDENCE 'cdb-exit.json') -Encoding utf8
-          if ($timedOut) { throw 'CDB stopped at target loader failure; raw log retained after 45 seconds' }
-          exit $debugger.ExitCode
-          '@
-            $env:GOGOKE_LOADER_EXPECTED_IMAGE = $image
-            $env:GOGOKE_LOADER_EXPECTED_CWD = (Resolve-Path -LiteralPath 'src-tauri').Path
-            $env:GOGOKE_LOADER_ORIGINAL_IMAGE_SHA = $imageHash
-            $env:GOGOKE_LOADER_ORIGINAL_PATH_SHA = $originalPathSha256
-            $env:GOGOKE_LOADER_EVIDENCE = $evidence
-            $env:GOGOKE_LOADER_CDB = $cdb
-            $oldRunner = $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER
-            $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER = "pwsh -NoProfile -File $runner"
-            try {
-              $runnerOut = Join-Path $evidence 'runner-cargo-stdout.txt'
-              $runnerErr = Join-Path $evidence 'runner-cargo-stderr.txt'
-              & $cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_update --lib -vv 1> $runnerOut 2> $runnerErr
-              $runnerExit = $LASTEXITCODE
-            } finally {
-              $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER = $oldRunner
-            }
-            Write-Output "Cargo runner exit: $runnerExit"
-            if (-not (Test-Path -LiteralPath (Join-Path $evidence 'runner-facts.json') -PathType Leaf)) {
-              Get-Content -LiteralPath $runnerErr -Tail 35 | Out-Host
-              throw 'Cargo did not invoke the exact test runner'
-            }
-            Get-Content -LiteralPath (Join-Path $evidence 'runner-facts.json') | Out-Host
-            $log = Join-Path $evidence 'cdb-loader-snaps.log'
-            if (-not (Test-Path -LiteralPath $log -PathType Leaf)) { throw 'CDB did not write target loader snaps' }
-            Get-Content -LiteralPath $log | Select-String -Pattern 'gogoke_desktop_lib|ModLoad|c0000139|entry point|procedure|LdrpSnapThunk|ERROR' -Context 2,2 |
-              Select-Object -Last 50 | Out-Host
-          } catch {
-            $diagnosticError = $_.Exception.Message
-          } finally {
-            & $gflags /i $imageName -sls
-            if ($LASTEXITCODE -ne 0) { $cleanupError = "Loader snaps cleanup failed: $LASTEXITCODE" }
-          }
-          $errors = @($diagnosticError, $cleanupError) | Where-Object { $_ }
-          if ($errors.Count -gt 0) { throw ($errors -join '; ') }
-      - name: Upload native update loader diagnostic evidence
-        if: always() && github.event_name == 'workflow_dispatch' && inputs.update_loader_only
-        uses: actions/upload-artifact@v4
-        with:
-          name: gogoke-update-loader-only-${{ github.sha }}-${{ github.run_id }}
-          path: ${{ runner.temp }}/gogoke-update-loader-diagnostic/*
-          if-no-files-found: warn
-          retention-days: 30
       - name: Test native release and resource trust paths
-        if: github.event_name != 'workflow_dispatch' || (!inputs.experimental_candidate && !inputs.update_loader_only)
+        if: github.event_name != 'workflow_dispatch' || !inputs.experimental_candidate
         shell: pwsh
         env:
           GOGOKE_BUILD_LANE: ${{ matrix.lane }}
+          GOGOKE_UPDATE_LOADER_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.update_loader_only }}
         run: |
-          cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_update --lib
-          if ($LASTEXITCODE -ne 0) { throw "gogoke update tests failed: $LASTEXITCODE" }
+          $PSNativeCommandUseErrorActionPreference = $false
+          $dependency = "/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
+          $env:CARGO_ENCODED_RUSTFLAGS = @(
+            '-C', 'link-arg=/Brepro',
+            '-C', 'link-arg=/MANIFEST:EMBED,ID=1',
+            '-C', "link-arg=$dependency"
+          ) -join [char]0x1f
+          $diagnostic = $env:GOGOKE_UPDATE_LOADER_ONLY -ceq 'true'
+          $evidence = Join-Path $env:RUNNER_TEMP 'gogoke-update-loader-diagnostic'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $updateOut = Join-Path $evidence 'cargo-update-stdout.txt'
+          $updateErr = Join-Path $evidence 'cargo-update-stderr.txt'
+          cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_update --lib -vv 1> $updateOut 2> $updateErr
+          $updateExit = $LASTEXITCODE
+          Get-Content -LiteralPath $updateOut -Tail 60 | Out-Host
+          if ($updateExit -ne 0) {
+            Get-Content -LiteralPath $updateErr -Tail 60 | Out-Host
+            throw "gogoke update tests failed: $updateExit"
+          }
+          $result = [regex]::Match((Get-Content -LiteralPath $updateOut -Raw), '(?m)^test result: ok\. ([1-9][0-9]*) passed; 0 failed; 0 ignored;')
+          if (-not $result.Success) { throw 'Original gogoke_update test did not execute a nonzero number of passing tests' }
+          $images = @(Get-ChildItem -LiteralPath 'src-tauri/target/debug/deps' -Filter 'gogoke_desktop_lib-*.exe' -File)
+          if ($images.Count -ne 1) { throw "Expected exactly one Cargo lib test image; found $($images.Count)" }
+          $image = $images[0].FullName
+          $running = @(Get-Content -LiteralPath $updateErr | Where-Object {
+            $_ -match '^\s+Running ' -and $_.Contains("$image gogoke_update", [StringComparison]::OrdinalIgnoreCase)
+          })
+          if ($running.Count -ne 1) { throw "Cargo Running did not bind exactly one actual lib test image: $($running.Count)" }
+          $imageHash = (Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLowerInvariant()
+          $mt = Join-Path $env:WindowsSdkDir 'bin/10.0.26100.0/x64/mt.exe'
+          if (-not (Test-Path -LiteralPath $mt -PathType Leaf)) { throw "Pinned Windows SDK manifest tool missing: $mt" }
+          $manifestPath = Join-Path $evidence 'actual-test-image-rt-manifest.xml'
+          & $mt "-inputresource:$image;#1" "-out:$manifestPath" -nologo
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw "Actual Cargo test image lacks extractable RT_MANIFEST #1: $LASTEXITCODE"
+          }
+          [xml]$manifest = Get-Content -LiteralPath $manifestPath -Raw
+          $identities = @($manifest.SelectNodes("//*[local-name()='dependency']/*[local-name()='dependentAssembly']/*[local-name()='assemblyIdentity' and @name='Microsoft.Windows.Common-Controls']"))
+          if ($identities.Count -ne 1) { throw "Actual test image has $($identities.Count) Common Controls manifest dependencies" }
+          $identity = $identities[0]
+          $expected = [ordered]@{
+            type='win32'; name='Microsoft.Windows.Common-Controls'; version='6.0.0.0'
+            processorArchitecture='*'; publicKeyToken='6595b64144ccf1df'; language='*'
+          }
+          foreach ($field in $expected.Keys) {
+            if ($identity.GetAttribute($field) -cne $expected[$field]) {
+              throw "Actual test image manifest $field differs from Tauri default"
+            }
+          }
+          [ordered]@{
+            schema='gogoke.update-test-manifest-diagnostic.v1'
+            sourceCommit=(git rev-parse HEAD).Trim()
+            diagnosticOnly=$diagnostic
+            cargoTestExitCode=$updateExit
+            testsPassed=[int]$result.Groups[1].Value
+            imagePath=$image
+            imageSha256=$imageHash
+            cargoRunningBoundCount=$running.Count
+            mtPath=$mt
+            mtSha256=(Get-FileHash -LiteralPath $mt -Algorithm SHA256).Hash.ToLowerInvariant()
+            manifestResourceId=1
+            commonControlsIdentity=$expected
+          } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $evidence 'direct-facts.json') -Encoding utf8
+          Write-Output "Actual Cargo lib test: $($result.Groups[1].Value) passed; EXE $image; SHA-256 $imageHash; RT_MANIFEST #1 Common Controls v6"
+          if ($diagnostic) {
+            'Loader repair diagnostic only: original gogoke_update lib test and actual test EXE RT_MANIFEST checked; Browser, reproducibility, candidate signing and installation are NOT_RUN.' >> $env:GITHUB_STEP_SUMMARY
+            return
+          }
           cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml resource_trust --lib
           if ($LASTEXITCODE -ne 0) { throw "resource trust tests failed: $LASTEXITCODE" }
           $custody = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml cancelled_reply_retains_job_and_lease_until_accounted_settlement --lib 2>&1
@@ -627,6 +522,14 @@ jobs:
           }
           cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_uninstall --lib
           if ($LASTEXITCODE -ne 0) { throw "gogoke uninstall tests failed: $LASTEXITCODE" }
+      - name: Upload native update test manifest diagnostic evidence
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.update_loader_only
+        uses: actions/upload-artifact@v4
+        with:
+          name: gogoke-update-loader-only-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/gogoke-update-loader-diagnostic/*
+          if-no-files-found: error
+          retention-days: 30
       - name: Upload one-shot task deletion receipt
         if: github.event_name != 'workflow_dispatch' || (!inputs.experimental_candidate && !inputs.update_loader_only)
         uses: actions/upload-artifact@v4
