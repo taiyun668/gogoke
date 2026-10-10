@@ -6,7 +6,7 @@
 //! E/F/H, fixed Claude initialize ACK, LPAC process identities and ACL effects
 //! come from their production producers. This is not installed Owner recovery.
 use super::*;
-use crate::process::NativeProcessHoldersGone;
+use crate::process::{AppContainerProfile, NativeProcessHoldersGone};
 use crate::store::same_open::route_b_test_guard;
 use crate::store::seat::{self, CreateSeat, Kind, NativeOrigin, StoreTemplate};
 use crate::store::session_transport as h;
@@ -223,6 +223,58 @@ fn journal(product: &ProductDatabase<'_>) -> Vec<Vec<String>> {
         FROM main.gogoke_v37_claude_holder_recovery WHERE instance_id=?1 ORDER BY domain_id,session_id",
         &[INSTANCE],10)
 }
+fn hex_bytes(value: &str) -> Vec<u8> {
+    assert_eq!(value.len() % 2, 0);
+    value.as_bytes().chunks_exact(2).map(|pair| {
+        u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()
+    }).collect()
+}
+fn captured_instance_after(row: &[String]) -> String {
+    let snapshot = hex_bytes(&row[5]);
+    let body = std::str::from_utf8(&snapshot).unwrap();
+    let Json::Object(fields) = crate::store::atomic::Parser::parse(body).unwrap() else {
+        panic!("captured journal body");
+    };
+    let Some(Json::Array(objects)) = fields.get(&JsonString::from_str("objects")) else {
+        panic!("captured objects");
+    };
+    for object in objects {
+        let Json::Object(values) = object else { panic!("captured ACL object"); };
+        let value = |key: &str| -> String {
+            let Some(Json::String(text)) = values.get(&JsonString::from_str(key)) else {
+                panic!("captured ACL field {key}");
+            };
+            text.to_well_formed_string().unwrap()
+        };
+        if value("root") == "0" && value("relative").is_empty() {
+            return value("after");
+        }
+    }
+    panic!("captured instance root ACL absent");
+}
+fn acl_image_has_sid(image_hex: &str, sid_text: &str) -> bool {
+    let parts: Vec<u64> = sid_text.strip_prefix("S-").unwrap().split('-')
+        .map(|part| part.parse().unwrap()).collect();
+    assert_eq!(parts[0], 1);
+    let count = u8::try_from(parts.len() - 2).unwrap();
+    let mut sid = vec![1, count];
+    sid.extend_from_slice(&parts[1].to_be_bytes()[2..]);
+    for part in parts.iter().skip(2) {
+        sid.extend_from_slice(&u32::try_from(*part).unwrap().to_le_bytes());
+    }
+    let image = hex_bytes(image_hex);
+    let mut cursor = 0;
+    while cursor < image.len() {
+        let length = u32::from_be_bytes(image[cursor..cursor + 4].try_into().unwrap()) as usize;
+        cursor += 4;
+        let ace = &image[cursor..cursor + length];
+        if ace.len() >= 8 + sid.len() && ace[8..8 + sid.len()] == sid {
+            return true;
+        }
+        cursor += length;
+    }
+    false
+}
 fn occupancy(product: &mut ProductDatabase<'_>) -> Option<usize> {
     let raw = product
         .configure_user_v37(
@@ -317,8 +369,24 @@ struct Cold {
     episodes: Vec<Vec<String>>,
     rpc: Vec<Vec<String>>,
     claims: Vec<Vec<String>>,
+    stopped: Option<StoppedHistory>,
+    target_profiles: Vec<String>,
+}
+struct StoppedHistory {
+    home: std::path::PathBuf,
+    home_identity: crate::root::RootIdentity,
+    profile_name: String,
+    sid: String,
+    operation_id: String,
+    stop_fact: String,
 }
 fn cold_two_claude(run: impl for<'a> FnOnce(ProductDatabase<'a>, &'a RootLock, &Cold)) {
+    cold_two_claude_with_stopped(false, run)
+}
+fn cold_two_claude_with_stopped(
+    include_stopped: bool,
+    run: impl for<'a> FnOnce(ProductDatabase<'a>, &'a RootLock, &Cold),
+) {
     let _guard = route_b_test_guard();
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -404,6 +472,8 @@ fn cold_two_claude(run: impl for<'a> FnOnce(ProductDatabase<'a>, &'a RootLock, &
         .unwrap();
     let mut pairs = Vec::new();
     let mut parents = Vec::new();
+    let mut stopped = None;
+    let mut target_profiles = Vec::new();
     for (domain, seat_id, tree, session) in SCOPES {
         seat::set_project_parallel_cap(&mut product.connection, &product.owner, domain, 1).unwrap();
         seat::store_template(&mut product.connection,NativeOrigin::user(&product.owner),StoreTemplate{
@@ -441,11 +511,76 @@ fn cold_two_claude(run: impl for<'a> FnOnce(ProductDatabase<'a>, &'a RootLock, &
             .unwrap();
         assert_eq!(graph.classification, "SINGLE");
         assert_eq!(graph.members.len(), 1);
-        let generation = seat::get(&product.connection, domain, seat_id)
-            .unwrap()
-            .unwrap()
-            .generation
-            + 1;
+        if include_stopped && domain == "projectA" {
+            let historical_session = "stoppedSessionA";
+            let historical_seat = seat::get(&product.connection, domain, seat_id)
+                .unwrap().unwrap();
+            let historical_generation = historical_seat.generation + 1;
+            let historical_f = worktree::resolve_for_launch(&product.connection, &root,
+                tree, "fixtureRepo", domain, seat_id, &historical_seat.incarnation,
+                historical_seat.generation).unwrap();
+            let profile_name = h::launch::original_session_profile_name(
+                &root.canonical_root().identity.opaque(), domain, historical_session,
+                &historical_seat.incarnation, &historical_generation.to_string());
+            let profile = AppContainerProfile::derive_for_revocation(&profile_name).unwrap();
+            let sid = profile.sid_identity().unwrap();
+            for (verb, revision) in [("admission-reserve", 0), ("admission-commit", 1)] {
+                applied(&mut product, &operation(domain, "K-SESSION", verb,
+                    &format!("claude-history-{verb}"), historical_session, revision,
+                    &format!(r#"{{"seatId":"{seat_id}","generation":"{historical_generation}"}}"#)));
+            }
+            applied(&mut product, &operation(domain, "K-SESSION", "open",
+                "claude-history-open", historical_session, 2,
+                &format!(r#"{{"seatId":"{seat_id}","generation":"{historical_generation}",
+                    "repositoryId":"fixtureRepo","worktreeId":"{tree}"}}"#)));
+            let operation_id = product.native_sessions.get(&(domain.into(), historical_session.into()))
+                .unwrap().operation_id.clone();
+            let stopped_raw = product.dispatch_user_request(&operation(domain, "K-SESSION",
+                "stop", "claude-history-stop", historical_session, 3,
+                &format!(r#"{{"seatId":"{seat_id}","generation":"{historical_generation}"}}"#)))
+                .expect("actual Claude child normal stop");
+            let stopped_receipt = h::decode_receipt(&stopped_raw).unwrap();
+            assert_eq!(stopped_receipt.status, V37Status::Applied,
+                "normal stop: {}", String::from_utf8_lossy(&stopped_raw));
+            let proof = rows(&product,
+                "SELECT c.stop_proof_hash,e.stop_fact_id,a.stop_fact_id,c.state,e.phase,a.state
+                 FROM main.gogoke_coordination_process_custody c
+                 JOIN main.gogoke_v37_h_process_episode e ON e.process_operation_id=c.operation_id
+                 JOIN main.gogoke_v37_h_claim a ON a.process_operation_id=c.operation_id
+                 WHERE c.operation_id=?1", &[&operation_id], 6);
+            assert_eq!(proof.len(), 1);
+            assert!(proof[0][0].starts_with("sha256:") && proof[0][0] == proof[0][1]
+                && proof[0][0] == proof[0][2]);
+            assert_eq!((&proof[0][3][..], &proof[0][4][..], &proof[0][5][..]),
+                ("STOPPED", "STOPPED", "STOPPED"));
+            let stop_fact = proof[0][0].clone();
+            applied(&mut product, &operation(domain, "K-SESSION", "admission-release",
+                "claude-history-release", historical_session, stopped_receipt.revision,
+                &format!(r#"{{"seatId":"{seat_id}","generation":"{historical_generation}"}}"#)));
+            assert_eq!(seat::get(&product.connection, domain, seat_id).unwrap().unwrap().state,
+                seat::State::Idle);
+            let next_seat = seat::get(&product.connection, domain, seat_id)
+                .unwrap().unwrap();
+            let rebound_f = worktree::resolve_for_launch(&product.connection, &root,
+                tree, "fixtureRepo", domain, seat_id, &next_seat.incarnation,
+                next_seat.generation).unwrap();
+            assert_eq!((&rebound_f.path, &rebound_f.identity),
+                (&historical_f.path, &historical_f.identity),
+                "F's existing physical root is reused at the producer-approved E generation");
+            let home = root.canonical_root().canonical_path
+                .join("v37-instances").join(INSTANCE);
+            let home_identity = crate::root::inspect_root(&home).unwrap().identity;
+            profile.verify_bound_directory_grant(&home, &home_identity, true)
+                .expect("normal STOPPED leaves its exact package SID ACE on reused HOME");
+            stopped = Some(StoppedHistory { home, home_identity, profile_name, sid,
+                operation_id, stop_fact });
+        }
+        let current_seat = seat::get(&product.connection, domain, seat_id)
+            .unwrap().unwrap();
+        let generation = current_seat.generation + 1;
+        target_profiles.push(h::launch::original_session_profile_name(
+            &root.canonical_root().identity.opaque(), domain, session,
+            &current_seat.incarnation, &generation.to_string()));
         for (verb, revision) in [("admission-reserve", 0), ("admission-commit", 1)] {
             applied(
                 &mut product,
@@ -501,12 +636,12 @@ fn cold_two_claude(run: impl for<'a> FnOnce(ProductDatabase<'a>, &'a RootLock, &
         episodes: episodes(&product),
         rpc: rpc(&product),
         claims: claims(&product),
+        stopped,
+        target_profiles,
     };
-    assert_eq!(before.custody.len(), 2);
-    assert_eq!(before.claims.len(), 2);
-    assert!(before
-        .claims
-        .iter()
+    assert_eq!(before.custody.len(), if include_stopped { 3 } else { 2 });
+    assert_eq!(before.claims.len(), if include_stopped { 3 } else { 2 });
+    assert!(before.claims.iter().filter(|row| row[1] != "stoppedSessionA")
         .all(|row| row[6] == "COMMITTED" && row[10] == "1"));
     assert!(
         before.rpc.iter().any(|row| row[15] == "OBSERVED"),
@@ -687,6 +822,168 @@ fn claude_holder_two_real_h_releases_only_after_exact_acl_retirement_and_keeps_h
         assert_eq!(custody(&product), custody_before);
         assert_eq!(episodes(&product), episodes_before);
         assert_eq!(rpc(&product), rpc_before);
+        product.close_checked().unwrap();
+    });
+}
+
+#[test]
+fn claude_holder_keeps_real_stopped_sid_when_later_unknown_holders_disappear() {
+    cold_two_claude_with_stopped(true, |mut product, _root, cold| {
+        let history = cold.stopped.as_ref().expect("real earlier normal stop");
+        let stopped_profile = AppContainerProfile::derive_for_revocation(&history.profile_name)
+            .unwrap();
+        assert_eq!(stopped_profile.sid_identity().unwrap(), history.sid);
+        let historical_grant = stopped_profile.verify_bound_directory_grant(
+            &history.home, &history.home_identity, true).unwrap();
+        assert_eq!(cold.custody.iter().find(|row| row[0] == history.operation_id)
+            .unwrap()[11], history.stop_fact);
+        // Only the two later open outcomes are projected to the persisted
+        // UNKNOWN shape. Their real initialize ACKs remain unchanged.
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_h_operation SET status='UNKNOWN'
+             WHERE operation='open' AND session_id IN ('sessionA','sessionB');
+             UPDATE main.gogoke_v37_h_process_episode SET phase='PREPARED'
+             WHERE instance_id='instanceA' AND session_id IN ('sessionA','sessionB')",
+        ).unwrap();
+        let opens_before = original_opens(&product);
+        let custody_before = custody(&product);
+        let episodes_before = episodes(&product);
+        let rpc_before = rpc(&product);
+        let claims_before = claims(&product);
+        assert_eq!(opens_before.len(), 3);
+        assert_eq!(opens_before.iter().filter(|row| row[5] == "UNKNOWN").count(), 2);
+        assert_eq!(journal(&product).len(), 0);
+        product.recover_disappeared_claude_resources(INSTANCE, None)
+            .expect("normal STOPPED SID has validated provenance, not an unknown peer");
+        let captured = journal(&product);
+        assert_eq!(captured.len(), 2);
+        assert!(captured.iter().all(|row| row[7] == "APPLIED"));
+        for (row, target_name) in captured.iter().zip(&cold.target_profiles) {
+            let after = captured_instance_after(row);
+            let target = AppContainerProfile::derive_for_revocation(target_name).unwrap();
+            assert!(acl_image_has_sid(&after, &history.sid),
+                "sealed after image must retain the real STOPPED peer SID");
+            assert!(!acl_image_has_sid(&after, &target.sid_identity().unwrap()),
+                "sealed after image retires only its exact unconfirmed target SID");
+            assert!(target.verify_bound_directory_grant(
+                &history.home, &history.home_identity, true).is_err(),
+                "unconfirmed H root grant must be retired");
+        }
+        assert_eq!(stopped_profile.verify_bound_directory_grant(
+            &history.home, &history.home_identity, true).unwrap(), historical_grant,
+            "the normal STOPPED root grant is not the recovery target");
+        assert_eq!(original_opens(&product), opens_before);
+        assert_eq!(custody(&product), custody_before, "real STOPPED and old UNKNOWN stay exact");
+        assert_eq!(episodes(&product), episodes_before);
+        assert_eq!(rpc(&product), rpc_before);
+        let after_claims = claims(&product);
+        assert_eq!(after_claims.len(), claims_before.len());
+        for (before, after) in claims_before.iter().zip(&after_claims) {
+            if before[1] == "stoppedSessionA" {
+                assert_eq!(after, before, "real StopFact cannot be rewritten");
+            } else {
+                assert_eq!(after[6], "RELEASED");
+                assert_eq!(after[9], "", "disappearance never invents StopFact");
+            }
+        }
+        product.close_checked().unwrap();
+    });
+}
+
+#[test]
+fn claude_holder_real_stopped_provenance_does_not_admit_foreign_package_sid() {
+    cold_two_claude_with_stopped(true, |mut product, _root, cold| {
+        let history = cold.stopped.as_ref().unwrap();
+        let foreign = AppContainerProfile::derive_for_revocation(
+            "Gogoke37.ForeignClaudeHolderFixture").unwrap();
+        let foreign_sid = foreign.sid_identity().unwrap();
+        assert_ne!(foreign_sid, history.sid);
+        for name in &cold.target_profiles {
+            assert_ne!(foreign_sid,
+                AppContainerProfile::derive_for_revocation(name).unwrap().sid_identity().unwrap());
+        }
+        foreign.grant_bound_tree(&history.home, &history.home_identity, true)
+            .expect("test-only foreign package ACE on private fixture HOME");
+        let before = (original_opens(&product), custody(&product), episodes(&product),
+            rpc(&product), claims(&product));
+        let refused = product.recover_disappeared_claude_resources(INSTANCE, None).unwrap_err();
+        assert!(format!("{refused:?}").contains("AclWitnessMismatch"), "{refused:?}");
+        assert!(journal(&product).is_empty(), "foreign SID rejected before capture intent");
+        assert_eq!((original_opens(&product), custody(&product), episodes(&product),
+            rpc(&product), claims(&product)), before);
+        foreign.verify_bound_directory_grant(&history.home, &history.home_identity, true)
+            .expect("refusal did not edit the foreign test ACE");
+        product.close_checked().unwrap();
+    });
+}
+
+#[test]
+fn claude_holder_rejects_stopped_peer_stop_bytes_changed_after_capture() {
+    cold_two_claude_with_stopped(true, |mut product, _root, cold| {
+        let history = cold.stopped.as_ref().unwrap();
+        let stop_row = rows(&product,
+            "SELECT raw_hex FROM main.gogoke_v37_h_operation
+             WHERE domain_id='projectA' AND request_id='claude-history-stop'
+               AND operation='stop'", &[], 1);
+        assert_eq!(stop_row.len(), 1);
+        assert!(!stop_row[0][0].is_empty());
+        product.connection.execute(
+            "CREATE TEMP TRIGGER claude_stopped_peer_second_release_cut
+             BEFORE INSERT ON main.gogoke_v37_h_operation
+             WHEN NEW.operation='claude-holder-gone-release' AND NEW.session_id='sessionB'
+             BEGIN SELECT RAISE(FAIL,'controlled stopped peer second release cut'); END",
+        ).unwrap();
+        let cut = product.recover_disappeared_claude_resources(INSTANCE, None).unwrap_err();
+        assert!(format!("{cut:?}").contains("controlled stopped peer second release cut"),
+            "{cut:?}");
+        product.connection.execute(
+            "DROP TRIGGER temp.claude_stopped_peer_second_release_cut",
+        ).unwrap();
+        let sealed = journal(&product);
+        assert_eq!(sealed.len(), 2);
+        assert_eq!((sealed[0][7].as_str(), sealed[1][7].as_str()),
+            ("APPLIED", "PREPARED"));
+        let second = AppContainerProfile::derive_for_revocation(&cold.target_profiles[1])
+            .unwrap();
+        let stopped_profile = AppContainerProfile::derive_for_revocation(&history.profile_name)
+            .unwrap();
+        let stopped_grant = stopped_profile.verify_bound_directory_grant(
+            &history.home, &history.home_identity, true).unwrap();
+        let second_after = captured_instance_after(&sealed[1]);
+        assert!(acl_image_has_sid(&second_after, &history.sid));
+        assert!(!acl_image_has_sid(&second_after, &second.sid_identity().unwrap()));
+        assert!(second.verify_bound_directory_grant(
+            &history.home, &history.home_identity, true).is_err(),
+            "second target ACL was already retired before the release cut");
+        let claims_before_drift = claims(&product);
+        assert_eq!(claims_before_drift.iter().find(|row| row[1] == "stoppedSessionA")
+            .unwrap()[9], history.stop_fact);
+        // The real normal STOPPED fact stays; alter only its original stop
+        // request bytes after both later H ACL captures were sealed.
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_h_operation SET raw_hex=raw_hex||'00'
+             WHERE domain_id='projectA' AND request_id='claude-history-stop'
+               AND operation='stop'",
+        ).unwrap();
+        let changed = rows(&product,
+            "SELECT raw_hex FROM main.gogoke_v37_h_operation
+             WHERE domain_id='projectA' AND request_id='claude-history-stop'
+               AND operation='stop'", &[], 1);
+        assert_eq!(changed[0][0], format!("{}00", stop_row[0][0]));
+        let refused = product.recover_disappeared_claude_resources(INSTANCE, None)
+            .unwrap_err();
+        let reason = format!("{refused:?}");
+        assert!(reason.contains("unverified") || reason.contains("changed")
+            || reason.contains("peer") || reason.contains("provenance"), "{refused:?}");
+        assert_eq!(journal(&product), sealed, "sealed ACL intent cannot be refreshed");
+        assert_eq!(claims(&product), claims_before_drift,
+            "historical StopFact and pending later H claim remain exact");
+        assert_eq!(captured_instance_after(&journal(&product)[1]), second_after);
+        assert_eq!(stopped_profile.verify_bound_directory_grant(
+            &history.home, &history.home_identity, true).unwrap(), stopped_grant);
+        assert!(second.verify_bound_directory_grant(
+            &history.home, &history.home_identity, true).is_err(),
+            "drift cannot restore or further edit the already retired target SID");
         product.close_checked().unwrap();
     });
 }

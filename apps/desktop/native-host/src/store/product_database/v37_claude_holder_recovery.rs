@@ -90,6 +90,84 @@ struct Original {
 }
 
 impl<'root> ProductDatabase<'root> {
+    // A normally stopped H leaves its own ACE on the reusable instance HOME.
+    // It is a preserved peer, not a holder to release again. Admit its SID only
+    // from the exact original open and matching claim/episode/custody StopFact;
+    // an arbitrary package SID present on disk remains a mismatch.
+    fn claude_stopped_peers(&self, instance: &str) -> Result<(Vec<String>, String)> {
+        let stopped = rows(
+            &self.connection,
+            "SELECT a.domain_id,a.session_id,a.generation,e.seat_incarnation,
+                    e.request_id,e.raw_hex,e.seat_id,o.raw_hex,o.status,
+                    a.binding_id,a.home_id,a.process_operation_id,a.stop_fact_id,
+                    c.ticket,c.custodian_nonce,c.pid,c.creation_time_100ns,
+                    c.image_path,c.binary_digest_sha256,e.stop_request_id,s.raw_hex,s.status
+             FROM main.gogoke_v37_h_claim a
+             JOIN main.gogoke_v37_h_process_episode e
+               ON e.process_operation_id=a.process_operation_id
+              AND e.domain_id=a.domain_id AND e.session_id=a.session_id
+              AND e.generation=a.generation AND e.instance_id=a.instance_id
+              AND e.home_id=a.home_id AND e.binding_id=a.binding_id
+             JOIN main.gogoke_coordination_process_custody c
+               ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
+              AND c.generation=e.generation AND c.profile_id=e.instance_id
+             JOIN main.gogoke_v37_h_operation o
+               ON o.domain_id=e.domain_id AND o.request_id=e.request_id
+              AND o.session_id=e.session_id AND o.operation='open'
+             JOIN main.gogoke_v37_h_operation s
+               ON s.domain_id=e.domain_id AND s.request_id=e.stop_request_id
+              AND s.session_id=e.session_id AND s.operation='stop'
+             WHERE a.instance_id=?1 AND a.state='RELEASED' AND e.phase='STOPPED'
+               AND c.state='STOPPED' AND e.old_generation IS NULL
+               AND a.stop_fact_id IS NOT NULL AND a.stop_fact_id!=''
+               AND e.stop_fact_id=a.stop_fact_id AND c.stop_proof_hash=a.stop_fact_id
+             ORDER BY a.domain_id,a.session_id",
+            &[instance],
+            22,
+        )?;
+        let mut sids = Vec::new();
+        let mut provenance = Vec::new();
+        for r in stopped {
+            let raw = unhex(&r[5])?;
+            let request = evidence(decode_request(&raw))?;
+            if r[5] != r[7] || r[8] != "APPLIED"
+                || request.raw_bytes != raw || request.family != "K-SESSION"
+                || request.operation != "open" || request.request_id != r[4]
+                || request.domain_id != r[0] || request.target_id != r[1]
+                || request.payload.len() != 4
+                || user_payload_string(&request, "seatId")? != r[6]
+                || user_payload_string(&request, "generation")? != r[2]
+            {
+                return Err(denied("Claude stopped peer original open changed"));
+            }
+            // Validate the other original payload fields, without interpreting
+            // either as a path or granting any new access.
+            user_payload_string(&request, "repositoryId")?;
+            user_payload_string(&request, "worktreeId")?;
+            let stop_raw = unhex(&r[20])?;
+            let stop = evidence(decode_request(&stop_raw))?;
+            if r[21] != "APPLIED" || stop.raw_bytes != stop_raw
+                || stop.family != "K-SESSION" || stop.operation != "stop"
+                || stop.request_id != r[19] || stop.domain_id != r[0] || stop.target_id != r[1]
+                || stop.payload.len() != 2
+                || user_payload_string(&stop, "seatId")? != r[6]
+                || user_payload_string(&stop, "generation")? != r[2]
+            {
+                return Err(denied("Claude stopped peer original stop changed"));
+            }
+            let name = original_session_profile_name(
+                &self.root.canonical_root().identity.opaque(), &r[0], &r[1], &r[3], &r[2],
+            );
+            let profile = evidence(AppContainerProfile::derive_for_revocation(&name))?;
+            sids.push(evidence(profile.sid_identity())?);
+            for value in r {
+                provenance.extend_from_slice(&(value.len() as u64).to_be_bytes());
+                provenance.extend_from_slice(value.as_bytes());
+            }
+        }
+        Ok((sids, sha256_hex(&provenance)))
+    }
+
     fn claude_originals(&self, instance: &str) -> Result<Vec<Original>> {
         let registered = self
             .read_registered_instance(instance)?
@@ -371,6 +449,8 @@ impl<'root> ProductDatabase<'root> {
         ))?;
         let objects = evidence(ClaudeAclRetirement::capture(&profile, &roots, known_sids))?;
         let mut facts = original.facts.clone();
+        let (_, stopped_provenance) = self.claude_stopped_peers(&fact(&facts, "instance")?)?;
+        put(&mut facts, "stoppedPeerProvenance", &stopped_provenance);
         for (key, value) in [
             ("root", self.connection.root_identity().opaque()),
             ("database", self.connection.identity().opaque()),
@@ -438,6 +518,13 @@ impl<'root> ProductDatabase<'root> {
             || fact(saved, "knownSids")? != known_sids.join(",")
         {
             return Err(denied("Claude original root/database/SID set changed"));
+        }
+        // Requalify historical peers both while pending and after completion,
+        // including inside the H release transaction. A matching SID alone is
+        // insufficient if its original stop/open provenance has since changed.
+        let (_, stopped_provenance) = self.claude_stopped_peers(&fact(saved, "instance")?)?;
+        if fact(saved, "stoppedPeerProvenance")? != stopped_provenance {
+            return Err(denied("Claude stopped peer provenance changed"));
         }
         if released {
             let expected_revision = fact(saved, "claimRevision")?
@@ -730,6 +817,14 @@ impl<'root> ProductDatabase<'root> {
         if known_sids.len() != originals.len() {
             return Err(denied("Claude original SID reused"));
         }
+        for peer in self.claude_stopped_peers(instance)?.0 {
+            if known_sids.contains(&peer) {
+                return Err(denied("Claude stopped peer SID reused"));
+            }
+            known_sids.push(peer);
+        }
+        known_sids.sort();
+        known_sids.dedup();
         for original in active {
             let operation = fact(&original.facts, "operation")?;
             evidence(all_gone.validate(&pairs))?;
