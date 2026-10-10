@@ -1492,6 +1492,101 @@ pub(crate) fn query_global(
     Ok(EventPage { position, events })
 }
 
+/// Read the enduring conversation of the currently designated Secretary seat.
+/// The native host must first establish the Owner/global reader through its
+/// original H proof; this storage read does not authenticate a caller. The
+/// reader's persisted NativeV2 incarnation is the only history identity.
+/// Released historical sessions remain readable, but absent or ambiguous
+/// original H associations never become conversation sources.
+pub(crate) fn query_secretary_history(
+    connection: &VerifiedDatabaseConnection<'_>,
+    reader: &Reader,
+    after: &LedgerPosition,
+    limit: u32,
+) -> Result<EventPage, AtomicError> {
+    let registration = registered(connection, &reader.session_id)?
+        .ok_or(AtomicError::InvalidRecord("unregistered reader"))?;
+    if reader.domain_id != "global" || registration.domain_id != reader.domain_id
+        || registration.seat_id != reader.seat_id
+        || registration.purpose != SessionPurpose::Secretary
+    {
+        return Err(AtomicError::OperationConflict);
+    }
+    // Resolve the incarnation from persisted H/E facts, never a caller label.
+    let identity = Statement::prepare(connection.as_ptr(),
+        "SELECT v.seat_incarnation
+           FROM main.gogoke_v37_session_binding_v2 v
+           JOIN main.gogoke_v37_h_claim h ON h.domain_id=v.domain_id
+             AND h.session_id=v.session_id AND h.instance_id=v.selected_instance_id
+             AND h.state IN ('COMMITTED','STOPPED','RELEASED')
+           JOIN main.gogoke_v37_h_owner_binding owner ON owner.binding_id=h.binding_id
+             AND owner.domain_id=h.domain_id AND owner.instance_id=h.instance_id
+             AND owner.kind='SESSION' AND owner.owner_id=h.session_id
+             AND owner.generation=h.generation
+           JOIN main.gogoke_v37_instance_homes home ON home.home_id=h.home_id
+             AND home.domain_id=h.domain_id AND home.instance_id=h.instance_id
+             AND home.kind='SESSION' AND home.owner_id=h.session_id
+             AND home.generation=h.generation
+           JOIN main.gogoke_v37_seat_secretary d ON d.singleton=1
+             AND d.domain_id='global' AND d.seat_id=v.seat_id
+             AND d.incarnation=v.seat_incarnation
+           JOIN main.gogoke_v37_seats s ON s.domain_id=d.domain_id
+             AND s.seat_id=d.seat_id AND s.incarnation=d.incarnation
+             AND s.layer='USER' AND s.kind='LONG' AND s.state<>'RECLAIMED'
+          WHERE v.domain_id='global' AND v.session_id=?1 AND v.seat_id=?2
+            AND v.provenance='NATIVE_V2'")?;
+    identity.bind_text(1, &reader.session_id)?;
+    identity.bind_text(2, &reader.seat_id)?;
+    if !identity.step_row()? {
+        return Err(AtomicError::OperationConflict);
+    }
+    let incarnation = identity.column_text(0)?;
+    if identity.step_row()? {
+        return Err(AtomicError::OperationConflict);
+    }
+    let position = recover(connection)?;
+    if after.epoch != position.epoch || after.cursor > position.cursor {
+        return Err(AtomicError::OperationConflict);
+    }
+    if limit == 0 || limit > 1000 {
+        return Err(AtomicError::InvalidRecord("limit"));
+    }
+    // Scope and original-source eligibility precede LIMIT. In particular a
+    // global project event cannot consume a slot in the conversation page.
+    let statement = Statement::prepare(connection.as_ptr(), &format!(
+        "SELECT {EVENT_COLUMNS} {EVENT_SOURCE}
+         JOIN main.v37_ledger_session src ON src.session_id=i.session_id
+           AND src.domain_id='global' AND src.seat_id=?1
+           AND src.purpose='SECRETARY'
+         JOIN main.gogoke_v37_session_binding_v2 v ON v.domain_id=src.domain_id
+           AND v.session_id=src.session_id AND v.seat_id=src.seat_id
+           AND v.seat_incarnation=?2 AND v.provenance='NATIVE_V2'
+         JOIN main.gogoke_v37_h_claim h ON h.domain_id=v.domain_id
+           AND h.session_id=v.session_id AND h.instance_id=v.selected_instance_id
+           AND h.state IN ('COMMITTED','STOPPED','RELEASED')
+         JOIN main.gogoke_v37_h_owner_binding owner ON owner.binding_id=h.binding_id
+           AND owner.domain_id=h.domain_id AND owner.instance_id=h.instance_id
+           AND owner.kind='SESSION' AND owner.owner_id=h.session_id
+           AND owner.generation=h.generation
+         JOIN main.gogoke_v37_instance_homes home ON home.home_id=h.home_id
+           AND home.domain_id=h.domain_id AND home.instance_id=h.instance_id
+           AND home.kind='SESSION' AND home.owner_id=h.session_id
+           AND home.generation=h.generation
+         WHERE i.cursor>?3 AND i.source_kind='v37'
+           AND i.domain_id='global' AND i.tier='GLOBAL' AND i.side_id IS NULL
+         ORDER BY i.cursor LIMIT ?4"
+    ))?;
+    statement.bind_text(1, &reader.seat_id)?;
+    statement.bind_text(2, &incarnation)?;
+    statement.bind_i64(3, after.cursor as i64)?;
+    statement.bind_i64(4, i64::from(limit))?;
+    let mut events = Vec::new();
+    while statement.step_row()? {
+        events.push(read_event(&statement)?);
+    }
+    Ok(EventPage { position, events })
+}
+
 fn subscription(
     connection: &VerifiedDatabaseConnection<'_>,
     id: &str,
@@ -1921,6 +2016,98 @@ pub(crate) mod tests {
 
     fn event(id: &str, session: &SessionRegistration, tier: Tier) -> EventInput {
         event_at(id, session, tier, "1")
+    }
+
+    #[test]
+    fn secretary_history_filters_original_identity_before_paging() {
+        let _guard = route_b_test_guard();
+        let path = scratch_root();
+        let root = RootLock::acquire(&path).expect("root");
+        let db = path.join("secretary-history.db");
+        let mut connection = create_new(&root, &db).expect("open");
+        exec(&mut connection, "CREATE TABLE orchestration_events
+            (sequence INTEGER PRIMARY KEY, event_id TEXT UNIQUE, stream_id TEXT,
+             occurred_at TEXT, event_type TEXT, payload_json TEXT)").expect("legacy table");
+        let start = initialize_schema(&mut connection).expect("schema");
+        // This fixture models only persisted relationships needed by the read.
+        // It does not stand in for native H admission or an installed product.
+        exec(&mut connection, "CREATE TABLE gogoke_v37_seat_secretary
+            (singleton INTEGER, domain_id TEXT, seat_id TEXT, incarnation TEXT);
+            CREATE TABLE gogoke_v37_seats
+            (domain_id TEXT, seat_id TEXT, incarnation TEXT, layer TEXT, kind TEXT, state TEXT);
+            CREATE TABLE gogoke_v37_session_binding_v2
+            (domain_id TEXT, session_id TEXT, seat_id TEXT, seat_incarnation TEXT,
+             selected_instance_id TEXT, provenance TEXT);
+            CREATE TABLE gogoke_v37_h_claim
+            (domain_id TEXT, session_id TEXT, instance_id TEXT, binding_id TEXT,
+             home_id TEXT, generation TEXT, state TEXT);
+            CREATE TABLE gogoke_v37_h_owner_binding
+            (binding_id TEXT, domain_id TEXT, instance_id TEXT, kind TEXT,
+             owner_id TEXT, generation TEXT);
+            CREATE TABLE gogoke_v37_instance_homes
+            (home_id TEXT, domain_id TEXT, instance_id TEXT, kind TEXT,
+             owner_id TEXT, generation TEXT);
+            INSERT INTO gogoke_v37_seat_secretary VALUES(1,'global','secretary','current');
+            INSERT INTO gogoke_v37_seats VALUES('global','secretary','current','USER','LONG','BUSY')"
+        ).expect("identity fixture");
+        let entries = [
+            ("reader", "secretary", "current", "NATIVE_V2", "COMMITTED", SessionPurpose::Secretary),
+            ("foreign", "other", "current", "NATIVE_V2", "COMMITTED", SessionPurpose::Secretary),
+            ("old-incarnation", "secretary", "previous", "NATIVE_V2", "RELEASED", SessionPurpose::Secretary),
+            ("legacy", "secretary", "current", "LEGACY_V1", "RELEASED", SessionPurpose::Secretary),
+            ("work", "secretary", "current", "NATIVE_V2", "COMMITTED", SessionPurpose::Work),
+            ("unbound", "secretary", "current", "NATIVE_V2", "COMMITTED", SessionPurpose::Secretary),
+            ("good-old", "secretary", "current", "NATIVE_V2", "RELEASED", SessionPurpose::Secretary),
+        ];
+        for (id, seat, incarnation, provenance, state, purpose) in entries {
+            let registration = session("global", seat, id, purpose, None);
+            register_session(&mut connection, &registration).expect("register");
+            if id != "unbound" {
+                exec(&mut connection, &format!(
+                    "INSERT INTO gogoke_v37_session_binding_v2 VALUES
+                     ('global','{id}','{seat}','{incarnation}','instance','{provenance}');
+                     INSERT INTO gogoke_v37_h_claim VALUES
+                     ('global','{id}','instance','binding-{id}','home-{id}','1','{state}');
+                     INSERT INTO gogoke_v37_h_owner_binding VALUES
+                     ('binding-{id}','global','instance','SESSION','{id}','1');
+                     INSERT INTO gogoke_v37_instance_homes VALUES
+                     ('home-{id}','global','instance','SESSION','{id}','1')"
+                )).expect("original H relationship");
+            }
+            let mut input = event(id, &registration, Tier::Global);
+            if id == "good-old" {
+                input.update_json = r#"{"sessionUpdate":"agent_message_chunk","text":"UNKNOWN"}"#.into();
+            }
+            record(&mut connection, &input).expect("source event");
+        }
+        let reader = Reader {domain_id:"global".into(),seat_id:"secretary".into(),session_id:"reader".into()};
+        let first = query_secretary_history(&connection, &reader, &start, 1).expect("first page");
+        assert_eq!(first.events.iter().map(|event| event.input.event_id.as_str()).collect::<Vec<_>>(), vec!["reader"]);
+        let second = query_secretary_history(&connection, &reader,
+            &LedgerPosition {epoch:start.epoch.clone(),cursor:first.events[0].cursor}, 1).expect("second page");
+        assert_eq!(second.events[0].input.event_id, "good-old");
+        assert_eq!(second.events[0].input.source_epoch, "source-epoch");
+        assert_eq!(second.events[0].input.source_cursor, "1");
+        assert!(second.events[0].input.update_json.contains("UNKNOWN"));
+        assert_eq!(second.position.epoch, start.epoch);
+        assert_eq!(second.position.cursor, 7);
+        assert!(query(&connection, &reader, &start, 1).is_err());
+        for denied in [
+            Reader {session_id:"foreign".into(),seat_id:"other".into(),..reader.clone()},
+            Reader {session_id:"legacy".into(),..reader.clone()},
+            Reader {session_id:"unbound".into(),..reader.clone()},
+            Reader {session_id:"work".into(),..reader.clone()},
+        ] {
+            assert!(query_secretary_history(&connection, &denied, &start, 1).is_err());
+        }
+        assert!(query_secretary_history(&connection, &reader,
+            &LedgerPosition {epoch:"wrong".into(),cursor:0}, 1).is_err());
+        assert!(query_secretary_history(&connection, &reader, &start, 1001).is_err());
+        exec(&mut connection,
+            "DELETE FROM gogoke_v37_h_owner_binding WHERE owner_id='reader'"
+        ).expect("break original reader association");
+        assert!(query_secretary_history(&connection, &reader, &start, 1).is_err());
+        connection.close_checked().expect("close");
     }
 
     pub(crate) fn initialize_raw_h_fixture(
