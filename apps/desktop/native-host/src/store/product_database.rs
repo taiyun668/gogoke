@@ -227,6 +227,9 @@ pub struct ProductDatabase<'root> {
     process_custodian: ProcessCustodian,
     owner_login: Option<v37_login::OwnerLoginSession>,
     native_sessions: BTreeMap<(String, String), v37_runtime::NativeSession>,
+    // Current due eligibility observation only: no receipt, authority, retry
+    // permission or persistent state. Re-observed on the existing host loop.
+    secretary_due_blocked: BTreeMap<String, String>,
     pending_native_launches: BTreeMap<(String, String), super::session_transport::launch::LaunchEvidence>,
     pending_credential_preparations: BTreeMap<(String, String),
         Vec<super::session_transport::credential_launch::CredentialPreparationCustody>>,
@@ -270,7 +273,7 @@ impl<'root> ProductDatabase<'root> {
         instance::initialize_grok_home_grant_schema(&mut connection)
             .map_err(|error| OrchestrationError::V37StoreFailure(format!("Grok HOME schema: {error}")))?;
         Ok(Self { root, connection, owner, session_binding_projection, process_custodian, owner_login: None,
-            native_sessions: BTreeMap::new(), pending_native_launches: BTreeMap::new(),
+            native_sessions: BTreeMap::new(), secretary_due_blocked: BTreeMap::new(), pending_native_launches: BTreeMap::new(),
             pending_credential_preparations: BTreeMap::new(),
             recovered_credential_holders: BTreeMap::new(),
             disappeared_credential_holders: BTreeMap::new() })
@@ -328,7 +331,8 @@ impl<'root> ProductDatabase<'root> {
             let observed_at_ms=SystemTime::now().duration_since(UNIX_EPOCH).ok()
                 .and_then(|elapsed|i64::try_from(elapsed.as_millis()).ok()).filter(|at|*at>0);
             let input=VerifiedDirectUserInput {origin,frame,observed_at_ms,visible_translation:None};
-            return self.configure_user_v37_with_input(frame,Some(&input));
+            let reply = self.configure_user_v37_with_input(frame,Some(&input))?;
+            return self.append_secretary_schedule_readback(frame, reply);
         }
         let request = decode_request(frame).map_err(|error|
             OrchestrationError::V37StoreFailure(format!("v37 user frame: {error:?}")))?;
@@ -896,7 +900,7 @@ impl<'root> ProductDatabase<'root> {
     }
 
     pub fn close_checked(self) -> std::result::Result<OpenLedger, SameOpenError> {
-        let Self { root: _, connection, owner: _, session_binding_projection, process_custodian, owner_login, native_sessions,
+        let Self { root: _, connection, owner: _, session_binding_projection, process_custodian, owner_login, native_sessions, secretary_due_blocked: _,
             pending_native_launches, pending_credential_preparations, recovered_credential_holders,
             disappeared_credential_holders } = self;
         drop(owner_login);
@@ -1263,6 +1267,349 @@ impl<'root> ProductDatabase<'root> {
             recipe_id,
             revision,
         )
+    }
+}
+
+fn scheduled_failure<T, E: std::fmt::Debug>(value: std::result::Result<T, E>) -> Result<T> {
+    value.map_err(|error| OrchestrationError::V37StoreFailure(format!("secretary original source: {error:?}")))
+}
+
+enum ScheduledWriteError {
+    Physical(String),
+    Provider(Vec<u8>),
+    Integrity(OrchestrationError),
+}
+impl From<OrchestrationError> for ScheduledWriteError {
+    fn from(error: OrchestrationError) -> Self { Self::Integrity(error) }
+}
+
+impl ProductDatabase<'_> {
+    /// Attach E's separate scheduling diagnostic to the already authenticated
+    /// USER read. It is not the provider result and supplies no made-up time.
+    fn append_secretary_schedule_readback(&mut self, frame: &[u8], reply: Vec<u8>) -> Result<Vec<u8>> {
+        use super::atomic::Parser;
+        let Json::Object(input) = scheduled_failure(Parser::parse(std::str::from_utf8(frame)
+            .map_err(|error| OrchestrationError::V37StoreFailure(format!("secretary USER frame UTF8: {error}")))?))?
+            else { return Ok(reply); };
+        let key = |name| JsonString::from_str(name);
+        if !matches!(input.get(&key("command")), Some(Json::String(value))
+            if value.to_well_formed_string().as_deref() == Some("secretary-routines-read")) {
+            return Ok(reply);
+        }
+        let Json::Object(mut result) = scheduled_failure(Parser::parse(std::str::from_utf8(&reply)
+            .map_err(|error| OrchestrationError::V37StoreFailure(format!("secretary read UTF8: {error}")))?))?
+            else { return Err(OrchestrationError::Invalid("secretary read result")); };
+        self.connection.execute("BEGIN").map_err(OrchestrationError::CommitUnknownWithCause)?;
+        let read = (|| -> Result<()> {
+            let mut append = |row: &mut Json| -> Result<()> {
+                let Json::Object(fields) = row else { return Err(OrchestrationError::Invalid("secretary read row")); };
+                let field = |name| match fields.get(&key(name)) {
+                    Some(Json::String(value)) => value.to_well_formed_string(), _ => None,
+                };
+                let id = field("routineId").ok_or(OrchestrationError::Invalid("secretary read routine id"))?;
+                let occurrence = field("lastOccurrenceId").ok_or(OrchestrationError::Invalid("secretary read occurrence"))?;
+                let errors = scheduled_failure(super::seat::read_secretary_schedule_errors_in_transaction(
+                    &self.connection, &self.owner, &id))?;
+                if let Some(reason) = self.secretary_due_blocked.get(&id) {
+                    fields.insert(key("dueBlockedReason"), Json::String(JsonString::from_str(reason)));
+                }
+                if let Some(error) = errors.into_iter().find(|error| error.occurrence_id == occurrence) {
+                    fields.insert(key("nextScheduleError"), Json::Object(BTreeMap::from([
+                        (key("occurrenceId"), Json::String(JsonString::from_str(&error.occurrence_id))),
+                        (key("diagnostic"), Json::String(JsonString::from_str(&error.diagnostic))),
+                    ])));
+                }
+                Ok(())
+            };
+            if let Some(row) = result.get_mut(&key("routine")) { append(row)?; }
+            if let Some(Json::Array(rows)) = result.get_mut(&key("routines")) {
+                for row in rows { append(row)?; }
+            }
+            Ok(())
+        })();
+        match read {
+            Ok(()) => self.connection.execute("COMMIT").map_err(OrchestrationError::CommitUnknownWithCause)?,
+            Err(primary) => {
+                if let Err(rollback) = self.connection.execute("ROLLBACK") {
+                    return Err(OrchestrationError::V37StoreFailure(format!(
+                        "secretary schedule read: {primary:?}; rollback: {rollback:?}")));
+                }
+                return Err(primary);
+            }
+        }
+        let bytes = Json::Object(result).canonical().into_bytes();
+        if bytes.len() > crate::ipc::MAX_FRAME_BYTES { return Err(OrchestrationError::Invalid("secretary schedule read size")); }
+        Ok(bytes)
+    }
+
+    /// Same authority loop and same verified database. E/H own all durable
+    /// decisions; this composition never invents a USER input or retries an
+    /// uncertain physical write. Missing live secretary custody is not ready.
+    pub fn pump_secretary_routines(&mut self) -> Result<()> {
+        use super::seat::{self, NativeOrigin};
+        use super::session_transport::{self as h, runtime};
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("secretary system clock: {error}")))?;
+        let now = i64::try_from(now.as_millis()).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("secretary system clock range: {error}")))?;
+        // Select locators only. H rechecks the current E designation, original
+        // USER source, A purpose and exact receipt inside its own transaction.
+        let query = Statement::prepare(self.connection.as_ptr(),
+            "SELECT r.routine_id,CAST(r.revision AS TEXT),r.state,r.last_occurrence_id,
+                    COALESCE(j.session_id,''),COALESCE(j.ticket,''),COALESCE(j.generation,'')
+             FROM main.gogoke_v37_seat_secretary_routines r
+             JOIN main.gogoke_v37_seat_secretary s ON s.seat_id=r.seat_id AND s.incarnation=r.incarnation
+             LEFT JOIN main.gogoke_v37_h_stdin_journal j ON j.domain_id='global'
+                 AND r.last_result='UNKNOWN' AND j.request_id=r.last_occurrence_id AND j.phase='RECEIPTED'
+             WHERE (r.state='ACTIVE' AND r.next_due_ms>0 AND r.next_due_ms<=?1)
+                OR (r.last_result='UNKNOWN' AND j.request_id IS NOT NULL)
+             ORDER BY r.next_due_ms,r.routine_id")?;
+        query.bind_i64(1, now)?;
+        let mut rows = Vec::new();
+        while query.step_row()? {
+            let revision = query.column_text(1)?.parse::<i64>().map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("secretary routine revision: {error}")))?;
+            rows.push((query.column_text(0)?, revision, query.column_text(2)?,
+                query.column_text(3)?, query.column_text(4)?, query.column_text(5)?, query.column_text(6)?));
+        }
+        drop(query);
+        self.secretary_due_blocked.retain(|routine, _| rows.iter().any(|row| &row.0 == routine));
+        for (routine, revision, state, occurrence, session, ticket, generation) in rows {
+            if !session.is_empty() {
+                self.secretary_due_blocked.remove(&routine);
+                scheduled_failure(h::settle_scheduled_secretary_occurrence(&mut self.connection,
+                    &self.owner, &routine, &occurrence, revision, now, &session, &ticket, &generation))?;
+                continue;
+            }
+            if state != "ACTIVE" { continue; }
+            let mut candidates = Vec::new();
+            for (key, run) in &self.native_sessions {
+                if key.0 != "global" || !run.allows_input() || run.turn_id.is_some()
+                    || run.pending_acp.is_some() || run.pending_claude.is_some() { continue; }
+                let registered = scheduled_failure(super::ledger::read_registered_session(&self.connection, &key.1))?;
+                if registered.is_some_and(|row| row.domain_id == "global"
+                    && row.purpose == super::ledger::SessionPurpose::Secretary) {
+                    candidates.push(key.clone());
+                }
+            }
+            if candidates.is_empty() {
+                self.secretary_due_blocked.insert(routine, "No idle held SECRETARY H session qualified for this due occurrence".into());
+                continue;
+            }
+            if candidates.len() != 1 { return Err(OrchestrationError::OperationConflict); }
+            let key = &candidates[0];
+            let run = self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+            let Some(process) = self.process_custodian.active(&run.custody.ticket) else {
+                self.secretary_due_blocked.insert(routine, "Original secretary process ticket is not held".into());
+                continue;
+            };
+            if process.identity() != &run.custody.identity {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            match process.exit_code() {
+                Ok(None) => {},
+                Ok(Some(code)) => {
+                    self.secretary_due_blocked.insert(routine, format!("Original secretary process exited: {code}"));
+                    continue;
+                }
+                Err(error) => {
+                    self.secretary_due_blocked.insert(routine, format!("Original secretary process exit query: {error:?}"));
+                    continue;
+                }
+            }
+            self.secretary_due_blocked.remove(&routine);
+            let claim = scheduled_failure(runtime::observe_claim(&self.connection,
+                &NativeOrigin::user(&self.owner), "global", run.evidence.seat_id(), &key.1))?
+                .ok_or(OrchestrationError::AccessDenied)?;
+            scheduled_failure(run.evidence.verify_live(&mut self.connection, self.root,
+                &self.owner, &run.operation_id, claim.revision))?;
+            let provider = match run.evidence.driver_id() {
+                "codex" if run.thread_id.is_some() => h::ScheduledSecretaryProvider::Codex,
+                "claude" => h::ScheduledSecretaryProvider::Claude { custody: &run.custody,
+                    open_request_id: &run.open_request_id, open_request_bytes: &run.open_request_bytes },
+                "opencode" | "grok" => h::ScheduledSecretaryProvider::Acp { custody: &run.custody,
+                    open_request_id: &run.open_request_id, open_request_bytes: &run.open_request_bytes },
+                _ => continue,
+            };
+            let expected_h_revision = u64::try_from(claim.revision).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("secretary H revision: {error}")))?;
+            let decision = scheduled_failure(h::prepare_scheduled_secretary_occurrence(
+                &mut self.connection, &h::ScheduledSecretaryInput { owner: &self.owner,
+                    routine_id: &routine, expected_routine_revision: revision, now_ms: now,
+                    session_id: &key.1, ticket: run.custody.ticket.opaque(),
+                    generation: &run.custody.binding.generation, expected_h_revision, provider }))?;
+            if let h::ScheduledSecretaryDecision::NewWrite(permit) = decision {
+                let write = permit.into_write();
+                let (occurrence, session, ticket, generation) = match &write {
+                    h::ScheduledSecretaryWrite::Codex { occurrence_id, session_id, ticket, generation, .. }
+                    | h::ScheduledSecretaryWrite::Claude { occurrence_id, session_id, ticket, generation, .. }
+                    | h::ScheduledSecretaryWrite::Acp { occurrence_id, session_id, ticket, generation, .. } =>
+                        (occurrence_id.clone(), session_id.clone(), ticket.clone(), generation.clone()),
+                };
+                let original_reason = match self.write_scheduled_secretary(write) {
+                    Ok(()) => continue,
+                    Err(ScheduledWriteError::Integrity(error)) => return Err(error),
+                    Err(ScheduledWriteError::Physical(reason)) => reason,
+                    Err(ScheduledWriteError::Provider(bytes)) =>
+                        format!("original scheduled provider rejection: {}", String::from_utf8_lossy(&bytes)),
+                };
+                let query = Statement::prepare(self.connection.as_ptr(),
+                    "SELECT CAST(revision AS TEXT) FROM main.gogoke_v37_seat_secretary_routines WHERE routine_id=?1")?;
+                query.bind_text(1, &routine)?;
+                if !query.step_row()? { return Err(OrchestrationError::AccessDenied); }
+                let current_revision = query.column_text(0)?.parse::<i64>().map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!("secretary failed occurrence revision: {error}")))?;
+                if query.step_row()? { return Err(OrchestrationError::OperationConflict); }
+                drop(query);
+                scheduled_failure(h::mark_scheduled_secretary_occurrence_unknown(&mut self.connection,
+                    &self.owner, &routine, &occurrence, current_revision, &session, &ticket,
+                    &generation, &original_reason, now))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn write_scheduled_secretary(&mut self,
+        write: super::session_transport::ScheduledSecretaryWrite)
+        -> std::result::Result<(), ScheduledWriteError> {
+        use super::session_transport::{self as h, codex_rpc, rpc_journal as rpc};
+        let (request_bytes, session, ticket, generation) = match &write {
+            h::ScheduledSecretaryWrite::Codex { request_bytes, session_id, ticket, generation, .. }
+            | h::ScheduledSecretaryWrite::Claude { request_bytes, session_id, ticket, generation, .. }
+            | h::ScheduledSecretaryWrite::Acp { request_bytes, session_id, ticket, generation, .. } =>
+                (request_bytes.clone(), session_id.clone(), ticket.clone(), generation.clone()),
+        };
+        let key = ("global".to_owned(), session);
+        let run = self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
+        if !run.allows_input() || run.turn_id.is_some() || run.pending_acp.is_some()
+            || run.pending_claude.is_some() || run.custody.ticket.opaque() != ticket
+            || run.custody.binding.generation != generation { return Err(OrchestrationError::AccessDenied.into()); }
+        let custody = run.custody.clone();
+        let operation = run.operation_id.clone();
+        let open_id = run.open_request_id.clone();
+        let open_bytes = run.open_request_bytes.clone();
+        let input = h::StdinRequest { domain_id: "global", session_id: &key.1,
+            ticket: &ticket, generation: &generation, request_bytes: &request_bytes };
+        match write {
+            h::ScheduledSecretaryWrite::Claude { provider_bytes, identity, .. } => {
+                self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?
+                    .pending_claude = Some((request_bytes.clone(), identity));
+                let vendor = h::ClaudeSendInput { user: input, custody: &custody,
+                    open_request_id: &open_id, open_request_bytes: &open_bytes };
+                let process = self.process_custodian.active(&custody.ticket).ok_or(OrchestrationError::AccessDenied)?;
+                if let Err(error) = process.write_persistent_frame(&provider_bytes) {
+                    let original = self.process_custodian.protocol_error_with_stderr(&custody.ticket,
+                        crate::process::ProcessCustodyError::ProtocolPipe(error));
+                    let unknown = authority::mark_process_unknown(&mut self.connection, &operation, &custody);
+                    let journal = h::mark_claude_send_write_unknown(&mut self.connection, &self.owner,
+                        &vendor, &original.to_string());
+                    let reason = format!("scheduled Claude input: {original}; custody: {unknown:?}; journal: {journal:?}");
+                    if unknown.is_err() || journal.is_err() {
+                        return Err(OrchestrationError::V37StoreFailure(reason).into());
+                    }
+                    return Err(ScheduledWriteError::Physical(reason));
+                }
+                scheduled_failure(h::mark_claude_send_written(&mut self.connection, &self.owner, &vendor))?;
+            }
+            h::ScheduledSecretaryWrite::Acp { provider_bytes, identity, .. } => {
+                self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?
+                    .pending_acp = Some((request_bytes.clone(), identity));
+                let vendor = h::AcpSendInput { user: input, custody: &custody,
+                    open_request_id: &open_id, open_request_bytes: &open_bytes };
+                let process = self.process_custodian.active(&custody.ticket).ok_or(OrchestrationError::AccessDenied)?;
+                if let Err(error) = process.write_persistent_frame(&provider_bytes) {
+                    let original = self.process_custodian.protocol_error_with_stderr(&custody.ticket,
+                        crate::process::ProcessCustodyError::ProtocolPipe(error));
+                    let unknown = authority::mark_process_unknown(&mut self.connection, &operation, &custody);
+                    let journal = h::mark_acp_send_write_unknown(&mut self.connection, &self.owner,
+                        &vendor, &original.to_string());
+                    let reason = format!("scheduled ACP input: {original}; custody: {unknown:?}; journal: {journal:?}");
+                    if unknown.is_err() || journal.is_err() {
+                        return Err(OrchestrationError::V37StoreFailure(reason).into());
+                    }
+                    return Err(ScheduledWriteError::Physical(reason));
+                }
+                scheduled_failure(h::mark_acp_send_written(&mut self.connection, &self.owner, &vendor))?;
+            }
+            h::ScheduledSecretaryWrite::Codex { occurrence_id, .. } => {
+                let run = self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
+                let thread = run.thread_id.clone().ok_or(OrchestrationError::AccessDenied)?;
+                let request = scheduled_failure(h::decode_request(&request_bytes))?;
+                let body = user_payload_string(&request, "body")?;
+                let command = codex_rpc::Command::TurnStart { thread_id: thread.clone(),
+                    cwd: run.evidence.cwd().to_string_lossy().into_owned(), model: run.model.clone(),
+                    effort: run.effort.clone(), text: body, network_access: Some(run.evidence.network_access()) };
+                // The existing codec supports string IDs. A due occurrence is
+                // already unique; it does not share the numeric RPC allocator.
+                let id = codex_rpc::RpcId::String(occurrence_id);
+                let step_id = format!("send-{}", &super::digest::sha256_hex(&request_bytes)[..40]);
+                let step = rpc::Step { domain_id: "global", session_id: &key.1,
+                    open_request_id: &open_id, open_request_bytes: &open_bytes,
+                    step_id: &step_id, custody: &custody, rpc_id: Some(&id), command: &command };
+                let prepared = scheduled_failure(rpc::prepare(&mut self.connection, &self.owner, &step))?;
+                if prepared.disposition != rpc::Disposition::NewWrite {
+                    return Err(OrchestrationError::OperationConflict.into());
+                }
+                let process = self.process_custodian.active(&custody.ticket).ok_or(OrchestrationError::AccessDenied)?;
+                if let Err(error) = process.write_persistent_frame(&prepared.bytes) {
+                    let original = self.process_custodian.protocol_error_with_stderr(&custody.ticket,
+                        crate::process::ProcessCustodyError::ProtocolPipe(error));
+                    let rpc_unknown = rpc::mark_unknown(&mut self.connection, &self.owner, &step, &original.to_string());
+                    let custody_unknown = authority::mark_process_unknown(&mut self.connection, &operation, &custody);
+                    let journal = h::mark_codex_write_unknown(&mut self.connection, &input);
+                    let reason = format!("scheduled Codex input: {original}; RPC: {rpc_unknown:?}; custody: {custody_unknown:?}; journal: {journal:?}");
+                    if rpc_unknown.is_err() || custody_unknown.is_err() || journal.is_err() {
+                        return Err(OrchestrationError::V37StoreFailure(reason).into());
+                    }
+                    return Err(ScheduledWriteError::Physical(reason));
+                }
+                scheduled_failure(rpc::mark_written(&mut self.connection, &self.owner, &step))?;
+                let started = std::time::Instant::now();
+                loop {
+                    let remaining = std::time::Duration::from_secs(30).saturating_sub(started.elapsed());
+                    let read = if remaining.is_zero() {
+                        Err(crate::process::ProcessCustodyError::ProtocolPipe(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut, "scheduled original Codex response deadline")))
+                    } else { self.process_custodian.read_persistent_child_frame(&custody.ticket, remaining) };
+                    let frame = match read {
+                        Ok(frame) => frame,
+                        Err(error) => {
+                            let rpc_unknown = rpc::mark_unknown(&mut self.connection, &self.owner, &step, &error.to_string());
+                            let custody_unknown = authority::mark_process_unknown(&mut self.connection, &operation, &custody);
+                            let journal = h::mark_codex_write_unknown(&mut self.connection, &input);
+                            let reason = format!("scheduled Codex response: {error}; RPC: {rpc_unknown:?}; custody: {custody_unknown:?}; journal: {journal:?}");
+                            if rpc_unknown.is_err() || custody_unknown.is_err() || journal.is_err() {
+                                return Err(OrchestrationError::V37StoreFailure(reason).into());
+                            }
+                            return Err(ScheduledWriteError::Physical(reason));
+                        }
+                    };
+                    let run = self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?;
+                    run.raw_capture.retain(frame)?;
+                    let (frame, raw) = run.raw_capture.capture(&mut self.connection, &operation,
+                        &custody.custodian_nonce)?.ok_or(OrchestrationError::OperationConflict)?;
+                    let decoded = scheduled_failure(codex_rpc::decode(frame.bytes(), Some((&id, &command))))?;
+                    match decoded {
+                        codex_rpc::Reply::Turn { .. } | codex_rpc::Reply::RemoteError { .. } => {
+                            let reply = scheduled_failure(rpc::complete_response(&mut self.connection,
+                                &self.owner, &step, &frame, &raw.key))?;
+                            if let codex_rpc::Reply::RemoteError { raw_frame, .. } = reply {
+                                return Err(ScheduledWriteError::Provider(raw_frame));
+                            }
+                            if let codex_rpc::Reply::Turn { turn_id, status: codex_rpc::TurnStatus::InProgress, .. } = reply {
+                                self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?
+                                    .turn_id = Some(turn_id);
+                            }
+                            scheduled_failure(h::complete_codex_turn_request(&mut self.connection,
+                                &input, &frame, &id, &command, &thread))?;
+                            break;
+                        }
+                        _ => {},
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
 

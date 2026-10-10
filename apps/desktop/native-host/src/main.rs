@@ -215,6 +215,7 @@ fn run_desktop(
         // its capture/dispatch on this one DB authority thread, independently
         // of whether the UI asks for output. No operation is retried here.
         product.pump_native_output()?;
+        product.pump_secretary_routines()?;
         let event = match receiver.recv_timeout(std::time::Duration::from_millis(20)) {
             Ok(event) => event,
             Err(mpsc::RecvTimeoutError::Timeout) => continue,

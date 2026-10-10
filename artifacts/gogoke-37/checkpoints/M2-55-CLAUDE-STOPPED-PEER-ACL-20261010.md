@@ -85,3 +85,20 @@ Grok 新请求的原回执为 FAILED，直接厂商终态 `cancelled`，原分�
 并行已开始：V06 剩余端到端修正在独立工人分支，先前无注册工具的会话不能要求出现一条被拒工具原帧；缺尝试仍记 NOT_RUN。V10 准备使用两个新测试作用域、真实 USER 与模型派生 LEAD，以及三棵原生已注册 F；incarnation、generation、StopFact 和 F 身份只从宿主回读，不照抄历史标识。秘书长 E.3 的 due 原语仍缺生产调用，当前授权未列其必要的 ProductDatabase 组合路径；仅完成最小范围提案，未越权改产品或回执。G 已有无日期任务结果的读模型问题继续交 Claude。
 
 SAC 本次重新读回为 0；所有新临时与证据直接 D 盘。正式保护保持，完整 M2/M3 和稳定链仍 NOT_RUN；稳定点实测与验收前须先提醒 Owner 开启 SAC，再读回 1。
+
+## 注册 F 的 Grok Write 与新授权读回
+
+- 已完成：已装 0.1.56 在原 Grok 测试实例、真实注册 F 中完成一次严格 Write。原 H journal、typed allow-once、REGISTERED_F_WRITE 资格、唯一完成调用、目标确切内容、真实 stop/release、正常产品退出及正式保护均直接读回；只读测量保持原数据库字节。真实协议导出并经既有工具生成黄金样本，尚待协议分类审阅。此结论仅覆盖该正向用例，不外推 OS ACL、完整隔离矩阵或 M2 验收。
+- 已完成：Owner 合并 PR #84 后，精确读回 main 回执、MANIFEST、可信校验器、摘要与三处固定回执值。摘要 `3a3d6651f8a5ca2b82f712951dc7a1c74ff593bcf8bde95e6e6604ba3f467a78`、回执 blob `5a55255cf5e28593f9df89bc27d65c93080088f7` 一致；合入施工分支无产品差异。秘书长组合路径现已授权。
+- 原失败：V10 新绑定任务在任何 USER 操作/模型请求前因 `ERR_MODULE_NOT_FOUND: Cannot find package '@e2e-dev/web'` 失败，产品正常关闭，原日志/快照/输入均保留，精确任务清理并回读不存在。原因是临时目录内复制的 CDP helper 相对加载依赖；改为已有 Root 原 helper，加载检查通过后启动新例，不重放旧请求、不出新候选。
+- 并行：Sol 在独立分支 `codex/g37-secretary-occurrence-20261010` 实施 E 到期与 H journal 同事务、单次物理写许可及原 H 回执结算；本机编译仅开发诊断。Root 接既有权威循环与单一 ProductDatabase，G 缺时间戳结果的读模型问题继续由 Claude 处理。
+- 下一步：V10 新例直接读回与剩余 M2；秘书长生产接线完成后跑受影响云检。完整稳定链、SAC 强制状态运行和验收未执行。
+- 参照：沿用已在真实 Grok/Claude 流程使用的 `tools/e2e/product-cdp.mjs` 与黄金样本工具；沿用原 E routines、H stdin/RPC journal、原单线程权威循环。未另造测量框架、scheduler 或权限；细节由 Controller 决定，因为既有授权覆盖且不跨用户边界。
+## 秘书长生产接线与聚焦修复
+
+- 已实施：在授权的 ProductDatabase/main 原权威循环组合 E 到期与原 H，同事务只发一张消费型许可；Codex 沿已有字符串 RPC ID、原 RPC journal/A capture，Claude/ACP 沿原 pending 与完成路径。未造 USER proof、StopFact 或第二调度服务。
+- 首次全轴 Astra 核出的五处问题已按直接代码逻辑修：下一次到期不再关联已结算旧回执；H 终态与下一次日程解析解耦，解析错误由 E 单独持久并向认证 USER 原读回组合；厂商错误原文和截断事实保留；单次物理/已关联厂商拒绝保持 UNKNOWN、原原因且不重发，来源/数据库损坏仍拒绝；Codex 原 UNKNOWN 转换先记录 custody。全新 Sol 聚焦复核另发现未准备 H 前退出进程影响整个宿主，现保留实际 dueBlockedReason 并等待原资格，原 E 状态不变，静态复核通过。
+- 本机检查只作开发诊断。Root 合入时的 JSON 比较、闭包生命周期、新增字段析构遗漏由编译原错误定位并修；组合 `cargo check` 最后退出零。工人五项同库安全测试本机通过，仅合成持久形状，不等于真实物理进程或正式云检。现有秘书长云检查已增精确 filter，完整稳定库/候选链未跑。
+- V10 原新例：测试 profile 首次 USER 配置已成功读回、两域两 USER/LEAD 建立；未启动模型。其 F create 被拒绝是仪器把 wire 小写 `single` 错改成内部枚举 `SINGLE`，Root 接受这一错误前提是本次返工原因；实际 USER 解析器与冻结源一致，只接受小写。原 DENIED、请求、正常关闭和保护原件保留，不改成通过。下一步从已建立原绑定闭库读回后续 F，不重做首次配置、不重放拒绝请求。
+- 边界：当前秘书长接线只支持已持有且空闲的原 SECRETARY H；重启后驻留恢复、无 H 时的缺席持久暂停和完整 V14 仍未完成，不能外推验收。G 结果读模型与新诊断展示继续由 Claude 负责。
+- 参照：原 USER 席位/实例/F 解析器，原 NativeSession/RPC/StdinJournal/RawCapture 的写入及错误路径，E 已有 UNKNOWN/暂停/删除语义；迁移仅从原 exact E schema 增独立诊断表，不改变原行、权限或持久写方。以原读取和错误类别替代猜测，未添加重试或等待补偿。
