@@ -44,18 +44,25 @@ The additional `v06Remaining` block is:
 ```
 
 `priorV06` is optional and remains labeled historical candidate49 coverage.
-The runner sends one new parent model child-create turn and one new child model
-bounds denial turn. The prior second-child capacity denial is not dispatched
-again. It creates and registers two fresh F trees, binds the new User seat to
-the existing instance, and answers exact non-secret native C cards. After a
-real child H open it reads BUSY, requests the BUSY reclaim refusal, then stops
-and releases that same H before User reclaim. `changeInstanceId` may name a
-separate already registered logical instance to exercise BUSY change-instance;
-otherwise that axis is `NOT_RUN`. SHORT-to-LONG, independent H admission
-capacity and host-choice axes are `NOT_RUN` without separate real sources.
+The runner performs the existing non-secret USER takeover and sends one new
+parent model child-create turn. The child LEAD
+`thread/start` does not register native dynamic tools under the current
+orchestration-scope gate, so model-origin bounds denial is `NOT_RUN`; the runner
+does not send a prompt that asks an unavailable tool to run. The prior
+second-child capacity denial is not dispatched again. It creates and registers
+two fresh F trees, binds the new User seat to the existing instance, and answers
+exact non-secret native C cards. After a real child H open it reads BUSY,
+requests the BUSY reclaim refusal, then stops and releases that same H before
+User reclaim. `changeInstanceId` may name a separate already registered
+logical instance to exercise BUSY change-instance; otherwise that axis is
+`NOT_RUN`. SHORT-to-LONG, independent H admission capacity and host-choice axes
+are `NOT_RUN` without separate real sources.
 
-The closed reader correlates the original H sends, A tool calls, H-written RPC
-replies, E writes, Busy state cards, StopFacts and physical custody. A live
+The closed reader correlates the original H sends, registered A tool calls,
+H-written RPC replies, E writes, Busy state cards, StopFacts and physical
+custody. For each completed A turn it joins the raw source row to the normalized
+event by `resolved_event_id` and verifies `_meta.rawSourceCursor`; the normalized
+ledger ordinal and global ledger cursor remain separate values. A live
 timeout or UNKNOWN preserves the original request and product custody; neither
 is replayed. The final state is a V06 slice for Controller review, never full
 V06 or milestone acceptance.

@@ -215,7 +215,8 @@ async function main(){
       'Actual H open did not make exact LEAD BUSY');
     journal.busyCard=busy;product.save();
     journal.notRun.push({axis:'MODEL_LEAD_BOUNDS_DENIAL',state:'NOT_RUN_NO_REGISTERED_TOOL',
-      reason:'A LEAD WORK thread has no native dynamicTools under the current E orchestration-scope gate.'});
+      attempted:false,
+      reason:'The exact LEAD thread/start omitted native dynamicTools; no bounds-denial request was dispatched.'});
     product.save();
     if(atom(f.changeInstanceId)&&f.changeInstanceId!==c.instanceId&&
        instances.instances.some(r=>r.instanceId===f.changeInstanceId)){

@@ -17,6 +17,37 @@ def one(db, sql, args=()):
 def rows(db,sql,args=()):
     return [dict(row) for row in db.execute(sql,args)]
 
+def normalized_terminal_link(db,j,s,operation_id,source,frame,turn_id):
+    links=rows(db,"SELECT i.cursor,i.source_epoch,i.source_cursor,i.update_json,"
+                  "r.state,r.resolved_event_id FROM v37_ledger_raw_source r "
+                  "JOIN v37_ledger_index i ON i.source_kind='v37' "
+                  "AND i.source_event_id=r.resolved_event_id "
+                  "AND i.domain_id=r.domain_id AND i.session_id=r.session_id "
+                  "WHERE r.domain_id=? AND r.session_id=? AND r.operation_id=? "
+                  "AND r.source_epoch=? AND r.source_cursor=?",
+                 (j["fixture"]["domainId"],s["id"],operation_id,
+                  source["source_epoch"],source["source_cursor"]))
+    check(len(links)==1,"Original A terminal lacks one event-ID normalization link")
+    link=links[0]
+    update=json.loads(link["update_json"])
+    meta=update.get("_meta",{})
+    params=frame.get("params",{})
+    check(source["state"]=="RESOLVED" and source["resolved_event_id"]==link["resolved_event_id"] and
+          link["source_epoch"]==source["source_epoch"] and
+          isinstance(link["cursor"],int) and link["cursor"]>0 and
+          str(link["source_cursor"]).isdecimal() and int(link["source_cursor"])>0 and
+          meta.get("rawSourceCursor")==str(source["source_cursor"]) and
+          meta.get("codexMethod")==frame.get("method")=="turn/completed" and
+          meta.get("threadId")==s["threadId"] and meta.get("turnId")==turn_id and
+          meta.get("turnStatus")==params.get("turn",{}).get("status") and
+          params.get("threadId")==s["threadId"] and
+          params.get("turn",{}).get("id")==turn_id,
+          "Original A terminal raw cursor is not linked to its normalized event")
+    return {"rawSourceCursor":str(source["source_cursor"]),
+            "normalizedSourceOrdinal":str(link["source_cursor"]),
+            "normalizedLedgerCursor":str(link["cursor"]),
+            "sourceEventId":link["resolved_event_id"]}
+
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -123,7 +154,8 @@ def unresolved_model_turn(db,j,attempt):
           e["receipt"]["result"]["turnId"]==attempt["turnId"] and
           e["request"]["payload"]["body"]==attempt["prompt"],
           "Original LEAD send/turn bytes differ")
-    source=rows(db,"SELECT raw_bytes FROM v37_ledger_raw_source WHERE domain_id=? "
+    source=rows(db,"SELECT source_epoch,source_cursor,raw_bytes,state,resolved_event_id "
+                   "FROM v37_ledger_raw_source WHERE domain_id=? "
                    "AND session_id=? AND operation_id=? ORDER BY rowid",
                 (j["fixture"]["domainId"],s["id"],s["processOperationId"]))
     calls=[];completed=[]
@@ -133,11 +165,13 @@ def unresolved_model_turn(db,j,attempt):
         if frame.get("method")=="item/tool/call" and params.get("threadId")==s["threadId"] and params.get("turnId")==attempt["turnId"]:
             calls.append(frame)
         if frame.get("method")=="turn/completed" and params.get("threadId")==s["threadId"] and params.get("turn",{}).get("id")==attempt["turnId"] and params.get("turn",{}).get("status")=="completed":
-            completed.append(frame)
+            completed.append((item,frame))
     check(len(calls)==0 and len(completed)==1,
           "Original LEAD turn had a tool call or lacked completion")
+    completion_link=normalized_terminal_link(db,j,s,s["processOperationId"],
+                                             completed[0][0],completed[0][1],attempt["turnId"])
     return {"state":"NOT_RUN_NO_REGISTERED_TOOL","originalCompletedTurnObserved":True,
-            "originalToolCallCount":0}
+            "originalToolCallCount":0,"completionSourceLink":completion_link}
 
 def model_tool(db,j,attempt,expected):
     f=j["fixture"]
@@ -169,7 +203,8 @@ def model_tool(db,j,attempt,expected):
           bytes.fromhex(stdin["request_hex"]).decode()==e["rawFrame"] and
           json.loads(bytes.fromhex(stdin["receipt_hex"]))==r,
           "Original H stdin journal/request/receipt mismatch")
-    source=rows(db,"SELECT raw_bytes FROM v37_ledger_raw_source WHERE domain_id=? AND session_id=? "
+    source=rows(db,"SELECT source_epoch,source_cursor,raw_bytes,state,resolved_event_id "
+                   "FROM v37_ledger_raw_source WHERE domain_id=? AND session_id=? "
                    "AND operation_id=? ORDER BY rowid",
                 (f["domainId"],s["id"],s["processOperationId"]))
     calls=[];completed=[];all_turn_calls=[]
@@ -189,9 +224,11 @@ def model_tool(db,j,attempt,expected):
             params.get("threadId")==s["threadId"] and
             params.get("turn",{}).get("id")==attempt["turnId"] and
             params.get("turn",{}).get("status")=="completed"):
-            completed.append(frame)
+            completed.append((item,frame))
     check(len(calls)==len(completed)==len(all_turn_calls)==1,
           "Original A tool call/turn completion absent or duplicated")
+    completion_link=normalized_terminal_link(db,j,s,s["processOperationId"],
+                                             completed[0][0],completed[0][1],attempt["turnId"])
     rpc=[]
     for row in rows(db,"SELECT command_hex,phase,step_id FROM gogoke_v37_rpc_steps "
                        "WHERE domain_id=? AND session_id=? AND process_operation_id=?",
@@ -224,7 +261,8 @@ def model_tool(db,j,attempt,expected):
               durable[0]["parent_seat_id"]==f["parentSeatId"],
               "Original native child belongs to another parent")
     return {"phase":attempt["phase"],"sendRequestId":attempt["sendRequestId"],
-            "rpcStepId":row["step_id"],"status":native["status"]}
+            "rpcStepId":row["step_id"],"status":native["status"],
+            "completionSourceLink":completion_link}
 
 def h_stop_release(db,j,s):
     f=j["fixture"]
@@ -427,7 +465,8 @@ def main():
                 denial=unresolved_model_turn(db,j,attempts[1])
             else:
                 missing=[n for n in j["notRun"] if n.get("axis")=="MODEL_LEAD_BOUNDS_DENIAL"]
-                check(len(missing)==1 and missing[0]["state"]=="NOT_RUN_NO_REGISTERED_TOOL",
+                check(len(missing)==1 and missing[0]["state"]=="NOT_RUN_NO_REGISTERED_TOOL" and
+                      missing[0].get("attempted") is False,
                       "Original LEAD capability absence was not recorded as NOT_RUN")
                 denial={"state":"NOT_RUN_NO_REGISTERED_TOOL",
                         "originalCompletedTurnObserved":False,"originalToolCallCount":0}
