@@ -48,7 +48,6 @@ PENDING_UNMAPPED_CODEX_METHODS = frozenset((
 ))
 PENDING_UNMAPPED_CODEX_ITEMS = frozenset(("userMessage", "agentMessage"))
 PENDING_CLASSIFICATION = "PRESERVED_UNRESOLVED_RAW_SOURCE_NO_SUCCESS_CREDIT"
-PENDING_UNHANDLED_SOURCE_COMMIT = "b0b2f31edf409fdc627d4b1558a50c29f319a697"
 
 
 def normalizer_item_string(value):
@@ -178,7 +177,10 @@ def session_evidence(db, session, case, operations, source_commit, peer=None):
     for row, frame in decoded:
         if row["state"] != "PENDING":
             continue
-        check(case["driverId"] == "codex" and source_commit == PENDING_UNHANDLED_SOURCE_COMMIT and
+        # Preserve only exact Unhandled notification shapes with original H
+        # custody and no RPC response association. A source SHA is provenance,
+        # not evidence that a PENDING row is a notification or a success.
+        check(case["driverId"] == "codex" and
               (row["source_epoch"], row["source_cursor"]) not in associated_rpc_sources,
               "Pending original source has unqualified provider or RPC response custody")
         method, item_type = pending_unhandled_codex_frame(frame, session["threadId"])
@@ -713,14 +715,12 @@ def main():
               not original_reader.is_relative_to(root),
               "Supplementary original reader must be a preserved external file")
         original_reader_sha = digest(original_reader.read_bytes())
-        check(journal["sourceCommit"] == "b0b2f31edf409fdc627d4b1558a50c29f319a697" and
-              journal["caseId"] == "m2V10_53c4a66968554d9db64d64472b61ee16" and
-              len(boundary["cases"]) == 1 and
-              boundary["cases"][0]["caseId"] == "history_47e8b299763a45f8a5ad56218af01b3f" and
+        check(len(boundary["cases"]) == 1 and
               boundary["cases"][0]["state"] == "FLOW_COMPLETE_BEFORE_REFUSALS" and
               journal["state"] == "FAIL_OR_NOT_RUN_PRESERVE_ORIGINAL" and
               boundary["state"] == "FAIL" and
-              bool(journal.get("originalError")) and bool(boundary.get("originalError")) and
+              "Pending original source has unqualified provider or RPC response custody" in journal.get("originalError", "") and
+              "Pending original source has unqualified provider or RPC response custody" in boundary.get("originalError", "") and
               not boundary["refusals"] and not journal["readbacks"] and
               original_reader_sha == boundary["readerSha256"] ==
                 journal["driverBytes"]["m2-history-boundaries-readback.py"] and
@@ -732,10 +732,13 @@ def main():
           "Latest exact installed candidate lacks an original normal-close receipt")
     database = root / "state.sqlite"
     wal, shm = Path(str(database) + "-wal"), Path(str(database) + "-shm")
-    check(database.is_file() and (not wal.exists() or wal.stat().st_size == 0), "Normal close/checkpoint required; active WAL refused")
+    rollback_journal = Path(str(database) + "-journal")
+    check(database.is_file() and all(not file.exists() or file.stat().st_size == 0
+          for file in (wal, shm, rollback_journal)),
+          "Normal close/checkpoint required; active SQLite sidecars refused")
     def files():
         return {file.name: {"length": file.stat().st_size, "sha256": digest(file.read_bytes())}
-                for file in (database, wal, shm) if file.exists()}
+                for file in (database, wal, shm, rollback_journal) if file.exists()}
     original_journal_sha = digest(journal_file.read_bytes()) if supplementary else None
     result = {"schema": "gogoke.37.private-m2-history-readback.v1", "phase": sys.argv[4],
               "caseId": journal["caseId"], "sourceCommit": journal["sourceCommit"], "domainId": journal["domainId"],
