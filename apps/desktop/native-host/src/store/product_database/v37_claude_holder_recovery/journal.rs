@@ -8,6 +8,15 @@ use crate::store::digest::sha256_hex;
 const TABLE: &str = "gogoke_v37_claude_holder_recovery";
 const SCHEMA:&str="CREATE TABLE gogoke_v37_claude_holder_recovery(process_operation_id TEXT PRIMARY KEY REFERENCES gogoke_coordination_process_custody(operation_id),instance_id TEXT NOT NULL,domain_id TEXT NOT NULL,session_id TEXT NOT NULL,request_id TEXT NOT NULL UNIQUE,snapshot_hex TEXT NOT NULL,snapshot_digest TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('PREPARED','APPLIED','UNKNOWN')),original_error TEXT,revision INTEGER NOT NULL CHECK(revision>=1)) STRICT";
 const MAX_BYTES: usize = 2_097_152;
+unsafe extern "C" {
+    fn sqlite3_get_autocommit(database: *mut std::ffi::c_void) -> i32;
+}
+fn require_transaction(db: &VerifiedDatabaseConnection<'_>) -> Result<()> {
+    if unsafe { sqlite3_get_autocommit(db.as_ptr()) } != 0 {
+        return Err(denied("Claude holder journal requires transaction"));
+    }
+    Ok(())
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct Capture {
@@ -348,6 +357,7 @@ pub(super) fn insert_in_transaction(
     db: &VerifiedDatabaseConnection<'_>,
     capture: Capture,
 ) -> Result<Record> {
+    require_transaction(db)?;
     let operation = field(&capture.facts, "operation")?;
     if read(db, &operation)?.is_some() {
         return Err(denied("Claude holder journal already exists"));
@@ -399,6 +409,7 @@ pub(super) fn applied_in_transaction(
     db: &VerifiedDatabaseConnection<'_>,
     record: &Record,
 ) -> Result<()> {
+    require_transaction(db)?;
     if record.phase != "PREPARED" {
         return Err(denied("Claude holder apply phase"));
     }
@@ -428,6 +439,7 @@ pub(super) fn unknown_in_transaction(
     record: &Record,
     error: &str,
 ) -> Result<()> {
+    require_transaction(db)?;
     if record.phase != "PREPARED" || error.is_empty() {
         return Err(denied("Claude holder UNKNOWN transition"));
     }
@@ -455,6 +467,8 @@ pub(super) fn unknown_in_transaction(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::same_open::route_b_test_guard;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn claude_holder_snapshot_codec_preserves_ordered_acl_and_exact_object_identity() {
@@ -478,5 +492,70 @@ mod tests {
         let mut changed = bytes;
         changed.extend_from_slice(b" ");
         assert!(decoded(&changed).is_err());
+    }
+
+    #[test]
+    fn claude_holder_unknown_journal_retains_original_error_and_never_reopens_intent() {
+        let _guard = route_b_test_guard();
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!(
+            "claude-holder-journal-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&base).unwrap();
+        let root = crate::root::RootLock::acquire(&base).unwrap();
+        let mut product = ProductDatabase::open(&root, &base.join("state.sqlite")).unwrap();
+        let operation = "original-synthetic-journal-operation";
+        let request = format!("claude-gone-{}", &sha256_hex(operation.as_bytes())[..40]);
+        let capture = Capture {
+            facts: BTreeMap::from([
+                ("operation".into(), operation.into()),
+                ("instance".into(), "fixture-instance".into()),
+                ("domain".into(), "fixture-domain".into()),
+                ("session".into(), "fixture-session".into()),
+                ("request".into(), request),
+            ]),
+            objects: vec![ClaudeAclObject {
+                root_index: 0,
+                relative_utf16_hex: String::new(),
+                identity: "volume:0000000000000001/file:00000000000000000000000000000002".into(),
+                directory: true,
+                control: 0x0404,
+                before_hex: "00000004aabbccdd".into(),
+                after_hex: "00000004eeff0011".into(),
+            }],
+        };
+        let custody=Statement::prepare(product.connection.as_ptr(),
+            "INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,
+             pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state)
+             VALUES(?1,'fixture-ticket','fixture-nonce','1','1','fixture-image','fixture-digest',
+             'fixture-instance','fixture-domain','1','UNKNOWN')").unwrap();
+        custody.bind_text(1, operation).unwrap();
+        custody.step_done().unwrap();
+        drop(custody);
+        product.connection.execute("BEGIN IMMEDIATE").unwrap();
+        let record = insert_in_transaction(&product.connection, capture).unwrap();
+        product.connection.execute("COMMIT").unwrap();
+        assert_eq!(
+            read(&product.connection, operation).unwrap().unwrap(),
+            record
+        );
+        product.connection.execute("BEGIN IMMEDIATE").unwrap();
+        unknown_in_transaction(&product.connection, &record, "original third ACL image").unwrap();
+        product.connection.execute("COMMIT").unwrap();
+        let unknown = read(&product.connection, operation).unwrap().unwrap();
+        assert_eq!(unknown.phase, "UNKNOWN");
+        assert_eq!(unknown.original_error, "original third ACL image");
+        assert_eq!(unknown.snapshot_hex, record.snapshot_hex);
+        product.connection.execute("BEGIN IMMEDIATE").unwrap();
+        assert!(unknown_in_transaction(&product.connection, &record, "new error").is_err());
+        assert!(insert_in_transaction(&product.connection, record.capture).is_err());
+        product.connection.execute("ROLLBACK").unwrap();
+        product.close_checked().unwrap();
+        drop(root);
+        std::fs::remove_dir_all(base).unwrap();
     }
 }
