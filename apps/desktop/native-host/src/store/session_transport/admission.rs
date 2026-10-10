@@ -1169,6 +1169,37 @@ mod tests {
     }
 
     #[test]
+    fn one_boundary_survives_reopen_unknown_replay_and_home_fence_unavailable_reserve_rolls_back() {
+        owner_unstarted_fixture(|_root,db,_owner,_busy| {
+            db.execute("CREATE TABLE test_reserve_side_effect(value TEXT) STRICT").unwrap();
+            let reserve=AdmissionRequest {domain_id:"projectA",session_id:"unavailableSession",
+                request_id:"unavailableReserve",raw_bytes:b"fresh unavailable reserve",
+                instance_id:"instanceA",home_id:"unavailableHome",generation:"3",
+                expected_revision:0};
+            let pin=super::super::runtime::InstancePin {driver_id:"codex".into(),
+                version:"0.160.0".into(),digest:"sha256:fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d".into()};
+            let result=reserve_native_admission(db,&reserve,|db,new| {
+                assert!(new);
+                db.execute("INSERT INTO test_reserve_side_effect VALUES('would-be-selection')")?;
+                super::super::runtime::require_new_reservation_supported(&pin,
+                    crate::store::seat::PermissionTier::ReadOnly,new)?;
+                one_capacity(db)
+            });
+            assert!(matches!(result,Err(AdmissionError::Invalid(reason))
+                if reason.contains("READ_ONLY LPAC unavailable")
+                    && reason.contains("GetComputerNameExW did not provide buffer size")));
+            for sql in ["SELECT COUNT(*) FROM test_reserve_side_effect",
+                "SELECT COUNT(*) FROM gogoke_v37_h_claim WHERE session_id='unavailableSession'",
+                "SELECT COUNT(*) FROM gogoke_v37_h_operation WHERE session_id='unavailableSession'",
+                "SELECT COUNT(*) FROM gogoke_v37_h_seat_binding WHERE session_id='unavailableSession'",
+                "SELECT COUNT(*) FROM gogoke_v37_native_selection WHERE session_id='unavailableSession'",
+                "SELECT COUNT(*) FROM gogoke_v37_h_process_episode WHERE session_id='unavailableSession'"] {
+                assert_eq!(count(db,sql,&[]).unwrap(),0,"{sql}");
+            }
+        });
+    }
+
+    #[test]
     fn owner_release_settles_only_an_unstarted_committed_claim_without_a_stop_fact() {
         owner_unstarted_fixture(|_root, db, owner, busy| {
             let request = owner_release_request(3);
