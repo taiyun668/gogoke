@@ -1082,6 +1082,14 @@
     ]
    },
    {
+    "path": "apps/desktop/native-host/src/store/product_database/v37_seat.rs",
+    "extension": "E/G project intake only: on the existing verified ProductDatabase connection and Owner configuration read path, report the exact policy head as explicitly absent or its original revision and currentStage in one read-only snapshot. Preserve original errors and all existing head/stage/grants/revocations. The read never initializes or repairs policy, grants a call, changes a stage, admits a model, or writes any state; only an explicit project/USER creation path may use confirmed absence to submit the existing Owner policy-initialize command with its original replay and conflict rules.",
+    "serves": [
+     "E",
+     "G"
+    ]
+   },
+   {
     "path": "apps/desktop/native-host/src/store/product_database/v37_visible_effect.rs",
     "extension": "For a new visible USER effect only, require the selected workspace row to be the latest current selection in the existing immediate transaction before preparing the original action. Existing request replay/recover keeps its original historical selection and H/A proof; do not add commands, fields, capabilities or writers.",
     "serves": [
