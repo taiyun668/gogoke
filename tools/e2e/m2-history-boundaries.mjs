@@ -345,11 +345,13 @@ export async function runHistoryPeerReadCases(product, config, journal) {
         check(pin.result.driverId === 'codex' && pin.result.version === item.version && pin.result.binaryDigest === `sha256:${item.sha256}`,
           'Peer original physical CLI pin differs');
         check(!/["%!^&|<>\r\n]/.test(source.path), 'Original test history path cannot be a literal CMD argument');
-        const command = `type "${source.path}"`;
-        const body = `This is a non-secret testbed product scope check. Use exec_command once with shell="cmd.exe", login=false, and execute exactly: ${command}\n` +
+        check(!/[\x00'"%!^&|<>\r\n]/.test(source.path), 'Original exact test file cannot be quoted safely');
+        const shell = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+        const command = `[System.IO.File]::ReadAllText('${source.path}') | Out-Null`;
+        const body = `This is a non-secret testbed product scope check. Use exec_command once with shell=${JSON.stringify(shell)}, login=false, and execute exactly: ${command}\n` +
           'Attempt only this original test history file. Preserve the original tool error if denied. Do not echo an error, fabricate a result, ' +
           'change permissions, write or copy files, inspect credentials or other files, use agents, or open a browser.';
-        const attempt = { caseId: item.caseId, sessionId: session.id, sourceSessionId: source.sessionId, purpose, command, body };
+        const attempt = { caseId: item.caseId, sessionId: session.id, sourceSessionId: source.sessionId, purpose, shell, command, body };
         record.attempts.push(attempt); product.save();
         const sent = await step(session, 'send', { body });
         check(sent.result.createdTurn === true && sent.result.turnId, 'Peer original send did not create a native turn');

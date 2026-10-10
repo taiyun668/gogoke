@@ -69,7 +69,7 @@ const check = (condition, reason) => { if (!condition) throw Error(reason); };
 async function requireClosedCandidate() {
   const original = await new Promise((resolve, reject) => {
     const child = spawn(config.pwsh, ['-NoProfile', '-NonInteractive', '-File',
-      path.join(here, 'm2-stop-worktree-v11-census.ps1'), '-Installed', config.installed],
+      path.join(here, 'm2-stop-worktree-v11-census.ps1'), '-Installed', config.installed, '-Python', config.python],
     { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
     child.stdout.on('data', bytes => { stdout = (stdout + bytes).slice(-8192); });

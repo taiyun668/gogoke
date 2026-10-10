@@ -157,3 +157,11 @@ SAC 本次重新读回为 0；所有新临时与证据直接 D 盘。正式保�
 - peer 两轮原工具都输出 path not found、exit 1；命令原文存在多重转义，未执行有效的同对象读取，不能计 ACL 拒绝。补读如实保留 NOT_RUN，下一步修确切命令后只续缺的两轮和同域读取，不重跑已完成源历史。三组正式/记忆/账本观察器十三字段全部等值；完成的补读任务已逐项清理并回读不存在，所有原件保留。
 - 阶段缺值提案已独立只读复核，材料见同目录 POLICY-UNSET-STAGE-CHANGE-REQUEST-20261010.md。虽然最少既有路径的细节可保持摘要不变，原 #85 明确保留政策表/初始化；改变该语义先交 Owner 裁决，本包未施工。其他 M2 线继续。
 - 参照：原 Codex item 生命周期、原 H/A commandExecution 和正常关闭读回；采用原事实与严格单次命令/对象校验，不用模型文字或 path not found 冒充隔离拒绝，不把测量修复当新产品能力。
+
+### 命令展示与实际参数分开，V11 预检补齐
+
+- 纠正上段“命令多重转义导致路径错误”的归因：固定 Codex 官方 CommandExecutionPresentation 使用 shlex::try_join 展示 argv。解码两条原工具记录后，实际 cmd.exe /c 参数与原请求精确相等；不能据展示中的反斜杠判断模型改坏命令。原 path not found 仍不是权限拒绝。普通 PowerShell 调 CMD 的成功也不等价于 CLI 参数序列；较接近的直接 argv 检查仍路径错误，根因不作过度归因。
+- 同一确切原测试对象，用系统 PowerShell 的原 derive_exec_args 序列执行唯一 File.ReadAllText 并丢弃 stdout，退出零、无 stderr，原文件 SHA 不变；这是仪器正对照，不是隔离或产品通过。peer fixture 采用该唯一读命令，reader 从固定 CLI 展示解码完整 argv 并逐元素比对；原工具同 turn/item 的 UnauthorizedAccessException 才可记直接拒绝，零码立即失败，原 CMD 错误继续不合格。尚未续跑两轮真实 peer。
+- V11 工人独立入口复用原 MAIN_WRITE/READ_ONLY，新增外部私有树尝试。独立复核要求发送前先用原闭库全量 F/source/common 物理清单排重叠，已补并封哈希；闭库再读同清单。原 BeforeLaunch 只证明登记，不证明进程退出，现按本 runner 固定安装名称及实际 8.3 名称枚举，比较进程映像与安装文件物理身份，未知拒绝；不声称排除任意重命名副本或所有主机写者。全 session 查询受保护系统进程的失败未作为闭库证明，最终不采用该方案。
+- Root 已接管小夹具连续调试，避免反复协调。全新 Sol 聚焦复核这两处测量边界无新阻塞，语法与 diff 检查通过；真实 V11、peer 与完整 M2 仍 NOT_RUN。E null 阶段/旧 schema 保全与 USER bridge 正在跑受影响云检；G 仍由 Claude 负责，最新交付评论主动核对后暂无新提交。
+- 参照：固定 Codex rust-v0.160.0 的 shell.rs、tools/handlers/unified_exec.rs、app-server-protocol/protocol/item_builders.rs 及 shell-command/parse_command.rs；原 Win32 文件对象和 F 登记、原正常关闭及现有 ActualProduct runner。采用官方 argv/展示编码和原物理对象，不改固定 CLI、系统安全或正式数据。

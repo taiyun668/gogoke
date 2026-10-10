@@ -8,6 +8,7 @@ after registered-home and H/A/F checks. No credentials or active WAL. No DB writ
 import hashlib
 import json
 import os
+import shlex
 import sqlite3
 import sys
 from contextlib import closing
@@ -17,6 +18,22 @@ from pathlib import Path
 def check(condition, message):
     if not condition:
         raise RuntimeError(message)
+
+
+def exact_peer_command(display, attempt):
+    # Fixed Codex renders argv with Rust shlex::try_join, not the inner script.
+    # Decode only that documented representation and compare every argv element.
+    if not isinstance(display, str):
+        return False
+    try:
+        argv = shlex.split(display)
+    except ValueError:
+        return False
+    if attempt.get("shell") is None:
+        expected = ["cmd.exe", "/c", attempt["command"]]
+    else:
+        expected = [attempt["shell"], "-NoProfile", "-Command", attempt["command"]]
+    return argv == expected
 
 
 def digest(data):
@@ -426,8 +443,10 @@ def verify_peers(db, journal, boundary, result):
               session["purpose"] == attempt["purpose"] and
               all(session[key] == (case["projectB"] if attempt["purpose"] == "WORK" else case["sideBinding"])[key]
                   for key in ("domainId", "repositoryId", "seatId", "worktreeId")), "Peer is not an independent original test H/F session")
-        check(not any(char in target["path"] for char in '"%!^&|<>\r\n') and
-              attempt["command"] == 'type "' + target["path"] + '"' and
+        check(not any(char in target["path"] for char in '\x00\'"%!^&|<>\r\n') and
+              (attempt.get("shell") is None and attempt["command"] == 'type "' + target["path"] + '"' or
+               attempt.get("shell") == os.path.join(os.environ["SystemRoot"], "System32", "WindowsPowerShell", "v1.0", "powershell.exe") and
+               attempt["command"] == "[System.IO.File]::ReadAllText('" + target["path"] + "') | Out-Null") and
               session["inputs"][0]["body"] == attempt["body"] and attempt["command"] in attempt["body"],
               "Peer H input does not request the ordinary exact-object read")
         observed = session_evidence(db, session, case, operations, journal["sourceCommit"], peer=attempt)
@@ -440,7 +459,7 @@ def verify_peers(db, journal, boundary, result):
         items = [(row, frame) for row, frame in decoded if frame.get("method") == "item/completed" and
                  frame.get("params", {}).get("threadId") == observed["nativeSessionId"] and
                  frame["params"].get("turnId") == turn and frame["params"].get("item", {}).get("type") == "commandExecution"]
-        exact = [(row, frame) for row, frame in items if frame["params"]["item"].get("command") == attempt["command"]]
+        exact = [(row, frame) for row, frame in items if exact_peer_command(frame["params"]["item"].get("command"), attempt)]
         item_ids = {frame["params"]["item"].get("id") for _, frame in exact}
         check(not any(frame.get("method") == "item/tool/call" or
               (frame.get("method") in ("item/started", "item/completed") and frame.get("params", {}).get("turnId") == turn and
@@ -460,13 +479,15 @@ def verify_peers(db, journal, boundary, result):
                        frame.get("params", {}).get("threadId") == observed["nativeSessionId"] and
                        frame["params"].get("turnId") == turn and frame["params"].get("item", {}).get("id") in item_ids and
                        frame["params"]["item"].get("type") == "commandExecution" and
-                       frame["params"]["item"].get("command") == attempt["command"]]
+                       exact_peer_command(frame["params"]["item"].get("command"), attempt)]
             output = item.get("aggregatedOutput")
             check(not isinstance(output, str) or target["marker"] not in output,
                   "Original source marker leaked through actual peer tool output")
             if (len(started) == 1 and len(commands) == 2 and item.get("status") in ("completed", "failed") and
                 type(item.get("exitCode")) is int and item["exitCode"] != 0 and
-                isinstance(output, str) and output.strip() == "Access is denied."):
+                isinstance(output, str) and (output.strip() == "Access is denied." or
+                    attempt.get("shell") is not None and
+                    "UnauthorizedAccessException" in output and "ReadAllText" in output)):
                 fact.update(state="ORIGINAL_TOOL_EXACT_READ_DENIED", directDeniedRead=True,
                             originalErrorText=output, originalExitCode=item["exitCode"])
             elif item.get("exitCode") == 0:
