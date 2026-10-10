@@ -1508,6 +1508,17 @@ fn native_child_create_derives_only_first_exact_dispatch_grant_preserves_legacy_
         answer_takeover(db,&caller,"q","Known scope",AnswerBasis::Cited {
             source_ref:"repo:PLAN".into()},0,"answerLegacy",b"original answer").unwrap();
         let admission=NativeLeadAdmission::from_native_runtime_snapshot(&active).unwrap();
+        let grant_snapshot=|db:&VerifiedDatabaseConnection<'_>,seat_id:&str| {
+            let q=Statement::prepare(db.as_ptr(),
+                "SELECT caller_seat_id,action,expires_at_ms,revision FROM main.gogoke_v37_seat_policy_grants WHERE domain_id='projectA' AND target_id=?1 ORDER BY caller_seat_id,action").unwrap();
+            q.bind_text(1,seat_id).unwrap();
+            let mut rows=Vec::new();
+            while q.step_row().unwrap() {
+                rows.push((q.column_text(0).unwrap(),q.column_text(1).unwrap(),
+                    q.column_text(2).unwrap(),q.column_text(3).unwrap()));
+            }
+            rows
+        };
         for (seat_id,request_id,kind,raw) in [
             ("legacyLong","legacyLongCreate",Kind::Long,b"old long create".as_slice()),
             ("legacyShort","legacyShortCreate",Kind::Short,b"old short create".as_slice()),
@@ -1522,17 +1533,33 @@ fn native_child_create_derives_only_first_exact_dispatch_grant_preserves_legacy_
                 "instanceA",kind.sql(),"LEAD","lead",&active.incarnation,
                 &active.generation.to_string()],raw);
             assert_eq!(operation(db,"projectA",request_id,&stored).unwrap().unwrap().seat,old);
+            // Historical H create derived this exact dispatch edge after writing
+            // the seat. Model that nonempty persisted grant before replay.
+            policy::derive_new_child_dispatch_grant(db,&caller,&old).unwrap();
+            let grants_before=grant_snapshot(db,seat_id);
+            assert_eq!(grants_before.len(),1);
+            assert_eq!(grants_before[0].0,"lead");
+            assert_eq!(grants_before[0].1,"DISPATCH");
+            authorize_child_dispatch(db,&caller,&old).unwrap();
             let replay=create_native_child(db,&caller,input()).unwrap();
             assert!(replay.replayed);
             assert_eq!(replay.seat,old);
             assert_eq!(operation(db,"projectA",request_id,&stored).unwrap().unwrap().seat,old);
-            let grants=Statement::prepare(db.as_ptr(),
-                "SELECT COUNT(*) FROM main.gogoke_v37_seat_policy_grants WHERE domain_id='projectA' AND target_id=?1").unwrap();
-            grants.bind_text(1,seat_id).unwrap();
-            assert!(grants.step_row().unwrap());
-            assert_eq!(grants.column_text(0).unwrap(),"0",
-                "legacy replay must not derive a new child grant");
+            assert_eq!(grant_snapshot(db,seat_id),grants_before,
+                "legacy replay must preserve the original dispatch grant exactly");
+            authorize_child_dispatch(db,&caller,&old).unwrap();
         }
+        let old_user=create(db,NativeOrigin::user(owner),CreateSeat {domain_id:"projectA",
+            seat_id:"legacyUserShort",template_id:"templateE2",instance_id:Some("instanceA"),
+            kind:Kind::Short,request_id:"legacyUserShortCreate",
+            request_bytes:b"old user short create"}).unwrap().seat;
+        let user_replay=create(db,NativeOrigin::user(owner),CreateSeat {domain_id:"projectA",
+            seat_id:"legacyUserShort",template_id:"templateE2",instance_id:Some("instanceA"),
+            kind:Kind::Long,request_id:"legacyUserShortCreate",
+            request_bytes:b"old user short create"}).unwrap();
+        assert!(user_replay.replayed);
+        assert_eq!(user_replay.seat,old_user);
+        assert_eq!(user_replay.seat.kind,Kind::Short);
         assert!(matches!(create_native_child(db,&caller,CreateSeat {
             request_bytes:b"changed long create",..CreateSeat {domain_id:"projectA",
                 seat_id:"legacyLong",template_id:"templateE2",instance_id:Some("instanceA"),

@@ -1021,8 +1021,8 @@ fn create_inner(
             a.generation.to_string(),
         ),
     };
-    // The authenticated native child entry used LONG before the task-child
-    // default changed. Its original kind remains part of the old fingerprint.
+    // The frozen create wire does not contain kind. Historical USER and LEAD
+    // requests may have either kind; their original fingerprints stay valid.
     let fresh_kind = if caller.is_some() { Kind::Short } else { input.kind };
     let create_fingerprint = |kind: Kind| fingerprint(
         &[
@@ -1040,7 +1040,8 @@ fn create_inner(
         input.request_bytes,
     );
     let fp = create_fingerprint(fresh_kind);
-    let legacy_fp = (fresh_kind != input.kind).then(|| create_fingerprint(input.kind));
+    let prior_kind = match fresh_kind { Kind::Long => Kind::Short, Kind::Short => Kind::Long };
+    let legacy_fp = create_fingerprint(prior_kind);
     transact(db, |db| {
         // Authenticate before looking up a request ID as well as before the
         // first seat write. This covers both fresh writes and replay/conflict
@@ -1059,7 +1060,7 @@ fn create_inner(
         // Resolve a persisted request against its original fingerprint before
         // applying the new default to a fresh child. Neither kind is rewritten.
         if let Some(stored_fp) = create_operation_fingerprint(db, input.domain_id, input.request_id)? {
-            if stored_fp != fp && legacy_fp.as_deref() != Some(stored_fp.as_str()) {
+            if stored_fp != fp && stored_fp != legacy_fp {
                 return Err(SeatError::Conflict);
             }
             let receipt = operation(db, input.domain_id, input.request_id, &stored_fp)?
