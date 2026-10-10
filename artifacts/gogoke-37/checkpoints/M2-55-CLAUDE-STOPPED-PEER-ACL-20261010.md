@@ -61,3 +61,15 @@ Claude 原实例冷恢复/新一次真实 USER turn，以及 Grok 新一次真�
 Grok 新脚本在产品启动前把真实安装路径与字面量环境变量比较而拒绝，原任务与空证据目录保全，修测量条件后才执行；没有原权限请求重放。独立审计一度把 H generation 与 E 授权 generation 的比较判为误拒，随后核到 admission 会递增 E generation、撤回发现；没有据错误前提改产品。并行席位继续核算术题读回和 Grok 单次权限回包，G 目录未改。
 
 参照沿用已有 `m2-provider-capture-readback.py` 的关闭后原库读法、原生 H 写入/停止生产者及固定 Claude 会话结果；不是凭替身或 CLI user echo 猜成功。源码当前明确追加 `--replay-user-messages`，此前空 HOME 组件参数比较不能推出已安装新会话没有该参数，本次不改 CLI 或其启动参数。
+
+## 普通问答与 Grok 新拒绝原文
+
+56 原 Claude 实例的新一次普通算术问答已完成：题面 `What is 241 + 537?`，实际回答 `241 + 537 = **778**`；原请求最初 UNKNOWN，随后原宿主回执完成，同物理 H 的确认写入、assistant 原文、唯一初始化会话与成功 Result、真实 StopFact/RELEASED 均在关闭后的原库核对。产品正常退出零，数据库及 sidecar 观察前后字节相同，正式/记忆/账本保护通过。两条未处理原帧仍如实保留，单条普通问答不算完整厂商矩阵。实际原帧已导入私有协议样本：入站六、出站二、一个归一化输出，标为 REVIEW_REQUIRED / NOT_ASSESSED，不冒充验收。
+
+将上述已实测的测量修正固化回现有 provider E2E：Claude 普通题与原 H 写入/同会话结果、空 WAL/journal 和正常退出的只读核对；其他两家原判据和旧失败补读保留。独立工人在独占分支交付，Controller 集成；本机签名 Node 语法、Python AST、卫生以及云端 Browser 检查通过。不为测试脚本改动重签、换装或跑全量原生库。
+
+Grok 新请求的原回执为 FAILED，直接厂商终态 `cancelled`，原分类 `PermissionRejected`，工具 `search_replace`，原原因 `User rejected the execution`；工具归一化原状态为 failed。已实际正常 H stop/release、产品退出零并通过正式保护。旧脚本误要求成功 end_turn，原 FAIL 保留；不重发请求。当前 adapter 对严格 Write 才能核准 F 写入，SearchReplace 属未核准形状；不能把这次拒绝写成“已验证 F 写入资格拒绝”或 OS ACL 拒绝。正在关闭后补核原请求、一次 WRITTEN 拒绝回包与目标未写事实，同时准备注册 F 的严格 Write 正向。
+
+补读仪器两项错误在 SQL 之前暴露：漏 import base64，以及把真实 productExits 列表按对象读取；原错误和确切完成任务已保全。已成批核失败路径缺少 hReceipt/toolCandidates、turns 位于 session、写时 E 与释放后 E 字段的区别，不用缺字段补造事实。
+
+并行推进 V10 新用例准备与秘书长 E.3 生产接缝。秘书长已证实 E 返回任务结果，但 G Routine 只接有日期的 lastRun，共享投影据此拒绝已有无日期结果；已交 Claude 修最小读模型，Root 不改 G。现有 TS coordinator 生产工厂不可用；实际 authority pump 存在，但定时 occurrence 原语尚无生产调用。后续接线必须复用同一 H 准入、同事务准备与原回执，UNKNOWN 不重发，不把 primitive 或静态代码写成已运行。
