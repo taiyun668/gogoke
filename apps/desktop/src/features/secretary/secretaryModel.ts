@@ -94,6 +94,8 @@ export type Routine = {
   schedule: string;
   nextRun?: string;
   lastRun?: { at: string; ok: boolean; note?: string };
+  /** The host's last outcome when it records no run time; shown as it is, never with an invented time. */
+  lastOutcome?: { result: "DELIVERED" | "FAILED" | "UNKNOWN"; reason?: string };
   paused: boolean;
 };
 
@@ -125,7 +127,14 @@ export function routineLine(routine: Routine): string {
 }
 
 export function lastRunLine(routine: Routine): { text: string; failed: boolean } {
-  if (!routine.lastRun) return { text: "还没跑过", failed: false };
+  if (!routine.lastRun) {
+    const outcome = routine.lastOutcome;
+    if (!outcome) return { text: "还没跑过", failed: false };
+    const when = "（宿主没记时间）";
+    if (outcome.result === "DELIVERED") return { text: `上次 · 已送达${when}`, failed: false };
+    if (outcome.result === "FAILED") return { text: `上次 · 没跑成：${outcome.reason || "宿主没给出原因"}${when}`, failed: true };
+    return { text: `上次 · 结果未确认${outcome.reason ? `：${outcome.reason}` : ""}${when}`, failed: false };
+  }
   if (routine.lastRun.ok) return { text: `上次 ${routine.lastRun.at} · 跑完了`, failed: false };
   return { text: `上次 ${routine.lastRun.at} · ${routine.lastRun.note ?? "没跑成，宿主没给出原因"}`, failed: true };
 }

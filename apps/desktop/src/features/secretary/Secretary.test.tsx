@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SecretaryActionLine, SecretaryEntry, SecretaryPanel, type SecretarySource } from "./Secretary";
-import type { SecretaryPage } from "./secretaryModel";
+import { lastRunLine, type Routine, type SecretaryPage } from "./secretaryModel";
 
 function page(overrides: Partial<SecretaryPage> = {}): SecretaryPage {
   return {
@@ -169,5 +169,24 @@ describe("SecretaryPanel", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("lastRunLine", () => {
+  const routine = (extra: Partial<Routine>): Routine => ({ id: "r", name: "盯云端测试", schedule: "每 30 分钟", paused: false, ...extra });
+
+  it("shows a host outcome without a run time as it is, never inventing a time or a success", () => {
+    expect(lastRunLine(routine({}))).toEqual({ text: "还没跑过", failed: false });
+    expect(lastRunLine(routine({ lastOutcome: { result: "DELIVERED" } }))).toEqual({ text: "上次 · 已送达（宿主没记时间）", failed: false });
+    expect(lastRunLine(routine({ lastOutcome: { result: "FAILED", reason: "主控不在线" } }))).toEqual({
+      text: "上次 · 没跑成：主控不在线（宿主没记时间）",
+      failed: true,
+    });
+    expect(lastRunLine(routine({ lastOutcome: { result: "UNKNOWN" } }))).toEqual({ text: "上次 · 结果未确认（宿主没记时间）", failed: false });
+    expect(lastRunLine(routine({ lastOutcome: { result: "UNKNOWN" } })).text).not.toMatch(/跑完|成功|没跑成/);
+  });
+
+  it("keeps a dated last run as before", () => {
+    expect(lastRunLine(routine({ lastRun: { at: "10:00", ok: true }, lastOutcome: { result: "UNKNOWN" } })).text).toBe("上次 10:00 · 跑完了");
   });
 });
