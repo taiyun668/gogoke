@@ -253,7 +253,9 @@ pub(super) fn initialize(db: &mut VerifiedDatabaseConnection<'_>) -> Result<()> 
         if schema_state(db)? {
             return Err(denied("Claude holder schema creation raced"));
         }
-        db.execute(SCHEMA)?;
+        db.execute(SCHEMA).map_err(|error| {
+            OrchestrationError::V37StoreFailure(format!("Claude holder schema creation: {error:?}"))
+        })?;
         if !schema_state(db)? {
             return Err(denied("Claude holder schema not created"));
         }
@@ -313,6 +315,13 @@ pub(super) fn read(db: &VerifiedDatabaseConnection<'_>, operation: &str) -> Resu
         if field(&capture.facts, key)? != value {
             return Err(denied("Claude holder journal identity"));
         }
+    }
+    let operation_digest = sha256_hex(operation.as_bytes());
+    if request_id != format!("claude-gone-{}", &operation_digest[..40])
+        || (phase == "PREPARED" && revision != 1)
+        || (phase == "APPLIED" && revision != 2)
+    {
+        return Err(denied("Claude holder journal phase/request binding"));
     }
     Ok(Some(Record {
         operation: operation.into(),
