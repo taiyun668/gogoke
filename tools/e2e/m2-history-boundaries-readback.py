@@ -349,7 +349,10 @@ def vendor_objects(root, cases):
             if not isinstance(value, str) or not value:
                 not_run.append({**identity, "state": "NOT_RUN_ORIGINAL_THREAD_PATH_MISSING"})
                 continue
-            original = Path(value)
+            # Windows readers do not necessarily opt in to DOS long paths.
+            # Use the same local object with its verbatim spelling, as H's
+            # native file APIs do; preserve the exact ACK spelling separately.
+            original = Path(value if value.startswith("\\\\?\\") else "\\\\?\\" + value)
             pin = source["instance"]
             home = root / "v37-instances" / source["episode"]["instance_id"]
             try:
@@ -391,7 +394,8 @@ def vendor_objects(root, cases):
                 check((before.st_dev, before.st_ino, before.st_nlink, before.st_size, before.st_mtime_ns) ==
                       (after.st_dev, after.st_ino, after.st_nlink, after.st_size, after.st_mtime_ns) and digest(original.read_bytes()) == digest(raw),
                       "Original vendor object changed during normal-close readback")
-                objects.append({**identity, "domainId": source["domainId"], "path": value,
+                objects.append({**identity, "domainId": source["domainId"], "path": str(original),
+                    "reportedPath": value,
                     "nativeSessionId": source["nativeSessionId"], "instanceId": pin["instance_id"],
                     "homeIdentity": pin["home_identity"], "fileIdentity": [str(before.st_dev), str(before.st_ino)],
                     "sha256": digest(raw), "marker": source["marker"], "sessionMeta": frames[0],

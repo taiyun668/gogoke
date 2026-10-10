@@ -126,6 +126,7 @@ jobs:
               'store::seat::tests::owner_policy_head_read_requires_current_owner_and_preserves_absent_or_existing_fact',
               'store::seat::tests::native_child_scope_cap_refuses_a_second_seat_without_minting_a_grant',
               'store::seat::tests::native_child_create_derives_only_first_exact_dispatch_grant',
+              'store::session_transport::admission::tests::one_boundary_survives_reopen_unknown_replay_and_home_fence',
               'store::product_database::v37_seat::tests::owner_orchestration_bounds_have_a_separate_receipt_and_preserve_project_cap') }
             'ledger-scope' { @('work_source_cannot_mint_a_secretary_global_reader',
               'native_user_ledger_scopes_replay_and_subscription_survive_reopen') }

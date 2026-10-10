@@ -43,7 +43,7 @@ fn worktree_request_identity_matches(db: &VerifiedDatabaseConnection<'_>,
 
 fn admission_status(error: &AdmissionError) -> V37Status {
     match error {
-        AdmissionError::Invalid(_) | AdmissionError::Denied
+        AdmissionError::Invalid(_) | AdmissionError::Denied | AdmissionError::CapacityExceeded { .. }
         | AdmissionError::ProjectCapacity(seat::SeatError::Denied)
         | AdmissionError::InstanceCapacity(OrchestrationError::AccessDenied) => V37Status::Denied,
         AdmissionError::Conflict => V37Status::Conflict,
