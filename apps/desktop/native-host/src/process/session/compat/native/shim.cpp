@@ -25,6 +25,8 @@ NamedPipeA g_pipe_a = nullptr;
 NamedPipeW g_pipe_w = nullptr;
 OpenFileA g_file_a = nullptr;
 volatile LONG g_pipe_capture = 0;
+volatile LONG g_server_observation = 0;
+volatile LONG g_client_observation = 0;
 
 // libuv's fixed uv__unique_pipe_name uses a 64-byte buffer and the form
 // \\?\pipe\uv\<decimal>-<pid>. Both ends of its private pair use that name.
@@ -100,7 +102,44 @@ bool uv_pipe_prefix(const wchar_t* name) {
 
 #ifdef GOGOKE_LPAC_PATH_TEST
 bool (*g_test_stderr)(const char*, DWORD) = nullptr;
+bool (*g_test_pipe_observation)(const char*, DWORD) = nullptr;
 #endif
+
+void report_pipe_observation(const char* api, const char* event, bool mapped,
+    bool succeeded, DWORD error) {
+    // Original calls only, bounded to the first same-process libuv pair.
+    // No pipe name, path, request or credential is included. Capture before
+    // and after the existing API so a blocking call is distinguishable from
+    // a call the CLI has not reached; do not change its result or deadline.
+    char line[256] = {};
+    DWORD len = 0;
+    auto append = [&](const char* text) { while (*text) line[len++] = *text++; };
+    auto number = [&](unsigned long long value) {
+        char digits[20]; DWORD count = 0;
+        do { digits[count++] = static_cast<char>('0' + value % 10); value /= 10; } while (value);
+        while (count) line[len++] = digits[--count];
+    };
+    FILETIME now = {};
+    GetSystemTimeAsFileTime(&now);
+    append("gogoke Claude pipe api="); append(api);
+    append(" event="); append(event);
+    append(mapped ? " mapped=1" : " mapped=0");
+    append(event[0] == 'e' ? " outcome=pending" :
+        (succeeded ? " outcome=succeeded" : " outcome=failed"));
+    append(" win32="); number(error);
+    append(" filetime_100ns=");
+    number((static_cast<unsigned long long>(now.dwHighDateTime) << 32) | now.dwLowDateTime);
+    append("\n");
+#ifdef GOGOKE_LPAC_PATH_TEST
+    if (g_test_pipe_observation) g_test_pipe_observation(line, len);
+#else
+    const HANDLE sink = GetStdHandle(STD_ERROR_HANDLE);
+    if (sink && sink != INVALID_HANDLE_VALUE) {
+        DWORD written = 0;
+        WriteFile(sink, line, len, &written, nullptr);
+    }
+#endif
+}
 
 void report_pipe_failure(const char* api, DWORD error) {
     // Fixed text and decimal Win32 code only: never disclose a generated pipe
@@ -130,13 +169,20 @@ void report_pipe_failure(const char* api, DWORD error) {
 
 HANDLE WINAPI observed_pipe_a(LPCSTR name, DWORD open_mode, DWORD pipe_mode,
     DWORD instances, DWORD out_size, DWORD in_size, DWORD timeout, LPSECURITY_ATTRIBUTES security) {
+    const DWORD prior_error = GetLastError();
     char local[kLocalPairNameCap] = {};
+    const bool own_pair = local_uv_pair_name(name, local);
     const char* target = uv_pair_server_call(open_mode, pipe_mode, instances,
-        out_size, in_size, timeout, security) && local_uv_pair_name(name, local)
+        out_size, in_size, timeout, security) && own_pair
             ? local : name;
+    const bool observe = own_pair && InterlockedCompareExchange(&g_server_observation, 1, 0) == 0;
+    if (observe) report_pipe_observation("CreateNamedPipeA", "enter", target == local, false, 0);
+    SetLastError(prior_error);
     const HANDLE result = g_pipe_a(target, open_mode, pipe_mode, instances,
         out_size, in_size, timeout, security);
     const DWORD error = GetLastError();
+    if (observe) report_pipe_observation("CreateNamedPipeA", "return", target == local,
+        result != INVALID_HANDLE_VALUE, result == INVALID_HANDLE_VALUE ? error : 0);
     if (result == INVALID_HANDLE_VALUE && uv_pipe_prefix(name) &&
         InterlockedCompareExchange(&g_pipe_capture, 1, 0) == 0)
         report_pipe_failure("CreateNamedPipeA", error);
@@ -146,13 +192,20 @@ HANDLE WINAPI observed_pipe_a(LPCSTR name, DWORD open_mode, DWORD pipe_mode,
 
 HANDLE WINAPI observed_file_a(LPCSTR name, DWORD access, DWORD share,
     LPSECURITY_ATTRIBUTES security, DWORD disposition, DWORD flags, HANDLE template_file) {
+    const DWORD prior_error = GetLastError();
     char local[kLocalPairNameCap] = {};
+    const bool own_pair = local_uv_pair_name(name, local);
     const char* target = uv_pair_client_call(access, share, security,
-        disposition, flags, template_file) && local_uv_pair_name(name, local)
+        disposition, flags, template_file) && own_pair
             ? local : name;
+    const bool observe = own_pair && InterlockedCompareExchange(&g_client_observation, 1, 0) == 0;
+    if (observe) report_pipe_observation("CreateFileA", "enter", target == local, false, 0);
+    SetLastError(prior_error);
     const HANDLE result = g_file_a(target, access, share, security,
         disposition, flags, template_file);
     const DWORD error = GetLastError();
+    if (observe) report_pipe_observation("CreateFileA", "return", target == local,
+        result != INVALID_HANDLE_VALUE, result == INVALID_HANDLE_VALUE ? error : 0);
     SetLastError(error);
     return result;
 }

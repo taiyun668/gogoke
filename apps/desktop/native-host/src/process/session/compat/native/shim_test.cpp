@@ -42,6 +42,9 @@ DWORD mock_file_error = ERROR_ACCESS_DENIED;
 char captured_stderr[112] = {};
 DWORD captured_length = 0;
 int stderr_calls = 0;
+char captured_pipe_observations[4][256] = {};
+int pipe_observation_calls = 0;
+DWORD original_file_entry_error = 0;
 
 HANDLE WINAPI mock_named_pipe_a(LPCSTR name, DWORD open_mode, DWORD pipe_mode,
     DWORD instances, DWORD out_size, DWORD in_size, DWORD timeout, LPSECURITY_ATTRIBUTES security) {
@@ -56,6 +59,7 @@ HANDLE WINAPI mock_named_pipe_a(LPCSTR name, DWORD open_mode, DWORD pipe_mode,
 
 HANDLE WINAPI mock_file_a(LPCSTR name, DWORD access, DWORD share,
     LPSECURITY_ATTRIBUTES security, DWORD disposition, DWORD flags, HANDLE template_file) {
+    original_file_entry_error = GetLastError();
     observed_file_name = name;
     strcpy_s(observed_file_name_copy, name);
     observed_file_access = access; observed_file_share = share;
@@ -81,6 +85,16 @@ bool mock_stderr(const char* line, DWORD len) {
     memcpy(captured_stderr, line, len);
     captured_stderr[len] = 0;
     SetLastError(999); // Failed stderr must not replace the original API code.
+    return false;
+}
+
+bool mock_pipe_observation(const char* line, DWORD len) {
+    if (pipe_observation_calls < 4 && len < 256) {
+        memcpy(captured_pipe_observations[pipe_observation_calls], line, len);
+        captured_pipe_observations[pipe_observation_calls][len] = 0;
+    }
+    ++pipe_observation_calls;
+    SetLastError(997);
     return false;
 }
 
@@ -479,6 +493,42 @@ void test_claude_local_uv_pair() {
     g_test_stderr = nullptr;
 }
 
+void test_original_pair_call_diagnostics_preserve_api_semantics() {
+    g_pipe_a = mock_named_pipe_a;
+    g_file_a = mock_file_a;
+    g_test_pipe_observation = mock_pipe_observation;
+    g_server_observation = 0;
+    g_client_observation = 0;
+    pipe_observation_calls = 0;
+    char source[64] = {};
+    sprintf_s(source, "\\\\?\\pipe\\uv\\123456789-%lu", GetCurrentProcessId());
+    const DWORD server_mode = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED |
+        FILE_FLAG_FIRST_PIPE_INSTANCE | WRITE_DAC;
+    mock_pipe_result = reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(0x2468));
+    mock_pipe_error = 71;
+    HANDLE result = observed_pipe_a(source, server_mode, 0, 1, 65536, 65536, 0, nullptr);
+    CHECK(result == mock_pipe_result && GetLastError() == 71);
+    CHECK(pipe_observation_calls == 2);
+    CHECK(strstr(captured_pipe_observations[0], "api=CreateNamedPipeA event=enter mapped=1 outcome=pending") != nullptr);
+    CHECK(strstr(captured_pipe_observations[1], "event=return mapped=1 outcome=succeeded win32=0 filetime_100ns=") != nullptr);
+    CHECK(strstr(captured_pipe_observations[0], source) == nullptr);
+    SECURITY_ATTRIBUTES security = {};
+    mock_file_result = INVALID_HANDLE_VALUE;
+    mock_file_error = ERROR_FILE_NOT_FOUND;
+    SetLastError(812);
+    result = observed_file_a(source, GENERIC_READ | GENERIC_WRITE | WRITE_DAC,
+        0, &security, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+    CHECK(result == INVALID_HANDLE_VALUE && GetLastError() == ERROR_FILE_NOT_FOUND);
+    CHECK(original_file_entry_error == 812 && pipe_observation_calls == 4);
+    CHECK(strstr(captured_pipe_observations[2], "api=CreateFileA event=enter mapped=1 outcome=pending") != nullptr);
+    CHECK(strstr(captured_pipe_observations[3], "event=return mapped=1 outcome=failed win32=2 filetime_100ns=") != nullptr);
+    CHECK(strstr(captured_pipe_observations[3], source) == nullptr);
+    result = observed_file_a(source, GENERIC_READ | GENERIC_WRITE | WRITE_DAC,
+        0, &security, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+    CHECK(result == INVALID_HANDLE_VALUE && GetLastError() == ERROR_FILE_NOT_FOUND && pipe_observation_calls == 4);
+    g_test_pipe_observation = nullptr;
+}
+
 void test_claude_iat_shape() {
     alignas(8) BYTE image[4096] = {};
     auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(image);
@@ -546,6 +596,7 @@ int main() {
     test_iat_shape();
     test_claude_pipe_observation();
     test_claude_local_uv_pair();
+    test_original_pair_call_diagnostics_preserve_api_semantics();
     test_claude_iat_shape();
     test_mode_selection();
     if (failures) fprintf(stderr, "%d fixed shim tests failed\n", failures);
