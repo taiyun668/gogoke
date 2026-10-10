@@ -1814,20 +1814,22 @@ pub(crate) fn recover(
     }
     let invalid_stream = scalar(
         connection,
-        "SELECT COUNT(*) FROM v37_ledger_source_stream AS s
+        "WITH stream_rows AS (
+            SELECT session_id, source_epoch, COUNT(*) AS row_count,
+                   MIN(CAST(source_cursor AS INTEGER)) AS first_cursor,
+                   COUNT(DISTINCT source_cursor) AS distinct_cursor_count
+            FROM v37_ledger_index
+            WHERE source_kind = 'v37'
+            GROUP BY session_id, source_epoch
+         )
+         SELECT COUNT(*) FROM v37_ledger_source_stream AS s
+          LEFT JOIN stream_rows AS rows
+            ON rows.session_id = s.session_id AND rows.source_epoch = s.source_epoch
          WHERE s.last_cursor < 1 OR
            (s.state = 'ACTIVE' AND (
-             (SELECT COUNT(*) FROM v37_ledger_index AS i
-              WHERE i.source_kind = 'v37' AND i.session_id = s.session_id
-                AND i.source_epoch = s.source_epoch) <> s.last_cursor OR
-             (SELECT COALESCE(MIN(CAST(i.source_cursor AS INTEGER)), 0)
-              FROM v37_ledger_index AS i
-              WHERE i.source_kind = 'v37' AND i.session_id = s.session_id
-                AND i.source_epoch = s.source_epoch) <> 1 OR
-             EXISTS (SELECT 1 FROM v37_ledger_index AS i
-              WHERE i.source_kind = 'v37' AND i.session_id = s.session_id
-                AND i.source_epoch = s.source_epoch
-              GROUP BY i.source_cursor HAVING COUNT(*) <> 1)
+              COALESCE(rows.row_count, 0) <> s.last_cursor OR
+              COALESCE(rows.first_cursor, 0) <> 1 OR
+              COALESCE(rows.distinct_cursor_count, 0) <> COALESCE(rows.row_count, 0)
            ))",
     )?;
     if invalid_stream != "0" {
