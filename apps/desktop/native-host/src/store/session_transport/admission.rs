@@ -13,6 +13,7 @@ pub(crate) enum AdmissionError {
     Stale,
     Unknown,
     UnsupportedCapacity,
+    CapacityExceeded { project_active: i64, project_cap: i64, instance_active: i64, instance_cap: i64 },
     Identity(crate::store::orchestration::OrchestrationError),
     Seat(crate::store::seat::SeatError),
     ProjectCapacity(crate::store::seat::SeatError),
@@ -538,7 +539,10 @@ fn reserve_admission_inner(
         if project_active >= limits.project_parallel
             || instance_active >= limits.instance_concurrency
         {
-            return Err(AdmissionError::Denied);
+            return Err(AdmissionError::CapacityExceeded {
+                project_active, project_cap: limits.project_parallel,
+                instance_active, instance_cap: limits.instance_concurrency,
+            });
         }
         let row = Statement::prepare(connection.as_ptr(),
             "INSERT INTO gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision) VALUES(?1,?2,?3,?4,?5,?6,'RESERVED',1)")?;
@@ -1335,8 +1339,16 @@ mod tests {
         );
         assert!(matches!(
             reserve_admission(&mut db, &second, one_capacity),
-            Err(AdmissionError::Denied)
+            Err(AdmissionError::CapacityExceeded {
+                project_active: 1, project_cap: 1, instance_active: 1, instance_cap: 1,
+            })
         ));
+        assert_eq!(count(&db,
+            "SELECT COUNT(*) FROM gogoke_v37_h_claim WHERE domain_id=?1 AND session_id=?2",
+            &["projectA", "sessionB"]).unwrap(), 0);
+        assert_eq!(count(&db,
+            "SELECT COUNT(*) FROM gogoke_v37_h_operation WHERE domain_id=?1 AND session_id=?2",
+            &["projectA", "sessionB"]).unwrap(), 0);
         let commit = AdmissionRequest {
             request_id: "commitA",
             raw_bytes: b"commit bytes",
@@ -1375,7 +1387,9 @@ mod tests {
         );
         assert!(matches!(
             reserve_admission(&mut db, &second, one_capacity),
-            Err(AdmissionError::Denied)
+            Err(AdmissionError::CapacityExceeded {
+                project_active: 1, project_cap: 1, instance_active: 1, instance_cap: 1,
+            })
         ));
         db.execute("UPDATE gogoke_coordination_process_custody SET state='STOPPED',stop_proof_hash='proofA' WHERE operation_id='processA'").unwrap();
         in_transaction(&mut db, |connection| {
