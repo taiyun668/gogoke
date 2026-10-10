@@ -427,3 +427,17 @@ Tauri 不改变首次附着丢弃历史实时事件的规则；冷读合页保�
 只新增 INTEGRATOR 共享路径 `apps/desktop/native-host/src/store/product_database/v37_seat.rs`：在既有 Owner 配置只读入口及同一已验证 ProductDatabase 快照中明确返回 head **absent** 或原 `{revision,currentStage}`，保留原错误，不写入、不自动修复、不授予 call grant、gate、route 或任何模型权限。G 已列共享 `apps/desktop/src/services/tauri.ts` 仅在显式新建项目或 USER 席位流程中消费该事实；确证 absent 才提交现有 Owner `policy-initialize`，既有 head 的 revision/stage、撤销和 grants 原样保留。原命令的 request bytes、精确重放及冲突规则保持；并发冲突只重读当前事实，不覆盖。初始 stage 的实际取值仍待按原项目创建语义确认；历史测试夹具使用 `OPEN` 不单独授予产品默认值。本提案不改变原政策表、持久写方、默认 grant、模型工具、契约或 Owner 触点。
 
 只读定位依据为当前施工源 `2d700a5b` 的该文件 blob `633b3d29e918202700f2a1391ccca6eaf376c3a2`；它尚不存在于 `origin/main`，不是已生效实现或授权。现有 `seat/policy.rs` 只有 Owner initialize 写者、缺 head 的 native 读为 Denied；现有 UI transport 无自动 initialize。新增这个唯一共享文件是提供缺行与当前 stage 可信只读事实的最小生产接线。Owner 只审阅并合并本次范围 PR 一次；Controller 精确读回新 v2 回执、main 摘要及新路径后才可施工。当前测试 APPLIED 不证明普通 UI 项目 intake 已接通，也不代替云检、候选和真实安装验收。
+
+## 2026-10-10：政策元数据与未设置流程阶段分开（Owner 已批准的同范围细节）
+
+Owner 已认可最小方案，替换上一节“只沿原具名初始化、不改原政策表”的实现限制。设计的 USER 编排范围与用户定义阶段分开：原 native 子席位派活只需要 head revision，不需要预先定义阶段；不能把测试 OPEN 当产品默认。E 的 head 明确允许 currentStage 为 null，表示尚未设置流程阶段，不占用真实阶段名称。
+
+仅显式认证 USER 项目/直属主控创建或设置编排范围时，可对确证 absent 的 head 初始化空政策元数据；grants、gates、routes 全为空。读取和模型调用不能初始化。后续 USER 设置初始阶段只允许对原 revision 且仍为 null 的 head 做 CAS；阶段缺值时关口和流转拒绝，具名阶段后的原关口规则保持。原验证后的 USER scope、层级、实例/模型/权限/并发上限和 H 物理调用证明仍限定第一张 native DISPATCH，不添加默认宽泛权限。
+
+旧 schema 精确迁移，仅允许原已知 schema，保留旧阶段、revision、grants、撤销、事件和回执。空阶段 head 已存在时，旧 policy-initialize 仍按原冲突语义拒绝；旧成功请求精确重放只返回原事件回执，不能解释为首次设置阶段。任何不明 schema、CAS、提交或回滚保留原错误，不覆盖已有政策内容。
+
+最少路径为 E 已授权的 store/seat/policy.rs、store/seat/mod.rs 和受影响安全测试；既有共享 product_database/v37_seat.rs 与 services/tauri.ts 接原 Owner 命令/读取；G 的 features/seats 仅按需表达“未设置”，仍由 Claude 施工。不扩展 v37_policy.rs、model wire、H、默认权限、持久写方或 Owner 触点。通知 K-POLICY 的 C/D/G 接缝；原 v2 回执和 scope digest 保持。
+
+受影响安全检查覆盖空阶段无默认授权、关口/流转拒绝、模型不能初始化、旧原具名初始化/精确重放/撤销、CAS 和原 schema 保全。真机用已有登录测试实例的新隔离项目，未定义阶段时按明确 scope 建直属 LEAD，再由明确 USER 设置阶段并核原关口，正常 stop/release 与正式保护。云检、源码和静态复核不能代替这些实际结果。
+
+参照：原设计 USER 编排与用户定义阶段、E 原 Owner policy/head revision/关口、原 USER ingress、已有精确 schema 迁移和 main 范围摘要实现。采用原空授权、CAS 与请求指纹；只解除当前 head 非空阶段约束造成的数据模型耦合。独立只读复核已核提案前提；本细节 PR 仍需独立复核后由 Controller 合并、精确读回，不新起授权回执。

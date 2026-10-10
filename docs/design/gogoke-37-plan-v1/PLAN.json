@@ -1083,7 +1083,7 @@
    },
    {
     "path": "apps/desktop/native-host/src/store/product_database/v37_seat.rs",
-    "extension": "E/G project intake only: on the existing verified ProductDatabase connection and Owner configuration read path, report the exact policy head as explicitly absent or its original revision and currentStage in one read-only snapshot. Preserve original errors and all existing head/stage/grants/revocations. The read never initializes or repairs policy, grants a call, changes a stage, admits a model, or writes any state; only an explicit project/USER creation path may use confirmed absence to submit the existing Owner policy-initialize command with its original replay and conflict rules.",
+    "extension": "E/G project intake only: on the existing verified ProductDatabase connection and Owner configuration path, report the exact head as absent or its revision and currentStage (null means no user-defined stage) in one read-only snapshot. Reads and model calls never initialize, repair, grant or write policy. Only explicit authenticated USER project/LEAD creation or orchestration configuration may initialize confirmed-absent policy metadata with null stage and empty grants/gates/routes; only explicit USER may CAS-set the first stage on a null-stage head. Preserve existing heads, grants, revocations, original request bytes and replay receipts; the old named policy-initialize still conflicts with any existing head, including null stage. Missing stage denies gate/transition. Use exact old-schema migration in E; do not add model tools, default permissions or other durable writers. Owner approved this implementation clarification on 2026-10-10; scope and v2 receipt stay unchanged.",
     "serves": [
      "E",
      "G"
@@ -1263,7 +1263,7 @@
      "trigger-recover",
      "trigger-cancel"
     ],
-    "seams": "Trusted sender from the host's issuer boundary, never self-declared by Node or the model. Secretary triggers live in the existing coordinator with de-duplication; they are settled at M3 with E.3."
+    "seams": "Trusted sender from the host's issuer boundary, never self-declared by Node or the model. Explicit USER policy metadata initialization is distinct from the optional user-defined first stage: null is unset, not a default stage. Missing stage denies gates and transitions; native child dispatch still requires the original verified scope and head revision. Preserve the old named initialize conflict and exact replay semantics. Secretary triggers live in the existing coordinator with de-duplication; they are settled at M3 with E.3."
    },
    {
     "id": "K-INSTANCE",
