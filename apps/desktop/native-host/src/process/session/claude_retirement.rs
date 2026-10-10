@@ -597,7 +597,10 @@ fn write_exact_after(handle: Handle, before: &Image, after: &[u8]) -> Result<(),
 mod tests {
     use super::*;
     use std::os::windows::io::AsRawHandle;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     #[repr(C)]
     struct FileTime {
@@ -650,8 +653,9 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let base =
-            std::env::temp_dir().join(format!("claude-holder-acl-{}-{nonce}", std::process::id()));
+        let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let fixture_id = format!("{}-{nonce}-{sequence}", std::process::id());
+        let base = std::env::temp_dir().join(format!("claude-holder-acl-{fixture_id}"));
         std::fs::create_dir(&base).unwrap();
         let mut roots = Vec::new();
         for (name, writable) in [("instance", true), ("session", true), ("f", true)] {
@@ -662,7 +666,7 @@ mod tests {
             roots.push((path, identity, writable));
         }
         let profile =
-            AppContainerProfile::derived_for_test(&format!("Gogoke37.ClaudeHolderFixture.{nonce}"))
+            AppContainerProfile::derived_for_test(&format!("Gogoke37.ClaudeHolderFixture.{fixture_id}"))
                 .unwrap();
         for (path, identity, writable) in &roots {
             profile.grant_bound_tree(path, identity, *writable).unwrap();

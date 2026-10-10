@@ -328,10 +328,12 @@ impl<'root> ProductDatabase<'root> {
             || binding.instance_id != seat.instance_id
             || binding.permission_tier
                 != match tier {
-                    seat::PermissionTier::ReadOnly => "READ_ONLY",
-                    seat::PermissionTier::NoNetwork => "NO_NETWORK",
-                    seat::PermissionTier::IsolatedWrite => "ISOLATED_WRITE",
-                    seat::PermissionTier::NetworkedWrite => "NETWORKED_WRITE",
+                    // F persists the exact Rust variant spelling, not the
+                    // uppercase permission tier used by the USER wire format.
+                    seat::PermissionTier::ReadOnly => "ReadOnly",
+                    seat::PermissionTier::NoNetwork => "NoNetwork",
+                    seat::PermissionTier::IsolatedWrite => "IsolatedWrite",
+                    seat::PermissionTier::NetworkedWrite => "NetworkedWrite",
                 }
         {
             return Err(denied("Claude original SINGLE F/tier changed"));

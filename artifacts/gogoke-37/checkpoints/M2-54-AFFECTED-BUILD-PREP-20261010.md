@@ -8,6 +8,10 @@
 
 53 的原启动和停止失败仍保留，产品、任务与 custody 存活，没有 StopFact 或释放。main 明确要求 StopFact 后才关闭；已提出正常关闭保全的例外，尚无 Owner 答复，因此不关闭、不换装、不补 STOPPED、不重发原请求。
 
+独立组合云测已到达真实固定 Claude 的两个 initialize，但恢复因 `Claude original SINGLE F/tier changed` 拒绝：F 生产者保存 `NetworkedWrite`，恢复却比较 wire 的 `NETWORKED_WRITE`。修正四个枚举为既有 F 存储的精确拼写，不放宽权限。另一个 ACL 组件测试因同进程时钟同值导致目录已存在，夹具目录与 profile 追加原子序号，不改被测时钟或停止语义。旧失败原件保留。
+
+组合测试只有注册登录元数据采用现成 `SYNTHETIC_LOGIN_PRESENCE_NOT_AUTHENTICATION`；H/E/F、固定 CLI initialize 与原生持有者均走生产者，不伪造 H APPLIED、StopFact、凭据或模型输出。它是云端安全机制验证，不是 Owner 登录或 Win11 恢复通过。当前旧 54 构建因已知产品缺陷取消，不用于安装；在修正源码上继续使用 54 版本，旧产物与运行身份不覆盖。
+
 ## 下一步
 
 现在只派发单路受影响云端构建，整理原冻结字节；不签名、不安装、不发布。完整库、双构建、稳定链和最终验收留稳定点。关闭例外与独立组合结果分别读回后，再决定下一实际安装步骤；不请求登录或重启。
