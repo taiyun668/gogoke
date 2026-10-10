@@ -125,20 +125,24 @@ fn prepare_at(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,revision
     })
 }
 
-fn add_resolved_secretary_history(db:&mut VerifiedDatabaseConnection<'_>,index:u32) {
+fn add_resolved_secretary_history(db:&mut VerifiedDatabaseConnection<'_>,index:u32,text:&str) {
     let source_cursor=index.to_string();
     let event_id=if index==1 {"historyEventS".to_owned()}
         else {format!("historyEventS{index}")};
+    let update=Json::Object(std::collections::BTreeMap::from([
+        (JsonString::from_str("sessionUpdate"),Json::String(JsonString::from_str("agent_message_chunk"))),
+        (JsonString::from_str("text"),Json::String(JsonString::from_str(text))),
+    ])).canonical();
+    let raw_bytes=format!("{update}\n");
+    assert!(raw_bytes.len()<=MAX_FRAME_BYTES,"synthetic original raw frame bound");
     let raw=Statement::prepare(db.as_ptr(),
         "INSERT INTO v37_ledger_raw_source(operation_id,process_ticket,custodian_nonce,
          domain_id,session_id,generation,source_epoch,source_cursor,raw_bytes,state)
          VALUES('processS','pct1_ticketS','nonceS','global','sessionS','1',
                 'historyEpochS',?1,?2,'PENDING')").unwrap();
     raw.bind_text(1,&source_cursor).unwrap();
-    raw.bind_blob(2,b"{\"sessionUpdate\":\"agent_message_chunk\",\"text\":\"prior fact\"}\n")
+    raw.bind_blob(2,raw_bytes.as_bytes())
         .unwrap();raw.step_done().unwrap();drop(raw);
-    let update=Parser::parse(r#"{"sessionUpdate":"agent_message_chunk","text":"prior fact"}"#)
-        .unwrap().canonical();
     ledger::record(db,&ledger::EventInput {event_id:event_id.clone(),
         source_epoch:"historyEpochS".into(),source_cursor:source_cursor.clone(),
         domain_id:"global".into(),seat_id:"seatS".into(),session_id:"sessionS".into(),
@@ -151,7 +155,7 @@ fn add_resolved_secretary_history(db:&mut VerifiedDatabaseConnection<'_>,index:u
 #[test]
 fn scheduled_history_requires_original_resolved_custody_and_stays_sealed() {
     with_fixture(|db,owner| {
-        add_resolved_secretary_history(db,1);
+        add_resolved_secretary_history(db,1,"prior fact");
         let start=ledger::recover(db).unwrap();
         let after=ledger::LedgerPosition {epoch:start.epoch.clone(),cursor:0};
         let reader=ledger::Reader {domain_id:"global".into(),seat_id:"seatS".into(),
@@ -200,7 +204,7 @@ fn scheduled_history_requires_original_resolved_custody_and_stays_sealed() {
 fn scheduled_history_page_marks_more_and_exact_resume_cursor() {
     with_fixture(|db,owner| {
         for index in 1..=SCHEDULED_HISTORY_PAGE_LIMIT+1 {
-            add_resolved_secretary_history(db,index);
+            add_resolved_secretary_history(db,index,"prior fact");
         }
         let ScheduledSecretaryDecision::NewWrite(permit)=prepare(db,owner,1).unwrap()
             else {panic!("one due H write")};
@@ -228,6 +232,32 @@ fn scheduled_history_page_marks_more_and_exact_resume_cursor() {
             epoch,cursor:cursor.parse().unwrap()},1).unwrap();
         assert_eq!(next.events.len(),1);
         assert_eq!(next.events[0].input.event_id,"historyEventS33");
+    });
+}
+
+#[test]
+fn oversized_first_resolved_history_event_rolls_back_e_and_h_prepare() {
+    with_fixture(|db,owner| {
+        let original_text="x".repeat(MAX_FRAME_BYTES-128);
+        add_resolved_secretary_history(db,1,&original_text);
+        let position=ledger::recover(db).unwrap();
+        let reader=ledger::Reader {domain_id:"global".into(),seat_id:"seatS".into(),
+            session_id:"sessionS".into()};
+        assert_eq!(ledger::query_secretary_history(db,&reader,
+            &ledger::LedgerPosition {epoch:position.epoch,cursor:0},1)
+            .unwrap().events.len(),1,"the large event has a real RESOLVED source association");
+        assert!(matches!(prepare(db,owner,1),
+            Err(JournalError::Invalid("scheduled history event size"))),
+            "a nonempty A page cannot become an empty page with more=true/cursor=0");
+        assert_eq!(count(db,"gogoke_v37_seat_secretary_occurrences"),0);
+        assert_eq!(count(db,"gogoke_v37_h_stdin_journal"),1,
+            "only the earlier original USER H row remains");
+        let routine=Statement::prepare(db.as_ptr(),
+            "SELECT state,revision FROM gogoke_v37_seat_secretary_routines WHERE routine_id='routineS'")
+            .unwrap();
+        assert!(routine.step_row().unwrap());
+        assert_eq!(routine.column_text(0).unwrap(),"ACTIVE");
+        assert_eq!(routine.column_text(1).unwrap(),"1");
     });
 }
 

@@ -1056,6 +1056,9 @@ fn scheduled_history_body(connection: &VerifiedDatabaseConnection<'_>,
     let base = scheduled_body(original)?;
     let mut count = page.events.len().min(SCHEDULED_HISTORY_PAGE_LIMIT as usize);
     loop {
+        if count == 0 && !page.events.is_empty() {
+            return Err(JournalError::Invalid("scheduled history event size"));
+        }
         let cursor = page.events.get(count.saturating_sub(1))
             .filter(|_| count != 0).map_or(0, |event| event.cursor);
         let mut events = Vec::with_capacity(count);
