@@ -130,6 +130,15 @@ pub(crate) enum SecretaryRoutineDecision {
     Reserved {occurrence_id:String,revision:i64},
 }
 #[derive(Clone,Debug,Eq,PartialEq)]
+pub(crate) enum SecretaryRoutineDueQualification {
+    NotDue,
+    MissingFacts,
+    PausedForAbsence {revision:i64,elapsed_ms:i64},
+    /// E-only eligibility. The caller must separately prove a live H and then
+    /// atomically call `take_due` with H prepare before any physical write.
+    NeedsLiveH {due_ms:i64,next_revision:i64},
+}
+#[derive(Clone,Debug,Eq,PartialEq)]
 pub(crate) struct SecretaryPresenceFact {
     pub(crate) source_id:String,
     pub(crate) kind:String,
@@ -503,12 +512,13 @@ pub(crate) fn configure_absence_policy(db:&mut VerifiedDatabaseConnection<'_>,is
     })
 }
 
-/// Compose inside the existing coordinator's BEGIN IMMEDIATE transaction,
-/// followed by H prepare/journal in that same transaction. The result alone
-/// is never a launch authorization. An unknown occurrence is never retried.
-pub(crate) fn take_due_secretary_routine_in_transaction(db:&VerifiedDatabaseConnection<'_>,
+/// E's due and absence decision, independent of any live H process. The
+/// caller owns BEGIN IMMEDIATE. `NeedsLiveH` is a read-only eligibility fact,
+/// never an occurrence, a send journal, or a launch permission. The only
+/// write here is ACTIVE -> ABSENCE_PAUSED under the existing User policy.
+pub(crate) fn qualify_secretary_routine_due_in_transaction(db:&VerifiedDatabaseConnection<'_>,
     issuer:&OwnerIssuer,routine_id:&str,expected_revision:i64,now_ms:i64)
-    ->Result<SecretaryRoutineDecision,SeatError> {
+    ->Result<SecretaryRoutineDueQualification,SeatError> {
     check_current_owner(db,issuer)?;
     if !valid_id(routine_id)||expected_revision<=0||now_ms<=0 {return Err(SeatError::Invalid("due_request"));}
     let seat=current_secretary(db)?;
@@ -516,44 +526,62 @@ pub(crate) fn take_due_secretary_routine_in_transaction(db:&VerifiedDatabaseConn
         super::secretary::SecretaryConfiguration::Designated {
             instance_id:Some(_),model:Some(_),effort:Some(_),permission:Some(_),..
         }=>{},
-        _=>return Ok(SecretaryRoutineDecision::MissingFacts),
+        _=>return Ok(SecretaryRoutineDueQualification::MissingFacts),
     }
     let row=routine(db,routine_id)?.ok_or(SeatError::Denied)?;
     if row.seat_id!=seat.seat_id||row.incarnation!=seat.incarnation {return Err(SeatError::Denied);}
     if row.revision!=expected_revision {return Err(SeatError::Conflict);}
     if has_unresolved_occurrence(db,routine_id)? {return Err(SeatError::Denied);}
     if row.state!="ACTIVE"||row.next_due_ms==0||row.next_due_ms>now_ms {
-        return Ok(SecretaryRoutineDecision::NotDue);
+        return Ok(SecretaryRoutineDueQualification::NotDue);
     }
     let policy=Statement::prepare(db.as_ptr(),"SELECT CAST(max_absent_ms AS TEXT) FROM main.gogoke_v37_seat_secretary_absence_policy WHERE singleton=1")?;
-    if !policy.step_row()? {return Ok(SecretaryRoutineDecision::MissingFacts);}
+    if !policy.step_row()? {return Ok(SecretaryRoutineDueQualification::MissingFacts);}
     let max_absent=policy.column_text(0)?.parse::<i64>().map_err(|_|SeatError::SchemaDrift)?;
     if policy.step_row()?||max_absent<=0 {return Err(SeatError::SchemaDrift);}
     let presence=Statement::prepare(db.as_ptr(),"SELECT CAST(occurred_at_ms AS TEXT),CAST(observed_at_ms AS TEXT) FROM main.gogoke_v37_seat_secretary_presence ORDER BY occurred_at_ms DESC,observed_at_ms DESC LIMIT 1")?;
-    if !presence.step_row()? {return Ok(SecretaryRoutineDecision::MissingFacts);}
+    if !presence.step_row()? {return Ok(SecretaryRoutineDueQualification::MissingFacts);}
     let occurred=presence.column_text(0)?.parse::<i64>().map_err(|_|SeatError::SchemaDrift)?;
     let observed=presence.column_text(1)?.parse::<i64>().map_err(|_|SeatError::SchemaDrift)?;
     if presence.step_row()?||occurred<=0||observed<occurred {return Err(SeatError::SchemaDrift);}
-    if now_ms<observed {return Ok(SecretaryRoutineDecision::MissingFacts);}
+    if now_ms<observed {return Ok(SecretaryRoutineDueQualification::MissingFacts);}
     let elapsed=now_ms.checked_sub(occurred).ok_or(SeatError::Unknown)?;
     let revision=row.revision.checked_add(1).ok_or(SeatError::Conflict)?;
     if elapsed>=max_absent {
         let q=Statement::prepare(db.as_ptr(),"UPDATE main.gogoke_v37_seat_secretary_routines SET state='ABSENCE_PAUSED',revision=?1 WHERE routine_id=?2 AND revision=?3")?;
         q.bind_i64(1,revision)?;q.bind_text(2,routine_id)?;q.bind_i64(3,row.revision)?;q.step_done()?;
         if routine(db,routine_id)?.ok_or(SeatError::SchemaDrift)?.revision!=revision {return Err(SeatError::Conflict);}
-        return Ok(SecretaryRoutineDecision::PausedForAbsence {revision,elapsed_ms:elapsed});
+        return Ok(SecretaryRoutineDueQualification::PausedForAbsence {revision,elapsed_ms:elapsed});
     }
+    Ok(SecretaryRoutineDueQualification::NeedsLiveH {due_ms:row.next_due_ms,
+        next_revision:revision})
+}
+
+/// Compose inside the existing coordinator's BEGIN IMMEDIATE transaction,
+/// followed by H prepare/journal in that same transaction. The result alone
+/// is never a launch authorization. An unknown occurrence is never retried.
+pub(crate) fn take_due_secretary_routine_in_transaction(db:&VerifiedDatabaseConnection<'_>,
+    issuer:&OwnerIssuer,routine_id:&str,expected_revision:i64,now_ms:i64)
+    ->Result<SecretaryRoutineDecision,SeatError> {
+    let (due_ms,revision)=match qualify_secretary_routine_due_in_transaction(db,issuer,
+        routine_id,expected_revision,now_ms)? {
+        SecretaryRoutineDueQualification::NotDue=>return Ok(SecretaryRoutineDecision::NotDue),
+        SecretaryRoutineDueQualification::MissingFacts=>return Ok(SecretaryRoutineDecision::MissingFacts),
+        SecretaryRoutineDueQualification::PausedForAbsence {revision,elapsed_ms}=>
+            return Ok(SecretaryRoutineDecision::PausedForAbsence {revision,elapsed_ms}),
+        SecretaryRoutineDueQualification::NeedsLiveH {due_ms,next_revision}=>(due_ms,next_revision),
+    };
     // A deterministic occurrence key and UNIQUE(routine_id,due_ms) prevent
     // a restart or competing coordinator from claiming this time twice.
-    let digest=fingerprint(&["secretary-occurrence",routine_id,&row.next_due_ms.to_string()],b"");
+    let digest=fingerprint(&["secretary-occurrence",routine_id,&due_ms.to_string()],b"");
     let hex=digest.strip_prefix("sha256:").ok_or(SeatError::SchemaDrift)?;
     let occurrence_id=format!("occ-{hex}");
     if !valid_id(&occurrence_id) {return Err(SeatError::SchemaDrift);}
     let q=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_seat_secretary_occurrences(occurrence_id,routine_id,due_ms,state,h_receipt_id,original_reason) VALUES(?1,?2,?3,'UNKNOWN','','')")?;
-    q.bind_text(1,&occurrence_id)?;q.bind_text(2,routine_id)?;q.bind_i64(3,row.next_due_ms)?;q.step_done()?;
+    q.bind_text(1,&occurrence_id)?;q.bind_text(2,routine_id)?;q.bind_i64(3,due_ms)?;q.step_done()?;
     let q=Statement::prepare(db.as_ptr(),"UPDATE main.gogoke_v37_seat_secretary_routines SET state='WAITING_NEXT',revision=?1,last_occurrence_id=?2,last_result='UNKNOWN',last_reason='' WHERE routine_id=?3 AND revision=?4")?;
     q.bind_i64(1,revision)?;q.bind_text(2,&occurrence_id)?;q.bind_text(3,routine_id)?;
-    q.bind_i64(4,row.revision)?;q.step_done()?;
+    q.bind_i64(4,expected_revision)?;q.step_done()?;
     if routine(db,routine_id)?.ok_or(SeatError::SchemaDrift)?.revision!=revision {return Err(SeatError::Conflict);}
     Ok(SecretaryRoutineDecision::Reserved {occurrence_id,revision})
 }
@@ -613,3 +641,7 @@ pub(crate) fn record_secretary_occurrence_outcome_in_transaction(
     if after.revision!=revision {return Err(SeatError::Conflict);}
     Ok(after)
 }
+
+#[cfg(all(test, windows))]
+#[path = "secretary_routine_tests.rs"]
+mod due_qualification_tests;

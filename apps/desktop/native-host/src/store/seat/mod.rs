@@ -27,6 +27,7 @@ pub(crate) use secretary_routines::{create_secretary_routine,change_secretary_ro
     read_secretary_occurrences_in_transaction,SecretaryOccurrenceFact,
     record_secretary_schedule_error_in_transaction,read_secretary_schedule_errors_in_transaction,
     SecretaryScheduleErrorFact,
+    qualify_secretary_routine_due_in_transaction,SecretaryRoutineDueQualification,
     take_due_secretary_routine_in_transaction,record_secretary_occurrence_outcome_in_transaction,
     SecretaryOccurrenceOutcome,SecretaryRoutine,SecretaryRoutineCreate,
     SecretaryRoutineChange,SecretaryRoutineCommand,SecretaryRoutineDecision,
