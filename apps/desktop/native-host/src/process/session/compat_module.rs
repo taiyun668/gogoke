@@ -684,12 +684,17 @@ mod tests {
         })();
         let fragment = active.persistent_stdout_fragment();
         let stderr = active.stderr_tail();
+        let stderr_live = active.stderr_live_bytes();
         let exit_code = active.exit_code();
         let job_count = active.active_job_processes();
-        let proof = custodian.stop(&prepared.ticket, StopBudgets::production(), || Ok(()));
-        eprintln!("CLAUDE_DIRECT_INITIALIZE original_request_id={request_id} original_result={result:?} raw_stdout_frames={raw_frames:?} stdout_fragment={fragment:?} stderr_tail={stderr:?} exit_code={exit_code:?} active_job_processes={job_count:?} prepared_identity={:?} stop_proof={proof:?}", prepared.identity);
-        let stop_ok = proof.as_ref().is_ok_and(|proof|
-            proof.parent_exited && proof.writer_fence_verified && proof.active_job_processes == Some(0));
+        let close = custodian.close_child_input(&prepared.ticket)
+            .map_err(|error| format!("native Claude direct stdin close: {error}"));
+        let close_evidence = close.clone();
+        let proof = custodian.stop(&prepared.ticket, StopBudgets::production(), move || close);
+        eprintln!("CLAUDE_DIRECT_INITIALIZE original_request_id={request_id} original_result={result:?} raw_stdout_frames={raw_frames:?} stdout_fragment={fragment:?} stderr_tail={stderr:?} stderr_live={stderr_live:?} exit_code={exit_code:?} active_job_processes={job_count:?} prepared_identity={:?} stdin_close={close_evidence:?} stop_proof={proof:?}", prepared.identity);
+        let stop_ok = close_evidence.is_ok() && proof.as_ref().is_ok_and(|proof|
+            proof.parent_exited && proof.writer_fence_verified && proof.active_job_processes == Some(0)
+                && proof.errors.is_empty() && !proof.deadline_exceeded);
         drop(custodian);
         drop(request);
         drop(profile);
