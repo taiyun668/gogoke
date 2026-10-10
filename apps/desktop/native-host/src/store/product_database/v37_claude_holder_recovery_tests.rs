@@ -83,25 +83,26 @@ fn custody(product: &ProductDatabase<'_>) -> Vec<Vec<String>> {
 fn episodes(product: &ProductDatabase<'_>) -> Vec<Vec<String>> {
     rows(
         product,
-        "SELECT domain_id,request_id,session_id,generation,COALESCE(old_generation,''),raw_hex,
-        CAST(previous_revision AS TEXT),COALESCE(CAST(result_revision AS TEXT),''),
-        COALESCE(process_operation_id,''),instance_id,home_id,binding_id,COALESCE(seat_id,''),
-        COALESCE(seat_incarnation,''),phase,COALESCE(stop_fact_id,''),
-        CAST(stop_fact_id IS NULL AS TEXT) FROM main.gogoke_v37_h_process_episode
+        "SELECT domain_id,request_id,session_id,generation,quote(old_generation),raw_hex,
+        CAST(previous_revision AS TEXT),quote(result_revision),
+        quote(process_operation_id),instance_id,home_id,binding_id,quote(seat_id),
+        quote(seat_incarnation),quote(stop_request_id),phase,quote(stop_fact_id)
+        FROM main.gogoke_v37_h_process_episode
         WHERE instance_id=?1 ORDER BY domain_id,request_id",
         &[INSTANCE],
-        16,
+        17,
     )
 }
 fn rpc(product: &ProductDatabase<'_>) -> Vec<Vec<String>> {
     rows(
         product,
-        "SELECT domain_id,session_id,step_id,process_operation_id,ticket,custodian_nonce,
-        pid,creation_time,command_hex,phase,COALESCE(source_epoch,''),COALESCE(source_cursor,''),
-        COALESCE(original_error,'') FROM main.gogoke_v37_rpc_steps
+        "SELECT domain_id,session_id,open_request_id,step_id,process_operation_id,ticket,
+        custodian_nonce,pid,creation_time,image_path,binary_digest,profile_id,generation,
+        command_hex,CAST(requires_response AS TEXT),phase,quote(source_epoch),quote(source_cursor),
+        quote(original_error),quote(permission_evidence) FROM main.gogoke_v37_rpc_steps
         WHERE profile_id=?1 ORDER BY domain_id,session_id,step_id",
         &[INSTANCE],
-        13,
+        20,
     )
 }
 fn claims(product: &ProductDatabase<'_>) -> Vec<Vec<String>> {
@@ -407,7 +408,7 @@ fn cold_two_claude(run: impl for<'a> FnOnce(ProductDatabase<'a>, &'a RootLock, &
         .iter()
         .all(|row| row[6] == "COMMITTED" && row[10] == "1"));
     assert!(
-        before.rpc.iter().any(|row| row[9] == "OBSERVED"),
+        before.rpc.iter().any(|row| row[15] == "OBSERVED"),
         "real Claude initialize ACK journal absent"
     );
     assert!(journal(&product).is_empty());
