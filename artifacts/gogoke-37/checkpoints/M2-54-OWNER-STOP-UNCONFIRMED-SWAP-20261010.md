@@ -41,6 +41,10 @@ Owner 2026-10-10 允许 53 正常关闭、停止照实记未确认、不补 Stop
 
 Owner 已合并 PR #83，并于 2026-10-10 关闭 SAC；Controller 实际读回 `VerifiedAndReputablePolicyState=0`。采用 main 的本机开发例外：D 盘独立数据与测试实例、产物与临时目录直接 D、并行不超过八。开发运行只用于诊断，不作正式证据、不进入候选；正式改动继续云检。稳定实测/验收前先提醒 Owner 开启 SAC，并读回为一后才能安装。此前 SAC 为一的换装快照保留为历史，新活动不套用旧状态。
 
+本机开发编译完成约 141 秒，只产出 D 盘测试程序。第一项安全组合因旧的 CI-only fixture guard 拒绝，未启动 CLI；测试辅助加入本机明确 opt-in、实际注册表 SAC DWORD 为零、规范化 TEMP 在 D 的条件，原 CI 与固定官方 archive/hash/H probe 不变。全新 Sol 聚焦静态复核无阻塞；这只校验 fixture 的 TEMP，编译目标/工作目录/测试根仍由实际运行配置保证直接 D，不伪造 CI 身份。
+
+现成 Claude 组件的外层脚本曾用 PowerShell 保留变量、又把测试父进程 profile 改为空目录，两次仪器失败保留。恢复普通父 profile、只重定向父 TEMP/TMP 后，实际 CLI 子进程仍由原 Rust 生产者配置独立 D 空 HOME/session/worktree；一次真实固定 Claude initialize ACK，stdin close 成功，正常停止退出零、Job 归零、未 kill。原 stdout/stderr、任务 XML 与 custody 保留，自建任务逐项清理。stderr 中 Win32 231 的 uv pipe 行与成功 ACK 共存，不据此宣称原超时根因。仅为空凭据组件诊断，原 53 已登录 H、模型与 M2/M3 未通过。
+
 继续在原身份上验证冷恢复与真实对话，旧失败请求不重发；Grok 原工具权限轴随后继续。稳定后再走完整链。
 
 普通关闭/换装的理由：测试候选、同一当前用户，原持有者精确已消失，不改变授权/隔离边界；停止未确认及原证据保留，正式保护核对通过。以后同类按 Owner 最新决定自行判断，不再新增 Owner 触点。

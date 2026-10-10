@@ -1,4 +1,6 @@
-//! CI-only setup of the real fixed official image in each test's private root.
+//! Real fixed official image setup in each test's private root.
+//! Formal evidence remains CI-only. Owner-authorized local development also
+//! requires an explicit opt-in, actual SAC=0 and a canonical D-drive TEMP.
 //! Every root still passes the production archive check and H version probe.
 use super::*;
 use std::collections::HashMap;
@@ -9,6 +11,36 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static ARCHIVES: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
+
+fn require_fixture_environment() {
+    if std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true") {
+        return;
+    }
+    assert_eq!(std::env::var("GOGOKE_LOCAL_NATIVE_DEVELOPMENT").as_deref(), Ok("true"),
+        "managed CLI fixture needs cloud CI or explicit authorized local development");
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn RegGetValueW(key: *mut std::ffi::c_void, subkey: *const u16,
+            value: *const u16, flags: u32, kind: *mut u32,
+            data: *mut std::ffi::c_void, bytes: *mut u32) -> i32;
+    }
+    let subkey: Vec<u16> = "SYSTEM\\CurrentControlSet\\Control\\CI\\Policy\0".encode_utf16().collect();
+    let value: Vec<u16> = "VerifiedAndReputablePolicyState\0".encode_utf16().collect();
+    let mut kind = 0u32;
+    let mut state = u32::MAX;
+    let mut bytes = 4u32;
+    let code = unsafe { RegGetValueW(0x80000002u32 as i32 as isize as *mut _,
+        subkey.as_ptr(), value.as_ptr(), 0, &mut kind,
+        (&mut state as *mut u32).cast(), &mut bytes) };
+    assert_eq!((code, kind, bytes, state), (0, 4, 4, 0),
+        "local native development requires actual SAC DWORD=0; raw registry result");
+    let temp = fs::canonicalize(std::env::temp_dir()).expect("canonical local development TEMP");
+    let drive = temp.components().next();
+    assert!(matches!(drive, Some(std::path::Component::Prefix(prefix))
+        if matches!(prefix.kind(), std::path::Prefix::Disk(b'D' | b'd')
+            | std::path::Prefix::VerbatimDisk(b'D' | b'd'))),
+        "local fixture data and downloads must remain on physical D drive");
+}
 
 fn official_url(driver: &str, version: &str) -> &'static str {
     match (driver, version) {
@@ -24,8 +56,7 @@ fn official_url(driver: &str, version: &str) -> &'static str {
 }
 
 fn archive(driver: &str, version: &str, expected: &str) -> PathBuf {
-    assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"),
-        "managed CLI native fixture runs only on cloud CI");
+    require_fixture_environment();
     let mut archives = ARCHIVES.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap();
     if let Some(path) = archives.get(driver) { return path.clone(); }
     let cache = std::env::temp_dir().join(format!("gogoke-managed-cli-fixture-{}", std::process::id()));
