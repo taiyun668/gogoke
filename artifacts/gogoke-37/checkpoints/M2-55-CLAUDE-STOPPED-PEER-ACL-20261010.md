@@ -37,3 +37,27 @@
 先提交正式修正并跑受影响云端检查，再冻结下一实验候选，走原字节验签、实际安装和原实例复现。已并行准备 Grok 的新真实权限回包读回，只拒绝当前新请求，不重放旧 cursor；宿主拒绝写入不能冒充 OS ACL 拒绝，OS ACL 完整轴仍 NOT_RUN。继续主动读取 PR #54 的 Claude 交付。
 
 参照现有 `session_transport/launch.rs` 的会话 SID 派生与绑定树 ACL 添加、`v37_runtime.rs` 的真实 stop/StopFact、`claude_retirement.rs` 的逐对象原字节删除，以及既有双 H/UNKNOWN 恢复组合；沿用普通候选安装、正式五组保护和产品 CDP 硬断言链。历史 gogo-party 的生命周期与 root/home 约定作为已有调研背景，本修法采用当前原生生产者的精确事实，没有新建补偿等待或重试机制。稳定点实测与验收前先提醒 Owner 重新开启 SAC，并实际读回 1。
+
+## 同源云测与换装准备回读
+
+最终修正的组合受影响云检实际通过二十项：Grok 权限六项、Claude holder 十一项、固定 Claude initialize 一项、原 EOF 与退出源各一项。原始运行、归档摘要、成员字节、源码提交及逐项日志已回读；卫生通过。第一次只选 holder 的小检查在四个新增回归建真实 Git 工作树前报 `cloud must bind actual installed Git backend`，原运行和失败产物保留，改用已有的组合检查绑定真实后端，源码不变。全量库与稳定门槛仍 NOT_RUN。
+
+实际普通视图重拍 55 基线：十个正式保护字段与原产品正常关闭后的记录完全相等，原七条 UNKNOWN/null StopFact 逐成员保留；数据库、WAL、SHM 与 journal 与实际 55 安装后读回字节连续一致。独立 Sol 对闭合来源、保护比较和确切候选卸载/安装目标聚焦只读复核无阻塞；未执行卸载或安装，缺冻结与签名输入时会拒绝。
+
+测量脚本两处误读不存在的 provider `recoveryJournal` 字段，错误原文为 `PropertyNotFoundException: The property 'recoveryJournal' cannot be found on this object.`；原任务、原脚本和失败日志保留，改为哈希绑定原库直接元数据的实际 recovery 表计数，未从缺字段推零。失败和已完成的自建任务按确切 action/主体/脚本字节保全后注销并逐项回读不存在。
+
+另一 Sol 机械比对原 53 与已通过空 HOME/Git 组件：二十个启动参数均已带 `--debug-file`，只有会话路径值不同；未据缺失日志断言原因，未重编或重复探针。原实例与空 HOME 的差异尚未解决，不能把组件通过写成原模型通过。
+
+Claude 原实例冷恢复/新一次真实 USER turn，以及 Grok 新一次真实权限回包的独立脚本已并行备好；签名、实际安装和仪器 pin 缺值即拒绝。仍保留所有旧失败、未确认停止和凭据；无新登录、无重发原请求、无补造 StopFact。下一步接最终冻结原字节和签名回读，实验安装后复现原实例。当前仍无新增已安装可运行能力，心跳计数不重置；稳定点开启 SAC 的 Owner 触点保持。
+
+## 56 实际回读与新增能力
+
+最终冻结字节的公开资源签名自动验签、产品成员逐字节一致性已通过。55 正常退装与 56 普通视图实际安装均退出零；正式文件、数据、快捷方式、登记与记忆/账本保护读回通过。仅中间实验链，全量原生库、双路构建、稳定安装烟测与验收仍 NOT_RUN。
+
+原 Claude 实例在 56 冷启动后已解除旧持有者阻塞，不需要 Owner 重新登录或复制 HOME。关闭后的原库只读回读以旧 process operation、原 episode open request 精确绑定：消失持有者释放 journal 为 APPLIED、revision 2、原错误为空；数据库及 sidecar 前后字节相同。旧 UNKNOWN 和 null StopFact 保留，没有伪造停止。随后新 H 收到真实 Claude 回复、真实正常 stop/StopFact 与 admission-release，产品正常退出零，正式保护通过。这项“原实例自行恢复并可重新运行”是新增真机可运行能力，不能外推完整 M2。
+
+原一次问答要求照抄测试标记，Claude 回复将其视为注入探测并拒绝，不能写成模型未响应或问答测试通过。原失败记录保留；关闭后读回器还报 WAL 比较变化，但没有保存比较值，不能推定原因。已用现有关闭后、空 WAL/journal 的 immutable 原库读法补核恢复事实；不重放旧请求。新测量改为一次普通算术题，独立核原 H 写入与同会话结果，尚未执行。
+
+Grok 新脚本在产品启动前把真实安装路径与字面量环境变量比较而拒绝，原任务与空证据目录保全，修测量条件后才执行；没有原权限请求重放。独立审计一度把 H generation 与 E 授权 generation 的比较判为误拒，随后核到 admission 会递增 E generation、撤回发现；没有据错误前提改产品。并行席位继续核算术题读回和 Grok 单次权限回包，G 目录未改。
+
+参照沿用已有 `m2-provider-capture-readback.py` 的关闭后原库读法、原生 H 写入/停止生产者及固定 Claude 会话结果；不是凭替身或 CLI user echo 猜成功。源码当前明确追加 `--replay-user-messages`，此前空 HOME 组件参数比较不能推出已安装新会话没有该参数，本次不改 CLI 或其启动参数。
