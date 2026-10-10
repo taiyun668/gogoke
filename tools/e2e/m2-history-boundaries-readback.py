@@ -42,6 +42,47 @@ def decode_hex(value):
     return json.loads(bytes.fromhex(value))
 
 
+PENDING_UNMAPPED_CODEX_METHODS = frozenset((
+    "remoteControl/status/changed", "warning", "mcpServer/startupStatus/updated",
+    "account/updated", "account/rateLimits/updated", "thread/settings/updated",
+))
+PENDING_UNMAPPED_CODEX_ITEMS = frozenset(("userMessage", "agentMessage"))
+PENDING_CLASSIFICATION = "PRESERVED_UNRESOLVED_RAW_SOURCE_NO_SUCCESS_CREDIT"
+PENDING_UNHANDLED_SOURCE_COMMIT = "b0b2f31edf409fdc627d4b1558a50c29f319a697"
+
+
+def pending_unhandled_codex_frame(frame, thread_id):
+    """Exact observed shapes that codex_output::normalize leaves Unhandled.
+
+    Unknown methods miss its mapped list; item lifecycle methods reach
+    tool_item's unsupported-type arm. Other pending shapes need new evidence.
+    """
+    check(isinstance(frame, dict) and not any(key in frame for key in ("id", "result", "error")),
+          "Pending original source is a response or server request")
+    method = frame.get("method")
+    params = frame.get("params")
+    check(isinstance(params, dict) and isinstance(method, str),
+          "Pending original source has no verifiable Codex notification shape")
+    check(params.get("threadId", thread_id) == thread_id,
+          "Pending original source has another native thread identity")
+    if method in PENDING_UNMAPPED_CODEX_METHODS:
+        check(not isinstance(params.get("item"), dict) or "type" not in params["item"],
+              "Pending unmapped method has an unqualified item type")
+        return method, None
+    check(method in ("item/started", "item/completed"),
+          "Pending Codex method may be projectable or requires separate routing")
+    item = params.get("item")
+    check(params.get("threadId") == thread_id and isinstance(item, dict) and
+          item.get("type") in PENDING_UNMAPPED_CODEX_ITEMS and
+          isinstance(item.get("id"), str) and bool(item["id"]) and
+          isinstance(params.get("turnId"), str) and bool(params["turnId"]),
+          "Pending Codex item is not a verified Unhandled lifecycle type")
+    time_value = params.get("startedAtMs" if method == "item/started" else "completedAtMs")
+    check(type(time_value) is int and time_value >= 0,
+          "Pending Codex item would fail normalizer lifecycle validation")
+    return method, item["type"]
+
+
 def path_spelling(value):
     # Same spelling rule as LaunchEvidence::verify_observed_cwd, no file reads.
     value = value.replace("/", "\\")
@@ -84,7 +125,7 @@ def serializable(value):
     return value
 
 
-def session_evidence(db, session, case, operations, peer=None):
+def session_evidence(db, session, case, operations, source_commit, peer=None):
     domain = session["domainId"]
     sid = session["id"]
     registration = one(db, "SELECT * FROM v37_ledger_session WHERE domain_id=? AND session_id=?", (domain, sid))
@@ -113,7 +154,7 @@ def session_evidence(db, session, case, operations, peer=None):
                     (domain, sid, episode["process_operation_id"]))
     check(incoming and outgoing and all(row["generation"] == session["generation"] and
           row["process_ticket"] == custody["ticket"] and row["custodian_nonce"] == custody["custodian_nonce"]
-          and row["state"] != "PENDING" for row in incoming), "Original A source custody is incomplete or changed")
+          for row in incoming), "Original A source custody is incomplete or changed")
     check(all(row["generation"] == session["generation"] and row["ticket"] == custody["ticket"] and
               row["custodian_nonce"] == custody["custodian_nonce"] and row["phase"] in ("WRITTEN", "OBSERVED")
               for row in outgoing), "Original H command custody or write evidence incomplete")
@@ -121,6 +162,19 @@ def session_evidence(db, session, case, operations, peer=None):
         cursors = sorted(int(row["source_cursor"]) for row in incoming if row["source_epoch"] == epoch)
         check(cursors == list(range(1, max(cursors) + 1)), "Original raw source stream has a capture gap")
     decoded = [(row, json.loads(row["raw_bytes"])) for row in incoming]
+    associated_rpc_sources = {(row["source_epoch"], row["source_cursor"]) for row in outgoing
+                              if row["source_epoch"] is not None and row["source_cursor"] is not None}
+    unknown_frames = []
+    for row, frame in decoded:
+        if row["state"] != "PENDING":
+            continue
+        check(case["driverId"] == "codex" and source_commit == PENDING_UNHANDLED_SOURCE_COMMIT and
+              (row["source_epoch"], row["source_cursor"]) not in associated_rpc_sources,
+              "Pending original source has unqualified provider or RPC response custody")
+        method, item_type = pending_unhandled_codex_frame(frame, session["threadId"])
+        unknown_frames.append({"sourceEpoch": row["source_epoch"],
+            "sourceCursor": row["source_cursor"], "method": method, "itemType": item_type,
+            "state": "PENDING", "classification": PENDING_CLASSIFICATION})
     commands = [(row, decode_hex(row["command_hex"])) for row in outgoing]
     open_request = case["sideOpenRequest"] if session["purpose"] == "SIDE_CHAT" else operations[session["openRequestId"]]["request"]
     check(decode_hex(episode["raw_hex"]) == open_request and episode["request_id"] == open_request["requestId"] and
@@ -266,6 +320,7 @@ def session_evidence(db, session, case, operations, peer=None):
     return {"domainId": domain, "sessionId": sid, "nativeSessionId": native_id, "originalCodexThreadPath": native_path,
             "episode": episode, "custody": custody, "registration": registration, "worktree": tree,
             "stdin": stdin, "rawSource": incoming, "rpcSteps": outgoing, "normalized": normalized,
+            "unknownFrameCount": len(unknown_frames), "unknownFrames": unknown_frames,
             "effectiveMemoryConfiguration": effective_memory_configuration, "instance": pin,
             "originalBody": original_body, "marker": input_row.get("marker")}
 
@@ -359,7 +414,7 @@ def verify_peers(db, journal, boundary, result):
               attempt["command"] == 'type "' + target["path"] + '"' and
               session["inputs"][0]["body"] == attempt["body"] and attempt["command"] in attempt["body"],
               "Peer H input does not request the ordinary exact-object read")
-        observed = session_evidence(db, session, case, operations, peer=attempt)
+        observed = session_evidence(db, session, case, operations, journal["sourceCommit"], peer=attempt)
         check(observed["nativeSessionId"] not in [original["nativeSessionId"] for original_case in baseline["cases"]
               if original_case["caseId"] == case["caseId"] for original in original_case["sessions"]], "Peer inherited original native identity")
         check(observed["nativeSessionId"] not in native_ids, "Independent peer scopes reused one native identity")
@@ -511,7 +566,7 @@ def verify_same_domain_worker(db, journal, boundary, result):
               attempt["command"] in attempt["body"] and
               not any(char in objects[0]["path"] for char in '"%!^&|<>\r\n'),
               "Original same-domain WORK request differs from exact lead object")
-        observed = session_evidence(db, session, case, operations, peer=attempt)
+        observed = session_evidence(db, session, case, operations, journal["sourceCommit"], peer=attempt)
         check(observed["episode"]["seat_incarnation"] == case_record["workerIncarnation"] and
               observed["nativeSessionId"] != sources[0]["nativeSessionId"] and
               observed["originalCodexThreadPath"] and
@@ -587,7 +642,7 @@ def verify_flow(db, journal, boundary, result):
         for session, binding in zip(owned, (case["projectA"], case["projectB"], case["sideBinding"], case["sideBinding"])):
             check(all(session[key] == binding[key] for key in ("domainId", "repositoryId", "seatId", "worktreeId")),
                   "Original session domain/F binding differs from its configured test object")
-        observed = [session_evidence(db, session, case, operations) for session in owned]
+        observed = [session_evidence(db, session, case, operations, journal["sourceCommit"]) for session in owned]
         check(len({row["nativeSessionId"] for row in observed}) == 4 and all(row["nativeSessionId"] for row in observed),
               "Original native sessions reused/forked prior context identity")
         a, b, side, formal = observed
@@ -615,6 +670,8 @@ def verify_flow(db, journal, boundary, result):
             "actualHInputIsolation": True, "actualSideThenFreshFormal": True, "sessions": observed,
             "V04b": "NOT_RUN_EFFECTIVE_VENDOR_MEMORY_AND_INSTRUCTION_PROVENANCE_MISSING",
             "V10": "NOT_RUN_VENDOR_HISTORY_PROVENANCE_MISSING_ACTUAL_NATIVE_FLOW_READ_BACK"})
+    result["unknownFrameCount"] = sum(source["unknownFrameCount"] for case in result["cases"]
+                                      for source in case["sessions"])
     result["scopedSnapshot"] = serializable(snapshot(db, sessions, cases))
     result["directFlowEvidence"] = True
 
