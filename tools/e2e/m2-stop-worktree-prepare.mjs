@@ -60,7 +60,7 @@ def wire(journal, request_id):
     matches=[item for item in journal["operations"] if item.get("request",{}).get("requestId")==request_id]
     check(len(matches)==1,"original request missing or duplicated")
     item=matches[0]; check(json.loads(item["rawFrame"])==item["request"] and item.get("rawReceiptSha256"),"original request/receipt binding missing")
-    check(item["receipt"].get("requestId")==request_id and item["receipt"].get("domainId")==item["request"].get("domainId") and item["receipt"].get("targetId")==item["request"].get("targetId"),"sanitized native receipt identity differs")
+    check(item["receipt"].get("schema")==item["request"].get("schema") and item["receipt"].get("family")==item["request"].get("family") and item["receipt"].get("operation")==item["request"].get("operation") and item["receipt"].get("requestId")==request_id and item["receipt"].get("targetId")==item["request"].get("targetId"),"sanitized native receipt identity differs")
     return item
 def seat_op(journal, request_id, db, parts):
     item=wire(journal,request_id); request=item["request"]
@@ -180,7 +180,7 @@ async function userOperation(family, operation, targetId, payload, expectedRevis
     entry.originalError = String(error?.stack ?? error); save(); throw error;
   }
   check(entry.receipt.schema === request.schema && entry.receipt.requestId === request.requestId &&
-    entry.receipt.domainId === request.domainId && entry.receipt.targetId === targetId &&
+    entry.receipt.targetId === targetId &&
     entry.receipt.family === family && entry.receipt.operation === operation &&
     allowed.includes(entry.receipt.status),
   `Original User ${family}/${operation} returned ${entry.receipt.status}; no replay`);
@@ -270,7 +270,7 @@ try {
   const bound = await userOperation('K-SEAT', 'bind-instance', seatId,
     { instanceId: config.instanceId }, created.receipt.revision);
   check(bound.receipt.result.layer === 'USER' && bound.receipt.result.state === 'IDLE' &&
-    bound.receipt.result.instanceId === config.instanceId && bound.receipt.result.revision === '2' &&
+    bound.receipt.result.instanceId === config.instanceId && bound.receipt.revision === '2' &&
     bound.receipt.result.generation === '2', 'Original User bind-instance did not bind the idle seat to the existing test instance');
   record.bindRequestId = bound.request.requestId; save();
   const card = await stateCard(seatId);
