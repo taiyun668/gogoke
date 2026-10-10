@@ -20,6 +20,12 @@ def rows(db,sql,args=()):
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
+ORIGINAL_READER_SHA="1047fa57c14333719529669dbd912ca8fc3c5973b2d2164ae938c79dfed03560"
+ORIGINAL_DRIVER_SHA="225827e0b796bb886920e3e65ae87cd0babc356c68180806e687fafc53dd8781"
+ORIGINAL_HOST_SHA="5096fc2cc19b925b2f6ae8fddafac33c861ee8e0500c222e5ae92f9be3c9241c"
+ORIGINAL_CASE="m2V06Remaining_21ef8d13f8634c1497b159080bc2238c"
+ORIGINAL_SOURCE="b0b2f31edf409fdc627d4b1558a50c29f319a697"
+
 def journal_entry(j,request_id,family,operation,target):
     found=[x for x in j["operations"] if x.get("request",{}).get("requestId")==request_id]
     check(len(found)==1,"Exact original request entry missing or duplicate")
@@ -66,6 +72,72 @@ def state_card(db,j,receipt,target):
     check(bytes(row["request_bytes"]).decode()==e["rawFrame"] and
           bytes(row["receipt_bytes"]).decode()==e["rawReceipt"],
           "Original E card ledger bytes differ")
+
+def thread_manifest(db,j,s,registered):
+    f=j["fixture"]
+    claim=one(db,"SELECT generation,process_operation_id,state FROM gogoke_v37_h_claim "
+                 "WHERE domain_id=? AND session_id=?",(f["domainId"],s["id"]))
+    custody=one(db,"SELECT generation,ticket,custodian_nonce,state FROM "
+                   "gogoke_coordination_process_custody WHERE domain_id=? AND operation_id=?",
+                (f["domainId"],s["processOperationId"]))
+    found=rows(db,"SELECT step_id,phase,command_hex,generation,ticket,custodian_nonce,"
+                  "source_epoch,source_cursor,open_request_id FROM gogoke_v37_rpc_steps "
+                  "WHERE domain_id=? AND session_id=? AND process_operation_id=? "
+                  "AND step_id='thread-start'",
+               (f["domainId"],s["id"],s["processOperationId"]))
+    check(len(found)==1,"Exact original H thread/start step missing or duplicated")
+    row=found[0]
+    command=json.loads(bytes.fromhex(row["command_hex"]))
+    params=command.get("params",{})
+    check(command.get("method")=="thread/start" and isinstance(params,dict) and
+          row["phase"]=="OBSERVED" and row["open_request_id"]==s["openRequestId"] and
+          row["source_epoch"] is not None and row["source_cursor"] is not None and
+          str(row["generation"])==str(claim["generation"])==str(custody["generation"])==s["generation"] and
+          row["ticket"]==custody["ticket"] and
+          row["custodian_nonce"]==custody["custodian_nonce"] and
+          claim["process_operation_id"]==s["processOperationId"] and
+          claim["state"]=="RELEASED" and custody["state"]=="STOPPED",
+          "Original H thread/start lacks physical generation/custody backing")
+    backing=rows(db,"SELECT source_cursor FROM v37_ledger_raw_source WHERE domain_id=? "
+                    "AND session_id=? AND operation_id=? AND generation=? AND source_epoch=? "
+                    "AND source_cursor=? AND process_ticket=? AND custodian_nonce=?",
+                 (f["domainId"],s["id"],s["processOperationId"],row["generation"],
+                  row["source_epoch"],row["source_cursor"],row["ticket"],row["custodian_nonce"]))
+    check(len(backing)==1,"Original H thread/start observation lacks exact raw source")
+    if registered:
+        tools=params.get("dynamicTools")
+        check(isinstance(tools,list) and
+              len([t for t in tools if isinstance(t,dict) and t.get("name")=="gogoke_seat"])==1,
+              "Original USER H native seat tool was not advertised")
+    else:
+        check("dynamicTools" not in params,
+              "Original LEAD H unexpectedly advertised dynamic tools")
+    return {"sessionId":s["id"],"phase":row["phase"],
+            "dynamicToolsRegistered":registered,
+            "commandSha256":digest(bytes.fromhex(row["command_hex"]))}
+
+def unresolved_model_turn(db,j,attempt):
+    e=journal_entry(j,attempt["sendRequestId"],"K-SESSION","send",attempt["sessionId"])
+    s=next((s for s in j["sessions"] if s["id"]==attempt["sessionId"]),None)
+    check(s and e["receipt"]["status"]=="APPLIED" and
+          e["receipt"]["result"]["turnId"]==attempt["turnId"] and
+          e["request"]["payload"]["body"]==attempt["prompt"],
+          "Original LEAD send/turn bytes differ")
+    source=rows(db,"SELECT raw_bytes FROM v37_ledger_raw_source WHERE domain_id=? "
+                   "AND session_id=? AND operation_id=? ORDER BY rowid",
+                (j["fixture"]["domainId"],s["id"],s["processOperationId"]))
+    calls=[];completed=[]
+    for item in source:
+        frame=json.loads(bytes(item["raw_bytes"]))
+        params=frame.get("params",{})
+        if frame.get("method")=="item/tool/call" and params.get("threadId")==s["threadId"] and params.get("turnId")==attempt["turnId"]:
+            calls.append(frame)
+        if frame.get("method")=="turn/completed" and params.get("threadId")==s["threadId"] and params.get("turn",{}).get("id")==attempt["turnId"] and params.get("turn",{}).get("status")=="completed":
+            completed.append(frame)
+    check(len(calls)==0 and len(completed)==1,
+          "Original LEAD turn had a tool call or lacked completion")
+    return {"state":"NOT_RUN_NO_REGISTERED_TOOL","originalCompletedTurnObserved":True,
+            "originalToolCallCount":0}
 
 def model_tool(db,j,attempt,expected):
     f=j["fixture"]
@@ -190,20 +262,40 @@ def h_stop_release(db,j,s):
             "releaseRequestId":s["releaseRequestId"],"stopFact":s["stopFact"]}
 
 def main():
-    check(len(sys.argv)==5 and sys.argv[4] in ("baseline","final"),
-          "Expected STATE_ROOT OUTPUT JOURNAL baseline|final")
+    supplementary=(len(sys.argv)==7 and sys.argv[4]=="final" and
+                   sys.argv[5]=="--supplementary-original-reader")
+    check((len(sys.argv)==5 and sys.argv[4] in ("baseline","final")) or supplementary,
+          "Expected STATE_ROOT OUTPUT JOURNAL baseline|final [--supplementary-original-reader D_FILE]")
     root=Path(sys.argv[1]).resolve(strict=True)
     output=Path(sys.argv[2]).resolve(strict=False)
     journal_path=Path(sys.argv[3]).resolve(strict=True)
     phase=sys.argv[4]
+    old_reader=Path(sys.argv[6]).resolve(strict=True) if supplementary else None
     check(not output.exists() and not output.is_relative_to(root) and
-          output.parent==journal_path.parent,"Fresh private D reader output required")
-    j=json.loads(journal_path.read_text(encoding="utf-8-sig"))
+          output.parent==journal_path.parent and
+          output.drive.upper()=="D:" and journal_path.drive.upper()=="D:",
+          "Fresh private D reader output required")
+    journal_bytes=journal_path.read_bytes()
+    old_reader_bytes=old_reader.read_bytes() if old_reader else None
+    j=json.loads(journal_bytes.decode("utf-8-sig"))
     f=j["fixture"]
+    current_reader_sha=digest(Path(__file__).read_bytes())
     check(j["schema"]=="gogoke.37.m2-v06-remaining-installed.v1" and
-          j["acceptance"] is False and
-          digest(Path(__file__).read_bytes())==j["driverBytes"]["m2-v06-remaining-readback.py"],
-          "Original V06 reader/journal source differs")
+          j["acceptance"] is False,"Original V06 journal identity differs")
+    original_reader_sha=j["driverBytes"]["m2-v06-remaining-readback.py"]
+    if supplementary:
+        check(old_reader.drive.upper()=="D:" and old_reader!=Path(__file__).resolve() and
+              digest(old_reader_bytes)==original_reader_sha==ORIGINAL_READER_SHA and
+              j["driverBytes"]["m2-v06-remaining-win11.mjs"]==ORIGINAL_DRIVER_SHA and
+              j["driverBytes"]["m2-v06-remaining-host.mjs"]==ORIGINAL_HOST_SHA and
+              j["sourceCommit"]==ORIGINAL_SOURCE and j["caseId"]==ORIGINAL_CASE and
+              j["state"]=="FAIL_OR_NOT_RUN_PRESERVE_ORIGINAL" and
+              isinstance(j.get("originalError"),str) and j["originalError"] and
+              len(j["readbacks"])==1 and j["readbacks"][0]["phase"]=="baseline",
+              "Supplementary mode requires exact retained b0 original FAIL and reader bytes")
+    else:
+        check(current_reader_sha==original_reader_sha,
+              "Current V06 reader/journal source differs")
     database=root/"state.sqlite"
     wal=Path(str(database)+"-wal")
     check(database.is_file() and (not wal.exists() or wal.stat().st_size==0),
@@ -289,28 +381,56 @@ def main():
             for key,operation in (("busyChangeRequestId","change-instance"),
                                   ("busyReclaimRequestId","reclaim")):
                 if j.get(key):
-                    user_write(db,j,j[key],operation,f["childSeatId"],"CONFLICT")
-            for name,state in (("busyCard","BUSY"),("afterDeniedCard","BUSY"),
-                               ("idleCard","IDLE")):
+                    refused=user_write(db,j,j[key],operation,f["childSeatId"],"CONFLICT")
+                    check(refused["request"]["expectedRevision"]==j["busyCard"]["revision"] and
+                          refused["receipt"]["previousRevision"]==j["busyCard"]["revision"] and
+                          refused["receipt"]["revision"]==j["busyCard"]["revision"],
+                          "Original BUSY User refusal changed the E revision")
+            card_names=[("childCard","IDLE"),("busyCard","BUSY"),("idleCard","IDLE")]
+            if not supplementary:
+                card_names.append(("afterBusyRefusalsCard","BUSY"))
+            else:
+                card_names.append(("afterDeniedCard","BUSY"))
+            for name,state in card_names:
                 card=j[name]
                 state_card(db,j,card,f["childSeatId"])
                 check(card["result"]["state"]==state,
                       "Original transient LEAD card state differs")
-            check(j["busyCard"]["revision"]==j["afterDeniedCard"]["revision"] and
+            after_busy=j["afterDeniedCard"] if supplementary else j["afterBusyRefusalsCard"]
+            check(j["busyCard"]["revision"]==after_busy["revision"] and
                   j["busyCard"]["result"]["generation"]==
-                    j["afterDeniedCard"]["result"]["generation"],
-                  "Denied model operation changed live LEAD revision/generation")
+                    after_busy["result"]["generation"],
+                  "Original BUSY card revision/generation changed")
+            if not supplementary:
+                busy_index=next(i for i,e in enumerate(j["operations"]) if
+                                e.get("request",{}).get("requestId")==j["busyCard"]["requestId"])
+                after_index=next(i for i,e in enumerate(j["operations"]) if
+                                 e.get("request",{}).get("requestId")==after_busy["requestId"])
+                refusal_indices=[next(i for i,e in enumerate(j["operations"]) if
+                                      e.get("request",{}).get("requestId")==j[key])
+                                 for key in ("busyChangeRequestId","busyReclaimRequestId") if j.get(key)]
+                check(busy_index<min(refusal_indices) and max(refusal_indices)<after_index,
+                      "BUSY unchanged card was not read after actual User refusals")
             attempts=j["modelAttempts"]
-            check(len(attempts)==2 and
-                  [a["phase"] for a in attempts]==["child-create","lead-bounds-denial"],
-                  "Original H model attempt count differs")
-            native=[model_tool(db,j,attempts[0],"APPLIED"),
-                    model_tool(db,j,attempts[1],"DENIED")]
+            phases=[a["phase"] for a in attempts]
+            check(phases==(["child-create","lead-bounds-denial"] if supplementary else
+                           ["child-create"]),"Original H model attempt count differs")
+            native=[model_tool(db,j,attempts[0],"APPLIED")]
             check(len(j["sessions"])==2 and
                   [s["seatId"] for s in j["sessions"]]==
                     [f["parentSeatId"],f["childSeatId"]],
                   "Original H parent/child session identities differ")
             parent_session,child_session=j["sessions"]
+            manifests=[thread_manifest(db,j,parent_session,True),
+                       thread_manifest(db,j,child_session,False)]
+            if supplementary:
+                denial=unresolved_model_turn(db,j,attempts[1])
+            else:
+                missing=[n for n in j["notRun"] if n.get("axis")=="MODEL_LEAD_BOUNDS_DENIAL"]
+                check(len(missing)==1 and missing[0]["state"]=="NOT_RUN_NO_REGISTERED_TOOL",
+                      "Original LEAD capability absence was not recorded as NOT_RUN")
+                denial={"state":"NOT_RUN_NO_REGISTERED_TOOL",
+                        "originalCompletedTurnObserved":False,"originalToolCallCount":0}
             child_admission=[]
             for operation in ("admission-reserve","admission-commit","open"):
                 found=[e for e in j["operations"] if
@@ -336,25 +456,101 @@ def main():
                   all(a<b for a,b in zip(order,order[1:])),
                   "Original parent stop/release did not precede child admission/open")
             h=[h_stop_release(db,j,s) for s in j["sessions"]]
+            child_stop=journal_entry(j,child_session["stopRequestId"],"K-SESSION","stop",child_session["id"])
+            child_release=journal_entry(j,child_session["releaseRequestId"],"K-SESSION","admission-release",child_session["id"])
+            reclaim=journal_entry(j,j["reclaimRequestId"],"K-SEAT","reclaim",f["childSeatId"])
+            busy_refusals=[journal_entry(j,j[key],"K-SEAT",operation,f["childSeatId"])
+                           for key,operation in (("busyChangeRequestId","change-instance"),
+                                                 ("busyReclaimRequestId","reclaim")) if j.get(key)]
+            busy_card_entry=journal_entry(j,j["busyCard"]["requestId"],"K-SEAT","state-card",f["childSeatId"])
+            idle_card_entry=journal_entry(j,j["idleCard"]["requestId"],"K-SEAT","state-card",f["childSeatId"])
+            check(all(j["operations"].index(busy_card_entry)<j["operations"].index(e)<
+                      j["operations"].index(child_stop) for e in busy_refusals) and
+                  j["operations"].index(child_stop)<j["operations"].index(child_release)<
+                  j["operations"].index(idle_card_entry)<j["operations"].index(reclaim) and
+                  int(j["idleCard"]["revision"])==int(j["busyCard"]["revision"])+1 and
+                  reclaim["request"]["expectedRevision"]==j["idleCard"]["revision"] and
+                  int(reclaim["receipt"]["revision"])==int(j["idleCard"]["revision"])+1,
+                  "Original BUSY refusals, H stop, IDLE card, reclaim order/revisions differ")
             sends=[x for x in j["operations"] if x.get("request",{}).get("family")=="K-SESSION" and
                    x["request"]["operation"]=="send"]
             turns=[t for s in j["sessions"] for t in s["turns"]]
-            check(len(h)==2 and len(sends)==len(turns)==4 and
-                  [t["phase"] for t in turns]==["takeover","child-create",
-                                                  "takeover","lead-bounds-denial"] and
-                  len(j["takeoverCards"])==2,
-                  "Original H send count/turn sequence differs")
+            expected_phases=["takeover","child-create"]+(["lead-bounds-denial"] if supplementary else [])
+            check(len(h)==2 and len(sends)==len(turns)==len(expected_phases) and
+                  [t["phase"] for t in turns]==expected_phases and
+                  [t["sendRequestId"] for t in turns]==
+                    [e["request"]["requestId"] for e in sends] and
+                  len(j["takeoverCards"])==1,
+                  "Original H send count/turn sequence differs from native ready gate")
+            qcard=j["takeoverCards"][0]
+            check(qcard["sessionId"]==parent_session["id"] and
+                  qcard["turnId"]==parent_session["turns"][0]["turnId"] and
+                  qcard["option"] in (f["takeover"]["option"],f["takeover"]["option"]+" (Recommended)"),
+                  "Original C card was not the USER parent takeover answer")
+            answer=journal_entry(j,qcard["requestId"],"K-QCARD","answer",qcard["cardId"])
+            qnative=one(db,"SELECT state,seat_id,turn_id,generation,answer_kind,answer "
+                           "FROM gogoke_v37_qcard_native WHERE domain_id=? AND card_id=?",
+                        (f["domainId"],qcard["cardId"]))
+            qoperation=one(db,"SELECT state,seat_id,turn_id,generation,answer_kind,answer,"
+                              "native_receipt_id FROM gogoke_v37_qcard_native_operations "
+                              "WHERE domain_id=? AND request_id=?",
+                           (f["domainId"],qcard["requestId"]))
+            check(answer["receipt"]["status"]=="APPLIED" and
+                  answer["receipt"]["result"]["state"]=="ANSWERED" and
+                  all(q["state"]=="ANSWERED" and q["seat_id"]==f["parentSeatId"] and
+                      q["turn_id"]==qcard["turnId"] and
+                      q["generation"]==parent_session["generation"] and
+                      q["answer_kind"]=="WIRE" and isinstance(q["answer"],str) and q["answer"]
+                      for q in (qnative,qoperation)) and
+                  qnative["answer"]==qoperation["answer"] and qoperation["native_receipt_id"],
+                  "Original C answer lacks exact native receipt backing")
+            check(answer["receipt"]["result"].get("nativeReceiptId")==
+                  qoperation["native_receipt_id"] and
+                  answer["receipt"]["result"].get("deliveryBasis")=="NATIVE_EXACT_WRITE_RECEIPT",
+                  "Original C answer receipt is not the native write receipt")
+            parent_cards=[e for e in j["operations"] if e.get("request",{}).get("family")=="K-SEAT" and
+                          e["request"].get("operation")=="state-card" and
+                          e["request"].get("targetId")==f["parentSeatId"] and
+                          e.get("receipt",{}).get("status")=="APPLIED"]
+            for e in parent_cards:
+                state_card(db,j,e["receipt"],f["parentSeatId"])
+            check(any(e["receipt"]["result"].get("takeoverReady") is False and
+                      j["operations"].index(e)<j["operations"].index(sends[0]) for e in parent_cards) and
+                  any(e["receipt"]["result"].get("takeoverReady") is True and
+                      any(a.get("questionId")==f["takeover"]["questionId"] and
+                          a.get("answer")==qcard["option"] and a.get("basis")=="CITED" and
+                          a.get("sourceRef","").startswith(
+                              f'C-QCARD:{qcard["cardId"]}:{qcard["requestId"]}:')
+                          for a in e["receipt"]["result"].get("takeoverAnswers",[])) and
+                      j["operations"].index(sends[0])<j["operations"].index(e)<
+                      j["operations"].index(sends[1]) for e in parent_cards),
+                  "Original USER C takeover state-card gate differs")
+            child_ready=journal_entry(j,j["childCard"]["requestId"],"K-SEAT", "state-card",f["childSeatId"])
+            child_open=journal_entry(j,child_session["openRequestId"],"K-SESSION","open",child_session["id"])
+            check(j["childCard"]["result"].get("takeoverReady") is True and
+                  j["busyCard"]["result"].get("takeoverReady") is True and
+                  j["operations"].index(sends[1])<j["operations"].index(child_ready)<
+                  j["operations"].index(child_open)<
+                  j["operations"].index(journal_entry(j,j["busyCard"]["requestId"],"K-SEAT","state-card",f["childSeatId"])),
+                  "Original LEAD ready gate/card sequence differs")
             facts={"parentAbsent":False,"childAbsent":False,
                    "sourceTemplateMatches":template_match,"projectCap":cap,
                    "historicalChildCap":prior_proof and
                      {"sourceCommit":prior_proof["sourceCommit"],"sha256":prior["sha256"],
                       "newCandidateCoverage":False},
-                   "directModelToolEvidence":True,
+                   "directModelToolEvidence":False,
+                   "directChildCreateEvidence":True,
+                   "modelLeadBoundsDenial":denial,
                    "directBusyStopReleaseEvidence":True,
-                   "nativeModelReceipts":native,"hStopRelease":h}
+                   "nativeModelReceipts":native,"hStopRelease":h,
+                   "threadStartManifests":manifests,
+                   "nativeTakeoverCardCount":1}
     after=digest(database.read_bytes())
     check(before==after and (not wal.exists() or wal.stat().st_size==0),
           "Immutable V06 reader changed database bytes or WAL")
+    check(digest(journal_path.read_bytes())==digest(journal_bytes) and
+          (not supplementary or digest(old_reader.read_bytes())==digest(old_reader_bytes)),
+          "Original journal or preserved reader bytes changed during supplementary read")
     root_id={"device":str(root.stat().st_dev),"inode":str(root.stat().st_ino),
              "databaseDevice":str(database.stat().st_dev),
              "databaseInode":str(database.stat().st_ino)}
@@ -364,7 +560,13 @@ def main():
                "generationId":j["launches"][0]["generationId"] if phase=="final" else j["preflightGenerationId"]}
     proof={"schema":"gogoke.37.private-m2-v06-remaining-readback.v1",
            "phase":phase,"caseId":j["caseId"],"sourceCommit":j["sourceCommit"],
-           "readerSha256":j["driverBytes"]["m2-v06-remaining-readback.py"],
+           "readerSha256":current_reader_sha,
+           "originalReaderSha256":original_reader_sha,
+           "currentReaderSha256":current_reader_sha,
+           "supplementary":supplementary,
+           "originalFailureRetained":supplementary,
+           "state":("SUPPLEMENTARY_PARTIAL_V06_ORIGINAL_FAIL_RETAINED" if supplementary
+                    else "PARTIAL_DIRECT_V06_REVIEW_REQUIRED" if phase=="final" else "BASELINE"),
            "acceptance":False,"databaseWrites":False,"credentialReads":False,
            "measurementPreservedDatabaseBytes":True,"databaseSha256":before,
            "rootIdentity":root_id,"candidateIdentity":candidate,**facts}

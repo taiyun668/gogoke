@@ -214,14 +214,9 @@ async function main(){
     check(busy.result?.state==='BUSY'&&busy.result?.layer==='LEAD',
       'Actual H open did not make exact LEAD BUSY');
     journal.busyCard=busy;product.save();
-    const boundArgs={operation:'set-orchestration-bounds',targetId:f.childSeatId,
-      expectedRevision:busy.revision,payload:{...scope,maxConcurrent:1}};
-    const denied=await root.modelTool(childH,'lead-bounds-denial',boundArgs);
-    denied.expectedStatus='DENIED';product.save();
-    const afterDenied=await root.card(c.domainId,f.childSeatId);
-    check(afterDenied.result?.state==='BUSY'&&afterDenied.revision===busy.revision,
-      'LEAD model bounds attempt changed original E revision');
-    journal.afterDeniedCard=afterDenied;product.save();
+    journal.notRun.push({axis:'MODEL_LEAD_BOUNDS_DENIAL',state:'NOT_RUN_NO_REGISTERED_TOOL',
+      reason:'A LEAD WORK thread has no native dynamicTools under the current E orchestration-scope gate.'});
+    product.save();
     if(atom(f.changeInstanceId)&&f.changeInstanceId!==c.instanceId&&
        instances.instances.some(r=>r.instanceId===f.changeInstanceId)){
       const change=(await root.op(c.domainId,'K-SEAT','change-instance',f.childSeatId,
@@ -237,6 +232,12 @@ async function main(){
     check(reclaimBusy.revision===busy.revision,
       'BUSY reclaim refusal changed E revision');
     journal.busyReclaimRequestId=journal.operations.at(-1).request.requestId;product.save();
+    const afterBusyRefusals=await root.card(c.domainId,f.childSeatId);
+    check(afterBusyRefusals.result?.state==='BUSY'&&
+      afterBusyRefusals.revision===busy.revision&&
+      afterBusyRefusals.result.generation===busy.result.generation,
+    'BUSY User refusals changed E revision or generation');
+    journal.afterBusyRefusalsCard=afterBusyRefusals;product.save();
     await root.stopRelease(childH);
     const idle=await root.card(c.domainId,f.childSeatId);
     check(idle.result?.state==='IDLE'&&idle.result?.layer==='LEAD',
@@ -258,13 +259,14 @@ async function main(){
     journal.state='FLOW_COMPLETE_CLOSED_READBACK_REQUIRED';product.save();
     await closeOnce();
     const final=readback('final');
-    check(final.directModelToolEvidence===true&&
+    check(final.directChildCreateEvidence===true&&
       final.directBusyStopReleaseEvidence===true&&
+      final.modelLeadBoundsDenial?.state==='NOT_RUN_NO_REGISTERED_TOOL'&&
       JSON.stringify(final.rootIdentity)===JSON.stringify(baseline.rootIdentity)&&
       JSON.stringify(final.candidateIdentity)===JSON.stringify(baseline.candidateIdentity),
     'Original closed H/E/F proof or physical identity differs');
     snapshot('after');compare();
-    journal.state='DIRECT_V06_REMAINING_SLICE_REVIEW_REQUIRED';
+    journal.state='PARTIAL_V06_REMAINING_SLICE_REVIEW_REQUIRED';
     journal.acceptance=false;product.save();
   }catch(error){
     journal.state='FAIL_OR_NOT_RUN_PRESERVE_ORIGINAL';
