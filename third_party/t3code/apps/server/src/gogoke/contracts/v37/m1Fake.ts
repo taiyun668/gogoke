@@ -247,8 +247,9 @@ export class V37M1FakePort implements V37Port {
         }
         const template = this.store.templates.get(nonempty(request.payload, "templateId"));
         if (!template) return encodeV37Receipt(reply("CONFLICT"));
-        this.store.seats.set(key, { revision: 1n, layer, lifecycle: "SHORT", settings: copy(template) });
-        return committed(reply("APPLIED", 1n, { state: "SHORT", layer }));
+        const lifecycle = caller.role === "lead" ? "SHORT" : "LONG";
+        this.store.seats.set(key, { revision: 1n, layer, lifecycle, settings: copy(template) });
+        return committed(reply("APPLIED", 1n, { state: lifecycle, layer }));
       }
       if (!seat) return encodeV37Receipt(reply("CONFLICT"));
       if (caller.role === "lead" && (seat.layer !== "LEAD" || caller.seatId === request.targetId)) {

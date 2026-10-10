@@ -1477,10 +1477,15 @@ fn native_child_create_derives_only_first_exact_dispatch_grant() {
         answer_takeover(db,&caller,"q","Known scope",AnswerBasis::Cited {
             source_ref:"repo:PLAN".into()},0,"answerNative",b"original answer").unwrap();
         let input=||CreateSeat {domain_id:"projectA",seat_id:"workerNative",
-            template_id:"templateE2",instance_id:Some("instanceA"),kind:Kind::Short,
+            template_id:"templateE2",instance_id:Some("instanceA"),kind:Kind::Long,
             request_id:"createNative",request_bytes:b"original native create"};
         let child=create_native_child(db,&caller,input()).unwrap().seat;
         assert_eq!(child.layer,Layer::Lead);
+        assert_eq!(child.kind,Kind::Short);
+        let expected=fingerprint(&["create","projectA","workerNative","templateE2",
+            "instanceA","SHORT","LEAD","lead",&active.incarnation,
+            &active.generation.to_string()],b"original native create");
+        assert_eq!(operation(db,"projectA","createNative",&expected).unwrap().unwrap().seat,child);
         authorize_child_dispatch(db,&caller,&child).unwrap();
         assert!(matches!(authorize_current_call(db,&caller,"projectA","MAIN",
             CallAction::Dispatch),Err(SeatError::Denied)));
@@ -1490,6 +1495,49 @@ fn native_child_create_derives_only_first_exact_dispatch_grant() {
         assert!(create_native_child(db,&caller,input()).unwrap().replayed);
         assert!(matches!(authorize_child_dispatch(db,&caller,&child),Err(SeatError::Denied)),
             "create replay must not restore an expired child grant");
+    });
+}
+
+#[test]
+fn native_child_create_derives_only_first_exact_dispatch_grant_preserves_legacy_kinds() {
+    fixture(|db,owner| {
+        let lead=create_e2_lead(db,owner);
+        let active=set_dispatch_state(db,&lead,true).unwrap();
+        let caller=NativeSeatCall::from_verified_h_turn(&active,"turnLegacy").unwrap();
+        initialize_policy(db,owner,"projectA","draft").unwrap();
+        answer_takeover(db,&caller,"q","Known scope",AnswerBasis::Cited {
+            source_ref:"repo:PLAN".into()},0,"answerLegacy",b"original answer").unwrap();
+        let admission=NativeLeadAdmission::from_native_runtime_snapshot(&active).unwrap();
+        for (seat_id,request_id,kind,raw) in [
+            ("legacyLong","legacyLongCreate",Kind::Long,b"old long create".as_slice()),
+            ("legacyShort","legacyShortCreate",Kind::Short,b"old short create".as_slice()),
+        ] {
+            let input=||CreateSeat {domain_id:"projectA",seat_id,template_id:"templateE2",
+                instance_id:Some("instanceA"),kind:Kind::Long,request_id,request_bytes:raw};
+            let old=create(db,NativeOrigin::lead(&admission),CreateSeat {
+                kind,..input()
+            }).unwrap().seat;
+            assert_eq!(old.kind,kind);
+            let stored=fingerprint(&["create","projectA",seat_id,"templateE2",
+                "instanceA",kind.sql(),"LEAD","lead",&active.incarnation,
+                &active.generation.to_string()],raw);
+            assert_eq!(operation(db,"projectA",request_id,&stored).unwrap().unwrap().seat,old);
+            let replay=create_native_child(db,&caller,input()).unwrap();
+            assert!(replay.replayed);
+            assert_eq!(replay.seat,old);
+            assert_eq!(operation(db,"projectA",request_id,&stored).unwrap().unwrap().seat,old);
+            let grants=Statement::prepare(db.as_ptr(),
+                "SELECT COUNT(*) FROM main.gogoke_v37_seat_policy_grants WHERE domain_id='projectA' AND target_id=?1").unwrap();
+            grants.bind_text(1,seat_id).unwrap();
+            assert!(grants.step_row().unwrap());
+            assert_eq!(grants.column_text(0).unwrap(),"0",
+                "legacy replay must not derive a new child grant");
+        }
+        assert!(matches!(create_native_child(db,&caller,CreateSeat {
+            request_bytes:b"changed long create",..CreateSeat {domain_id:"projectA",
+                seat_id:"legacyLong",template_id:"templateE2",instance_id:Some("instanceA"),
+                kind:Kind::Long,request_id:"legacyLongCreate",request_bytes:b"old long create"}
+        }),Err(SeatError::Conflict)));
     });
 }
 

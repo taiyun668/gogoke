@@ -896,6 +896,18 @@ fn operation(
         replayed: true,
     }))
 }
+fn create_operation_fingerprint(
+    db: &VerifiedDatabaseConnection<'_>, domain: &str, request: &str,
+) -> Result<Option<String>, SeatError> {
+    let q = Statement::prepare(db.as_ptr(),
+        "SELECT fingerprint FROM main.gogoke_v37_seat_operations WHERE domain_id=?1 AND request_id=?2")?;
+    q.bind_text(1, domain)?;
+    q.bind_text(2, request)?;
+    if !q.step_row()? { return Ok(None); }
+    let fingerprint = q.column_text(0)?;
+    if q.step_row()? { return Err(SeatError::SchemaDrift); }
+    Ok(Some(fingerprint))
+}
 fn authorize_replay(
     db: &VerifiedDatabaseConnection<'_>,
     origin: &NativeOrigin<'_>,
@@ -1009,14 +1021,17 @@ fn create_inner(
             a.generation.to_string(),
         ),
     };
-    let fp = fingerprint(
+    // The authenticated native child entry used LONG before the task-child
+    // default changed. Its original kind remains part of the old fingerprint.
+    let fresh_kind = if caller.is_some() { Kind::Short } else { input.kind };
+    let create_fingerprint = |kind: Kind| fingerprint(
         &[
             "create",
             input.domain_id,
             input.seat_id,
             input.template_id,
             input.instance_id.unwrap_or(""),
-            input.kind.sql(),
+            kind.sql(),
             layer_label,
             parent_label,
             origin_incarnation,
@@ -1024,6 +1039,8 @@ fn create_inner(
         ],
         input.request_bytes,
     );
+    let fp = create_fingerprint(fresh_kind);
+    let legacy_fp = (fresh_kind != input.kind).then(|| create_fingerprint(input.kind));
     transact(db, |db| {
         // Authenticate before looking up a request ID as well as before the
         // first seat write. This covers both fresh writes and replay/conflict
@@ -1039,7 +1056,14 @@ fn create_inner(
                 return Err(SeatError::Denied);
             }
         }
-        if let Some(receipt) = operation(db, input.domain_id, input.request_id, &fp)? {
+        // Resolve a persisted request against its original fingerprint before
+        // applying the new default to a fresh child. Neither kind is rewritten.
+        if let Some(stored_fp) = create_operation_fingerprint(db, input.domain_id, input.request_id)? {
+            if stored_fp != fp && legacy_fp.as_deref() != Some(stored_fp.as_str()) {
+                return Err(SeatError::Conflict);
+            }
+            let receipt = operation(db, input.domain_id, input.request_id, &stored_fp)?
+                .ok_or(SeatError::SchemaDrift)?;
             authorize_replay(db, &origin, &receipt)?;
             return Ok(receipt);
         }
@@ -1069,7 +1093,7 @@ fn create_inner(
             if let Some(parent) = &parent {
                 q.bind_text(4, parent)?;
             }
-            q.bind_text(5, input.kind.sql())?;
+            q.bind_text(5, fresh_kind.sql())?;
             q.bind_text(6, instance_id)?;
             q.step_done()?;
         } else {
@@ -1080,7 +1104,7 @@ fn create_inner(
             if let Some(parent) = &parent {
                 q.bind_text(4, parent)?;
             }
-            q.bind_text(5, input.kind.sql())?;
+            q.bind_text(5, fresh_kind.sql())?;
             q.step_done()?;
         }
         let settings = Statement::prepare(

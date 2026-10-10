@@ -71,8 +71,12 @@ export async function runV37M1ContractCases(factory: V37M1HarnessFactory): Promi
     const h = factory("seat-user");
     const createA = req("K-SEAT", "create-from-template", "seatCreateA", "seatA", "0",
       { layer: "LEAD", templateId: "templateA" });
-    assert.equal((await call(h.port, createA)).status, "APPLIED");
-    assert.equal((await call(h.reconstruct(), createA)).status, "REPLAYED");
+    const createdA = await call(h.port, createA);
+    assert.equal(createdA.status, "APPLIED");
+    assert.equal(createdA.result.state, "LONG");
+    const replayA = await call(h.reconstruct(), createA);
+    assert.equal(replayA.status, "REPLAYED");
+    assert.equal(replayA.result.state, "LONG");
     assert.equal((await call(h.port, req("K-SEAT", "create-from-template", "seatCreateB", "seatB", "0",
       { layer: "LEAD", templateId: "templateA" }))).status, "APPLIED");
     assert.equal((await call(h.port, req("K-SEAT", "tune", "tuneA", "seatA", "1",
@@ -103,8 +107,10 @@ export async function runV37M1ContractCases(factory: V37M1HarnessFactory): Promi
   }
   {
     const h = factory("seat-takeover");
-    assert.equal((await call(h.port, req("K-SEAT", "create-from-template", "takeoverLead", "leadA", "0",
-      { layer: "USER", templateId: "templateA" }))).status, "APPLIED");
+    const createdLead = await call(h.port, req("K-SEAT", "create-from-template", "takeoverLead", "leadA", "0",
+      { layer: "USER", templateId: "templateA" }));
+    assert.equal(createdLead.status, "APPLIED");
+    assert.equal(createdLead.result.state, "LONG");
     const missing = await call(h.port, req("K-SEAT", "takeover-answers", "missingAnswer", "leadA", "1",
       { takeoverEpoch: "epochA", answers: [{ questionId: "purpose", answer: "Build app", sourceRef: "repo:README" }] }));
     assert.equal(missing.status, "CONFLICT");
@@ -187,8 +193,16 @@ export async function runV37M1ContractCases(factory: V37M1HarnessFactory): Promi
       { layer: "LEAD", templateId: "templateA", caller: { role: "user" } }))).status, "DENIED");
     assert.equal((await call(h.port, req("K-SEAT", "create-from-template", "wrongLayer", "userSeat", "0",
       { layer: "USER", templateId: "templateA" }))).status, "DENIED");
-    assert.equal((await call(h.port, req("K-SEAT", "create-from-template", "childSeat", "childSeat", "0",
-      { layer: "LEAD", templateId: "templateA" }))).status, "APPLIED");
+    const createChild = req("K-SEAT", "create-from-template", "childSeat", "childSeat", "0",
+      { layer: "LEAD", templateId: "templateA" });
+    const child = await call(h.port, createChild);
+    assert.equal(child.status, "APPLIED");
+    assert.equal(child.result.state, "SHORT");
+    assert.equal((await call(h.reconstruct(), createChild)).result.state, "SHORT");
+    const promoted = await call(h.port, req("K-SEAT", "short-to-long", "keepChild", "childSeat", "1"));
+    assert.equal(promoted.status, "APPLIED");
+    assert.equal(promoted.result.state, "LONG");
+    assert.equal((await call(h.port, req("K-SEAT", "state-card", "longChild", "childSeat", "2"))).result.state, "LONG");
   }
   {
     const h = factory("instance-seat-denied");
