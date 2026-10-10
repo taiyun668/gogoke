@@ -431,45 +431,10 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $false
           $evidence = Join-Path $env:RUNNER_TEMP 'gogoke-update-loader-diagnostic'
           New-Item -ItemType Directory -Path $evidence -Force | Out-Null
-          $buildOut = Join-Path $evidence 'cargo-build.jsonl'
-          $buildErr = Join-Path $evidence 'cargo-build.stderr.txt'
-          & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml --lib --no-run --message-format=json 1> $buildOut 2> $buildErr
-          if ($LASTEXITCODE -ne 0) {
-            Get-Content -LiteralPath $buildErr -Tail 80 | Out-Host
-            throw "Exact native test image build failed: $LASTEXITCODE"
-          }
-          $images = @(Get-Content -LiteralPath $buildOut | ForEach-Object {
-            try { $_ | ConvertFrom-Json -ErrorAction Stop } catch { $null }
-          } | Where-Object {
-            $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'gogoke_desktop_lib' -and
-            $_.target.kind.Count -eq 3 -and $_.target.kind -contains 'staticlib' -and
-            $_.target.kind -contains 'cdylib' -and $_.target.kind -contains 'rlib' -and
-            $_.profile.test -eq $true -and $_.executable
-          } | ForEach-Object { $_.executable } | Select-Object -Unique)
-          if ($images.Count -ne 1) { throw "Expected one actual desktop lib test image; found $($images.Count)" }
-          $image = (Resolve-Path -LiteralPath $images[0]).Path
-          $expectedRoot = [IO.Path]::GetFullPath((Join-Path (Get-Location).Path 'src-tauri/target/debug/deps')) + [IO.Path]::DirectorySeparatorChar
-          if (-not $image.StartsWith($expectedRoot, [StringComparison]::OrdinalIgnoreCase)) {
-            throw "Test image escaped expected Cargo output: $image"
-          }
-          $imageHash = (Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLowerInvariant()
           $cargo = (Get-Command cargo -ErrorAction Stop).Source
           if ([IO.Path]::GetExtension($cargo) -cne '.exe') { throw "Cargo is not an executable: $cargo" }
           $cargoVersion = (& $cargo +1.89.0 --version).Trim()
           if ($LASTEXITCODE -ne 0 -or $cargoVersion -notmatch '^cargo 1\.89\.0 ') { throw "Unexpected Cargo toolchain: $cargoVersion" }
-          [ordered]@{
-            schema='gogoke.update-loader-diagnostic.v1'
-            sourceCommit=(git rev-parse HEAD).Trim()
-            originalFailedRun='38079237420'
-            diagnosticOnly=$true
-            imagePath=$image
-            imageSha256=$imageHash
-            cargoPath=$cargo
-            cargoSha256=(Get-FileHash -LiteralPath $cargo -Algorithm SHA256).Hash.ToLowerInvariant()
-            cargoVersion=$cargoVersion
-            filter='gogoke_update'
-          } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence 'identity.json') -Encoding utf8
-          Write-Output "Exact test image: $image; SHA-256 $imageHash"
           $originalOut = Join-Path $evidence 'original-cargo-stdout.txt'
           $originalErr = Join-Path $evidence 'original-cargo-stderr.txt'
           & $cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_update --lib -vv 1> $originalOut 2> $originalErr
@@ -481,14 +446,36 @@ jobs:
           if ($originalExit -eq 0 -or $originalText -notmatch '0xc0000139|STATUS_ENTRYPOINT_NOT_FOUND') {
             throw "Original Cargo child loader failure did not reproduce: cargo exit $originalExit"
           }
-          if ((Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLowerInvariant() -cne $imageHash) {
-            throw 'Original Cargo test changed the captured image bytes'
-          }
+          $images = @(Get-ChildItem -LiteralPath 'src-tauri/target/debug/deps' -Filter 'gogoke_desktop_lib-*.exe' -File)
+          if ($images.Count -ne 1) { throw "Expected one original Cargo desktop lib test image; found $($images.Count)" }
+          $image = $images[0].FullName
+          $running = @(Get-Content -LiteralPath $originalErr | Where-Object {
+            $_ -match '^\s+Running ' -and $_.Contains("$image gogoke_update", [StringComparison]::OrdinalIgnoreCase)
+          })
+          if ($running.Count -ne 1) { throw "Original Cargo Running line did not bind exactly one test image: $($running.Count)" }
+          $imageHash = (Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLowerInvariant()
+          [ordered]@{
+            schema='gogoke.update-loader-diagnostic.v1'
+            sourceCommit=(git rev-parse HEAD).Trim()
+            originalFailedRun='38079237420'
+            diagnosticOnly=$true
+            originalCargoExitCode=$originalExit
+            originalImagePath=$image
+            originalImageSha256=$imageHash
+            cargoPath=$cargo
+            cargoSha256=(Get-FileHash -LiteralPath $cargo -Algorithm SHA256).Hash.ToLowerInvariant()
+            cargoVersion=$cargoVersion
+            filter='gogoke_update'
+          } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence 'identity.json') -Encoding utf8
+          Write-Output "Original Cargo test image: $image; SHA-256 $imageHash"
           $dumpbin = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x64/dumpbin.exe'
-          if (-not (Test-Path -LiteralPath $dumpbin -PathType Leaf)) { throw 'Pinned MSVC dumpbin unavailable' }
-          $imports = Join-Path $evidence 'test-image-imports.txt'
-          & $dumpbin /imports $image 1> $imports
-          if ($LASTEXITCODE -ne 0) { throw "Test image import table unavailable: $LASTEXITCODE" }
+          if (Test-Path -LiteralPath $dumpbin -PathType Leaf) {
+            $imports = Join-Path $evidence 'test-image-imports.txt'
+            & $dumpbin /imports $image 1> $imports
+            if ($LASTEXITCODE -ne 0) { Write-Warning "Supplemental import table unavailable: $LASTEXITCODE" }
+          } else {
+            Write-Warning 'Supplemental pinned MSVC dumpbin unavailable; continue to loader snaps'
+          }
 
           $debuggers = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10/Debuggers/x64'
           $gflags = Join-Path $debuggers 'gflags.exe'
@@ -499,7 +486,7 @@ jobs:
             if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Microsoft') {
               throw "Microsoft Debugging Tool signature invalid: $tool"
             }
-            Write-Output "Debugging tool: $tool; version $((Get-Item -LiteralPath $tool).VersionInfo.FileVersion); SHA-256 $((Get-FileHash -LiteralPath $tool -Algorithm SHA256).Hash)"
+            Write-Output "Debugging tool: $tool; version $((Get-Item -LiteralPath $tool).VersionInfo.FileVersion); SHA-256 $((Get-FileHash -LiteralPath $tool -Algorithm SHA256).Hash); signer $($signature.SignerCertificate.Subject)"
           }
           'Loader diagnostic only: original Cargo child then CDB child tracking; Browser, reproducibility, candidate signing and installation are NOT_RUN.' >> $env:GITHUB_STEP_SUMMARY
           $imageName = [IO.Path]::GetFileName($image)
@@ -528,16 +515,28 @@ jobs:
               $debugger.Kill($true)
               $debugger.WaitForExit()
             }
-            [IO.File]::WriteAllText((Join-Path $evidence 'cdb-stdout.txt'), $stdout.GetAwaiter().GetResult())
-            [IO.File]::WriteAllText((Join-Path $evidence 'cdb-stderr.txt'), $stderr.GetAwaiter().GetResult())
+            $cdbStdout = $stdout.GetAwaiter().GetResult()
+            $cdbStderr = $stderr.GetAwaiter().GetResult()
+            [IO.File]::WriteAllText((Join-Path $evidence 'cdb-stdout.txt'), $cdbStdout)
+            [IO.File]::WriteAllText((Join-Path $evidence 'cdb-stderr.txt'), $cdbStderr)
+            $cdbRunning = @($cdbStderr -split "`n" | Where-Object {
+              $_ -match '^\s+Running ' -and $_.Contains("$image gogoke_update", [StringComparison]::OrdinalIgnoreCase)
+            })
+            $cdbImageHash = (Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLowerInvariant()
+            [ordered]@{
+              imagePath=$image
+              imageSha256=$cdbImageHash
+              originalImageSha256=$imageHash
+              sameImageBytes=($cdbImageHash -ceq $imageHash)
+              cargoRunningLineBound=($cdbRunning.Count -eq 1)
+              debuggerTimedOut=$timedOut
+            } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence 'cdb-image.json') -Encoding utf8
+            Write-Output "CDB Cargo image SHA-256 $cdbImageHash; same original bytes $($cdbImageHash -ceq $imageHash); Running line bound $($cdbRunning.Count -eq 1)"
             if ($timedOut) { throw 'Microsoft CDB loader diagnosis timed out; raw log retained' }
             Write-Output "Microsoft CDB exit: $($debugger.ExitCode)"
             if (-not (Test-Path -LiteralPath $log -PathType Leaf)) { throw 'CDB did not write loader snaps' }
             Get-Content -LiteralPath $log | Select-String -Pattern 'gogoke_desktop_lib|ModLoad|c0000139|entry point|procedure|LdrpSnapThunk|ERROR' -Context 2,2 |
               Select-Object -Last 50 | Out-Host
-            if ((Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLowerInvariant() -cne $imageHash) {
-              throw 'CDB-wrapped Cargo test changed the captured image bytes'
-            }
           } catch {
             $diagnosticError = $_.Exception.Message
           } finally {
