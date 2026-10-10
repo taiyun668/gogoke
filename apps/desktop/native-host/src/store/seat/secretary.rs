@@ -4,6 +4,58 @@
 
 use super::*;
 
+unsafe extern "C" {
+    fn sqlite3_get_autocommit(database:*mut std::ffi::c_void)->i32;
+}
+
+fn autocommit(db:&VerifiedDatabaseConnection<'_>)->bool {
+    (unsafe {sqlite3_get_autocommit(db.as_ptr())})!=0
+}
+
+fn read_control(db:&VerifiedDatabaseConnection<'_>,sql:&'static str)
+    ->Result<(),AtomicError> {
+    Statement::prepare(db.as_ptr(),sql)?.step_done()
+}
+
+/// Only the two secretary read entry points use this fixed transaction
+/// boundary. A borrowed transaction remains entirely with its caller.
+struct SecretaryReadSnapshot<'a,'root> {
+    db:&'a VerifiedDatabaseConnection<'root>,
+    owned:bool,
+}
+impl<'a,'root> SecretaryReadSnapshot<'a,'root> {
+    fn begin(db:&'a VerifiedDatabaseConnection<'root>)->Result<Self,SeatError> {
+        let owned=autocommit(db);
+        if owned {read_control(db,"BEGIN")?;}
+        Ok(Self {db,owned})
+    }
+    fn finish<T>(self,result:Result<T,SeatError>)->Result<T,SeatError> {
+        if !self.owned {return result;}
+        match result {
+            Ok(value)=>match read_control(self.db,"COMMIT") {
+                Ok(())=>Ok(value),
+                Err(commit)=>{
+                    let primary=SeatError::Store(commit);
+                    if autocommit(self.db) {Err(primary)}
+                    else {match read_control(self.db,"ROLLBACK") {
+                        Ok(())=>Err(primary),
+                        Err(rollback)=>Err(SeatError::Store(AtomicError::DurabilityContractFailed(
+                            format!("secretary read COMMIT: primary {primary:?}; ROLLBACK {rollback:?}")))),
+                    }}
+                },
+            },
+            Err(primary)=>{
+                if autocommit(self.db) {Err(primary)}
+                else {match read_control(self.db,"ROLLBACK") {
+                    Ok(())=>Err(primary),
+                    Err(rollback)=>Err(SeatError::Store(AtomicError::DurabilityContractFailed(
+                        format!("secretary read: primary {primary:?}; ROLLBACK {rollback:?}")))),
+                }}
+            },
+        }
+    }
+}
+
 pub(super) const DESIGNATION: &str = "CREATE TABLE gogoke_v37_seat_secretary(singleton INTEGER PRIMARY KEY CHECK(singleton=1),domain_id TEXT NOT NULL CHECK(domain_id='global'),seat_id TEXT NOT NULL,incarnation TEXT NOT NULL,request_id TEXT NOT NULL,fingerprint TEXT NOT NULL,FOREIGN KEY(domain_id,seat_id) REFERENCES gogoke_v37_seats(domain_id,seat_id)) STRICT";
 
 #[derive(Clone,Debug,Eq,PartialEq)]
@@ -101,9 +153,17 @@ pub(crate) fn designate_secretary(db:&mut VerifiedDatabaseConnection<'_>,
     })
 }
 
-/// Root calls this inside its authenticated Owner read transaction. This is
-/// an E settings snapshot only; it does not make the secretary operational.
+/// Compatibility read for native callers that may hold an existing product
+/// transaction or call before opening one. Its private core still requires a
+/// transaction and checks the Owner there. This is only an E settings fact.
 pub(crate) fn read_secretary_configuration_in_transaction(
+    db:&VerifiedDatabaseConnection<'_>,issuer:&OwnerIssuer)
+    ->Result<SecretaryConfiguration,SeatError> {
+    let snapshot=SecretaryReadSnapshot::begin(db)?;
+    snapshot.finish(read_secretary_configuration_core_in_transaction(db,issuer))
+}
+
+fn read_secretary_configuration_core_in_transaction(
     db:&VerifiedDatabaseConnection<'_>,issuer:&OwnerIssuer)
     ->Result<SecretaryConfiguration,SeatError> {
     check_current_owner(db,issuer)?;
@@ -134,14 +194,20 @@ pub(crate) fn read_secretary_configuration_in_transaction(
         permission,state:seat.state})
 }
 
-/// H's current USER admission fact. The singleton and its incarnation are
-/// re-read at every launch verification; a display name or wire flag has no
-/// authority. All four selections must be present before a model can start.
+/// H's current USER admission fact. One snapshot covers Owner, designation,
+/// four selections, instance enabled/login state, and the final seat reread.
+/// A borrowed transaction remains open on either success or failure.
 pub(crate) fn require_secretary_session(db:&VerifiedDatabaseConnection<'_>,
+    issuer:&OwnerIssuer,seat_id:&str,incarnation:&str)->Result<Seat,SeatError> {
+    let snapshot=SecretaryReadSnapshot::begin(db)?;
+    snapshot.finish(require_secretary_session_core_in_transaction(db,issuer,seat_id,incarnation))
+}
+
+fn require_secretary_session_core_in_transaction(db:&VerifiedDatabaseConnection<'_>,
     issuer:&OwnerIssuer,seat_id:&str,incarnation:&str)->Result<Seat,SeatError> {
     let SecretaryConfiguration::Designated {seat_id:current,incarnation:current_inc,
         instance_id:Some(instance),model:Some(_),effort:Some(_),permission:Some(_),
-        state,..}=read_secretary_configuration_in_transaction(db,issuer)? else {
+        state,..}=read_secretary_configuration_core_in_transaction(db,issuer)? else {
         return Err(SeatError::Denied);
     };
     if current!=seat_id || current_inc!=incarnation ||
@@ -175,3 +241,7 @@ pub(crate) fn configure_secretary(db:&mut VerifiedDatabaseConnection<'_>,
         request_id,request_bytes:original_raw,
     },instance_id,model,effort,permission_json)
 }
+
+#[cfg(all(test, windows))]
+#[path = "secretary_read_tests.rs"]
+mod read_snapshot_tests;
