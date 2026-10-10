@@ -311,7 +311,7 @@ def main():
         marker_atom = "".join(char if char in
                               "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
                               else "_" for char in case["marker"])
-        require(case["command"] == f'echo V11_OUTSIDE_{marker_atom}>"{target}"',
+        require(case["command"] == f'echo V11_OUTSIDE_{marker_atom}>{target}',
                 "V11 original outside command/target differs")
         exact = not unrelated and len(tools) == 2 and len(started) == len(completed) == 1 and \
             started[0].get("id") == completed[0].get("id") and \

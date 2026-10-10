@@ -121,7 +121,7 @@ def file_boundaries(root, output, journal_file):
                     "V11 original F tree differs")
             tree_path = Path(tree[4]).resolve(strict=True)
             require(tree_path.is_dir() and not tree_path.is_symlink() and
-                    (root / "v37-worktrees").resolve(strict=True) in tree_path.parents,
+                    any(same_path(parent, root / "v37-worktrees") for parent in tree_path.parents),
                     "V11 original F physical tree is outside candidate root")
             source = exactly(db, "SELECT source_path FROM gogoke_v37_worktree_sources "
                              "WHERE repository_id=?", (case["repositoryId"],))[0]
@@ -250,7 +250,7 @@ def file_boundaries(root, output, journal_file):
                                       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
                                       else "_" for char in case["markerFile"])
                 require(item.get("command") ==
-                        f'echo V11_{item["name"]}_{marker_atom}>"{target}"',
+                        f'echo V11_{item["name"]}_{marker_atom}>{target}',
                         "V11 CMD command differs from the private marker target")
                 exact = pair and original_tool.get("type") == "commandExecution" and \
                     first_tool.get("command") == original_tool.get("command") and \

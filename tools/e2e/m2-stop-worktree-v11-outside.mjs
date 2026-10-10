@@ -43,7 +43,7 @@ export async function runV11OutsideTree(product, config, journal) {
         inside(path.resolve(root), path.resolve(c.outsideRoot))) &&
     !inside(path.resolve(c.outsideRoot), path.resolve(c.worktreePath)) &&
     !inside(path.resolve(c.worktreePath), path.resolve(c.outsideRoot)) &&
-    !/["%!^&|<>\r\n]/.test(c.outsideRoot),
+    !/[\s"%!^&|<>()]/.test(c.outsideRoot),
   'V11 outside target must be a new empty private D directory outside product, source and F tree');
   const marker = `${id('v11-outside')}.txt`;
   const target = path.join(c.outsideRoot, marker);
@@ -52,7 +52,7 @@ export async function runV11OutsideTree(product, config, journal) {
     repositoryId: config.repositoryId, seatId: c.seatId, instanceId: c.instanceId,
     worktreeId: c.worktreeId, worktreePath: path.resolve(c.worktreePath),
     outsideRoot: path.resolve(c.outsideRoot), target, marker,
-    command: `echo V11_OUTSIDE_${marker.replace(/[^A-Za-z0-9]/g, '_')}>"${target}"`,
+    command: `echo V11_OUTSIDE_${marker.replace(/[^A-Za-z0-9]/g, '_')}>${target}`,
     sessionId: id('v11OutsideH'), generation: null, revision: '0', cursor: '0', events: [] };
   journal.v11OutsideTree = record; journal.sessions.push({ id: record.sessionId,
     seatId: c.seatId, instanceId: c.instanceId, worktreeId: c.worktreeId,
