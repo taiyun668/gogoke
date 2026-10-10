@@ -283,7 +283,7 @@ def session_evidence(db, session, case, operations, source_commit, peer=None):
         check(peer is not None or not any(frame.get("method", "").startswith("item/tool/") or
               (frame.get("method") in ("item/started", "item/completed") and
                frame.get("params", {}).get("item", {}).get("type") not in
-               ("agentMessage", "reasoning", "contextCompaction")) for _, frame in decoded),
+               ("userMessage", "agentMessage", "reasoning", "contextCompaction")) for _, frame in decoded),
               "No-tool history marker induced a tool or unrelated activity")
     elif case["driverId"] == "claude":
         check(sent["result"]["deliveryBasis"] == "CLAUDE_USER_REPLAY_AND_RESULT", "Claude original terminal basis differs")
