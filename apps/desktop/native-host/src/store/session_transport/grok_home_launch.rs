@@ -636,7 +636,7 @@ impl GrokHomeLaunch {
             phase:"GRANT_PENDING".into(),process_operation_id:None,ticket:None,
             custodian_nonce:None,pid:None,creation_time_100ns:None,image_path:None,
             stop_fact_id:None,revision:1};
-        let grant=instance::begin_grok_grant_with_root_anchor(db,&domain,&grant,
+        let grant=instance::begin_grok_grant_with_root_anchor(db,root,&domain,&grant,
             &ordered_root_acl(&original_root),original_root.dacl_control,
             &sha256_hex(&original_root.other_aces_bytes()))?;
         if grant.phase!="GRANT_PENDING" {
@@ -1502,6 +1502,144 @@ fn h_only_unhex(value:&str)->Result<Vec<u8>,String>{
             .map_err(|e|e.to_string())
     }).collect()
 }
+
+fn h_only_recorded_aces(value:&str)->Result<Vec<Vec<u8>>,String>{
+    let bytes=h_only_unhex(value)?;
+    let mut offset=0usize;
+    let mut aces=Vec::new();
+    while offset<bytes.len(){
+        let end=offset.checked_add(4).ok_or("Grok H-only: recorded ACE length overflow")?;
+        let length=bytes.get(offset..end)
+            .ok_or("Grok H-only: truncated recorded ACE length")?;
+        let size=u32::from_be_bytes(length.try_into().map_err(|_|"Grok H-only: invalid ACE length")?) as usize;
+        offset=end;
+        let end=offset.checked_add(size).ok_or("Grok H-only: recorded ACE size overflow")?;
+        let ace=bytes.get(offset..end).ok_or("Grok H-only: truncated recorded ACE")?;
+        if ace.len()<16 ||!matches!(ace[0],0|1) ||
+            usize::from(u16::from_le_bytes([ace[2],ace[3]]))!=ace.len(){
+            return Err("Grok H-only: invalid recorded ACE".into());
+        }
+        aces.push(ace.to_vec());
+        offset=end;
+    }
+    if aces.is_empty(){return Err("Grok H-only: empty recorded root ACL".into());}
+    Ok(aces)
+}
+
+fn h_only_recorded_ace_sid(ace:&[u8])->Result<String,String>{
+    let sid=ace.get(8..).ok_or("Grok H-only: recorded ACE SID absent")?;
+    if sid.len()<8 ||sid[0]!=1 ||sid.len()!=8+usize::from(sid[1])*4 {
+        return Err("Grok H-only: malformed recorded ACE SID".into());
+    }
+    let authority=u64::from_be_bytes([0,0,sid[2],sid[3],sid[4],sid[5],sid[6],sid[7]]);
+    let mut result=format!("S-{}-{authority}",sid[0]);
+    for sub in sid[8..].chunks_exact(4){
+        result.push_str(&format!("-{}",u32::from_le_bytes(sub.try_into()
+            .map_err(|_|"Grok H-only: malformed SID subauthority")?)));
+    }
+    Ok(result)
+}
+
+/// A completed H-only retirement is the sole permitted bridge from an old
+/// REVOKE_ROOT peer multiset to the first post-retirement ordered F baseline.
+/// The historical old-SID ACE is removed exactly once; every other ACE byte,
+/// the HOME FileID and control must still match the current physical root.
+pub(crate) fn completed_h_only_root_peer_bridge(
+    db:&VerifiedDatabaseConnection<'_>,root:&RootLock,instance_id:&str,
+    expected_root:&RootIdentity,expected_home:&RootIdentity,
+    current_acl_hex:&str,current_control:u16,
+)->Result<Option<String>,String>{
+    let Some(fields)=h_only_header(db,instance_id)? else{return Ok(None)};
+    let home=evidence("H-only bridge registered HOME",
+        instance::resolve_grok_original_home(db,root,instance_id))?;
+    if root.canonical_root().identity!=*expected_root ||
+        *db.root_identity()!=*expected_root ||home.identity!=*expected_home {
+        return Err("Grok H-only bridge: physical root or HOME changed".into());
+    }
+    h_only_completed_source(db,instance_id,&home,&fields)?;
+    let objects=h_only_inventory(db,instance_id,&fields,true)?;
+    let root_row=&objects[0];
+    if root_row[1]!=home.identity.opaque() ||root_row[2]!="1" ||
+        root_row[5].parse::<u16>().map_err(|_|"Grok H-only bridge: control changed")?!=current_control {
+        return Err("Grok H-only bridge: sealed root object changed".into());
+    }
+    let profile=evidence("H-only bridge historical SID",
+        AppContainerProfile::derive_for_revocation(&fields[8]))?;
+    let current=evidence("H-only bridge current root ACL",
+        grok_root_acl(&profile,&home.path,&home.identity))?;
+    if current.identity!=home.identity ||!current.canonical_dacl() ||
+        !current.package_sid_aces().is_empty() ||!current.target_aces.is_empty() ||
+        current.dacl_control!=current_control ||
+        ordered_root_acl(&current)!=root_row[4] ||
+        ordered_root_acl(&current)!=current_acl_hex {
+        return Err("Grok H-only bridge: current root differs from committed after ACL".into());
+    }
+    // This bridge is only used before the first new F anchor. A completed
+    // H-only journal is not sufficient if an affected descendant has since
+    // changed physical identity or ACL behind the journal's back.
+    for row in objects.iter().skip(1){
+        let relative=PathBuf::from(&row[0]);
+        let object=GrokHomeObject{relative_name:relative,
+            identity:h_only_identity(&row[1])?,directory:row[2]=="1",
+            protected_inherited:false};
+        let acl=evidence("H-only bridge descendant ACL",
+            grok_residue_acl(&profile,&home.path,&home.identity,&object))?;
+        if acl.identity!=object.identity ||!acl.canonical_dacl() ||
+            !acl.package_sid_aces().is_empty() ||!acl.target_aces.is_empty() ||
+            acl.dacl_control!=row[5].parse::<u16>()
+                .map_err(|_|"Grok H-only bridge: descendant control changed")? ||
+            ordered_root_acl(&acl)!=row[4] {
+            return Err("Grok H-only bridge: descendant FileID or after ACL changed".into());
+        }
+    }
+    // The sealed journal names only objects present when H-only retirement
+    // began. A later legitimate child may exist, but it cannot bring a new
+    // package SID into the first F anchor. Inspect the complete current HOME
+    // before any F grant is written; the old objects remain exact-ACL checked
+    // above, while new objects have no historical ACL to compare against.
+    for (object,acl) in evidence("H-only bridge current HOME inventory",
+        profile.observe_grok_h_only_tree(&home.path,&home.identity))? {
+        if acl.identity!=object.identity ||!acl.canonical_dacl() ||
+            !acl.target_aces.is_empty() ||!acl.package_sid_aces().is_empty() {
+            return Err("Grok H-only bridge: current descendant has unknown package SID or ACL shape".into());
+        }
+    }
+    let before=h_only_recorded_aces(&root_row[3])?;
+    let after=h_only_recorded_aces(&root_row[4])?;
+    if before.len()!=after.len()+1 {
+        return Err("Grok H-only bridge: root retirement changed more than one ACE".into());
+    }
+    let mut removed=None;
+    for index in 0..before.len(){
+        let remaining=before.iter().enumerate().filter(|(i,_)|*i!=index)
+            .map(|(_,ace)|ace.clone()).collect::<Vec<_>>();
+        if remaining==after {
+            if removed.is_some(){return Err("Grok H-only bridge: ambiguous removed ACE".into());}
+            removed=Some(&before[index]);
+        }
+    }
+    let removed=removed.ok_or("Grok H-only bridge: non-target ACE changed")?;
+    if removed[0]!=0 ||removed[1]!=3 ||
+        u32::from_le_bytes(removed[4..8].try_into()
+            .map_err(|_|"Grok H-only bridge: removed ACE mask absent")?)!=RIGHTS ||
+        h_only_recorded_ace_sid(removed)?!=fields[9] {
+        return Err("Grok H-only bridge: removed ACE is not original H SID".into());
+    }
+    for ace in &before {
+        let sid=h_only_recorded_ace_sid(ace)?;
+        if sid.starts_with("S-1-15-2-") &&sid!=fields[9] {
+            return Err("Grok H-only bridge: unknown package SID in old root".into());
+        }
+    }
+    let mut peers=before;
+    peers.sort();
+    let mut bytes=Vec::new();
+    for ace in peers {
+        bytes.extend_from_slice(&(ace.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&ace);
+    }
+    Ok(Some(sha256_hex(&bytes)))
+}
 fn h_only_identity(value:&str)->Result<RootIdentity,String>{
     let (volume,file)=value.strip_prefix("volume:").and_then(|v|v.split_once("/file:"))
         .ok_or("Grok H-only: invalid recorded FileID")?;
@@ -1930,6 +2068,60 @@ mod tests {
         assert!(retire_h_only_root(&mut db,&root,"grokA",pending).is_err());
         db.execute("UPDATE main.gogoke_v37_grok_home_h_only_retirement SET object_count=object_count-1 WHERE instance_id='grokA'").unwrap();
         retire_h_only_root(&mut db,&root,"grokA",pending).unwrap();
+        let current=grok_root_acl(&profile,&home.path,&home.identity).unwrap();
+        let current_ordered=ordered_root_acl(&current);
+        let current_peer=sha256_hex(&current.other_aces_bytes());
+        let bridged=completed_h_only_root_peer_bridge(&db,&root,"grokA",
+            &root.canonical_root().identity,&home.identity,
+            &current_ordered,current.dacl_control).unwrap().unwrap();
+        assert_ne!(bridged,current_peer);
+        assert!(completed_h_only_root_peer_bridge(&db,&root,"grokA",
+            &root.canonical_root().identity,&home.identity,
+            &(current_ordered.clone()+"00"),current.dacl_control).is_err());
+        // A descendant created after the sealed H-only inventory is valid
+        // when clean. A foreign package grant on that same new FileID must
+        // fail before the first F anchor, even though every old row is intact.
+        let late_child=home.path.join("late-clean-child");
+        std::fs::create_dir(&late_child).unwrap();
+        let late_identity=RootLock::acquire(&late_child).unwrap().canonical_root().identity.clone();
+        let foreign=AppContainerProfile::derived_for_test("Gogoke37.HOnlyBridgeForeign").unwrap();
+        grant_grok_home_root(&foreign,&late_child,&late_identity).unwrap();
+        assert!(completed_h_only_root_peer_bridge(&db,&root,"grokA",
+            &root.canonical_root().identity,&home.identity,
+            &current_ordered,current.dacl_control).is_err());
+        revoke_grok_home_root(&foreign,&late_child,&late_identity).unwrap();
+        assert_eq!(completed_h_only_root_peer_bridge(&db,&root,"grokA",
+            &root.canonical_root().identity,&home.identity,
+            &current_ordered,current.dacl_control).unwrap().as_deref(),Some(bridged.as_str()));
+        drop(foreign);
+        // Model the archived pre-fix F effect's exact peer set when the H-only
+        // SID still existed. The current writer cannot create this old shape:
+        // its first-anchor preflight correctly refuses an unknown package SID.
+        let old_revoke=instance::read_grok_effects(&db,"oldBinding").unwrap()
+            .into_iter().find(|effect|effect.action=="REVOKE_ROOT").unwrap();
+        db.execute(&format!("UPDATE main.gogoke_v37_grok_home_effects SET other_aces_sha256='{bridged}' WHERE effect_id='{}'",
+            old_revoke.effect_id)).unwrap();
+        let candidate_profile=AppContainerProfile::derived_for_test("Gogoke37.HOnlyBridgeCandidate").unwrap();
+        let candidate_auth=observe_grok_auth_candidate(&home.path,&home.identity).unwrap();
+        let domain=instance::current_grok_home_domain(&db,"grokA").unwrap();
+        let candidate=GrokGrant{binding_id:"bindingB".into(),instance_id:"grokA".into(),
+            domain_id:"domainA".into(),session_id:"sessionB".into(),seat_id:"seatA".into(),
+            seat_incarnation:"incA".into(),generation:"3".into(),request_id:"openB".into(),
+            profile_name:"Gogoke37.HOnlyBridgeCandidate".into(),
+            profile_sid:candidate_profile.sid_identity().unwrap(),
+            program_digest:pin.digest.clone(),home_identity:home.identity.clone(),
+            auth_identity:candidate_auth.identity.clone(),phase:"GRANT_PENDING".into(),
+            process_operation_id:None,ticket:None,custodian_nonce:None,pid:None,
+            creation_time_100ns:None,image_path:None,stop_fact_id:None,revision:1};
+        assert!(instance::begin_grok_grant_with_root_anchor(&mut db,&root,&domain,&candidate,
+            &(current_ordered.clone()+"00"),current.dacl_control,&current_peer).is_err());
+        assert!(instance::read_grok_root_anchor(&db,"grokA").unwrap().is_none());
+        instance::begin_grok_grant_with_root_anchor(&mut db,&root,&domain,&candidate,
+            &current_ordered,current.dacl_control,&current_peer).unwrap();
+        let anchor=instance::read_grok_root_anchor(&db,"grokA").unwrap().unwrap();
+        assert_eq!(anchor.baseline_effect_id,old_revoke.effect_id);
+        assert_eq!(anchor.acl_hex,current_ordered);
+        drop(candidate_auth);drop(candidate_profile);
         db.close_checked().unwrap();drop(root);std::fs::remove_dir_all(path).unwrap();
     }
 
