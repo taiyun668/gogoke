@@ -73,3 +73,15 @@ Grok 新请求的原回执为 FAILED，直接厂商终态 `cancelled`，原分�
 补读仪器两项错误在 SQL 之前暴露：漏 import base64，以及把真实 productExits 列表按对象读取；原错误和确切完成任务已保全。已成批核失败路径缺少 hReceipt/toolCandidates、turns 位于 session、写时 E 与释放后 E 字段的区别，不用缺字段补造事实。
 
 并行推进 V10 新用例准备与秘书长 E.3 生产接缝。秘书长已证实 E 返回任务结果，但 G Routine 只接有日期的 lastRun，共享投影据此拒绝已有无日期结果；已交 Claude 修最小读模型，Root 不改 G。现有 TS coordinator 生产工厂不可用；实际 authority pump 存在，但定时 occurrence 原语尚无生产调用。后续接线必须复用同一 H 准入、同事务准备与原回执，UNKNOWN 不重发，不把 primitive 或静态代码写成已运行。
+
+## Grok 原拒绝链已直接核对
+
+关闭后的原库补读实际通过：同一新 USER/H 原请求、精确 typed permission ID、一次 WRITTEN reject-once 回包和原 raw source 的 NO_EVENT 原因均一致；厂商原终态仍为 FAILED/cancelled/PermissionRejected，原工具 SearchReplace 报用户拒绝，目标前后未出现。真实 StopFact、RELEASED、产品正常退出零和正式保护通过；原 FAIL、旧未回包请求和 UNKNOWN 记录完整保留。此结论仅为未支持形状拒绝、无写入，不是 F 写入资格或 OS ACL 通过。
+
+测量修正来自直接生产者：permission request 的持久状态是 NO_EVENT；归一化事件 cursor 与 raw cursor 是两个序号，以唯一 event 和 `_meta.rawSourceCursor` 联结；permission 摘要绑定原 H USER request，不是其 ACP 编码；写时 E 来自 reserve 后的 BUSY 快照，H claim revision 来自原 open 和 send，不能使用更早的 commit 或释放后的值。所有先前只读失败及自建任务原件保留，完成任务核确切主体/action/脚本后逐项注销并回读。
+
+注册 F 的原生 FileIdInfo、原 E/H 关系及实际候选字节也已只读核对，数据库及 sidecar 前后字节相同。原生 F tier 存储为 `NetworkedWrite`，USER 字段为 `NETWORKED_WRITE`；先前仪器混用拼法造成误拒，未据此改产品。新正向 Write 请求准备沿用同一已注册 F、固定 CLI、模型、权限档位和原实例，不重放原负例；尚待实测，不能计通过。
+
+并行已开始：V06 剩余端到端修正在独立工人分支，先前无注册工具的会话不能要求出现一条被拒工具原帧；缺尝试仍记 NOT_RUN。V10 准备使用两个新测试作用域、真实 USER 与模型派生 LEAD，以及三棵原生已注册 F；incarnation、generation、StopFact 和 F 身份只从宿主回读，不照抄历史标识。秘书长 E.3 的 due 原语仍缺生产调用，当前授权未列其必要的 ProductDatabase 组合路径；仅完成最小范围提案，未越权改产品或回执。G 已有无日期任务结果的读模型问题继续交 Claude。
+
+SAC 本次重新读回为 0；所有新临时与证据直接 D 盘。正式保护保持，完整 M2/M3 和稳定链仍 NOT_RUN；稳定点实测与验收前须先提醒 Owner 开启 SAC，再读回 1。
