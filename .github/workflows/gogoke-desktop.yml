@@ -118,6 +118,8 @@ jobs:
           cache-dependency-path: apps/desktop/package-lock.json
       - run: npm ci
       - run: npm run check:product-identity
+      - name: Check actual USER policy receipt boundaries
+        run: node ../../tools/e2e/design37-policy-receipt-check.mjs
       - name: Parse candidate installed preflight and product smoke scripts
         shell: pwsh
         run: |

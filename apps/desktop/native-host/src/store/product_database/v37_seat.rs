@@ -1424,7 +1424,9 @@ impl<'root> ProductDatabase<'root> {
                 seat::OwnerPolicyHead::Present {revision,current_stage} => {
                     result.insert(key("state"), text("PRESENT"));
                     result.insert(key("revision"), text(&revision.to_string()));
-                    result.insert(key("currentStage"), text(&current_stage));
+                    result.insert(key("currentStage"), match current_stage {
+                        Some(stage) => text(&stage), None => Json::Null,
+                    });
                 },
             }
             return Ok(Json::Object(result).canonical().into_bytes());
@@ -1542,6 +1544,38 @@ impl<'root> ProductDatabase<'root> {
                 Some(seat::apply_owner_policy_configuration(&mut self.connection,&self.owner,
                     domain,request_id,frame,seat::OwnerPolicyCommand::Template {
                         template_id:&template_id,settings_json:settings.as_bytes()})?)
+            }
+            "policy-metadata-initialize" if fields.len() == 5 => {
+                if revision("expectedRevision")? != 0 {
+                    return Err(OrchestrationError::Invalid("expectedRevision"));
+                }
+                let (domain, request_id) = policy_domain.as_ref().expect("policy command");
+                match seat::apply_owner_policy_configuration(&mut self.connection, &self.owner,
+                    domain, request_id, frame, seat::OwnerPolicyCommand::MetadataInitialize) {
+                    Ok(receipt) => Some(receipt),
+                    Err(error @ SeatError::Conflict) => {
+                        return Ok(Json::Object(BTreeMap::from([
+                            (key("schema"), Json::String(JsonString::from_str("gogoke.37.owner-configuration.v1"))),
+                            (key("command"), Json::String(JsonString::from_str(&command))),
+                            (key("requestId"), Json::String(JsonString::from_str(request_id))),
+                            (key("status"), Json::String(JsonString::from_str("CONFLICT"))),
+                            (key("reason"), Json::String(JsonString::from_str(&format!("{error:?}")))),
+                        ])).canonical().into_bytes());
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            "policy-stage-set-initial" if fields.len() == 6 => {
+                let stage = string_field(&fields, "stage")?;
+                let expected_revision = revision("expectedRevision")?;
+                if expected_revision < 1 {
+                    return Err(OrchestrationError::Invalid("expectedRevision"));
+                }
+                let (domain, request_id) = policy_domain.as_ref().expect("policy command");
+                Some(seat::apply_owner_policy_configuration(&mut self.connection, &self.owner,
+                    domain, request_id, frame, seat::OwnerPolicyCommand::SetInitialStage {
+                        stage: &stage, expected_revision,
+                    })?)
             }
             "policy-initialize" if fields.len() == 6 => {
                 let stage = string_field(&fields, "stage")?;
@@ -2154,6 +2188,51 @@ mod tests {
             let Json::Object(old)=&rows[0] else {panic!("old row");};
             assert_eq!(old.get(&key("bodyState")).unwrap().canonical(),"\"VERIFIED\"");
             assert_eq!(old.get(&key("generation")).unwrap().canonical(),"\"1\"");
+        });
+    }
+
+    #[test]
+    fn owner_policy_metadata_ingress_preserves_unset_and_original_stage_conflicts() {
+        fixture(|product| {
+            let parse = |bytes: &[u8]| match Parser::parse(std::str::from_utf8(bytes).unwrap()).unwrap() {
+                Json::Object(fields) => fields, _ => panic!("Owner reply must be an object"),
+            };
+            let read = br#"{"schema":"gogoke.37.owner-configuration.v1","command":"policy-head-read","domainId":"projectA"}"#;
+            assert_eq!(parse(&product.configure_user_v37(read).unwrap())
+                .get(&key("state")).unwrap().canonical(), "\"ABSENT\"");
+            let initialize = br#"{"schema":"gogoke.37.owner-configuration.v1","command":"policy-metadata-initialize","domainId":"projectA","requestId":"metadataA","expectedRevision":"0"}"#;
+            let applied = parse(&product.configure_user_v37(initialize).unwrap());
+            assert_eq!(applied.get(&key("status")).unwrap().canonical(), "\"APPLIED\"");
+            assert_eq!(applied.get(&key("revision")).unwrap().canonical(), "\"1\"");
+            assert_eq!(parse(&product.configure_user_v37(initialize).unwrap())
+                .get(&key("status")).unwrap().canonical(), "\"REPLAYED\"");
+            let unset_bytes = product.configure_user_v37(read).unwrap();
+            let unset = parse(&unset_bytes);
+            assert_eq!(unset.get(&key("currentStage")).unwrap().canonical(), "null");
+            for table in ["gogoke_v37_seat_policy_grants", "gogoke_v37_seat_policy_gates", "gogoke_v37_seat_policy_routes"] {
+                let query = Statement::prepare(product.connection.as_ptr(),
+                    &format!("SELECT COUNT(*) FROM main.{table} WHERE domain_id='projectA'")).unwrap();
+                assert!(query.step_row().unwrap());
+                assert_eq!(query.column_text(0).unwrap(), "0");
+            }
+            let conflict = br#"{"schema":"gogoke.37.owner-configuration.v1","command":"policy-metadata-initialize","domainId":"projectA","requestId":"otherMetadata","expectedRevision":"0"}"#;
+            let rejected = parse(&product.configure_user_v37(conflict).unwrap());
+            assert_eq!(rejected.get(&key("status")).unwrap().canonical(), "\"CONFLICT\"");
+            assert_eq!(rejected.get(&key("reason")).unwrap().canonical(), "\"Conflict\"");
+            assert!(product.configure_user_v37(br#"{"schema":"gogoke.37.owner-configuration.v1","command":"policy-initialize","domainId":"projectA","requestId":"oldInitialize","stage":"OPEN","expectedRevision":"0"}"#).is_err());
+            assert!(product.configure_user_v37(br#"{"schema":"gogoke.37.owner-configuration.v1","command":"policy-metadata-initialize","domainId":"projectB","requestId":"invalidMetadata","expectedRevision":"1"}"#).is_err());
+            assert!(product.configure_user_v37(br#"{"schema":"gogoke.37.owner-configuration.v1","command":"policy-stage-set-initial","domainId":"projectA","requestId":"extraField","stage":"REVIEW","expectedRevision":"1","grant":"ALL"}"#).is_err());
+            assert_eq!(product.configure_user_v37(read).unwrap(), unset_bytes);
+            let set_stage = br#"{"schema":"gogoke.37.owner-configuration.v1","command":"policy-stage-set-initial","domainId":"projectA","requestId":"stageA","stage":"REVIEW","expectedRevision":"1"}"#;
+            let applied = parse(&product.configure_user_v37(set_stage).unwrap());
+            assert_eq!(applied.get(&key("revision")).unwrap().canonical(), "\"2\"");
+            assert_eq!(parse(&product.configure_user_v37(set_stage).unwrap())
+                .get(&key("status")).unwrap().canonical(), "\"REPLAYED\"");
+            let named_bytes = product.configure_user_v37(read).unwrap();
+            let named = parse(&named_bytes);
+            assert_eq!(named.get(&key("currentStage")).unwrap().canonical(), "\"REVIEW\"");
+            assert!(product.configure_user_v37(br#"{"schema":"gogoke.37.owner-configuration.v1","command":"policy-stage-set-initial","domainId":"projectA","requestId":"overwriteStage","stage":"OPEN","expectedRevision":"2"}"#).is_err());
+            assert_eq!(product.configure_user_v37(read).unwrap(), named_bytes);
         });
     }
 

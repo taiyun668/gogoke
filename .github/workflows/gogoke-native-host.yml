@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       focused_library:
-        description: Affected checks only (seat-scope, ledger-scope, native-takeover, pipe-evidence, grok-permission, claude-holder, claude-initialize or m2-provider-current); all full and formal gates are NOT_RUN
+        description: Affected checks only (seat-scope, policy-unset-stage, ledger-scope, native-takeover, pipe-evidence, grok-permission, claude-holder, claude-initialize or m2-provider-current); all full and formal gates are NOT_RUN
         type: string
         default: ""
       secretary_routine_fixture_only:
@@ -128,6 +128,14 @@ jobs:
               'store::seat::tests::native_child_create_derives_only_first_exact_dispatch_grant',
               'store::session_transport::admission::tests::one_boundary_survives_reopen_unknown_replay_and_home_fence',
               'store::product_database::v37_seat::tests::owner_orchestration_bounds_have_a_separate_receipt_and_preserve_project_cap') }
+            'policy-unset-stage' { @('store::seat::tests::owner_policy_head_read_requires_current_owner_and_preserves_absent_or_existing_fact',
+              'store::seat::tests::owner_unset_stage_requires_explicit_metadata_and_one_cas_stage_setting',
+              'store::seat::tests::exact_old_policy_head_schema_migrates_without_rewriting_policy_facts',
+              'store::seat::tests::unset_stage_refuses_gate_and_transition_without_recording_events',
+              'store::seat::tests::native_child_create_requires_existing_policy_head',
+              'store::seat::tests::native_child_create_derives_only_first_exact_dispatch_grant',
+              'store::seat::tests::e2_gate_rejection_stops_stage_and_reserves_one_escalation',
+              'store::product_database::v37_seat::tests::owner_policy_metadata_ingress_preserves_unset_and_original_stage_conflicts') }
             'ledger-scope' { @('work_source_cannot_mint_a_secretary_global_reader',
               'native_user_ledger_scopes_replay_and_subscription_survive_reopen') }
             'native-takeover' { @('native_takeover_') }

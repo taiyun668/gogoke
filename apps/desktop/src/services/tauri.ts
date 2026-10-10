@@ -950,7 +950,7 @@ export async function design37UserConfiguration<T>(
 
 export type Design37ProjectPolicyHead =
   | { state: "ABSENT" }
-  | { state: "PRESENT"; revision: string; currentStage: string };
+  | { state: "PRESENT"; revision: string; currentStage: string | null };
 
 /** Reads the original Owner policy without initializing a stage or granting calls. */
 export async function readDesign37ProjectPolicyHead(domainId: string): Promise<Design37ProjectPolicyHead> {
@@ -961,10 +961,53 @@ export async function readDesign37ProjectPolicyHead(domainId: string): Promise<D
   if (reply.state === "ABSENT" && !Object.hasOwn(reply, "revision") && !Object.hasOwn(reply, "currentStage")) {
     return { state: "ABSENT" };
   }
-  if (reply.state === "PRESENT" && decimal(reply.revision) && reply.revision !== "0" && nonempty(reply.currentStage)) {
+  if (reply.state === "PRESENT" && decimal(reply.revision) && reply.revision !== "0" &&
+      (reply.currentStage === null || nonempty(reply.currentStage))) {
     return { state: "PRESENT", revision: reply.revision, currentStage: reply.currentStage };
   }
   throw new Error(`Native project policy head is malformed: ${JSON.stringify(reply)}`);
+}
+
+/** Called only by an explicit USER create/configure action, never by a read or model. */
+export async function initializeDesign37ProjectPolicyMetadata(domainId: string): Promise<void> {
+  const head = await readDesign37ProjectPolicyHead(domainId);
+  if (head.state === "PRESENT") return;
+  const requestId = `ui-${crypto.randomUUID()}`;
+  const reply = await design37UserFrame({
+    schema: "gogoke.37.owner-configuration.v1", command: "policy-metadata-initialize",
+    domainId, requestId, expectedRevision: "0",
+  });
+  if (!record(reply) || reply.schema !== "gogoke.37.owner-configuration.v1" ||
+      reply.command !== "policy-metadata-initialize" || reply.requestId !== requestId ||
+      !((reply.status === "APPLIED" || reply.status === "REPLAYED") && reply.revision === "1" ||
+        reply.status === "CONFLICT" && reply.reason === "Conflict")) {
+    throw new Error(`Native USER policy metadata initialization failed: ${JSON.stringify(reply)}`);
+  }
+  // A proven concurrent initializer only permits a fresh read, never a write retry.
+  const initialized = await readDesign37ProjectPolicyHead(domainId);
+  if (initialized.state !== "PRESENT") {
+    throw new Error("Native USER policy metadata is still absent after initialization.");
+  }
+}
+
+/** An explicit USER choice; never supplies a stage name on the user's behalf. */
+export async function setDesign37ProjectInitialStage(domainId: string, stage: string): Promise<void> {
+  if (!nonempty(stage)) throw new Error("A user-defined initial stage is required.");
+  const head = await readDesign37ProjectPolicyHead(domainId);
+  if (head.state !== "PRESENT" || head.currentStage !== null) {
+    throw new Error("Native project policy is absent or already has a stage.");
+  }
+  const requestId = `ui-${crypto.randomUUID()}`;
+  const reply = await design37UserFrame({
+    schema: "gogoke.37.owner-configuration.v1", command: "policy-stage-set-initial",
+    domainId, requestId, stage, expectedRevision: head.revision,
+  });
+  const expectedRevision = (BigInt(head.revision) + 1n).toString();
+  if (!record(reply) || reply.schema !== "gogoke.37.owner-configuration.v1" ||
+      reply.command !== "policy-stage-set-initial" || reply.requestId !== requestId ||
+      !(reply.status === "APPLIED" || reply.status === "REPLAYED") || reply.revision !== expectedRevision) {
+    throw new Error(`Native USER initial stage configuration failed: ${JSON.stringify(reply)}`);
+  }
 }
 
 type NativeSeatPageRow = {
@@ -1068,6 +1111,8 @@ export function createDesign37SeatsSource<Page>(domainId: string | null) {
         if (!scope || typeof scope !== "object" || Array.isArray(scope)) {
           throw new Error("Native orchestration scope is unavailable.");
         }
+        if (!domainId) throw new Error("No project is selected.");
+        await initializeDesign37ProjectPolicyMetadata(domainId);
         await operation("set-orchestration-bounds", lead.id, lead._revision, {
           instanceIds: input.instanceIds,
           models: (scope as Record<string, unknown>).models,
