@@ -272,10 +272,15 @@ async function runCase(row, instances) {
   record.processIdentity = await captureProcess(row);
   if (row.driverId === 'claude' || row.driverId === 'grok') record.modelEffortEvidence.argv = record.processIdentity;
   product.save();
-  const marker = `${journal.marker}_${row.driverId}_${id('answer')}`;
-  record.marker = marker;
-  record.prompt = `Private non-secret provider protocol capture. Reply with exactly ${marker}. ` +
-    'Do not use tools, read or write files, open a browser, access credentials, or switch models.';
+  if (row.driverId === 'claude') {
+    record.prompt = 'What is 241 + 537?';
+    record.expectedAnswer = '778';
+  } else {
+    const marker = `${journal.marker}_${row.driverId}_${id('answer')}`;
+    record.marker = marker;
+    record.prompt = `Private non-secret provider protocol capture. Reply with exactly ${marker}. ` +
+      'Do not use tools, read or write files, open a browser, access credentials, or switch models.';
+  }
   const sent = await sessionStep(session, 'send', { body: record.prompt }, ['APPLIED', 'UNKNOWN']);
   record.sendRequestId = journal.operations.at(-1).request.requestId;
   record.sendStatus = sent.status; record.state = 'SENT_ORIGINAL_ONCE'; product.save();
@@ -314,8 +319,10 @@ async function readbackAndGolden() {
     const observed = facts.sessions.find(value => value.sessionId === record.sessionId);
     check(observed?.driverId === record.driverId && observed?.version === record.fixedVersion &&
       observed?.binarySha256 === `sha256:${record.fixedSha256}` && observed?.allEpisodesStopped &&
-      observed?.providerEndTurn === true && observed?.markerObserved === true,
-      `${record.driverId}: original A end-turn, marker, and stopped pinned H session`);
+      observed?.providerEndTurn === true && (record.driverId === 'claude'
+        ? observed?.answerObserved === true && Boolean(observed?.vendorSessionId)
+        : observed?.markerObserved === true),
+      `${record.driverId}: original A end-turn, answer or marker, and stopped pinned H session`);
     const bundle = path.join(config.evidenceDirectory, `m2-${record.driverId}-protocol-golden.json`);
     if (fs.existsSync(bundle)) throw Error(`${record.driverId}: private golden output already exists`);
     await new Promise((resolve, reject) => {
@@ -369,6 +376,10 @@ try {
 } catch (error) {
   journal.state = 'FAIL'; journal.error = String(error.stack ?? error);
   journal.currentEndpoint = product.endpoint ?? null; product.save(); process.exitCode = 1;
-  try { await product.preserveFailure(); }
-  catch (disconnectError) { journal.disconnectError = String(disconnectError); product.save(); }
+  // After a normal close, keep the already captured after snapshots and the
+  // original readback error. Never dispatch a second after observer.
+  if (journal.closes.length === 0) {
+    try { await product.preserveFailure(); }
+    catch (disconnectError) { journal.disconnectError = String(disconnectError); product.save(); }
+  }
 }

@@ -6,6 +6,7 @@ original A/H/F bytes; it never opens credential stores or writes the database.
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -164,18 +165,21 @@ if launch.get("sourceCommit") != journal["sourceCommit"] or \
         not all(name in journal.get("installedSha256", {}) for name in
                 ("gogoke.exe", "gogoke-native-host.exe", "resource-index.json")) or \
         close.get("exitCode") != 0 or close.get("forceKill") is not False or \
-        close.get("pid") != launch.get("pid"):
+        close.get("pid") != launch.get("pid") or \
+        not any(event.get("pid") == launch.get("pid") and event.get("code") == 0
+                for event in journal.get("productExits", [])):
     fail("Actual installed candidate identity or normal-close receipt differs")
 database = root / "state.sqlite"
 wal = Path(str(database) + "-wal")
+journal_file = Path(str(database) + "-journal")
 if not database.is_file():
     fail("Actual installed candidate database is absent")
-if wal.exists() and wal.stat().st_size:
-    fail("Actual product must be normally closed and checkpointed; refuse nonempty WAL")
+if (wal.exists() and wal.stat().st_size) or (journal_file.exists() and journal_file.stat().st_size):
+    fail("Actual product must be normally closed and checkpointed; refuse nonempty WAL or journal")
 
 def file_facts():
     return {item.name: {"length": item.stat().st_size, "sha256": sha(item.read_bytes())}
-            for item in (database, wal, Path(str(database) + "-shm")) if item.exists()}
+            for item in (database, wal, Path(str(database) + "-shm"), journal_file) if item.exists()}
 
 before = file_facts()
 result = {"schema": "gogoke.37.private-m2-readback.v1", "phase": "provider-final",
@@ -228,7 +232,14 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
         session_id = case["sessionId"]
         send_id = case["sendRequestId"]
         prompt = case["prompt"]
-        marker = case["marker"]
+        marker = case.get("marker")
+        expected_answer = case.get("expectedAnswer")
+        natural_claude = driver == "claude" and not supplement
+        if natural_claude:
+            if prompt != "What is 241 + 537?" or expected_answer != "778" or marker is not None:
+                fail("Claude arithmetic question or private answer differs")
+        elif not isinstance(marker, str) or not marker:
+            fail(f"{driver}: private marker absent")
         operation_record = next((row for row in journal["operations"]
                                  if row.get("request", {}).get("requestId") == send_id), None)
         request = operation_record.get("request") if operation_record else None
@@ -449,6 +460,7 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
         if not scoped:
             fail(f"{driver}: original H operation has no A source rows")
         marker_output = False
+        answer_output = False
         provider_output = ""
         vendor_end = False
         prompt_echo = False
@@ -460,12 +472,23 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
         for command_row in result["commands"]:
             if command_row["sessionId"] != session_id or not command_row["confirmedWrite"]:
                 continue
+            if natural_claude and (command_row["operationId"] != send[6] or
+                    command_row["generation"] != send[4] or
+                    command_row["processTicket"] != send[5] or
+                    command_row["custodianNonce"] != send[7]):
+                continue
             try:
                 command_frame = json.loads(command_row["originalFrame"])
             except json.JSONDecodeError:
                 continue
-            raw_command = json.dumps(command_frame, ensure_ascii=False)
-            if marker in raw_command or prompt in raw_command:
+            if natural_claude:
+                selected = command_frame.get("type") == "user" and command_frame.get("message") == {
+                    "role": "user", "content": [{"type": "text", "text": prompt}]
+                } and isinstance(command_frame.get("uuid"), str)
+            else:
+                raw_command = json.dumps(command_frame, ensure_ascii=False)
+                selected = marker in raw_command or prompt in raw_command
+            if selected:
                 prompt_commands.append(command_frame)
         if not prompt_commands:
             fail(f"{driver}: original H write journal does not contain the one configured prompt")
@@ -474,14 +497,17 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
         for row, frame in scoped:
             if driver == "claude":
                 provider_output += claude_text(frame)
-                marker_output = marker in provider_output
-                if frame.get("type") == "user" and prompt in json.dumps(frame, ensure_ascii=False):
-                    claude_echoes.append(frame)
+                if natural_claude:
+                    answer_output = re.search(r"(?<!\d)778(?!\d)", provider_output) is not None
+                else:
+                    marker_output = marker in provider_output
+                    if frame.get("type") == "user" and prompt in json.dumps(frame, ensure_ascii=False):
+                        claude_echoes.append(frame)
                 if frame.get("type") == "result" and frame.get("subtype") == "success" and \
                         frame.get("is_error") is False and isinstance(frame.get("session_id"), str):
-                    if marker_output:
+                    if (answer_output if natural_claude else marker_output):
                         claude_terminals.append(frame)
-                if any(isinstance(part, dict) and part.get("type") == "tool_use"
+                if not natural_claude and any(isinstance(part, dict) and part.get("type") == "tool_use"
                        for part in nested_text(frame, ("message", "content")) or []):
                     fail("Claude produced a tool-use frame despite the no-tool prompt")
             elif driver in ("opencode", "grok"):
@@ -499,9 +525,14 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                      frame.get("subtype") == "init" and isinstance(frame.get("session_id"), str)]
             if len(claude_terminals) == 1:
                 terminal_session = claude_terminals[0]["session_id"]
-            prompt_echo = len(claude_echoes) == 1 and len(inits) == 1 and \
-                inits[0]["session_id"] == terminal_session
-            vendor_end = len(claude_terminals) == 1 and prompt_echo
+            if natural_claude:
+                prompt_echo = len(prompt_commands) == 1
+                vendor_end = len(claude_terminals) == 1 and len(inits) == 1 and \
+                    inits[0]["session_id"] == terminal_session
+            else:
+                prompt_echo = len(claude_echoes) == 1 and len(inits) == 1 and \
+                    inits[0]["session_id"] == terminal_session
+                vendor_end = len(claude_terminals) == 1 and prompt_echo
             evidence = case.get("modelEffortEvidence", {})
             argv = evidence.get("argv", {})
             if evidence.get("basis") != "ORIGINAL_H_CLAUDE_CAPABILITY" or \
@@ -616,8 +647,8 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                 record_model_evidence = {"basis": "ACTUAL_PINNED_GROK_PROCESS_ARGV",
                     "processId": argv.get("processId"), "commandLineSha256": argv.get("commandLineSha256"),
                     "model": argv.get("model"), "effort": argv.get("effort")}
-        if not prompt_echo or not marker_output or not vendor_end:
-            fail(f"{driver}: matching original A prompt, provider marker output, and vendor end-turn are not all present")
+        if not prompt_echo or not (answer_output if natural_claude else marker_output) or not vendor_end:
+            fail(f"{driver}: original H prompt, provider answer or marker, and vendor end-turn are not all present")
         normalized = db.execute(
             "SELECT i.cursor,i.source_epoch,i.source_cursor,i.update_json,r.operation_id,r.generation,"
             "r.process_ticket,r.custodian_nonce FROM v37_ledger_index i LEFT JOIN v37_ledger_raw_source r "
@@ -638,6 +669,7 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             "rawFrameCount": len(incoming), "unknownFrameCount": sum(row[5] == "PENDING" for row in incoming),
             "allEpisodesStopped": True, "claimState": claim[0], "providerPromptObserved": prompt_echo,
             "providerEndTurn": vendor_end, "markerObserved": marker_output,
+            "answerObserved": answer_output,
             "vendorSessionId": terminal_session,
             "modelEffortEvidence": record_model_evidence if driver in ("opencode", "grok") else
                 {"basis": "ACTUAL_PINNED_CLAUDE_PROCESS_ARGV", "processId": argv.get("processId"),
@@ -652,7 +684,9 @@ if len({os.path.normcase(row["path"]) for row in result["providerWorktrees"]}) !
 result["filesAfter"] = file_facts()
 result["measurementPreservedDatabaseBytes"] = before == result["filesAfter"]
 result["directProviderEvidence"] = result["measurementPreservedDatabaseBytes"] and \
-    all(row["allEpisodesStopped"] and row["providerEndTurn"] and row["markerObserved"]
+    all(row["allEpisodesStopped"] and row["providerEndTurn"] and
+        (row["answerObserved"] if row["driverId"] == "claude" and not supplement
+         else row["markerObserved"])
         for row in result["sessions"])
 output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 if not result["directProviderEvidence"]:

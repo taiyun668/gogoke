@@ -38,7 +38,10 @@ setting mismatch fails without login, substitution, or fallback.
 
 For each provider, the runner reserves and commits the existing seat, opens its
 registered F worktree, checks H's capability version and executable digest,
-and sends exactly one private non-secret marker prompt. It then observes only
+and sends exactly one private non-secret prompt. Claude receives the ordinary
+question `What is 241 + 537?`; the expected answer `778` exists only in the
+readback, never in that User message. OpenCode and Grok retain their marker
+prompts and ACP checks. The runner then observes only
 the original output stream and request receipt. An `UNKNOWN` request is never
 sent again; a stated unknown reason fails immediately. A timeout or any
 failure preserves the original app/session handle and request for Controller
@@ -62,8 +65,9 @@ protocol evidence.
 
 Only after normal product close does
 `m2-provider-capture-readback.py` open the actual candidate database as
-`mode=ro&immutable=1`. It refuses a nonempty WAL and verifies unchanged DB
-bytes. The outer journal distinguishes read-only observers from the expected
+`mode=ro&immutable=1`. It requires the original normal-close and product-exit
+receipts, refuses a nonempty WAL or rollback journal, and verifies unchanged
+DB, WAL, SHM, and journal bytes. The outer journal distinguishes read-only observers from the expected
 candidate database writes caused by real H admissions, provider input, stop,
 and release. The five formal protection facts and configured observers are
 captured and compared before readback or golden import, so their evidence
@@ -73,14 +77,21 @@ binary custody, and registered F identity by opening the path without following
 a reparse point and matching Win32 `FileIdInfo` to the native opaque identity.
 Raw pending frames retain their original state with an explicit classification;
 a pending row alone does not fail the case. Completion still requires the H
-receipt, matching provider end-turn and marker, and the fixed identity/stop
+receipt, matching provider terminal and answer or marker, and the fixed identity/stop
 facts above. It exports the
 original A frames, confirmed H commands, and normalized ledger rows. Claude
-requires its exact original User echo, same vendor session, marker-bearing
-assistant output and successful original `type: result`; OpenCode and Grok
+requires exactly one confirmed User command with the journal's exact prompt
+and process/generation/ticket/nonce scope, arithmetic answer text from the
+assistant in that same scope, and a successful original `type: result` from
+the initialized vendor session. Any inbound User frame remains in the raw
+capture, but an echo is not required for completion. OpenCode and Grok
 require the original `session/prompt` write, its typed-ID matched `end_turn`
 response and marker-bearing `agent_message_chunk`. Unexpected provider tool or
-permission activity fails the capture.
+permission activity remains a failure in the ACP cases. A failed readback after
+normal close preserves existing `after` snapshots and its original error;
+the catch path does not run those observers a second time.
+The existing original-failure supplement keeps its historical Claude marker
+and User-echo checks when inspecting an older, already failed journal.
 
 Reference: path spelling and containment follow the existing M2 readback;
 physical F identity follows the native `RootIdentity::opaque()` encoding and
