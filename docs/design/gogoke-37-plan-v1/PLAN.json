@@ -23,7 +23,7 @@
   },
   {
    "path": "AGENTS.md",
-   "blob": "c16ec04b268362cb406a03348ee36343de459d27"
+   "blob": "60c0b7c5d5a1811f9da459a4ee1bf7cc110c5ad7"
   },
   {
    "path": "docs/model-routing.md",
@@ -31,7 +31,7 @@
   },
   {
    "path": "docs/governance/gogoke-build-and-release.md",
-   "blob": "7482ac5855fe65d873fb419a88e4dcb1db9db76c"
+   "blob": "4c2d49a719ec81a900784a583de6325f951b0b21"
   },
   {
    "path": "docs/governance/gogoke-ledger-decision.md",
@@ -404,6 +404,15 @@
      "E",
      "F",
      "D"
+    ]
+   },
+   {
+    "path": "apps/desktop/native-host/src/store/product_database.rs",
+    "extension": "E.3 only: compose secretary due decisions on the existing single verified ProductDatabase authority thread with E's original routine and presence facts, H's same-transaction original request journal and the original H receipt; no raw database or issuer accessor, second scheduler, new permission or persistent writer",
+    "serves": [
+     "E",
+     "H",
+     "A"
     ]
    },
    {

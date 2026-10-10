@@ -411,3 +411,11 @@ Tauri 不改变首次附着丢弃历史实时事件的规则；冷读合页保�
 参照：gogo-party packages/seat-runtime/src/seat-runtime.ts 的 assistant-delta/item-completed/turn-completed 分开记录；既有 A 原帧账本、native full thread/read、Tauri 合页和 hydration；固定 Codex commit a956835d020762cb2b570053af06f643a11c0ecc 的 codex-rs/app-server-protocol/src/protocol/v2/thread_data.rs 中 TurnItemsView 定义。采用明确区分部分输出与最终快照，保留 gogoke 更严格的原 H/A 来源，而不是复制实时事件去假装冷读原件。
 
 共享路径、conditional、owner、各线写域及操作/权限契约均未增加，范围摘要和 v2 回执不变。按现行 amendment_rule，独立审计通过后由 Controller 合并细节 PR，再精确读回；不重新请求 Owner 合并或登录。实施前不得将这份修订草稿当作已生效计划。
+
+## 2026-10-10：秘书长 E.3 到期接线的唯一共享路径（范围提案，待 Owner 合并）
+
+只新增 `apps/desktop/native-host/src/store/product_database.rs` 为 INTEGRATOR 共享文件，限定在既有单一已验证数据库、Owner issuer 与原 H custody 上组合 E.3 到期判定、同事务原 H 请求 journal 和原 H receipt 结算。已列共享 `apps/desktop/native-host/src/main.rs` 仅在现有桌面宿主权威循环调用这一窄接线；E 的 `apps/desktop/native-host/src/store/seat/` 和 H 的 `apps/desktop/native-host/src/store/session_transport/` 各守原写域。不得给外部开放原数据库或 issuer，不另建 scheduler、后台服务、持久写方、权限档位、StopFact 或向项目文件写入的模型通道。未知送达不重发，原缺席事实或 H 资格不足继续拒绝。
+
+实际 ProductDatabase 的 connection、issuer 和活动 H 会话均为私有；main.rs 属独立 binary crate，E/H 是 store 下的兄弟模块。现有 `store/mod.rs` 注册职责和 main.rs 的公开调用均不能单独完成同库事务组合。直接在既有 product_database.rs 增窄方法即可，不新增模块注册或其他共享路径。所依据的静态准备是私有 `g37-secretary-scheduler-preparation-20261010/scope-amendment.md`；它不构成产品证据或授权。
+
+本次只有该共享路径进入范围摘要；需求、阶段、角色、E/H 写域、契约持久写方和 Owner 触点不变。参照 main `d91c9aa2` 已生效的 PR83 治理，仅将 `PLAN.json.sources` 中 `AGENTS.md` 与 `docs/governance/gogoke-build-and-release.md` 两个来源 blob 同步到当前 main；其余来源与映射保持，不新增治理要求。同 PR 更新 v2 授权回执、MANIFEST 和三处固定回执 blob。Owner 合并并精确读回新摘要前不得施工该路径；本提案不宣称定时任务已能运行、V14 通过或候选验收。
