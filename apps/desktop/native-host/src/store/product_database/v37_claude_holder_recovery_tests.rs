@@ -987,3 +987,109 @@ fn claude_holder_rejects_stopped_peer_stop_bytes_changed_after_capture() {
         product.close_checked().unwrap();
     });
 }
+
+#[test]
+fn claude_holder_completed_receipts_survive_later_real_stopped_peer() {
+    cold_two_claude_with_stopped(true, |mut product, root, cold| {
+        let history = cold.stopped.as_ref().unwrap();
+        product.recover_disappeared_claude_resources(INSTANCE, None).unwrap();
+        let old_journal = journal(&product);
+        let old_claims = claims(&product);
+        let old_opens = original_opens(&product);
+        let old_custody = custody(&product);
+        let old_episodes = episodes(&product);
+        let old_rpc = rpc(&product);
+        assert_eq!(old_journal.len(), 2);
+        assert!(old_journal.iter().all(|row| row[7] == "APPLIED"));
+        assert!(old_claims.iter().filter(|row| row[1] == "sessionA" || row[1] == "sessionB")
+            .all(|row| row[6] == "RELEASED" && row[9].is_empty()));
+
+        let domain = "projectA";
+        let seat_id = "seatA";
+        let tree = "treeA";
+        let session = "laterSessionA";
+        let seat_now = seat::get(&product.connection, domain, seat_id).unwrap().unwrap();
+        assert_eq!(seat_now.state, seat::State::Idle);
+        let f_before = worktree::resolve_for_launch(&product.connection, root,
+            tree, "fixtureRepo", domain, seat_id, &seat_now.incarnation,
+            seat_now.generation).unwrap();
+        let generation = seat_now.generation + 1;
+        let later_profile_name = h::launch::original_session_profile_name(
+            &root.canonical_root().identity.opaque(), domain, session,
+            &seat_now.incarnation, &generation.to_string());
+        let later_profile = AppContainerProfile::derive_for_revocation(&later_profile_name).unwrap();
+        let later_sid = later_profile.sid_identity().unwrap();
+        assert_ne!(later_sid, history.sid);
+        for name in &cold.target_profiles {
+            assert_ne!(later_sid,
+                AppContainerProfile::derive_for_revocation(name).unwrap().sid_identity().unwrap());
+        }
+        for (verb, revision) in [("admission-reserve", 0), ("admission-commit", 1)] {
+            applied(&mut product, &operation(domain, "K-SESSION", verb,
+                &format!("claude-later-{verb}"), session, revision,
+                &format!(r#"{{"seatId":"{seat_id}","generation":"{generation}"}}"#)));
+        }
+        applied(&mut product, &operation(domain, "K-SESSION", "open",
+            "claude-later-open", session, 2,
+            &format!(r#"{{"seatId":"{seat_id}","generation":"{generation}",
+                "repositoryId":"fixtureRepo","worktreeId":"{tree}"}}"#)));
+        let later_operation = product.native_sessions.get(&(domain.into(), session.into()))
+            .unwrap().operation_id.clone();
+        let stopped_raw = product.dispatch_user_request(&operation(domain, "K-SESSION",
+            "stop", "claude-later-stop", session, 3,
+            &format!(r#"{{"seatId":"{seat_id}","generation":"{generation}"}}"#)))
+            .expect("later actual Claude child normal stop");
+        let stopped_receipt = h::decode_receipt(&stopped_raw).unwrap();
+        assert_eq!(stopped_receipt.status, V37Status::Applied,
+            "later original stop: {}", String::from_utf8_lossy(&stopped_raw));
+        let stopped_fact = rows(&product,
+            "SELECT c.stop_proof_hash,e.stop_fact_id,a.stop_fact_id,c.state,e.phase,a.state
+             FROM main.gogoke_coordination_process_custody c
+             JOIN main.gogoke_v37_h_process_episode e ON e.process_operation_id=c.operation_id
+             JOIN main.gogoke_v37_h_claim a ON a.process_operation_id=c.operation_id
+             WHERE c.operation_id=?1", &[&later_operation], 6);
+        assert_eq!(stopped_fact.len(), 1);
+        assert!(stopped_fact[0][0].starts_with("sha256:")
+            && stopped_fact[0][0] == stopped_fact[0][1]
+            && stopped_fact[0][0] == stopped_fact[0][2]);
+        assert_eq!((&stopped_fact[0][3][..], &stopped_fact[0][4][..], &stopped_fact[0][5][..]),
+            ("STOPPED", "STOPPED", "STOPPED"));
+        applied(&mut product, &operation(domain, "K-SESSION", "admission-release",
+            "claude-later-release", session, stopped_receipt.revision,
+            &format!(r#"{{"seatId":"{seat_id}","generation":"{generation}"}}"#)));
+        let seat_after = seat::get(&product.connection, domain, seat_id).unwrap().unwrap();
+        assert_eq!(seat_after.state, seat::State::Idle);
+        let f_after = worktree::resolve_for_launch(&product.connection, root,
+            tree, "fixtureRepo", domain, seat_id, &seat_after.incarnation,
+            seat_after.generation).unwrap();
+        assert_eq!((&f_before.path, &f_before.identity), (&f_after.path, &f_after.identity),
+            "later normal H used the same registered SINGLE F root");
+        later_profile.verify_bound_directory_grant(&history.home, &history.home_identity, true)
+            .expect("later legitimate STOPPED package SID is present on the reused instance HOME");
+        let later_claim = claims(&product).into_iter().find(|row| row[1] == session).unwrap();
+        assert_eq!(later_claim[6], "RELEASED");
+        assert_eq!(later_claim[9], stopped_fact[0][0]);
+
+        // The old captured peer set is fixed. A later validated normal stop
+        // is a new peer, not a mutation of the two completed old receipts.
+        product.recover_disappeared_claude_resources(INSTANCE, None)
+            .expect("later legitimate STOPPED peer cannot invalidate prior completed release");
+        for row in &old_journal {
+            assert!(product.completed_claude_holder_release(
+                INSTANCE, &row[2], &row[3], &row[0]).unwrap(),
+                "old completed receipt survives later normal stop");
+        }
+        assert_eq!(journal(&product), old_journal);
+        assert_eq!(claims(&product).into_iter().filter(|row| row[1] != session)
+            .collect::<Vec<_>>(), old_claims);
+        assert_eq!(original_opens(&product).into_iter().filter(|row| row[4] != session)
+            .collect::<Vec<_>>(), old_opens);
+        assert_eq!(custody(&product).into_iter().filter(|row|
+            old_custody.iter().any(|old| old[0] == row[0])).collect::<Vec<_>>(), old_custody);
+        assert_eq!(episodes(&product).into_iter().filter(|row| row[2] != session)
+            .collect::<Vec<_>>(), old_episodes);
+        assert_eq!(rpc(&product).into_iter().filter(|row| row[1] != session)
+            .collect::<Vec<_>>(), old_rpc);
+        product.close_checked().unwrap();
+    });
+}

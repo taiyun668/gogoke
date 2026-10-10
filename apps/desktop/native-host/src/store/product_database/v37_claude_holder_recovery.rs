@@ -94,7 +94,11 @@ impl<'root> ProductDatabase<'root> {
     // It is a preserved peer, not a holder to release again. Admit its SID only
     // from the exact original open and matching claim/episode/custody StopFact;
     // an arbitrary package SID present on disk remains a mismatch.
-    fn claude_stopped_peers(&self, instance: &str) -> Result<(Vec<String>, String)> {
+    fn claude_stopped_peers(
+        &self,
+        instance: &str,
+        captured: Option<&[String]>,
+    ) -> Result<(Vec<String>, String)> {
         let stopped = rows(
             &self.connection,
             "SELECT a.domain_id,a.session_id,a.generation,e.seat_incarnation,
@@ -128,6 +132,16 @@ impl<'root> ProductDatabase<'root> {
         let mut sids = Vec::new();
         let mut provenance = Vec::new();
         for r in stopped {
+            let name = original_session_profile_name(
+                &self.root.canonical_root().identity.opaque(), &r[0], &r[1], &r[3], &r[2],
+            );
+            let profile = evidence(AppContainerProfile::derive_for_revocation(&name))?;
+            let sid = evidence(profile.sid_identity())?;
+            if captured.is_some_and(|members| !members.contains(&sid)) {
+                // A later normally stopped session is not part of this older
+                // receipt. New captures still qualify the complete current set.
+                continue;
+            }
             let raw = unhex(&r[5])?;
             let request = evidence(decode_request(&raw))?;
             if r[5] != r[7] || r[8] != "APPLIED"
@@ -155,15 +169,18 @@ impl<'root> ProductDatabase<'root> {
             {
                 return Err(denied("Claude stopped peer original stop changed"));
             }
-            let name = original_session_profile_name(
-                &self.root.canonical_root().identity.opaque(), &r[0], &r[1], &r[3], &r[2],
-            );
-            let profile = evidence(AppContainerProfile::derive_for_revocation(&name))?;
-            sids.push(evidence(profile.sid_identity())?);
+            if sids.contains(&sid) {
+                return Err(denied("Claude stopped peer SID reused"));
+            }
+            sids.push(sid);
             for value in r {
                 provenance.extend_from_slice(&(value.len() as u64).to_be_bytes());
                 provenance.extend_from_slice(value.as_bytes());
             }
+        }
+        sids.sort();
+        if captured.is_some_and(|members| members != sids.as_slice()) {
+            return Err(denied("Claude captured stopped peer missing or changed"));
         }
         Ok((sids, sha256_hex(&provenance)))
     }
@@ -449,7 +466,9 @@ impl<'root> ProductDatabase<'root> {
         ))?;
         let objects = evidence(ClaudeAclRetirement::capture(&profile, &roots, known_sids))?;
         let mut facts = original.facts.clone();
-        let (_, stopped_provenance) = self.claude_stopped_peers(&fact(&facts, "instance")?)?;
+        let (stopped_sids, stopped_provenance) =
+            self.claude_stopped_peers(&fact(&facts, "instance")?, None)?;
+        put(&mut facts, "stoppedPeerSids", &stopped_sids.join(","));
         put(&mut facts, "stoppedPeerProvenance", &stopped_provenance);
         for (key, value) in [
             ("root", self.connection.root_identity().opaque()),
@@ -522,7 +541,11 @@ impl<'root> ProductDatabase<'root> {
         // Requalify historical peers both while pending and after completion,
         // including inside the H release transaction. A matching SID alone is
         // insufficient if its original stop/open provenance has since changed.
-        let (_, stopped_provenance) = self.claude_stopped_peers(&fact(saved, "instance")?)?;
+        let captured = fact(saved, "stoppedPeerSids")?;
+        let captured: Vec<String> = if captured.is_empty() { Vec::new() }
+            else { captured.split(',').map(str::to_owned).collect() };
+        let (_, stopped_provenance) =
+            self.claude_stopped_peers(&fact(saved, "instance")?, Some(&captured))?;
         if fact(saved, "stoppedPeerProvenance")? != stopped_provenance {
             return Err(denied("Claude stopped peer provenance changed"));
         }
@@ -817,7 +840,7 @@ impl<'root> ProductDatabase<'root> {
         if known_sids.len() != originals.len() {
             return Err(denied("Claude original SID reused"));
         }
-        for peer in self.claude_stopped_peers(instance)?.0 {
+        for peer in self.claude_stopped_peers(instance, None)?.0 {
             if known_sids.contains(&peer) {
                 return Err(denied("Claude stopped peer SID reused"));
             }
