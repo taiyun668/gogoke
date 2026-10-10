@@ -30,7 +30,7 @@ fn require_fixture_environment() {
     let mut state = u32::MAX;
     let mut bytes = 4u32;
     let code = unsafe { RegGetValueW(0x80000002u32 as i32 as isize as *mut _,
-        subkey.as_ptr(), value.as_ptr(), 0, &mut kind,
+        subkey.as_ptr(), value.as_ptr(), 0x00000010, &mut kind,
         (&mut state as *mut u32).cast(), &mut bytes) };
     assert_eq!((code, kind, bytes, state), (0, 4, 4, 0),
         "local native development requires actual SAC DWORD=0; raw registry result");

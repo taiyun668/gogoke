@@ -43,6 +43,8 @@ Owner 已合并 PR #83，并于 2026-10-10 关闭 SAC；Controller 实际读回 
 
 本机开发编译完成约 141 秒，只产出 D 盘测试程序。第一项安全组合因旧的 CI-only fixture guard 拒绝，未启动 CLI；测试辅助加入本机明确 opt-in、实际注册表 SAC DWORD 为零、规范化 TEMP 在 D 的条件，原 CI 与固定官方 archive/hash/H probe 不变。全新 Sol 聚焦静态复核无阻塞；这只校验 fixture 的 TEMP，编译目标/工作目录/测试根仍由实际运行配置保证直接 D，不伪造 CI 身份。
 
+本机该测试辅助的首轮读回返回 Win32 87，未启动 CLI：`RegGetValueW` 的类型标志错误地为零。原失败保留，直接 SDK `winreg.h` 定义确认 `RRF_RT_REG_DWORD=0x00000010`，已修为该精确类型；没有改注册表或放松 SAC DWORD/值的断言。恢复修正的正式受影响云检十六项及卫生已通过，原产物逐成员与日志回读；本机辅助最新改动仍须自己的云检，不沿用旧源码证明。
+
 现成 Claude 组件的外层脚本曾用 PowerShell 保留变量、又把测试父进程 profile 改为空目录，两次仪器失败保留。恢复普通父 profile、只重定向父 TEMP/TMP 后，实际 CLI 子进程仍由原 Rust 生产者配置独立 D 空 HOME/session/worktree；一次真实固定 Claude initialize ACK，stdin close 成功，正常停止退出零、Job 归零、未 kill。原 stdout/stderr、任务 XML 与 custody 保留，自建任务逐项清理。stderr 中 Win32 231 的 uv pipe 行与成功 ACK 共存，不据此宣称原超时根因。仅为空凭据组件诊断，原 53 已登录 H、模型与 M2/M3 未通过。
 
 继续在原身份上验证冷恢复与真实对话，旧失败请求不重发；Grok 原工具权限轴随后继续。稳定后再走完整链。
