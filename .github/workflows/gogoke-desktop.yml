@@ -341,39 +341,6 @@ jobs:
               throw "The active $tool is not from the pinned MSVC toolset."
             }
           }
-      - name: Verify Microsoft loader diagnostic tools
-        if: github.event_name == 'workflow_dispatch' && inputs.update_loader_only
-        shell: pwsh
-        run: |
-          $evidence = Join-Path $env:RUNNER_TEMP 'gogoke-update-loader-diagnostic'
-          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
-          $debuggers = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10/Debuggers/x64'
-          $identity = [ordered]@{
-            schema = 'gogoke.update-loader-diagnostic.v1'
-            sourceCommit = (git rev-parse HEAD).Trim()
-            originalFailedRun = '38079237420'
-            diagnosticOnly = $true
-            tools = @()
-          }
-          foreach ($name in @('cdb.exe', 'gflags.exe')) {
-            $path = Join-Path $debuggers $name
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Microsoft Debugging Tools missing on this runner: $path"
-            }
-            $signature = Get-AuthenticodeSignature -LiteralPath $path
-            if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Microsoft') {
-              throw "Microsoft Debugging Tool signature invalid: $path"
-            }
-            $identity.tools += [ordered]@{
-              name = $name
-              path = $path
-              version = (Get-Item -LiteralPath $path).VersionInfo.FileVersion
-              sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
-              signer = $signature.SignerCertificate.Subject
-            }
-          }
-          $identity | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidence 'identity.json') -Encoding utf8
-          'Loader diagnostic only: native test image build and direct start; Browser, reproducibility, candidate signing and installation are NOT_RUN.' >> $env:GITHUB_STEP_SUMMARY
       - name: Download notices from this exact workflow run
         uses: actions/download-artifact@v4
         with:
@@ -463,6 +430,7 @@ jobs:
         run: |
           $PSNativeCommandUseErrorActionPreference = $false
           $evidence = Join-Path $env:RUNNER_TEMP 'gogoke-update-loader-diagnostic'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
           $buildOut = Join-Path $evidence 'cargo-build.jsonl'
           $buildErr = Join-Path $evidence 'cargo-build.stderr.txt'
           & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml --lib --no-run --message-format=json 1> $buildOut 2> $buildErr
@@ -483,46 +451,55 @@ jobs:
             throw "Test image escaped expected Cargo output: $image"
           }
           $imageHash = (Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLowerInvariant()
-          [ordered]@{path=$image;sha256=$imageHash;filter='gogoke_update';sourceCommit=(git rev-parse HEAD).Trim()} |
-            ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence 'test-image.json') -Encoding utf8
+          $cargo = (Get-Command cargo -ErrorAction Stop).Source
+          if ([IO.Path]::GetExtension($cargo) -cne '.exe') { throw "Cargo is not an executable: $cargo" }
+          $cargoVersion = (& $cargo +1.89.0 --version).Trim()
+          if ($LASTEXITCODE -ne 0 -or $cargoVersion -notmatch '^cargo 1\.89\.0 ') { throw "Unexpected Cargo toolchain: $cargoVersion" }
+          [ordered]@{
+            schema='gogoke.update-loader-diagnostic.v1'
+            sourceCommit=(git rev-parse HEAD).Trim()
+            originalFailedRun='38079237420'
+            diagnosticOnly=$true
+            imagePath=$image
+            imageSha256=$imageHash
+            cargoPath=$cargo
+            cargoSha256=(Get-FileHash -LiteralPath $cargo -Algorithm SHA256).Hash.ToLowerInvariant()
+            cargoVersion=$cargoVersion
+            filter='gogoke_update'
+          } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence 'identity.json') -Encoding utf8
           Write-Output "Exact test image: $image; SHA-256 $imageHash"
+          $originalOut = Join-Path $evidence 'original-cargo-stdout.txt'
+          $originalErr = Join-Path $evidence 'original-cargo-stderr.txt'
+          & $cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml gogoke_update --lib -vv 1> $originalOut 2> $originalErr
+          $originalExit = $LASTEXITCODE
+          $originalText = (Get-Content -LiteralPath $originalOut -Raw) + (Get-Content -LiteralPath $originalErr -Raw)
+          [ordered]@{cargoExitCode=$originalExit;entrypointStatusRecorded=($originalText -match '0xc0000139|STATUS_ENTRYPOINT_NOT_FOUND')} |
+            ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence 'original-cargo-exit.json') -Encoding utf8
+          Get-Content -LiteralPath $originalErr -Tail 50 | Out-Host
+          if ($originalExit -eq 0 -or $originalText -notmatch '0xc0000139|STATUS_ENTRYPOINT_NOT_FOUND') {
+            throw "Original Cargo child loader failure did not reproduce: cargo exit $originalExit"
+          }
+          if ((Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLowerInvariant() -cne $imageHash) {
+            throw 'Original Cargo test changed the captured image bytes'
+          }
           $dumpbin = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x64/dumpbin.exe'
           if (-not (Test-Path -LiteralPath $dumpbin -PathType Leaf)) { throw 'Pinned MSVC dumpbin unavailable' }
           $imports = Join-Path $evidence 'test-image-imports.txt'
           & $dumpbin /imports $image 1> $imports
           if ($LASTEXITCODE -ne 0) { throw "Test image import table unavailable: $LASTEXITCODE" }
 
-          $directOut = Join-Path $evidence 'direct-stdout.txt'
-          $directErr = Join-Path $evidence 'direct-stderr.txt'
-          $directInfo = [Diagnostics.ProcessStartInfo]::new($image)
-          [void]$directInfo.ArgumentList.Add('gogoke_update')
-          $directInfo.UseShellExecute = $false
-          $directInfo.CreateNoWindow = $true
-          $directInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
-          $directInfo.RedirectStandardOutput = $true
-          $directInfo.RedirectStandardError = $true
-          $direct = [Diagnostics.Process]::Start($directInfo)
-          if (-not $direct) { throw 'Direct native test image did not start' }
-          $directStdout = $direct.StandardOutput.ReadToEndAsync()
-          $directStderr = $direct.StandardError.ReadToEndAsync()
-          if (-not $direct.WaitForExit(120000)) {
-            $direct.Kill($true)
-            $direct.WaitForExit()
-            throw 'Direct native test image exceeded 120 seconds'
-          }
-          [IO.File]::WriteAllText($directOut, $directStdout.GetAwaiter().GetResult())
-          [IO.File]::WriteAllText($directErr, $directStderr.GetAwaiter().GetResult())
-          $directExit = $direct.ExitCode
-          Write-Output "Direct test image exit: $directExit (0x$('{0:X8}' -f $directExit))"
-          [ordered]@{exitCode=$directExit;exitHex=('0x{0:X8}' -f $directExit)} |
-            ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence 'direct-exit.json') -Encoding utf8
-          if ($directExit -ne -1073741511) {
-            throw "Original loader failure did not reproduce in direct test image: $directExit"
-          }
-
           $debuggers = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10/Debuggers/x64'
           $gflags = Join-Path $debuggers 'gflags.exe'
           $cdb = Join-Path $debuggers 'cdb.exe'
+          foreach ($tool in @($gflags, $cdb)) {
+            if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) { throw "Microsoft Debugging Tools missing on this runner: $tool" }
+            $signature = Get-AuthenticodeSignature -LiteralPath $tool
+            if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Microsoft') {
+              throw "Microsoft Debugging Tool signature invalid: $tool"
+            }
+            Write-Output "Debugging tool: $tool; version $((Get-Item -LiteralPath $tool).VersionInfo.FileVersion); SHA-256 $((Get-FileHash -LiteralPath $tool -Algorithm SHA256).Hash)"
+          }
+          'Loader diagnostic only: original Cargo child then CDB child tracking; Browser, reproducibility, candidate signing and installation are NOT_RUN.' >> $env:GITHUB_STEP_SUMMARY
           $imageName = [IO.Path]::GetFileName($image)
           $diagnosticError = $null
           $cleanupError = $null
@@ -531,9 +508,10 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "Loader snaps enable failed: $LASTEXITCODE" }
             $log = Join-Path $evidence 'cdb-loader-snaps.log'
             $info = [Diagnostics.ProcessStartInfo]::new($cdb)
-            foreach ($argument in @('-logo', $log, '-g', '-G', $image, 'gogoke_update')) {
+            foreach ($argument in @('-o', '-g', '-G', '-v', '-logo', $log, $cargo, '+1.89.0', 'test', '--locked', '--manifest-path', 'src-tauri/Cargo.toml', 'gogoke_update', '--lib', '-vv')) {
               [void]$info.ArgumentList.Add($argument)
             }
+            $info.WorkingDirectory = (Get-Location).Path
             $info.UseShellExecute = $false
             $info.CreateNoWindow = $true
             $info.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
@@ -543,17 +521,21 @@ jobs:
             if (-not $debugger) { throw 'Microsoft CDB did not start' }
             $stdout = $debugger.StandardOutput.ReadToEndAsync()
             $stderr = $debugger.StandardError.ReadToEndAsync()
-            if (-not $debugger.WaitForExit(120000)) {
+            $timedOut = -not $debugger.WaitForExit(120000)
+            if ($timedOut) {
               $debugger.Kill($true)
               $debugger.WaitForExit()
-              throw 'Microsoft CDB loader diagnosis timed out'
             }
             [IO.File]::WriteAllText((Join-Path $evidence 'cdb-stdout.txt'), $stdout.GetAwaiter().GetResult())
             [IO.File]::WriteAllText((Join-Path $evidence 'cdb-stderr.txt'), $stderr.GetAwaiter().GetResult())
+            if ($timedOut) { throw 'Microsoft CDB loader diagnosis timed out; raw log retained' }
             Write-Output "Microsoft CDB exit: $($debugger.ExitCode)"
             if (-not (Test-Path -LiteralPath $log -PathType Leaf)) { throw 'CDB did not write loader snaps' }
-            Get-Content -LiteralPath $log | Select-String -Pattern 'c0000139|entry point|procedure|LdrpSnapThunk|ERROR' -Context 2,2 |
-              Select-Object -Last 30 | Out-Host
+            Get-Content -LiteralPath $log | Select-String -Pattern 'gogoke_desktop_lib|ModLoad|c0000139|entry point|procedure|LdrpSnapThunk|ERROR' -Context 2,2 |
+              Select-Object -Last 50 | Out-Host
+            if ((Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLowerInvariant() -cne $imageHash) {
+              throw 'CDB-wrapped Cargo test changed the captured image bytes'
+            }
           } catch {
             $diagnosticError = $_.Exception.Message
           } finally {
