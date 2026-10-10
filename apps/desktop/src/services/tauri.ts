@@ -104,11 +104,7 @@ async function readSecretaryRoutines(): Promise<SecretaryRoutineRow[]> {
 }
 
 function routinePageRow(row: SecretaryRoutineRow): Routine {
-  // G's current Routine only accepts a dated lastRun; E has an outcome and
-  // reason but no outcome timestamp. Rendering it as "never run" is false.
-  if (row.lastResult !== "NONE" || row.lastReason !== "") {
-    throw new Error(`Native Secretary routine outcome cannot be displayed by the current page contract: ${row.lastResult} ${row.lastReason}`);
-  }
+  // E records delivery outcomes, not an execution time or completion proof.
   const ms = Number(row.nextDueMs);
   if (!Number.isSafeInteger(ms) || !Number.isFinite(new Date(ms).getTime())) {
     throw new Error("Native Secretary next due time is invalid.");
@@ -119,6 +115,10 @@ function routinePageRow(row: SecretaryRoutineRow): Routine {
   return { id: row.routineId, name: row.originalText,
     schedule: `${row.scheduleRaw} · ${row.timezone}`,
     ...(row.state === "ACTIVE" ? { nextRun } : {}),
+    ...(row.lastResult === "NONE" ? {} : { lastOutcome: {
+      result: row.lastResult,
+      ...(row.lastReason === "" ? {} : { reason: row.lastReason }),
+    } }),
     paused: row.state === "PAUSED" || row.state === "ABSENCE_PAUSED" };
 }
 
