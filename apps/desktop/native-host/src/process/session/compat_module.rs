@@ -574,6 +574,133 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn real_claude_initialize_with_fixed_lpac_compat_persistent_stdio() {
+        use crate::process::{NativeBinding, PrepareRequest, ProcessCustodian, ProcessLaunch, StopBudgets};
+        use crate::store::session_transport::provider_evidence::{commands, stream_json};
+        use std::time::{Duration, Instant};
+
+        const DIGEST: &str = "sha256:180d7b279455e8b89d4353a5146447be2f80b80fb0db14bdc6dd9cb98c0aef09";
+        let program = crate::store::instance::locate_pinned_program("claude", DIGEST, "2.1.196")
+            .expect("required real cloud catalog CLI and exact fixed pin");
+        let original = program.parent().unwrap().parent().unwrap()
+            .join("node_modules/@anthropic-ai/claude-code-win32-x64/claude.exe");
+        let program_identity = AppContainerProfile::capture_catalog_program_identity(&program).unwrap();
+        assert_eq!(AppContainerProfile::capture_catalog_program_identity(&original).unwrap(), program_identity);
+
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("gogoke-claude-direct-{}-{stamp}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root = RootLock::acquire(&path).unwrap();
+        let base = &root.canonical_root().canonical_path;
+        let instance = base.join("instance-home");
+        let session = base.join("session-home");
+        let worktree = base.join("worktree");
+        let roaming = instance.join("AppData/Roaming");
+        let local = instance.join("AppData/Local");
+        for directory in [&roaming, &local, &session, &worktree] {
+            fs::create_dir_all(directory).unwrap();
+        }
+        let name = format!("Gogoke37.ClaudeDirect.{}.{stamp}", std::process::id());
+        let profile = AppContainerProfile::ensure_for_cli(&name, true).unwrap();
+        let instance_id = crate::root::inspect_root(&instance).unwrap().identity;
+        let session_id = crate::root::inspect_root(&session).unwrap().identity;
+        let worktree_id = crate::root::inspect_root(&worktree).unwrap().identity;
+        profile.grant_bound_tree(&instance, &instance_id, true).unwrap();
+        profile.grant_bound_tree(&session, &session_id, true).unwrap();
+        profile.grant_bound_tree(&worktree, &worktree_id, true).unwrap();
+        profile.grant_bound_catalog_program(&program, &program_identity).unwrap();
+        profile.verify_bound_catalog_program_grant(&original, &program_identity).unwrap();
+        let roots = Arc::new(DirectoryRoots::prepare(&root, &[
+            (instance.clone(), instance_id), (session.clone(), session_id),
+            (worktree.clone(), worktree_id),
+        ]).unwrap());
+        let module = CompatModule::prepare_claude_observation(&root, &profile, &name).unwrap();
+
+        let system_root = std::env::var("SystemRoot").unwrap();
+        let mut environment = vec![
+            ("SystemRoot".into(), system_root.clone()), ("WINDIR".into(), system_root),
+            ("HOME".into(), instance.to_string_lossy().into_owned()),
+            ("USERPROFILE".into(), instance.to_string_lossy().into_owned()),
+            ("APPDATA".into(), roaming.to_string_lossy().into_owned()),
+            ("LOCALAPPDATA".into(), local.to_string_lossy().into_owned()),
+            ("TEMP".into(), session.to_string_lossy().into_owned()),
+            ("TMP".into(), session.to_string_lossy().into_owned()),
+            ("CLAUDE_CONFIG_DIR".into(), instance.to_string_lossy().into_owned()),
+            ("CLAUDE_CODE_DISABLE_AUTO_MEMORY".into(), "1".into()),
+        ];
+        module.extend_environment(&mut environment);
+        module.validate_launch(Some(&name), Some(&environment)).unwrap();
+        let mut launch = ProcessLaunch::new(&program);
+        launch.arguments = commands::claude_launch_args("claude-sonnet-4-6", "high", None).unwrap();
+        launch.arguments.extend([
+            "--permission-prompt-tool".into(), "stdio".into(),
+            "--permission-mode".into(), "acceptEdits".into(),
+            "--debug-file".into(), session.join("claude-startup-debug.log").to_string_lossy().into_owned(),
+        ]);
+        launch.current_directory = Some(worktree);
+        launch.protocol_stdio = true;
+        launch.persistent_protocol_stdio = true;
+        launch.environment = Some(environment);
+        launch.app_container_profile = Some(name.clone());
+        launch.app_container_internet_client = true;
+        launch.app_container_cli_identity_services = true;
+        launch.path_compat = Some(module);
+        launch.directory_roots = Some(roots);
+        let request = PrepareRequest { launch, binding: NativeBinding {
+            binary_digest_sha256: DIGEST.into(), profile_id: name,
+            domain_id: "claude-direct-component".into(), generation: "1".into(),
+        }};
+        let mut custodian = ProcessCustodian::new().unwrap();
+        let prepared = custodian.prepare(&request)
+            .expect("fixed CLI suspended prepare, actual image SHA, LPAC token, Job and compat import");
+        assert!(prepared.identity.pid > 0 && prepared.identity.creation_time_100ns > 0);
+        assert!(custodian.active(&prepared.ticket).is_none());
+        custodian.activate(&prepared).expect("activate exact prepared Claude child");
+        let active = custodian.active(&prepared.ticket).unwrap();
+        assert!(active.handles_are_non_inheritable().unwrap());
+        let request_id = "claude-direct-initialize-original";
+        let frame = commands::encode_claude(commands::ClaudeCommand::Initialize { request_id }).unwrap();
+        let started = Instant::now();
+        let mut raw_frames = Vec::new();
+        let result = (|| -> Result<(), String> {
+            active.write_persistent_frame(&frame)
+                .map_err(|error| format!("original initialize write: {error}"))?;
+            loop {
+                let remaining = Duration::from_secs(30).saturating_sub(started.elapsed());
+                if remaining.is_zero() { return Err("original initialize 30s total deadline".into()); }
+                let raw = active.read_persistent_frame(remaining)
+                    .map_err(|error| format!("original initialize read: {error}"))?;
+                let decoded = stream_json::decode_claude_line(&raw);
+                raw_frames.push(String::from_utf8_lossy(&raw).into_owned());
+                match decoded {
+                    Ok(stream_json::ClaudeData::ControlResponse { request_id: observed, success: true })
+                        if observed == request_id => return Ok(()),
+                    Ok(stream_json::ClaudeData::ControlResponse { request_id: observed, success: false })
+                        if observed == request_id => return Err("original initialize was rejected".into()),
+                    Err(error) => return Err(format!("original initialize stdout decode: {error:?}")),
+                    _ => {},
+                }
+            }
+        })();
+        let fragment = active.persistent_stdout_fragment();
+        let stderr = active.stderr_tail();
+        let exit_code = active.exit_code();
+        let job_count = active.active_job_processes();
+        let proof = custodian.stop(&prepared.ticket, StopBudgets::production(), || Ok(()));
+        eprintln!("CLAUDE_DIRECT_INITIALIZE original_request_id={request_id} original_result={result:?} raw_stdout_frames={raw_frames:?} stdout_fragment={fragment:?} stderr_tail={stderr:?} exit_code={exit_code:?} active_job_processes={job_count:?} prepared_identity={:?} stop_proof={proof:?}", prepared.identity);
+        let stop_ok = proof.as_ref().is_ok_and(|proof|
+            proof.parent_exited && proof.writer_fence_verified && proof.active_job_processes == Some(0));
+        drop(custodian);
+        drop(request);
+        drop(profile);
+        drop(root);
+        let cleanup = fs::remove_dir_all(path);
+        assert!(result.is_ok(), "real fixed Claude initialize did not ACK its original request; see original component evidence above");
+        assert!(stop_ok, "production stop after original initialize: {proof:?}");
+        cleanup.expect("remove empty-auth Claude component fixture after stopped Job");
+    }
+
+    #[test]
     fn fixed_module_locks_bytes_identity_and_native_mapping() {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)

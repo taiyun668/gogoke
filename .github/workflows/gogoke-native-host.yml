@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       focused_library:
-        description: Affected checks only (seat-scope, ledger-scope, native-takeover, pipe-evidence or grok-permission); all full and formal gates are NOT_RUN
+        description: Affected checks only (seat-scope, ledger-scope, native-takeover, pipe-evidence, grok-permission, claude-holder or claude-initialize); all full and formal gates are NOT_RUN
         type: string
         default: ""
       secretary_routine_fixture_only:
@@ -78,6 +78,45 @@ jobs:
         with:
           node-version: 24.13.1
       - uses: dtolnay/rust-toolchain@1.85.1
+      - name: Pin identical Claude CLI for direct initialize component
+        id: fixed-claude-initialize
+        if: ${{ inputs.focused_library == 'claude-initialize' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $prefix = Join-Path $env:APPDATA 'npm'
+          & npm install --global --prefix $prefix --ignore-scripts '@anthropic-ai/claude-code@2.1.196'
+          if ($LASTEXITCODE -ne 0) { throw "Claude CLI install failed: $LASTEXITCODE" }
+          $package = Join-Path $prefix 'node_modules\@anthropic-ai\claude-code'
+          $platform = Join-Path $package 'node_modules\@anthropic-ai\claude-code-win32-x64'
+          foreach ($fact in @(@{ path=$package; name='@anthropic-ai/claude-code' }, @{ path=$platform; name='@anthropic-ai/claude-code-win32-x64' })) {
+            $metadata = Get-Content -LiteralPath (Join-Path $fact.path 'package.json') -Raw | ConvertFrom-Json
+            if ($metadata.name -ne $fact.name -or $metadata.version -ne '2.1.196') { throw 'Fixed Claude package identity mismatch' }
+          }
+          $original = Join-Path $platform 'claude.exe'
+          if (-not (Test-Path -LiteralPath $original -PathType Leaf)) { throw 'Fixed Claude platform image missing' }
+          # The product catalog uses the installed package's bin image. Keep
+          # the official bytes identical without running npm postinstall code.
+          $bin = Join-Path $package 'bin'
+          New-Item -ItemType Directory -Path $bin -Force | Out-Null
+          $binary = Join-Path $bin 'claude.exe'
+          $digest = (Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash
+          if ($digest -cne '180D7B279455E8B89D4353A5146447BE2F80B80FB0DB14BDC6DD9CB98C0AEF09') { throw "Official fixed Claude platform digest differs: $digest" }
+          if (Test-Path -LiteralPath $binary) {
+            $existing = Get-Item -LiteralPath $binary -Force
+            Write-Output "Existing cloud catalog leaf: directory=$($existing.PSIsContainer) attributes=$($existing.Attributes) linkType=$($existing.LinkType)"
+            if ($existing.PSIsContainer) { throw 'Cloud catalog leaf unexpectedly became a directory' }
+            Write-Output "Existing cloud catalog leaf SHA256=$((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash)"
+            # This is the cloud fixture's package leaf, not an Owner installation.
+            # Remove only that name; a file symlink's target is never removed.
+            Remove-Item -LiteralPath $binary -ErrorAction Stop
+          }
+          New-Item -ItemType HardLink -Path $binary -Target $original -ErrorAction Stop | Out-Null
+          if ((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash -ne $digest) { throw 'Fixed Claude bytes changed during layout preparation' }
+          $version = & $binary --version
+          if ($LASTEXITCODE -ne 0 -or $version -ne '2.1.196 (Claude Code)') { throw "Fixed Claude CLI version mismatch: $version" }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CLAUDE_CLI_PATH=$binary"
+          Write-Output "Fixed Claude CLI SHA256=$digest"
       - name: Run the explicitly selected affected tests
         shell: pwsh
         run: |
@@ -91,6 +130,8 @@ jobs:
               'native_user_ledger_scopes_replay_and_subscription_survive_reopen') }
             'native-takeover' { @('native_takeover_') }
             'grok-permission' { @('grok_permission') }
+            'claude-holder' { @('claude_holder') }
+            'claude-initialize' { @('real_claude_initialize_with_fixed_lpac_compat_persistent_stdio') }
             'pipe-evidence' { @('stop_requires_clean_original_eof_not_a_generic_source_error',
               'persistent_reader_keeps_eof_unknown_after_exact_child_exit') }
             default { throw 'Unknown affected-check selection; no arbitrary shell or test filter is accepted.' }
