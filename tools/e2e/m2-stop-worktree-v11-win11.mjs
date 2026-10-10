@@ -63,7 +63,24 @@ journal.driverBytes['m2-v11-boundaries.mjs'] = sha256(path.join(here, 'm2-v11-bo
 journal.driverBytes['m2-v11-readback.py'] = sha256(path.join(here, 'm2-v11-readback.py'));
 journal.driverBytes['m2-stop-worktree-v11-outside.mjs'] = sha256(path.join(here, 'm2-stop-worktree-v11-outside.mjs'));
 journal.driverBytes['m2-stop-worktree-v11-readback.py'] = sha256(path.join(here, 'm2-stop-worktree-v11-readback.py'));
+journal.driverBytes['m2-stop-worktree-v11-census.ps1'] = sha256(path.join(here, 'm2-stop-worktree-v11-census.ps1'));
 const check = (condition, reason) => { if (!condition) throw Error(reason); };
+
+async function requireClosedCandidate() {
+  const original = await new Promise((resolve, reject) => {
+    const child = spawn(config.pwsh, ['-NoProfile', '-NonInteractive', '-File',
+      path.join(here, 'm2-stop-worktree-v11-census.ps1'), '-Installed', config.installed],
+    { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', bytes => { stdout = (stdout + bytes).slice(-8192); });
+    child.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-8192); });
+    child.once('error', reject);
+    child.once('exit', code => code === 0 ? resolve(stdout.trim()) :
+      reject(Error(`V11 closed-candidate census exit=${code}; stderr=${stderr}`)));
+  });
+  check(original === 'NO_INSTALLED_CANDIDATE_PROCESS',
+    'V11 installed-candidate process absence was not directly observed');
+}
 
 async function preflightOutside() {
   const file = 'm2-v11-outside-closed-preflight.json';
@@ -148,10 +165,12 @@ async function readbackOutside() {
 }
 
 try {
-  // Candidate custody confirms there is no active product writer before an
-  // immutable read. The reader itself checks absent/empty WAL and byte stability.
+  // The original custody helper checks registration; this separate process
+  // census checks no exact installed candidate is live before immutable IO.
   await product.custody(true); product.verifyBytes();
+  await requireClosedCandidate();
   await preflightOutside();
+  await requireClosedCandidate();
   await product.launch();
   await product.custody(); product.verifyBytes();
   const ui = await product.evaluate('({url:location.href,home:!!document.querySelector(".home-product-entry"),tauri:!!window.__TAURI_INTERNALS__})');
