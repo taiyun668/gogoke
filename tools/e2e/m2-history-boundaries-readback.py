@@ -51,6 +51,16 @@ PENDING_CLASSIFICATION = "PRESERVED_UNRESOLVED_RAW_SOURCE_NO_SUCCESS_CREDIT"
 PENDING_UNHANDLED_SOURCE_COMMIT = "b0b2f31edf409fdc627d4b1558a50c29f319a697"
 
 
+def normalizer_item_string(value):
+    if not isinstance(value, str) or not value or "\0" in value:
+        return False
+    try:
+        value.encode("utf-8", "strict")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def pending_unhandled_codex_frame(frame, thread_id):
     """Exact observed shapes that codex_output::normalize leaves Unhandled.
 
@@ -74,9 +84,8 @@ def pending_unhandled_codex_frame(frame, thread_id):
     item = params.get("item")
     check(params.get("threadId") == thread_id and isinstance(item, dict) and
           item.get("type") in PENDING_UNMAPPED_CODEX_ITEMS and
-          isinstance(item.get("id"), str) and bool(item["id"]) and "\0" not in item["id"] and
-          isinstance(params.get("turnId"), str) and bool(params["turnId"]) and
-          "\0" not in params["turnId"],
+          normalizer_item_string(item.get("id")) and
+          normalizer_item_string(params.get("turnId")),
           "Pending Codex item is not a verified Unhandled lifecycle type")
     time_value = params.get("startedAtMs" if method == "item/started" else "completedAtMs")
     check(type(time_value) is int and 0 <= time_value <= 2**64 - 1,
