@@ -79,7 +79,7 @@ async function requireClosedCandidate() {
     child.once('exit', code => code === 0 ? resolve(stdout.trim()) :
       reject(Error(`V11 closed-candidate census exit=${code}; stderr=${stderr}`)));
   });
-  check(original === 'NO_INSTALLED_CANDIDATE_PROCESS',
+  check(original === 'NO_INSTALLED_CANDIDATE_PROCESS_PHYSICAL_IDENTITIES_CHECKED',
     'V11 installed-candidate process absence was not directly observed');
 }
 

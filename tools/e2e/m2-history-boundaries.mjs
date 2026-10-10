@@ -465,7 +465,7 @@ export async function runHistorySameDomainWorkerReadCase(product, config, journa
     original[0].marker === sourceSession.inputs[0].marker &&
     objects[0].marker === sourceSession.inputs[0].marker &&
     objects[0].nativeSessionId === original[0].nativeSessionId &&
-    objects[0].path === original[0].originalCodexThreadPath,
+    objects[0].reportedPath === original[0].originalCodexThreadPath,
   'The exact original User lead input, A thread/path and physical marker must identify one source');
   const record = journal.historyBoundary.sameDomainRead = {
     state: 'RUNNING', acceptance: false, caseId: item.caseId,

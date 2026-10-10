@@ -599,7 +599,7 @@ def verify_same_domain_worker(db, journal, boundary, result):
               current[0] == objects[0] and objects[0]["state"] == "ORIGINAL_TEST_VENDOR_OBJECT_READ_BACK" and
               sources[0]["originalBody"] == source_input["body"] and
               sources[0]["marker"] == objects[0]["marker"] == source_input["marker"] and
-              sources[0]["originalCodexThreadPath"] == objects[0]["path"] and
+              sources[0]["originalCodexThreadPath"] == objects[0]["reportedPath"] and
               sources[0]["nativeSessionId"] == objects[0]["nativeSessionId"] and
               objects[0]["sessionMeta"]["payload"]["id"] == objects[0]["nativeSessionId"],
               "Exact original lead vendor object/path/session_meta/marker is unqualified")
