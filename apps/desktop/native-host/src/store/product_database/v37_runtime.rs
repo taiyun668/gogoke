@@ -2336,11 +2336,11 @@ impl<'root> ProductDatabase<'root> {
         let raw_capture=&self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?.raw_capture;
         if !raw_capture.source_exhausted() {
             return Err(OrchestrationError::V37StoreFailure(format!(
-                "native stopped stdout terminal boundary not yet observed; custody retained; original stop state: parent_exited={}, active_job_processes={:?}, identity_status={}, process_handle_present={}, job_handle_present={}, kill_attempted={}, kill_succeeded={}, writer_fence_verified={}, exit_code={:?}, deadline_exceeded={}, errors_count={}; original reader: source_eof={}, has_pending={}, source_error_present={}, source_error_kind={:?}, source_os_error={:?}",
+                "native stopped stdout terminal boundary not yet observed; custody retained; original stop state: parent_exited={}, active_job_processes={:?}, identity_status={}, process_handle_present={}, job_handle_present={}, kill_attempted={}, kill_succeeded={}, writer_fence_verified={}, exit_code={:?}, deadline_exceeded={}, errors_count={}, original_errors={}; original reader: source_eof={}, has_pending={}, source_error_present={}, source_error_kind={:?}, source_os_error={:?}",
                 proof.parent_exited,proof.active_job_processes,proof.identity_status,
                 proof.process_handle_present,proof.job_handle_present,proof.kill_attempted,
                 proof.kill_succeeded,proof.writer_fence_verified,proof.exit_code,
-                proof.deadline_exceeded,proof.errors.len(),raw_capture.source_exhausted(),
+                proof.deadline_exceeded,proof.errors.len(),bounded_original_error(&format!("{:?}",proof.errors),4096),raw_capture.source_exhausted(),
                 raw_capture.has_pending(),raw_capture.source_failed(),raw_capture.source_error_kind(),raw_capture.source_os_error())));
         }
         authority::mark_process_stopped(&mut self.connection, &operation, &proof)?;
@@ -2819,7 +2819,7 @@ impl<'root> ProductDatabase<'root> {
                             "Claude initialize read: {error}; original failure record: {record_error:?}")));
                     }
                     return Err(OrchestrationError::V37StoreFailure(format!(
-                        "Claude initialize read: {error}; original startup evidence recorded; UNKNOWN")));
+                        "Claude initialize read: {diagnostic}; original startup evidence recorded; UNKNOWN")));
                 },
             };
             let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
