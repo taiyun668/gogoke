@@ -59,6 +59,19 @@ pub(crate) enum RuntimeError {
 
 pub(crate) use crate::store::seat::PermissionTier;
 
+const CODEX_READ_ONLY_UNAVAILABLE: &str =
+    "fixed Codex 0.160.0 READ_ONLY LPAC unavailable: app-server initialize exited after gethostname-1.1.0 panic: GetComputerNameExW did not provide buffer size; Win32 GetLastError was not captured";
+
+pub(super) fn require_new_reservation_supported(pin: &InstancePin, tier: PermissionTier,
+    new_reservation: bool) -> Result<(), AdmissionError> {
+    if new_reservation && tier == PermissionTier::ReadOnly
+        && pin.driver_id == "codex" && pin.version == "0.160.0"
+        && pin.digest == "sha256:fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d" {
+        return Err(AdmissionError::Invalid(CODEX_READ_ONLY_UNAVAILABLE));
+    }
+    Ok(())
+}
+
 /// A reservation is not a process permission. H's open path must call this
 /// before prepare. F currently returns an opaque directory receipt but no
 /// verified launch profile/path pair, and E has no durable tier binding. Even
@@ -104,7 +117,9 @@ pub(crate) fn reserve_native(
             seat_authorization_generation:current.generation,
             selected_instance_id:request.instance_id.into(),provenance:Provenance::NativeV2,
         }).map_err(selection_error)?;}
-        current_instance_pin(db, request.instance_id)?;
+        let pin = current_instance_pin(db, request.instance_id)?;
+        require_new_reservation_supported(&pin, seat::permission_tier(&current)
+            .map_err(AdmissionError::Seat)?, new_reservation)?;
         persisted_limits(db, request.domain_id, request.instance_id)
     })
 }
@@ -137,7 +152,9 @@ pub(crate) fn reserve_native_for_host(db:&mut VerifiedDatabaseConnection<'_>,
             seat_authorization_generation:seat.generation,
             selected_instance_id:request.instance_id.into(),provenance:Provenance::NativeV2,
         }).map_err(selection_error)?;}
-        current_instance_pin(db,request.instance_id)?;
+        let pin=current_instance_pin(db,request.instance_id)?;
+        require_new_reservation_supported(&pin,seat::permission_tier(&seat)
+            .map_err(AdmissionError::Seat)?,new_reservation)?;
         persisted_limits(db,request.domain_id,request.instance_id)
     })
 }
@@ -246,7 +263,9 @@ pub(crate) fn reserve_native_with_origin(db:&mut VerifiedDatabaseConnection<'_>,
             seat_authorization_generation:child.generation,
             selected_instance_id:request.instance_id.into(),provenance:Provenance::NativeV2,
         }).map_err(selection_error)?;}
-        current_instance_pin(db,request.instance_id)?;
+        let pin=current_instance_pin(db,request.instance_id)?;
+        require_new_reservation_supported(&pin,seat::permission_tier(&child)
+            .map_err(AdmissionError::Seat)?,new_reservation)?;
         persisted_limits(db,request.domain_id,request.instance_id)
     })
 }
@@ -747,6 +766,28 @@ impl SessionTransitions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_codex_read_only_unavailable_only_for_exact_fresh_pin() {
+        let fixed = InstancePin {driver_id:"codex".into(),version:"0.160.0".into(),
+            digest:"sha256:fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d".into()};
+        let rejected=require_new_reservation_supported(&fixed,PermissionTier::ReadOnly,true);
+        assert!(matches!(rejected,Err(AdmissionError::Invalid(reason))
+            if reason.contains("READ_ONLY LPAC unavailable")
+                && reason.contains("GetComputerNameExW did not provide buffer size")
+                && reason.contains("GetLastError was not captured")));
+        assert!(require_new_reservation_supported(&fixed,PermissionTier::ReadOnly,false).is_ok(),
+            "the old original request keeps its replay path");
+        for tier in [PermissionTier::NoNetwork,PermissionTier::IsolatedWrite,
+            PermissionTier::NetworkedWrite] {
+            assert!(require_new_reservation_supported(&fixed,tier,true).is_ok());
+        }
+        for changed in [InstancePin {driver_id:"claude".into(),..fixed.clone()},
+            InstancePin {version:"0.160.1".into(),..fixed.clone()},
+            InstancePin {digest:format!("sha256:{}","0".repeat(64)),..fixed}] {
+            assert!(require_new_reservation_supported(&changed,PermissionTier::ReadOnly,true).is_ok());
+        }
+    }
 
     #[cfg(windows)]
     #[test]
