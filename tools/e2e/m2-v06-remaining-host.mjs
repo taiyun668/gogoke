@@ -65,7 +65,7 @@ export class RemainingHostRoot {
         m.domainId===domain&&m.seatId===seat&&m.worktreeId===tree&&
         m.repositoryId===this.config.repositoryId&&m.instanceId===this.config.instanceId),
     'Exact E/F binding is not idle and registered');
-    const s={id:id('m2V06RemainingH'),domainId,seatId:seat,worktreeId:tree,
+    const s={id:id('m2V06RemainingH'),domainId:domain,seatId:seat,worktreeId:tree,
       generation:String(BigInt(card.result.generation)+1n),revision:'0',cursor:'0',
       phase,events:[],turns:[],threadId:null,stopFact:null,releaseRequestId:null};
     this.sessions.push(s);this.journal.sessions.push(s);this.save();
