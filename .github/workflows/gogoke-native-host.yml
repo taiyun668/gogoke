@@ -142,6 +142,17 @@ jobs:
           }
           $node = Get-Command node.exe -CommandType Application | Select-Object -First 1 -ExpandProperty Source
           $env:GOGOKE_CONTROLLED_NODE_PATH = $node
+          if ($env:FOCUSED_LIBRARY -eq 'm2-provider-current') {
+            # The composed F/H fixture uses the real backend image, like the
+            # existing full-library job; the git.exe launcher is not its pin.
+            $execPath = & git --exec-path
+            if ($LASTEXITCODE -ne 0) { throw 'Git exec path unavailable' }
+            $mingw = Split-Path -Parent (Split-Path -Parent $execPath.Trim())
+            $backend = Join-Path $mingw 'bin/git.exe'
+            if (-not (Test-Path -LiteralPath $backend -PathType Leaf)) { throw 'Actual Git backend image unavailable; no launcher substitute' }
+            $env:GOGOKE_CONTROLLED_GIT_PATH = $backend
+            Write-Output "Git backend SHA256=$((Get-FileHash -LiteralPath $backend -Algorithm SHA256).Hash)"
+          }
           $evidence = Join-Path $env:RUNNER_TEMP "native-affected-$env:GITHUB_RUN_ID"
           New-Item -ItemType Directory -Path $evidence | Out-Null
           $results = @()
