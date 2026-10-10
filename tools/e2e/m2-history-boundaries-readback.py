@@ -74,11 +74,12 @@ def pending_unhandled_codex_frame(frame, thread_id):
     item = params.get("item")
     check(params.get("threadId") == thread_id and isinstance(item, dict) and
           item.get("type") in PENDING_UNMAPPED_CODEX_ITEMS and
-          isinstance(item.get("id"), str) and bool(item["id"]) and
-          isinstance(params.get("turnId"), str) and bool(params["turnId"]),
+          isinstance(item.get("id"), str) and bool(item["id"]) and "\0" not in item["id"] and
+          isinstance(params.get("turnId"), str) and bool(params["turnId"]) and
+          "\0" not in params["turnId"],
           "Pending Codex item is not a verified Unhandled lifecycle type")
     time_value = params.get("startedAtMs" if method == "item/started" else "completedAtMs")
-    check(type(time_value) is int and time_value >= 0,
+    check(type(time_value) is int and 0 <= time_value <= 2**64 - 1,
           "Pending Codex item would fail normalizer lifecycle validation")
     return method, item["type"]
 
