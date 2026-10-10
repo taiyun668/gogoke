@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.public-authorization.v2",
-  "owner_instruction": "PROPOSED_MINIMAL_NATIVE_FIRST_WORKSPACE_REGISTRATION_AND_LIVE_ENVELOPE_PENDING_OWNER_MERGE_2026-10-08",
+  "owner_instruction": "PROPOSED_MINIMAL_E3_SECRETARY_DUE_COMPOSITION_SCOPE_PENDING_OWNER_MERGE_2026-10-10",
   "validity": {
     "path": "artifacts/gogoke-37/intake/PUBLIC_AUTHORIZATION_RECEIPT.json",
     "introduced_by": "a merge commit on taiyun668/gogoke main whose GitHub merged_by is taiyun668",
@@ -9,12 +9,12 @@
   "repository": "taiyun668/gogoke",
   "supersedes": {
     "schema": "gogoke.37.public-authorization.v2",
-    "scope_digest": "b2d36f6d55865d1c40168457dbd04989669aaec9836c1a065bcc58071457fabd",
-    "reason": "One exact native live-envelope producer path and bounded purpose additions to four existing shared lifecycle paths. No implementation authority before Owner merge and exact readback."
+    "scope_digest": "00778c365c46e54b40976318420b5f38658f6b968f8927fb46447252c6a7e7dd",
+    "reason": "One exact INTEGRATOR ProductDatabase composition path for E.3 secretary due decisions with E facts, the original H journal and original receipt. No implementation authority before Owner merge and exact readback."
   },
   "plan": {
     "public_plan_path": "docs/design/gogoke-37-plan-v1/",
-    "scope_digest": "00778c365c46e54b40976318420b5f38658f6b968f8927fb46447252c6a7e7dd",
+    "scope_digest": "3a3d6651f8a5ca2b82f712951dc7a1c74ff593bcf8bde95e6e6604ba3f467a78",
     "digest_tool": "docs/design/gogoke-37-plan-v1/verify_plan.py --scope-digest PLAN.json, run from trusted main",
     "stale_when": "the scope digest of the plan in force differs from the value above"
   },
