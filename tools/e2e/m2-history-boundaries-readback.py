@@ -599,9 +599,11 @@ def verify_same_domain_worker(db, journal, boundary, result):
               session["instanceId"] == case["instanceId"] == objects[0]["instanceId"] and
               session["inputs"][0]["body"] == attempt["body"] and
               attempt["sourceSessionId"] == source_session["id"] and
-              attempt["command"] == 'type "' + objects[0]["path"] + '"' and
+              (attempt.get("shell") is None and attempt["command"] == 'type "' + objects[0]["path"] + '"' or
+               attempt.get("shell") == os.path.join(os.environ["SystemRoot"], "System32", "WindowsPowerShell", "v1.0", "powershell.exe") and
+               attempt["command"] == "[System.IO.File]::ReadAllText('" + objects[0]["path"] + "') | Out-Null") and
               attempt["command"] in attempt["body"] and
-              not any(char in objects[0]["path"] for char in '"%!^&|<>\r\n'),
+              not any(char in objects[0]["path"] for char in '\x00\'"%!^&|<>\r\n'),
               "Original same-domain WORK request differs from exact lead object")
         observed = session_evidence(db, session, case, operations, journal["sourceCommit"], peer=attempt)
         check(observed["episode"]["seat_incarnation"] == case_record["workerIncarnation"] and
@@ -622,7 +624,7 @@ def verify_same_domain_worker(db, journal, boundary, result):
                      (frame.get("method") == "item/tool/call" or
                       frame.get("method") in ("item/started", "item/completed") and
                       frame["params"].get("item", {}).get("type") not in
-                      ("agentMessage", "reasoning", "contextCompaction",
+                      ("userMessage", "agentMessage", "reasoning", "contextCompaction",
                        "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall"))]
         started = [frame["params"]["item"] for frame in tools if frame["method"] == "item/started"]
         completed = [frame["params"]["item"] for frame in tools if frame["method"] == "item/completed"]
@@ -636,7 +638,8 @@ def verify_same_domain_worker(db, journal, boundary, result):
                  isinstance(last.get("id"), str) and bool(last["id"]) and
                  first.get("id") == last["id"] and
                  first.get("status") == "inProgress" and
-                 first.get("command") == last.get("command") == attempt["command"] and
+                 first.get("command") == last.get("command") and
+                 exact_peer_command(last.get("command"), attempt) and
                  last.get("status") in ("completed", "failed") and
                  type(last.get("exitCode")) is int)
         fact = {"state": "NOT_RUN_ORIGINAL_WORKER_TOOL_ACTION_MISSING", "directDeniedRead": False,
@@ -649,7 +652,9 @@ def verify_same_domain_worker(db, journal, boundary, result):
                       isinstance(original_output, str) and source_input["marker"] in original_output):
             raise SameDomainReadBreach("Original same-domain worker read the designated Owner-lead history")
         if exact and last["exitCode"] != 0:
-            if isinstance(original_output, str) and original_output.strip() == "Access is denied.":
+            if isinstance(original_output, str) and (original_output.strip() == "Access is denied." or
+                    attempt.get("shell") is not None and
+                    "UnauthorizedAccessException" in original_output and "ReadAllText" in original_output):
                 fact.update(state="ORIGINAL_SAME_DOMAIN_WORKER_ACCESS_DENIED",
                             directDeniedRead=True)
             else:

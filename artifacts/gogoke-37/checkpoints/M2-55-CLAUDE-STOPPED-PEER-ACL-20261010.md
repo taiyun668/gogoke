@@ -165,3 +165,11 @@ SAC 本次重新读回为 0；所有新临时与证据直接 D 盘。正式保�
 - V11 工人独立入口复用原 MAIN_WRITE/READ_ONLY，新增外部私有树尝试。独立复核要求发送前先用原闭库全量 F/source/common 物理清单排重叠，已补并封哈希；闭库再读同清单。原 BeforeLaunch 只证明登记，不证明进程退出，现按本 runner 固定安装名称及实际 8.3 名称枚举，比较进程映像与安装文件物理身份，未知拒绝；不声称排除任意重命名副本或所有主机写者。全 session 查询受保护系统进程的失败未作为闭库证明，最终不采用该方案。
 - Root 已接管小夹具连续调试，避免反复协调。全新 Sol 聚焦复核这两处测量边界无新阻塞，语法与 diff 检查通过；真实 V11、peer 与完整 M2 仍 NOT_RUN。E null 阶段/旧 schema 保全与 USER bridge 正在跑受影响云检；G 仍由 Claude 负责，最新交付评论主动核对后暂无新提交。
 - 参照：固定 Codex rust-v0.160.0 的 shell.rs、tools/handlers/unified_exec.rs、app-server-protocol/protocol/item_builders.rs 及 shell-command/parse_command.rs；原 Win32 文件对象和 F 登记、原正常关闭及现有 ActualProduct runner。采用官方 argv/展示编码和原物理对象，不改固定 CLI、系统安全或正式数据。
+
+### 空阶段修订云检通过，真实读取用新请求
+
+- Owner 同意最小空阶段修订后，细节 PR 经独立复核由 Controller 合并；main 现行范围摘要和回执精确读回保持不变。E 五种原 schema 迁移、USER 元数据初始化与首次阶段 CAS、缺阶段关口/流转拒绝、旧回执重放九项受影响原生云检通过；真实 TS USER 桥 24 项回执检查、Browser 与卫生通过。完整稳定门槛和已装产品的空阶段能力尚未验证。
+- peer 和同域 worker 都改用普通视图正对照通过的同一系统 PowerShell 精确 argv；零退出仍直接判读越界，原 UnauthorizedAccessException 与 ReadAllText 同时出现的非零结果才可记拒绝。全新 Sol 聚焦静态复核无阻塞。旧原件、旧失败保持；新请求沿已装 56、原实例和 E/F 绑定，不重复配置或登录。
+- 调整上段“只续缺项”的走法：原完整入口已能直接使用新 reader。拼接旧 journal 需要另加来源/仪器代际证明，成本和出错点高于四轮源会话，因此复用完整入口跑一份新测量；不得回写旧 FAIL 或拿新结果代替旧请求。旧构建 source 与新仪器字节分别封存。新任务已起，结果未回，不计通过。
+- Windows 完整流水线更新库测试启动前出现 STATUS_ENTRYPOINT_NOT_FOUND；测试正文未执行，缺失符号/DLL 尚未知。独立线仅在临时云端 runner 取加载器原文；Root 同时跑 V10，另席位准备 V11 已有证据。无新 Owner 登录/重启触点，稳定前仍须开启 SAC。
+- 参照：原完整 V10 入口、已验证的精确 argv 正对照和单次 commandExecution 原事实；沿原生 E/H/A/F 与普通视图，不引入旧日志拼接门槛，不以一般路径错误充当权限结果。

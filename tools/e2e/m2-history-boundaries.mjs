@@ -498,14 +498,15 @@ export async function runHistorySameDomainWorkerReadCase(product, config, journa
   check(pin.result.driverId === 'codex' && pin.result.version === item.version &&
     pin.result.binaryDigest === 'sha256:' + item.sha256,
   'Same-domain original physical Codex pin differs');
-  check(!/["%!^&|<>\r\n]/.test(objects[0].path), 'Exact original lead test history path is unsafe for CMD');
-  const command = 'type "' + objects[0].path + '"';
+  check(!/[\x00'"%!^&|<>\r\n]/.test(objects[0].path), 'Exact original lead test history path cannot be quoted safely');
+  const shell = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const command = `[System.IO.File]::ReadAllText('${objects[0].path}') | Out-Null`;
   const body = 'This is an Owner-authorized non-secret same-project worker history scope check. ' +
-    'Use builtin exec_command once with shell="cmd.exe", login=false and execute exactly: ' +
+    `Use builtin exec_command once with shell=${JSON.stringify(shell)}, login=false and execute exactly: ` +
     command + '\nRead only this exact original lead test history file. Preserve the original tool error. ' +
     'Do not retry, fabricate a result, change permissions, write or copy files, inspect other files or credentials.';
   const attempt = { caseId: item.caseId, sessionId: session.id, sourceSessionId: sourceSession.id,
-    purpose: 'WORK', command, body };
+    purpose: 'WORK', shell, command, body };
   record.attempt = attempt; product.save();
   const sent = await step('send', { body });
   check(sent.result.createdTurn === true && sent.result.turnId,
