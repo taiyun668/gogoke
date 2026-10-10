@@ -1,6 +1,6 @@
 {
   "schema": "gogoke.37.public-authorization.v2",
-  "owner_instruction": "PROPOSED_MINIMAL_E3_SECRETARY_DUE_COMPOSITION_SCOPE_PENDING_OWNER_MERGE_2026-10-10",
+  "owner_instruction": "PROPOSED_MINIMAL_PROJECT_POLICY_HEAD_READ_SCOPE_PENDING_OWNER_MERGE_2026-10-10",
   "validity": {
     "path": "artifacts/gogoke-37/intake/PUBLIC_AUTHORIZATION_RECEIPT.json",
     "introduced_by": "a merge commit on taiyun668/gogoke main whose GitHub merged_by is taiyun668",
@@ -9,12 +9,12 @@
   "repository": "taiyun668/gogoke",
   "supersedes": {
     "schema": "gogoke.37.public-authorization.v2",
-    "scope_digest": "00778c365c46e54b40976318420b5f38658f6b968f8927fb46447252c6a7e7dd",
-    "reason": "One exact INTEGRATOR ProductDatabase composition path for E.3 secretary due decisions with E facts, the original H journal and original receipt. No implementation authority before Owner merge and exact readback."
+    "scope_digest": "3a3d6651f8a5ca2b82f712951dc7a1c74ff593bcf8bde95e6e6604ba3f467a78",
+    "reason": "One exact INTEGRATOR Owner read path for the original project policy head, distinguishing absence from the current revision and stage before explicit project or USER seat creation. No implementation authority before Owner merge and exact readback."
   },
   "plan": {
     "public_plan_path": "docs/design/gogoke-37-plan-v1/",
-    "scope_digest": "3a3d6651f8a5ca2b82f712951dc7a1c74ff593bcf8bde95e6e6604ba3f467a78",
+    "scope_digest": "593b8be6d6b41ba19255636a673441e2d3c7b4f1fd7140806229b6312f1b7490",
     "digest_tool": "docs/design/gogoke-37-plan-v1/verify_plan.py --scope-digest PLAN.json, run from trusted main",
     "stale_when": "the scope digest of the plan in force differs from the value above"
   },
