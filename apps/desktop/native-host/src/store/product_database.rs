@@ -1595,11 +1595,24 @@ impl ProductDatabase<'_> {
             // Prior reads/handshakes and previous routines may have consumed
             // time. H must recheck absence with the current prepare time.
             let now = secretary_current_time_ms()?;
-            let decision = scheduled_failure(h::prepare_scheduled_secretary_occurrence(
+            let prepared = h::prepare_scheduled_secretary_occurrence(
                 &mut self.connection, &h::ScheduledSecretaryInput { owner: &self.owner,
                     routine_id: &routine, expected_routine_revision: revision, now_ms: now,
                     session_id: &key.1, ticket: run.custody.ticket.opaque(),
-                    generation: &run.custody.binding.generation, expected_h_revision, provider }))?;
+                    generation: &run.custody.binding.generation, expected_h_revision, provider });
+            let decision = match prepared {
+                Ok(decision) => decision,
+                Err(error @ h::JournalError::Invalid("scheduled body size"
+                    | "scheduled request size" | "scheduled history frame size"
+                    | "scheduled history event size")) => {
+                    // H rolled back this occurrence without a write permit.
+                    // A size refusal affects this routine, not the host loop.
+                    self.secretary_due_blocked.insert(routine,
+                        format!("Original Secretary preparation refused: {error:?}"));
+                    continue;
+                }
+                Err(error) => return scheduled_failure(Err(error)),
+            };
             if let h::ScheduledSecretaryDecision::NewWrite(permit) = decision {
                 let write = permit.into_write();
                 let (occurrence, session, ticket, generation) = match &write {

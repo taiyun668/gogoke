@@ -120,3 +120,10 @@ SAC 本次重新读回为 0；所有新临时与证据直接 D 盘。正式保�
 - 并行：H 工人接原 A 历史到首次 occurrence 的固定请求；V10 仪器工人准备缺策略头的闭库核对；Root 组合与受影响云检继续。G 的无日期结果读模型仍交 Claude，主动查看 PR 后暂无新交付。
 - 本机卫生：A 工人的已完成源码工作树保留；其忽略的开发产物清理被工具自动审批拒绝，原对象保留，未改命令绕过。所有新产物与证据在独立开发位置。
 - 参照：原 E presence/absence、原 H native admission/recovery/journal、A 原 raw resolution/episode、冻结源 `native_child_create_requires_existing_policy_head` 和已有 CDP readiness；在已授权写域内组合原机制，不新增权限、调度服务或 Owner 触点。下一步核原策略头、完成 H 历史拼接并跑受影响云检，再续真机 M2。
+
+## 历史封存尺寸边界与原策略前置条件
+
+- H 已在原同事务资格之后接 A 历史材料：原 USER 指令单独保留，历史明确标为归一化数据，附原 event/session/source epoch/cursor 和分页事实；旧 occurrence 只按原封存字节结算。全新 Sol 核出首条过大历史可能形成空页无进展，已改为明确尺寸错误、回滚 E/H、无写许可；Root 只将这几种固定尺寸拒绝投影到该任务原因，其他数据库/回滚错误继续传播。原工人八项合成测试本机通过，正式云检待跑。
+- V10 原库闭库核对成功：两测试域都没有 policy head，失败 child 与其 F 均不存在；原 source/peer incarnation、两已注册 F、原 NativeV2/H STOPPED/RELEASED 和数据库/旁文件字节一致。E generation/revision 是 stop/release 后的新值，不能拿 pre-H 值要求相等；读取仪器已据真实生命周期改正，旧原件保留。
+- 新续例已通过原 USER `policy-initialize`，仅在 source 域创建 OPEN revision 1；不重建 profile、域、USER/lead、两棵 F，不重放 DENIED。新 H 已启动，原生创建及剩余流程仍在跑，尚不能计创建或 V10 通过。
+- 原闭库读取任务已按确切主体/action/脚本逐项清理并回读不存在；原 XML、输入、输出和所有失败保留。参照是原 policy head 生产者、原缺头拒绝测试、原同事务 journal 和已验证的关闭后 immutable 元数据读取，不用提示词冒充模型实际参数。
