@@ -1169,6 +1169,34 @@ mod tests {
     }
 
     #[test]
+    fn one_boundary_survives_reopen_unknown_replay_and_home_fence_pin_matrix() {
+        use super::super::runtime::{require_new_reservation_supported, InstancePin};
+        use crate::store::seat::PermissionTier;
+        let fixed=InstancePin {driver_id:"codex".into(),version:"0.160.0".into(),
+            digest:"sha256:fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d".into()};
+        let refused=require_new_reservation_supported(&fixed,true,||Ok(PermissionTier::ReadOnly));
+        assert!(matches!(refused,Err(AdmissionError::Invalid(reason))
+            if reason.contains("READ_ONLY LPAC unavailable")
+                && reason.contains("GetComputerNameExW did not provide buffer size")
+                && reason.contains("GetLastError was not captured")));
+        assert!(require_new_reservation_supported(&fixed,false,||panic!("old replay read E tier")).is_ok());
+        for changed in [InstancePin {driver_id:"claude".into(),..fixed.clone()},
+            InstancePin {version:"0.160.1".into(),..fixed.clone()},
+            InstancePin {digest:format!("sha256:{}","0".repeat(64)),..fixed.clone()}] {
+            assert!(require_new_reservation_supported(&changed,true,
+                ||panic!("unrelated pin read E tier")).is_ok());
+            assert!(require_new_reservation_supported(&changed,true,
+                ||Err(AdmissionError::Denied)).is_ok());
+        }
+        for tier in [PermissionTier::NoNetwork,PermissionTier::IsolatedWrite,
+            PermissionTier::NetworkedWrite] {
+            assert!(require_new_reservation_supported(&fixed,true,||Ok(tier)).is_ok());
+        }
+        assert!(matches!(require_new_reservation_supported(&fixed,true,
+            ||Err(AdmissionError::Denied)),Err(AdmissionError::Denied)));
+    }
+
+    #[test]
     fn one_boundary_survives_reopen_unknown_replay_and_home_fence_unavailable_reserve_rolls_back() {
         owner_unstarted_fixture(|_root,db,_owner,_busy| {
             db.execute("CREATE TABLE test_reserve_side_effect(value TEXT) STRICT").unwrap();
@@ -1181,8 +1209,8 @@ mod tests {
             let result=reserve_native_admission(db,&reserve,|db,new| {
                 assert!(new);
                 db.execute("INSERT INTO test_reserve_side_effect VALUES('would-be-selection')")?;
-                super::super::runtime::require_new_reservation_supported(&pin,
-                    crate::store::seat::PermissionTier::ReadOnly,new)?;
+                super::super::runtime::require_new_reservation_supported(&pin,new,
+                    || Ok(crate::store::seat::PermissionTier::ReadOnly))?;
                 one_capacity(db)
             });
             assert!(matches!(result,Err(AdmissionError::Invalid(reason))
@@ -1196,6 +1224,25 @@ mod tests {
                 "SELECT COUNT(*) FROM gogoke_v37_h_process_episode WHERE session_id='unavailableSession'"] {
                 assert_eq!(count(db,sql,&[]).unwrap(),0,"{sql}");
             }
+            let old=AdmissionRequest {domain_id:"projectA",session_id:"sessionA",
+                request_id:"originalLegacyReserve",raw_bytes:b"original legacy reserve",
+                instance_id:"instanceA",home_id:"homeA",generation:"2",expected_revision:0};
+            let original=Statement::prepare(db.as_ptr(),
+                "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA',?1,?2,'admission-reserve','sessionA','APPLIED',0,1)").unwrap();
+            original.bind_text(1,old.request_id).unwrap();
+            original.bind_text(2,&hex(old.raw_bytes)).unwrap();
+            original.step_done().unwrap();drop(original);
+            let replay=reserve_native_admission(db,&old,|db,new| {
+                assert!(!new);
+                let seat=crate::store::seat::get(db,"projectA","seatA")
+                    .map_err(AdmissionError::Seat)?.ok_or(AdmissionError::Denied)?;
+                assert!(crate::store::seat::permission_tier(&seat).is_err(),
+                    "legacy fixture has no permission setting");
+                super::super::runtime::require_new_reservation_supported(&pin,new,
+                    || crate::store::seat::permission_tier(&seat).map_err(AdmissionError::Seat))?;
+                one_capacity(db)
+            });
+            assert_eq!(replay.unwrap(),AdmissionResult::Replayed(1));
         });
     }
 
