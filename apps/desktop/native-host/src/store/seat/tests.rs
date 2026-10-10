@@ -187,7 +187,7 @@ fn owner_policy_head_read_requires_current_owner_and_preserves_absent_or_existin
         db.execute("UPDATE main.gogoke_v37_seat_policy_head SET revision=7,current_stage='REVIEW' WHERE domain_id='projectA'").unwrap();
         db.execute("BEGIN").unwrap();
         assert_eq!(read_owner_policy_head_in_transaction(db,owner,"projectA").unwrap(),
-            OwnerPolicyHead::Present {revision:7,current_stage:"REVIEW".into()});
+            OwnerPolicyHead::Present {revision:7,current_stage:Some("REVIEW".into())});
         db.execute("COMMIT").unwrap();
         let current=Statement::prepare(db.as_ptr(),
             "SELECT revision,current_stage FROM main.gogoke_v37_seat_policy_head WHERE domain_id='projectA'")
@@ -201,6 +201,111 @@ fn owner_policy_head_read_requires_current_owner_and_preserves_absent_or_existin
         assert!(matches!(read_owner_policy_head_in_transaction(db,owner,"projectA"),
             Err(SeatError::Denied)),"a stale Owner issuer cannot read the head");
         db.execute("ROLLBACK").unwrap();
+    });
+}
+
+#[test]
+fn owner_unset_stage_requires_explicit_metadata_and_one_cas_stage_setting() {
+    fixture(|db,owner| {
+        db.execute("INSERT INTO main.gogoke_v37_seat_policy_grants(domain_id,caller_seat_id,target_id,action,expires_at_ms,revision) VALUES('projectOrphan','old','target','DISPATCH',0,1)").unwrap();
+        assert!(matches!(apply_owner_policy_configuration(db,owner,"projectOrphan","orphanMetadata",
+            b"explicit orphan metadata",OwnerPolicyCommand::MetadataInitialize),Err(SeatError::SchemaDrift)));
+        db.execute("BEGIN").unwrap();
+        assert_eq!(read_owner_policy_head_in_transaction(db,owner,"projectOrphan").unwrap(),OwnerPolicyHead::Absent);
+        db.execute("COMMIT").unwrap();
+        let metadata=b"explicit user metadata";
+        assert_eq!(apply_owner_policy_configuration(db,owner,"projectA","metadataA",metadata,
+            OwnerPolicyCommand::MetadataInitialize).unwrap(),(1,false));
+        assert_eq!(apply_owner_policy_configuration(db,owner,"projectA","metadataA",metadata,
+            OwnerPolicyCommand::MetadataInitialize).unwrap(),(1,true));
+        db.execute("BEGIN").unwrap();
+        assert_eq!(read_owner_policy_head_in_transaction(db,owner,"projectA").unwrap(),
+            OwnerPolicyHead::Present {revision:1,current_stage:None});
+        db.execute("COMMIT").unwrap();
+        for table in ["gogoke_v37_seat_policy_grants","gogoke_v37_seat_policy_gates",
+            "gogoke_v37_seat_policy_routes"] {
+            let q=Statement::prepare(db.as_ptr(),&format!("SELECT count(*) FROM main.{table} WHERE domain_id='projectA'")).unwrap();
+            assert!(q.step_row().unwrap());
+            assert_eq!(q.column_text(0).unwrap(),"0","metadata creates no policy authority");
+        }
+        assert!(matches!(apply_owner_policy_configuration(db,owner,"projectA","oldInit",
+            b"old named initialize",OwnerPolicyCommand::Initialize{stage:"OPEN"}),
+            Err(SeatError::Store(_)) | Err(SeatError::Conflict)));
+        let stage=b"user set first stage";
+        assert!(matches!(apply_owner_policy_configuration(db,owner,"projectA","stageWrong",stage,
+            OwnerPolicyCommand::SetInitialStage{stage:"REVIEW",expected_revision:2}),Err(SeatError::Conflict)));
+        assert_eq!(apply_owner_policy_configuration(db,owner,"projectA","stageA",stage,
+            OwnerPolicyCommand::SetInitialStage{stage:"REVIEW",expected_revision:1}).unwrap(),(2,false));
+        assert_eq!(apply_owner_policy_configuration(db,owner,"projectA","stageA",stage,
+            OwnerPolicyCommand::SetInitialStage{stage:"REVIEW",expected_revision:1}).unwrap(),(2,true));
+        assert!(matches!(apply_owner_policy_configuration(db,owner,"projectA","stageAgain",
+            b"second stage",OwnerPolicyCommand::SetInitialStage{stage:"OPEN",expected_revision:2}),
+            Err(SeatError::Conflict)));
+        db.execute("BEGIN").unwrap();
+        assert_eq!(read_owner_policy_head_in_transaction(db,owner,"projectA").unwrap(),
+            OwnerPolicyHead::Present {revision:2,current_stage:Some("REVIEW".into())});
+        db.execute("COMMIT").unwrap();
+    });
+}
+
+#[test]
+fn exact_old_policy_head_schema_migrates_without_rewriting_policy_facts() {
+    fixture(|db,owner| {
+        assert_eq!(apply_owner_policy_configuration(db,owner,"projectA","namedStage",
+            b"original named stage",OwnerPolicyCommand::Initialize{stage:"REVIEW"}).unwrap(),(1,false));
+        db.execute("INSERT INTO main.gogoke_v37_seat_policy_grants(domain_id,caller_seat_id,target_id,action,expires_at_ms,revision) VALUES('projectA','lead','worker','DISPATCH',0,1)").unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        db.execute("CREATE TABLE gogoke_v37_seat_policy_head_v2(domain_id TEXT PRIMARY KEY,revision INTEGER NOT NULL CHECK(revision>0),current_stage TEXT NOT NULL) STRICT").unwrap();
+        db.execute("INSERT INTO gogoke_v37_seat_policy_head_v2 SELECT domain_id,revision,current_stage FROM gogoke_v37_seat_policy_head").unwrap();
+        db.execute("DROP TABLE gogoke_v37_seat_policy_head").unwrap();
+        db.execute(policy::OLD_POLICY_HEAD).unwrap();
+        db.execute("INSERT INTO gogoke_v37_seat_policy_head SELECT domain_id,revision,current_stage FROM gogoke_v37_seat_policy_head_v2").unwrap();
+        db.execute("DROP TABLE gogoke_v37_seat_policy_head_v2").unwrap();
+        db.execute("COMMIT").unwrap();
+        assert_eq!(schema(db).unwrap(),old_policy_head_schema(expected_schema()));
+        initialize_schema(db).unwrap();
+        assert_eq!(schema(db).unwrap(),expected_schema());
+        db.execute("BEGIN").unwrap();
+        assert_eq!(read_owner_policy_head_in_transaction(db,owner,"projectA").unwrap(),
+            OwnerPolicyHead::Present{revision:1,current_stage:Some("REVIEW".into())});
+        db.execute("COMMIT").unwrap();
+        let q=Statement::prepare(db.as_ptr(),"SELECT target_id,revision FROM main.gogoke_v37_seat_policy_grants WHERE domain_id='projectA'").unwrap();
+        assert!(q.step_row().unwrap());
+        assert_eq!((q.column_text(0).unwrap(),q.column_text(1).unwrap()),("worker".into(),"1".into()));
+        drop(q);
+        assert_eq!(apply_owner_policy_configuration(db,owner,"projectA","namedStage",
+            b"original named stage",OwnerPolicyCommand::Initialize{stage:"REVIEW"}).unwrap(),(1,true),
+            "old exact request replays its original event after migration");
+        assert!(matches!(apply_owner_policy_configuration(db,owner,"projectA","newMetadata",
+            b"new metadata",OwnerPolicyCommand::MetadataInitialize),Err(SeatError::Conflict)));
+    });
+}
+
+#[test]
+fn unset_stage_refuses_gate_and_transition_without_recording_events() {
+    fixture(|db,owner| {
+        let lead=create_e2_lead(db,owner);
+        let reviewer=create_user(db,owner,"reviewer","createReviewerUnset");
+        let lead=set_dispatch_state(db,&lead,true).unwrap();
+        let reviewer=set_dispatch_state(db,&reviewer,true).unwrap();
+        let submitter=NativeSeatCall::from_verified_h_turn(&lead,"turnUnset").unwrap();
+        let _auditor=NativeSeatCall::from_verified_h_turn(&reviewer,"reviewUnset").unwrap();
+        apply_owner_policy_configuration(db,owner,"projectA","metadataGate",
+            b"explicit metadata",OwnerPolicyCommand::MetadataInitialize).unwrap();
+        assert_eq!(configure_call_grant(db,owner,"projectA","lead","reviewer",
+            CallAction::Review,None,1).unwrap(),2);
+        assert_eq!(configure_gate(db,owner,"projectA","gateUnset","lead","reviewer",
+            "draft","done",1,2).unwrap(),3);
+        assert!(matches!(gate_submit(db,&submitter,"gateUnset",3,1,"submitUnset",
+            b"original submit"),Err(SeatError::Denied)));
+        // A corrupted PASSED gate cannot use null as a stage-transition source.
+        db.execute("UPDATE main.gogoke_v37_seat_policy_gates SET state='PASSED' WHERE domain_id='projectA' AND gate_id='gateUnset'").unwrap();
+        assert!(matches!(stage_transition(db,&submitter,"gateUnset",3,1,"transitionUnset",
+            b"original transition"),Err(SeatError::Denied)));
+        let events=Statement::prepare(db.as_ptr(),
+            "SELECT count(*) FROM main.gogoke_v37_seat_policy_events WHERE domain_id='projectA' AND event_id IN ('submitUnset','transitionUnset')").unwrap();
+        assert!(events.step_row().unwrap());
+        assert_eq!(events.column_text(0).unwrap(),"0");
     });
 }
 
@@ -1673,6 +1778,22 @@ fn native_child_create_requires_existing_policy_head() {
             kind:Kind::Short,request_id:"createNoHead",request_bytes:b"no policy head"});
         assert!(matches!(result,Err(SeatError::Denied)));
         assert!(get(db,"projectA","noPolicy").unwrap().is_none());
+        apply_owner_policy_configuration(db,owner,"projectA","metadataForChild",
+            b"explicit user metadata",OwnerPolicyCommand::MetadataInitialize).unwrap();
+        let child=create_native_child(db,&caller,CreateSeat {domain_id:"projectA",
+            seat_id:"noPolicy",template_id:"templateE2",instance_id:Some("instanceA"),
+            kind:Kind::Short,request_id:"createNoHead",request_bytes:b"no policy head"}).unwrap().seat;
+        authorize_child_dispatch(db,&caller,&child).unwrap();
+        db.execute("BEGIN").unwrap();
+        assert_eq!(read_owner_policy_head_in_transaction(db,owner,"projectA").unwrap(),
+            OwnerPolicyHead::Present{revision:2,current_stage:None});
+        db.execute("COMMIT").unwrap();
+        let grants=Statement::prepare(db.as_ptr(),
+            "SELECT caller_seat_id,target_id,action FROM main.gogoke_v37_seat_policy_grants WHERE domain_id='projectA'").unwrap();
+        assert!(grants.step_row().unwrap());
+        assert_eq!((grants.column_text(0).unwrap(),grants.column_text(1).unwrap(),grants.column_text(2).unwrap()),
+            ("lead".into(),"noPolicy".into(),"DISPATCH".into()));
+        assert!(!grants.step_row().unwrap(),"only the original bounded child edge is created");
     });
 }
 

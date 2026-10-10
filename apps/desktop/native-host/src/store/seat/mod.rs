@@ -358,6 +358,12 @@ fn expected_schema() -> Vec<(String, String)> {
     entries.sort_by(|left, right| left.0.cmp(&right.0));
     entries
 }
+fn old_policy_head_schema(mut entries: Vec<(String,String)>) -> Vec<(String,String)> {
+    let head=entries.iter_mut().find(|(name,_)|name=="gogoke_v37_seat_policy_head")
+        .expect("E.2 schema has policy head");
+    head.1=policy::OLD_POLICY_HEAD.into();
+    entries
+}
 fn prior_secretary_routines_schema() -> Vec<(String,String)> {
     let mut entries=pre_secretary_schema();
     entries.push(("gogoke_v37_seat_secretary".into(),secretary::DESIGNATION.into()));
@@ -441,6 +447,29 @@ pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Resu
     if observed == expected_schema() {
         return Ok(());
     }
+    let old_versions=[expected_schema(),prior_secretary_routines_schema(),secretary_only_schema(),
+        pre_secretary_schema(),e2_schema()];
+    if let Some(version)=old_versions.iter().position(|shape|observed==old_policy_head_schema(shape.clone())) {
+        return transact(db,|db| {
+            reject_shadow_or_effect(db)?;
+            if schema(db)?!=old_policy_head_schema(old_versions[version].clone()) {
+                return Err(SeatError::SchemaDrift);
+            }
+            migrate_old_policy_head_in_transaction(db)?;
+            if schema(db)?!=old_versions[version] {return Err(SeatError::SchemaDrift);}
+            match version {
+                0=>{},
+                1=>secretary_routines::create_schedule_errors(db)?,
+                2=>secretary_routines::create_tables(db)?,
+                3=>{db.execute(secretary::DESIGNATION)?;secretary_routines::create_tables(db)?;},
+                4=>{page_facts::create_tables(db)?;db.execute(secretary::DESIGNATION)?;
+                    secretary_routines::create_tables(db)?;},
+                _=>return Err(SeatError::SchemaDrift),
+            }
+            if schema(db)?!=expected_schema() {return Err(SeatError::SchemaDrift);}
+            Ok(())
+        });
+    }
     if observed == prior_secretary_routines_schema() {
         return transact(db,|db| {
             if schema(db)? != prior_secretary_routines_schema() {return Err(SeatError::SchemaDrift);}
@@ -508,6 +537,25 @@ pub(crate) fn initialize_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Resu
         }
         Ok(())
     })
+}
+
+fn migrate_old_policy_head_in_transaction(db:&mut VerifiedDatabaseConnection<'_>)->Result<(),SeatError> {
+    let old=Statement::prepare(db.as_ptr(),
+        "SELECT domain_id,revision,current_stage FROM main.gogoke_v37_seat_policy_head")?;
+    while old.step_row()? {
+        let revision=old.column_text(1)?.parse::<i64>().map_err(|_|SeatError::SchemaDrift)?;
+        if !valid_id(&old.column_text(0)?) || revision<1 || !valid_id(&old.column_text(2)?) {
+            return Err(SeatError::SchemaDrift);
+        }
+    }
+    drop(old);
+    db.execute("CREATE TABLE gogoke_v37_seat_policy_head_v2(domain_id TEXT PRIMARY KEY,revision INTEGER NOT NULL CHECK(revision>0),current_stage TEXT NOT NULL) STRICT")?;
+    db.execute("INSERT INTO gogoke_v37_seat_policy_head_v2(domain_id,revision,current_stage) SELECT domain_id,revision,current_stage FROM gogoke_v37_seat_policy_head")?;
+    db.execute("DROP TABLE gogoke_v37_seat_policy_head")?;
+    db.execute(policy::POLICY_HEAD)?;
+    db.execute("INSERT INTO gogoke_v37_seat_policy_head(domain_id,revision,current_stage) SELECT domain_id,revision,current_stage FROM gogoke_v37_seat_policy_head_v2")?;
+    db.execute("DROP TABLE gogoke_v37_seat_policy_head_v2")?;
+    Ok(())
 }
 
 fn migrate_f1_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Result<(), SeatError> {

@@ -11,7 +11,8 @@ pub(crate) use host_rule::{HostEscalationProof,observe_host_reject_cap_in_transa
     revalidate_host_escalation_in_transaction,read_host_escalation_intent_in_transaction,
     begin_host_escalation_in_transaction};
 
-pub(super) const POLICY_HEAD: &str = "CREATE TABLE gogoke_v37_seat_policy_head(domain_id TEXT PRIMARY KEY,revision INTEGER NOT NULL CHECK(revision>0),current_stage TEXT NOT NULL) STRICT";
+pub(super) const OLD_POLICY_HEAD: &str = "CREATE TABLE gogoke_v37_seat_policy_head(domain_id TEXT PRIMARY KEY,revision INTEGER NOT NULL CHECK(revision>0),current_stage TEXT NOT NULL) STRICT";
+pub(super) const POLICY_HEAD: &str = "CREATE TABLE gogoke_v37_seat_policy_head(domain_id TEXT PRIMARY KEY,revision INTEGER NOT NULL CHECK(revision>0),current_stage TEXT) STRICT";
 pub(super) const POLICY_GRANTS: &str = "CREATE TABLE gogoke_v37_seat_policy_grants(domain_id TEXT NOT NULL,caller_seat_id TEXT NOT NULL,target_id TEXT NOT NULL,action TEXT NOT NULL CHECK(action IN ('DISPATCH','REVIEW','MESSAGE','MERGE')),expires_at_ms INTEGER NOT NULL CHECK(expires_at_ms>=0),revision INTEGER NOT NULL CHECK(revision>0),PRIMARY KEY(domain_id,caller_seat_id,target_id,action)) STRICT";
 pub(super) const POLICY_GATES: &str = "CREATE TABLE gogoke_v37_seat_policy_gates(domain_id TEXT NOT NULL,gate_id TEXT NOT NULL,submitter_seat_id TEXT NOT NULL,reviewer_seat_id TEXT NOT NULL,from_stage TEXT NOT NULL,to_stage TEXT NOT NULL,reject_cap INTEGER NOT NULL CHECK(reject_cap>0),reject_count INTEGER NOT NULL CHECK(reject_count>=0),state TEXT NOT NULL CHECK(state IN ('READY','SUBMITTED','PASSED','REJECTED','ESCALATION_REQUIRED','ADVANCED')),reason TEXT,revision INTEGER NOT NULL CHECK(revision>0),PRIMARY KEY(domain_id,gate_id)) STRICT";
 pub(super) const POLICY_ROUTES: &str = "CREATE TABLE gogoke_v37_seat_policy_routes(domain_id TEXT NOT NULL,from_seat_id TEXT NOT NULL,reason TEXT NOT NULL CHECK(reason IN ('REJECT_CAP','STALL')),to_seat_id TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>0),PRIMARY KEY(domain_id,from_seat_id,reason)) STRICT";
@@ -120,7 +121,7 @@ fn head_revision(db:&VerifiedDatabaseConnection<'_>,domain:&str)->Result<i64,Sea
 #[derive(Clone,Debug,Eq,PartialEq)]
 pub(crate) enum OwnerPolicyHead {
     Absent,
-    Present {revision:i64,current_stage:String},
+    Present {revision:i64,current_stage:Option<String>},
 }
 
 /// Owner-only head read inside the caller's already-open verified snapshot.
@@ -132,12 +133,12 @@ pub(crate) fn read_owner_policy_head_in_transaction(
     check_current_owner(db,issuer)?;
     if !valid_id(domain) {return Err(SeatError::Invalid("policy domain"));}
     let q=Statement::prepare(db.as_ptr(),
-        "SELECT revision,current_stage FROM main.gogoke_v37_seat_policy_head WHERE domain_id=?1")?;
+        "SELECT revision,current_stage,current_stage IS NULL FROM main.gogoke_v37_seat_policy_head WHERE domain_id=?1")?;
     q.bind_text(1,domain)?;
     if !q.step_row()? {return Ok(OwnerPolicyHead::Absent);}
     let revision=q.column_text(0)?.parse::<i64>().map_err(|_|SeatError::SchemaDrift)?;
-    let current_stage=q.column_text(1)?;
-    if revision<=0 || !valid_id(&current_stage) || q.step_row()? {
+    let current_stage=if q.column_text(2)?=="1" {None} else {Some(q.column_text(1)?)};
+    if revision<=0 || current_stage.as_deref().is_some_and(|stage|!valid_id(stage)) || q.step_row()? {
         return Err(SeatError::SchemaDrift);
     }
     Ok(OwnerPolicyHead::Present {revision,current_stage})
@@ -455,6 +456,8 @@ pub(crate) fn configure_escalation_route(db:&mut VerifiedDatabaseConnection<'_>,
 pub(crate) enum OwnerPolicyCommand<'a> {
     Template {template_id:&'a str,settings_json:&'a [u8]},
     Initialize {stage:&'a str},
+    MetadataInitialize,
+    SetInitialStage {stage:&'a str,expected_revision:i64},
     Grant {caller:&'a str,target:&'a str,action:CallAction,
         expires_at_ms:Option<i64>,expected_revision:i64},
     Gate {gate_id:&'a str,submitter:&'a str,reviewer:&'a str,
@@ -469,6 +472,8 @@ pub(crate) fn apply_owner_policy_configuration(db:&mut VerifiedDatabaseConnectio
     let operation=match &command {
         OwnerPolicyCommand::Template{..}=>"seat-template",
         OwnerPolicyCommand::Initialize{..}=>"policy-initialize",
+        OwnerPolicyCommand::MetadataInitialize=>"policy-metadata-initialize",
+        OwnerPolicyCommand::SetInitialStage{..}=>"policy-stage-set-initial",
         OwnerPolicyCommand::Grant{..}=>"policy-call-grant",
         OwnerPolicyCommand::Gate{..}=>"policy-gate",
         OwnerPolicyCommand::Route{..}=>"policy-escalation-route",
@@ -498,6 +503,39 @@ pub(crate) fn apply_owner_policy_configuration(db:&mut VerifiedDatabaseConnectio
                     "INSERT INTO main.gogoke_v37_seat_policy_head(domain_id,revision,current_stage) VALUES(?1,1,?2)")?;
                 q.bind_text(1,domain)?;q.bind_text(2,stage)?;q.step_done()?;
                 1
+            }
+            OwnerPolicyCommand::MetadataInitialize=>{
+                if read_owner_policy_head_in_transaction(db,issuer,domain)?!=OwnerPolicyHead::Absent {
+                    return Err(SeatError::Conflict);
+                }
+                for table in ["gogoke_v37_seat_policy_grants","gogoke_v37_seat_policy_gates",
+                    "gogoke_v37_seat_policy_routes"] {
+                    let sql=format!("SELECT 1 FROM main.{table} WHERE domain_id=?1 LIMIT 1");
+                    let q=Statement::prepare(db.as_ptr(),&sql)?;
+                    q.bind_text(1,domain)?;
+                    if q.step_row()? {return Err(SeatError::SchemaDrift);}
+                }
+                let q=Statement::prepare(db.as_ptr(),
+                    "INSERT INTO main.gogoke_v37_seat_policy_head(domain_id,revision,current_stage) VALUES(?1,1,NULL)")?;
+                q.bind_text(1,domain)?;q.step_done()?;
+                1
+            }
+            OwnerPolicyCommand::SetInitialStage{stage,expected_revision}=>{
+                if !valid_id(stage)||expected_revision<1 {return Err(SeatError::Invalid("policy stage"));}
+                match read_owner_policy_head_in_transaction(db,issuer,domain)? {
+                    OwnerPolicyHead::Present{revision,current_stage:None} if revision==expected_revision=>{},
+                    _=>return Err(SeatError::Conflict),
+                }
+                let next=expected_revision.checked_add(1).ok_or(SeatError::Conflict)?;
+                let q=Statement::prepare(db.as_ptr(),
+                    "UPDATE main.gogoke_v37_seat_policy_head SET current_stage=?1,revision=?2 WHERE domain_id=?3 AND revision=?4 AND current_stage IS NULL")?;
+                q.bind_text(1,stage)?;q.bind_i64(2,next)?;q.bind_text(3,domain)?;
+                q.bind_i64(4,expected_revision)?;q.step_done()?;
+                if read_owner_policy_head_in_transaction(db,issuer,domain)?!=
+                    (OwnerPolicyHead::Present{revision:next,current_stage:Some(stage.into())}) {
+                    return Err(SeatError::Conflict);
+                }
+                next
             }
             OwnerPolicyCommand::Grant{caller,target,action,expires_at_ms,expected_revision}=>{
                 if !valid_id(caller)||!valid_id(target)||expected_revision<1||
@@ -611,9 +649,10 @@ fn gate_row(db:&VerifiedDatabaseConnection<'_>,domain:&str,id:&str)
 
 fn stage(db:&VerifiedDatabaseConnection<'_>,domain:&str)->Result<String,SeatError> {
     let q=Statement::prepare(db.as_ptr(),
-        "SELECT current_stage FROM main.gogoke_v37_seat_policy_head WHERE domain_id=?1")?;
+        "SELECT current_stage,current_stage IS NULL FROM main.gogoke_v37_seat_policy_head WHERE domain_id=?1")?;
     q.bind_text(1,domain)?;
     if !q.step_row()? {return Err(SeatError::Denied);}
+    if q.column_text(1)?=="1" {return Err(SeatError::Denied);}
     let value=q.column_text(0)?;
     if !valid_id(&value)||q.step_row()? {return Err(SeatError::SchemaDrift);}
     Ok(value)
