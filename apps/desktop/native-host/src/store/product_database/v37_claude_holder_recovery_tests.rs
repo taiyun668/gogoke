@@ -119,7 +119,7 @@ fn claude_holder_unknown_open_keeps_originals_and_rejects_captured_status_drift(
              WHERE domain_id='projectB' AND operation='open' AND session_id='sessionB'",
         ).unwrap();
         let drift = product.recover_disappeared_claude_resources(INSTANCE, None).unwrap_err();
-        assert!(format!("{drift:?}").contains("Claude original H tuple changed"), "{drift:?}");
+        assert!(format!("{drift:?}").contains("Claude prior disappeared holder release unverified"), "{drift:?}");
         assert_eq!(claims(&product), expected);
         assert_eq!(journal(&product), completed);
         assert_eq!(custody(&product), custody_before);
