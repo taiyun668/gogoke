@@ -31,9 +31,10 @@ check(c.testerArmy!==false&&c.repositoryId==='gogokeSeatTestbed'&&
   Array.isArray(c.observers)&&['formal','memory','ledger'].every(name=>
     c.observers.some(row=>row.name===name))&&
   path.isAbsolute(c.evidenceDirectory)&&
-  path.parse(c.evidenceDirectory).root.toUpperCase()==='D:\\'&&
+  path.parse(c.evidenceDirectory).root[0]?.toUpperCase()==='D'&&
   ['TEMP','TMP'].every(name=>process.env[name]&&
-    path.parse(process.env[name]).root.toUpperCase()==='D:\\')&&
+    path.isAbsolute(process.env[name])&&
+    path.parse(process.env[name]).root[0]?.toUpperCase()==='D')&&
   c.result===path.join(c.evidenceDirectory,'result.json')&&
   !fs.existsSync(c.evidenceDirectory),
   'Private original installed fixture/identity or fresh output boundary differs');
