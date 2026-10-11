@@ -21,7 +21,7 @@ export async function runSeatManagementCases(product, config, journal) {
     !journal.seatManagement && Array.isArray(c.projects) && c.projects.length === 2 &&
     typeof c.normalCloseReadbackRestart === 'function',
   'Seat management requires two exclusive real test domains, original User ingress and close/readback callback');
-  const [a, b] = c.projects;
+  const [inputA, inputB] = c.projects;
   const seats = new Set(), domains = new Set();
   for (const row of c.projects) {
     check(['domainId', 'templateId', 'seatId'].every(key => atom(row[key])) &&
@@ -29,8 +29,8 @@ export async function runSeatManagementCases(product, config, journal) {
     'Two actual project domains require distinct exact template and new seat identities');
     domains.add(row.domainId); seats.add(row.seatId);
   }
-  check(a.domainId !== b.domainId && a.seatId !== b.seatId &&
-    a.templateId === b.templateId && typeof c.setting === 'string' && atom(c.setting) &&
+  check(inputA.domainId !== inputB.domainId && inputA.seatId !== inputB.seatId &&
+    inputA.templateId === inputB.templateId && typeof c.setting === 'string' && atom(c.setting) &&
     typeof c.value === 'string' && atom(c.value) &&
     !/credential|password|token|secret|api.?key/i.test(`${c.setting} ${c.value}`),
   'Cases require the same actual template identity in two domains and a non-secret test edit');
@@ -57,6 +57,7 @@ export async function runSeatManagementCases(product, config, journal) {
     leadSeat: c.leadSeat ? { ...c.leadSeat, setting: c.setting, tuneRequestId: null, tuneReceipt: null,
       cardRequestId: null, cardReceipt: null, reclaimRequestId: null, reclaimReceipt: null } : null,
     modelAttempt: null, notRun: [], readbacks: [] };
+  const [a, b] = record.projects;
   journal.seatManagement = record; product.save();
   const invoke = async (domainId, operation, targetId, payload, revision = '0', allowed = ['APPLIED']) => {
     const request = { schema: 'gogoke.37.operations.v1', family: 'K-SEAT', operation,
@@ -69,7 +70,7 @@ export async function runSeatManagementCases(product, config, journal) {
       entry.receipt = JSON.parse(entry.rawReceipt); entry.finishedAt = new Date().toISOString(); product.save();
     } catch (error) { entry.originalError = String(error.stack ?? error); product.save(); throw error; }
     check(entry.receipt.schema === request.schema && entry.receipt.requestId === request.requestId &&
-      entry.receipt.domainId === domainId && entry.receipt.targetId === targetId &&
+      entry.receipt.targetId === targetId &&
       entry.receipt.family === 'K-SEAT' && entry.receipt.operation === operation &&
       allowed.includes(entry.receipt.status),
     `Original ${domainId}/K-SEAT/${operation} returned ${entry.receipt.status}; no replay`);

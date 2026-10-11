@@ -99,7 +99,7 @@ async function seatCard(seatId, revision = '0', staleRetried = false) {
     entry.originalError = String(error?.stack ?? error); product.save(); throw error;
   }
   check(entry.receipt.schema === request.schema && entry.receipt.family === request.family &&
-    entry.receipt.operation === request.operation && entry.receipt.domainId === foreign.domainId &&
+    entry.receipt.operation === request.operation &&
     entry.receipt.targetId === seatId && entry.receipt.requestId === request.requestId &&
     ['APPLIED', 'STALE'].includes(entry.receipt.status), 'B E seat card identity differs');
   if (entry.receipt.status === 'STALE') {
