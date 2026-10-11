@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       focused_library:
-        description: Affected checks only (seat-scope, policy-unset-stage, ledger-scope, native-takeover, pipe-evidence, grok-permission, claude-holder, claude-initialize or m2-provider-current); all full and formal gates are NOT_RUN
+        description: Affected checks only (seat-scope, policy-unset-stage, ledger-scope, native-takeover, pipe-evidence, grok-permission, claude-holder, claude-initialize, m2-provider-current or model-options); all full and formal gates are NOT_RUN
         type: string
         default: ""
       secretary_routine_fixture_only:
@@ -138,6 +138,8 @@ jobs:
               'store::product_database::v37_seat::tests::owner_policy_metadata_ingress_preserves_unset_and_original_stage_conflicts') }
             'ledger-scope' { @('work_source_cannot_mint_a_secretary_global_reader',
               'native_user_ledger_scopes_replay_and_subscription_survive_reopen') }
+            'model-options' { @('store::instance::management::original_model_efforts_follow_the_cached_source_and_current_pin',
+              'store::instance::management::qualified_account_observation_invalidates_prior_models_even_when_mask_collides') }
             'native-takeover' { @('native_takeover_') }
             'grok-permission' { @('grok_permission') }
             'claude-holder' { @('claude_holder') }
