@@ -2319,10 +2319,66 @@ pub(crate) fn read_original_claude_resume_init(
         ticket.as_str(),nonce.as_str(),step_id.as_str()].iter().enumerate() {
         ack.bind_text((index+1) as i32,value)?;
     }
-    if !ack.step_row()? { return Ok(None); }
-    let command = unhex(&ack.column_text(0)?)?;
-    let response = unhex(&ack.column_text(1)?)?;
-    if ack.step_row()? { return Err(JournalError::Conflict); }
+    let observed_ack = if ack.step_row()? {
+        let command = unhex(&ack.column_text(0)?)?;
+        let response = unhex(&ack.column_text(1)?)?;
+        if ack.step_row()? { return Err(JournalError::Conflict); }
+        Some((command,response))
+    } else { None };
+    drop(ack);
+    let (command,response) = if let Some(observed_ack) = observed_ack {
+        observed_ack
+    } else {
+        // A read timeout keeps the RPC step UNKNOWN and its original error
+        // intact. The original captured ACK may still be settled in A. It is
+        // usable only with this exact deterministic command and physical
+        // candidate binding; it does not turn the RPC step into OBSERVED.
+        let unknown = Statement::prepare(connection.as_ptr(),
+            "SELECT command_hex FROM main.gogoke_v37_rpc_steps
+              WHERE domain_id=?1 AND session_id=?2 AND open_request_id=?3
+                AND process_operation_id=?4 AND generation=?5 AND ticket=?6
+                AND custodian_nonce=?7 AND step_id=?8 AND phase='UNKNOWN'
+                AND requires_response=1 AND original_error IS NOT NULL
+                AND length(original_error)>0 AND source_epoch IS NULL
+                AND source_cursor IS NULL")?;
+        for (index,value) in [domain,session,request_id,process_operation,
+            generation,ticket.as_str(),nonce.as_str(),step_id.as_str()]
+            .iter().enumerate() { unknown.bind_text((index+1) as i32,value)?; }
+        if !unknown.step_row()? { return Ok(None); }
+        let command=unhex(&unknown.column_text(0)?)?;
+        if unknown.step_row()? { return Err(JournalError::Conflict); }
+        drop(unknown);
+        if command!=encoded { return Err(JournalError::Denied); }
+        let raw_ack=Statement::prepare(connection.as_ptr(),
+            "SELECT source_epoch,source_cursor,hex(raw_bytes)
+               FROM main.v37_ledger_raw_source
+              WHERE domain_id=?1 AND session_id=?2 AND generation=?3
+                AND operation_id=?4 AND process_ticket=?5 AND custodian_nonce=?6
+                AND state='NO_EVENT' AND no_event_reason='CLAUDE_STDIN_ACK'
+              ORDER BY CAST(source_cursor AS INTEGER)")?;
+        for (index,value) in [domain,session,generation,process_operation,
+            ticket.as_str(),nonce.as_str()].iter().enumerate() {
+            raw_ack.bind_text((index+1) as i32,value)?;
+        }
+        let mut response=None;
+        while raw_ack.step_row()? {
+            let epoch=raw_ack.column_text(0)?;
+            let cursor=raw_ack.column_text(1)?;
+            let raw=unhex(&raw_ack.column_text(2)?)?;
+            if matches!(stream_json::decode_claude_line(&raw).map_err(|error|
+                JournalError::Store(AtomicError::DurabilityContractFailed(
+                    format!("Claude original UNKNOWN initialize ACK: {error:?}"))))?,
+                stream_json::ClaudeData::ControlResponse {request_id,..}
+                    if request_id==initialize_id) {
+                if epoch!=nonce || cursor.parse::<u64>().ok()
+                    .filter(|value| *value>0 && value.to_string()==cursor).is_none()
+                    || response.is_some() { return Err(JournalError::Conflict); }
+                response=Some(raw);
+            }
+        }
+        let Some(response)=response else { return Ok(None); };
+        (command,response)
+    };
     let ack_data = stream_json::decode_claude_line(&response).map_err(|error|
         JournalError::Store(AtomicError::DurabilityContractFailed(
             format!("Claude resume initialize ACK: {error:?}"))))?;
