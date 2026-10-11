@@ -10,7 +10,8 @@ type SecretaryLimits = {
   startupReason?: string | null;
 };
 type SecretaryConfiguration = SecretaryLimits & (
-  | { schema: "gogoke.37.secretary-configuration.v1"; state: "UNSET" | "REVOKED" }
+  | { schema: "gogoke.37.secretary-configuration.v1"; state: "UNSET" | "REVOKED";
+      designationCandidates?: Array<{ seatId: string; incarnation: string }> }
   | { schema: "gogoke.37.secretary-configuration.v1"; state: "DESIGNATED";
       seatId: string; incarnation: string; generation: string; revision: string;
       instanceId: string | null; model: string | null; effort: string | null;
@@ -52,6 +53,14 @@ function parseSecretaryConfiguration(value: unknown): SecretaryConfiguration {
     throw new Error(`Native Secretary startup reason is invalid: ${JSON.stringify(value.startupReason)}`);
   }
   if (value.state === "UNSET" || value.state === "REVOKED") {
+    if (value.designationCandidates !== undefined) {
+      const candidates = value.designationCandidates;
+      if (value.state !== "UNSET" || !Array.isArray(candidates) ||
+          candidates.some((item) => !record(item) || !nonempty(item.seatId) || !nonempty(item.incarnation)) ||
+          new Set(candidates.map((item) => item.seatId)).size !== candidates.length) {
+        throw new Error("Native Secretary designation candidates are invalid.");
+      }
+    }
     return value as SecretaryConfiguration;
   }
   if (value.state !== "DESIGNATED" || !nonempty(value.seatId) ||
@@ -764,17 +773,15 @@ export function createDesign37SecretarySource(): {
           !["APPLIED", "REPLAYED"].includes(String(create.status))) {
         throw new Error(`Native Secretary original creation is unresolved: ${JSON.stringify(create)}`);
       }
-      const page: unknown = await design37UserConfiguration("seats-page-read", { domainId: "global" });
-      if (!record(page) || !Array.isArray(page.seats)) {
-        throw new Error("宿主未返回原全局席位，保留创建结果而不再新建。");
-      }
-      const seats = page.seats.filter((item: unknown) => record(item) && item.id === "secretary-user");
-      const seat: unknown = seats[0];
-      if (seats.length !== 1 || !record(seat) || !nonempty(seat._incarnation)) {
+      const original = await readSecretaryConfiguration();
+      const seats = original.state === "UNSET"
+        ? original.designationCandidates?.filter((item) => item.seatId === "secretary-user") ?? [] : [];
+      const seat = seats[0];
+      if (seats.length !== 1 || !seat) {
         throw new Error("原秘书长席位身份未确认，保留创建结果而不再新建。");
       }
       await design37UserConfiguration("secretary-designate", { requestId: "secretary-ui-designate",
-        seatId: "secretary-user", incarnation: seat._incarnation });
+        seatId: "secretary-user", incarnation: seat.incarnation });
       configuration = await readSecretaryConfiguration();
     }
     if (configuration.state !== "DESIGNATED" || configuration.seatState !== "IDLE" ||

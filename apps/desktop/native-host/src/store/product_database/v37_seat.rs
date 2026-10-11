@@ -1481,7 +1481,25 @@ impl<'root> ProductDatabase<'root> {
                 result.insert(key("globalEffectiveLimit"),optional(effective.map(|value|value.to_string())));
                 result.insert(key("startupReason"),optional(self.secretary_startup_reason.clone()));
                 match configuration {
-                    seat::SecretaryConfiguration::Unset=>{result.insert(key("state"),text("UNSET"));},
+                    seat::SecretaryConfiguration::Unset=>{
+                        result.insert(key("state"),text("UNSET"));
+                        // First designation needs the original seat identity,
+                        // before an instance presentation can exist. This is an
+                        // Owner-only read on the same verified transaction, not
+                        // a change to generic K-SEAT operation receipts.
+                        let seats=Statement::prepare(self.connection.as_ptr(),
+                            "SELECT seat_id,incarnation FROM main.gogoke_v37_seats \
+                             WHERE domain_id='global' AND layer='USER' AND kind='LONG' \
+                               AND state='IDLE' AND instance_id IS NULL ORDER BY seat_id")?;
+                        let mut candidates=Vec::new();
+                        while seats.step_row()? {
+                            candidates.push(Json::Object(BTreeMap::from([
+                                (key("seatId"),text(&seats.column_text(0)?)),
+                                (key("incarnation"),text(&seats.column_text(1)?)),
+                            ])));
+                        }
+                        result.insert(key("designationCandidates"),Json::Array(candidates));
+                    },
                     seat::SecretaryConfiguration::Revoked=>{result.insert(key("state"),text("REVOKED"));},
                     seat::SecretaryConfiguration::Designated {seat_id,incarnation,generation,revision,
                         instance_id,model,effort,permission,state}=>{
