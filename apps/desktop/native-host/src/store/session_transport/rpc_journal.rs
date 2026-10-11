@@ -2729,6 +2729,48 @@ fn claude_initialize_binding(db:&VerifiedDatabaseConnection<'_>,step:&ClaudeStep
     assert_current_binding(db,&step.fields(),required_state,allow_unknown_claim)
 }
 
+/// A promoted Claude resume may retain the original initialize read error in
+/// RPC UNKNOWN even after its captured ACK and matching new init are proved.
+/// Exempt only that one resolved-in-A initialize from the ordinary unresolved
+/// gate; every other pending or uncertain RPC still blocks another User.
+fn only_resolved_unknown_claude_initialize(
+    db:&VerifiedDatabaseConnection<'_>,step:&ClaudeStep<'_>,operation:&str,
+) -> Result<bool> {
+    if !matches!(step.command,commands::ClaudeCommand::User {..}) {
+        return Ok(false);
+    }
+    let (initialize_step,initialize_id)=claude_initialize_identity(step.open_request_bytes);
+    let expected=commands::encode_claude(commands::ClaudeCommand::Initialize {
+        request_id:&initialize_id,
+    }).map_err(RpcJournalError::AcpEncode)?;
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT step_id,command_hex,open_request_id,ticket,custodian_nonce,
+                generation,phase,requires_response,COALESCE(original_error,'')
+           FROM main.gogoke_v37_rpc_steps
+          WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3
+            AND (phase IN ('INTENT','UNKNOWN') OR
+                (phase='WRITTEN' AND requires_response=1))")?;
+    for (index,value) in [step.domain_id,step.session_id,operation]
+        .iter().enumerate() { q.bind_text((index+1) as i32,value)?; }
+    if !q.step_row()? { return Ok(false); }
+    let exact=q.column_text(0)?==initialize_step
+        && unhex(&q.column_text(1)?)?==expected
+        && q.column_text(2)?==step.open_request_id
+        && q.column_text(3)?==step.custody.ticket.opaque()
+        && q.column_text(4)?==step.custody.custodian_nonce
+        && q.column_text(5)?==step.custody.binding.generation
+        && q.column_text(6)?=="UNKNOWN"
+        && q.column_text(7)?=="1"
+        && !q.column_text(8)?.is_empty();
+    if q.step_row()? || !exact { return Ok(false); }
+    drop(q);
+    super::journal::read_original_claude_resume_init(db,step.domain_id,
+        step.session_id,step.open_request_id,&step.custody.binding.generation,
+        operation).map(|source|source.is_some()).map_err(|error|
+            RpcJournalError::Store(AtomicError::DurabilityContractFailed(
+                format!("Claude resumed initialize source: {error:?}"))))
+}
+
 /// Persist original Claude stdin intent before the physical writer. An
 /// existing row is readback only; neither replay nor UNKNOWN permits resend.
 pub(crate) fn prepare_claude(db: &mut VerifiedDatabaseConnection<'_>,
@@ -2757,7 +2799,8 @@ pub(super) fn prepare_claude_in_transaction(db: &mut VerifiedDatabaseConnection<
         return Ok(PreparedStep { bytes: encoded,
             disposition: Disposition::Existing(phase) });
     }
-    if has_unresolved(db, step.domain_id, step.session_id, &operation)? {
+    if has_unresolved(db, step.domain_id, step.session_id, &operation)?
+        && !only_resolved_unknown_claude_initialize(db,step,&operation)? {
         return Err(RpcJournalError::Unknown);
     }
     insert_intent(db, &step.fields(), &operation, &encoded, true)?;
