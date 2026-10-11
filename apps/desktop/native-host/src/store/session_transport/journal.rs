@@ -2255,6 +2255,36 @@ pub(crate) fn read_original_claude_send_completed(
     }))
 }
 
+/// A contradictory or missing original observation is distinct from a stdin
+/// write failure. Custody must already be UNKNOWN; retain every observed RPC
+/// ACK/A frame and any completed original receipt byte for byte.
+pub(crate) fn mark_claude_send_observation_unknown(
+    connection:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,
+    input:&ClaudeSendInput<'_>,
+) -> Result<JournalDecision,JournalError> {
+    let (request,_,_)=claude_send_request(&input.user)?;
+    in_transaction(connection,|connection|with_claude_send_step(connection,input,
+        |connection,step| {
+            super::rpc_journal::check_claude_observation_unknown_in_transaction(
+                connection,owner,step)?;
+            mark_claude_observation_record_unknown_in_transaction(
+                connection,&input.user,&request)
+        }))
+}
+
+fn mark_claude_observation_record_unknown_in_transaction(
+    connection:&mut VerifiedDatabaseConnection<'_>,input:&StdinRequest<'_>,
+    request:&super::V37Request,
+) -> Result<JournalDecision,JournalError> {
+    let record=read_row(connection,input.domain_id,&request.request_id)?
+        .ok_or(JournalError::Unknown)?;
+    input_matches(input,request,&record)?;
+    let binding=h_binding(connection,input.domain_id,input.session_id,
+        input.ticket,input.generation,BindingUse::MarkUnknown)?;
+    binding_matches(&record,&binding)?;
+    mark_decoded_unknown_in_transaction(connection,input,request)
+}
+
 /// Select only the old stopped H generation's vendor identity. A User UUID,
 /// H request ID, or an unreceipted input cannot become a Claude resume ID.
 pub(crate) fn read_stopped_claude_resume_id(

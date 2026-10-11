@@ -2932,6 +2932,20 @@ fn transition_claude_in_transaction(db: &mut VerifiedDatabaseConnection<'_>,
     transition_row(db, &step.fields(), &operation, &encoded, next, error)
 }
 
+/// Observation uncertainty fences H input without reclassifying an already
+/// observed initialize/User ACK. No RPC row is inserted or transitioned here.
+pub(super) fn check_claude_observation_unknown_in_transaction(
+    db:&VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,step:&ClaudeStep<'_>,
+) -> Result<()> {
+    check_owner_in_current_transaction(db,owner)?;
+    original_open(db,&step.fields())?;
+    let (_,driver)=assert_current_binding(db,&step.fields(),&["UNKNOWN"],true)?;
+    if driver!="claude" || !matches!(step.command,commands::ClaudeCommand::User {..}) {
+        return Err(RpcJournalError::Denied);
+    }
+    Ok(())
+}
+
 pub(crate) fn mark_claude_written(db: &mut VerifiedDatabaseConnection<'_>,
     owner: &OwnerIssuer, step: &ClaudeStep<'_>) -> Result<()> {
     transact(db, |db| transition_claude_in_transaction(db, owner, step, Phase::Written, None))

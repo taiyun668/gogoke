@@ -127,6 +127,18 @@ fn init(db:&VerifiedDatabaseConnection<'_>)->Result<Option<RawSourceKey>,Journal
     read_original_claude_resume_init(db,"projectA","sessionA","resumeB","2","processB")
 }
 
+fn original_observation_snapshot(db:&VerifiedDatabaseConnection<'_>)->Vec<Vec<String>> {
+    let mut rows=Vec::new();
+    for sql in [
+        "SELECT step_id,command_hex,phase,COALESCE(source_epoch,''),COALESCE(source_cursor,''),COALESCE(original_error,'') FROM gogoke_v37_rpc_steps ORDER BY step_id",
+        "SELECT operation_id,source_epoch,source_cursor,hex(raw_bytes),state,COALESCE(no_event_reason,'') FROM v37_ledger_raw_source ORDER BY operation_id,CAST(source_cursor AS INTEGER)",
+    ] {
+        let q=Statement::prepare(db.as_ptr(),sql).unwrap();
+        while q.step_row().unwrap() {rows.push((0..6).map(|i|q.column_text(i).unwrap()).collect());}
+    }
+    rows
+}
+
 #[test]
 fn prepared_resume_ack_is_ready_without_inventing_init() {
     with_fixture(|db| {
@@ -195,7 +207,35 @@ fn cold_completed_receipt_keeps_original_bytes_after_custody_unknown() {
         let input=StdinRequest {domain_id:"projectA",session_id:"sessionA",ticket:"pct1_ticketB",generation:"2",request_bytes:NEW_SEND};
         let initial=read_original_claude_send_completed(db,&input).unwrap().unwrap();
         assert_eq!(initial.user.record.receipt_bytes.as_ref().unwrap(),&stored);
+        let (request,_,_)=claude_send_request(&input).unwrap();
+        assert!(matches!(mark_claude_observation_record_unknown_in_transaction(db,&input,&request),
+            Err(JournalError::Denied)),"observation marker requires custody already UNKNOWN");
         db.execute("UPDATE gogoke_coordination_process_custody SET state='UNKNOWN' WHERE operation_id='processB'").unwrap();
+        // Exercise the same production record marker used after the public
+        // Owner/full-physical-custody verifier. This SQL fixture does not
+        // construct a process ticket or claim dynamic validation of that wrapper.
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        let observed=original_observation_snapshot(db);
+        db.execute("SAVEPOINT prepared_observation_fixture").unwrap();
+        db.execute("UPDATE gogoke_v37_h_stdin_journal SET phase='PREPARED',receipt_hex=NULL,receipt_status=NULL,receipt_previous_revision=NULL,receipt_revision=NULL WHERE request_id='sendB'").unwrap();
+        let fenced=mark_claude_observation_record_unknown_in_transaction(db,&input,&request).unwrap();
+        assert_eq!(fenced.record.state,JournalState::Unknown);
+        assert_eq!(fenced.record.request_bytes,NEW_SEND);
+        assert_eq!(original_observation_snapshot(db),observed,
+            "original OBSERVED initialize/echo RPC and A must not be reclassified");
+        db.execute("ROLLBACK TO prepared_observation_fixture").unwrap();
+        db.execute("RELEASE prepared_observation_fixture").unwrap();
+        let completed=mark_claude_observation_record_unknown_in_transaction(db,&input,&request).unwrap();
+        assert_eq!(completed.record,initial.user.record,"stored completed receipt remains byte exact");
+        db.execute("SAVEPOINT missing_observation_fixture").unwrap();
+        db.execute("DELETE FROM gogoke_v37_h_stdin_journal WHERE request_id='sendB'").unwrap();
+        assert!(matches!(mark_claude_observation_record_unknown_in_transaction(db,&input,&request),
+            Err(JournalError::Unknown)),"missing input is not a new intent");
+        assert!(read_row(db,"projectA","sendB").unwrap().is_none());
+        assert_eq!(original_observation_snapshot(db),observed);
+        db.execute("ROLLBACK TO missing_observation_fixture").unwrap();
+        db.execute("RELEASE missing_observation_fixture").unwrap();
+        db.execute("COMMIT").unwrap();
         db.execute("UPDATE gogoke_v37_h_claim SET state='UNKNOWN' WHERE generation='2'").unwrap();
         let historical=read_original_claude_send_completed(db,&input).unwrap().unwrap();
         assert_eq!(historical.user.record,initial.user.record,
