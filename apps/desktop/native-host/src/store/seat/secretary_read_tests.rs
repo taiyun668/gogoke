@@ -15,7 +15,7 @@ fn fixture(action:impl FnOnce(&mut VerifiedDatabaseConnection<'_>,&OwnerIssuer))
     let root=RootLock::acquire(&folder).unwrap();
     let mut db=crate::store::session::open_product_database(&root,&folder.join("state.sqlite")).unwrap();
     let owner=authority::initialize_profile(&mut db,&root).unwrap();
-    db.execute("INSERT INTO gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('instanceRead','codex','fixture-home','fixture-home-identity','sha256:fixture','0.160.0','INSTALLED','LOGGED_IN',1)").unwrap();
+    db.execute("INSERT INTO gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('instanceRead','codex','fixture-home','fixture-home-identity','sha256:fixture','0.160.0','UNKNOWN','LOGGED_IN',1)").unwrap();
     db.execute("INSERT INTO gogoke_v37_instance_profiles(instance_id,display_name,enabled,tombstoned,revision) VALUES('instanceRead','fixture',1,0,1)").unwrap();
     db.execute("INSERT INTO gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('global','seatRead','incarnationRead','USER','LONG','instanceRead','BUSY',1,1)").unwrap();
     let settings=Parser::parse(SETTINGS).unwrap().canonical();

@@ -97,8 +97,12 @@ pub(super) fn is_designated_current(db:&VerifiedDatabaseConnection<'_>,seat:&Sea
 
 pub(super) fn require_enabled_instance(db:&VerifiedDatabaseConnection<'_>,instance_id:&str)
     ->Result<(),SeatError> {
+    // This is an E configuration prerequisite, not proof of executable
+    // availability. F observes the bound catalog without maintaining the
+    // legacy install_state column. H rechecks the actual registered CLI pin
+    // on admission; a stale INSTALLED value could not prove that either.
     let q=Statement::prepare(db.as_ptr(),
-        "SELECT 1 FROM main.gogoke_v37_instances i JOIN main.gogoke_v37_instance_profiles p ON p.instance_id=i.instance_id WHERE i.instance_id=?1 AND i.install_state='INSTALLED' AND i.login_state='LOGGED_IN' AND p.enabled=1 AND p.tombstoned=0")?;
+        "SELECT 1 FROM main.gogoke_v37_instances i JOIN main.gogoke_v37_instance_profiles p ON p.instance_id=i.instance_id WHERE i.instance_id=?1 AND i.login_state='LOGGED_IN' AND p.enabled=1 AND p.tombstoned=0")?;
     q.bind_text(1,instance_id)?;
     if !q.step_row()? {return Err(SeatError::Denied);}
     if q.step_row()? {return Err(SeatError::SchemaDrift);}
