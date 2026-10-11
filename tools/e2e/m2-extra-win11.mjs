@@ -144,6 +144,7 @@ const journal = {
   rulesCases: [],
   foreignProject: rules.foreignProject ?? null,
   rulesSelection: crossProjectOnly ? 'CROSS_PROJECT_ONLY' : 'ALL',
+  ...(crossProjectOnly ? { rulesSourceSelection: { ...rules.submitter } } : {}),
   v12: 'NOT_RUN_ORIGINAL_M2_SIDE_WORKTREE_READBACK_REQUIRED',
   v08: 'RUNNING',
 };
@@ -303,14 +304,31 @@ async function runRules() {
       row.driverId === 'codex' && row.state === 'LOGGED_IN'),
     'V08 uses an already admitted logged-in Codex instance');
   }
-  for (const selection of selections) await prepareRulesWorktree(selection, 'V08');
   journal.v08 = 'RUNNING';
   journal.driverBytes['m2-rules.mjs'] = sha256(path.join(here, 'm2-rules.mjs'));
   journal.driverBytes['m2-rules-readback.py'] = sha256(path.join(here, 'm2-rules-readback.py'));
   product.save();
 
-  await product.closeNormally();
-  const baselineReadback = await rulesReadback('before');
+  let baselineReadback = null;
+  if (crossProjectOnly) {
+    await product.closeNormally();
+    baselineReadback = await rulesReadback('before');
+    const baseline = readJson(path.join(evidencePath, baselineReadback.file));
+    journal.crossProjectQualification = baseline.sameScopeQualification ?? null;
+    if (baseline.sameScopeQualification?.state !== 'QUALIFIED_SAME_SCOPE_GATE_SUBMIT') {
+      journal.v08 = 'NOT_RUN_CROSS_PROJECT_SAME_SCOPE_AUTHORIZATION_MISSING';
+      journal.state = 'V08_NOT_RUN_CROSS_PROJECT_CALLER_NOT_QUALIFIED_IN_A';
+      journal.crossProjectQualificationStatus = baseline.sameScopeQualification?.state ?? 'UNKNOWN';
+      product.save();
+      return;
+    }
+    await product.launch();
+    await product.instances();
+  }
+  for (const selection of selections) await prepareRulesWorktree(selection, 'V08');
+  if (!baselineReadback) await product.closeNormally();
+  if (!baselineReadback) baselineReadback = await rulesReadback('before');
+  if (crossProjectOnly) await product.closeNormally();
   await product.launch();
   await product.instances();
   const submitterSession = await openUserSession(...['seatId', 'instanceId', 'worktreeId']

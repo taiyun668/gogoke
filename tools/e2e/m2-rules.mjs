@@ -56,6 +56,19 @@ export async function runRulesCase(product, config, journal) {
       before.readerSha256 === record.readerSha256,
     'V08 baseline must be the same candidate/domain immutable native readback');
     record.baselineReadback = baseline;
+    if (c.selection === 'CROSS_PROJECT_ONLY') {
+      const qualification = before.sameScopeQualification;
+      requireFact(qualification?.state === 'QUALIFIED_SAME_SCOPE_GATE_SUBMIT' &&
+        qualification.domainId === config.domainId && qualification.callerSeatId === c.submitterSession.seatId &&
+        qualification.callerLayer === 'USER' && qualification.callerState === 'IDLE' &&
+        qualification.gate?.submitter_seat_id === c.submitterSession.seatId &&
+        qualification.gate.revision === before.foreignProject?.gate?.revision &&
+        qualification.reviewGrant?.caller_seat_id === c.submitterSession.seatId &&
+        qualification.reviewGrant.target_id === qualification.reviewerSeatId &&
+        qualification.reviewGrant.action === 'REVIEW' && qualification.reviewGrant.expires_at_ms === 0,
+      'Cross-project DENIED requires an actual same-scope A gate-submit/reviewer-REVIEW qualification');
+      record.sameScopeQualification = qualification;
+    }
     const foreign = c.foreignProject ?? null;
     requireFact(JSON.stringify(foreign) === JSON.stringify(journal.foreignProject ?? null) &&
       JSON.stringify(foreign) === JSON.stringify(before.foreignProject?.configuration ?? null),
