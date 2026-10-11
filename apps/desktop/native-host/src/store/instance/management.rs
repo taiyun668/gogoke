@@ -298,9 +298,14 @@ pub(crate) fn read_instance_evidence(db: &VerifiedDatabaseConnection<'_>, instan
 fn original_hex_bytes(hex:&str)->Result<Vec<u8>,InstanceManagementError> {
     if hex.len()%2!=0 || hex.len()>2*1024*1024 {return Err(InstanceManagementError::Conflict);}
     hex.as_bytes().chunks_exact(2).map(|pair| {
-        let text=std::str::from_utf8(pair).map_err(|_|InstanceManagementError::Conflict)?;
-        u8::from_str_radix(text,16).map_err(|_|InstanceManagementError::Conflict)
+        let text=std::str::from_utf8(pair).map_err(|error|source_decode_error("hex UTF-8",error))?;
+        u8::from_str_radix(text,16).map_err(|error|source_decode_error("hex byte",error))
     }).collect()
+}
+
+fn source_decode_error(context:&str,error:impl std::fmt::Debug)->InstanceManagementError {
+    InstanceManagementError::Store(OrchestrationError::V37StoreFailure(
+        format!("original Codex model/list {context}: {error:?}")))
 }
 
 fn valid_wire_id(value:&str)->bool {
@@ -320,8 +325,8 @@ fn original_effort(value:&Json)->Result<String,InstanceManagementError> {
 
 fn original_model_efforts_page(response:&[u8],slugs:&[String])
     ->Result<Vec<VerifiedModelEffort>,InstanceManagementError> {
-    let raw=std::str::from_utf8(response).map_err(|_|InstanceManagementError::Conflict)?;
-    let Json::Object(frame)=Parser::parse(raw).map_err(|_|InstanceManagementError::Conflict)?
+    let raw=std::str::from_utf8(response).map_err(|error|source_decode_error("response UTF-8",error))?;
+    let Json::Object(frame)=Parser::parse(raw).map_err(|error|source_decode_error("response JSON",error))?
         else {return Err(InstanceManagementError::Conflict)};
     let Some(Json::Object(result))=frame.get(&JsonString::from_str("result"))
         else {return Err(InstanceManagementError::Conflict)};
@@ -380,7 +385,7 @@ pub(crate) fn read_verified_model_efforts(db:&VerifiedDatabaseConnection<'_>,ins
         || !valid_wire_id(parts[2]) {return Ok(None)};
     let first_cursor=parts[3].parse::<u64>().ok().filter(|value|*value>0)
         .ok_or(InstanceManagementError::Conflict)?;
-    let Json::Array(cached)=Parser::parse(&slugs).map_err(|_|InstanceManagementError::Conflict)?
+    let Json::Array(cached)=Parser::parse(&slugs).map_err(|error|source_decode_error("cached slugs JSON",error))?
         else {return Err(InstanceManagementError::Conflict)};
     let cached:Vec<String>=cached.iter().map(|item| {
         let Json::String(value)=item else {return Err(InstanceManagementError::Conflict)};
@@ -413,7 +418,7 @@ pub(crate) fn read_verified_model_efforts(db:&VerifiedDatabaseConnection<'_>,ins
           ORDER BY CAST(s.source_cursor AS INTEGER),s.step_id")?;
     rows.bind_text(1,instance_id)?;rows.bind_text(2,parts[0])?;
     rows.bind_text(3,parts[1])?;rows.bind_text(4,parts[2])?;
-    rows.bind_i64(5,i64::try_from(first_cursor).map_err(|_|InstanceManagementError::Conflict)?)?;
+    rows.bind_i64(5,i64::try_from(first_cursor).map_err(|error|source_decode_error("first cursor",error))?)?;
     let mut expected_cursor=None;
     let mut prior_source_cursor=0;
     let mut process=None;
@@ -427,7 +432,7 @@ pub(crate) fn read_verified_model_efforts(db:&VerifiedDatabaseConnection<'_>,ins
         let command=original_hex_bytes(&rows.column_text(0)?)?;
         let response=original_hex_bytes(&rows.column_text(1)?)?;
         let cursor=rows.column_text(2)?.parse::<u64>()
-            .map_err(|_|InstanceManagementError::Conflict)?;
+            .map_err(|error|source_decode_error("source cursor",error))?;
         let current_process=rows.column_text(3)?;
         if cursor<=prior_source_cursor || (prior_source_cursor==0 && cursor!=first_cursor)
             || process.as_ref().is_some_and(|prior|prior!=&current_process) {
@@ -435,7 +440,7 @@ pub(crate) fn read_verified_model_efforts(db:&VerifiedDatabaseConnection<'_>,ins
         }
         prior_source_cursor=cursor;process=Some(current_process);
         let (request_cursor,page,next)=codex_rpc::decode_stored_model_list(&command,&response)
-            .map_err(|_|InstanceManagementError::Conflict)?;
+            .map_err(|error|source_decode_error("original RPC",error))?;
         if request_cursor!=expected_cursor {return Err(InstanceManagementError::Conflict);}
         for model in original_model_efforts_page(&response,&page)? {
             if seen.insert(model.model.clone()) {models.push(model);}
@@ -601,18 +606,18 @@ fn original_model_efforts_follow_the_cached_source_and_current_pin() {
     db.execute("INSERT INTO gogoke_coordination_process_custody VALUES('processA','ticketA','nonceA','41','42','programA','sha256:pin','instanceA','global','1','STOPPED')").unwrap();
     let command=codex_rpc::Command::ModelList {cursor:None}
         .encode(Some(&codex_rpc::RpcId::client(4).unwrap())).unwrap();
-    let response=br#"{"id":4,"result":{"data":[{"model":"gpt-6.1-sol","hidden":false,"defaultReasoningEffort":"low","supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}]},{"model":"hidden","hidden":true}],"nextCursor":null}}"#;
+    let response=[br#"{"id":4,"result":{"data":[{"model":"gpt-6.1-sol","hidden":false,"defaultReasoningEffort":"low","supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}]},{"model":"hidden","hidden":true}],"nextCursor":null}}"#.as_slice(),b"\n"].concat();
     let hex=|bytes:&[u8]|bytes.iter().map(|byte|format!("{byte:02x}")).collect::<String>();
     db.execute(&format!("INSERT INTO gogoke_v37_rpc_steps VALUES('global','sessionA','modelsA','pcn1_demo','10','processA','ticketA','nonceA','41','42','programA','sha256:pin','instanceA','1','{}','OBSERVED',1)",hex(&command))).unwrap();
-    db.execute(&format!("INSERT INTO v37_ledger_raw_source VALUES('processA','pcn1_demo','10','ticketA','nonceA','global','sessionA','1','NO_EVENT','CODEX_RPC_RESPONSE',X'{}')",hex(response))).unwrap();
+    db.execute(&format!("INSERT INTO v37_ledger_raw_source VALUES('processA','pcn1_demo','10','ticketA','nonceA','global','sessionA','1','NO_EVENT','CODEX_RPC_RESPONSE',X'{}')",hex(&response))).unwrap();
     let original=read_verified_model_efforts(&db,"instanceA").unwrap().unwrap();
     assert_eq!(original.models,vec![VerifiedModelEffort {model:"gpt-6.1-sol".into(),
         default_effort:Some("low".into()),supported_efforts:Some(vec!["low".into(),"high".into()])}]);
     db.execute("UPDATE gogoke_v37_instances SET program_digest='sha256:changed' WHERE instance_id='instanceA'").unwrap();
     assert!(read_verified_model_efforts(&db,"instanceA").unwrap().is_none());
     db.execute("UPDATE gogoke_v37_instances SET program_digest='sha256:pin' WHERE instance_id='instanceA'").unwrap();
-    let without=br#"{"id":4,"result":{"data":[{"model":"gpt-6.1-sol","hidden":false}],"nextCursor":null}}"#;
-    db.execute(&format!("UPDATE v37_ledger_raw_source SET raw_bytes=X'{}'",hex(without))).unwrap();
+    let without=[br#"{"id":4,"result":{"data":[{"model":"gpt-6.1-sol","hidden":false}],"nextCursor":null}}"#.as_slice(),b"\n"].concat();
+    db.execute(&format!("UPDATE v37_ledger_raw_source SET raw_bytes=X'{}'",hex(&without))).unwrap();
     let unknown=read_verified_model_efforts(&db,"instanceA").unwrap().unwrap();
     assert_eq!(unknown.models[0].default_effort,None);
     assert_eq!(unknown.models[0].supported_efforts,None);
