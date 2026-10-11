@@ -2,6 +2,7 @@
 // not a host/model substitute or an M2 acceptance decision.
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ActualProduct, readJson, sha256, id, delay } from './product-cdp.mjs';
@@ -10,6 +11,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const drivers = ['claude', 'opencode', 'grok'];
 const atom = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
 const inside = (child, parent) => child === parent || child.startsWith(parent + path.sep);
+const sameWindowsPath = (left, right) => path.resolve(left).toUpperCase() === path.resolve(right).toUpperCase();
 const config = readJson(process.argv[2]);
 const required = ['installed', 'installedSha256', 'version', 'sourceCommit', 'registryKey', 'pwsh',
   'python', 'stateRoot', 'evidenceDirectory', 'result', 'domainId', 'repositoryId', 'observers', 'cases'];
@@ -38,6 +40,18 @@ if (process.platform !== 'win32' || !process.argv[2] || required.some(key => con
     [config.installed, config.stateRoot, path.resolve(here, '..', '..')]
       .some(root => inside(path.resolve(config.evidenceDirectory), path.resolve(root)))) {
   throw Error('Fresh private provider E2E config, exact installed product, three fixed provider cases and observers required');
+}
+const writeCases = config.cases.filter(row => row.caseMode === 'grokWrite');
+if (config.cases.some(row => row.caseMode !== undefined && row.caseMode !== 'grokWrite') ||
+    (writeCases.length > 0 && (writeCases.length !== 1 || config.cases.length !== 1 ||
+      writeCases[0].driverId !== 'grok' ||
+      typeof writeCases[0].worktreePath !== 'string' || !path.isAbsolute(writeCases[0].worktreePath) ||
+      writeCases[0].worktreePath.startsWith('\\\\?\\') ||
+      !/^volume:[a-f0-9]{16}\/file:[a-f0-9]{32}$/.test(writeCases[0].worktreeIdentity ?? '') ||
+      !/^grok-provider-write_[a-f0-9]{32}\.json$/.test(writeCases[0].writeMarker ?? '') ||
+      !sameWindowsPath(path.dirname(path.resolve(writeCases[0].worktreePath)),
+        path.resolve(config.stateRoot, 'v37-worktrees', 'single'))))) {
+  throw Error('Grok Write needs one exact registered F root identity and one new private marker');
 }
 const opencode = config.cases.find(row => row.driverId === 'opencode');
 if (opencode && (opencode.model.toLowerCase().includes('gpt') || !/(grok|xai)/i.test(opencode.model))) {
@@ -201,13 +215,26 @@ ConvertTo-Json -InputObject @($matchingProcesses) -Compress`;
     productRootPid: String(product.endpoint.pid), ...matches[0],
     creationTime100ns: identity.creationTime100ns };
 }
+async function captureDirectoryIdentity(root) {
+  const identity = await new Promise((resolve, reject) => {
+    const child = spawn(config.python, [path.join(here, 'm2-provider-capture-readback.py'),
+      '--directory-identity', root], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', bytes => { stdout = (stdout + bytes).slice(-4096); });
+    child.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-4096); });
+    child.once('error', reject);
+    child.once('exit', code => code === 0 ? resolve(stdout.trim()) :
+      reject(Error(`Original F directory identity exit=${code}: ${stderr}`)));
+  });
+  return identity;
+}
 async function observeReceipt(session, row) {
   const deadline = Date.now() + 600000;
   while (Date.now() < deadline) {
     const page = await output(session);
     const receipt = page.nativeInputReceipts?.find(value => value.requestId === row.sendRequestId);
     if (receipt?.receipt?.status === 'APPLIED') {
-      row.hReceipt = receipt; product.save(); return;
+      row.hReceipt = receipt; product.save(); return receipt;
     }
     if (receipt?.receipt?.status && receipt.receipt.status !== 'UNKNOWN') {
       throw Error(`${row.driverId}: original H receipt=${receipt.receipt.status}; no replay`);
@@ -218,9 +245,11 @@ async function observeReceipt(session, row) {
 }
 
 async function runCase(row, instances) {
+  const grokWrite = row.caseMode === 'grokWrite';
   const record = { driverId: row.driverId, instanceId: row.instanceId, seatId: row.seatId,
     worktreeId: row.worktreeId, fixedVersion: row.version, fixedSha256: row.sha256,
-    expectedModel: row.model, expectedEffort: row.effort, state: 'PREFLIGHT', acceptance: false };
+    expectedModel: row.model, expectedEffort: row.effort, caseMode: row.caseMode ?? 'singleAnswer',
+    state: 'PREFLIGHT', acceptance: false };
   journal.cases.push(record); product.save();
   const instance = instances.instances.find(value => value.instanceId === row.instanceId && value.driverId === row.driverId);
   if (!instance || instance.state !== 'LOGGED_IN') {
@@ -235,11 +264,33 @@ async function runCase(row, instances) {
     `${row.driverId}: actual seat is Idle on configured instance`);
   check(seat.result.settings?.model === row.model && seat.result.settings?.effort === row.effort,
     `${row.driverId}: configured seat model and effort match private fixture`);
+  if (grokWrite) check(seat.result.layer === 'USER' &&
+    seat.result.settings?.permissionTier === 'NETWORKED_WRITE',
+  'Grok Write needs the actual IDLE USER NETWORKED_WRITE E seat');
   if (row.driverId === 'opencode') check(/(grok|xai)/i.test(seat.result.settings.model) &&
     !/gpt/i.test(seat.result.settings.model), 'OpenCode seat card confirms xAI/Grok and not GPT');
   record.seatSettings = { model: seat.result.settings.model, effort: seat.result.settings.effort };
   product.save();
   record.graph = await graph(row); product.save();
+  if (grokWrite) {
+    const root = path.resolve(row.worktreePath);
+    const stat = fs.lstatSync(root);
+    check(stat.isDirectory() && !stat.isSymbolicLink() &&
+      sameWindowsPath(fs.realpathSync.native(root), root) &&
+      await captureDirectoryIdentity(root) === row.worktreeIdentity,
+    'Grok Write F physical root differs from the private registered identity');
+    const target = path.join(root, row.writeMarker);
+    check(path.dirname(target) === root && !fs.existsSync(target),
+      'Grok Write target must be a new file directly in this F root');
+    const bytes = JSON.stringify({ case: 'GROK_PROVIDER_WRITE', marker: row.writeMarker }) + '\n';
+    record.write = { worktreePath: root, worktreeIdentity: row.worktreeIdentity,
+      marker: row.writeMarker, target, expectedContentLength: Buffer.byteLength(bytes),
+      expectedContentSha256: createHash('sha256').update(bytes).digest('hex'),
+      targetAbsentBeforeSend: true, actualOsAclDisposition: 'NOT_RUN',
+      permissionCause: 'UNATTRIBUTED' };
+    record.write.expectedContent = bytes;
+    product.save();
+  }
   const session = { id: id('m2ProviderSession'), caseId: journal.caseId,
     seatId: row.seatId, instanceId: row.instanceId, worktreeId: row.worktreeId,
     generation: (BigInt(seat.result.generation) + 1n).toString(), revision: '0', cursor: '0', events: [], turns: [] };
@@ -272,7 +323,27 @@ async function runCase(row, instances) {
   record.processIdentity = await captureProcess(row);
   if (row.driverId === 'claude' || row.driverId === 'grok') record.modelEffortEvidence.argv = record.processIdentity;
   product.save();
-  if (row.driverId === 'claude') {
+  if (grokWrite) {
+    record.marker = row.writeMarker;
+    record.prompt = `Create one nonsecret JSON file at ${JSON.stringify(record.write.target)} ` +
+      `with these exact UTF-8 bytes: ${JSON.stringify(record.write.expectedContent)}. ` +
+      'Use the Write tool once for this file. Do not use shell, Git, network tools, ' +
+      'browser, agents, or credentials. Do not retry or choose another path. ' +
+      'Report the result of this one tool call.';
+    let before;
+    for (;;) {
+      const prior = session.cursor;
+      before = await output(session);
+      check(/^\d+$/.test(before.rawHighwater ?? '') &&
+        /^\d+$/.test(before.ledgerHighwater ?? '') &&
+        !before.nativeCardRefs?.some(card => card.state === 'OPEN'),
+      'Grok Write needs an original H page without a pending card');
+      if (BigInt(before.cursor) === BigInt(before.ledgerHighwater)) break;
+      check(BigInt(before.cursor) > BigInt(prior),
+        'Grok Write pre-send H page made no ledger progress');
+    }
+    record.beforeSendRawHighwater = before.rawHighwater;
+  } else if (row.driverId === 'claude') {
     record.prompt = 'What is 241 + 537?';
     record.expectedAnswer = '778';
   } else {
@@ -287,7 +358,49 @@ async function runCase(row, instances) {
   if (sent.status === 'UNKNOWN' && sent.result.reason) {
     throw Error(`${row.driverId}: original send UNKNOWN reason=${sent.result.reason}; no resend`);
   }
-  await observeReceipt(session, record);
+  const receipt = await observeReceipt(session, record);
+  if (grokWrite) {
+    check(receipt.receipt?.result?.createdTurn === true &&
+      receipt.receipt.result.stopReason === 'end_turn' &&
+      /^\d+$/.test(receipt.receipt.result.sourceCursor ?? '') &&
+      typeof receipt.receipt.result.sourceEpoch === 'string' &&
+      BigInt(receipt.receipt.result.sourceCursor) >= BigInt(record.beforeSendRawHighwater),
+    'Grok Write original ACP terminal receipt is incomplete');
+    const deadline = Date.now() + 600000;
+    let complete = false;
+    while (Date.now() < deadline) {
+      const page = await output(session);
+      check(/^\d+$/.test(page.rawHighwater ?? '') &&
+        /^\d+$/.test(page.ledgerHighwater ?? ''),
+      'Grok Write output cursor shape differs');
+      if (BigInt(page.rawHighwater) >= BigInt(receipt.receipt.result.sourceCursor) &&
+          BigInt(page.cursor) === BigInt(page.ledgerHighwater)) {
+        record.terminalOutputPage = { rawHighwater: page.rawHighwater,
+          ledgerCursor: page.cursor, ledgerHighwater: page.ledgerHighwater };
+        complete = true; break;
+      }
+      await delay(300);
+    }
+    check(complete, 'Grok Write original ACP terminal source was not fully observed');
+    record.toolCandidates = session.events.filter(event =>
+      ['tool_call', 'tool_call_update'].includes(event.sessionUpdate) &&
+      event._meta?.provider === 'grok-build' &&
+      event._meta?.threadId === session.threadId &&
+      /^\d+$/.test(event._meta?.rawSourceCursor ?? '') &&
+      BigInt(event._meta.rawSourceCursor) > BigInt(record.beforeSendRawHighwater) &&
+      BigInt(event._meta.rawSourceCursor) <= BigInt(receipt.receipt.result.sourceCursor))
+      .map(event => ({ sourceCursor: event._meta.rawSourceCursor,
+        toolCallId: event.toolCallId, update: event.sessionUpdate, title: event.title,
+        kind: event.kind, status: event.status, rawInput: event.rawInput,
+        rawOutput: event.rawOutput, content: event.content }));
+    record.write.targetExistsAfterTurn = fs.existsSync(record.write.target);
+    if (record.write.targetExistsAfterTurn) {
+      const bytes = fs.readFileSync(record.write.target);
+      record.write.targetContentLengthAfterTurn = bytes.length;
+      record.write.targetContentSha256AfterTurn = createHash('sha256').update(bytes).digest('hex');
+    }
+    product.save();
+  }
   record.state = 'ORIGINAL_H_RECEIPTED'; product.save();
   const stopped = await sessionStep(session, 'stop', { seatId: row.seatId });
   check(typeof stopped.result.stopFact === 'string' && stopped.result.stopFact.length > 0,
@@ -321,7 +434,8 @@ async function readbackAndGolden() {
       observed?.binarySha256 === `sha256:${record.fixedSha256}` && observed?.allEpisodesStopped &&
       observed?.providerEndTurn === true && (record.driverId === 'claude'
         ? observed?.answerObserved === true && Boolean(observed?.vendorSessionId)
-        : observed?.markerObserved === true),
+        : record.caseMode === 'grokWrite' ? observed?.writeObserved === true
+          : observed?.markerObserved === true),
       `${record.driverId}: original A end-turn, answer or marker, and stopped pinned H session`);
     const bundle = path.join(config.evidenceDirectory, `m2-${record.driverId}-protocol-golden.json`);
     if (fs.existsSync(bundle)) throw Error(`${record.driverId}: private golden output already exists`);

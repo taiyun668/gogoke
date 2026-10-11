@@ -221,6 +221,172 @@ def acp_text(frame):
         return content["text"]
     return ""
 
+
+def grok_write_evidence(db, domain, case, session, send, prompt_command,
+                        original_wire, open_receipt, seat, seat_generation,
+                        f_identity, expected_bytes):
+    sid, target = case["sessionId"], case["write"]["target"]
+    receipt = case.get("hReceipt", {})
+    answer = receipt.get("receipt", {})
+    terminal = answer.get("result", {})
+    stored = exact_one(db, "SELECT receipt_hex FROM gogoke_v37_h_stdin_journal "
+                       "WHERE domain_id=? AND session_id=? AND request_id=? AND operation='send'",
+                       (domain, sid, case["sendRequestId"]))[0]
+    if receipt.get("requestId") != case["sendRequestId"] or \
+            json.loads(bytes.fromhex(stored).decode()) != answer or \
+            answer.get("status") != "APPLIED" or terminal.get("createdTurn") is not True or \
+            terminal.get("stopReason") != "end_turn" or \
+            not isinstance(terminal.get("sourceEpoch"), str) or \
+            not isinstance(terminal.get("sourceCursor"), str) or \
+            not terminal["sourceCursor"].isdecimal() or \
+            not isinstance(case.get("beforeSendRawHighwater"), str) or \
+            not case["beforeSendRawHighwater"].isdecimal() or \
+            int(terminal["sourceCursor"]) < int(case["beforeSendRawHighwater"]) or \
+            int(case.get("terminalOutputPage", {}).get("rawHighwater", "-1")) < int(terminal["sourceCursor"]) or \
+            case["terminalOutputPage"]["ledgerCursor"] != case["terminalOutputPage"]["ledgerHighwater"]:
+        fail("Grok Write exact original H terminal ACK or output highwater differs")
+    rows = db.execute(
+        "SELECT source_epoch,source_cursor,raw_bytes,state,resolved_event_id,no_event_reason,"
+        "operation_id,generation,process_ticket,custodian_nonce FROM v37_ledger_raw_source "
+        "WHERE domain_id=? AND session_id=? ORDER BY rowid", (domain, sid)).fetchall()
+    scoped = [row for row in rows if row[6:] ==
+              (send[6], send[4], send[5], send[7]) and
+              row[0] == terminal["sourceEpoch"] and
+              int(case["beforeSendRawHighwater"]) < int(row[1]) <= int(terminal["sourceCursor"])]
+    terminal_rows = [row for row in scoped if row[1] == terminal["sourceCursor"]]
+    if not scoped or len(terminal_rows) != 1:
+        fail("Grok Write original ACP turn scope or terminal source is absent")
+    terminal_frame = json.loads(bytes(terminal_rows[0][2]).decode())
+    if type(terminal_frame.get("id")) is not type(prompt_command.get("id")) or \
+            terminal_frame.get("id") != prompt_command.get("id") or \
+            terminal_frame.get("result", {}).get("stopReason") != "end_turn":
+        fail("Grok Write H terminal source is not the typed ACP prompt response")
+    permission_rows = []
+    raw_tools = []
+    for epoch, cursor, raw, state, event_id, reason, *_ in scoped:
+        frame = json.loads(bytes(raw).decode("utf-8"))
+        if frame.get("method") == "session/request_permission":
+            permission_rows.append((epoch, cursor, bytes(raw), state, event_id, reason, frame))
+        update = frame.get("params", {}).get("update") if frame.get("method") == "session/update" else None
+        if not isinstance(update, dict) or update.get("sessionUpdate") not in ("tool_call", "tool_call_update"):
+            continue
+        if frame.get("params", {}).get("sessionId") != session["threadId"] or \
+                not isinstance(update.get("toolCallId"), str) or not update["toolCallId"] or \
+                state != "RESOLVED" or reason is not None or not isinstance(event_id, str):
+            fail("Grok Write original ACP tool source identity differs")
+        normalized = db.execute(
+            "SELECT cursor,source_epoch,source_cursor,update_json FROM v37_ledger_index "
+            "WHERE source_kind='v37' AND domain_id=? AND session_id=? AND source_event_id=?",
+            (domain, sid, event_id)).fetchall()
+        if len(normalized) != 1 or type(normalized[0][0]) is not int or normalized[0][0] < 1 or \
+                normalized[0][1] != epoch or not isinstance(normalized[0][2], str) or \
+                not normalized[0][2].isdecimal() or int(normalized[0][2]) < 1:
+            fail("Grok Write tool source did not resolve to one original normalized row")
+        observed = json.loads(normalized[0][3])
+        if observed.get("sessionUpdate") != update["sessionUpdate"] or \
+                observed.get("toolCallId") != update["toolCallId"] or \
+                observed.get("_meta", {}).get("provider") != "grok-build" or \
+                observed["_meta"].get("threadId") != session["threadId"] or \
+                observed["_meta"].get("rawSourceCursor") != cursor or \
+                any(observed.get(key) != update[key] for key in
+                    ("kind", "status", "rawInput", "rawOutput", "content") if key in update):
+            fail("Grok Write raw ACP tool and persisted H update differ")
+        raw_tools.append({"cursor": cursor, "toolCallId": update["toolCallId"],
+                          "kind": update.get("kind"), "status": update.get("status"),
+                          "rawInput": update.get("rawInput"),
+                          "rawOutput": update.get("rawOutput"), "content": update.get("content")})
+    recorded = case.get("toolCandidates", [])
+    if len(recorded) != len(raw_tools) or not all(sum(
+            item.get("sourceCursor") == raw["cursor"] and
+            item.get("toolCallId") == raw["toolCallId"] and
+            item.get("kind") == raw["kind"] and item.get("status") == raw["status"] and
+            item.get("rawInput") == raw["rawInput"] and
+            item.get("rawOutput") == raw["rawOutput"] and
+            item.get("content") == raw["content"] for item in recorded) == 1
+            for raw in raw_tools):
+        fail("Grok Write original H tool candidates differ from the raw ACP source")
+    call_ids = {row["toolCallId"] for row in raw_tools}
+    if len(call_ids) != 1 or not raw_tools or any(row["status"] == "failed" for row in raw_tools) or \
+            raw_tools[-1]["status"] != "completed" or not any(
+                row["kind"] == "edit" and isinstance(row["rawInput"], dict) and
+                same_local_path(row["rawInput"].get("file_path", ""), target) and
+                row["rawInput"].get("content") == expected_bytes.decode() and
+                row["rawInput"].get("variant") == "Write" for row in raw_tools):
+        fail("Grok Write lacks one completed original exact-target Write tool")
+    permission = {"state": "NOT_REQUESTED", "originalRequestCount": 0}
+    if permission_rows:
+        if len(permission_rows) != 1:
+            fail("Grok Write original permission request is not unique")
+        epoch, cursor, raw, state, event_id, reason, frame = permission_rows[0]
+        params = frame.get("params", {})
+        tool = params.get("toolCall", {})
+        options = [value for value in params.get("options", []) if value.get("kind") == "allow_once"]
+        if params.get("sessionId") != session["threadId"] or \
+                type(frame.get("id")) not in (int, str) or \
+                tool.get("toolCallId") != next(iter(call_ids)) or \
+                tool.get("kind") != "edit" or tool.get("title") != f"Write `{target}`" or \
+                tool.get("rawInput", {}).get("variant") != "Write" or \
+                not same_local_path(tool.get("rawInput", {}).get("file_path", ""), target) or \
+                tool["rawInput"].get("content") != expected_bytes.decode() or \
+                not same_local_path(tool.get("_meta", {}).get("x.ai/tool", {}).get("input", {}).get("path", ""), target) or \
+                len(options) != 1 or not isinstance(options[0].get("optionId"), str) or \
+                state != "NO_EVENT" or event_id is not None or reason != "GROK_PERMISSION_REPLY_WRITTEN":
+            fail("Grok Write permission is not the original exact-target allow_once request")
+        write_path = tool["rawInput"]["file_path"]
+        prefix = f"gperm-{cursor}-allow-bound-f-write-"
+        steps = db.execute(
+            "SELECT step_id,command_hex,requires_response,phase,source_epoch,source_cursor,"
+            "permission_evidence FROM gogoke_v37_rpc_steps WHERE domain_id=? AND session_id=? "
+            "AND process_operation_id=? AND step_id LIKE ?",
+            (domain, sid, send[6], prefix + "%")).fetchall()
+        if len(steps) != 1 or steps[0][2:6] != (0, "WRITTEN", None, None):
+            fail("Grok Write permission writer has no one exact original H step")
+        step = steps[0]
+        wire = bytes.fromhex(step[1])
+        evidence = json.loads(step[6])
+        response = json.loads(wire.decode())
+        if step[0] != prefix + sha(step[6].encode())[:40] or not wire.endswith(b"\n") or \
+                response.get("jsonrpc") != "2.0" or type(response.get("id")) is not type(frame["id"]) or \
+                response.get("id") != frame["id"] or response.get("result") != {
+                    "outcome": {"outcome": "selected", "optionId": options[0]["optionId"]}} or \
+                "method" in response or "error" in response:
+            fail("Grok Write original permission ACK did not select the requested option")
+        prompt_steps = []
+        for step_id, command_hex in db.execute(
+                "SELECT step_id,command_hex FROM gogoke_v37_rpc_steps WHERE domain_id=? "
+                "AND session_id=? AND process_operation_id=? AND phase IN ('WRITTEN','OBSERVED')",
+                (domain, sid, send[6])):
+            command = json.loads(bytes.fromhex(command_hex).decode().rstrip("\n"))
+            if command == prompt_command:
+                prompt_steps.append(step_id)
+        if len(prompt_steps) != 1:
+            fail("Grok Write original prompt step is not unique")
+        expected = {"version": 1, "sourceOperation": send[6], "sourceEpoch": epoch,
+                    "sourceCursor": cursor, "sourceSha256": sha(raw), "domainId": domain,
+                    "sessionId": sid, "nativeSessionId": session["threadId"],
+                    "promptStepId": prompt_steps[0], "promptRpcId": prompt_command["id"],
+                    "permissionRpcId": frame["id"], "toolCallId": next(iter(call_ids)),
+                    "writePathSha256": sha(write_path.encode()), "seatId": case["seatId"],
+                    "permissionTier": "NETWORKED_WRITE", "seatIncarnation": seat[0],
+                    "seatGeneration": seat_generation, "claimGeneration": send[4],
+                    "claimRevision": int(open_receipt["revision"]),
+                    "decision": "allow-bound-f-write", "reason": "REGISTERED_F_WRITE",
+                    "selectedOptionId": options[0]["optionId"], "replySha256": sha(wire)}
+        if any(evidence.get(key) != value for key, value in expected.items()) or \
+                evidence.get("promptRequestSha256") != sha(original_wire.encode()) or \
+                evidence.get("scopeBasis") != (f"{case['worktreeId']}\n{f_identity}\n"
+                                                 f"NetworkedWrite\n{sha(write_path.encode())}") or \
+                not isinstance(evidence.get("seatRevision"), int) or evidence["seatRevision"] < 1:
+            fail("Grok Write permission evidence is not bound to this USER E/F/H scope")
+        permission = {"state": "ORIGINAL_HOST_ALLOW_ONCE_WRITTEN", "originalRequestCount": 1,
+                      "requestId": frame["id"], "sourceEpoch": epoch, "sourceCursor": cursor,
+                      "selectedOptionId": options[0]["optionId"], "stepId": step[0],
+                      "replySha256": sha(wire), "toolCallId": next(iter(call_ids))}
+    return {"writeObserved": True, "target": target, "toolCallId": next(iter(call_ids)),
+            "rawToolFrameCount": len(raw_tools), "permission": permission,
+            "targetSha256": sha(expected_bytes), "actualOsAclDisposition": "NOT_RUN",
+            "permissionCause": "UNATTRIBUTED"}
+
 with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db:
     db.execute("PRAGMA query_only=ON")
     result["epoch"] = exact_one(db, "SELECT epoch FROM v37_ledger_meta WHERE singleton=1")[0]
@@ -234,12 +400,35 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
         prompt = case["prompt"]
         marker = case.get("marker")
         expected_answer = case.get("expectedAnswer")
+        grok_write = case.get("caseMode") == "grokWrite"
+        if case.get("caseMode", "singleAnswer") not in ("singleAnswer", "grokWrite") or \
+                (grok_write and (driver != "grok" or len(journal["cases"]) != 1)):
+            fail("Provider case mode differs from its one selected fixed CLI")
         natural_claude = driver == "claude" and not supplement
         if natural_claude:
             if prompt != "What is 241 + 537?" or expected_answer != "778" or marker is not None:
                 fail("Claude arithmetic question or private answer differs")
         elif not isinstance(marker, str) or not marker:
             fail(f"{driver}: private marker absent")
+        write = case.get("write") if grok_write else None
+        if grok_write:
+            if not isinstance(write, dict) or not re.fullmatch(r"grok-provider-write_[a-f0-9]{32}\.json", marker) or \
+                    write.get("marker") != marker or write.get("targetAbsentBeforeSend") is not True or \
+                    write.get("actualOsAclDisposition") != "NOT_RUN" or \
+                    write.get("permissionCause") != "UNATTRIBUTED":
+                fail("Grok Write marker or fresh-target declaration differs")
+            expected_bytes = (json.dumps({"case": "GROK_PROVIDER_WRITE", "marker": marker},
+                                         ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+            target = Path(str(write.get("target", "")))
+            expected_prompt = (f"Create one nonsecret JSON file at {json.dumps(str(target))} "
+                               f"with these exact UTF-8 bytes: {json.dumps(expected_bytes.decode())}. "
+                               "Use the Write tool once for this file. Do not use shell, Git, network tools, "
+                               "browser, agents, or credentials. Do not retry or choose another path. "
+                               "Report the result of this one tool call.")
+            if write.get("expectedContent") != expected_bytes.decode() or \
+                    write.get("expectedContentLength") != len(expected_bytes) or \
+                    write.get("expectedContentSha256") != sha(expected_bytes) or prompt != expected_prompt:
+                fail("Grok Write prompt, target, or exact UTF-8 marker bytes differ")
         operation_record = next((row for row in journal["operations"]
                                  if row.get("request", {}).get("requestId") == send_id), None)
         request = operation_record.get("request") if operation_record else None
@@ -263,6 +452,12 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             fail(f"{driver}: original H session differs from configured E/F identity")
         operations = [row for row in journal["operations"]
                       if row.get("request", {}).get("targetId") == session_id]
+        if grok_write and any(sum(
+                row.get("request", {}).get("family") == "K-SESSION" and
+                row.get("request", {}).get("operation") == action
+                for row in operations) != 1
+                for action in ("open", "send", "stop", "admission-release")):
+            fail("Grok Write requires one original H open/send/stop/release each")
         by_action = {row["request"]["operation"]: row for row in operations
                      if row.get("request", {}).get("family") == "K-SESSION"}
         if not all(action in by_action for action in ("open", "stop", "admission-release")):
@@ -318,6 +513,11 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                 seat_settings.get("model") != expected_settings.get("model") or \
                 seat_settings.get("effort") != expected_settings.get("effort"):
             fail(f"{driver}: direct E row is not normally released with its original model/effort")
+        if grok_write and (exact_one(db,
+                "SELECT layer FROM gogoke_v37_seats WHERE domain_id=? AND seat_id=?",
+                (domain, case["seatId"]))[0] != "USER" or
+                seat_settings.get("permissionTier") != "NETWORKED_WRITE"):
+            fail("Grok Write original E is not USER NETWORKED_WRITE")
         instance = exact_one(db,
             "SELECT driver_id,version,program_digest,install_state,login_state "
             "FROM gogoke_v37_instances WHERE instance_id=?", (case["instanceId"],))
@@ -417,6 +617,20 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             "instanceId": case["instanceId"], "path": str(resolved_tree),
             "nativeOpaqueIdentity": tree[5], "fileIdInfoIdentity": actual_identity,
             "rootIdentity": [str(stat_after.st_dev), str(stat_after.st_ino)]})
+        if grok_write:
+            if not same_local_path(write.get("worktreePath", ""), resolved_tree) or \
+                    write.get("worktreeIdentity") != actual_identity or \
+                    target.name != marker or not same_local_path(target.parent, resolved_tree) or \
+                    not beneath(root / "v37-worktrees" / "single", target) or \
+                    not target.is_file() or target.is_symlink() or \
+                    (getattr(target.lstat(), "st_file_attributes", 0) & 0x400):
+                fail("Grok Write target does not belong to its exact registered F identity")
+            target_bytes = target.read_bytes()
+            if target_bytes != expected_bytes or \
+                    write.get("targetExistsAfterTurn") is not True or \
+                    write.get("targetContentLengthAfterTurn") != len(target_bytes) or \
+                    write.get("targetContentSha256AfterTurn") != sha(target_bytes):
+                fail("Grok Write target bytes differ from its one original H request")
         incoming = db.execute(
             "SELECT generation,operation_id,source_epoch,source_cursor,raw_bytes,state,process_ticket,custodian_nonce,no_event_reason "
             "FROM v37_ledger_raw_source WHERE domain_id=? AND session_id=? ORDER BY rowid",
@@ -515,9 +729,9 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                 marker_output = marker in provider_output
                 if frame.get("result", {}).get("stopReason") == "end_turn":
                     acp_end_candidates.append((frame, marker_output))
-                if frame.get("method") == "session/request_permission":
+                if not grok_write and frame.get("method") == "session/request_permission":
                     fail(f"{driver} produced a permission request despite the no-tool prompt")
-                if frame.get("method") == "session/update" and nested_text(frame,
+                if not grok_write and frame.get("method") == "session/update" and nested_text(frame,
                         ("params", "update", "sessionUpdate")) in ("tool_call", "tool_call_update"):
                     fail(f"{driver} produced a tool-call frame despite the no-tool prompt")
         if driver == "claude":
@@ -563,10 +777,10 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                     outbound_prompts.append(command_frame)
             terminal_ids = {json.dumps(frame.get("id"), separators=(",", ":")) for frame in outbound_prompts}
             prompt_echo = len(outbound_prompts) == 1
-            matching_ends = [frame for frame, saw_marker in acp_end_candidates if saw_marker and isinstance(frame, dict) and
+            matching_ends = [frame for frame, saw_marker in acp_end_candidates if (grok_write or saw_marker) and isinstance(frame, dict) and
                 frame.get("result", {}).get("stopReason") == "end_turn" and
                 json.dumps(frame.get("id"), separators=(",", ":")) in terminal_ids]
-            vendor_end = len(matching_ends) == 1 and marker_output
+            vendor_end = len(matching_ends) == 1 and (grok_write or marker_output)
             if driver == "opencode":
                 evidence = case.get("modelEffortEvidence", {})
                 if evidence.get("basis") != "REQUIRES_ORIGINAL_ACP_MODEL_EFFORT_ACK_READBACK":
@@ -647,7 +861,15 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                 record_model_evidence = {"basis": "ACTUAL_PINNED_GROK_PROCESS_ARGV",
                     "processId": argv.get("processId"), "commandLineSha256": argv.get("commandLineSha256"),
                     "model": argv.get("model"), "effort": argv.get("effort")}
-        if not prompt_echo or not (answer_output if natural_claude else marker_output) or not vendor_end:
+        write_evidence = None
+        if grok_write:
+            if not prompt_echo or not vendor_end:
+                fail("Grok Write has no one typed original ACP prompt/end-turn pair")
+            write_evidence = grok_write_evidence(db, domain, case, session, send,
+                outbound_prompts[0], original_wire, by_action["open"]["receipt"], seat,
+                binding[3], actual_identity, expected_bytes)
+        if not prompt_echo or not (write_evidence if grok_write else
+                answer_output if natural_claude else marker_output) or not vendor_end:
             fail(f"{driver}: original H prompt, provider answer or marker, and vendor end-turn are not all present")
         normalized = db.execute(
             "SELECT i.cursor,i.source_epoch,i.source_cursor,i.update_json,r.operation_id,r.generation,"
@@ -663,12 +885,14 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             fail(f"{driver}: original normalized provider output is absent")
         result["sessions"].append({"sessionId": session_id, "seatId": case["seatId"],
             "instanceId": case["instanceId"], "worktreeId": case["worktreeId"],
-            "driverId": pins[0][0], "version": pins[0][1], "binarySha256": pins[0][2],
+            "driverId": pins[0][0], "caseMode": case.get("caseMode", "singleAnswer"),
+            "version": pins[0][1], "binarySha256": pins[0][2],
             "persistedInstallState": instance[3], "installObservationCredit": False,
             "episodes": episodes, "normalized": updates, "missingNormalized": False,
             "rawFrameCount": len(incoming), "unknownFrameCount": sum(row[5] == "PENDING" for row in incoming),
             "allEpisodesStopped": True, "claimState": claim[0], "providerPromptObserved": prompt_echo,
             "providerEndTurn": vendor_end, "markerObserved": marker_output,
+            "writeObserved": bool(write_evidence), "writeEvidence": write_evidence,
             "answerObserved": answer_output,
             "vendorSessionId": terminal_session,
             "modelEffortEvidence": record_model_evidence if driver in ("opencode", "grok") else
@@ -682,10 +906,18 @@ if len(result["providerWorktrees"]) != case_count or len(result["sessions"]) != 
 if len({os.path.normcase(row["path"]) for row in result["providerWorktrees"]}) != case_count:
     fail("Provider F worktree roots overlap")
 result["filesAfter"] = file_facts()
+if any(row.get("writeObserved") and
+       (not Path(row["writeEvidence"]["target"]).is_file() or
+        Path(row["writeEvidence"]["target"]).is_symlink() or
+        (getattr(Path(row["writeEvidence"]["target"]).lstat(), "st_file_attributes", 0) & 0x400) or
+        sha(Path(row["writeEvidence"]["target"]).read_bytes()) != row["writeEvidence"]["targetSha256"])
+       for row in result["sessions"]):
+    fail("Grok Write target changed during the immutable readback")
 result["measurementPreservedDatabaseBytes"] = before == result["filesAfter"]
 result["directProviderEvidence"] = result["measurementPreservedDatabaseBytes"] and \
     all(row["allEpisodesStopped"] and row["providerEndTurn"] and
-        (row["answerObserved"] if row["driverId"] == "claude" and not supplement
+        (row["writeObserved"] if row.get("caseMode") == "grokWrite" else
+         row["answerObserved"] if row["driverId"] == "claude" and not supplement
          else row["markerObserved"])
         for row in result["sessions"])
 output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
