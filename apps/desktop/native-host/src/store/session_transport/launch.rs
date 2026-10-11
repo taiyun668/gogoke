@@ -69,6 +69,7 @@ pub(crate) struct LaunchEvidence {
     claude_resume_id: Option<String>,
     launch_admission: Option<seat::NativeLeadAdmission>,
     host_guard: Option<(HostEscalationProof,HostRecipient)>,
+    opencode_alias: Option<super::admission::DosAliasIntent>,
 }
 
 /// Constructed only after the current E/F/H physical write check.
@@ -652,7 +653,8 @@ impl LaunchEvidence {
             launch_request_id:request_id.into(),directory,
             profile, profile_name, program, program_identity, code_mode, module, directory_roots, tier,
             resume_old,resume_request_id,claude_resume_id,launch_admission,
-            host_guard:host_guard.map(|(proof,choice)|(proof.clone(),choice.clone())) };
+            host_guard:host_guard.map(|(proof,choice)|(proof.clone(),choice.clone())),
+            opencode_alias:None };
         if let Err(original) = observed.verify(db, root, owner, None) {
             let cleanup = observed.revoke_uncreated_credential(db,root);
             return Err(format!("{original}; uncreated credential settlement: {cleanup:?}"));
@@ -881,6 +883,9 @@ impl LaunchEvidence {
             || self.directory.identity()!=&self.homes.session.identity {
             return Err("native secretary launch: session home identity changed".into());
         }
+        if let Some(alias)=&self.opencode_alias {
+            self.verify_opencode_alias(db,alias)?;
+        }
         let program = evidence(instance::locate_bound_instance_program(db,&self.claim.instance_id,&self.pin.driver_id, &self.pin.digest, &self.pin.version))?;
         if program != self.program { return Err("native session launch: program path changed".into()); }
         if let Some(grok)=&self.grok_home {
@@ -938,7 +943,195 @@ impl LaunchEvidence {
         }
     }
 
+    /// Canonical physical F remains the only authorization and display path.
     pub(crate) fn cwd(&self) -> &Path { self.directory.cwd() }
+
+    /// OpenCode's ACP receives only this host-owned alias spelling. All other
+    /// consumers continue to use canonical `cwd()`.
+    pub(crate) fn protocol_cwd(&self) -> &Path {
+        self.opencode_alias.as_ref().map(|alias|
+            Path::new(&alias.protocol_path)).unwrap_or_else(||self.directory.cwd())
+    }
+
+    /// Root calls this after the original H open UNKNOWN or resume INTENT has
+    /// committed, and before ProcessCustodian.prepare. The canonical F binding
+    /// is rechecked before intent creation and after the DOS mapping appears.
+    pub(crate) fn define_opencode_alias_after_intent(
+        &mut self,
+        db:&mut VerifiedDatabaseConnection<'_>,
+        request_id:&str,
+        request_bytes:&[u8],
+    )->Result<(),String>{
+        if self.pin.driver_id!="opencode" {
+            if self.opencode_alias.is_some(){return Err("native alias: non-OpenCode binding".into());}
+            return Ok(());
+        }
+        if self.pin.version!="1.18.32" {
+            return Err("native DOS alias is limited to fixed OpenCode 1.18.32".into());
+        }
+        if matches!(&self.directory,LaunchDirectory::SecretarySessionHome(_)) {
+            return Ok(());
+        }
+        if self.opencode_alias.is_some(){return Err("native alias: intent already bound".into());}
+        let LaunchDirectory::ProjectWorktrees {worktree,..}=&self.directory else {
+            return Err("native OpenCode alias requires project F".into());
+        };
+        let physical_path=self.directory.cwd().to_str()
+            .ok_or("native OpenCode alias: F path is not well-formed Unicode")?;
+        if worktree.identity!=*self.directory.identity() {
+            return Err("native OpenCode alias: canonical F identity changed".into());
+        }
+        let request=super::wire::decode_request(request_bytes)
+            .map_err(|error|format!("native OpenCode alias request: {error:?}"))?;
+        if request.request_id!=request_id || request.domain_id!=self.claim.domain_id
+            || request.target_id!=self.claim.session_id || request.family!="K-SESSION"
+            || !matches!(request.operation.as_str(),"open"|"resume") {
+            return Err("native OpenCode alias: request is not the original open/resume".into());
+        }
+        let request_digest=crate::store::digest::sha256_hex(request_bytes);
+        let process_operation_id=format!("h-{}-{}",request.operation,&request_digest[..40]);
+        // The caller re-runs LaunchEvidence::verify immediately before this
+        // method. The exact H request and original F identity are additionally
+        // bound below before any OS mapping is created.
+        let mut alias=super::admission::reserve_opencode_dos_alias(db,
+            &self.claim.domain_id,&self.claim.session_id,request_id,request_bytes,
+            &self.claim.generation,&process_operation_id,&self.claim.instance_id,
+            &self.claim.binding_id,&worktree.worktree_id,
+            physical_path,self.directory.identity())
+            .map_err(|error|format!("native OpenCode alias intent: {error:?}"))?;
+        let requested_target=super::dos_alias::define(&alias.alias_name,self.directory.cwd())?;
+        if requested_target!=alias.requested_target {
+            return Err("native OpenCode alias: requested target changed".into());
+        }
+        let observed=super::dos_alias::verify_mapping(&alias.alias_name,None,
+            self.directory.identity())?;
+        alias=super::admission::mark_opencode_dos_alias_mapped(db,&alias,&observed)
+            .map_err(|error|format!("native OpenCode alias mapped commit: {error:?}"))?;
+        alias.protocol_path=format!(r"{}\",alias.alias_name);
+        self.opencode_alias=Some(alias);
+        self.verify_opencode_alias(db,self.opencode_alias.as_ref().unwrap())
+    }
+
+    /// Durable fence immediately before calling ProcessCustodian.prepare.
+    pub(crate) fn mark_opencode_prepare_started(
+        &mut self,db:&mut VerifiedDatabaseConnection<'_>,
+    )->Result<(),String>{
+        let Some(alias)=self.opencode_alias.as_ref() else {
+            if self.pin.driver_id=="opencode"
+                && matches!(&self.directory,LaunchDirectory::ProjectWorktrees{..}) {
+                return Err("native OpenCode alias intent absent before prepare".into());
+            }
+            return Ok(());
+        };
+        self.verify_opencode_alias(db,alias)?;
+        let updated=super::admission::mark_opencode_dos_alias_prepare_started(db,alias)
+            .map_err(|error|format!("native OpenCode alias prepare fence: {error:?}"))?;
+        self.opencode_alias=Some(updated);
+        Ok(())
+    }
+
+    /// Bind the alias record to the existing C process custody after that
+    /// durable C row is committed; never substitutes for ProcessCustodian.
+    pub(crate) fn bind_opencode_process_custody(
+        &mut self,db:&mut VerifiedDatabaseConnection<'_>,
+        operation_id:&str,custody:&crate::process::PreparedCustody,
+    )->Result<(),String>{
+        let Some(alias)=self.opencode_alias.as_ref() else {
+            if self.pin.driver_id=="opencode"
+                && matches!(&self.directory,LaunchDirectory::ProjectWorktrees{..}) {
+                return Err("native OpenCode alias absent while binding custody".into());
+            }
+            return Ok(());
+        };
+        let updated=super::admission::bind_opencode_dos_alias_custody(db,alias,
+            operation_id,custody.ticket.opaque(),&custody.custodian_nonce,
+            custody.identity.pid,custody.identity.creation_time_100ns)
+            .map_err(|error|format!("native OpenCode alias custody binding: {error:?}"))?;
+        self.opencode_alias=Some(updated);
+        Ok(())
+    }
+
+    /// Remove the exact mapping only after H, C and the Job have recorded the
+    /// same original stop fact. Cleanup has its own durable result and does
+    /// not require an admission release (cold resume can retain the claim).
+    pub(crate) fn cleanup_opencode_alias_after_stop(
+        &mut self,db:&mut VerifiedDatabaseConnection<'_>,stop_fact:&str,
+    )->Result<(),String>{
+        let Some(alias)=self.opencode_alias.as_ref() else {return Ok(());};
+        super::admission::verify_opencode_dos_alias_record(db,alias)
+            .map_err(|error|format!("native OpenCode alias cleanup record: {error:?}"))?;
+        if super::dos_alias::current_namespace_id()?!=alias.namespace_id {
+            let updated=super::admission::record_opencode_dos_alias_cleanup(db,alias,
+                stop_fact,"UNKNOWN","original logon namespace unavailable")
+                .map_err(|error|format!("native OpenCode alias cleanup outcome: {error:?}"))?;
+            self.opencode_alias=Some(updated);
+            return Err("native OpenCode alias cleanup retained UNKNOWN: namespace differs".into());
+        }
+        let (pid,creation)=super::dos_alias::current_host_identity()?;
+        if pid.to_string()!=alias.host_pid || creation.to_string()!=alias.host_creation_time_100ns {
+            let updated=super::admission::record_opencode_dos_alias_cleanup(db,alias,
+                stop_fact,"UNKNOWN","original host identity differs")
+                .map_err(|error|format!("native OpenCode alias cleanup outcome: {error:?}"))?;
+            self.opencode_alias=Some(updated);
+            return Err("native OpenCode alias cleanup retained UNKNOWN: host differs".into());
+        }
+        let result:(String,String)=match super::dos_alias::query(&alias.alias_name) {
+            Ok(mappings) if mappings.is_empty() => ("ABSENT".into(),"exact mapping absent before cleanup".into()),
+            Ok(mappings) if mappings.len()==1
+                && alias.observed_target.as_deref()==mappings.first().map(String::as_str) => {
+                match super::dos_alias::verify_mapping(&alias.alias_name,
+                    alias.observed_target.as_deref(),self.directory.identity()) {
+                    Ok(_) => match super::dos_alias::remove_exact(&alias.alias_name,&alias.requested_target) {
+                        Ok(()) => ("REMOVED".into(),"exact target removal and absence query succeeded".into()),
+                        Err(error) => ("UNKNOWN".into(),error),
+                    },
+                    Err(error)=>("UNKNOWN".into(),error),
+                }
+            },
+            Ok(_)=>("UNKNOWN".into(),"mapping target or count changed".into()),
+            Err(error)=>("UNKNOWN".into(),error),
+        };
+        let updated=super::admission::record_opencode_dos_alias_cleanup(db,alias,
+            stop_fact,result.0,result.1)
+            .map_err(|error|format!("native OpenCode alias cleanup outcome: {error:?}"))?;
+        self.opencode_alias=Some(updated);
+        if result.0=="UNKNOWN" {
+            return Err(format!("native OpenCode alias cleanup retained UNKNOWN: {}",result.1));
+        }
+        Ok(())
+    }
+
+    fn verify_opencode_alias(&self,db:&VerifiedDatabaseConnection<'_>,
+        alias:&super::admission::DosAliasIntent)->Result<(),String>{
+        if self.pin.driver_id!="opencode" || self.pin.version!="1.18.32"
+            || alias.phase=="INTENT"
+            || alias.phase=="UNKNOWN" || alias.cleanup_status!="NOT_REQUESTED" {
+            return Err("native OpenCode alias is not in a launchable phase".into());
+        }
+        let LaunchDirectory::ProjectWorktrees {worktree,..}=&self.directory else {
+            return Err("native OpenCode alias lost project F".into());
+        };
+        if alias.domain_id!=self.claim.domain_id || alias.session_id!=self.claim.session_id
+            || alias.generation!=self.claim.generation || alias.instance_id!=self.claim.instance_id
+            || alias.binding_id!=self.claim.binding_id || alias.worktree_id!=worktree.worktree_id
+            || alias.requested_target!=self.directory.cwd().to_string_lossy()
+            || alias.volume_serial!=format!("{:016x}",self.directory.identity().volume_serial)
+            || alias.file_id!=self.directory.identity().file_id.iter().map(|b|format!("{b:02x}")).collect::<String>()
+            || alias.protocol_path!=format!(r"{}\",alias.alias_name) {
+            return Err("native OpenCode alias durable F binding changed".into());
+        }
+        let namespace=super::dos_alias::current_namespace_id()?;
+        let (pid,creation)=super::dos_alias::current_host_identity()?;
+        if namespace!=alias.namespace_id || pid.to_string()!=alias.host_pid
+            || creation.to_string()!=alias.host_creation_time_100ns {
+            return Err("native OpenCode alias host/logon identity changed".into());
+        }
+        super::admission::verify_opencode_dos_alias_record(db,alias)
+            .map_err(|error|format!("native OpenCode alias record: {error:?}"))?;
+        super::dos_alias::verify_mapping(&alias.alias_name,alias.observed_target.as_deref(),
+            self.directory.identity())?;
+        Ok(())
+    }
 
     fn model_home(&self)->&instance::ResolvedDirectory {
         self.private_history.as_ref().map(|history|&history.directory).unwrap_or(&self.homes.instance)
@@ -1031,6 +1224,21 @@ impl LaunchEvidence {
         if !path.is_absolute() || observed.contains('\0') {
             return Err(format!("native thread cwd is not absolute: observed={observed:?}"));
         }
+        if let Some(alias)=&self.opencode_alias {
+            let alias_spelling=|value:&str|value.replace('/',"\\").to_ascii_lowercase();
+            if alias_spelling(observed)==alias_spelling(&alias.protocol_path) {
+                if super::dos_alias::current_namespace_id()?!=alias.namespace_id {
+                    return Err("native OpenCode alias observation: logon namespace changed".into());
+                }
+                let (pid,creation)=super::dos_alias::current_host_identity()?;
+                if pid.to_string()!=alias.host_pid || creation.to_string()!=alias.host_creation_time_100ns {
+                    return Err("native OpenCode alias observation: host identity changed".into());
+                }
+                super::dos_alias::verify_mapping(&alias.alias_name,
+                    alias.observed_target.as_deref(),self.directory.identity())?;
+                return Ok(());
+            }
+        }
         // Only known DOS/verbatim spellings of the already-bound local path
         // are inspected. Provider output cannot make this host open a new
         // target (including a remote share) merely to compare identities.
@@ -1074,6 +1282,15 @@ impl LaunchEvidence {
     }
 
     pub(crate) fn request(&self) -> Result<PrepareRequest, String> {
+        if self.pin.driver_id=="opencode"
+            && matches!(&self.directory,LaunchDirectory::ProjectWorktrees{..}) {
+            let alias=self.opencode_alias.as_ref()
+                .ok_or("native OpenCode launch: durable DOS alias intent absent")?;
+            if !matches!(alias.phase.as_str(),"MAPPED"|"PREPARE_STARTED"|"CUSTODY_BOUND")
+                || alias.cleanup_status!="NOT_REQUESTED" {
+                return Err("native OpenCode launch: DOS alias is not ready".into());
+            }
+        }
         let system_root = evidence(std::env::var("SystemRoot"))?;
         if !Path::new(&system_root).is_absolute() || system_root.contains('\0') {
             return Err("native session launch: invalid SystemRoot".into());
@@ -1177,7 +1394,7 @@ impl LaunchEvidence {
         if self.file_credentials_bound() {
             launch.arguments.splice(0..0,["-c".to_owned(),"cli_auth_credentials_store=\"file\"".to_owned()]);
         }
-        launch.current_directory = Some(self.directory.cwd().to_path_buf());
+        launch.current_directory = Some(self.protocol_cwd().to_path_buf());
         launch.protocol_stdio = true;
         launch.persistent_protocol_stdio = true;
         launch.environment = Some(environment);
