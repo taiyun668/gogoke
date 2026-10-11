@@ -26,8 +26,15 @@ const hostSessionLocator = (domain, cause, policyRevision) => {
 export async function runRulesCase(product, config, journal) {
   const c = config.rules;
   const hostOnly = c.selection === 'HOST_BUSY_TO_IDLE_ONLY';
+  const reusedRecipients = hostOnly ? c.host?.reusePreparedRecipients : undefined;
   requireFact(!hostOnly || (c.host?.busyToIdleOnly === true && !c.foreignProject),
     'Host-only selection requires one real busy-to-idle recipient and no foreign policy');
+  requireFact(reusedRecipients === undefined || (Object.keys(reusedRecipients).sort().join(',') ===
+      'originalJournal,originalJournalSha256' &&
+      typeof reusedRecipients.originalJournal === 'string' && path.isAbsolute(reusedRecipients.originalJournal) &&
+      /^[a-f0-9]{64}$/.test(reusedRecipients.originalJournalSha256) &&
+      JSON.stringify(reusedRecipients) === JSON.stringify(journal.hostRecipientReuse)),
+    'Host-only reuse requires the exact pinned original preparation journal');
   requireFact(process.platform === 'win32' && config.repositoryId === 'gogokeSeatTestbed' &&
     /^[a-f0-9]{40}$/.test(config.sourceCommit ?? '') &&
     c?.lifecycleOwnership === 'EXCLUSIVE_V08_SUBMITTER_AND_REVIEWER' &&
@@ -120,6 +127,15 @@ export async function runRulesCase(product, config, journal) {
         before.capacityQualification?.state === 'CAPACITY_4_WITHIN_REFERENCE_OWNER_AND_HOST',
       'Host-only baseline must continue the closed A policy and actual four-slot capacity');
       record.priorCore13 = c.priorCore13;
+      if (reusedRecipients) {
+        requireFact(before.hostRecipientReuse?.state === 'PREPARED_REUSE_CONFIRMED' &&
+          before.hostRecipientReuse.originalJournalSha256 === reusedRecipients.originalJournalSha256 &&
+          JSON.stringify(before.hostRecipientReuse.selections) ===
+            JSON.stringify([c.host.destination, c.host.alternateDestination]) &&
+          before.hostRecipientReuse.originalRequestIds?.length === 8,
+        'Host-only reuse needs the fresh closed E/F read and eight pinned original requests before H/model input');
+        record.hostRecipientReuse = reusedRecipients;
+      }
     }
     let policyRevision = String(before.policy.head[0].revision);
     const fromStage = before.policy.head[0].current_stage, toStage = hostOnly ? fromStage : id('v08Stage');
@@ -449,6 +465,15 @@ export async function runRulesCase(product, config, journal) {
       'Four exclusive actual registered test seats/worktrees and a nonsecret busy question are required');
       record.hostOwnership = h.lifecycleOwnership;
       record.hostRecipients = selections; product.save();
+      if (reusedRecipients) {
+        requireFact((journal.hostUserPreparations ?? []).length === 2 &&
+          journal.hostUserPreparations.every((entry, index) =>
+            entry.mode === 'REUSE_PREPARED' &&
+            JSON.stringify(entry.selection) === JSON.stringify(selections[index]) &&
+            typeof entry.cardRequestId === 'string' && typeof entry.treeRequestId === 'string' &&
+            entry.templateId === before.hostTemplateSettings[0].templateId),
+        'Host-only reuse must retain only fresh E/F read request IDs for exact recipients');
+      }
       const open = async selection => {
         const session = await c.openHostSession(selection);
         requireFact(journal.sessions.includes(session) && selections.some(row =>
