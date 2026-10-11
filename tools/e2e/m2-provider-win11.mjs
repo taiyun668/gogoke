@@ -361,17 +361,23 @@ async function runSequenceTurns(row, record, session) {
     resumedCapability.result.version === row.version &&
     resumedCapability.result.binaryDigest === `sha256:${row.sha256}` &&
     (claudeContext
-      ? typeof resumedCapability.result.capabilities?.resume === 'string'
+      ? typeof resumedCapability.result.capabilities?.resume === 'string' &&
+        resumedCapability.result.capabilities?.interruptAndResume === undefined
       : resumedCapability.result.capabilities?.inTurnSteer === 'UNSUPPORTED' &&
         resumedCapability.result.capabilities?.resume ===
           'SOURCE_PRESENT_NATIVE_RESUME_BEHAVIOUR_NOT_RUN'),
   `${row.driverId}: resumed exact fixed CLI capability differs`);
-  sequence.resumedCapability = { requestId: resumedCapability.requestId,
-    processOperationId: resumedCapability.result.processOperationId,
-    inTurnSteer: resumedCapability.result.capabilities.inTurnSteer ?? null,
-    resume: resumedCapability.result.capabilities.resume,
-    interruptAndResume: resumedCapability.result.capabilities.interruptAndResume ?? null,
-    evidenceBasis: resumedCapability.result.evidenceBasis };
+  sequence.resumedCapability = claudeContext
+    ? { requestId: resumedCapability.requestId,
+      processOperationId: resumedCapability.result.processOperationId,
+      inTurnSteer: resumedCapability.result.capabilities.inTurnSteer ?? null,
+      resume: resumedCapability.result.capabilities.resume,
+      interruptAndResume: resumedCapability.result.capabilities.interruptAndResume ?? null,
+      evidenceBasis: resumedCapability.result.evidenceBasis }
+    : { requestId: resumedCapability.requestId,
+      processOperationId: resumedCapability.result.processOperationId,
+      inTurnSteer: resumedCapability.result.capabilities.inTurnSteer,
+      resume: resumedCapability.result.capabilities.resume };
   if (claudeContext) {
     const priorMarker = sequence.turns[0].marker;
     let before;
@@ -443,7 +449,7 @@ async function runCase(row, instances) {
   const record = { driverId: row.driverId, instanceId: row.instanceId, seatId: row.seatId,
     worktreeId: row.worktreeId, fixedVersion: row.version, fixedSha256: row.sha256,
     expectedModel: row.model, expectedEffort: row.effort, caseMode: row.caseMode ?? 'singleAnswer',
-    contextAfterResume: row.contextAfterResume === true,
+    contextAfterResume: row.contextAfterResume === true ? true : undefined,
     state: 'PREFLIGHT', acceptance: false };
   journal.cases.push(record); product.save();
   const instance = instances.instances.find(value => value.instanceId === row.instanceId && value.driverId === row.driverId);
@@ -512,7 +518,7 @@ async function runCase(row, instances) {
       `${row.driverId}: original H ACP sequence capability facts differ`);
     } else {
       check(row.driverId === 'claude' && row.contextAfterResume === true &&
-        typeof capabilities?.resume === 'string',
+        typeof capabilities?.resume === 'string' && capabilities?.interruptAndResume === undefined,
       'Claude case must preserve the original native-resume capability claim');
     }
     record.sequenceCapability = { inTurnSteer: capabilities.inTurnSteer,

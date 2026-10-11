@@ -724,6 +724,8 @@ def read_claude_sequence(case):
             resumed_capability.get("evidenceBasis") != "ORIGINAL_CLAUDE_INITIALIZE_ACK" or \
             not isinstance(capability.get("resume"), str) or \
             resumed_capability.get("resume") != capability.get("resume") or \
+            resumed_capability.get("inTurnSteer") != capability.get("inTurnSteer") or \
+            "interruptAndResume" in capability or resumed_capability.get("interruptAndResume") is not None or \
             resumed_capability.get("processOperationId") is None:
         fail("Claude original native-resume capability gap was not preserved across the H attempt")
 
@@ -851,6 +853,7 @@ def read_claude_sequence(case):
                     probe_result["result"].get("processOperationId") != episodes[episode_index][1] or \
                     probe_result["result"].get("evidenceBasis") != "ORIGINAL_CLAUDE_INITIALIZE_ACK" or \
                     probe_result["result"].get("capabilities", {}).get("resume") != expected_claim.get("resume") or \
+                    probe_result["result"].get("capabilities", {}).get("inTurnSteer") != expected_claim.get("inTurnSteer") or \
                     probe_result["result"].get("requestedModel") != case.get("expectedModel") or \
                     probe_result["result"].get("requestedEffort") != case.get("expectedEffort"):
                 fail("Claude original/resumed initialize acknowledgement is not bound to its H generation")
@@ -1027,6 +1030,7 @@ def read_claude_sequence(case):
             "providerEndTurn": True, "markerObserved": True, "writeObserved": False,
             "writeEvidence": None, "answerObserved": True, "vendorSessionId": original_vendor_id,
             "originalTurns": observed_turns, "nativeResumeClaim": capability.get("resume"),
+            "inTurnSteerClaim": capability.get("inTurnSteer"),
             "resumedNativeResumeClaim": resumed_capability.get("resume"),
             "runningInterrupt": sequence.get("runningInterrupt"),
             "coldResume": resume, "modelEffortEvidence": {"basis": "ACTUAL_PINNED_CLAUDE_PROCESS_ARGV_TWO_EPISODES",
