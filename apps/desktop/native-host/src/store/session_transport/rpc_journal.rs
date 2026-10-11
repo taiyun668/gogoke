@@ -2889,6 +2889,62 @@ pub(crate) fn read_observed_claude_ack(
     transact(db, |db| read_observed_claude_ack_in_transaction(db, owner, step))
 }
 
+/// Reconcile only an already WRITTEN deterministic Claude initialize from
+/// its original captured A frame. This does no stdin write and cannot grant
+/// an ordinary User send while the old claim is still STOPPED.
+pub(crate) fn reconcile_written_claude_initialize_from_a(
+    db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,
+    step:&ClaudeStep<'_>,
+) -> Result<Option<RawSourceKey>> {
+    let (expected_step,expected_id)=claude_initialize_identity(step.open_request_bytes);
+    if step.step_id!=expected_step || !matches!(step.command,
+        commands::ClaudeCommand::Initialize {request_id} if *request_id==expected_id) {
+        return Err(RpcJournalError::Denied);
+    }
+    transact(db,|db| {
+        check_owner_in_current_transaction(db,owner)?;
+        original_open(db,&step.fields())?;
+        let (operation,driver)=claude_initialize_binding(db,step,
+            &["ACTIVE","UNKNOWN"],false)?;
+        if driver!="claude" {return Err(RpcJournalError::Denied);}
+        let encoded=claude_bytes(step,&driver)?;
+        match same_row(db,&step.fields(),&operation,&encoded)? {
+            Some(Phase::Written)=>{},
+            Some(Phase::Observed)=>return Ok(None),
+            _=>return Err(RpcJournalError::Conflict),
+        }
+        let sources=Statement::prepare(db.as_ptr(),
+            "SELECT source_epoch,source_cursor,hex(raw_bytes) FROM main.v37_ledger_raw_source
+              WHERE operation_id=?1 AND domain_id=?2 AND session_id=?3
+                AND generation=?4 AND process_ticket=?5 AND custodian_nonce=?6
+                AND state='PENDING' ORDER BY CAST(source_cursor AS INTEGER)")?;
+        for (index,value) in [operation.as_str(),step.domain_id,step.session_id,
+            step.custody.binding.generation.as_str(),step.custody.ticket.opaque(),
+            step.custody.custodian_nonce.as_str()].iter().enumerate() {
+            sources.bind_text((index+1) as i32,value)?;
+        }
+        let mut found=None;
+        while sources.step_row()? {
+            let bytes=unhex(&sources.column_text(2)?)?;
+            let observation=stream_json::decode_claude_line(&bytes).map_err(|error|
+                RpcJournalError::Store(AtomicError::DurabilityContractFailed(
+                    format!("Claude original initialize A source: {error:?}"))))?;
+            if matches!(observation,stream_json::ClaudeData::ControlResponse {
+                request_id,.. } if request_id==expected_id) {
+                if found.is_some() {return Err(RpcJournalError::Conflict);}
+                found=Some(RawSourceKey {operation_id:operation.clone(),
+                    source_epoch:sources.column_text(0)?,
+                    source_cursor:sources.column_text(1)?});
+            }
+        }
+        drop(sources);
+        if let Some(key)=&found {
+            observe_claude_captured_ack_in_transaction(db,owner,step,key)?;
+        }
+        Ok(found)
+    })
+}
+
 /// Historical proof of the original Claude open handshake. This only reads
 /// the original open intent, episode, RPC step and captured A ACK. It does not
 /// grant live custody, infer a vendor session ID, or contact the process.
