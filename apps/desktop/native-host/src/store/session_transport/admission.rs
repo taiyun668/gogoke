@@ -1804,10 +1804,10 @@ mod tests {
             image_path TEXT,binary_digest_sha256 TEXT,profile_id TEXT,domain_id TEXT,
             generation TEXT,state TEXT,stop_proof_hash TEXT)").unwrap();
         db.execute(&format!(r#"INSERT INTO gogoke_coordination_process_custody VALUES(
-            '{process_operation}','child-ticket','custodian-nonce','42','123','C:\cli.exe',
+            '{process_operation}','child-ticket','custodian-nonce','42','123','C:\Program Files\fixture\cli.exe',
             'sha256:abc','instance','domain','generation','PREPARED',NULL)"#)).unwrap();
         let facts=AliasCustodyFacts{operation_id:&process_operation,ticket:"child-ticket",
-            nonce:"custodian-nonce",pid:"42",creation:"123",image_path:r"C:\cli.exe",
+            nonce:"custodian-nonce",pid:"42",creation:"123",image_path:r"C:\Program Files\fixture\cli.exe",
             binary_digest:"sha256:abc",profile_id:"instance",domain_id:"domain",
             generation:"generation",state:"PREPARED"};
         verify_original_alias_custody_row(&db,&started,&facts,"PREPARED").unwrap();
