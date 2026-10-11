@@ -126,6 +126,13 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $env:GOGOKE_CONTROLLED_NODE_PATH = Get-Command node.exe -CommandType Application | Select-Object -First 1 -ExpandProperty Source
+          $execPath = & git --exec-path
+          if ($LASTEXITCODE -ne 0) { throw 'Git exec path unavailable' }
+          $mingw = Split-Path -Parent (Split-Path -Parent $execPath.Trim())
+          $backend = Join-Path $mingw 'bin/git.exe'
+          if (-not (Test-Path -LiteralPath $backend -PathType Leaf)) { throw 'Actual Git backend image unavailable; no launcher substitute' }
+          $env:GOGOKE_CONTROLLED_GIT_PATH = $backend
           cargo check --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib
           if ($LASTEXITCODE -ne 0) { throw 'Production configuration check failed; test-only historical fixture is not production evidence.' }
       - name: Run the explicitly selected affected tests
