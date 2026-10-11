@@ -1499,6 +1499,34 @@ impl<'root> ProductDatabase<'root> {
                         row.insert(key("models"), Json::Array(models));
                     }
                 }
+                if let Some(options)=instance::read_verified_model_efforts(
+                    &self.connection,&profile.instance_id).map_err(fail)? {
+                    let text=|value:&str|Json::String(JsonString::from_str(value));
+                    let mut models=Vec::new();
+                    for option in options.models {
+                        let mut fields=BTreeMap::from([(key("model"),text(&option.model))]);
+                        if let Some(value)=option.default_effort {
+                            fields.insert(key("defaultEffort"),text(&value));
+                        }
+                        if let Some(values)=option.supported_efforts {
+                            fields.insert(key("efforts"),Json::Array(values.iter().map(|value|text(value)).collect()));
+                        }
+                        models.push(Json::Object(fields));
+                    }
+                    row.insert(key("modelOptions"),Json::Array(models));
+                    row.insert(key("modelOptionsSource"),text(&options.models_source));
+                    row.insert(key("modelOptionsObservedAt"),text(&options.models_observed_at));
+                    // Offer the host tier already exercised with this exact
+                    // fixed CLI. This is a deliberately limited configuration
+                    // menu, not a model/list claim about permissions. Fresh H
+                    // admission still checks the pin, LPAC and User bounds.
+                    if let Some(pin)=self.read_registered_instance(&profile.instance_id)? {
+                        if pin.driver_id=="codex" && pin.version=="0.160.0"
+                            && pin.program_digest=="sha256:fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d" {
+                            row.insert(key("configurationPermissions"),Json::Array(vec![text("NETWORKED_WRITE")]));
+                        }
+                    }
+                }
                 if let Some(reason)=self.unbound_managed_source_reason(&profile.instance_id,&profile.driver_id)? {
                     row.insert(key("programSourceError"),
                         Json::String(JsonString::from_str(reason)));

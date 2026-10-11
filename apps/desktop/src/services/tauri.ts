@@ -2,8 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import type { SecretarySource } from "@/features/secretary/Secretary";
 import type { SecretaryPage, Routine } from "@/features/secretary/secretaryModel";
 import type { ConversationItem } from "@/types";
+import { readDesign37InstancesSnapshot } from "@/features/seats/design37Instances";
 
-type SecretaryConfiguration =
+type SecretaryLimits = {
+  globalParallelCap?: string | null;
+  globalEffectiveLimit?: string | null;
+};
+type SecretaryConfiguration = SecretaryLimits & (
   | { schema: "gogoke.37.secretary-configuration.v1"; state: "UNSET" | "REVOKED" }
   | { schema: "gogoke.37.secretary-configuration.v1"; state: "DESIGNATED";
       seatId: string; incarnation: string; generation: string; revision: string;
@@ -14,7 +19,7 @@ type SecretaryConfiguration =
         claimState?: string; stoppedFact?: boolean | null; runtimeAvailable?: boolean;
         historical?: boolean;
         turnState?: "IDLE" | "RUNNING" | "UNKNOWN";
-        threadId?: string; ledgerEpoch?: string; ledgerCursor?: string } };
+        threadId?: string; ledgerEpoch?: string; ledgerCursor?: string } });
 
 type SecretaryRoutineRow = { routineId: string; seatId: string; incarnation: string;
   originalText: string; scheduleRaw: string; timezone: string; nextDueMs: string;
@@ -34,6 +39,13 @@ const optionalText = (value: unknown): value is string | null =>
 function parseSecretaryConfiguration(value: unknown): SecretaryConfiguration {
   if (!record(value) || value.schema !== "gogoke.37.secretary-configuration.v1") {
     throw new Error(`Native Secretary configuration schema is unavailable: ${JSON.stringify(value)}`);
+  }
+  for (const field of ["globalParallelCap", "globalEffectiveLimit"]) {
+    const limit = value[field];
+    if (limit !== undefined && limit !== null &&
+        (!decimal(limit) || BigInt(limit) < 1n || BigInt(limit) > 4294967295n)) {
+      throw new Error(`Native Secretary ${field} is invalid: ${JSON.stringify(limit)}`);
+    }
   }
   if (value.state === "UNSET" || value.state === "REVOKED") {
     return value as SecretaryConfiguration;
@@ -95,6 +107,74 @@ async function readSecretaryConfiguration(): Promise<SecretaryConfiguration> {
   return parseSecretaryConfiguration(await design37UserFrame({
     schema: "gogoke.37.owner-configuration.v1", command: "secretary-configuration-read",
   }));
+}
+
+async function readSecretarySettingChoices(): Promise<SecretaryPage["settings"]> {
+  const management = await design37UserFrame({
+    schema: "gogoke.37.owner-configuration.v1", command: "instance-management-read",
+  });
+  if (!record(management) || management.schema !== "gogoke.37.instance-management.v1" ||
+      !Array.isArray(management.profiles)) {
+    throw new Error(`Native Secretary instance choices are malformed: ${JSON.stringify(management)}`);
+  }
+  const registry = readDesign37InstancesSnapshot(await invoke<unknown>("gogoke_design37_instances"));
+  const settings: SecretaryPage["settings"] = { instances: [], efforts: [], permissions: [] };
+  const ids = new Set<string>();
+  let commonEfforts: string[] | null = null;
+  let commonPermissions: string[] | null = null;
+  for (const profile of management.profiles) {
+    if (!record(profile) || !nonempty(profile.instanceId) || ids.has(profile.instanceId)) {
+      throw new Error("Native Secretary instance choice identity is invalid or duplicated.");
+    }
+    ids.add(profile.instanceId);
+    const instance = registry.instances.find((item) => item.instanceId === profile.instanceId);
+    if (profile.enabled !== true || instance?.state !== "LOGGED_IN" ||
+        profile.driverId !== instance.driverId || profile.programSourceError ||
+        !nonempty(profile.name) || !nonempty(profile.modelsSource) ||
+        !nonempty(profile.modelsObservedAt)) continue;
+    if (!Array.isArray(profile.models) || !profile.models.every(nonempty) ||
+        new Set(profile.models).size !== profile.models.length) {
+      throw new Error("Native Secretary verified model choice list is invalid.");
+    }
+    if (profile.models.length === 0) continue;
+    // G's present interface offers one effort list. Offer only the intersection
+    // of original per-model options, never a vendor default or an E scope.
+    if (profile.modelOptions === undefined) continue;
+    if (!Array.isArray(profile.modelOptions) ||
+        profile.modelOptionsSource !== profile.modelsSource ||
+        profile.modelOptionsObservedAt !== profile.modelsObservedAt ||
+        profile.modelOptions.length !== profile.models.length) {
+      throw new Error("Native Secretary model option provenance differs from the verified model list.");
+    }
+    const availableModels: string[] = [];
+    for (let index = 0; index < profile.models.length; index += 1) {
+      const option: unknown = profile.modelOptions[index];
+      if (!record(option) || option.model !== profile.models[index] ||
+          (option.efforts !== undefined && (!Array.isArray(option.efforts) ||
+            !option.efforts.every(nonempty) || new Set(option.efforts).size !== option.efforts.length))) {
+        throw new Error("Native Secretary per-model effort options are invalid.");
+      }
+      const efforts = option.efforts === undefined ? [] : option.efforts as string[];
+      if (efforts.length === 0) continue;
+      availableModels.push(profile.models[index]);
+      commonEfforts = commonEfforts === null ? efforts :
+        commonEfforts.filter((effort) => efforts.includes(effort));
+    }
+    if (availableModels.length > 0) {
+      settings.instances.push({ id: profile.instanceId, name: profile.name, models: availableModels });
+      const permissions = profile.configurationPermissions ?? [];
+      if (!Array.isArray(permissions) || !permissions.every((value: unknown) =>
+          ["READ_ONLY", "NO_NETWORK", "ISOLATED_WRITE", "NETWORKED_WRITE"].includes(String(value))) ||
+          new Set(permissions).size !== permissions.length) {
+        throw new Error("Native Secretary configuration permission choices are invalid.");
+      }
+      commonPermissions = commonPermissions === null ? permissions as string[] :
+        commonPermissions.filter((permission) => permissions.includes(permission));
+    }
+  }
+  settings.efforts = commonEfforts ?? [];
+  settings.permissions = commonPermissions ?? [];
+  return settings;
 }
 
 async function readSecretaryRoutines(): Promise<SecretaryRoutineRow[]> {
@@ -483,7 +563,15 @@ export function createDesign37SecretarySource(): {
 } {
   const readSnapshot = async () => {
     const configuration = await readSecretaryConfiguration();
-    const settings: SecretaryPage["settings"] = { instances: [], efforts: [], permissions: [] };
+    const settings: SecretaryPage["settings"] & {
+      globalParallelCap?: number; globalEffectiveLimit?: number;
+    } = await readSecretarySettingChoices();
+    if (configuration.globalParallelCap) {
+      settings.globalParallelCap = Number(configuration.globalParallelCap);
+    }
+    if (configuration.globalEffectiveLimit) {
+      settings.globalEffectiveLimit = Number(configuration.globalEffectiveLimit);
+    }
     if (configuration.state !== "DESIGNATED") {
       return { configuration, page: {
         entry: configuration.state === "UNSET" ? { kind: "unset" as const } :
