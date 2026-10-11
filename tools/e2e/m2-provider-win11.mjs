@@ -588,7 +588,9 @@ async function runClaudeSequenceTurns(row, record, session) {
     resumed.result.oldGeneration === oldGeneration &&
     /^\d+$/.test(resumed.result.newGeneration ?? '') &&
     BigInt(resumed.result.newGeneration) > BigInt(oldGeneration) &&
-    (claudeSequence ? Object.hasOwn(resumed.result, 'threadId') && resumed.result.threadId === null :
+    (claudeSequence ? Object.hasOwn(resumed.result, 'threadId') &&
+      resumed.result.readinessBasis === 'ORIGINAL_CLAUDE_INITIALIZE_ACK' &&
+      (resumed.result.threadId === null || resumed.result.threadId === sequence.vendorSessionId) :
       (!resumed.result.threadId || resumed.result.threadId === session.threadId)),
   `${row.driverId}: original stopped session did not resume its own H/thread`);
   session.generation = resumed.result.newGeneration;
@@ -601,7 +603,8 @@ async function runClaudeSequenceTurns(row, record, session) {
     resumedCapability.result.version === row.version &&
     resumedCapability.result.binaryDigest === `sha256:${row.sha256}` &&
     (!claudeSequence || (Object.hasOwn(resumedCapability.result, 'threadId') &&
-      resumedCapability.result.threadId === null)) &&
+      (resumedCapability.result.threadId === null ||
+        resumedCapability.result.threadId === sequence.vendorSessionId))) &&
     (claudeContext
       ? typeof resumedCapability.result.capabilities?.resume === 'string' &&
         resumedCapability.result.capabilities?.interruptAndResume === undefined

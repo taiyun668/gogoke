@@ -863,11 +863,8 @@ impl<'root> ProductDatabase<'root> {
                 let receipt_id=self.resume_source_receipt(&request.domain_id,&request.target_id,
                     &operation,&new_generation,&request.request_id)?;
                 return Ok(encode_receipt(request,V37Status::Replayed,previous,revision,
-                    BTreeMap::from([
-                        (JsonString::from_str("state"),text("RUNNING")),
-                        (JsonString::from_str("oldGeneration"),text(&old_generation)),
-                        (JsonString::from_str("newGeneration"),text(&new_generation)),
-                        (JsonString::from_str("receiptId"),text(&receipt_id))])));
+                    self.native_resume_receipt_payload(request,&operation,&old_generation,
+                        &new_generation,&receipt_id)?));
             }
             if !operation.is_empty() && matches!(phase.as_str(),"PREPARED"|"UNKNOWN") {
                 let key=(request.domain_id.clone(),request.target_id.clone());
@@ -892,9 +889,20 @@ impl<'root> ProductDatabase<'root> {
                                 &self.owner,&request.domain_id,&request.target_id,
                                 &request.request_id,&request.raw_bytes,&operation,&new_generation))?;
                         }
-                        if self.observed_resume_thread(&request.domain_id,&request.target_id,
-                            &operation,&new_generation,&request.request_id)?
-                            .as_deref()==Some(expected.as_str()) {
+                        // A PREPARED Claude candidate may be transport-ready
+                        // before its first legal USER produces system/init.
+                        // UNKNOWN still needs the original stronger init proof.
+                        let resume_ready=if claude && phase=="PREPARED" {
+                            failure(h::read_original_claude_resume_ready(&self.connection,
+                                &request.domain_id,&request.target_id,&request.request_id,
+                                &new_generation,&operation))?.is_some_and(|ready|
+                                    ready.expected_vendor_session_id==expected)
+                        } else {
+                            self.observed_resume_thread(&request.domain_id,&request.target_id,
+                                &operation,&new_generation,&request.request_id)?
+                                .as_deref()==Some(expected.as_str())
+                        };
+                        if resume_ready {
                             let current=failure(runtime::observe_claim(&self.connection,
                                 &NativeOrigin::user(&self.owner),&request.domain_id,
                                 &original_seat,&request.target_id))?
@@ -922,8 +930,12 @@ impl<'root> ProductDatabase<'root> {
                                 Ok(next)=>{self.finish_native_transaction(Ok(()))?;next},
                                 Err(error)=>{self.finish_native_transaction(Err(error))?;unreachable!()}
                             };
+                            let observed_thread=if claude {
+                                self.observed_resume_thread(&request.domain_id,&request.target_id,
+                                    &operation,&new_generation,&request.request_id)?
+                            } else {Some(expected)};
                             self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?
-                                .thread_id=Some(expected);
+                                .thread_id=observed_thread;
                             self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?
                                 .evidence.adopt_resume(&self.connection,&self.owner,&operation)
                                 .map_err(OrchestrationError::V37StoreFailure)?;
@@ -932,11 +944,8 @@ impl<'root> ProductDatabase<'root> {
                                 &request.target_id,&operation,&new_generation,&request.request_id)?;
                             return Ok(encode_receipt(request,V37Status::Replayed,revision,
                                 u64::try_from(next).map_err(|_|OrchestrationError::OperationConflict)?,
-                                BTreeMap::from([
-                                    (JsonString::from_str("state"),text("RUNNING")),
-                                    (JsonString::from_str("oldGeneration"),text(&old_generation)),
-                                    (JsonString::from_str("newGeneration"),text(&new_generation)),
-                                    (JsonString::from_str("receiptId"),text(&receipt_id))])));
+                                self.native_resume_receipt_payload(request,&operation,
+                                    &old_generation,&new_generation,&receipt_id)?));
                         }
                     }
                 }
@@ -1150,12 +1159,18 @@ impl<'root> ProductDatabase<'root> {
             if driver=="claude" {
                 self.native_claude_initialize(&key)?;
                 self.drain_native_output(&key)?;
+                let ready=failure(h::read_original_claude_resume_ready(&self.connection,
+                    &key.0,&key.1,&request.request_id,&new_generation,&operation_id))?
+                    .ok_or(OrchestrationError::Invalid("Claude original resume initialize ACK absent"))?;
+                if ready.expected_vendor_session_id!=thread_id {
+                    return Err(OrchestrationError::OperationConflict);
+                }
+                // The sealed target is an expectation, not an observed new ID.
+                // Only the original new-process Init may fill thread_id.
                 let observed=self.observed_resume_thread(&key.0,&key.1,&operation_id,
-                    &new_generation,&request.request_id)?.ok_or(
-                        OrchestrationError::Invalid("Claude original resumed init is not observed"))?;
-                if observed!=thread_id {return Err(OrchestrationError::OperationConflict);}
+                    &new_generation,&request.request_id)?;
                 self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?
-                    .thread_id=Some(thread_id.clone());
+                    .thread_id=observed;
                 return Ok(());
             }
             if driver!="codex" {return Err(OrchestrationError::Invalid("native provider metadata resume unsupported"));}
@@ -1260,19 +1275,37 @@ impl<'root> ProductDatabase<'root> {
         }
         Ok(encode_receipt(request,V37Status::Applied,effective_revision,
             u64::try_from(next).map_err(|_|OrchestrationError::OperationConflict)?,
-            BTreeMap::from([
-                (JsonString::from_str("state"),text("RUNNING")),
-                (JsonString::from_str("oldGeneration"),text(&old_generation)),
-                (JsonString::from_str("newGeneration"),text(&new_generation)),
-                (JsonString::from_str("receiptId"),text(&receipt_id))])))
+            self.native_resume_receipt_payload(request,&operation_id,&old_generation,
+                &new_generation,&receipt_id)?))
+    }
+
+    fn native_resume_receipt_payload(&self,request:&V37Request,operation:&str,
+        old_generation:&str,new_generation:&str,receipt_id:&str)
+        ->Result<BTreeMap<JsonString,Json>> {
+        let mut fields=BTreeMap::from([
+            (JsonString::from_str("state"),text("RUNNING")),
+            (JsonString::from_str("oldGeneration"),text(old_generation)),
+            (JsonString::from_str("newGeneration"),text(new_generation)),
+            (JsonString::from_str("receiptId"),text(receipt_id))]);
+        if self.is_claude_resume_episode(&request.domain_id,&request.target_id,
+            operation,new_generation,&request.request_id)? {
+            fields.insert(JsonString::from_str("readinessBasis"),
+                text("ORIGINAL_CLAUDE_INITIALIZE_ACK"));
+            let observed=self.observed_resume_thread(&request.domain_id,&request.target_id,
+                operation,new_generation,&request.request_id)?;
+            fields.insert(JsonString::from_str("threadId"),
+                observed.as_deref().map(text).unwrap_or(Json::Null));
+        }
+        Ok(fields)
     }
 
     pub(super) fn resume_source_receipt(&self,domain:&str,session:&str,operation:&str,
         generation:&str,request_id:&str)->Result<String> {
         if self.is_claude_resume_episode(domain,session,operation,generation,request_id)? {
-            let source=failure(h::read_original_claude_resume_init(&self.connection,
+            let ready=failure(h::read_original_claude_resume_ready(&self.connection,
                 domain,session,request_id,generation,operation))?
                 .ok_or(OrchestrationError::OperationConflict)?;
+            let source=ready.ack_source;
             return Ok(format!("{}:{}:{}",source.operation_id,source.source_epoch,source.source_cursor));
         }
         // Verify the typed original ACK and custody before projecting its A
@@ -3426,6 +3459,19 @@ impl<'root> ProductDatabase<'root> {
         let input=h::ClaudeSendInput {user:h::StdinRequest {domain_id:&request.domain_id,
             session_id:&request.target_id,ticket:custody.ticket.opaque(),generation:&custody.binding.generation,
             request_bytes:&request.raw_bytes},custody:&custody,open_request_id:&open_id,open_request_bytes:&open_bytes};
+        if self.is_claude_resume_episode(&key.0,&key.1,&run.operation_id,
+            &custody.binding.generation,&open_id)? {
+            // Validate actual provider evidence separately from ordinary USER
+            // permission/revision rejection, before preparing a new stdin row.
+            let ready=failure(h::read_original_claude_resume_ready(&self.connection,
+                &key.0,&key.1,&open_id,&custody.binding.generation,&run.operation_id));
+            match ready {
+                Ok(Some(_))=>{},
+                Ok(None)=>return Err(self.retain_claude_observation_failure(key,
+                    OrchestrationError::Invalid("Claude resumed transport source is unknown"))),
+                Err(error)=>return Err(self.retain_claude_observation_failure(key,error)),
+            }
+        }
         let prepared=failure(h::prepare_claude_send_request(&mut self.connection,&self.owner,&input,user_input))?;
         if !prepared.write_permitted {return Ok(encode_receipt(request,V37Status::Unknown,
             request.expected_revision,request.expected_revision,Default::default()));}
@@ -3449,6 +3495,32 @@ impl<'root> ProductDatabase<'root> {
     /// currently being projected by C. A later captured result must not
     /// clear the current send before an earlier AskUserQuestion is raised.
     pub(super) fn complete_pending_native_claude_send_through(&mut self,key:&(String,String),
+        through_cursor:&str) -> Result<()> {
+        match self.complete_pending_native_claude_send_through_inner(key,through_cursor) {
+            Ok(())=>Ok(()),
+            Err(error)=>Err(self.retain_claude_observation_failure(key,error)),
+        }
+    }
+
+    fn retain_claude_observation_failure(&mut self,key:&(String,String),
+        original:OrchestrationError)->OrchestrationError {
+        let Some(run)=self.native_sessions.get(key) else {return original;};
+        let custody=run.custody.clone();let operation=run.operation_id.clone();
+        let open_id=run.open_request_id.clone();let open_bytes=run.open_request_bytes.clone();
+        let bytes=run.pending_claude.as_ref().map(|(bytes,_)|bytes.clone());
+        let unknown=authority::mark_process_unknown(&mut self.connection,&operation,&custody);
+        let journal=if let Some(bytes)=bytes {
+            let input=h::ClaudeSendInput {user:h::StdinRequest {domain_id:&key.0,
+                session_id:&key.1,ticket:custody.ticket.opaque(),generation:&custody.binding.generation,
+                request_bytes:&bytes},custody:&custody,open_request_id:&open_id,
+                open_request_bytes:&open_bytes};
+            Some(h::mark_claude_send_observation_unknown(&mut self.connection,&self.owner,&input))
+        }else{None};
+        OrchestrationError::V37StoreFailure(format!(
+            "Claude original observation: {original:?}; custody UNKNOWN: {unknown:?}; stdin UNKNOWN: {journal:?}; original A and RPC retained"))
+    }
+
+    fn complete_pending_native_claude_send_through_inner(&mut self,key:&(String,String),
         through_cursor:&str) -> Result<()> {
         let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
         let Some((bytes,identity))=run.pending_claude.clone() else {return Ok(());};
@@ -3474,15 +3546,30 @@ impl<'root> ProductDatabase<'root> {
                 OrchestrationError::V37StoreFailure(format!("Claude pending source: {error:?}; raw: {}",String::from_utf8_lossy(&raw.raw_bytes))))?;
             match decoded {
                 stream_json::ClaudeData::Init {session_id,..}=>{
+                    if self.is_claude_resume_episode(&key.0,&key.1,&operation,
+                        &custody.binding.generation,&open_id)? {
+                        let ready=failure(h::read_original_claude_resume_ready(&self.connection,
+                            &key.0,&key.1,&open_id,&custody.binding.generation,&operation))?
+                            .ok_or(OrchestrationError::OperationConflict)?;
+                        if session_id!=ready.expected_vendor_session_id {
+                            return Err(OrchestrationError::OperationConflict);
+                        }
+                        failure(h::read_original_claude_resume_init(&self.connection,
+                            &key.0,&key.1,&open_id,&custody.binding.generation,&operation))?
+                            .ok_or(OrchestrationError::OperationConflict)?;
+                    }
                     let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
                     if run.thread_id.as_ref().is_some_and(|id|id!=&session_id) {return Err(OrchestrationError::OperationConflict);}
                     run.thread_id=Some(session_id);
                 },
                 stream_json::ClaudeData::UserReplay {uuid,session_id,..} if uuid==identity.uuid=>{
                     failure(h::observe_claude_send_echo_from_source(&mut self.connection,&self.owner,&input,&raw.key))?;
+                    let resumed=self.is_claude_resume_episode(&key.0,&key.1,&operation,
+                        &custody.binding.generation,&open_id)?;
                     let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
                     if run.thread_id.as_ref().is_some_and(|id|id!=&session_id) {return Err(OrchestrationError::OperationConflict);}
-                    run.thread_id=Some(session_id);echoed=true;
+                    if !resumed {run.thread_id=Some(session_id);}
+                    echoed=true;
                 },
                 stream_json::ClaudeData::Result {..} if echoed=>{
                     // Even if an earlier question could not yet be projected
@@ -3658,7 +3745,7 @@ impl<'root> ProductDatabase<'root> {
         let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
         if self.is_claude_resume_episode(&key.0,&key.1,&run.operation_id,
             &run.custody.binding.generation,&run.open_request_id)? {
-            return Ok(failure(h::read_original_claude_resume_init(&self.connection,
+            return Ok(failure(h::read_original_claude_resume_ready(&self.connection,
                 &key.0,&key.1,&run.open_request_id,&run.custody.binding.generation,
                 &run.operation_id))?.is_some());
         }

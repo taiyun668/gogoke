@@ -170,7 +170,12 @@ jobs:
             'grok-permission' { @('grok_permission') }
             'claude-holder' { @('claude_holder') }
             'claude-initialize' { @('real_claude_initialize_with_fixed_lpac_compat_persistent_stdio') }
-            'claude-second-init' { @('claude_second_result_accepts_same_session_init_and_rejects_changed_identity') }
+            'claude-second-init' { @(
+              'claude_second_result_accepts_same_session_init_and_rejects_changed_identity',
+              'store::session_transport::journal::claude_resume_tests::prepared_resume_ack_is_ready_without_inventing_init',
+              'store::session_transport::journal::claude_resume_tests::unknown_resume_requires_init_and_observed_ack',
+              'store::session_transport::journal::claude_resume_tests::cold_completion_rejects_new_consistent_but_wrong_vendor_identity',
+              'store::session_transport::journal::claude_resume_tests::cold_completed_receipt_keeps_original_bytes_after_custody_unknown') }
             'm2-provider-current' { @('grok_permission', 'claude_holder',
               'real_claude_initialize_with_fixed_lpac_compat_persistent_stdio',
               'stop_requires_clean_original_eof_not_a_generic_source_error',
