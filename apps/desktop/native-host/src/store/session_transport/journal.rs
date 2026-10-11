@@ -2301,7 +2301,8 @@ pub(crate) fn read_original_claude_resume_init(
     let (step_id, initialize_id) = super::rpc_journal::claude_initialize_identity(&resume_bytes);
     let encoded = commands::encode_claude(commands::ClaudeCommand::Initialize {
         request_id:&initialize_id,
-    }).map_err(|_|JournalError::Denied)?;
+    }).map_err(|error|JournalError::Store(AtomicError::DurabilityContractFailed(
+        format!("Claude resume initialize command: {error:?}"))))?;
     let ack = Statement::prepare(connection.as_ptr(),
         "SELECT s.command_hex,hex(r.raw_bytes) FROM main.gogoke_v37_rpc_steps s
            JOIN main.v37_ledger_raw_source r
@@ -2322,8 +2323,11 @@ pub(crate) fn read_original_claude_resume_init(
     let command = unhex(&ack.column_text(0)?)?;
     let response = unhex(&ack.column_text(1)?)?;
     if ack.step_row()? { return Err(JournalError::Conflict); }
-    if command != encoded || !matches!(stream_json::decode_claude_line(&response),
-        Ok(stream_json::ClaudeData::ControlResponse { request_id, success:true })
+    let ack_data = stream_json::decode_claude_line(&response).map_err(|error|
+        JournalError::Store(AtomicError::DurabilityContractFailed(
+            format!("Claude resume initialize ACK: {error:?}"))))?;
+    if command != encoded || !matches!(ack_data,
+        stream_json::ClaudeData::ControlResponse { request_id, success:true }
             if request_id==initialize_id) { return Err(JournalError::Denied); }
     let sources = Statement::prepare(connection.as_ptr(),
         "SELECT source_epoch,source_cursor,hex(raw_bytes) FROM main.v37_ledger_raw_source
@@ -2340,7 +2344,9 @@ pub(crate) fn read_original_claude_resume_init(
         let cursor = sources.column_text(1)?;
         let raw = unhex(&sources.column_text(2)?)?;
         if let stream_json::ClaudeData::Init { session_id, .. } =
-            stream_json::decode_claude_line(&raw).map_err(|_|JournalError::Denied)? {
+            stream_json::decode_claude_line(&raw).map_err(|error|
+                JournalError::Store(AtomicError::DurabilityContractFailed(
+                    format!("Claude resume candidate source: {error:?}"))))? {
             if session_id != wanted || epoch != nonce
                 || cursor.parse::<u64>().ok().filter(|value| *value>0
                     && value.to_string()==cursor).is_none() || found.is_some() {
