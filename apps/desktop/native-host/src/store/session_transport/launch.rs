@@ -996,7 +996,7 @@ impl LaunchEvidence {
         let mut alias=super::admission::reserve_opencode_dos_alias(db,
             &self.claim.domain_id,&self.claim.session_id,request_id,request_bytes,
             &self.claim.generation,&process_operation_id,&self.claim.instance_id,
-            &self.claim.binding_id,&worktree.worktree_id,
+            &self.pin.digest,&self.claim.binding_id,&worktree.worktree_id,
             physical_path,self.directory.identity())
             .map_err(|error|format!("native OpenCode alias intent: {error:?}"))?;
         let requested_target=super::dos_alias::define(&alias.alias_name,self.directory.cwd())?;
@@ -1043,9 +1043,11 @@ impl LaunchEvidence {
             }
             return Ok(());
         };
+        if custody.identity.image_path!=self.program {
+            return Err("native OpenCode alias custody image differs from registered F program".into());
+        }
         let updated=super::admission::bind_opencode_dos_alias_custody(db,alias,
-            operation_id,custody.ticket.opaque(),&custody.custodian_nonce,
-            custody.identity.pid,custody.identity.creation_time_100ns)
+            operation_id,&self.pin.digest,custody)
             .map_err(|error|format!("native OpenCode alias custody binding: {error:?}"))?;
         self.opencode_alias=Some(updated);
         Ok(())
@@ -1060,14 +1062,41 @@ impl LaunchEvidence {
         let Some(alias)=self.opencode_alias.as_ref() else {return Ok(());};
         super::admission::verify_opencode_dos_alias_record(db,alias)
             .map_err(|error|format!("native OpenCode alias cleanup record: {error:?}"))?;
-        if super::dos_alias::current_namespace_id()?!=alias.namespace_id {
+        // Prove the original C/Job and H episode StopFact before querying or
+        // removing any OS mapping. Cleanup is a separate fact from admission
+        // release and remains valid for stopped, unadopted resume candidates.
+        super::admission::verify_opencode_dos_alias_stop_source(db,alias,stop_fact)
+            .map_err(|error|format!("native OpenCode alias stop source: {error:?}"))?;
+        if matches!(alias.cleanup_status.as_str(),"REMOVED"|"ABSENT") {
+            return Ok(());
+        }
+        let namespace=match super::dos_alias::current_namespace_id(){
+            Ok(value)=>value,
+            Err(error)=>{
+                let updated=super::admission::record_opencode_dos_alias_cleanup(db,alias,
+                    stop_fact,"UNKNOWN",&format!("current logon namespace query failed: {error}"))
+                    .map_err(|record|format!("native OpenCode alias cleanup outcome: {record:?}"))?;
+                self.opencode_alias=Some(updated);
+                return Err(format!("native OpenCode alias cleanup retained UNKNOWN: {error}"));
+            }
+        };
+        if namespace!=alias.namespace_id {
             let updated=super::admission::record_opencode_dos_alias_cleanup(db,alias,
-                stop_fact,"UNKNOWN","original logon namespace unavailable")
+                stop_fact,"UNKNOWN","current logon namespace differs from original")
                 .map_err(|error|format!("native OpenCode alias cleanup outcome: {error:?}"))?;
             self.opencode_alias=Some(updated);
             return Err("native OpenCode alias cleanup retained UNKNOWN: namespace differs".into());
         }
-        let (pid,creation)=super::dos_alias::current_host_identity()?;
+        let (pid,creation)=match super::dos_alias::current_host_identity(){
+            Ok(value)=>value,
+            Err(error)=>{
+                let updated=super::admission::record_opencode_dos_alias_cleanup(db,alias,
+                    stop_fact,"UNKNOWN",&format!("current host identity query failed: {error}"))
+                    .map_err(|record|format!("native OpenCode alias cleanup outcome: {record:?}"))?;
+                self.opencode_alias=Some(updated);
+                return Err(format!("native OpenCode alias cleanup retained UNKNOWN: {error}"));
+            }
+        };
         if pid.to_string()!=alias.host_pid || creation.to_string()!=alias.host_creation_time_100ns {
             let updated=super::admission::record_opencode_dos_alias_cleanup(db,alias,
                 stop_fact,"UNKNOWN","original host identity differs")
@@ -1113,6 +1142,7 @@ impl LaunchEvidence {
         };
         if alias.domain_id!=self.claim.domain_id || alias.session_id!=self.claim.session_id
             || alias.generation!=self.claim.generation || alias.instance_id!=self.claim.instance_id
+            || alias.binary_digest_sha256!=self.pin.digest
             || alias.binding_id!=self.claim.binding_id || alias.worktree_id!=worktree.worktree_id
             || alias.requested_target!=self.directory.cwd().to_string_lossy()
             || alias.volume_serial!=format!("{:016x}",self.directory.identity().volume_serial)
@@ -1286,9 +1316,9 @@ impl LaunchEvidence {
             && matches!(&self.directory,LaunchDirectory::ProjectWorktrees{..}) {
             let alias=self.opencode_alias.as_ref()
                 .ok_or("native OpenCode launch: durable DOS alias intent absent")?;
-            if !matches!(alias.phase.as_str(),"MAPPED"|"PREPARE_STARTED"|"CUSTODY_BOUND")
+            if !matches!(alias.phase.as_str(),"PREPARE_STARTED"|"CUSTODY_BOUND")
                 || alias.cleanup_status!="NOT_REQUESTED" {
-                return Err("native OpenCode launch: DOS alias is not ready".into());
+                return Err("native OpenCode launch: durable PREPARE_STARTED fence is absent".into());
             }
         }
         let system_root = evidence(std::env::var("SystemRoot"))?;
