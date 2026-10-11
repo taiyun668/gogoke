@@ -273,6 +273,7 @@ if failure_settlement:
                    "originalJournalSha256": sha(journal_bytes), "originalStopRelease": True,
                    "originalSendAttemptCount": len(sends),
                    "registeredFIdentity": tree[5], "targetExistsAfterClose": target.exists(),
+                   "protection": journal.get("protection", "NOT_RUN"),
                    "measurementPreservedDatabaseBytes": before == result["filesAfter"],
                    "directProviderEvidence": False, "permissionCause": "UNATTRIBUTED",
                    "actualOsAclDisposition": "NOT_RUN"})

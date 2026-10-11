@@ -512,6 +512,21 @@ async function failureReadback() {
   journal.readbacks.push({ file: path.basename(outputFile), sha256: sha256(outputFile) }); product.save();
 }
 
+function compareProtection() {
+  for (const observer of config.observers) {
+    const before = observerValue(observer.name, 'before'), after = observerValue(observer.name, 'after');
+    for (const field of observer.equalFields ?? []) check(Object.hasOwn(before, field) &&
+      Object.hasOwn(after, field) && JSON.stringify(before[field]) === JSON.stringify(after[field]),
+    `${observer.name}: unchanged ${field}`);
+  }
+  for (const phase of ['before', 'after']) {
+    const memory = observerValue('memory', phase);
+    check(memory.memoryDataUnchangedByRead === true && memory.stage1OutputCount === 0 &&
+      memory.memoryJobCount === 0, `memory ${phase}: existing read-only observer facts`);
+  }
+  journal.protection = 'PASS_FORMAL_MEMORY_LEDGER_FIELDS_UNCHANGED'; product.save();
+}
+
 try {
   journal.driverBytes = { ...journal.driverBytes,
     ...Object.fromEntries(['cli-protocol-golden.mjs', 'm2-provider-win11.mjs',
@@ -526,38 +541,33 @@ try {
   journal.state = 'DIRECT_PROVIDER_H_RECEIPTS_A_READBACK_REQUIRED'; product.save();
   await product.closeNormally();
   await snapshot('after');
-  for (const observer of config.observers) {
-    const before = observerValue(observer.name, 'before'), after = observerValue(observer.name, 'after');
-    for (const field of observer.equalFields ?? []) check(Object.hasOwn(before, field) && Object.hasOwn(after, field) &&
-      JSON.stringify(before[field]) === JSON.stringify(after[field]), `${observer.name}: unchanged ${field}`);
-  }
-  for (const phase of ['before', 'after']) {
-    const memory = observerValue('memory', phase);
-    check(memory.memoryDataUnchangedByRead === true && memory.stage1OutputCount === 0 &&
-      memory.memoryJobCount === 0, `memory ${phase}: existing read-only observer facts`);
-  }
+  compareProtection();
   await readbackAndGolden();
   journal.state = 'REVIEW_REQUIRED'; journal.acceptance = false; product.save();
 } catch (error) {
   journal.state = 'FAIL'; journal.error = String(error.stack ?? error);
   journal.currentEndpoint = product.endpoint ?? null; product.save(); process.exitCode = 1;
-  if (writeCases.length === 1 && journal.closes.length === 0) {
-    let settled = false;
-    if (product.child?.exitCode === null && product.socket?.readyState === WebSocket.OPEN) {
+  if (writeCases.length === 1) {
+    const session = journal.sessions.find(row => row.id === journal.cases[0]?.sessionId);
+    let settled = journal.closes.length === 1 && session && stoppedReleased(session);
+    if (!settled && journal.closes.length === 0 &&
+        product.child?.exitCode === null && product.socket?.readyState === WebSocket.OPEN) {
       try { settled = await settleFailedGrokWrite(); }
       catch (settlementError) {
         journal.settlementError = String(settlementError.stack ?? settlementError); product.save();
       }
     }
-    if (settled) {
+    if (settled && journal.closes.length === 0) {
       try { await product.closeNormally(); }
       catch (closeError) { journal.closeError = String(closeError.stack ?? closeError); product.save(); }
-      if (journal.closes.length === 1) {
-        try { await snapshot('after'); }
+    }
+    if (settled && journal.closes.length === 1) {
+      if (!Object.hasOwn(journal.snapshots, 'formal-after')) {
+        try { await snapshot('after'); compareProtection(); }
         catch (observerError) { journal.afterObserverError = String(observerError.stack ?? observerError); product.save(); }
-        try { await failureReadback(); }
-        catch (readbackError) { journal.failureReadbackError = String(readbackError.stack ?? readbackError); product.save(); }
       }
+      try { await failureReadback(); }
+      catch (readbackError) { journal.failureReadbackError = String(readbackError.stack ?? readbackError); product.save(); }
     }
     if (journal.closes.length === 0) {
       journal.custodyHold = 'PRODUCT_AND_ORIGINAL_H_RETAINED_STOP_RELEASE_OR_NORMAL_CLOSE_NOT_CONFIRMED';
