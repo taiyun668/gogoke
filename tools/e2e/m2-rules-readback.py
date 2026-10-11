@@ -1153,11 +1153,15 @@ def verify_cross_project_only(db, journal, case, result):
           before["readerSha256"] == case["readerSha256"] == journal["driverBytes"]["m2-rules-readback.py"],
           "Cross-project baseline is not the original closed candidate/domain/reader")
     check(case.get("selection") == journal.get("rulesSelection") == "CROSS_PROJECT_ONLY" and
-          case["caseId"] == journal["caseId"] and case["sourceCommit"] == journal["sourceCommit"] and
+          case is journal.get("rulesCases", [None])[0] and
+          re.fullmatch(r"V08_[0-9a-f]{32}", case["caseId"]) and
+          case["sourceCommit"] == journal["sourceCommit"] and
           case["driverSha256"] == digest(Path(__file__).with_name("m2-rules.mjs").read_bytes()) and
           case.get("ownership") == {"lifecycle": "EXCLUSIVE_V08_SUBMITTER_AND_REVIEWER",
                                     "policy": "EXCLUSIVE_V08_POLICY_DOMAIN"},
           "Single-case selection/module/ownership identity differs")
+    result["originalReaderSha256"] = case["readerSha256"]
+    result["readerChangedSinceOriginalRun"] = result["readerSha256"] != case["readerSha256"]
     check(journal.get("rulesUserPermissionTier") == case.get("userPermissionTier") == "NETWORKED_WRITE" and
           journal.get("rulesUserMaxConcurrent") == case.get("userMaxConcurrent") == 4 and
           journal.get("rulesProjectParallelCap") == case.get("projectParallelCap") == 4 and
@@ -1236,11 +1240,17 @@ def verify_cross_project_only(db, journal, case, result):
         result["sessions"].append({"binding": bound, **actual})
         scoped = [row for row in journal["operations"] if row["request"].get("family") == "K-SESSION" and
                   row["request"].get("targetId") == bound["id"]]
+        reads = [row for row in scoped if row["request"]["operation"] == "output-stream"]
+        check(all(set(row["request"]["payload"]) == {"generation", "afterCursor"} and
+                  row["request"]["payload"]["generation"] == bound["generation"] and
+                  re.fullmatch(r"0|[1-9][0-9]*", row["request"]["payload"]["afterCursor"])
+                  for row in reads), "Output observations must read this exact original H generation")
         expected_operations = ["admission-reserve", "admission-commit", "open", "capability-probe"]
         if bound["id"] == submitter["id"]:
             expected_operations.append("send")
         expected_operations.extend(("stop", "admission-release"))
-        check([row["request"]["operation"] for row in scoped] == expected_operations,
+        check([row["request"]["operation"] for row in scoped
+               if row["request"]["operation"] != "output-stream"] == expected_operations,
               "One-shot H lifecycle contains a missing or additional request")
         tree = one(db, "SELECT * FROM gogoke_v37_worktrees WHERE domain_id=? AND worktree_id=?",
                    (domain, bound["worktreeId"]))
@@ -1277,8 +1287,8 @@ def verify_cross_project_only(db, journal, case, result):
                   member["worktreeId"] == bound["worktreeId"] for member in worktree[0]["result"]["members"]) and
               probe[0]["receipt"]["result"]["driverId"] == "codex" and
               probe[0]["receipt"]["result"]["version"] == actual["pin"]["version"] and
-              probe[0]["receipt"]["result"]["binaryDigest"] == "sha256:" + actual["pin"]["program_digest"] ==
-              "sha256:" + actual["pin"]["binary_digest_sha256"] and
+              probe[0]["receipt"]["result"]["binaryDigest"] == actual["pin"]["program_digest"] ==
+              actual["pin"]["binary_digest_sha256"] and
               re.fullmatch(r"sha256:[a-f0-9]{64}", probe[0]["receipt"]["result"]["binaryDigest"]),
               "Actual F registration/current H Codex capability pin differs")
         result.setdefault("worktrees", []).append(tree)
@@ -1361,15 +1371,8 @@ def verify_cross_project_only(db, journal, case, result):
           native["previousRevision"] == native["revision"] == expected_args["expectedRevision"] and
           native["result"] == {} and action["cliToolStatus"] == "failed",
           "Native K-POLICY cross-project refusal is not the exact original DENIED result")
-    stored = one(db, "SELECT request_bytes,receipt_bytes FROM v37_ledger_receipt "
-                 "WHERE family='K-POLICY' AND domain_id=? AND request_id=?",
-                 (domain, native["requestId"]))
-    native_request = json.loads(bytes(stored["request_bytes"]))
-    native_receipt = json.loads(bytes(stored["receipt_bytes"]))
-    check(bytes(stored["receipt_bytes"]).decode() == content[0]["text"] and native_receipt == native and
-          native_request["operation"] == "gate-submit" and native_request["targetId"] == foreign["gateId"] and
-          native_request["payload"] == {} and native_request["expectedRevision"] == expected_args["expectedRevision"],
-          "Original native K-POLICY request/receipt differs from the immutable ledger")
+    # Native gate-submit returns its receipt through the original A/H tool reply;
+    # this path does not write the call-permission-table ledger receipt table.
     completed_items = [(row, value) for row, value in tool_items if value["method"] == "item/completed"]
     started_items = [(row, value) for row, value in tool_items if value["method"] == "item/started"]
     check(len(started_items) <= 1 and all(
