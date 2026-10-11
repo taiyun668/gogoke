@@ -270,7 +270,10 @@ impl ProductDatabase<'_> {
         }
         let stop_revision=stopped[0][2].parse::<u64>().ok();
         let child=episodes.iter().find(|e|!e.old_generation.is_empty());
-        if episodes.len()!=1+usize::from(child.is_some()) {return Ok(None)}
+        // This settlement is only for the exact observed failed resume whose
+        // F-only profile has been revoked. A merely stopped initial thread
+        // still follows the existing resident resume path.
+        if child.is_none() || episodes.len()!=2 {return Ok(None)}
         if let Some(child)=child {
             let adjacent=generation.parse::<u64>().ok().and_then(|old|old.checked_add(1))
                 ==child.generation.parse::<u64>().ok();
