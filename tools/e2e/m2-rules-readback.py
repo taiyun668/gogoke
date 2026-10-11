@@ -1137,6 +1137,170 @@ def verify_host(db, domain, case, host, operations, result):
     return final
 
 
+def verify_host_only_model_calls(db, domain, case, operations, result, expected_events, cases):
+    check(len(case["actions"]) == len(cases), "Incomplete or additional model actions")
+    checked_sessions = set()
+    for action, (key, session, operation, gate, gate_rev, payload, status, state, reason, policy_rev) in zip(case["actions"], cases):
+        arguments = {"operation": operation, "targetId": gate, "expectedRevision": gate_rev, "payload": payload}
+        check(action["caseId"] == key and action["sessionId"] == session["id"] and action["arguments"] == arguments,
+              "Model action identity/arguments differ")
+        check(action["binding"]["id"] == session["id"] and action["binding"]["seatId"] == session["seatId"] and
+              action["binding"]["instanceId"] == session["instanceId"] and action["binding"]["worktreeId"] == session["worktreeId"],
+              "Historical action changed its logical subject")
+        session = action["binding"]  # Original per-action generation, never a mutable final session snapshot.
+        sent = operations[action["sendRequestId"]]
+        request = sent["request"]
+        check(json.loads(sent["rawFrame"]) == request and request["family"] == "K-SESSION" and
+              request["operation"] == "send" and request["domainId"] == domain and
+              request["targetId"] == session["id"] and request["payload"] ==
+              {"generation": session["generation"], "body": action["askBytes"]}, "Original User ask bytes/target differ")
+        stdin = one(db, "SELECT * FROM gogoke_v37_h_stdin_journal WHERE domain_id=? AND request_id=?",
+                    (domain, request["requestId"]))
+        check(stdin["phase"] == "RECEIPTED" and stdin["receipt_status"] == "APPLIED" and
+              bytes.fromhex(stdin["request_hex"]).decode() == sent["rawFrame"], "Original H stdin was not receipted")
+        send_ack = json.loads(bytes.fromhex(stdin["receipt_hex"]))
+        check(send_ack == sent["receipt"] == action["sendReceipt"] and
+              send_ack["result"]["createdTurn"] is True and send_ack["result"]["turnId"] == action["turnId"],
+              "Model authority lacks original H User turn authorization")
+        episode = one(db, "SELECT * FROM gogoke_v37_h_process_episode WHERE domain_id=? AND session_id=? AND process_operation_id=?",
+                      (domain, session["id"], stdin["process_operation_id"]))
+        check(episode["seat_id"] == session["seatId"] and episode["instance_id"] == session["instanceId"] and
+              str(episode["generation"]) == session["generation"] and episode["phase"] == "STOPPED" and
+              episode["stop_fact_id"], "Original physical model episode/stop facts differ")
+        check(stdin["session_id"] == session["id"] and stdin["generation"] == session["generation"] and
+              stdin["operation"] == "send", "H stdin belongs to another generation/session")
+        physical = (session["id"], stdin["process_operation_id"], session["generation"])
+        if physical not in checked_sessions:
+            pin = one(db, "SELECT i.driver_id,i.version,i.program_digest,c.binary_digest_sha256 "
+                      ",c.domain_id,c.generation,c.ticket,c.custodian_nonce,c.state,c.stop_proof_hash "
+                      "FROM gogoke_v37_instances i JOIN gogoke_coordination_process_custody c "
+                      "ON c.operation_id=? WHERE i.instance_id=?", (stdin["process_operation_id"], session["instanceId"]))
+            check(pin["driver_id"] == "codex" and pin["program_digest"] == pin["binary_digest_sha256"] and
+                  pin["domain_id"] == domain and pin["generation"] == session["generation"] and
+                  pin["ticket"] == stdin["ticket"] and pin["custodian_nonce"] == stdin["custodian_nonce"] and
+                  pin["state"] == "STOPPED" and pin["stop_proof_hash"] == episode["stop_fact_id"],
+                  "Actual Codex CLI pin differs from physical custody")
+            result["sessions"].append({"sessionId": session["id"], "episode": episode, "pin": pin})
+            checked_sessions.add(physical)
+        incoming = select(db, "SELECT * FROM v37_ledger_raw_source WHERE domain_id=? AND session_id=? AND operation_id=? "
+                          "AND process_ticket=? AND custodian_nonce=? AND generation=? ORDER BY rowid",
+                          (domain, session["id"], stdin["process_operation_id"], stdin["ticket"], stdin["custodian_nonce"], stdin["generation"]))
+        decoded = [(row, json.loads(bytes(row["raw_bytes"]))) for row in incoming]
+        tool_items, calls, questions = turn_activity(decoded, session["threadId"], action["turnId"],
+                                                     expected_input=action["askBytes"])
+        check(not questions, "Model turn has an unrelated question")
+        check(len(calls) == 1, "Exactly one original model tool call is required, without retry/substitute")
+        source, frame = calls[0]
+        check(frame["params"]["threadId"] == session["threadId"] and frame["params"]["tool"] == "gogoke_policy" and
+              frame["params"]["arguments"] == arguments and source["state"] == "NO_EVENT" and
+              source["no_event_reason"] == "NATIVE_HOST_TOOL_REPLY_WRITTEN", "Original A tool/caller/arguments not the intended call")
+        replies = select(db, "SELECT * FROM gogoke_v37_rpc_steps WHERE domain_id=? AND session_id=? "
+                         "AND process_operation_id=? AND ticket=? AND custodian_nonce=? AND generation=?",
+                         (domain, session["id"], stdin["process_operation_id"], stdin["ticket"], stdin["custodian_nonce"], stdin["generation"]))
+        starts = [(step, json.loads(bytes.fromhex(step["command_hex"]))) for step in replies]
+        starts = [(step, command) for step, command in starts if command.get("method") == "turn/start" and
+                  command.get("params", {}).get("threadId") == session["threadId"] and
+                  command.get("params", {}).get("input") == [{"type": "text", "text": action["askBytes"]}]]
+        check(len(starts) == 1 and starts[0][0]["phase"] == "OBSERVED", "Actual H turn/start did not carry original Owner ask")
+        start_step, start_command = starts[0]
+        acknowledgements = [(row, value) for row, value in decoded if "method" not in value and "id" in value and
+                            typed_id(value["id"]) == typed_id(start_command["id"])]
+        check(len(acknowledgements) == 1 and acknowledgements[0][0]["state"] == "NO_EVENT" and
+              acknowledgements[0][0]["no_event_reason"] == "CODEX_RPC_RESPONSE" and
+              acknowledgements[0][0]["source_epoch"] == start_step["source_epoch"] and
+              acknowledgements[0][0]["source_cursor"] == start_step["source_cursor"] and
+              acknowledgements[0][1]["result"]["turn"]["id"] == action["turnId"] and
+              acknowledgements[0][1]["result"]["turn"]["status"] in ("inProgress", "completed"),
+              "Original CLI turn ACK does not prove this exact H User ask")
+        reply_matches = []
+        for reply in replies:
+            written = json.loads(bytes.fromhex(reply["command_hex"]))
+            if "method" not in written and "id" in written and typed_id(written["id"]) == typed_id(frame["id"]):
+                reply_matches.append((reply, written))
+        check(len(reply_matches) == 1, "Original typed model RPC ID has no unique H response")
+        reply, written = reply_matches[0]
+        check(reply["phase"] in ("WRITTEN", "OBSERVED"), "H tool reply not written for the original A source")
+        content = written["result"]["contentItems"]
+        check(len(content) == 1 and content[0]["type"] == "inputText", "Original H tool response shape differs")
+        if status == "INVALID_INPUT":
+            original = 'Native host operation failed: Invalid("reason")'
+            check(key == "V08_MODEL_EMPTY_REJECT_REASON" and content[0]["text"] ==
+                  action["rawToolReceipt"] == original and written["result"]["success"] is False and
+                  action["nativeRefusal"] == {"kind": "INVALID_INPUT", "original": original} and
+                  "receipt" not in action,
+                  "Malformed reason must retain the exact native refusal, not an invented policy receipt")
+            request_id = reply["step_id"]
+            receipt = None
+        else:
+            receipt = json.loads(content[0]["text"])
+            check(content[0]["text"] == action["rawToolReceipt"] and receipt == action["receipt"] and
+                  reply["step_id"] == receipt["requestId"] and written["result"]["success"] == (status == "APPLIED") and
+                  receipt["schema"] == "gogoke.37.operations.v1" and receipt["family"] == "K-POLICY" and
+                  receipt["operation"] == operation and receipt["targetId"] == gate and receipt["status"] == status and
+                  receipt["previousRevision"] == gate_rev and receipt["revision"] == str(int(gate_rev) + (status == "APPLIED")),
+                  "Actual H policy receipt differs from observation/required outcome")
+            request_id = receipt["requestId"]
+        tool_completions = [(row, value) for row, value in tool_items if value["method"] == "item/completed"]
+        tool_starts = [(row, value) for row, value in tool_items if value["method"] == "item/started"]
+        check(len(tool_completions) == 1 and tool_completions[0][1]["params"]["threadId"] == session["threadId"] and
+              tool_completions[0][1]["params"]["item"]["type"] == "dynamicToolCall" and
+              tool_completions[0][1]["params"]["item"]["id"] == frame["params"]["callId"] and
+              tool_completions[0][1]["params"]["item"]["tool"] == "gogoke_policy" and
+              tool_completions[0][1]["params"]["item"]["arguments"] == arguments,
+              "Original CLI tool completion includes a substitute/additional tool")
+        check(len(tool_starts) <= 1 and all(
+            started["params"]["item"]["id"] == frame["params"]["callId"] and
+            started["params"]["item"]["tool"] == "gogoke_policy" and
+            started["params"]["item"]["arguments"] == arguments
+            for _, started in tool_starts), "Original CLI tool start includes an additional tool")
+        completed_item = tool_completions[0][1]["params"]["item"]
+        # Retain the same original output field precedence as native codex_output.
+        completed_output = next((completed_item[name] for name in
+                                 ("aggregatedOutput", "result", "error", "contentItems")
+                                 if completed_item.get(name) is not None), None)
+        completed_content = (completed_output if isinstance(completed_output, list) else
+                             completed_output.get("contentItems") if isinstance(completed_output, dict) else None)
+        check(completed_item["status"] == action["cliToolStatus"] ==
+              ("completed" if status == "APPLIED" else "failed") and
+              completed_content == content,
+              "Original CLI tool completion does not preserve the actual H result/failure")
+        if status == "DENIED":
+            check(receipt["result"] == {} and written["result"]["success"] is False,
+                  "Denied native boundary must preserve empty result and success=false")
+        events = select(db, "SELECT * FROM gogoke_v37_seat_policy_events WHERE domain_id=? AND event_id=?",
+                        (domain, request_id))
+        if status == "APPLIED":
+            check(len(events) == 1 and events[0]["operation"] == operation and events[0]["target_id"] == gate and
+                  events[0]["state"] == state and events[0]["detail"] == reason and events[0]["policy_revision"] == policy_rev and
+                  receipt["result"] == {"state": state, "reason": reason, "policyRevision": str(policy_rev)},
+                  "Committed actual gate/stage event differs")
+            if operation == "gate-decide":
+                parts = [operation, session["seatId"], gate, payload["decision"], reason, str(policy_rev), gate_rev]
+            else:
+                parts = [operation, session["seatId"], gate, str(policy_rev - (operation == "stage-transition")), gate_rev]
+            check(events[0]["fingerprint"] == native_fingerprint(parts, bytes(source["raw_bytes"])),
+                  "Original native gate/stage event is not bound to this A caller/request bytes")
+            expected_events[events[0]["event_id"]] = events[0]
+        else:
+            check(not events, "Denied model call committed a policy event")
+        completions = [(row, value) for row, value in decoded if value.get("method") == "turn/completed" and
+                       value.get("params", {}).get("threadId") == session["threadId"] and
+                       value.get("params", {}).get("turn", {}).get("id") == action["turnId"]]
+        check(len(completions) == 1 and completions[0][1]["params"]["turn"]["status"] == "completed" and
+              completions[0][0]["state"] != "PENDING", "Original CLI completion missing/unresolved")
+        result["modelCalls"].append({"caseId": key, "sessionId": session["id"],
+            "originalAsk": sent["rawFrame"], "originalSendReceipt": bytes.fromhex(stdin["receipt_hex"]).decode(),
+            "originalTurnStart": bytes.fromhex(start_step["command_hex"]).decode(),
+            "originalTurnAck": bytes(acknowledgements[0][0]["raw_bytes"]).decode(),
+            "originalAFrame": bytes(source["raw_bytes"]).decode(), "originalHReply": bytes.fromhex(reply["command_hex"]).decode(),
+            "sourceEpoch": source["source_epoch"], "sourceCursor": source["source_cursor"],
+            "processOperationId": stdin["process_operation_id"], "processTicket": stdin["ticket"],
+            "custodianNonce": stdin["custodian_nonce"], "policyEvents": events,
+            "originalToolCompletion": bytes(tool_completions[0][0]["raw_bytes"]).decode(),
+            "originalCompletion": bytes(completions[0][0]["raw_bytes"]).decode()})
+
+
+
 def verify_cross_project_only(db, journal, case, result):
     domain = journal["domainId"]
     reference = case.get("baselineReadback")
@@ -1404,6 +1568,250 @@ def verify_cross_project_only(db, journal, case, result):
     result["verifiedCaseId"] = case["caseId"]
     result["directCaseEvidence"] = True
     result["state"] = "CROSS_PROJECT_ONLY_DIRECT_EVIDENCE_V08_INCOMPLETE"
+
+
+def verify_host_only(db, journal, case, result):
+    domain = journal["domainId"]
+    check(case.get("selection") == journal.get("rulesSelection") == "HOST_BUSY_TO_IDLE_ONLY" and
+          case.get("readbackRequired") is True and case.get("acceptance") is False and
+          case["driverSha256"] == digest(Path(__file__).with_name("m2-rules.mjs").read_bytes()) and
+          case["readerSha256"] == result["readerSha256"] == journal["driverBytes"]["m2-rules-readback.py"],
+          "Host-only original driver/reader/selection bytes differ")
+    result["originalReaderSha256"] = case["readerSha256"]
+    result["readerChangedSinceOriginalRun"] = False
+    reference = case["baselineReadback"]
+    check(Path(reference["file"]).name == reference["file"] and
+          re.fullmatch(r"[a-f0-9]{64}", reference["sha256"]), "Original Host baseline reference required")
+    raw = (output.parent / reference["file"]).read_bytes()
+    check(digest(raw) == reference["sha256"], "Original Host baseline bytes changed")
+    before = json.loads(raw)
+    check(before["schema"] == result["schema"] and before["phase"] == "before" and
+          before["caseId"] == result["caseId"] and before["sourceCommit"] == result["sourceCommit"] and
+          before["domainId"] == domain and before["databasePath"] == result["databasePath"] and
+          before["rootIdentity"] == result["rootIdentity"] and before["readerSha256"] == result["readerSha256"] and
+          before["measurementPreservedDatabaseBytes"] is True and before["databaseWrites"] is False and
+          before["credentialReads"] is False and
+          before["capacityQualification"]["state"] == result["capacityQualification"]["state"] ==
+          "CAPACITY_4_WITHIN_REFERENCE_OWNER_AND_HOST",
+          "Host-only baseline is not the same closed A authority/cap subject")
+    ref = case.get("priorCore13")
+    check(ref == journal.get("priorCore13") and isinstance(ref, dict) and
+          set(ref) == {"journal", "journalSha256", "finalReadback", "finalSha256"},
+          "Original closed core13 references changed")
+    old_files = []
+    for path_key, hash_key in (("journal", "journalSha256"), ("finalReadback", "finalSha256")):
+        path = Path(ref[path_key])
+        check(path.is_file() and re.fullmatch(r"[a-f0-9]{64}", ref[hash_key]) and
+              digest(path.read_bytes()) == ref[hash_key],
+              "Original closed core13 bytes absent or changed")
+        old_files.append(json.loads(path.read_text(encoding="utf-8-sig")))
+    old, old_final = old_files
+    check(old["rulesCases"][0]["actions"] and len(old["rulesCases"][0]["actions"]) == 13 and
+          old["v08"] == old_final["state"] == "IMPLEMENTED_CASES_HAVE_DIRECT_EVIDENCE_V08_INCOMPLETE" and
+          old_final["directCaseEvidence"] is True and old_final["acceptance"] is False and
+          old["caseId"] == old_final["caseId"] and old["domainId"] == old_final["domainId"] == domain and
+          all(before["policy"][name] == old_final["policy"][name]
+              for name in ("head", "grants", "gates", "routes", "events")),
+          "Host-only current A policy is not the closed original core13 continuation")
+    check(case["fromStage"] == case["toStage"] == before["policy"]["head"][0]["current_stage"] and
+          len(case["hostCases"]) == 1 and case["hostCases"][0]["kind"] == "BUSY_TO_IDLE_DELIVERY" and
+          len(case["actions"]) == 2 and len(case["ownerConfigurations"]) == 2 and
+          not case["userBoundaries"], "Host-only must use one new gate, two model calls and no core13 replay")
+    sources = case["initialSessions"]
+    old_sources = old["rulesCases"][0]["initialSessions"]
+    sessions = {row["id"]: row for row in journal["sessions"]}
+    check(len(sources) == len(old_sources) == 2 and
+          [row["id"] for row in sources] == [case["submitterSession"], case["reviewerSession"]] and
+          all(row["id"] in sessions and row["id"] != old_sources[index]["id"] and
+              all(row[key] == old_sources[index][key] for key in ("seatId", "instanceId", "worktreeId"))
+              for index, row in enumerate(sources)),
+          "Host-only source H must be new and retain the original A E/F identities")
+    operations = {row["request"]["requestId"]: row for row in journal["operations"]
+                  if row["request"].get("requestId")}
+    check(len(operations) == sum(bool(row["request"].get("requestId")) for row in journal["operations"]),
+          "Host-only request IDs duplicated")
+    result["initialSources"] = [verify_recipient(db, domain, row, operations) for row in sources]
+    result["finalSources"] = [verify_final_source(db, domain, row, sessions[row["id"]], journal["operations"])
+                              for row in sources]
+    source_reads = journal.get("hostSourceReadbacks", [])
+    check(len(source_reads) == 2 and [row["selection"]["seatId"] for row in source_reads] ==
+          [row["seatId"] for row in sources], "Two original A E/F reuse reads required")
+    for selection, evidence in zip(sources, source_reads):
+        card, tree = (operations[evidence[key]] for key in ("cardRequestId", "treeRequestId"))
+        check(card["request"]["family"] == "K-SEAT" and card["request"]["operation"] == "state-card" and
+              card["request"]["targetId"] == selection["seatId"] and card["receipt"]["status"] == "APPLIED" and
+              card["receipt"]["result"]["state"] == "IDLE" and
+              card["receipt"]["result"]["instanceId"] == selection["instanceId"] and
+              tree["request"]["family"] == "K-WORKTREE" and tree["request"]["operation"] == "graph-query" and
+              tree["request"]["targetId"] == selection["worktreeId"] and tree["receipt"]["status"] == "APPLIED" and
+              tree["receipt"]["result"]["state"] == "REGISTERED" and any(
+                  all(member.get(key) == value for key, value in
+                      (("domainId", domain), ("repositoryId", journal["repositoryId"]),
+                       ("seatId", selection["seatId"]), ("instanceId", selection["instanceId"]),
+                       ("worktreeId", selection["worktreeId"])))
+                  for member in tree["receipt"]["result"]["members"]),
+              "Original A source did not have its read-back E/F membership before fresh H")
+        for entry in (card, tree):
+            stored = one(db, "SELECT request_bytes,receipt_bytes FROM v37_ledger_receipt "
+                         "WHERE family=? AND domain_id=? AND request_id=?",
+                         (entry["request"]["family"], domain, entry["request"]["requestId"]))
+            check(bytes(stored["request_bytes"]).decode() == entry["rawFrame"] and
+                  json.loads(bytes(stored["receipt_bytes"])) == entry["receipt"],
+                  "Source E/F read receipt differs from native ledger")
+    host = case["hostCases"][0]
+    recipients = case["hostRecipients"]
+    check(len(recipients) == 2 and
+          len({row["seatId"] for row in [*sources, *recipients]}) == 4 and
+          len({row["worktreeId"] for row in [*sources, *recipients]}) == 4 and
+          host["destination"] == recipients[0] and host["sourceSeatId"] == sources[0]["seatId"],
+          "Host-only recipient IDs must be two new disjoint USER E/F identities")
+    preparations = journal.get("hostUserPreparations", [])
+    check(len(preparations) == 2 and [row["selection"] for row in preparations] == recipients,
+          "Two original USER recipient creation/bind/F preparations required")
+    for item in preparations:
+        selection = item["selection"]
+        create, bind, tree_create, tree_register = (operations[item[key]] for key in
+            ("createRequestId", "bindRequestId", "createWorktreeRequestId", "registerWorktreeRequestId"))
+        check(create["request"]["family"] == "K-SEAT" and
+              create["request"]["operation"] == "create-from-template" and
+              create["request"]["targetId"] == selection["seatId"] and
+              create["request"]["expectedRevision"] == "0" and
+              create["request"]["payload"] == {"layer": "USER", "templateId": item["templateId"]} and
+              create["receipt"]["status"] == "APPLIED" and
+              create["receipt"]["result"]["layer"] == "USER" and
+              create["receipt"]["result"]["kind"] == "LONG" and
+              create["receipt"]["result"]["instanceId"] is None and
+              create["receipt"]["result"]["templateId"] ==
+              operations[source_reads[0]["cardRequestId"]]["receipt"]["result"]["templateId"] and
+              create["receipt"]["result"]["settings"] ==
+              operations[source_reads[0]["cardRequestId"]]["receipt"]["result"]["settings"] and
+              bind["request"]["family"] == "K-SEAT" and bind["request"]["operation"] == "bind-instance" and
+              bind["request"]["targetId"] == selection["seatId"] and
+              bind["request"]["expectedRevision"] == create["receipt"]["revision"] and
+              bind["request"]["payload"] == {"instanceId": selection["instanceId"]} and
+              bind["receipt"]["status"] == "APPLIED" and
+              bind["receipt"]["result"]["settings"]["permissionTier"] == "NETWORKED_WRITE" and
+              tree_create["request"]["family"] == tree_register["request"]["family"] == "K-WORKTREE" and
+              tree_create["request"]["operation"] == "create" and
+              tree_register["request"]["operation"] == "register" and
+              tree_create["request"]["targetId"] == tree_register["request"]["targetId"] ==
+              selection["worktreeId"] and
+              tree_create["receipt"]["status"] == tree_register["receipt"]["status"] == "APPLIED",
+              "New Host recipient has no exact USER E bind and F registration receipts")
+        for entry in (create, bind, tree_create, tree_register):
+            stored = one(db, "SELECT request_bytes,receipt_bytes FROM v37_ledger_receipt "
+                         "WHERE family=? AND domain_id=? AND request_id=?",
+                         (entry["request"]["family"], domain, entry["request"]["requestId"]))
+            check(bytes(stored["request_bytes"]).decode() == entry["rawFrame"] and
+                  json.loads(bytes(stored["receipt_bytes"])) == entry["receipt"],
+                  "Host USER E/F original ledger receipt differs")
+        seat = one(db, "SELECT * FROM gogoke_v37_seats WHERE domain_id=? AND seat_id=?",
+                   (domain, selection["seatId"]))
+        tree = one(db, "SELECT * FROM gogoke_v37_worktrees WHERE domain_id=? AND worktree_id=?",
+                   (domain, selection["worktreeId"]))
+        first = one(db, "SELECT * FROM gogoke_v37_seat_operations WHERE domain_id=? "
+                    "AND request_id=?", (domain, create["request"]["requestId"]))
+        check(first["seat_id"] == selection["seatId"] and first["revision"] == 1 and
+              first["generation"] == 1 and
+              seat["incarnation"] == first["incarnation"] == tree["seat_incarnation"] and
+              seat["instance_id"] == tree["instance_id"] == selection["instanceId"] and
+              tree["seat_id"] == selection["seatId"] and tree["repository_id"] == journal["repositoryId"] and
+              tree["state"] == "REGISTERED", "Host USER E/F current identity differs from original create")
+    head = before["policy"]["head"][0]
+    owner = [operations[key] for key in case["ownerConfigurations"]]
+    route, gate = owner
+    for index, (entry, command) in enumerate(((route, "policy-escalation-route"), (gate, "policy-gate"))):
+        request, receipt = entry["request"], entry["receipt"]
+        check(request["schema"] == "gogoke.37.owner-configuration.v1" and
+              request["command"] == receipt["command"] == command and
+              request["domainId"] == domain and receipt["status"] == "APPLIED" and
+              request["expectedRevision"] == str(head["revision"] + index) and
+              receipt["revision"] == str(head["revision"] + index + 1) and
+              receipt["requestId"] == request["requestId"] and
+              json.loads(entry["rawFrame"]) == request and json.loads(entry["rawReceipt"]) == receipt,
+              "Host-only Owner route/gate exact CAS bytes differ")
+        event = one(db, "SELECT * FROM gogoke_v37_seat_policy_events WHERE domain_id=? AND event_id=?",
+                    (domain, request["requestId"]))
+        check(event["operation"] == command and event["state"] == "APPLIED" and
+              event["policy_revision"] == head["revision"] + index + 1 and
+              event["fingerprint"] == original_owner_fingerprint(command, domain, entry["rawFrame"]),
+              "Host-only Owner event did not derive from its original USER frame")
+        result["ownerFrames"].append({"rawFrame": entry["rawFrame"], "rawReceipt": entry["rawReceipt"],
+                                     "storedEvent": event})
+    check(route["request"] == {"schema": "gogoke.37.owner-configuration.v1",
+          "command": "policy-escalation-route", "domainId": domain,
+          "requestId": route["request"]["requestId"], "fromSeatId": sources[0]["seatId"],
+          "reason": "REJECT_CAP", "toSeatId": recipients[0]["seatId"],
+          "expectedRevision": str(head["revision"])} and
+          gate["request"] == {"schema": "gogoke.37.owner-configuration.v1",
+          "command": "policy-gate", "domainId": domain, "requestId": gate["request"]["requestId"],
+          "gateId": host["gateId"], "submitterSeatId": sources[0]["seatId"],
+          "reviewerSeatId": sources[1]["seatId"], "fromStage": head["current_stage"],
+          "toStage": host["toStage"], "rejectCap": 1,
+          "expectedRevision": str(head["revision"] + 1)} and
+          host["routeRevision"] == str(head["revision"] + 1) and
+          host["policyRevision"] == str(head["revision"] + 2) and
+          host["toStage"] != head["current_stage"],
+          "Host-only route/gate is not a new cap-one cause at the current A stage")
+    expected_events = {row["event_id"]: row for row in before["policy"]["events"]}
+    for row in result["ownerFrames"]:
+        expected_events[row["storedEvent"]["event_id"]] = row["storedEvent"]
+    cases = [
+        (host["caseId"] + "_SUBMIT", sources[0], "gate-submit", host["gateId"], "1", {},
+         "APPLIED", "SUBMITTED", "", head["revision"] + 2),
+        (host["caseId"] + "_REJECT", sources[1], "gate-decide", host["gateId"], "2",
+         {"decision": "REJECT", "reason": host["reason"]}, "APPLIED", "ESCALATION_REQUIRED",
+         host["reason"], head["revision"] + 2),
+    ]
+    verify_host_only_model_calls(db, domain, case, operations, result, expected_events, cases)
+    fact = verify_host(db, domain, case, host, operations, result)
+    expected_events[fact["intentEvent"]["event_id"]] = fact["intentEvent"]
+    current = result["policy"]
+    check({row["event_id"]: row for row in current["events"]} == expected_events and
+          current["head"] == [{"domain_id": domain, "revision": head["revision"] + 2,
+                               "current_stage": head["current_stage"]}] and
+          current["grants"] == before["policy"]["grants"] and
+          current["triggers"] == before["policy"]["triggers"] and
+          current["routes"] == [*before["policy"]["routes"],
+              {"domain_id": domain, "from_seat_id": sources[0]["seatId"], "reason": "REJECT_CAP",
+               "to_seat_id": recipients[0]["seatId"], "revision": head["revision"] + 1}],
+          "Host-only final E policy has extra changes or missed its original cause")
+    expected_gate = {"domain_id": domain, "gate_id": host["gateId"],
+                     "submitter_seat_id": sources[0]["seatId"], "reviewer_seat_id": sources[1]["seatId"],
+                     "from_stage": head["current_stage"], "to_stage": host["toStage"], "reject_cap": 1,
+                     "reject_count": 1, "state": "ESCALATION_REQUIRED",
+                     "reason": host["reason"], "revision": 3}
+    check({row["gate_id"]: row for row in current["gates"]} ==
+          {**{row["gate_id"]: row for row in before["policy"]["gates"]},
+           host["gateId"]: expected_gate}, "Host-only final gate differs from the new cap-one event")
+    expected_escalations = {row["trigger_id"]: row for row in before["policy"]["escalations"]}
+    expected_escalations[fact["intent"]["trigger_id"]] = fact["intent"]
+    check({row["trigger_id"]: row for row in current["escalations"]} == expected_escalations,
+          "Host-only E escalation has an unrelated or missing intent")
+    expected_messages = {row["message_id"]: row for row in before["inbox"]["messages"]}
+    expected_messages[fact["message"]["message_id"]] = fact["message"]
+    expected_inbox_ops = {row["request_id"]: row for row in before["inbox"]["operations"]}
+    for row in [fact["enqueue"], *[item["operation"] for item in fact["deliveries"]]]:
+        expected_inbox_ops[row["request_id"]] = row
+    check({row["message_id"]: row for row in result["inbox"]["messages"]} == expected_messages and
+          {row["request_id"]: row for row in result["inbox"]["operations"]} == expected_inbox_ops,
+          "Host-only C history includes extra or substituted messages")
+    required_not_run = {"V08_MODEL_CROSS_PROJECT", "V08_MODEL_SUBORDINATE_OWNER", "V08_STALL_CHAIN",
+                        "V08_HOST_LATE_ACK_AFTER_ROUTE_CHANGE", "V08_HOST_DELIVERED",
+                        "V08_HOST_BUSY_QUEUED", "V08_HOST_ROUTE_CHANGED", "V08_HOST_CANCELLED",
+                        *("V08_SUBMIT_REJECT_GATE", "V08_REJECT_WITH_REASON", "V08_MODEL_BYPASS_GATE",
+                          "V08_RESUBMIT", "V08_REJECT_CAP_STATE_ONLY", "V08_MODEL_CAP_BLOCKS_SUBMIT",
+                          "V08_MODEL_EXPIRED_GRANT", "V08_SUBMIT_PASS_GATE", "V08_MODEL_FORGED_SENDER",
+                          "V08_MODEL_WRONG_REVIEWER", "V08_MODEL_EMPTY_REJECT_REASON", "V08_APPROVE",
+                          "V08_LEGAL_STAGE", "V08_USER_POLICY_UNSUPPORTED")}
+    check({row["caseId"] for row in case["notRun"]} == required_not_run and
+          case["state"] == "FLOW_COMPLETE_DIRECT_LEDGER_READBACK_REQUIRED" and
+          journal["v08"] == "IMPLEMENTED_CASES_HAVE_DIRECT_EVIDENCE_V08_INCOMPLETE",
+          "Host-only must preserve every other V08 axis as not run")
+    result["verifiedCaseId"] = case["caseId"]
+    result["verifiedAxis"] = "V08_REJECT_CAP_DELIVERY_BUSY_TO_IDLE_ONLY"
+    result["directCaseEvidence"] = True
+    result["state"] = "IMPLEMENTED_CASES_HAVE_DIRECT_EVIDENCE_V08_INCOMPLETE"
 
 
 def verify_case(db, journal, case, result):
@@ -1831,10 +2239,21 @@ try:
                 journal["rulesUserPermissionTier"], journal["rulesUserMaxConcurrent"])
             check(result["capacityQualification"]["state"] == "CAPACITY_4_WITHIN_REFERENCE_OWNER_AND_HOST",
                   "Fresh A cap 4 is not supported by the original Owner cap and host source facts")
+        if journal.get("rulesSelection") == "HOST_BUSY_TO_IDLE_ONLY":
+            check(journal.get("rulesUserPermissionTier") == "NETWORKED_WRITE" and
+                  journal.get("rulesUserMaxConcurrent") == 4 and journal.get("rulesProjectParallelCap") == 4,
+                  "Host-only needs the actual selected User and A four-slot cap")
+            result["capacityQualification"] = cross_project_capacity_qualification(
+                db, journal["domainId"], journal.get("rulesCapacityReferenceDomainId"), 4)
+            check(result["capacityQualification"]["state"] == "CAPACITY_4_WITHIN_REFERENCE_OWNER_AND_HOST",
+                  "Current Host A cap four lacks actual Owner and machine facts")
         check(len(result["policy"]["head"]) == 1, "Existing real Owner-initialized policy head required")
         if sys.argv[4] == "final":
             check(len(journal.get("rulesCases", [])) == 1, "One exclusive original V08 case required")
-            verify_case(db, journal, journal["rulesCases"][0], result)
+            if journal.get("rulesSelection") == "HOST_BUSY_TO_IDLE_ONLY":
+                verify_host_only(db, journal, journal["rulesCases"][0], result)
+            else:
+                verify_case(db, journal, journal["rulesCases"][0], result)
         elif sys.argv[4] == "checkpoint":
             check(len(journal.get("rulesCases", [])) == 1, "One original exclusive V08 checkpoint case required")
             case = journal["rulesCases"][0]

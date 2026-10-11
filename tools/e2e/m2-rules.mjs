@@ -25,6 +25,9 @@ const hostSessionLocator = (domain, cause, policyRevision) => {
 
 export async function runRulesCase(product, config, journal) {
   const c = config.rules;
+  const hostOnly = c.selection === 'HOST_BUSY_TO_IDLE_ONLY';
+  requireFact(!hostOnly || (c.host?.busyToIdleOnly === true && !c.foreignProject),
+    'Host-only selection requires one real busy-to-idle recipient and no foreign policy');
   requireFact(process.platform === 'win32' && config.repositoryId === 'gogokeSeatTestbed' &&
     /^[a-f0-9]{40}$/.test(config.sourceCommit ?? '') &&
     c?.lifecycleOwnership === 'EXCLUSIVE_V08_SUBMITTER_AND_REVIEWER' &&
@@ -41,6 +44,16 @@ export async function runRulesCase(product, config, journal) {
       { caseId: 'V08_REJECT_CAP_DELIVERY', reason: 'Host recipient/checkpoint context not supplied; gate state alone cannot prove original E/C/H delivery.' },
       { caseId: 'V08_STALL_CHAIN', reason: 'No original failed WORK with contextWindowExceeded/typed retry followed by original compact -32601 Unsupported, same custody and no successor work was observed. Interrupted turns and synthetic cloud associations cannot substitute.' },
     ], readbackRequired: true };
+  if (hostOnly) {
+    record.selection = 'HOST_BUSY_TO_IDLE_ONLY';
+    record.notRun.push(...[
+      'V08_SUBMIT_REJECT_GATE','V08_REJECT_WITH_REASON','V08_MODEL_BYPASS_GATE',
+      'V08_RESUBMIT','V08_REJECT_CAP_STATE_ONLY','V08_MODEL_CAP_BLOCKS_SUBMIT',
+      'V08_MODEL_EXPIRED_GRANT','V08_SUBMIT_PASS_GATE','V08_MODEL_FORGED_SENDER',
+      'V08_MODEL_WRONG_REVIEWER','V08_MODEL_EMPTY_REJECT_REASON','V08_APPROVE',
+      'V08_LEGAL_STAGE','V08_USER_POLICY_UNSUPPORTED',
+    ].map(caseId => ({ caseId, reason: 'Original core13 is closed separately; this Host run never resends it.' })));
+  }
   journal.rulesCases ??= []; journal.rulesCases.push(record); product.save();
   try {
     const baseline = c.baselineReadback;
@@ -97,8 +110,19 @@ export async function runRulesCase(product, config, journal) {
       'Foreign target must actually exist in B and be absent from A');
       record.foreignProject = foreign;
     }
+    if (hostOnly) {
+      const prior = c.priorCore13Snapshot;
+      requireFact(prior?.directCaseEvidence === true &&
+        prior.state === 'IMPLEMENTED_CASES_HAVE_DIRECT_EVIDENCE_V08_INCOMPLETE' &&
+        prior.domainId === config.domainId &&
+        ['head', 'grants', 'gates', 'routes', 'events'].every(name =>
+          JSON.stringify(before.policy[name]) === JSON.stringify(prior.policy[name])) &&
+        before.capacityQualification?.state === 'CAPACITY_4_WITHIN_REFERENCE_OWNER_AND_HOST',
+      'Host-only baseline must continue the closed A policy and actual four-slot capacity');
+      record.priorCore13 = c.priorCore13;
+    }
     let policyRevision = String(before.policy.head[0].revision);
-    const fromStage = before.policy.head[0].current_stage, toStage = id('v08Stage');
+    const fromStage = before.policy.head[0].current_stage, toStage = hostOnly ? fromStage : id('v08Stage');
     const submitter = c.submitterSession, reviewer = c.reviewerSession;
     for (const session of [submitter, reviewer]) {
       requireFact(session && journal.sessions.includes(session) && session.threadId &&
@@ -115,8 +139,9 @@ export async function runRulesCase(product, config, journal) {
     record.submitterSession = submitter.id; record.reviewerSession = reviewer.id;
     record.initialSessions = [binding(submitter), binding(reviewer)];
     record.fromStage = fromStage; record.toStage = toStage;
-    record.rejectGate = id('v08Reject'); record.passGate = id('v08Pass');
-    record.rejectReasons = [id('V08_reason_one'), id('V08_reason_cap')]; product.save();
+    record.rejectGate = hostOnly ? null : id('v08Reject');
+    record.passGate = hostOnly ? null : id('v08Pass');
+    record.rejectReasons = hostOnly ? [] : [id('V08_reason_one'), id('V08_reason_cap')]; product.save();
     for (const session of [submitter, reviewer]) {
       let card = await product.operation('K-SEAT', 'state-card', session.seatId, {}, '0', ['APPLIED', 'STALE']);
       if (card.status === 'STALE') card = await product.operation('K-SEAT', 'state-card', session.seatId, {}, card.revision);
@@ -286,6 +311,14 @@ export async function runRulesCase(product, config, journal) {
     };
     const grant = expiresAtMs => configure('policy-call-grant', { callerSeatId: submitter.seatId,
       targetId: reviewer.seatId, action: 'REVIEW', expiresAtMs });
+    if (hostOnly) {
+      requireFact(c.userPermissionTier === 'NETWORKED_WRITE' && c.userMaxConcurrent === 4 &&
+        c.projectParallelCap === 4 && before.capacityQualification?.state ===
+        'CAPACITY_4_WITHIN_REFERENCE_OWNER_AND_HOST' &&
+        before.policy.grants.some(row => row.caller_seat_id === submitter.seatId &&
+          row.target_id === reviewer.seatId && row.action === 'REVIEW' && row.expires_at_ms === 0),
+      'Host-only needs the current original A grant and verified four-slot cap');
+    } else {
     await grant(null);
     for (const gateId of [record.rejectGate, record.passGate]) await configure('policy-gate', {
       gateId, submitterSeatId: submitter.seatId, reviewerSeatId: reviewer.seatId,
@@ -298,6 +331,7 @@ export async function runRulesCase(product, config, journal) {
       requestId: journal.operations.at(-1).request.requestId, receipt: userReply,
       authority: 'REAL_USER_INGRESS_ONLY' }); product.save();
 
+    }
     const output = async (session, allowQuestion = false) => {
       let reply = await product.operation('K-SESSION', 'output-stream', session.id,
         { generation: session.generation, afterCursor: session.cursor }, session.revision, ['APPLIED', 'STALE']);
@@ -374,6 +408,7 @@ export async function runRulesCase(product, config, journal) {
       session.turns.push({ turnId: action.turnId, sendRequestId: action.sendRequestId }); product.save();
       return action;
     };
+    if (!hostOnly) {
     const reject = record.rejectGate, pass = record.passGate;
     await call('V08_SUBMIT_REJECT_GATE', submitter, 'gate-submit', reject, '1', {}, 'APPLIED', 'SUBMITTED');
     await call('V08_REJECT_WITH_REASON', reviewer, 'gate-decide', reject, '2',
@@ -397,6 +432,7 @@ export async function runRulesCase(product, config, journal) {
     await call('V08_APPROVE', reviewer, 'gate-decide', pass, '2', { decision: 'PASS' }, 'APPLIED', 'PASSED');
     policyRevision = (BigInt(policyRevision) + 1n).toString();
     await call('V08_LEGAL_STAGE', submitter, 'stage-transition', pass, '3', {}, 'APPLIED', 'ADVANCED', toStage);
+    }
     if (c.host) {
       const h = c.host;
       requireFact(h.lifecycleOwnership === 'EXCLUSIVE_V08_HOST_RECIPIENTS' &&
