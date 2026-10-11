@@ -7,7 +7,7 @@ use crate::store::atomic::Statement;
 use crate::store::authority::{check_owner_in_current_transaction, OwnerIssuer};
 use crate::store::orchestration::OrchestrationError;
 use crate::store::same_open::VerifiedDatabaseConnection;
-use crate::store::atomic::{Json,JsonString};
+use crate::store::atomic::{Json,JsonString,Parser};
 use crate::store::session_transport::codex_rpc;
 use std::collections::BTreeSet;
 
@@ -51,6 +51,24 @@ pub(crate) struct InstanceEvidence {
     pub(crate) models_observed_at: Option<String>,
     pub(crate) detect_error: Option<String>,
     pub(crate) detect_error_at: Option<String>,
+}
+
+/// Optional fields recovered from the same original Codex model/list pages
+/// that supplied `available_models_json`. Absence remains absence; an E scope
+/// or a vendor default cannot manufacture a supported effort.
+#[derive(Clone,Debug,Eq,PartialEq)]
+pub(crate) struct VerifiedModelEffort {
+    pub(crate) model: String,
+    pub(crate) default_effort: Option<String>,
+    pub(crate) supported_efforts: Option<Vec<String>>,
+}
+
+#[derive(Clone,Debug,Eq,PartialEq)]
+pub(crate) struct VerifiedModelEfforts {
+    pub(crate) instance_id: String,
+    pub(crate) models_source: String,
+    pub(crate) models_observed_at: String,
+    pub(crate) models: Vec<VerifiedModelEffort>,
 }
 
 fn optional_text(row: &Statement, index: i32) -> Result<Option<String>, InstanceManagementError> {
@@ -291,6 +309,147 @@ fn valid_wire_id(value:&str)->bool {
         && bytes[1..].iter().all(|byte|byte.is_ascii_alphanumeric() || matches!(*byte,b'_'|b'-'))
 }
 
+fn original_effort(value:&Json)->Result<String,InstanceManagementError> {
+    let Json::String(value)=value else {return Err(InstanceManagementError::Conflict)};
+    let effort=value.to_well_formed_string().ok_or(InstanceManagementError::Conflict)?;
+    if effort.is_empty() || effort.len()>64 || effort.chars().any(char::is_control) {
+        return Err(InstanceManagementError::Conflict);
+    }
+    Ok(effort)
+}
+
+fn original_model_efforts_page(response:&[u8],slugs:&[String])
+    ->Result<Vec<VerifiedModelEffort>,InstanceManagementError> {
+    let raw=std::str::from_utf8(response).map_err(|_|InstanceManagementError::Conflict)?;
+    let Json::Object(frame)=Parser::parse(raw).map_err(|_|InstanceManagementError::Conflict)?
+        else {return Err(InstanceManagementError::Conflict)};
+    let Some(Json::Object(result))=frame.get(&JsonString::from_str("result"))
+        else {return Err(InstanceManagementError::Conflict)};
+    let Some(Json::Array(data))=result.get(&JsonString::from_str("data"))
+        else {return Err(InstanceManagementError::Conflict)};
+    let mut seen=BTreeSet::new();
+    let mut models=Vec::new();
+    for item in data {
+        let Json::Object(fields)=item else {return Err(InstanceManagementError::Conflict)};
+        let Some(Json::String(slug))=fields.get(&JsonString::from_str("model"))
+            else {return Err(InstanceManagementError::Conflict)};
+        let slug=slug.to_well_formed_string().ok_or(InstanceManagementError::Conflict)?;
+        let Some(Json::Bool(hidden))=fields.get(&JsonString::from_str("hidden"))
+            else {return Err(InstanceManagementError::Conflict)};
+        if *hidden || !seen.insert(slug.clone()) {continue;}
+        let default_effort=fields.get(&JsonString::from_str("defaultReasoningEffort"))
+            .map(original_effort).transpose()?;
+        let supported_efforts=match fields.get(&JsonString::from_str("supportedReasoningEfforts")) {
+            None=>None,
+            Some(Json::Array(options)) if options.len()<=32=>{
+                let mut values=Vec::new();let mut unique=BTreeSet::new();
+                for option in options {
+                    let Json::Object(option)=option else {return Err(InstanceManagementError::Conflict)};
+                    let effort=original_effort(option.get(&JsonString::from_str("reasoningEffort"))
+                        .ok_or(InstanceManagementError::Conflict)?)?;
+                    if !unique.insert(effort.clone()) {return Err(InstanceManagementError::Conflict);}
+                    values.push(effort);
+                }
+                Some(values)
+            },
+            _=>return Err(InstanceManagementError::Conflict),
+        };
+        if default_effort.as_ref().is_some_and(|default|
+            supported_efforts.as_ref().is_some_and(|options|!options.contains(default))) {
+            return Err(InstanceManagementError::Conflict);
+        }
+        models.push(VerifiedModelEffort {model:slug,default_effort,supported_efforts});
+    }
+    if models.iter().map(|row|&row.model).ne(slugs.iter()) {
+        return Err(InstanceManagementError::Conflict);
+    }
+    Ok(models)
+}
+
+/// Re-read only the original H/A pages named by F's existing source marker.
+/// This introduces no second model cache and works for observations recorded
+/// before effort projection existed. The old slug list remains authoritative.
+pub(crate) fn read_verified_model_efforts(db:&VerifiedDatabaseConnection<'_>,instance_id:&str)
+    ->Result<Option<VerifiedModelEfforts>,InstanceManagementError> {
+    let Some(evidence)=read_instance_evidence(db,instance_id)? else {return Ok(None)};
+    let (Some(slugs),Some(source),Some(observed_at))=(evidence.available_models_json,
+        evidence.models_source,evidence.models_observed_at) else {return Ok(None)};
+    let Some(identity)=source.strip_prefix("codex-model/list:OBSERVED:") else {return Ok(None)};
+    let parts:Vec<_>=identity.split(':').collect();
+    if parts.len()!=4 || !valid_wire_id(parts[0]) || !valid_wire_id(parts[1])
+        || !valid_wire_id(parts[2]) {return Ok(None)};
+    let first_cursor=parts[3].parse::<u64>().ok().filter(|value|*value>0)
+        .ok_or(InstanceManagementError::Conflict)?;
+    let Json::Array(cached)=Parser::parse(&slugs).map_err(|_|InstanceManagementError::Conflict)?
+        else {return Err(InstanceManagementError::Conflict)};
+    let cached:Vec<String>=cached.iter().map(|item| {
+        let Json::String(value)=item else {return Err(InstanceManagementError::Conflict)};
+        value.to_well_formed_string().ok_or(InstanceManagementError::Conflict)
+    }).collect::<Result<_,_>>()?;
+    let rows=Statement::prepare(db.as_ptr(),
+        "SELECT s.command_hex,hex(r.raw_bytes),s.source_cursor,s.process_operation_id
+           FROM main.gogoke_v37_rpc_steps s
+           JOIN main.gogoke_v37_h_process_episode e ON e.domain_id=s.domain_id
+             AND e.session_id=s.session_id AND e.generation=s.generation
+             AND e.process_operation_id=s.process_operation_id AND e.instance_id=?1
+           JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
+             AND i.driver_id='codex' AND i.login_state='LOGGED_IN'
+             AND i.program_digest=s.binary_digest
+           JOIN main.gogoke_coordination_process_custody c ON c.operation_id=s.process_operation_id
+             AND c.ticket=s.ticket AND c.custodian_nonce=s.custodian_nonce
+             AND c.pid=s.pid AND c.creation_time_100ns=s.creation_time
+             AND c.image_path=s.image_path AND c.binary_digest_sha256=s.binary_digest
+             AND c.profile_id=e.instance_id AND c.domain_id=s.domain_id
+             AND c.generation=s.generation
+           JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
+             AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
+             AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
+             AND r.domain_id=s.domain_id AND r.session_id=s.session_id AND r.generation=s.generation
+             AND r.state='NO_EVENT' AND r.no_event_reason='CODEX_RPC_RESPONSE'
+          WHERE s.domain_id=?2 AND s.session_id=?3 AND s.source_epoch=?4
+            AND CAST(s.source_cursor AS INTEGER)>=?5 AND s.phase='OBSERVED'
+            AND s.requires_response=1
+            AND instr(lower(s.command_hex),'6d6f64656c2f6c697374')>0
+          ORDER BY CAST(s.source_cursor AS INTEGER),s.step_id")?;
+    rows.bind_text(1,instance_id)?;rows.bind_text(2,parts[0])?;
+    rows.bind_text(3,parts[1])?;rows.bind_text(4,parts[2])?;
+    rows.bind_i64(5,i64::try_from(first_cursor).map_err(|_|InstanceManagementError::Conflict)?)?;
+    let mut expected_cursor=None;
+    let mut prior_source_cursor=0;
+    let mut process=None;
+    let mut models=Vec::new();
+    let mut seen=BTreeSet::new();
+    let mut pages=0usize;
+    let mut complete=false;
+    while rows.step_row()? {
+        pages+=1;
+        if pages>64 || models.len()>1024 {return Err(InstanceManagementError::Conflict);}
+        let command=original_hex_bytes(&rows.column_text(0)?)?;
+        let response=original_hex_bytes(&rows.column_text(1)?)?;
+        let cursor=rows.column_text(2)?.parse::<u64>()
+            .map_err(|_|InstanceManagementError::Conflict)?;
+        let current_process=rows.column_text(3)?;
+        if cursor<=prior_source_cursor || (prior_source_cursor==0 && cursor!=first_cursor)
+            || process.as_ref().is_some_and(|prior|prior!=&current_process) {
+            return Err(InstanceManagementError::Conflict);
+        }
+        prior_source_cursor=cursor;process=Some(current_process);
+        let (request_cursor,page,next)=codex_rpc::decode_stored_model_list(&command,&response)
+            .map_err(|_|InstanceManagementError::Conflict)?;
+        if request_cursor!=expected_cursor {return Err(InstanceManagementError::Conflict);}
+        for model in original_model_efforts_page(&response,&page)? {
+            if seen.insert(model.model.clone()) {models.push(model);}
+        }
+        expected_cursor=next;
+        if expected_cursor.is_none() {complete=true;break;}
+    }
+    if !complete || models.iter().map(|model|&model.model).ne(cached.iter()) {
+        return Err(InstanceManagementError::Conflict);
+    }
+    Ok(Some(VerifiedModelEfforts {instance_id:instance_id.into(),
+        models_source:source,models_observed_at:observed_at,models}))
+}
+
 /// Only H's OBSERVED original model/list RPC pages can update this cache.
 /// The supplied step IDs select records; they never supply model names or a
 /// response. Every page must be in the same exact process/claim/pin and the
@@ -417,4 +576,47 @@ fn qualified_account_observation_invalidates_prior_models_even_when_mask_collide
     db.close_checked().unwrap();
     drop(root);
     std::fs::remove_dir_all(path).unwrap();
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn original_model_efforts_follow_the_cached_source_and_current_pin() {
+    use crate::root::RootLock;
+    use crate::store::same_open::{create_new,route_b_test_guard};
+    let _guard=route_b_test_guard();
+    let nonce=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let path=std::env::temp_dir().join(format!("gogoke-model-effort-source-{}-{nonce}",std::process::id()));
+    std::fs::create_dir(&path).unwrap();
+    let root=RootLock::acquire(&path).unwrap();
+    let mut db=create_new(&root,&path.join("state.sqlite")).unwrap();
+    db.execute("PRAGMA foreign_keys=ON").unwrap();
+    super::initialize_schema(&mut db).unwrap();
+    db.execute("CREATE TABLE gogoke_v37_rpc_steps(domain_id TEXT,session_id TEXT,step_id TEXT,source_epoch TEXT,source_cursor TEXT,process_operation_id TEXT,ticket TEXT,custodian_nonce TEXT,pid TEXT,creation_time TEXT,image_path TEXT,binary_digest TEXT,profile_id TEXT,generation TEXT,command_hex TEXT,phase TEXT,requires_response INTEGER) STRICT").unwrap();
+    db.execute("CREATE TABLE gogoke_v37_h_process_episode(domain_id TEXT,session_id TEXT,generation TEXT,process_operation_id TEXT,instance_id TEXT) STRICT").unwrap();
+    db.execute("CREATE TABLE gogoke_coordination_process_custody(operation_id TEXT,ticket TEXT,custodian_nonce TEXT,pid TEXT,creation_time_100ns TEXT,image_path TEXT,binary_digest_sha256 TEXT,profile_id TEXT,domain_id TEXT,generation TEXT,state TEXT) STRICT").unwrap();
+    db.execute("CREATE TABLE v37_ledger_raw_source(operation_id TEXT,source_epoch TEXT,source_cursor TEXT,process_ticket TEXT,custodian_nonce TEXT,domain_id TEXT,session_id TEXT,generation TEXT,state TEXT,no_event_reason TEXT,raw_bytes BLOB) STRICT").unwrap();
+    db.execute("INSERT INTO gogoke_v37_instances VALUES('instanceA','codex','homeA','identityA','sha256:pin','0.160.0','INSTALLED','LOGGED_IN',1)").unwrap();
+    db.execute("INSERT INTO gogoke_v37_instance_evidence(instance_id,available_models_json,models_source,models_observed_at,models_program_digest) VALUES('instanceA','[\"gpt-6.1-sol\"]','codex-model/list:OBSERVED:global:sessionA:pcn1_demo:10','100','sha256:pin')").unwrap();
+    db.execute("INSERT INTO gogoke_v37_h_process_episode VALUES('global','sessionA','1','processA','instanceA')").unwrap();
+    db.execute("INSERT INTO gogoke_coordination_process_custody VALUES('processA','ticketA','nonceA','41','42','programA','sha256:pin','instanceA','global','1','STOPPED')").unwrap();
+    let command=codex_rpc::Command::ModelList {cursor:None}
+        .encode(Some(&codex_rpc::RpcId::client(4).unwrap())).unwrap();
+    let response=br#"{"id":4,"result":{"data":[{"model":"gpt-6.1-sol","hidden":false,"defaultReasoningEffort":"low","supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}]},{"model":"hidden","hidden":true}],"nextCursor":null}}"#;
+    let hex=|bytes:&[u8]|bytes.iter().map(|byte|format!("{byte:02x}")).collect::<String>();
+    db.execute(&format!("INSERT INTO gogoke_v37_rpc_steps VALUES('global','sessionA','modelsA','pcn1_demo','10','processA','ticketA','nonceA','41','42','programA','sha256:pin','instanceA','1','{}','OBSERVED',1)",hex(&command))).unwrap();
+    db.execute(&format!("INSERT INTO v37_ledger_raw_source VALUES('processA','pcn1_demo','10','ticketA','nonceA','global','sessionA','1','NO_EVENT','CODEX_RPC_RESPONSE',X'{}')",hex(response))).unwrap();
+    let original=read_verified_model_efforts(&db,"instanceA").unwrap().unwrap();
+    assert_eq!(original.models,vec![VerifiedModelEffort {model:"gpt-6.1-sol".into(),
+        default_effort:Some("low".into()),supported_efforts:Some(vec!["low".into(),"high".into()])}]);
+    db.execute("UPDATE gogoke_v37_instances SET program_digest='sha256:changed' WHERE instance_id='instanceA'").unwrap();
+    assert!(read_verified_model_efforts(&db,"instanceA").unwrap().is_none());
+    db.execute("UPDATE gogoke_v37_instances SET program_digest='sha256:pin' WHERE instance_id='instanceA'").unwrap();
+    let without=br#"{"id":4,"result":{"data":[{"model":"gpt-6.1-sol","hidden":false}],"nextCursor":null}}"#;
+    db.execute(&format!("UPDATE v37_ledger_raw_source SET raw_bytes=X'{}'",hex(without))).unwrap();
+    let unknown=read_verified_model_efforts(&db,"instanceA").unwrap().unwrap();
+    assert_eq!(unknown.models[0].default_effort,None);
+    assert_eq!(unknown.models[0].supported_efforts,None);
+    db.execute("UPDATE gogoke_v37_instance_evidence SET models_source='codex-model/list:OBSERVED:global:sessionA:pcn1_demo:11' WHERE instance_id='instanceA'").unwrap();
+    assert!(matches!(read_verified_model_efforts(&db,"instanceA"),Err(InstanceManagementError::Conflict)));
+    db.close_checked().unwrap();drop(root);std::fs::remove_dir_all(path).unwrap();
 }
