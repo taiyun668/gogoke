@@ -43,16 +43,21 @@ if (process.platform !== 'win32' || !process.argv[2] || required.some(key => con
 }
 const writeCases = config.cases.filter(row => row.caseMode === 'grokWrite');
 const sequenceCases = config.cases.filter(row => row.caseMode === 'sequence');
-const contextAfterResumeCases = config.cases.filter(row => row.contextAfterResume === true);
+const grokContextAfterResumeCases = config.cases.filter(row =>
+  row.contextAfterResume === true && row.caseMode === 'sequence');
+const claudeSequenceCases = config.cases.filter(row => row.caseMode === 'claudeSequence');
 if (config.cases.some(row => row.caseMode !== undefined &&
-      !['grokWrite', 'sequence'].includes(row.caseMode)) ||
+      !['grokWrite', 'sequence', 'claudeSequence'].includes(row.caseMode)) ||
     config.cases.some(row => row.contextAfterResume !== undefined &&
       typeof row.contextAfterResume !== 'boolean') ||
-    (contextAfterResumeCases.length > 0 && (contextAfterResumeCases.length !== 1 ||
-      sequenceCases.length !== 1 || contextAfterResumeCases[0].caseMode !== 'sequence' ||
-      contextAfterResumeCases[0].driverId !== 'grok')) ||
+    (grokContextAfterResumeCases.length > 0 && (grokContextAfterResumeCases.length !== 1 ||
+      sequenceCases.length !== 1 || grokContextAfterResumeCases[0].driverId !== 'grok')) ||
     (sequenceCases.length > 0 && (sequenceCases.length !== 1 || config.cases.length !== 1 ||
       sequenceCases[0].driverId !== 'grok')) ||
+    (claudeSequenceCases.length > 0 && (claudeSequenceCases.length !== 1 || config.cases.length !== 1 ||
+      claudeSequenceCases[0].driverId !== 'claude' || claudeSequenceCases[0].contextAfterResume !== true)) ||
+    config.cases.some(row => row.contextAfterResume === true &&
+      row.caseMode !== 'sequence' && row.caseMode !== 'claudeSequence') ||
     (writeCases.length > 0 && (writeCases.length !== 1 || config.cases.length !== 1 ||
       writeCases[0].driverId !== 'grok' ||
       typeof writeCases[0].worktreePath !== 'string' || !path.isAbsolute(writeCases[0].worktreePath) ||
@@ -445,6 +450,198 @@ async function runSequenceTurns(row, record, session) {
   record.result = 'DIRECT_H_RECEIPT_A_READBACK_REQUIRED'; product.save();
 }
 
+async function runClaudeSequenceTurns(row, record, session) {
+  const claudeContext = row.driverId === 'claude' && row.caseMode === 'claudeSequence' &&
+    row.contextAfterResume === true;
+  const sequence = { state: 'RUNNING', turns: [],
+    steer: claudeContext
+      ? { state: 'NOT_RUN_CLAUDE_CONTEXT_CASE',
+        originalCapability: record.sequenceCapability.inTurnSteer ?? null,
+        reason: 'This case tests native cold resume context; it does not claim in-turn steering' }
+      : { state: 'NOT_RUN_UNSUPPORTED',
+        originalCapability: record.sequenceCapability.inTurnSteer,
+        reason: 'The original H capability reports no ACP in-turn steer; no new send is substituted' },
+    runningInterrupt: claudeContext
+      ? { state: 'NOT_RUN_CAPABILITY_FIELD_ABSENT', originalCapability: null,
+        reason: 'The fixed Claude capability does not advertise an interrupt field; this case does not claim in-turn interruption' }
+      : { state: 'NOT_RUN_RUNNING_STOP_NOT_DISPATCHED',
+        originalCapability: record.sequenceCapability.interruptAndResume,
+        reason: 'Both original sends reached their own terminal receipt before H stop; this case does not claim an in-flight interruption' },
+    coldResume: null, firstStopFact: null, finalStopFact: null };
+  record.sequence = sequence; product.save();
+  for (let ordinal = 1; ordinal <= 2; ordinal++) {
+    const marker = `${journal.marker}_${row.driverId}_${id(`sequence${ordinal}`)}`;
+    const prompt = `Private non-secret provider sequence turn ${ordinal}. Reply with exactly ${marker}. ` +
+      'Do not use tools, read or write files, open a browser, access credentials, or switch models.';
+    let before;
+    for (;;) {
+      const prior = session.cursor;
+      before = await output(session);
+      check(/^\d+$/.test(before.rawHighwater ?? '') &&
+        /^\d+$/.test(before.ledgerHighwater ?? '') &&
+        !before.nativeCardRefs?.some(card => card.state === 'OPEN'),
+      'Provider sequence needs a complete original H page without an open card');
+      if (BigInt(before.cursor) === BigInt(before.ledgerHighwater)) break;
+      check(BigInt(before.cursor) > BigInt(prior),
+        'Provider sequence pre-send H page made no ledger progress');
+    }
+    const turn = { ordinal, marker, prompt, generation: session.generation,
+      beforeSendRawHighwater: before.rawHighwater, sendRequestId: null,
+      hReceipt: null };
+    sequence.turns.push(turn); product.save();
+    const sent = await sessionStep(session, 'send', { body: prompt }, ['APPLIED', 'UNKNOWN']);
+    turn.sendRequestId = journal.operations.at(-1).request.requestId;
+    turn.sendStatus = sent.status; product.save();
+    if (sent.status === 'UNKNOWN' && sent.result.reason) {
+      throw Error(`${row.driverId}: original sequence send UNKNOWN reason=${sent.result.reason}; no resend`);
+    }
+    const receipt = await observeReceipt(session, row, turn);
+    check(receipt.receipt?.result?.createdTurn === true &&
+      receipt.receipt.result.stopReason === 'end_turn' &&
+      typeof receipt.receipt.result.sourceEpoch === 'string' &&
+      /^\d+$/.test(receipt.receipt.result.sourceCursor ?? '') &&
+      BigInt(receipt.receipt.result.sourceCursor) > BigInt(turn.beforeSendRawHighwater),
+    `${row.driverId}: original sequence H terminal receipt is incomplete`);
+    const deadline = Date.now() + 600000;
+    let observed = false;
+    while (Date.now() < deadline) {
+      const page = await output(session);
+      const text = session.events.filter(event => event.sessionUpdate === 'agent_message_chunk' &&
+        event._meta?.threadId === session.threadId &&
+        /^\d+$/.test(event._meta?.rawSourceCursor ?? '') &&
+        BigInt(event._meta.rawSourceCursor) > BigInt(turn.beforeSendRawHighwater) &&
+        BigInt(event._meta.rawSourceCursor) <= BigInt(receipt.receipt.result.sourceCursor))
+        .map(event => event.content?.type === 'text' ? event.content.text : '').join('');
+      if (text.includes(marker) && /^\d+$/.test(page.rawHighwater ?? '') &&
+          BigInt(page.rawHighwater) >= BigInt(receipt.receipt.result.sourceCursor) &&
+          page.cursor === page.ledgerHighwater) {
+        observed = true; break;
+      }
+      await delay(300);
+    }
+    check(observed, `${row.driverId}: original sequence marker and terminal A output absent`);
+    turn.markerObserved = true; turn.terminalSourceEpoch = receipt.receipt.result.sourceEpoch;
+    turn.terminalSourceCursor = receipt.receipt.result.sourceCursor; product.save();
+  }
+  const firstStop = await sessionStep(session, 'stop', { seatId: row.seatId });
+  check(/^sha256:[a-f0-9]{64}$/.test(firstStop.result.stopFact ?? ''),
+    `${row.driverId}: first original H StopFact missing`);
+  sequence.firstStopFact = firstStop.result.stopFact; product.save();
+  await product.closeNormally();
+  await product.launch();
+  check(Boolean(product.tester) && journal.connectionBackend?.name === 'tester-army/e2e',
+    'Cold provider sequence must use the same installed product USER endpoint');
+  const oldGeneration = session.generation;
+  let resumed = await operation('K-SESSION', 'resume', session.id,
+    { generation: oldGeneration }, session.revision, ['APPLIED', 'UNKNOWN']);
+  let original = journal.operations.at(-1);
+  const resumeDeadline = Date.now() + 600000;
+  while (resumed.status === 'UNKNOWN') {
+    if (resumed.result.reason || Date.now() >= resumeDeadline) {
+      throw Error(`${row.driverId}: exact original H resume UNKNOWN; preserve without a fresh session`);
+    }
+    await delay(300);
+    original = await product.reconcile(original); resumed = original.receipt;
+  }
+  check(['APPLIED', 'REPLAYED'].includes(resumed.status) && resumed.result.state === 'RUNNING' &&
+    resumed.result.oldGeneration === oldGeneration &&
+    /^\d+$/.test(resumed.result.newGeneration ?? '') &&
+    BigInt(resumed.result.newGeneration) > BigInt(oldGeneration) &&
+    (!resumed.result.threadId || resumed.result.threadId === session.threadId),
+  `${row.driverId}: original stopped session did not resume its own H/thread`);
+  session.generation = resumed.result.newGeneration;
+  session.revision = resumed.revision; sequence.coldResume = {
+    requestId: resumed.requestId, oldGeneration, newGeneration: session.generation,
+    sessionId: session.id, threadId: session.threadId, receipt: resumed };
+  record.resumedProcessIdentity = await captureProcess(row); product.save();
+  const resumedCapability = await sessionStep(session, 'capability-probe');
+  check(resumedCapability.result.driverId === row.driverId &&
+    resumedCapability.result.version === row.version &&
+    resumedCapability.result.binaryDigest === `sha256:${row.sha256}` &&
+    (claudeContext
+      ? typeof resumedCapability.result.capabilities?.resume === 'string' &&
+        resumedCapability.result.capabilities?.interruptAndResume === undefined
+      : resumedCapability.result.capabilities?.inTurnSteer === 'UNSUPPORTED' &&
+        resumedCapability.result.capabilities?.resume ===
+          'SOURCE_PRESENT_NATIVE_RESUME_BEHAVIOUR_NOT_RUN'),
+  `${row.driverId}: resumed exact fixed CLI capability differs`);
+  sequence.resumedCapability = claudeContext
+    ? { requestId: resumedCapability.requestId,
+      processOperationId: resumedCapability.result.processOperationId,
+      inTurnSteer: resumedCapability.result.capabilities.inTurnSteer ?? null,
+      resume: resumedCapability.result.capabilities.resume,
+      interruptAndResume: resumedCapability.result.capabilities.interruptAndResume ?? null,
+      evidenceBasis: resumedCapability.result.evidenceBasis }
+    : { requestId: resumedCapability.requestId,
+      processOperationId: resumedCapability.result.processOperationId,
+      inTurnSteer: resumedCapability.result.capabilities.inTurnSteer,
+      resume: resumedCapability.result.capabilities.resume };
+  if (claudeContext) {
+    const priorMarker = sequence.turns[0].marker;
+    let before;
+    for (;;) {
+      const priorCursor = session.cursor;
+      before = await output(session);
+      check(/^\d+$/.test(before.rawHighwater ?? '') &&
+        /^\d+$/.test(before.ledgerHighwater ?? '') &&
+        !before.nativeCardRefs?.some(card => card.state === 'OPEN'),
+      'Claude resumed H page must be complete and have no open card');
+      if (before.cursor === before.ledgerHighwater) break;
+      check(BigInt(before.cursor) > BigInt(priorCursor),
+        'Claude resumed H page made no ledger progress');
+    }
+    const prompt = 'In this same conversation, recall the exact token you returned in the first turn. ' +
+      'Reply with only that earlier token. Do not use tools, read or write files, open a browser, ' +
+      'access credentials, or switch models.';
+    check(!prompt.includes(priorMarker),
+      'Claude post-resume prompt must not contain the earlier marker');
+    const contextTurn = { ordinal: 3, priorTurnOrdinal: 1, marker: priorMarker, prompt,
+      generation: session.generation, beforeSendRawHighwater: before.rawHighwater,
+      sendRequestId: null, hReceipt: null, state: 'SENDING_ONCE' };
+    sequence.contextAfterResume = contextTurn; product.save();
+    const sent = await sessionStep(session, 'send', { body: prompt }, ['APPLIED', 'UNKNOWN']);
+    contextTurn.sendRequestId = journal.operations.at(-1).request.requestId;
+    contextTurn.sendStatus = sent.status; product.save();
+    if (sent.status === 'UNKNOWN' && sent.result.reason) {
+      throw Error('claude: original post-resume send UNKNOWN; do not resend');
+    }
+    const receipt = await observeReceipt(session, row, contextTurn);
+    check(receipt.receipt?.result?.createdTurn === true &&
+      receipt.receipt.result.stopReason === 'end_turn' &&
+      typeof receipt.receipt.result.sourceEpoch === 'string' &&
+      /^\d+$/.test(receipt.receipt.result.sourceCursor ?? '') &&
+      BigInt(receipt.receipt.result.sourceCursor) > BigInt(contextTurn.beforeSendRawHighwater),
+    'Claude post-resume original H terminal receipt is incomplete');
+    const deadline = Date.now() + 600000;
+    let complete = false;
+    while (Date.now() < deadline) {
+      const page = await output(session);
+      if (/^\d+$/.test(page.rawHighwater ?? '') &&
+          BigInt(page.rawHighwater) >= BigInt(receipt.receipt.result.sourceCursor) &&
+          page.cursor === page.ledgerHighwater) {
+        contextTurn.terminalOutputPage = { rawHighwater: page.rawHighwater,
+          ledgerCursor: page.cursor, ledgerHighwater: page.ledgerHighwater };
+        complete = true; break;
+      }
+      await delay(300);
+    }
+    check(complete, 'Claude post-resume raw terminal source was not fully observed');
+    contextTurn.terminalSourceEpoch = receipt.receipt.result.sourceEpoch;
+    contextTurn.terminalSourceCursor = receipt.receipt.result.sourceCursor;
+    contextTurn.state = 'ORIGINAL_H_RECEIPTED'; product.save();
+  }
+  const finalStop = await sessionStep(session, 'stop', { seatId: row.seatId });
+  check(/^sha256:[a-f0-9]{64}$/.test(finalStop.result.stopFact ?? '') &&
+    finalStop.result.stopFact !== sequence.firstStopFact,
+  `${row.driverId}: final original H StopFact missing or reused`);
+  sequence.finalStopFact = finalStop.result.stopFact;
+  await sessionStep(session, 'admission-release', { seatId: row.seatId });
+  sequence.state = claudeContext
+    ? 'CLAUDE_CONTEXT_AFTER_RESUME_STOP_RELEASE_READBACK_REQUIRED'
+    : 'ORIGINAL_TWO_TURNS_COLD_RESUME_STOP_RELEASE_READBACK_REQUIRED';
+  record.result = 'DIRECT_H_RECEIPT_A_READBACK_REQUIRED'; product.save();
+}
+
 async function runCase(row, instances) {
   const grokWrite = row.caseMode === 'grokWrite';
   const record = { driverId: row.driverId, instanceId: row.instanceId, seatId: row.seatId,
@@ -510,12 +707,18 @@ async function runCase(row, instances) {
     `${row.driverId}: original provider initialization evidence basis`);
   record.capability = { driverId: capability.result.driverId, version: capability.result.version,
     binaryDigest: capability.result.binaryDigest, evidenceBasis: capability.result.evidenceBasis };
-  if (row.caseMode === 'sequence') {
+  if (row.caseMode === 'sequence' || row.caseMode === 'claudeSequence') {
     const capabilities = capability.result.capabilities;
-    check(capabilities?.inTurnSteer === 'UNSUPPORTED' &&
-      capabilities?.resume === 'SOURCE_PRESENT_NATIVE_RESUME_BEHAVIOUR_NOT_RUN' &&
-      capabilities?.interruptAndResume === 'SOURCE_PRESENT_NATIVE_RESUME_BEHAVIOUR_NOT_RUN',
-    `${row.driverId}: original H ACP sequence capability facts differ`);
+    if (row.caseMode === 'sequence') {
+      check(capabilities?.inTurnSteer === 'UNSUPPORTED' &&
+        capabilities?.resume === 'SOURCE_PRESENT_NATIVE_RESUME_BEHAVIOUR_NOT_RUN' &&
+        capabilities?.interruptAndResume === 'SOURCE_PRESENT_NATIVE_RESUME_BEHAVIOUR_NOT_RUN',
+      `${row.driverId}: original H ACP sequence capability facts differ`);
+    } else {
+      check(row.driverId === 'claude' && row.contextAfterResume === true &&
+        typeof capabilities?.resume === 'string' && capabilities?.interruptAndResume === undefined,
+      'Claude case must preserve the original native-resume capability claim');
+    }
     record.sequenceCapability = { inTurnSteer: capabilities.inTurnSteer,
       resume: capabilities.resume, interruptAndResume: capabilities.interruptAndResume,
       evidenceBasis: capability.result.evidenceBasis,
@@ -538,6 +741,10 @@ async function runCase(row, instances) {
   product.save();
   if (row.caseMode === 'sequence') {
     await runSequenceTurns(row, record, session);
+    return;
+  }
+  if (row.caseMode === 'claudeSequence') {
+    await runClaudeSequenceTurns(row, record, session);
     return;
   }
   if (grokWrite) {
