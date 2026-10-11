@@ -70,19 +70,19 @@ fn health_control_product_fixture(driver:&str,retain_original:bool,run:impl FnOn
         "SELECT generation,revision,state FROM main.gogoke_v37_h_claim WHERE domain_id='projectA' AND session_id='sessionA'").unwrap();
     assert!(claim.step_row().unwrap());let generation=claim.column_text(0).unwrap();
     let revision=claim.column_text(1).unwrap().parse::<u64>().unwrap();
-    let released=claim.column_text(2).unwrap()=="RELEASED";drop(claim);
-    if released {
+    let terminal=matches!(claim.column_text(2).unwrap().as_str(),"STOPPED"|"RELEASED");drop(claim);
+    if terminal {
         let proof=Statement::prepare(product.connection.as_ptr(),
             "SELECT 1 FROM main.gogoke_v37_h_claim h
                JOIN main.gogoke_v37_h_process_episode e ON e.process_operation_id=h.process_operation_id
                  AND e.domain_id=h.domain_id AND e.session_id=h.session_id AND e.generation=h.generation
                JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id
                  AND c.domain_id=e.domain_id AND c.generation=e.generation
-              WHERE h.domain_id='projectA' AND h.session_id='sessionA' AND h.state='RELEASED'
+               WHERE h.domain_id='projectA' AND h.session_id='sessionA' AND h.state IN ('STOPPED','RELEASED')
                 AND e.phase='STOPPED' AND c.state='STOPPED'
                 AND h.stop_fact_id=e.stop_fact_id AND e.stop_fact_id=c.stop_proof_hash
                 AND length(c.stop_proof_hash)>0").unwrap();
-        assert!(proof.step_row().unwrap(),"an already released test session requires its actual stop/custody proof");
+        assert!(proof.step_row().unwrap(),"an already stopped/released test session requires its actual stop/custody proof");
         assert!(!proof.step_row().unwrap());
     } else {
         let stop=operation("K-SESSION","stop","health-final-stop","sessionA",revision,
@@ -205,6 +205,92 @@ fn actual_pinned_codex_empty_thread_archive_metadata_cold_resume_without_model_c
             assert!(!method.starts_with("turn/") && method!="thread/inject_items" && method!="thread/compact/start",
                 "original sources contain no USER/model input or manufactured history");
         }
+    });
+}
+
+#[test]
+fn observed_codex_metadata_resume_cannot_promote_without_original_physical_rollout() {
+    health_control_product_fixture("codex",true,|product| {
+        let key=("projectA".to_owned(),"sessionA".to_owned());
+        let old=runtime::observe_claim_bound(&product.connection,"projectA","seatA","sessionA").unwrap().unwrap();
+        let stop=operation("K-SESSION","stop","metadata-boundary-stop","sessionA",old.revision as u64,
+            &format!(r#"{{"seatId":"seatA","generation":"{}"}}"#,old.generation));
+        let stopped=h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap();
+        assert_eq!(stopped.status,V37Status::Applied);
+        // The real fixed CLI writes and ACKs resume. Only the subsequent H
+        // promotion transaction fails; no provider history or ACK is fabricated.
+        product.connection.execute("CREATE TEMP TRIGGER metadata_promotion_fault BEFORE UPDATE OF phase ON main.gogoke_v37_h_process_episode WHEN NEW.phase='ACTIVE' AND NEW.request_id='metadata-boundary-resume' BEGIN SELECT RAISE(ABORT,'original metadata ACK promotion fault'); END").unwrap();
+        let resume=operation("K-SESSION","resume","metadata-boundary-resume","sessionA",stopped.revision,
+            &format!(r#"{{"generation":"{}"}}"#,old.generation));
+        let original_error=product.dispatch_user_request(&resume).expect_err("promotion fault after actual ACK");
+        assert!(format!("{original_error:?}").contains("original metadata ACK promotion fault"));
+        product.connection.execute("DROP TRIGGER metadata_promotion_fault").unwrap();
+        let run=product.native_sessions.get(&key).unwrap();
+        let custody=run.custody.clone();let process=run.operation_id.clone();
+        let generation=custody.binding.generation.clone();
+        assert!(product.process_custodian.active(&custody.ticket).is_some(),"original actual child remains live");
+        let step=format!("{process}-thread-resume");
+        let original_source=original_codex_control_rpc(product,&process,&step);
+        let path=h::rpc_journal::observed_codex_metadata_resume_path(&product.connection,
+            "projectA","sessionA",&process,&generation,&resume.request_id,custody.ticket.opaque(),
+            &custody.custodian_nonce).unwrap().unwrap();
+        run.evidence.verify_codex_rollout_path(&path,true).unwrap();
+        let canonical=std::fs::canonicalize(&path).unwrap();
+        let fixture=std::fs::canonicalize(std::env::temp_dir()).unwrap();
+        assert!(canonical.starts_with(&fixture),"the reversible move stays in this independent test directory");
+        let held=canonical.with_extension("jsonl.promotion-boundary-held");
+        assert_eq!(canonical.parent(),held.parent());assert!(!held.exists());
+        std::fs::rename(&canonical,&held).unwrap();
+        let claim_before=runtime::observe_claim_bound(&product.connection,"projectA","seatA","sessionA").unwrap();
+        let prepared=health_control_rows(product,
+            "SELECT raw_hex,phase||'|'||previous_revision||'|'||COALESCE(result_revision,previous_revision) FROM main.gogoke_v37_h_process_episode WHERE request_id='metadata-boundary-resume'");
+        assert!(prepared[0][1].starts_with("PREPARED|"));
+        let source_rows=health_control_rows(product,
+            "SELECT s.command_hex||'|'||s.phase||'|'||COALESCE(s.source_cursor,''),hex(r.raw_bytes)||'|'||r.state FROM main.gogoke_v37_rpc_steps s JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor WHERE s.session_id='sessionA' ORDER BY s.rowid");
+        let denied=product.dispatch_user_request(&resume).expect_err("PREPARED cannot promote missing original physical file");
+        assert!(format!("{denied:?}").contains("NotFound"),"the original physical file error must be retained");
+        eprintln!("GOGOKE_METADATA_PROMOTION_PREPARED_REFUSAL original={denied:?}");
+        assert_eq!(runtime::observe_claim_bound(&product.connection,"projectA","seatA","sessionA").unwrap(),claim_before);
+        assert_eq!(health_control_rows(product,
+            "SELECT raw_hex,phase||'|'||previous_revision||'|'||COALESCE(result_revision,previous_revision) FROM main.gogoke_v37_h_process_episode WHERE request_id='metadata-boundary-resume'"),prepared);
+        // Register UNKNOWN with the existing production boundary API. This is
+        // fixture state registration, not a claimed natural first physical fault.
+        authority::mark_process_unknown(&mut product.connection,&process,&custody).unwrap();
+        product.connection.execute("BEGIN IMMEDIATE").unwrap();
+        authority::check_owner_in_current_transaction(&product.connection,&product.owner).unwrap();
+        h::mark_resume_unknown(&product.connection,"projectA","sessionA",&resume.request_id,&process).unwrap();
+        product.connection.execute("COMMIT").unwrap();
+        let unknown_claim=runtime::observe_claim_bound(&product.connection,"projectA","seatA","sessionA").unwrap();
+        let unknown=health_control_rows(product,
+            "SELECT raw_hex,phase||'|'||previous_revision||'|'||COALESCE(result_revision,previous_revision) FROM main.gogoke_v37_h_process_episode WHERE request_id='metadata-boundary-resume'");
+        assert!(unknown[0][1].starts_with("UNKNOWN|"));
+        let denied=product.dispatch_user_request(&resume).expect_err("UNKNOWN cannot promote missing original physical file");
+        assert!(format!("{denied:?}").contains("NotFound"),"the original physical file error must be retained");
+        eprintln!("GOGOKE_METADATA_PROMOTION_UNKNOWN_REFUSAL original={denied:?}");
+        assert_eq!(runtime::observe_claim_bound(&product.connection,"projectA","seatA","sessionA").unwrap(),unknown_claim);
+        assert_eq!(health_control_rows(product,
+            "SELECT raw_hex,phase||'|'||previous_revision||'|'||COALESCE(result_revision,previous_revision) FROM main.gogoke_v37_h_process_episode WHERE request_id='metadata-boundary-resume'"),unknown);
+        assert_eq!(health_control_rows(product,
+            "SELECT s.command_hex||'|'||s.phase||'|'||COALESCE(s.source_cursor,''),hex(r.raw_bytes)||'|'||r.state FROM main.gogoke_v37_rpc_steps s JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor WHERE s.session_id='sessionA' ORDER BY s.rowid"),source_rows,"neither branch rewrites ACK/A or performs another native writer");
+        assert_eq!(original_codex_control_rpc(product,&process,&step),original_source);
+        assert!(product.process_custodian.active(&custody.ticket).is_some());
+        std::fs::rename(&held,&canonical).unwrap();
+        // Positive control: restoration alone allows original-source promotion,
+        // without another stdin write. ACTIVE replay then retains past success.
+        let promoted=h::decode_receipt(&product.dispatch_user_request(&resume).unwrap()).unwrap();
+        assert_eq!(promoted.status,V37Status::Replayed);
+        std::fs::rename(&canonical,&held).unwrap();
+        assert_eq!(h::decode_receipt(&product.dispatch_user_request(&resume).unwrap()).unwrap().status,V37Status::Replayed,
+            "old ACTIVE success does not revalidate its old path after later history changes");
+        std::fs::rename(&held,&canonical).unwrap();
+        assert_eq!(original_codex_control_rpc(product,&process,&step),original_source);
+        let current=runtime::observe_claim_bound(&product.connection,"projectA","seatA","sessionA").unwrap().unwrap();
+        let stop=operation("K-SESSION","stop","metadata-boundary-final-stop","sessionA",current.revision as u64,
+            &format!(r#"{{"seatId":"seatA","generation":"{}"}}"#,current.generation));
+        let stopped=h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap();
+        assert_eq!(stopped.status,V37Status::Applied);
+        assert!(product.process_custodian.active(&custody.ticket).is_none(),"actual candidate parent is stopped after file restoration");
+        eprintln!("GOGOKE_METADATA_PROMOTION_FILE_RESTORED path={canonical:?} actual_parent_stopped=true");
     });
 }
 

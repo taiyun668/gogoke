@@ -793,6 +793,19 @@ impl<'root> ProductDatabase<'root> {
         Ok(claude)
     }
 
+    fn verify_original_codex_metadata_resume_file(&self,key:&(String,String),
+        operation:&str,generation:&str,request_id:&str)->Result<()> {
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        if run.evidence.driver_id()!="codex" {return Ok(());}
+        let path=failure(rpc::observed_codex_metadata_resume_path(&self.connection,
+            &key.0,&key.1,operation,generation,request_id,run.custody.ticket.opaque(),
+            &run.custody.custodian_nonce))?;
+        if let Some(path)=path {
+            failure(run.evidence.verify_codex_rollout_path(&path,true))?;
+        }
+        Ok(())
+    }
+
     pub(super) fn dispatch_native_resume(&mut self, request: &V37Request) -> Result<Vec<u8>> {
         self.dispatch_native_resume_at(request,request.expected_revision,None)
     }
@@ -892,6 +905,8 @@ impl<'root> ProductDatabase<'root> {
                                 if let Some((proof,choice))=host {
                                     self.check_host_recipient_choice_in_transaction(proof,choice)?;
                                 }
+                                 self.verify_original_codex_metadata_resume_file(&key,
+                                     &operation,&new_generation,&request.request_id)?;
                                 let run=self.native_sessions.get(&key)
                                     .ok_or(OrchestrationError::AccessDenied)?;
                                 // The original A response and retained custody above
@@ -1167,9 +1182,8 @@ impl<'root> ProductDatabase<'root> {
                 return Err(OrchestrationError::Invalid("native resume thread response"));
             };
             if observed!=thread_id {return Err(OrchestrationError::OperationConflict);}
-            let path=failure(codex_rpc::persistent_paginated_thread_path(response.frame.bytes(),&thread_id))?;
-            failure(self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?
-                .evidence.verify_codex_rollout_path(&path,true))?;
+            self.verify_original_codex_metadata_resume_file(&key,&operation_id,
+                &new_generation,&request.request_id)?;
             self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?.thread_id=
                 Some(thread_id.clone());
             Ok(())
@@ -1220,6 +1234,8 @@ impl<'root> ProductDatabase<'root> {
             if let Some((proof,choice))=host {
                 self.check_host_recipient_choice_in_transaction(proof,choice)?;
             }
+            self.verify_original_codex_metadata_resume_file(&key,&operation_id,
+                &new_generation,&request.request_id)?;
             let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
             failure(run.evidence.verify_active_in_transaction(&mut self.connection,self.root,
                 &self.owner,Some(&operation_id)))?;

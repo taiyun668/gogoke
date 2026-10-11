@@ -686,6 +686,32 @@ pub(crate) fn observed_thread_id(db: &VerifiedDatabaseConnection<'_>,
     domain: &str, session: &str, process_operation_id: &str,
     generation: &str, open_request_id: &str, ticket: &str,
     custodian_nonce: &str) -> Result<String> {
+    Ok(observed_thread_source(db,domain,session,process_operation_id,generation,
+        open_request_id,ticket,custodian_nonce)?.thread_id)
+}
+
+struct ObservedThreadSource {
+    thread_id:String,
+    driver:String,
+    resumed:bool,
+    command:Vec<u8>,
+    response:Vec<u8>,
+}
+
+/// Uses exactly the same original episode/custody/RPC/A binding as thread ID
+/// recovery. Legacy canonical resume bytes remain legacy observations.
+pub(crate) fn observed_codex_metadata_resume_path(db:&VerifiedDatabaseConnection<'_>,
+    domain:&str,session:&str,operation:&str,generation:&str,request:&str,
+    ticket:&str,nonce:&str)->Result<Option<String>> {
+    let source=observed_thread_source(db,domain,session,operation,generation,request,ticket,nonce)?;
+    if source.driver!="codex" || !source.resumed {return Err(RpcJournalError::Denied);}
+    Ok(codex_rpc::decode_stored_metadata_resume_path(&source.command,&source.response)?)
+}
+
+fn observed_thread_source(db: &VerifiedDatabaseConnection<'_>,
+    domain: &str, session: &str, process_operation_id: &str,
+    generation: &str, open_request_id: &str, ticket: &str,
+    custodian_nonce: &str) -> Result<ObservedThreadSource> {
     for (value,name) in [(domain,"domain"),(session,"session"),
         (process_operation_id,"process operation"),(generation,"generation"),
         (open_request_id,"open request"),(ticket,"ticket"),
@@ -756,7 +782,7 @@ pub(crate) fn observed_thread_id(db: &VerifiedDatabaseConnection<'_>,
             _=>return Err(RpcJournalError::Denied),
         }
     };
-    Ok(thread)
+    Ok(ObservedThreadSource {thread_id:thread,driver,resumed:older,command,response})
 }
 
 /// A failed Codex resume is a typed, already observed response from this exact

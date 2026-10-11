@@ -866,6 +866,19 @@ pub(crate) fn decode_stored_thread_resume(
     }
 }
 
+/// Select a physical path only from the original, strictly decoded metadata
+/// command/ACK pair. Old canonical resumes are not rewritten as this protocol.
+pub(crate) fn decode_stored_metadata_resume_path(command_frame:&[u8],response_frame:&[u8])
+    -> Result<Option<String>,RpcError> {
+    let thread_id=decode_stored_thread_resume(command_frame,response_frame)?;
+    let Json::Object(fields)=Parser::parse(std::str::from_utf8(frame_body(command_frame)?)?)?
+        else {return Err(RpcError::Invalid("stored resume command"));};
+    let params=object(field(&fields,"params")?,"resume params")?;
+    if matches!(params.get(&k("excludeTurns")),Some(Json::Bool(true))) {
+        persistent_paginated_thread_path(response_frame,&thread_id).map(Some)
+    } else {Ok(None)}
+}
+
 /// Historical records keep their exact bytes. Accept only the encodings
 /// this product actually emitted, without rewriting their original history or
 /// allowing callers to select a legacy configuration for a new native write.
@@ -1341,6 +1354,10 @@ mod tests {
         assert!(std::str::from_utf8(&request).unwrap().contains("\"excludeTurns\":true"));
         assert!(!std::str::from_utf8(&request).unwrap().contains("\"path\""));
         assert_eq!(decode_stored_thread_resume(&request,original.as_bytes()).unwrap(),"original-thread");
+        assert_eq!(decode_stored_metadata_resume_path(&request,original.as_bytes()).unwrap(),
+            Some("D:/private-history/sessions/2026/10/11/original.jsonl".into()));
+        assert!(decode_stored_metadata_resume_path(&request,
+            original.replace("original-thread","other-thread").as_bytes()).is_err());
         // Decoder acceptance proves metadata binding, never the absence of history.
         assert!(decode(original.replace("[]","[{}]").as_bytes(),Some((&id,&resume))).is_ok());
         let polluted=std::str::from_utf8(&request).unwrap().replace("\"excludeTurns\":true","\"excludeTurns\":true,\"history\":[]");
@@ -1355,6 +1372,9 @@ mod tests {
         let start=Command::ThreadStart {cwd:"D:/sealed-tree".into(),model:"m".into()};
         let historical=b"{\"id\":4,\"result\":{\"thread\":{\"id\":\"original-thread\",\"cwd\":\"D:/sealed-tree\"}}}\n";
         assert!(decode(historical,Some((&id,&start))).is_ok());
+        let legacy=Command::ThreadResume {thread_id:"original-thread".into(),
+            cwd:"D:/sealed-tree".into(),model:"m".into()}.encode(Some(&id)).unwrap();
+        assert_eq!(decode_stored_metadata_resume_path(&legacy,historical).unwrap(),None);
         assert!(verify_new_empty_paginated_thread(historical,"original-thread").is_err());
         verify_new_empty_paginated_thread(original.as_bytes(),"original-thread").unwrap();
         assert!(verify_new_empty_paginated_thread(original.replace("[]","[{}]").as_bytes(),"original-thread").is_err());
