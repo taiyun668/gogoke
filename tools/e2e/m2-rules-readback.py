@@ -100,7 +100,7 @@ def same_scope_owner_snapshot(db, domain, configuration):
                    "submitter_seat_id": gate_request["submitterSeatId"], "reviewer_seat_id": gate_request["reviewerSeatId"],
                    "from_stage": gate_request["fromStage"], "to_stage": gate_request["toStage"],
                    "reject_cap": gate_request["rejectCap"], "reject_count": 0,
-                   "state": "READY", "reason": "", "revision": 1} and
+                   "state": "READY", "reason": None, "revision": 1} and
           grant == {"domain_id": domain, "caller_seat_id": grant_request["callerSeatId"],
                     "target_id": grant_request["targetId"], "action": "REVIEW", "expires_at_ms": 0, "revision": 3},
           "A's actual same-scope gate or permanent REVIEW grant differs from its NativeUser receipts")
@@ -273,7 +273,7 @@ def foreign_snapshot(db, domain, configuration):
     check(gate == {"domain_id": foreign_domain, "gate_id": gate_id,
                    "submitter_seat_id": request["submitterSeatId"], "reviewer_seat_id": request["reviewerSeatId"],
                    "from_stage": request["fromStage"], "to_stage": request["toStage"],
-                   "reject_cap": request["rejectCap"], "reject_count": 0, "state": "READY", "reason": "", "revision": 1} and
+                   "reject_cap": request["rejectCap"], "reject_count": 0, "state": "READY", "reason": None, "revision": 1} and
           current["head"][0]["revision"] >= int(receipt["revision"]) and
           event["domain_id"] == event["target_id"] == foreign_domain and
           event["operation"] == "policy-gate" and event["state"] == "APPLIED" and event["detail"] == "" and
