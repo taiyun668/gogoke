@@ -269,6 +269,51 @@ function claudeTerminalResult(result, beforeSendRawHighwater) {
     BigInt(result.sourceCursor) > BigInt(beforeSendRawHighwater);
 }
 
+const claudeNaturalSequenceTurns = [
+  { prompt: 'What is 241 + 537?', expectedAnswer: '778' },
+  { prompt: 'What is 16 multiplied by 27?', expectedAnswer: '432' }
+];
+
+function containsStandaloneNumber(text, expected) {
+  return new RegExp(`(?:^|\\D)${expected}(?:\\D|$)`).test(text);
+}
+
+function claudeAnswerForTurn(session, vendorSessionId, turn, terminalCursor) {
+  return session.events.slice(turn.beforeSendEventCount).filter(event =>
+    event.sessionUpdate === 'agent_message_chunk' &&
+    event._meta?.threadId === vendorSessionId &&
+    /^\d+$/.test(event._meta?.rawSourceCursor ?? '') &&
+    BigInt(event._meta.rawSourceCursor) > BigInt(turn.beforeSendRawHighwater) &&
+    BigInt(event._meta.rawSourceCursor) <= BigInt(terminalCursor))
+    .map(event => event.content?.type === 'text' ? event.content.text : '').join('');
+}
+
+async function observeClaudeAnswer(session, turn, result, expectedAnswer, exactAnswer, contextLabel) {
+  const deadline = Date.now() + 600000;
+  while (Date.now() < deadline) {
+    const page = await output(session);
+    const pageComplete = /^\d+$/.test(page.rawHighwater ?? '') &&
+      /^\d+$/.test(page.cursor ?? '') && /^\d+$/.test(page.ledgerHighwater ?? '') &&
+      BigInt(page.rawHighwater) >= BigInt(result.sourceCursor) &&
+      page.cursor === page.ledgerHighwater;
+    if (pageComplete) {
+      const text = claudeAnswerForTurn(session, result.vendorSessionId, turn, result.sourceCursor);
+      turn.terminalOutputPage = { rawHighwater: page.rawHighwater,
+        ledgerCursor: page.cursor, ledgerHighwater: page.ledgerHighwater };
+      const answerPresent = exactAnswer ? text.trim() === expectedAnswer :
+        containsStandaloneNumber(text, expectedAnswer);
+      if (!answerPresent) {
+        throw Error(`${contextLabel}: complete original raw result and consumed ledger lack its expected answer`);
+      }
+      turn.answerObserved = true;
+      turn.observedAnswer = text.trim();
+      return;
+    }
+    await delay(300);
+  }
+  throw Error(`${contextLabel}: original raw result was not fully observed before timeout`);
+}
+
 async function runSequenceTurns(row, record, session) {
   const contextAfterResume = row.contextAfterResume === true;
   const sequence = { state: 'RUNNING', turns: [],
@@ -480,10 +525,11 @@ async function runClaudeSequenceTurns(row, record, session) {
         reason: 'Both original sends reached their own terminal receipt before H stop; this case does not claim an in-flight interruption' },
     coldResume: null, firstStopFact: null, finalStopFact: null };
   record.sequence = sequence; product.save();
-  for (let ordinal = 1; ordinal <= 2; ordinal++) {
-    const marker = `${journal.marker}_${row.driverId}_${id(`sequence${ordinal}`)}`;
-    const prompt = `Private non-secret provider sequence turn ${ordinal}. Reply with exactly ${marker}. ` +
-      'Do not use tools, read or write files, open a browser, access credentials, or switch models.';
+  for (let ordinal = 1; ordinal <= claudeNaturalSequenceTurns.length; ordinal++) {
+    const spec = claudeNaturalSequenceTurns[ordinal - 1];
+    const prompt = spec.prompt;
+    check(!prompt.includes(spec.expectedAnswer),
+      'Claude natural question must not disclose its expected answer');
     let before;
     for (;;) {
       const prior = session.cursor;
@@ -496,9 +542,10 @@ async function runClaudeSequenceTurns(row, record, session) {
       check(BigInt(before.cursor) > BigInt(prior),
         'Provider sequence pre-send H page made no ledger progress');
     }
-    const turn = { ordinal, marker, prompt, generation: session.generation,
-      beforeSendRawHighwater: before.rawHighwater, sendRequestId: null,
-      hReceipt: null };
+    const turn = { ordinal, prompt, expectedAnswer: spec.expectedAnswer,
+      generation: session.generation, beforeSendRawHighwater: before.rawHighwater,
+      beforeSendLedgerHighwater: before.ledgerHighwater,
+      beforeSendEventCount: session.events.length, sendRequestId: null, hReceipt: null };
     sequence.turns.push(turn); product.save();
     const sent = await sessionStep(session, 'send', { body: prompt }, ['APPLIED', 'UNKNOWN']);
     turn.sendRequestId = journal.operations.at(-1).request.requestId;
@@ -514,25 +561,9 @@ async function runClaudeSequenceTurns(row, record, session) {
     sequence.vendorSessionId = receipt.receipt.result.vendorSessionId;
     turn.userUuid = receipt.receipt.result.userUuid;
     turn.rawResultSha256 = receipt.receipt.result.rawResultSha256;
-    const deadline = Date.now() + 600000;
-    let observed = false;
-    while (Date.now() < deadline) {
-      const page = await output(session);
-      const text = session.events.filter(event => event.sessionUpdate === 'agent_message_chunk' &&
-        event._meta?.threadId === sequence.vendorSessionId &&
-        /^\d+$/.test(event._meta?.rawSourceCursor ?? '') &&
-        BigInt(event._meta.rawSourceCursor) > BigInt(turn.beforeSendRawHighwater) &&
-        BigInt(event._meta.rawSourceCursor) <= BigInt(receipt.receipt.result.sourceCursor))
-        .map(event => event.content?.type === 'text' ? event.content.text : '').join('');
-      if (text.includes(marker) && /^\d+$/.test(page.rawHighwater ?? '') &&
-          BigInt(page.rawHighwater) >= BigInt(receipt.receipt.result.sourceCursor) &&
-          page.cursor === page.ledgerHighwater) {
-        observed = true; break;
-      }
-      await delay(300);
-    }
-    check(observed, `${row.driverId}: original sequence marker and terminal A output absent`);
-    turn.markerObserved = true; turn.terminalSourceEpoch = receipt.receipt.result.sourceEpoch;
+    await observeClaudeAnswer(session, turn, receipt.receipt.result,
+      spec.expectedAnswer, false, `Claude natural turn ${ordinal}`);
+    turn.terminalSourceEpoch = receipt.receipt.result.sourceEpoch;
     turn.terminalSourceCursor = receipt.receipt.result.sourceCursor; product.save();
   }
   const firstStop = await sessionStep(session, 'stop', { seatId: row.seatId });
@@ -592,7 +623,7 @@ async function runClaudeSequenceTurns(row, record, session) {
       inTurnSteer: resumedCapability.result.capabilities.inTurnSteer,
       resume: resumedCapability.result.capabilities.resume };
   if (claudeContext) {
-    const priorMarker = sequence.turns[0].marker;
+    const priorAnswer = sequence.turns[0].expectedAnswer;
     let before;
     for (;;) {
       const priorCursor = session.cursor;
@@ -605,13 +636,15 @@ async function runClaudeSequenceTurns(row, record, session) {
       check(BigInt(before.cursor) > BigInt(priorCursor),
         'Claude resumed H page made no ledger progress');
     }
-    const prompt = 'In this same conversation, recall the exact token you returned in the first turn. ' +
-      'Reply with only that earlier token. Do not use tools, read or write files, open a browser, ' +
-      'access credentials, or switch models.';
-    check(!prompt.includes(priorMarker),
-      'Claude post-resume prompt must not contain the earlier marker');
-    const contextTurn = { ordinal: 3, priorTurnOrdinal: 1, marker: priorMarker, prompt,
+    const prompt = 'What was the exact answer to my first arithmetic question? Reply with the number only.';
+    check(!prompt.includes(priorAnswer),
+      'Claude post-resume natural question must not disclose the earlier answer');
+    const contextTurn = { ordinal: 3, contextAfterResume: true, priorTurnOrdinal: 1,
+      expectedPriorAnswer: priorAnswer, expectedAnswer: priorAnswer, prompt,
       generation: session.generation, beforeSendRawHighwater: before.rawHighwater,
+      beforeSendLedgerHighwater: before.ledgerHighwater,
+      beforeSendEventCount: session.events.length,
+      processOperationId: sequence.resumedCapability.processOperationId,
       sendRequestId: null, hReceipt: null, state: 'SENDING_ONCE' };
     sequence.contextAfterResume = contextTurn; product.save();
     const sent = await sessionStep(session, 'send', { body: prompt }, ['APPLIED', 'UNKNOWN']);
@@ -623,24 +656,14 @@ async function runClaudeSequenceTurns(row, record, session) {
     const receipt = await observeReceipt(session, row, contextTurn);
     check(receipt.receipt?.status === 'APPLIED' &&
       claudeTerminalResult(receipt.receipt.result, contextTurn.beforeSendRawHighwater) &&
-      receipt.receipt.result.vendorSessionId === sequence.vendorSessionId,
+      receipt.receipt.result.vendorSessionId === sequence.vendorSessionId &&
+      receipt.receipt.result.sourceEpoch !== sequence.turns[0].terminalSourceEpoch &&
+      receipt.receipt.result.sourceEpoch !== sequence.turns[1].terminalSourceEpoch,
     'Claude post-resume original H terminal receipt is incomplete');
     contextTurn.userUuid = receipt.receipt.result.userUuid;
     contextTurn.rawResultSha256 = receipt.receipt.result.rawResultSha256;
-    const deadline = Date.now() + 600000;
-    let complete = false;
-    while (Date.now() < deadline) {
-      const page = await output(session);
-      if (/^\d+$/.test(page.rawHighwater ?? '') &&
-          BigInt(page.rawHighwater) >= BigInt(receipt.receipt.result.sourceCursor) &&
-          page.cursor === page.ledgerHighwater) {
-        contextTurn.terminalOutputPage = { rawHighwater: page.rawHighwater,
-          ledgerCursor: page.cursor, ledgerHighwater: page.ledgerHighwater };
-        complete = true; break;
-      }
-      await delay(300);
-    }
-    check(complete, 'Claude post-resume raw terminal source was not fully observed');
+    await observeClaudeAnswer(session, contextTurn, receipt.receipt.result,
+      priorAnswer, true, 'Claude post-resume context answer');
     contextTurn.terminalSourceEpoch = receipt.receipt.result.sourceEpoch;
     contextTurn.terminalSourceCursor = receipt.receipt.result.sourceCursor;
     contextTurn.state = 'ORIGINAL_H_RECEIPTED'; product.save();

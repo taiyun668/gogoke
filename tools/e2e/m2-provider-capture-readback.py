@@ -754,6 +754,18 @@ def read_sequence():
         fail("Original sequence immutable readback changed database bytes")
 
 
+CLAUDE_NATURAL_SEQUENCE_TURNS = (
+    {"prompt": "What is 241 + 537?", "expectedAnswer": "778"},
+    {"prompt": "What is 16 multiplied by 27?", "expectedAnswer": "432"},
+)
+CLAUDE_NATURAL_CONTEXT_PROMPT = \
+    "What was the exact answer to my first arithmetic question? Reply with the number only."
+
+
+def contains_standalone_number(text, expected):
+    return re.search(r"(?<!\d)" + re.escape(expected) + r"(?!\d)", text) is not None
+
+
 def read_claude_sequence(case):
     """Read a real Claude H cold-resume and prove its new-generation answer from A bytes."""
     if supplement or failure_settlement or len(journal["cases"]) != 1:
@@ -768,9 +780,13 @@ def read_claude_sequence(case):
             case.get("contextAfterResume") is not True or \
             case.get("result") != "DIRECT_H_RECEIPT_A_READBACK_REQUIRED" or \
             sequence.get("state") != "CLAUDE_CONTEXT_AFTER_RESUME_STOP_RELEASE_READBACK_REQUIRED" or \
-            len(turns) != 2 or session is None or context.get("priorTurnOrdinal") != 1 or \
-            context.get("marker") != turns[0].get("marker") or \
-            context.get("marker") in context.get("prompt", "") or \
+            len(turns) != len(CLAUDE_NATURAL_SEQUENCE_TURNS) or session is None or \
+            context.get("priorTurnOrdinal") != 1 or \
+            context.get("expectedPriorAnswer") != CLAUDE_NATURAL_SEQUENCE_TURNS[0]["expectedAnswer"] or \
+            context.get("expectedAnswer") != CLAUDE_NATURAL_SEQUENCE_TURNS[0]["expectedAnswer"] or \
+            context.get("prompt") != CLAUDE_NATURAL_CONTEXT_PROMPT or \
+            context.get("expectedPriorAnswer") in context.get("prompt", "") or \
+            "marker" in context or \
             context.get("state") != "ORIGINAL_H_RECEIPTED" or \
             sequence.get("runningInterrupt", {}).get("state") != "NOT_RUN_CAPABILITY_FIELD_ABSENT":
         fail("Claude context-after-resume journal is incomplete or substitutes old history")
@@ -788,6 +804,25 @@ def read_claude_sequence(case):
             any(turn.get("generation") != resume["oldGeneration"] for turn in turns) or \
             context.get("generation") != resume["newGeneration"]:
         fail("Claude H session, seat/F binding or old/new generation boundary differs")
+    for ordinal, (turn, spec) in enumerate(zip(turns, CLAUDE_NATURAL_SEQUENCE_TURNS), start=1):
+        if turn.get("ordinal") != ordinal or \
+                turn.get("prompt") != spec["prompt"] or \
+                turn.get("expectedAnswer") != spec["expectedAnswer"] or \
+                spec["expectedAnswer"] in turn.get("prompt", "") or \
+                not str(turn.get("beforeSendLedgerHighwater", "")).isdecimal() or \
+                not str(turn.get("beforeSendEventCount", "")).isdecimal():
+            fail("Claude original turns are not the configured natural questions")
+    for turn in [*turns, context]:
+        page = turn.get("terminalOutputPage", {})
+        if not str(turn.get("beforeSendLedgerHighwater", "")).isdecimal() or \
+                not str(turn.get("terminalSourceCursor", "")).isdecimal() or \
+                not str(page.get("rawHighwater", "")).isdecimal() or \
+                not str(page.get("ledgerCursor", "")).isdecimal() or \
+                not str(page.get("ledgerHighwater", "")).isdecimal() or \
+                int(page["rawHighwater"]) < int(turn.get("terminalSourceCursor", "0")) or \
+                page["ledgerCursor"] != page["ledgerHighwater"] or \
+                int(page["ledgerCursor"]) <= int(turn["beforeSendLedgerHighwater"]):
+            fail("Claude answer page did not reach the terminal raw source with its ledger fully consumed")
     capability = case.get("sequenceCapability", {})
     resumed_capability = sequence.get("resumedCapability", {})
     if capability.get("evidenceBasis") != "ORIGINAL_CLAUDE_INITIALIZE_ACK" or \
@@ -1036,10 +1071,15 @@ def read_claude_sequence(case):
                     request.get("payload", {}).get("generation") != expected_generation or \
                     turn.get("generation") != expected_generation or not str(turn.get("beforeSendRawHighwater", "")).isdecimal():
                 fail("Claude USER input is not bound to its exact original generation and H request")
-            if index == 2 and turn.get("marker") != turns[0].get("marker"):
-                fail("Claude post-resume target marker differs from the original first-turn token")
-            if index == 2 and turn["marker"] in turn["prompt"]:
-                fail("Claude post-resume prompt leaks the token it must recall")
+            spec = CLAUDE_NATURAL_SEQUENCE_TURNS[index] if index < 2 else None
+            expected_answer = spec["expectedAnswer"] if spec else turns[0]["expectedAnswer"]
+            expected_prompt = spec["prompt"] if spec else CLAUDE_NATURAL_CONTEXT_PROMPT
+            if turn.get("prompt") != expected_prompt or turn.get("expectedAnswer") != expected_answer or \
+                    expected_answer in turn.get("prompt", "") or \
+                    (index == 2 and turn.get("expectedPriorAnswer") != expected_answer) or \
+                    (index == 2 and turn.get("contextAfterResume") is not True) or \
+                    "marker" in turn:
+                fail("Claude natural prompt or prior-answer boundary differs")
             receipt = turn.get("hReceipt", {}).get("receipt", {})
             stored = send_rows[index]
             if stored[0:5] != ("RECEIPTED", "APPLIED", h_action["rawFrame"].encode().hex(), sid, expected_generation) or \
@@ -1100,23 +1140,26 @@ def read_claude_sequence(case):
                     sha(raw_bytes_lookup[terminal_keys[0]]) != receipt["result"].get("rawResultSha256"):
                 fail("Claude raw USER/typed result frames are not unique within the original H receipt")
             text = "".join(claude_text(frame) for _, frame, _ in source_frames)
-            if (index == 2 and text.strip() != turn["marker"]) or \
-                    (index < 2 and turn["marker"] not in text):
-                fail("Claude answer is not present in the new turn's original A frames")
+            if (index == 2 and text.strip() != expected_answer) or \
+                    (index < 2 and not contains_standalone_number(text, expected_answer)):
+                fail("Claude expected answer is not present in this turn's original A frames")
             normalized_text = "".join(item["update"].get("content", {}).get("text", "") for item in updates
                 if item["operationId"] == process_operation and item["generation"] == expected_generation and
                 item["processTicket"] == stored[5] and item["custodianNonce"] == stored[7] and
                 item["sourceEpoch"] == terminal_epoch and item["update"].get("sessionUpdate") == "agent_message_chunk" and
                 str(item["update"].get("_meta", {}).get("rawSourceCursor", "")).isdecimal() and
                 int(turn["beforeSendRawHighwater"]) < int(item["update"]["_meta"]["rawSourceCursor"]) <= int(terminal_cursor))
-            if (index == 2 and normalized_text.strip() != turn["marker"]) or \
-                    (index < 2 and turn["marker"] not in normalized_text):
-                fail("Claude terminal A answer does not link to normalized output in the same new source interval")
+            if (index == 2 and normalized_text.strip() != expected_answer) or \
+                    (index < 2 and not contains_standalone_number(normalized_text, expected_answer)):
+                fail("Claude terminal answer does not link to normalized output in its exact source interval")
+            if turn.get("observedAnswer") != normalized_text.strip():
+                fail("Claude captured H answer differs from normalized original A output")
             observed_turns.append({"ordinal": turn.get("ordinal"), "requestId": request_id,
                 "generation": expected_generation, "processOperationId": process_operation,
                 "vendorSessionId": original_vendor_id, "terminalSourceEpoch": terminal_epoch,
                 "terminalSourceCursor": terminal_cursor, "typedUserFrameCount": len(users),
-                "typedResultFrameCount": len(results), "markerObserved": True})
+                "typedResultFrameCount": len(results), "expectedAnswer": expected_answer,
+                "answerObserved": True})
         if len({row["requestId"] for row in observed_turns}) != 3 or \
                 exact_one(db, "SELECT COUNT(*) FROM gogoke_v37_h_stdin_journal "
                           "WHERE domain_id=? AND session_id=? AND operation='send'", (domain, sid))[0] != 3:
@@ -1147,7 +1190,7 @@ def read_claude_sequence(case):
             "missingNormalized": False, "rawFrameCount": len(raw_source),
             "unknownFrameCount": sum(row[5] == "PENDING" for row in raw_source),
             "allEpisodesStopped": True, "claimState": "RELEASED", "providerPromptObserved": True,
-            "providerEndTurn": True, "markerObserved": True, "writeObserved": False,
+            "providerEndTurn": True, "markerObserved": False, "writeObserved": False,
             "writeEvidence": None, "answerObserved": True, "vendorSessionId": original_vendor_id,
             "originalTurns": observed_turns, "nativeResumeClaim": capability.get("resume"),
             "inTurnSteerClaim": capability.get("inTurnSteer"),
