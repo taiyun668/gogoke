@@ -3545,7 +3545,7 @@ mod tests {
     }
 
     #[test]
-    fn h_source_attachment_requires_response_transaction_and_never_rebinds_failed_resume_typed_remote_error() {
+    fn failed_resume_rpc_observed_remote_error_exact_binding() {
         let _guard=route_b_test_guard();
         let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let path=std::env::temp_dir().join(format!("gogoke-failed-resume-rpc-{}-{stamp}",std::process::id()));

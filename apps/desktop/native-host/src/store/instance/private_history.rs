@@ -638,7 +638,7 @@ mod tests {
         });
     }
     #[test]
-    fn h_source_attachment_requires_response_transaction_and_never_rebinds_failed_resume_resource_cas() {
+    fn failed_resume_profile_source_cas_exact_and_replay() {
         fixture(|db,root| {
             let first=create_initial_private_history(db,root,&launch()).unwrap();
             attach(db,&first);
