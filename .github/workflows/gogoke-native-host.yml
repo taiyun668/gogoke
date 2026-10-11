@@ -44,7 +44,7 @@ on:
         type: boolean
         default: false
       failed_resume_profile_only:
-        description: Select three failed-resume profile resource boundaries within private_history_fixture_only; all other formal gates are NOT_RUN
+        description: Select failed-resume profile and empty initial Secretary resource boundaries within private_history_fixture_only; all other formal gates are NOT_RUN
         type: boolean
         default: false
       grok_home_fixture_only:
