@@ -40,12 +40,15 @@ function observeInstalledClose(config, shellPid) {
           item.shell?.image?.sha256 === config.installedSha256['gogoke.exe'] &&
           item.native?.image?.sha256 === config.installedSha256['gogoke-native-host.exe'] &&
           item.shell?.image?.fileId && item.native?.image?.fileId &&
-          item.shell?.creationUtc && item.native?.creationUtc) {
+          item.shell?.creationUtc && item.native?.creationUtc &&
+          Array.isArray(item.nativeAncestorChain) &&
+          item.nativeAncestorChain.at(-1)?.pid === shellPid) {
         original = item; clearTimeout(timer); resolveReady(item);
       } else if (item.kind === 'EXIT' && original && !completed &&
           ['shell', 'native'].includes(item.role) && events.every(event => event.role !== item.role) &&
           item.pid === original[item.role].pid && item.creationUtc === original[item.role].creationUtc &&
-          typeof item.observedUtc === 'string') {
+          typeof item.observedUtc === 'string' && Number.isSafeInteger(item.code) && item.code >= 0 &&
+          item.codeBasis === 'GET_EXIT_CODE_PROCESS') {
         events.push(item);
       } else if (item.kind === 'COMPLETE' && original && events.length === 2 &&
                  item.installedCandidateProcesses === 0) {
@@ -72,7 +75,7 @@ export class ActualProduct {
   constructor(config, journal) {
     this.config = config; this.journal = journal; this.sequence = 0;
     journal.driverBytes = Object.fromEntries([
-      'product-cdp.mjs', 'e2e-webview.mjs', 'm1-win11.mjs', 'candidate-custody.ps1',
+      'product-cdp.mjs', 'candidate-close-events.ps1', 'e2e-webview.mjs', 'm1-win11.mjs', 'candidate-custody.ps1',
       'm1-readback.py', 'package-lock.json',
     ].map(relative => [relative, sha256(path.join(here, relative))]));
     journal.nodeVersion = process.version;
@@ -351,25 +354,56 @@ export class ActualProduct {
     });
     // A dispatch error still leaves the original bounded exit observer handled.
     exited.catch(() => {});
-    const captionStarted = new Date().toISOString();
-    const dispatched = await this.evaluate('(()=>{const b=document.querySelector(".window-caption-control-close");if(!b)throw Error("Actual caption close absent");setTimeout(()=>b.click(),100);return "CAPTION_CLOSE_DISPATCHED"})()');
-    if (dispatched !== 'CAPTION_CLOSE_DISPATCHED') throw Error('Actual caption close was not dispatched');
+    const marker = id('captionClick');
+    let resolveClick, rejectClick;
+    const clickObserved = new Promise((resolve, reject) => { resolveClick = resolve; rejectClick = reject; });
+    clickObserved.catch(() => {});
+    const clickTimer = setTimeout(() => rejectClick(Error('Actual caption click event was not observed')), 15000);
+    const onClickMessage = event => {
+      try {
+        const message = JSON.parse(event.data);
+        if (message.method !== 'Runtime.consoleAPICalled' || message.params?.args?.[0]?.value !== marker) return;
+        const clickedAt = message.params.args[1]?.value;
+        if (!Number.isSafeInteger(clickedAt) || clickedAt <= 0) throw Error('Actual caption click timestamp absent');
+        resolveClick({ clickedUtc: new Date(clickedAt).toISOString(), observedUtc: new Date().toISOString(),
+          marker, basis: 'ACTUAL_CAPTION_CLICK_EVENT' });
+      } catch (error) { rejectClick(error); }
+    };
+    this.socket.addEventListener('message', onClickMessage);
+    let clicked;
+    try {
+      const dispatch = this.evaluate(`(()=>{const b=document.querySelector('.window-caption-control-close');if(!b)throw Error('Actual caption close absent');const marker=${JSON.stringify(marker)};b.addEventListener('click',event=>{if(!event.isTrusted)console.info(marker,Date.now())},{capture:true,once:true});setTimeout(()=>b.click(),100);return 'CAPTION_CLOSE_SCHEDULED'})()`);
+      dispatch.catch(() => {}); // The actual click may close CDP before its evaluate reply.
+      const first = await Promise.race([dispatch, clickObserved]);
+      if (typeof first === 'string' && first !== 'CAPTION_CLOSE_SCHEDULED') {
+        throw Error('Actual caption scheduling differed');
+      }
+      clicked = await clickObserved;
+    } finally {
+      clearTimeout(clickTimer);
+      this.socket.removeEventListener('message', onClickMessage);
+    }
+    this.journal.captionClickEvidence ??= [];
+    this.journal.captionClickEvidence.push(clicked); this.save();
     const [code, observed] = await Promise.all([exited, observer.done]);
-    if (observed.events.some(event => Date.parse(event.observedUtc) < Date.parse(captionStarted)) ||
+    if (observed.events.some(event => Date.parse(event.observedUtc) < Date.parse(clicked.clickedUtc)) ||
         observed.events.some(event => !Number.isFinite(Date.parse(event.observedUtc)))) {
       throw Error('Original shell/native exit preceded the caption close');
     }
     const shell = observed.events.find(event => event.role === 'shell');
     const native = observed.events.find(event => event.role === 'native');
-    if (!shell || !native || shell.code !== null && shell.code !== code) {
+    if (!shell || !native || shell.code !== code) {
       throw Error('Original shell/native exit code or process binding differs');
     }
+    this.journal.nativeCloseObservations ??= [];
+    this.journal.nativeCloseObservations.push({ click: clicked, ready: observed.ready, events: observed.events }); this.save();
+    if (native.code !== 0) throw Error(`Original native-host exit=${native.code}; no normal-close credit`);
     this.socket.close();
     if (this.tester) {
       await this.tester.dispose(); this.tester = null;
     }
     this.journal.closes.push({ pid: this.endpoint.pid, exitCode: code, forceKill: false,
-      captionStartedUtc: captionStarted, nativeExit: native, shellExit: shell,
+      captionClick: clicked, nativeExit: native, shellExit: shell,
       nativeIdentity: observed.ready.native }); this.save();
     if (code !== 0) throw Error(`Actual product exit=${code}; ${this.stderr}`);
   }
