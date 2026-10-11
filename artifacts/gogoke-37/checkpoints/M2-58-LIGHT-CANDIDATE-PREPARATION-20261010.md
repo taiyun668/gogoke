@@ -1,0 +1,7 @@
+# Experimental candidate 0.1.58 preparation
+
+The next light candidate includes real Secretary first-use, original model/effort choice, resident startup, current-holder checks, normal H stop and original stopped-thread resume wiring. Native release build and twelve affected Secretary boundary groups passed with thirty-two tests, zero failures and zero ignored. Native source is unchanged from that exact checked ancestor. Browser and hygiene checks passed on the integrated code. A local D-only compiler check was development feedback, not a formal gate or candidate input.
+
+Version fields are now prepared for a single affected Windows build. Candidate build, signed frozen resource manifest, exact installed-byte verification and the first-use/recovery repro remain pending. No full-library, independent dual-build, full update chain, SAC-enabled result or M2/M3 acceptance is claimed. No public release is requested or performed. The current installed candidate remains available for the qualified new A/B and V06 test preparation while cloud work proceeds.
+
+References: the existing experimental build/resource-signing flow and unchanged trusted main receipt verifier, existing Secretary due bootstrap and independent holder-disappearance release, F original model-list evidence, actual original Grok single Write and V12 cases. Claude owns G's explicit global-cap field. No new credential input, scope, CLI byte, permission or Owner touchpoint was introduced.
