@@ -2883,6 +2883,27 @@ pub(super) fn prepare_claude_in_transaction(db: &mut VerifiedDatabaseConnection<
     original_open(db, &step.fields())?;
     let (operation, driver) = claude_initialize_binding(db, step,
         &["PREPARED", "ACTIVE"], false)?;
+    if matches!(step.command,commands::ClaudeCommand::User {..}) {
+        let resumed=Statement::prepare(db.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_h_process_episode
+              WHERE domain_id=?1 AND session_id=?2 AND request_id=?3
+                AND process_operation_id=?4 AND generation=?5
+                AND old_generation IS NOT NULL")?;
+        for (index,value) in [step.domain_id,step.session_id,step.open_request_id,
+            operation.as_str(),step.custody.binding.generation.as_str()].iter().enumerate() {
+            resumed.bind_text((index+1) as i32,value)?;
+        }
+        let is_resume=resumed.step_row()?;
+        if resumed.step_row()? {return Err(RpcJournalError::Conflict);}
+        drop(resumed);
+        if is_resume && super::journal::read_original_claude_resume_ready(db,
+            step.domain_id,step.session_id,step.open_request_id,
+            &step.custody.binding.generation,&operation)
+            .map_err(|error|RpcJournalError::Store(AtomicError::DurabilityContractFailed(
+                format!("Claude resumed User original readiness: {error:?}"))))?.is_none() {
+            return Err(RpcJournalError::Denied);
+        }
+    }
     let encoded = claude_bytes(step, &driver)?;
     if let Some(phase) = same_row(db, &step.fields(), &operation, &encoded)? {
         return Ok(PreparedStep { bytes: encoded,
