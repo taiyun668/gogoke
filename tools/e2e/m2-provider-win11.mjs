@@ -348,12 +348,15 @@ async function runSequenceTurns(row, record, session) {
     resumedCapability.result.version === row.version &&
     resumedCapability.result.binaryDigest === `sha256:${row.sha256}` &&
     resumedCapability.result.capabilities?.inTurnSteer === 'UNSUPPORTED' &&
+    resumedCapability.result.capabilities?.interruptAndResume ===
+      record.sequenceCapability.interruptAndResume &&
     resumedCapability.result.capabilities?.resume ===
       'SOURCE_PRESENT_NATIVE_RESUME_BEHAVIOUR_NOT_RUN',
   `${row.driverId}: resumed exact fixed CLI capability differs`);
   sequence.resumedCapability = { requestId: resumedCapability.requestId,
     processOperationId: resumedCapability.result.processOperationId,
     inTurnSteer: resumedCapability.result.capabilities.inTurnSteer,
+    interruptAndResume: resumedCapability.result.capabilities.interruptAndResume,
     resume: resumedCapability.result.capabilities.resume };
   const finalStop = await sessionStep(session, 'stop', { seatId: row.seatId });
   check(/^sha256:[a-f0-9]{64}$/.test(finalStop.result.stopFact ?? '') &&
@@ -718,7 +721,11 @@ try {
   } else {
   // After a normal close, keep the already captured after snapshots and the
   // original readback error. Never dispatch a second after observer.
-  if (journal.closes.length === 0) {
+  // A sequence already closed its first launch. Only the current child proves
+  // that the cold launch is closed; the old close count cannot settle it.
+  if (product.child?.exitCode === null && product.child.signalCode === null) {
+    journal.custodyHold = 'CURRENT_PRODUCT_AND_ORIGINAL_H_RETAINED_CONTROLLER_SETTLEMENT_REQUIRED';
+    product.save();
     try { await product.preserveFailure(); }
     catch (disconnectError) { journal.disconnectError = String(disconnectError); product.save(); }
   }
