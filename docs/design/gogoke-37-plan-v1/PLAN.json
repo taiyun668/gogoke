@@ -1107,6 +1107,13 @@
      "A",
      "G"
     ]
+   },
+   {
+    "path": "apps/desktop/src-tauri/src/public_runtime/design37_host.rs",
+    "extension": "H only: retain the existing bounded native stderr tail and original Child exit result and surface them through the existing HOST_EXITED error. No new process, permission, persistent writer, replay, or StopFact.",
+    "serves": [
+     "H"
+    ]
    }
   ],
   "conditional_rule": "A conditional file is recorded in T00 or L0 as either MODIFIED, with the change, or VERIFIED_UNCHANGED, with the reason; no line widens its own scope to reach it."
