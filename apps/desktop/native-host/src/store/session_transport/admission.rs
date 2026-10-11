@@ -37,7 +37,7 @@ impl From<SameOpenError> for AdmissionError {
     }
 }
 
-const SCHEMA: [(&str, &str); 9] = [
+const SCHEMA: [(&str, &str); 10] = [
     ("gogoke_v37_h_owner_binding",
      "CREATE TABLE gogoke_v37_h_owner_binding(binding_id TEXT PRIMARY KEY,instance_id TEXT NOT NULL,domain_id TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('SESSION','CALL')),owner_id TEXT NOT NULL,generation TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('ACTIVE','REVOKED')),UNIQUE(instance_id,domain_id,kind,owner_id,generation)) STRICT"),
     ("gogoke_v37_h_claim",
@@ -53,7 +53,399 @@ const SCHEMA: [(&str, &str); 9] = [
     ("gogoke_v37_h_process_episode", super::episodes::PROCESS_SCHEMA),
     ("gogoke_v37_h_generation", super::episodes::GENERATION_SCHEMA),
     ("gogoke_v37_h_generation_change", super::generation_change::SCHEMA),
+    ("gogoke_v37_h_dos_alias",
+     "CREATE TABLE gogoke_v37_h_dos_alias(domain_id TEXT NOT NULL,session_id TEXT NOT NULL,request_id TEXT NOT NULL,request_sha256 TEXT NOT NULL,generation TEXT NOT NULL,origin_kind TEXT NOT NULL CHECK(origin_kind IN ('OPEN','RESUME')),process_operation_id TEXT NOT NULL,instance_id TEXT NOT NULL,binding_id TEXT NOT NULL,worktree_id TEXT NOT NULL,namespace_id TEXT NOT NULL,alias_name TEXT NOT NULL,requested_target TEXT NOT NULL,observed_target TEXT,volume_serial TEXT NOT NULL,file_id TEXT NOT NULL,host_pid TEXT NOT NULL,host_creation_time_100ns TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('INTENT','MAPPED','PREPARE_STARTED','CUSTODY_BOUND','UNKNOWN')),child_operation_id TEXT,child_ticket TEXT,child_nonce TEXT,child_pid TEXT,child_creation_time_100ns TEXT,cleanup_status TEXT NOT NULL CHECK(cleanup_status IN ('NOT_REQUESTED','UNKNOWN','REMOVED','ABSENT')),cleanup_result TEXT,revision INTEGER NOT NULL CHECK(revision>=1),PRIMARY KEY(domain_id,session_id,generation),CHECK((phase='INTENT' AND observed_target IS NULL) OR (phase<>'INTENT' AND observed_target IS NOT NULL)),CHECK((child_operation_id IS NULL AND child_ticket IS NULL AND child_nonce IS NULL AND child_pid IS NULL AND child_creation_time_100ns IS NULL) OR (child_operation_id IS NOT NULL AND child_ticket IS NOT NULL AND child_nonce IS NOT NULL AND child_pid IS NOT NULL AND child_creation_time_100ns IS NOT NULL)),CHECK((cleanup_status='NOT_REQUESTED' AND cleanup_result IS NULL) OR (cleanup_status<>'NOT_REQUESTED' AND cleanup_result IS NOT NULL))) STRICT"),
 ];
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct DosAliasIntent {
+    pub(super) domain_id: String,
+    pub(super) session_id: String,
+    pub(super) request_id: String,
+    pub(super) request_sha256: String,
+    pub(super) generation: String,
+    pub(super) origin_kind: String,
+    pub(super) process_operation_id: String,
+    pub(super) instance_id: String,
+    pub(super) binding_id: String,
+    pub(super) worktree_id: String,
+    pub(super) namespace_id: String,
+    pub(super) alias_name: String,
+    pub(super) protocol_path: String,
+    pub(super) requested_target: String,
+    pub(super) observed_target: Option<String>,
+    pub(super) volume_serial: String,
+    pub(super) file_id: String,
+    pub(super) host_pid: String,
+    pub(super) host_creation_time_100ns: String,
+    pub(super) phase: String,
+    pub(super) child_operation_id: Option<String>,
+    pub(super) child_ticket: Option<String>,
+    pub(super) child_nonce: Option<String>,
+    pub(super) child_pid: Option<String>,
+    pub(super) child_creation_time_100ns: Option<String>,
+    pub(super) cleanup_status: String,
+    pub(super) cleanup_result: Option<String>,
+    pub(super) revision: i64,
+}
+
+pub(super) fn verify_opencode_dos_alias_record(
+    connection: &VerifiedDatabaseConnection<'_>, alias: &DosAliasIntent,
+) -> Result<(), AdmissionError> {
+    let row=Statement::prepare(connection.as_ptr(),
+        "SELECT request_sha256,generation,origin_kind,process_operation_id,instance_id,
+          binding_id,worktree_id,namespace_id,alias_name,requested_target,
+          COALESCE(observed_target,''),volume_serial,file_id,host_pid,
+          host_creation_time_100ns,phase,COALESCE(child_operation_id,''),
+          COALESCE(child_ticket,''),COALESCE(child_nonce,''),COALESCE(child_pid,''),
+          COALESCE(child_creation_time_100ns,''),cleanup_status,COALESCE(cleanup_result,''),revision
+          FROM main.gogoke_v37_h_dos_alias WHERE domain_id=?1 AND session_id=?2
+            AND request_id=?3 AND generation=?4")?;
+    for (index,value) in [alias.domain_id.as_str(),alias.session_id.as_str(),
+        alias.request_id.as_str(),alias.generation.as_str()].iter().enumerate(){
+        row.bind_text(index as i32+1,value)?;
+    }
+    if !row.step_row()? {return Err(AdmissionError::Unknown);}
+    let observed=alias.observed_target.as_deref().unwrap_or("");
+    let fields=[alias.request_sha256.as_str(),alias.generation.as_str(),
+        alias.origin_kind.as_str(),alias.process_operation_id.as_str(),
+        alias.instance_id.as_str(),alias.binding_id.as_str(),alias.worktree_id.as_str(),
+        alias.namespace_id.as_str(),alias.alias_name.as_str(),alias.requested_target.as_str(),
+        observed,alias.volume_serial.as_str(),alias.file_id.as_str(),alias.host_pid.as_str(),
+        alias.host_creation_time_100ns.as_str(),alias.phase.as_str(),
+        alias.child_operation_id.as_deref().unwrap_or(""),alias.child_ticket.as_deref().unwrap_or(""),
+        alias.child_nonce.as_deref().unwrap_or(""),alias.child_pid.as_deref().unwrap_or(""),
+        alias.child_creation_time_100ns.as_deref().unwrap_or(""),alias.cleanup_status.as_str(),
+        alias.cleanup_result.as_deref().unwrap_or("")];
+    for (index,expected) in fields.iter().enumerate(){
+        if row.column_text(index as i32)?!=*expected {return Err(AdmissionError::Conflict);}
+    }
+    if row.column_text(23)?.parse::<i64>().ok()!=Some(alias.revision) || row.step_row()? {
+        return Err(AdmissionError::Conflict);
+    }
+    verify_opencode_alias_source(connection,alias)?;
+    Ok(())
+}
+
+fn verify_opencode_alias_source(
+    connection:&VerifiedDatabaseConnection<'_>,alias:&DosAliasIntent,
+)->Result<(),AdmissionError>{
+    let (sql,parameters):(&str,[&str;4])=match alias.origin_kind.as_str(){
+        "OPEN"=>("SELECT raw_hex FROM main.gogoke_v37_h_operation
+            WHERE domain_id=?1 AND request_id=?2 AND session_id=?3 AND operation='open'
+              AND status IN ('UNKNOWN','APPLIED')",[
+                alias.domain_id.as_str(),alias.request_id.as_str(),alias.session_id.as_str(),""]),
+        "RESUME"=>("SELECT raw_hex FROM main.gogoke_v37_h_process_episode
+            WHERE domain_id=?1 AND request_id=?2 AND session_id=?3 AND generation=?4",
+            [alias.domain_id.as_str(),alias.request_id.as_str(),alias.session_id.as_str(),alias.generation.as_str()]),
+        _=>return Err(AdmissionError::Denied),
+    };
+    let row=Statement::prepare(connection.as_ptr(),sql)?;
+    for(index,value)in parameters.iter().enumerate(){
+        if !value.is_empty(){row.bind_text(index as i32+1,value)?;}
+    }
+    if !row.step_row()? {return Err(AdmissionError::Conflict);}
+    let raw_hex=row.column_text(0)?;
+    if row.step_row()? {return Err(AdmissionError::Conflict);}
+    let raw=decode_hex_bytes(&raw_hex)?;
+    let request=super::wire::decode_request(&raw).map_err(|_|AdmissionError::Denied)?;
+    if request.family!="K-SESSION" || request.request_id!=alias.request_id
+        || request.domain_id!=alias.domain_id || request.target_id!=alias.session_id
+        || request.operation!=(if alias.origin_kind=="OPEN"{"open"}else{"resume"}) {
+        return Err(AdmissionError::Conflict);
+    }
+    let digest=crate::store::digest::sha256_hex(&raw);
+    if digest!=alias.request_sha256
+        || alias.process_operation_id!=format!("h-{}-{}",request.operation,&digest[..40]) {
+        return Err(AdmissionError::Conflict);
+    }
+    let binding=if alias.origin_kind=="OPEN" {
+        let episode=count(connection,
+            "SELECT COUNT(*) FROM main.gogoke_v37_h_process_episode
+              WHERE domain_id=?1 AND session_id=?2 AND request_id=?3 AND generation=?4
+                AND raw_hex=?5 AND instance_id=?6 AND binding_id=?7
+                AND (process_operation_id IS NULL OR process_operation_id=?8)",
+            &[&alias.domain_id,&alias.session_id,&alias.request_id,&alias.generation,
+                &raw_hex,&alias.instance_id,&alias.binding_id,&alias.process_operation_id])?;
+        if episode==1 {1} else {count(connection,
+            "SELECT COUNT(*) FROM main.gogoke_v37_h_claim
+              WHERE domain_id=?1 AND session_id=?2 AND generation=?3 AND instance_id=?4
+                AND binding_id=?5 AND state IN ('COMMITTED','UNKNOWN','STOPPED')
+                AND (process_operation_id IS NULL OR process_operation_id=?6)",
+            &[&alias.domain_id,&alias.session_id,&alias.generation,&alias.instance_id,
+                &alias.binding_id,&alias.process_operation_id])?}
+    }else{
+        count(connection,
+            "SELECT COUNT(*) FROM main.gogoke_v37_h_process_episode
+              WHERE domain_id=?1 AND session_id=?2 AND request_id=?3 AND generation=?4
+                AND raw_hex=?5 AND instance_id=?6 AND binding_id=?7
+                AND (process_operation_id IS NULL OR process_operation_id=?8)",
+            &[&alias.domain_id,&alias.session_id,&alias.request_id,&alias.generation,
+                &raw_hex,&alias.instance_id,&alias.binding_id,&alias.process_operation_id])?
+    };
+    if binding!=1 {return Err(AdmissionError::Conflict);}
+    Ok(())
+}
+
+fn decode_hex_bytes(value:&str)->Result<Vec<u8>,AdmissionError>{
+    if value.is_empty() || value.len()%2!=0
+        || !value.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b)) {
+        return Err(AdmissionError::Denied);
+    }
+    value.as_bytes().chunks_exact(2).map(|pair|{
+        let byte=|v:u8|if v.is_ascii_digit(){v-b'0'}else{v-b'a'+10};
+        Ok((byte(pair[0])<<4)|byte(pair[1]))
+    }).collect()
+}
+
+pub(super) fn record_opencode_dos_alias_cleanup(
+    connection:&mut VerifiedDatabaseConnection<'_>,alias:&DosAliasIntent,
+    stop_fact:&str,status:&str,result:&str,
+)->Result<DosAliasIntent,AdmissionError>{
+    require(stop_fact,"stop_fact")?;
+    if !matches!(status,"REMOVED"|"ABSENT"|"UNKNOWN") || result.is_empty() {
+        return Err(AdmissionError::Invalid("cleanup_result"));
+    }
+    in_transaction(connection,|connection|{
+        let stopped=Statement::prepare(connection.as_ptr(),
+            "SELECT COUNT(*) FROM main.gogoke_v37_h_dos_alias a
+              JOIN main.gogoke_v37_h_process_episode e ON e.domain_id=a.domain_id
+                AND e.session_id=a.session_id AND e.generation=a.generation
+                AND e.request_id=a.request_id AND e.process_operation_id=a.process_operation_id
+              JOIN main.gogoke_v37_h_claim h ON h.domain_id=e.domain_id
+                AND h.session_id=e.session_id AND h.generation=e.generation
+                AND h.process_operation_id=e.process_operation_id
+              JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id
+                AND c.domain_id=e.domain_id AND c.generation=e.generation
+              WHERE a.domain_id=?1 AND a.session_id=?2 AND a.generation=?3
+                AND a.request_id=?4 AND a.revision=?5 AND a.phase='CUSTODY_BOUND'
+                AND a.cleanup_status IN ('NOT_REQUESTED','UNKNOWN')
+                AND a.child_operation_id=c.operation_id AND a.child_ticket=c.ticket
+                AND a.child_nonce=c.custodian_nonce AND a.child_pid=c.pid
+                AND a.child_creation_time_100ns=c.creation_time_100ns
+                AND e.phase='STOPPED' AND e.stop_fact_id=?6
+                AND h.state='STOPPED' AND h.stop_fact_id=?6
+                AND c.state='STOPPED' AND c.stop_proof_hash=?6")?;
+        let revision=alias.revision.to_string();
+        for(index,value) in [alias.domain_id.as_str(),alias.session_id.as_str(),
+            alias.generation.as_str(),alias.request_id.as_str(),revision.as_str(),stop_fact]
+            .iter().enumerate(){stopped.bind_text(index as i32+1,value)?;}
+        if !stopped.step_row()? || stopped.column_text(0)?!="1" {
+            return Err(AdmissionError::Denied);
+        }
+        let update=Statement::prepare(connection.as_ptr(),
+            "UPDATE main.gogoke_v37_h_dos_alias SET cleanup_status=?1,cleanup_result=?2,
+              revision=revision+1 WHERE domain_id=?3 AND session_id=?4 AND generation=?5
+                AND request_id=?6 AND revision=?7 AND phase='CUSTODY_BOUND'")?;
+        let revision=alias.revision.to_string();
+        for(index,value) in [status,result,alias.domain_id.as_str(),alias.session_id.as_str(),
+            alias.generation.as_str(),alias.request_id.as_str(),revision.as_str()]
+            .iter().enumerate(){update.bind_text(index as i32+1,value)?;}
+        update.step_done()?;
+        if changes(connection)?!=1{return Err(AdmissionError::Conflict);}
+        let mut updated=alias.clone();
+        updated.cleanup_status=status.into();updated.cleanup_result=Some(result.into());
+        updated.revision+=1;
+        Ok(updated)
+    })
+}
+
+/// Reconcile one original alias after a prior native-host process disappeared.
+/// This updates only H alias cleanup state; it never changes claim state,
+/// admission release, StopFact or any user-visible H operation receipt.
+pub(crate) fn recover_orphan_opencode_dos_alias(
+    connection:&mut VerifiedDatabaseConnection<'_>,domain:&str,session:&str,generation:&str,
+)->Result<String,AdmissionError>{
+    let mut alias=read_opencode_dos_alias(connection,domain,session,generation)?
+        .ok_or(AdmissionError::Unknown)?;
+    if matches!(alias.cleanup_status.as_str(),"REMOVED"|"ABSENT") {
+        return Ok(alias.cleanup_status);
+    }
+    let fail_closed=|connection:&mut VerifiedDatabaseConnection<'_>,record:&DosAliasIntent,reason:&str|
+        ->Result<String,AdmissionError>{
+        record_orphan_dos_alias_result(connection,record,"UNKNOWN",reason)?;
+        Err(AdmissionError::Unknown)
+    };
+    let namespace=match super::dos_alias::current_namespace_id(){
+        Ok(value)=>value,Err(_)=>return fail_closed(connection,&alias,"current namespace unavailable"),
+    };
+    if namespace!=alias.namespace_id {
+        return fail_closed(connection,&alias,"recorded logon namespace is not current");
+    }
+    let host_pid=alias.host_pid.parse::<u32>().map_err(|_|AdmissionError::Denied)?;
+    let host_creation=alias.host_creation_time_100ns.parse::<u64>()
+        .map_err(|_|AdmissionError::Denied)?;
+    if super::dos_alias::current_host_identity().ok()==Some((host_pid,host_creation)) {
+        return Err(AdmissionError::Unknown);
+    }
+    if crate::process::NativeProcessHoldersGone::observe(&[(host_pid,host_creation)]).is_err(){
+        return fail_closed(connection,&alias,"original host holder is not proven gone");
+    }
+    let mut unbound_custody=None;
+    match alias.phase.as_str(){
+        "INTENT"|"MAPPED"=>{},
+        "CUSTODY_BOUND"=>{
+            let (Some(child_operation),Some(ticket),Some(nonce),Some(pid),Some(creation))=(
+                alias.child_operation_id.as_deref(),alias.child_ticket.as_deref(),
+                alias.child_nonce.as_deref(),alias.child_pid.as_deref(),
+                alias.child_creation_time_100ns.as_deref()) else {
+                    return fail_closed(connection,&alias,"C custody identity is incomplete");
+                };
+            if !opencode_alias_custody_matches(connection,&alias,child_operation,ticket,nonce,pid,creation)? {
+                return fail_closed(connection,&alias,"original C Job custody does not match alias intent");
+            }
+            let pid=pid.parse::<u32>().map_err(|_|AdmissionError::Denied)?;
+            let creation=creation.parse::<u64>().map_err(|_|AdmissionError::Denied)?;
+            if crate::process::NativeProcessHoldersGone::observe(&[(pid,creation)]).is_err(){
+                return fail_closed(connection,&alias,"original C process identity is not proven gone");
+            }
+        },
+        "PREPARE_STARTED"=>{
+            let custody=match read_original_alias_custody(connection,&alias){
+                Ok(Some(value))=>value,
+                Ok(None)=>return fail_closed(connection,&alias,
+                    "prepare began without durable child custody; possible child retained UNKNOWN"),
+                Err(_)=>return fail_closed(connection,&alias,
+                    "original C custody could not be read exactly; possible child retained UNKNOWN"),
+            };
+            let(_,_,pid,creation)=custody;
+            if crate::process::NativeProcessHoldersGone::observe(&[(pid,creation)]).is_err(){
+                return fail_closed(connection,&alias,"original C process identity is not proven gone");
+            }
+            unbound_custody=Some(custody);
+        },
+        _=>return fail_closed(connection,&alias,"alias phase is not recoverable"),
+    }
+    let root_identity=identity_from_alias(&alias)?;
+    let mappings=match super::dos_alias::query(&alias.alias_name){
+        Ok(value)=>value,Err(_)=>return fail_closed(connection,&alias,"current mapping query failed"),
+    };
+    let status=if mappings.is_empty(){
+        if let Some((ticket,nonce,pid,creation))=unbound_custody.take(){
+            alias=match bind_opencode_dos_alias_custody(connection,&alias,
+                &alias.process_operation_id,&ticket,&nonce,pid,creation){
+                    Ok(value)=>value,
+                    Err(_)=>return fail_closed(connection,&alias,"durable C custody binding failed"),
+                };
+        }
+        "ABSENT"
+    } else if mappings.len()==1
+        && alias.observed_target.as_deref().map_or(true,|target|
+            mappings.first().is_some_and(|observed|observed==target))
+        && super::dos_alias::verify_mapping(&alias.alias_name,alias.observed_target.as_deref(),
+            &root_identity).is_ok() {
+        if let Some((ticket,nonce,pid,creation))=unbound_custody.take(){
+            alias=match bind_opencode_dos_alias_custody(connection,&alias,
+                &alias.process_operation_id,&ticket,&nonce,pid,creation){
+                    Ok(value)=>value,
+                    Err(_)=>return fail_closed(connection,&alias,"durable C custody binding failed"),
+                };
+        }
+        if super::dos_alias::remove_exact(&alias.alias_name,&alias.requested_target).is_err(){
+            return fail_closed(connection,&alias,"exact alias removal or absence readback failed");
+        }
+        "REMOVED"
+    } else {
+        return fail_closed(connection,&alias,"current target or physical F FileID differs");
+    };
+    record_orphan_dos_alias_result(connection,&alias,status,
+        if status=="REMOVED"{"exact target removed after original holders were proven gone"}
+        else {"exact mapping was already absent after original holders were proven gone"})?;
+    Ok(status.into())
+}
+
+fn identity_from_alias(alias:&DosAliasIntent)->Result<crate::root::RootIdentity,AdmissionError>{
+    let volume_serial=u64::from_str_radix(&alias.volume_serial,16)
+        .map_err(|_|AdmissionError::Denied)?;
+    if alias.file_id.len()!=32 || !alias.file_id.bytes().all(|b|b.is_ascii_hexdigit()) {
+        return Err(AdmissionError::Denied);
+    }
+    let mut file_id=[0u8;16];
+    for(index,slot) in file_id.iter_mut().enumerate(){
+        *slot=u8::from_str_radix(&alias.file_id[index*2..index*2+2],16)
+            .map_err(|_|AdmissionError::Denied)?;
+    }
+    Ok(crate::root::RootIdentity{volume_serial,file_id})
+}
+
+fn read_opencode_dos_alias(connection:&VerifiedDatabaseConnection<'_>,domain:&str,
+    session:&str,generation:&str)->Result<Option<DosAliasIntent>,AdmissionError>{
+    let row=Statement::prepare(connection.as_ptr(),
+        "SELECT request_id,request_sha256,origin_kind,process_operation_id,instance_id,
+          binding_id,worktree_id,namespace_id,alias_name,requested_target,
+          COALESCE(observed_target,''),volume_serial,file_id,host_pid,
+          host_creation_time_100ns,phase,COALESCE(child_operation_id,''),
+          COALESCE(child_ticket,''),COALESCE(child_nonce,''),COALESCE(child_pid,''),
+          COALESCE(child_creation_time_100ns,''),cleanup_status,COALESCE(cleanup_result,''),revision
+          FROM main.gogoke_v37_h_dos_alias WHERE domain_id=?1 AND session_id=?2 AND generation=?3")?;
+    row.bind_text(1,domain)?;row.bind_text(2,session)?;row.bind_text(3,generation)?;
+    if !row.step_row()? {return Ok(None);}
+    let text=(0..24).map(|index|row.column_text(index)).collect::<Result<Vec<_>,_>>()?;
+    if row.step_row()? {return Err(AdmissionError::Conflict);}
+    let optional=|index:usize|if text[index].is_empty(){None}else{Some(text[index].clone())};
+    let alias=DosAliasIntent{domain_id:domain.into(),session_id:session.into(),request_id:text[0].clone(),
+        request_sha256:text[1].clone(),generation:generation.into(),origin_kind:text[2].clone(),
+        process_operation_id:text[3].clone(),instance_id:text[4].clone(),binding_id:text[5].clone(),
+        worktree_id:text[6].clone(),namespace_id:text[7].clone(),alias_name:text[8].clone(),
+        protocol_path:format!(r"{}\",text[8]),requested_target:text[9].clone(),
+        observed_target:optional(10),volume_serial:text[11].clone(),file_id:text[12].clone(),
+        host_pid:text[13].clone(),host_creation_time_100ns:text[14].clone(),phase:text[15].clone(),
+        child_operation_id:optional(16),child_ticket:optional(17),child_nonce:optional(18),
+        child_pid:optional(19),child_creation_time_100ns:optional(20),cleanup_status:text[21].clone(),
+        cleanup_result:optional(22),revision:text[23].parse().map_err(|_|AdmissionError::Denied)?};
+    verify_opencode_dos_alias_record(connection,&alias)?;
+    Ok(Some(alias))
+}
+
+fn opencode_alias_custody_matches(connection:&VerifiedDatabaseConnection<'_>,alias:&DosAliasIntent,
+    operation:&str,ticket:&str,nonce:&str,pid:&str,creation:&str)->Result<bool,AdmissionError>{
+    let count=count(connection,
+        "SELECT COUNT(*) FROM main.gogoke_coordination_process_custody c
+          WHERE c.operation_id=?1 AND c.ticket=?2 AND c.custodian_nonce=?3
+            AND c.pid=?4 AND c.creation_time_100ns=?5 AND c.domain_id=?6
+            AND c.generation=?7 AND c.profile_id=?8
+            AND c.state IN ('PREPARED','ACTIVE','STOPPED')",
+        &[operation,ticket,nonce,pid,creation,&alias.domain_id,&alias.generation,&alias.instance_id])?;
+    Ok(count==1)
+}
+
+fn read_original_alias_custody(
+    connection:&VerifiedDatabaseConnection<'_>,alias:&DosAliasIntent,
+)->Result<Option<(String,String,u32,u64)>,AdmissionError>{
+    let row=Statement::prepare(connection.as_ptr(),
+        "SELECT ticket,custodian_nonce,pid,creation_time_100ns
+           FROM main.gogoke_coordination_process_custody
+          WHERE operation_id=?1 AND profile_id=?2 AND domain_id=?3 AND generation=?4
+            AND state IN ('PREPARED','ACTIVE','STOPPED')")?;
+    for(index,value)in [alias.process_operation_id.as_str(),alias.instance_id.as_str(),
+        alias.domain_id.as_str(),alias.generation.as_str()].iter().enumerate(){
+        row.bind_text(index as i32+1,value)?;
+    }
+    if !row.step_row()? {return Ok(None);}
+    let ticket=row.column_text(0)?;let nonce=row.column_text(1)?;
+    let pid=row.column_text(2)?.parse::<u32>().map_err(|_|AdmissionError::Denied)?;
+    let creation=row.column_text(3)?.parse::<u64>().map_err(|_|AdmissionError::Denied)?;
+    if row.step_row()? {return Err(AdmissionError::Conflict);}
+    if pid==0||creation==0 {return Err(AdmissionError::Denied);}
+    Ok(Some((ticket,nonce,pid,creation)))
+}
+
+fn record_orphan_dos_alias_result(connection:&mut VerifiedDatabaseConnection<'_>,
+    alias:&DosAliasIntent,status:&str,result:&str)->Result<(),AdmissionError>{
+    in_transaction(connection,|connection|{
+        let update=Statement::prepare(connection.as_ptr(),
+            "UPDATE main.gogoke_v37_h_dos_alias SET cleanup_status=?1,cleanup_result=?2,
+              revision=revision+1 WHERE domain_id=?3 AND session_id=?4 AND generation=?5
+                AND request_id=?6 AND revision=?7 AND cleanup_status IN ('NOT_REQUESTED','UNKNOWN')")?;
+        let revision=alias.revision.to_string();
+        for(index,value) in [status,result,alias.domain_id.as_str(),alias.session_id.as_str(),
+            alias.generation.as_str(),alias.request_id.as_str(),revision.as_str()]
+            .iter().enumerate(){update.bind_text(index as i32+1,value)?;}
+        update.step_done()?;
+        if changes(connection)?!=1{return Err(AdmissionError::Conflict);}
+        Ok(())
+    })
+}
 
 fn valid(value: &str) -> bool {
     !value.is_empty()
@@ -140,7 +532,11 @@ pub(crate) fn initialize_admission_schema(
     let mut prior_eight: Vec<(String, String)> = SCHEMA[..8].iter()
         .map(|(name, sql)| ((*name).to_owned(), (*sql).to_owned())).collect();
     prior_eight.sort_by(|left, right| left.0.cmp(&right.0));
-    if !rows.is_empty() && rows != previous && rows != older && rows != prior_eight {
+    let mut prior_nine: Vec<(String, String)> = SCHEMA[..9].iter()
+        .map(|(name, sql)| ((*name).to_owned(), (*sql).to_owned())).collect();
+    prior_nine.sort_by(|left, right| left.0.cmp(&right.0));
+    if !rows.is_empty() && rows != previous && rows != older && rows != prior_eight
+        && rows != prior_nine {
         return Err(AdmissionError::Denied);
     }
     in_transaction(connection, |connection| {
@@ -150,7 +546,8 @@ pub(crate) fn initialize_admission_schema(
         }
         let to_create = if rows.is_empty() { &SCHEMA[..] }
             else if rows == older { &SCHEMA[5..] }
-            else if rows == previous { &SCHEMA[6..] } else { &SCHEMA[8..] };
+            else if rows == previous { &SCHEMA[6..] }
+            else if rows == prior_eight { &SCHEMA[8..] } else { &SCHEMA[9..] };
         for (_, sql) in to_create {
             connection.execute(sql)?;
         }
@@ -161,6 +558,213 @@ pub(crate) fn initialize_admission_schema(
             return Err(AdmissionError::Denied);
         }
         Ok(())
+    })
+}
+
+/// Durably reserve one unused logon-local DOS name for an already-persisted
+/// OpenCode H open/resume intent. No OS mapping exists when this returns.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn reserve_opencode_dos_alias(
+    connection: &mut VerifiedDatabaseConnection<'_>,
+    domain: &str,
+    session: &str,
+    request_id: &str,
+    request_bytes: &[u8],
+    generation: &str,
+    process_operation_id: &str,
+    instance_id: &str,
+    binding_id: &str,
+    worktree_id: &str,
+    physical_path: &str,
+    identity: &crate::root::RootIdentity,
+) -> Result<DosAliasIntent, AdmissionError> {
+    for (value, name) in [
+        (domain, "domain"), (session, "session"), (request_id, "request"),
+        (generation, "generation"), (process_operation_id, "process_operation"),
+        (instance_id, "instance"), (binding_id, "binding"),
+        (worktree_id, "worktree"),
+    ] { require(value, name)?; }
+    if request_bytes.is_empty() || physical_path.is_empty() || physical_path.contains('\0')
+        || !std::path::Path::new(physical_path).is_absolute() {
+        return Err(AdmissionError::Invalid("request_bytes_or_path"));
+    }
+    let namespace_id = super::dos_alias::current_namespace_id()
+        .map_err(|_| AdmissionError::Denied)?;
+    let (host_pid, host_creation) = super::dos_alias::current_host_identity()
+        .map_err(|_| AdmissionError::Denied)?;
+    let request_sha256 = crate::store::digest::sha256_hex(request_bytes);
+    let request_hex = hex(request_bytes);
+    let volume_serial = format!("{:016x}", identity.volume_serial);
+    let file_id = identity.file_id.iter().map(|b| format!("{b:02x}")).collect::<String>();
+
+    in_transaction(connection, |connection| {
+        let intent = Statement::prepare(connection.as_ptr(),
+            "SELECT
+              (SELECT COUNT(*) FROM main.gogoke_v37_h_operation
+                WHERE domain_id=?1 AND request_id=?2 AND session_id=?3
+                  AND raw_hex=?4 AND operation='open' AND status='UNKNOWN'),
+              (SELECT COUNT(*) FROM main.gogoke_v37_h_process_episode
+                WHERE domain_id=?1 AND request_id=?2 AND session_id=?3
+                  AND raw_hex=?4 AND generation=?5 AND phase='INTENT')")?;
+        intent.bind_text(1, domain)?; intent.bind_text(2, request_id)?;
+        intent.bind_text(3, session)?; intent.bind_text(4, &request_hex)?;
+        intent.bind_text(5, generation)?;
+        if !intent.step_row()? {
+            return Err(AdmissionError::Conflict);
+        }
+        let open=intent.column_text(0)?;
+        let resume=intent.column_text(1)?;
+        let origin_kind=if open=="1"&&resume=="0"{"OPEN"}
+            else if open=="0"&&resume=="1"{"RESUME"}
+            else{return Err(AdmissionError::Conflict);};
+        let existing = count(connection,
+            "SELECT COUNT(*) FROM main.gogoke_v37_h_dos_alias
+              WHERE domain_id=?1 AND session_id=?2 AND generation=?3",
+            &[domain, session, generation])?;
+        if existing != 0 {
+            return Err(AdmissionError::Conflict);
+        }
+        let mut selected = None;
+        for name in super::dos_alias::free_candidates() {
+            let reserved = count(connection,
+                "SELECT COUNT(*) FROM main.gogoke_v37_h_dos_alias
+                  WHERE namespace_id=?1 AND alias_name=?2
+                    AND cleanup_status NOT IN ('REMOVED','ABSENT')",
+                &[&namespace_id, name])?;
+            if reserved != 0 || !super::dos_alias::query(name)
+                .map_err(|_| AdmissionError::Denied)?.is_empty() {
+                continue;
+            }
+            selected = Some(name.to_owned());
+            break;
+        }
+        let alias_name = selected.ok_or(AdmissionError::UnsupportedCapacity)?;
+        let insert = Statement::prepare(connection.as_ptr(), "INSERT INTO main.gogoke_v37_h_dos_alias(
+          domain_id,session_id,request_id,request_sha256,generation,origin_kind,
+          process_operation_id,instance_id,binding_id,worktree_id,namespace_id,
+          alias_name,requested_target,observed_target,volume_serial,file_id,
+          host_pid,host_creation_time_100ns,phase,cleanup_status,revision)
+          VALUES(?1,?2,?3,?4,?5,
+            CASE WHEN EXISTS(SELECT 1 FROM main.gogoke_v37_h_operation
+              WHERE domain_id=?1 AND request_id=?3 AND operation='open') THEN 'OPEN' ELSE 'RESUME' END,
+            ?6,?7,?8,?9,?10,?11,?12,?13,NULL,?14,?15,?16,?17,'INTENT','NOT_REQUESTED',1)")?;
+        let host_pid_text=host_pid.to_string();
+        let host_creation_text=host_creation.to_string();
+        for (index, value) in [domain, session, request_id, request_sha256.as_str(), generation,
+            origin_kind,process_operation_id, instance_id, binding_id, worktree_id, namespace_id.as_str(),
+            alias_name.as_str(), physical_path, volume_serial.as_str(), file_id.as_str(),
+            host_pid_text.as_str(), host_creation_text.as_str()]
+            .iter().enumerate() {
+            insert.bind_text(index as i32 + 1, value)?;
+        }
+        insert.step_done()?;
+        Ok(DosAliasIntent {
+            domain_id:domain.into(),session_id:session.into(),request_id:request_id.into(),
+            request_sha256,generation:generation.into(),origin_kind:origin_kind.into(),
+            process_operation_id:process_operation_id.into(),
+            instance_id:instance_id.into(),binding_id:binding_id.into(),worktree_id:worktree_id.into(),
+            namespace_id,alias_name,protocol_path:String::new(),
+            requested_target:physical_path.into(),observed_target:None,
+            volume_serial,file_id,host_pid:host_pid.to_string(),
+            host_creation_time_100ns:host_creation.to_string(),phase:"INTENT".into(),
+            child_operation_id:None,child_ticket:None,child_nonce:None,child_pid:None,
+            child_creation_time_100ns:None,cleanup_status:"NOT_REQUESTED".into(),
+            cleanup_result:None,revision:1,
+        })
+    })
+}
+
+pub(super) fn mark_opencode_dos_alias_mapped(
+    connection: &mut VerifiedDatabaseConnection<'_>, alias: &DosAliasIntent,
+    observed_target: &str,
+) -> Result<DosAliasIntent, AdmissionError> {
+    if observed_target.is_empty() || observed_target.contains('\0') {
+        return Err(AdmissionError::Invalid("observed_target"));
+    }
+    in_transaction(connection, |connection| {
+        let update=Statement::prepare(connection.as_ptr(),
+            "UPDATE main.gogoke_v37_h_dos_alias SET observed_target=?1,phase='MAPPED',revision=revision+1
+              WHERE domain_id=?2 AND session_id=?3 AND generation=?4 AND request_id=?5
+                AND process_operation_id=?6 AND alias_name=?7 AND requested_target=?8
+                AND namespace_id=?9 AND volume_serial=?10 AND file_id=?11 AND phase='INTENT'
+                AND revision=?12")?;
+        for (index,value) in [observed_target,alias.domain_id.as_str(),alias.session_id.as_str(),
+            alias.generation.as_str(),alias.request_id.as_str(),alias.process_operation_id.as_str(),
+            alias.alias_name.as_str(),alias.requested_target.as_str(),alias.namespace_id.as_str(),
+            alias.volume_serial.as_str(),alias.file_id.as_str()].iter().enumerate() {
+            update.bind_text(index as i32+1,value)?;
+        }
+        update.bind_text(12,&alias.revision.to_string())?;
+        update.step_done()?;
+        if changes(connection)?!=1 {return Err(AdmissionError::Conflict);}
+        let mut mapped=alias.clone();
+        mapped.observed_target=Some(observed_target.into());
+        mapped.phase="MAPPED".into();
+        mapped.revision+=1;
+        Ok(mapped)
+    })
+}
+
+pub(super) fn mark_opencode_dos_alias_prepare_started(
+    connection: &mut VerifiedDatabaseConnection<'_>, alias: &DosAliasIntent,
+) -> Result<DosAliasIntent, AdmissionError> {
+    set_dos_alias_phase(connection,alias,"MAPPED","PREPARE_STARTED")
+}
+
+pub(super) fn bind_opencode_dos_alias_custody(
+    connection: &mut VerifiedDatabaseConnection<'_>, alias: &DosAliasIntent,
+    child_operation_id: &str, ticket: &str, nonce: &str, pid: u32,
+    creation_time_100ns: u64,
+) -> Result<DosAliasIntent, AdmissionError> {
+    for (value,name) in [(child_operation_id,"child_operation"),(ticket,"child_ticket"),
+        (nonce,"child_nonce")] {require(value,name)?;}
+    if pid==0 || creation_time_100ns==0 {return Err(AdmissionError::Invalid("child_identity"));}
+    in_transaction(connection,|connection|{
+        let update=Statement::prepare(connection.as_ptr(),
+            "UPDATE main.gogoke_v37_h_dos_alias SET phase='CUSTODY_BOUND',
+              child_operation_id=?1,child_ticket=?2,child_nonce=?3,child_pid=?4,
+              child_creation_time_100ns=?5,revision=revision+1
+              WHERE domain_id=?6 AND session_id=?7 AND generation=?8 AND request_id=?9
+                AND process_operation_id=?10 AND phase='PREPARE_STARTED' AND revision=?11")?;
+        let pid_text=pid.to_string();
+        let creation_text=creation_time_100ns.to_string();
+        for (index,value) in [child_operation_id,ticket,nonce,pid_text.as_str(),
+            creation_text.as_str(),alias.domain_id.as_str(),alias.session_id.as_str(),
+            alias.generation.as_str(),alias.request_id.as_str(),alias.process_operation_id.as_str()]
+            .iter().enumerate(){update.bind_text(index as i32+1,value)?;}
+        update.bind_text(11,&alias.revision.to_string())?;
+        update.step_done()?;
+        if changes(connection)?!=1 {return Err(AdmissionError::Conflict);}
+        let mut bound=alias.clone();
+        bound.phase="CUSTODY_BOUND".into();
+        bound.child_operation_id=Some(child_operation_id.into());
+        bound.child_ticket=Some(ticket.into());
+        bound.child_nonce=Some(nonce.into());
+        bound.child_pid=Some(pid_text);
+        bound.child_creation_time_100ns=Some(creation_text);
+        bound.revision+=1;
+        Ok(bound)
+    })
+}
+
+fn set_dos_alias_phase(connection:&mut VerifiedDatabaseConnection<'_>,alias:&DosAliasIntent,
+    before:&str,after:&str)->Result<DosAliasIntent,AdmissionError>{
+    in_transaction(connection,|connection|{
+        let update=Statement::prepare(connection.as_ptr(),
+            "UPDATE main.gogoke_v37_h_dos_alias SET phase=?1,revision=revision+1
+              WHERE domain_id=?2 AND session_id=?3 AND generation=?4 AND request_id=?5
+                AND process_operation_id=?6 AND phase=?7 AND cleanup_status='NOT_REQUESTED'
+                AND revision=?8")?;
+        for (index,value) in [after,alias.domain_id.as_str(),alias.session_id.as_str(),
+            alias.generation.as_str(),alias.request_id.as_str(),alias.process_operation_id.as_str(),before]
+            .iter().enumerate(){update.bind_text(index as i32+1,value)?;}
+        update.bind_text(8,&alias.revision.to_string())?;
+        update.step_done()?;
+        if changes(connection)?!=1 {return Err(AdmissionError::Conflict);}
+        let mut updated=alias.clone();
+        updated.phase=after.into();
+        updated.revision+=1;
+        Ok(updated)
     })
 }
 fn observed_schema(
@@ -1030,7 +1634,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn eighth_table_upgrade_only_adds_generation_change_and_rejects_shadow() {
+    fn eighth_table_upgrade_adds_generation_change_and_alias_without_rewriting_old_rows() {
         let _guard=route_b_test_guard();
         let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let folder=std::env::temp_dir().join(format!("gogoke-h-change-schema-{}-{stamp}",std::process::id()));
@@ -1043,14 +1647,42 @@ mod tests {
         db.execute("INSERT INTO gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id) VALUES('domain','session','instance','home','binding','1','COMMITTED',3,'original-process')").unwrap();
         let before=observed_schema(&db).unwrap();
         initialize_admission_schema(&mut db).unwrap();
-        assert_eq!(observed_schema(&db).unwrap().len(),9);
+        assert_eq!(observed_schema(&db).unwrap().len(),10);
         assert_eq!(observed_schema(&db).unwrap().into_iter().filter(|(name,_)|
-            name!="gogoke_v37_h_generation_change").collect::<Vec<_>>(),before);
+            name!="gogoke_v37_h_generation_change"&&name!="gogoke_v37_h_dos_alias")
+            .collect::<Vec<_>>(),before);
         assert_eq!(count(&db,"SELECT COUNT(*) FROM gogoke_v37_h_claim WHERE process_operation_id=?1",
             &["original-process"]).unwrap(),1);
         initialize_admission_schema(&mut db).unwrap();
         db.execute("CREATE TEMP TABLE gogoke_v37_h_generation_change_shadow(x TEXT)").unwrap();
         assert!(matches!(initialize_admission_schema(&mut db),Err(AdmissionError::Denied)));
+        db.close_checked().unwrap();drop(root);std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn exact_nine_table_migration_adds_only_the_h_alias_record() {
+        let _guard=route_b_test_guard();
+        let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let folder=std::env::temp_dir().join(format!("gogoke-h-alias-schema-{}-{stamp}",std::process::id()));
+        std::fs::create_dir(&folder).unwrap();
+        let root=RootLock::acquire(&folder).unwrap();
+        let path=folder.join("state.sqlite");
+        let mut db=create_new(&root,&path).unwrap();
+        for(_,sql)in &SCHEMA[..9]{db.execute(sql).unwrap();}
+        db.execute("INSERT INTO gogoke_v37_h_owner_binding(binding_id,instance_id,domain_id,kind,owner_id,generation,state) VALUES('binding','instance','domain','SESSION','session','1','ACTIVE')").unwrap();
+        db.execute("INSERT INTO gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id) VALUES('domain','session','instance','home','binding','1','UNKNOWN',4,'original-process')").unwrap();
+        let before=observed_schema(&db).unwrap();
+        assert_eq!(before.len(),9);
+        assert_eq!(count(&db,"SELECT COUNT(*) FROM gogoke_v37_h_claim WHERE process_operation_id=?1",
+            &["original-process"]).unwrap(),1);
+        initialize_admission_schema(&mut db).unwrap();
+        let after=observed_schema(&db).unwrap();
+        assert_eq!(after.len(),10);
+        assert_eq!(after.into_iter().filter(|(name,_)|name!="gogoke_v37_h_dos_alias")
+            .collect::<Vec<_>>(),before);
+        assert_eq!(count(&db,"SELECT COUNT(*) FROM gogoke_v37_h_claim WHERE process_operation_id=?1",
+            &["original-process"]).unwrap(),1);
+        initialize_admission_schema(&mut db).unwrap();
         db.close_checked().unwrap();drop(root);std::fs::remove_dir_all(folder).unwrap();
     }
 
