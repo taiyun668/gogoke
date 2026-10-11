@@ -33,6 +33,8 @@ impl Drop for StartupChildGuard {
 #[derive(Debug)]
 pub(crate) struct Design37Host {
     child: Mutex<Child>,
+    stderr_tail: Arc<Mutex<Vec<u8>>>,
+    stderr_reader: Mutex<Option<std::thread::JoinHandle<Result<(), String>>>>,
     service_pipe: String,
     user_pipe: String,
     capability: String,
@@ -72,34 +74,36 @@ impl Design37Host {
         let mut startup_child = StartupChildGuard(Some(child));
         let stderr_tail = Arc::new(Mutex::new(Vec::new()));
         let stderr = startup_child.0.as_mut().and_then(|child| child.stderr.take());
-        if let Some(stderr) = stderr {
+        let stderr_reader = if let Some(stderr) = stderr {
             // The host remains long-lived. Drain stderr so a diagnostic cannot
             // block it; the process exit path still reports the exit status.
             let stderr_tail_writer = Arc::clone(&stderr_tail);
-            std::thread::Builder::new()
+            Some(std::thread::Builder::new()
                 .name("gogoke-design37-host-stderr".to_string())
                 .spawn(move || {
                     let mut reader = BufReader::new(stderr);
                     let mut tail = Vec::with_capacity(4096);
                     let mut chunk = [0u8; 1024];
-                    while let Ok(count) = reader.read(&mut chunk) {
+                    loop {
+                        let count = reader.read(&mut chunk).map_err(|error|
+                            format!("GOGOKE_DESIGN37_HOST_STDERR_READ_FAILED:WIN32_{}:{error}",
+                                error.raw_os_error().unwrap_or(0)))?;
                         if count == 0 {
-                            break;
+                            return Ok(());
                         }
                         tail.extend_from_slice(&chunk[..count]);
                         if tail.len() > 4096 {
                             let drain = tail.len() - 4096;
                             tail.drain(..drain);
                         }
-                        if let Ok(mut shared) = stderr_tail_writer.lock() {
-                            *shared = tail.clone();
-                        }
+                        *stderr_tail_writer.lock().map_err(|error|
+                            format!("GOGOKE_DESIGN37_HOST_STDERR_LOCK_FAILED:{error}"))? = tail.clone();
                     }
                 })
                 .map_err(|error| {
                     with_stderr_tail(format!("GOGOKE_DESIGN37_HOST_STDERR_FAILED:{error}"), &stderr_tail)
-                })?;
-        }
+                })?)
+        } else { None };
         let stdout = startup_child
             .0
             .as_mut()
@@ -113,6 +117,8 @@ impl Design37Host {
         let child = startup_child.0.take().expect("startup child retained");
         Ok(Self {
             child: Mutex::new(child),
+            stderr_tail,
+            stderr_reader: Mutex::new(stderr_reader),
             service_pipe,
             user_pipe,
             capability,
@@ -151,15 +157,27 @@ impl Design37Host {
             .child
             .lock()
             .map_err(|_| "GOGOKE_DESIGN37_HOST_LOCK_POISONED".to_string())?;
-        child
-            .try_wait()
-            .map(|status| status.is_none())
+        let status = child.try_wait()
             .map_err(|error| {
                 format!(
                     "GOGOKE_DESIGN37_HOST_STATUS_FAILED:WIN32_{}",
                     error.raw_os_error().unwrap_or(0)
                 )
-            })
+            })?;
+        let Some(status) = status else { return Ok(true) };
+        let mut original = format!("GOGOKE_DESIGN37_HOST_EXITED:EXIT_STATUS:{status}");
+        // The exact Child has exited. Finish its existing pipe reader so the
+        // returned tail includes its final diagnostic, rather than a snapshot
+        // taken before the original reader consumed the last bytes.
+        let capture = self.stderr_reader.lock()
+            .map_err(|error| format!("GOGOKE_DESIGN37_HOST_STDERR_READER_LOCK_FAILED:{error}"))
+            .and_then(|mut reader| match reader.take() {
+                None => Ok(()),
+                Some(reader) => reader.join()
+                    .map_err(|_| "GOGOKE_DESIGN37_HOST_STDERR_READER_PANICKED".to_string())?,
+            });
+        if let Err(error) = capture { original.push_str(&format!(":{error}")); }
+        Err(with_stderr_tail(original, &self.stderr_tail))
     }
 
     /// Send one User frame over the retained, object-verified connection.
@@ -344,13 +362,11 @@ fn validate_pipe(value: &str, prefix: &str, error: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_os = "windows")]
 fn with_stderr_tail(error: String, tail: &Arc<Mutex<Vec<u8>>>) -> String {
-    let bytes = tail
-        .lock()
-        .ok()
-        .map(|value| value.clone())
-        .unwrap_or_default();
+    let bytes = match tail.lock() {
+        Ok(value) => value.clone(),
+        Err(original) => return format!("{error}:STDERR_TAIL_LOCK_FAILED:{original}"),
+    };
     if bytes.is_empty() {
         return error;
     }
