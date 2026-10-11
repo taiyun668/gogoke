@@ -15,6 +15,22 @@ struct SecretaryInputHistoryRead {
     continuation:Option<String>,
 }
 
+fn secretary_episodes_continuation(fields:&BTreeMap<JsonString,Json>)
+    ->Result<Option<String>> {
+    let Some(Json::Object(read))=fields.get(&key("episodesPage")) else {
+        return Err(OrchestrationError::Invalid("episodesPage"));
+    };
+    if read.is_empty() {return Ok(None);}
+    if read.len()!=1 || !read.contains_key(&key("continuation")) {
+        return Err(OrchestrationError::Invalid("episodesPage fields"));
+    }
+    let value=string_field(read,"continuation")?;
+    if value.len()!=64 || !value.bytes().all(|byte|byte.is_ascii_hexdigit()) {
+        return Err(OrchestrationError::Invalid("episodesPage continuation"));
+    }
+    Ok(Some(value))
+}
+
 fn secretary_input_history_read(fields:&BTreeMap<JsonString,Json>)
     ->Result<SecretaryInputHistoryRead> {
     let Some(Json::Object(read))=fields.get(&key("inputHistory")) else {
@@ -157,6 +173,109 @@ fn status_for(error: &SeatError, request: &V37Request, present: Option<&Seat>) -
 }
 
 impl<'root> ProductDatabase<'root> {
+    /// The singleton's long dialogue may span several original H threads.
+    /// List original selections without merging their identity or dropping
+    /// unresolved history. Existing H/A validation governs every row.
+    fn read_secretary_episodes_in_transaction(&self,seat_id:&str,
+        incarnation:&str,generation:i64,revision:i64,continuation:Option<&str>)
+        ->Result<Json> {
+        let text=|value:&str|Json::String(JsonString::from_str(value));
+        let scope=format!("gogoke.37.secretary-episodes.v1\n{seat_id}\n{incarnation}\n{generation}\n{revision}");
+        let query=Statement::prepare(self.connection.as_ptr(),
+            "SELECT session_id,selected_instance_id,seat_authorization_generation \
+             FROM main.gogoke_v37_native_selection \
+             WHERE domain_id='global' AND seat_id=?1 AND seat_incarnation=?2 \
+             ORDER BY CAST(seat_authorization_generation AS INTEGER),session_id")?;
+        query.bind_text(1,seat_id)?;
+        query.bind_text(2,incarnation)?;
+        let mut past=continuation.is_none();
+        let mut matched=false;
+        let mut items=Vec::new();
+        let mut last_token=None;
+        let mut more=false;
+        while query.step_row()? {
+            let session=query.column_text(0)?;
+            let instance=query.column_text(1)?;
+            let raw_generation=query.column_text(2)?;
+            let original_generation=raw_generation.parse::<i64>().map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("secretary episode authorization: {error}")))?;
+            if original_generation<0 || original_generation.to_string()!=raw_generation {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            let token=crate::store::digest::sha256_hex(
+                format!("{scope}\n{raw_generation}\n{session}").as_bytes());
+            if !past {
+                if continuation==Some(token.as_str()) {past=true;matched=true;}
+                continue;
+            }
+            if items.len()==32 {more=true;break;}
+            let duplicates=Statement::prepare(self.connection.as_ptr(),
+                "SELECT CAST(COUNT(*) AS TEXT) FROM main.gogoke_v37_native_selection \
+                 WHERE domain_id='global' AND seat_id=?1 AND seat_incarnation=?2 \
+                   AND seat_authorization_generation=?3")?;
+            duplicates.bind_text(1,seat_id)?;
+            duplicates.bind_text(2,incarnation)?;
+            duplicates.bind_i64(3,original_generation)?;
+            if !duplicates.step_row()? {return Err(OrchestrationError::OperationConflict);}
+            let unique=duplicates.column_text(0)?=="1";
+            if duplicates.step_row()? {return Err(OrchestrationError::OperationConflict);}
+            drop(duplicates);
+            let conversation=if !unique {
+                Json::Object(BTreeMap::from([(key("state"),text("CONFLICT"))]))
+            } else if original_generation>generation {
+                Json::Object(BTreeMap::from([(key("state"),text("UNKNOWN"))]))
+            } else {
+                self.read_secretary_conversation_candidate_in_transaction(
+                    seat_id,incarnation,original_generation,&session,&instance,
+                    original_generation==generation)?
+            };
+            items.push(Json::Object(BTreeMap::from([
+                (key("authorizationGeneration"),text(&raw_generation)),
+                (key("sessionId"),text(&session)),
+                (key("selectedInstanceId"),text(&instance)),
+                (key("conversation"),conversation),
+            ])));
+            last_token=Some(token);
+        }
+        if continuation.is_some() && !matched {
+            return Err(OrchestrationError::Invalid("episodesPage continuation"));
+        }
+        Ok(Json::Object(BTreeMap::from([
+            (key("state"),text("FOUND")),
+            (key("items"),Json::Array(items)),
+            (key("nextContinuation"),if more {
+                last_token.map(|value|text(&value)).unwrap_or(Json::Null)
+            } else {Json::Null}),
+        ])))
+    }
+
+    /// A historical input page must select its original native row. The
+    /// current designation is checked by the caller; old claims must pass
+    /// the same RELEASED H/A reader validation used by the history roster.
+    fn read_secretary_historical_input_conversation_in_transaction(&self,
+        read:&SecretaryInputHistoryRead,current_generation:i64)->Result<Json> {
+        let authorization=read.authorization_generation.parse::<i64>().map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("secretary input authorization: {error}")))?;
+        if authorization<0 || authorization>=current_generation ||
+            authorization.to_string()!=read.authorization_generation {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let query=Statement::prepare(self.connection.as_ptr(),
+            "SELECT selected_instance_id FROM main.gogoke_v37_native_selection \
+             WHERE domain_id='global' AND seat_id=?1 AND seat_incarnation=?2 \
+               AND seat_authorization_generation=?3 AND session_id=?4")?;
+        query.bind_text(1,&read.seat_id)?;
+        query.bind_text(2,&read.incarnation)?;
+        query.bind_i64(3,authorization)?;
+        query.bind_text(4,&read.session_id)?;
+        if !query.step_row()? {return Err(OrchestrationError::AccessDenied);}
+        let instance=query.column_text(0)?;
+        if query.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        drop(query);
+        self.read_secretary_conversation_candidate_in_transaction(
+            &read.seat_id,&read.incarnation,authorization,&read.session_id,&instance,false)
+    }
+
     /// A USER display projection. E identifies the sole seat; original H/A
     /// records identify its conversation. This never creates a session or
     /// treats a committed H claim as proof that a process survived restart.
@@ -1323,14 +1442,17 @@ impl<'root> ProductDatabase<'root> {
             return self.dispatch_user_secretary_routine_configuration(&command, &fields, frame);
         }
         if command == "secretary-configuration-read" && (fields.len() == 2
-            || (fields.len()==3 && fields.contains_key(&key("inputHistory")))) {
-            let history=if fields.len()==3 {Some(secretary_input_history_read(&fields)?)}
+            || (fields.len()==3 && (fields.contains_key(&key("inputHistory"))
+                || fields.contains_key(&key("episodesPage"))))) {
+            let episodes=fields.contains_key(&key("episodesPage"));
+            let continuation=if episodes {secretary_episodes_continuation(&fields)?} else {None};
+            let history=if fields.contains_key(&key("inputHistory")) {Some(secretary_input_history_read(&fields)?)}
                 else {None};
             self.connection.execute("BEGIN").map_err(OrchestrationError::CommitUnknownWithCause)?;
             let observed=(|| -> Result<_> {
                 let configuration=seat::read_secretary_configuration_in_transaction(
                     &self.connection,&self.owner)?;
-                let conversation=match &configuration {
+                let mut conversation=match &configuration {
                     seat::SecretaryConfiguration::Designated {seat_id,incarnation,generation,..}=>
                         self.read_secretary_conversation_in_transaction(seat_id,incarnation,*generation)?,
                     _=>Json::Object(BTreeMap::from([(key("state"),
@@ -1364,10 +1486,17 @@ impl<'root> ProductDatabase<'root> {
                     seat::SecretaryConfiguration::Designated {seat_id,incarnation,generation,revision,
                         instance_id,model,effort,permission,state}=>{
                         if let Some(read)=&history {
-                            if read.seat_id!=seat_id || read.incarnation!=incarnation
-                                || read.authorization_generation!=generation.to_string() {
+                            if read.seat_id!=seat_id || read.incarnation!=incarnation {
                                 return Err(OrchestrationError::AccessDenied);
                             }
+                            if read.authorization_generation!=generation.to_string() {
+                                conversation=self.read_secretary_historical_input_conversation_in_transaction(
+                                    read,generation)?;
+                            }
+                        }
+                        if episodes {
+                            result.insert(key("episodesPage"),self.read_secretary_episodes_in_transaction(
+                                &seat_id,&incarnation,generation,revision,continuation.as_deref())?);
                         }
                         result.insert(key("state"),text("DESIGNATED"));
                         result.insert(key("seatId"),text(&seat_id));
@@ -2233,6 +2362,62 @@ mod tests {
             let Json::Object(old)=&rows[0] else {panic!("old row");};
             assert_eq!(old.get(&key("bodyState")).unwrap().canonical(),"\"VERIFIED\"");
             assert_eq!(old.get(&key("generation")).unwrap().canonical(),"\"1\"");
+            let before_history=changes(product);
+            let explicit=product.configure_user_v37(frame(&designated.incarnation,
+                designated.generation,"secretarySession",None).as_bytes()).unwrap();
+            let mut explicit=parse(&explicit);
+            let Json::Object(page)=explicit.remove(&key("inputHistory")).unwrap() else {panic!("historical input page");};
+            let Json::Array(rows)=page.get(&key("items")).unwrap() else {panic!("historical items");};
+            assert_original(product,rows);
+            assert!(rows.iter().any(|row|matches!(row,Json::Object(row)
+                if row.get(&key("requestId")).is_some_and(|value|value.canonical()=="\"oldUser\"")
+                && row.get(&key("bodyState")).is_some_and(|value|value.canonical()=="\"VERIFIED\""))),
+                "an exact released authorization exposes its proven original USER body");
+            assert!(product.configure_user_v37(frame(&designated.incarnation,
+                designated.generation,"foreignSession",None).as_bytes()).is_err(),
+                "old authorization generation must select its exact original H row");
+            let mut roster=parse(&product.configure_user_v37(br#"{"schema":"gogoke.37.owner-configuration.v1","command":"secretary-configuration-read","episodesPage":{}}"#).unwrap());
+            let Json::Object(page)=roster.remove(&key("episodesPage")).unwrap() else {panic!("episode page");};
+            let Json::Array(rows)=page.get(&key("items")).unwrap() else {panic!("episodes");};
+            assert_eq!(rows.len(),1,"the same incarnation has one original selection");
+            let Json::Object(episode)=&rows[0] else {panic!("episode");};
+            assert_eq!(episode.get(&key("authorizationGeneration")).unwrap().canonical(),
+                format!("\"{}\"",designated.generation));
+            let Json::Object(fact)=episode.get(&key("conversation")).unwrap() else {panic!("episode fact");};
+            assert_eq!(fact.get(&key("claimState")).unwrap().canonical(),"\"RELEASED\"");
+            assert!(product.configure_user_v37(br#"{"schema":"gogoke.37.owner-configuration.v1","command":"secretary-configuration-read","episodesPage":{"continuation":"0000000000000000000000000000000000000000000000000000000000000000"}}"#).is_err());
+            assert_eq!(changes(product),before_history,"roster and explicit historical reads perform no writes");
+            // Incomplete selections remain explicit rows, never empty success.
+            // Their absent H/A evidence is not replaced with a simulated thread.
+            for index in 0..33 {
+                let q=Statement::prepare(product.connection.as_ptr(),
+                    "INSERT INTO main.gogoke_v37_native_selection(domain_id,session_id,seat_id,seat_incarnation,seat_authorization_generation,selected_instance_id) VALUES('global',?1,'seatS',?2,?3,'unverifiedInstance')").unwrap();
+                q.bind_text(1,&format!("unresolved{index:02}")).unwrap();
+                q.bind_text(2,&designated.incarnation).unwrap();
+                q.bind_i64(3,designated.generation+2+if index==32 {0} else {index}).unwrap();
+                q.step_done().unwrap();
+            }
+            let before_pages=changes(product);
+            let mut first=parse(&product.configure_user_v37(br#"{"schema":"gogoke.37.owner-configuration.v1","command":"secretary-configuration-read","episodesPage":{}}"#).unwrap());
+            let Json::Object(first)=first.remove(&key("episodesPage")).unwrap() else {panic!("first episode page");};
+            let Json::Array(rows)=first.get(&key("items")).unwrap() else {panic!("first episodes");};
+            assert_eq!(rows.len(),32);
+            let Json::String(token)=first.get(&key("nextContinuation")).unwrap() else {panic!("episode continuation");};
+            let next=format!(r#"{{"schema":"gogoke.37.owner-configuration.v1","command":"secretary-configuration-read","episodesPage":{{"continuation":"{}"}}}}"#,token.to_well_formed_string().unwrap());
+            let mut second=parse(&product.configure_user_v37(next.as_bytes()).unwrap());
+            let Json::Object(second)=second.remove(&key("episodesPage")).unwrap() else {panic!("second episode page");};
+            let Json::Array(rest)=second.get(&key("items")).unwrap() else {panic!("remaining episodes");};
+            assert_eq!(rest.len(),2);
+            assert_eq!(second.get(&key("nextContinuation")).unwrap().canonical(),"null");
+            let states=rows.iter().chain(rest.iter()).map(|row| {
+                let Json::Object(row)=row else {panic!("episode row");};
+                let Json::Object(fact)=row.get(&key("conversation")).unwrap() else {panic!("conversation fact");};
+                fact.get(&key("state")).unwrap().canonical()
+            }).collect::<Vec<_>>();
+            assert_eq!(states.iter().filter(|state|state.as_str()=="\"FOUND\"").count(),1);
+            assert_eq!(states.iter().filter(|state|state.as_str()=="\"CONFLICT\"").count(),2);
+            assert_eq!(states.iter().filter(|state|state.as_str()=="\"UNKNOWN\"").count(),31);
+            assert_eq!(changes(product),before_pages,"all paged metadata reads preserve the original database");
         });
     }
 
