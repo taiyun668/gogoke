@@ -270,7 +270,7 @@ function claudeTerminalResult(result, beforeSendRawHighwater) {
 }
 
 const claudeNaturalSequenceTurns = [
-  { prompt: 'What is 241 + 537?', expectedOutput: '241 + 537 = **778**',
+  { prompt: 'What is 241 + 537? Please answer with the number only.', expectedOutput: '778',
     answerForContext: '778' },
   { prompt: 'What is 16 multiplied by 27? Please answer with the number only.',
     expectedOutput: '432' }
