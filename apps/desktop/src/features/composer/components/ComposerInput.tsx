@@ -1,4 +1,5 @@
 import { useCallback, useRef } from "react";
+import { NowComposerStop, useNowActiveConversation } from "@/features/now/NowContext";
 import type {
   ChangeEvent,
   ClipboardEvent,
@@ -28,6 +29,8 @@ type ComposerInputProps = {
   text: string;
   disabled: boolean;
   sendLabel: string;
+  placeholder?: string;
+  disabledPlaceholder?: string;
   canStop: boolean;
   canSend: boolean;
   isProcessing: boolean;
@@ -86,6 +89,8 @@ export function ComposerInput({
   text,
   disabled,
   sendLabel,
+  placeholder,
+  disabledPlaceholder,
   canStop,
   canSend,
   isProcessing,
@@ -137,6 +142,8 @@ export function ComposerInput({
   onReviewPromptUpdateCustomInstructions,
   onReviewPromptConfirmCustom,
 }: ComposerInputProps) {
+  const now = useNowActiveConversation();
+  const hasNowStop = Boolean(now?.conversation.actions?.stopTurn || now?.conversation.actions?.stopWork);
   const { tx } = useI18n();
   const suggestionListRef = useRef<HTMLDivElement | null>(null);
   const suggestionRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -277,8 +284,8 @@ export function ComposerInput({
             ref={textareaRef}
             placeholder={
               disabled
-                ? tx("Review in progress. Chat will re-enable when it completes.")
-                : tx("Ask Codex to do something...")
+                ? disabledPlaceholder ?? tx("Review in progress. Chat will re-enable when it completes.")
+                : placeholder ?? tx("Ask Codex to do something...")
             }
             value={text}
             onChange={handleTextareaChange}
@@ -324,7 +331,14 @@ export function ComposerInput({
                 <Mic aria-hidden />
               )}
             </button>
-            <button
+            {hasNowStop && now ? (
+              <NowComposerStop
+                workspaceId={now.conversation.workspaceId}
+                threadId={now.conversation.threadId}
+                disabled={isDictationBusy || (disabled && !canStop)}
+              />
+            ) : null}
+            {(!hasNowStop || !canStop || !now?.conversation.actions?.stopTurn) && <button
               className={`composer-action${canStop ? " is-stop" : " is-send"}${
                 canStop && isProcessing ? " is-loading" : ""
               }`}
@@ -351,7 +365,7 @@ export function ComposerInput({
                   />
                 </svg>
               )}
-            </button>
+            </button>}
           </div>
         </div>
         {isDictationBusy && (

@@ -3,17 +3,20 @@ import type {
   CollabAgentRef,
   CustomPromptOption,
   DebugEntry,
+  AppServerEvent,
   ServiceTier,
   ThreadListSortKey,
   WorkspaceInfo,
 } from "@/types";
 import { CHAT_SCROLLBACK_DEFAULT } from "@utils/chatScrollback";
-import { useAppServerEvents } from "@app/hooks/useAppServerEvents";
-import { initialState, threadReducer } from "./useThreadsReducer";
+import { METHODS_ROUTED_IN_USE_APP_SERVER_EVENTS, useAppServerEvents } from "@app/hooks/useAppServerEvents";
+import { getAppServerParams, getAppServerRawMethod } from "@utils/appServerEvents";
+import { initialState, threadReducer, type ThreadAction } from "./useThreadsReducer";
 import { useThreadStorage } from "./useThreadStorage";
 import { useThreadLinking } from "./useThreadLinking";
 import { useThreadEventHandlers } from "./useThreadEventHandlers";
-import { useThreadActions } from "./useThreadActions";
+import { nativeSourceRef, useThreadActions } from "./useThreadActions";
+import type { NativeProjectionRead, NativeProjectionSource } from "./useThreadActions";
 import { useThreadMessaging } from "./useThreadMessaging";
 import { useThreadApprovals } from "./useThreadApprovals";
 import { useThreadAccountInfo } from "./useThreadAccountInfo";
@@ -26,6 +29,7 @@ import { useDetachedReviewTracking } from "./useDetachedReviewTracking";
 import {
   archiveThread as archiveThreadService,
   readThread as readThreadService,
+  nativeConversationAssociation,
   setThreadName as setThreadNameService,
 } from "@services/tauri";
 import {
@@ -98,7 +102,7 @@ export function useThreads({
       ? CHAT_SCROLLBACK_DEFAULT
       : chatHistoryScrollbackItems;
 
-  const [state, dispatch] = useReducer(
+  const [state, dispatchToReducer] = useReducer(
     threadReducer,
     maxItemsPerThread,
     (initialMaxItemsPerThread) => ({
@@ -106,6 +110,110 @@ export function useThreads({
       maxItemsPerThread: initialMaxItemsPerThread,
     }),
   );
+  // A read records only conversation writes that arrive while it is in flight.
+  // The source is bound only while a routed event callback runs synchronously.
+  const projectionReadsRef = useRef<Record<string, Set<NativeProjectionRead>>>({});
+  const pendingEventRef = useRef<{
+    workspaceId: string;
+    threadId: string;
+    source: NativeProjectionSource | null;
+    hasSecondCallback: boolean;
+  } | null>(null);
+  const activeEventRef = useRef<typeof pendingEventRef.current>(null);
+  const lifecycleShadowRef = useRef({
+    status: state.threadStatusById,
+    turns: state.activeTurnIdByThread,
+    parents: state.threadParentById,
+  });
+  lifecycleShadowRef.current = {
+    status: state.threadStatusById,
+    turns: state.activeTurnIdByThread,
+    parents: state.threadParentById,
+  };
+  const dispatch = useCallback((action: ThreadAction) => {
+    if ("threadId" in action && typeof action.threadId === "string") {
+      const threadId = action.threadId;
+      let projectionWrite = false;
+      switch (action.type) {
+        case "markProcessing": {
+          const previous = lifecycleShadowRef.current.status[threadId];
+          projectionWrite = previous?.isProcessing !== action.isProcessing &&
+            (previous !== undefined || action.isProcessing);
+          lifecycleShadowRef.current.status = {
+            ...lifecycleShadowRef.current.status,
+            [threadId]: { isProcessing: action.isProcessing,
+              hasUnread: previous?.hasUnread ?? false,
+              isReviewing: previous?.isReviewing ?? false,
+              processingStartedAt: previous?.processingStartedAt ?? null,
+              lastDurationMs: previous?.lastDurationMs ?? null },
+          };
+          break;
+        }
+        case "markReviewing": {
+          const previous = lifecycleShadowRef.current.status[threadId];
+          projectionWrite = previous?.isReviewing !== action.isReviewing &&
+            (previous !== undefined || action.isReviewing);
+          lifecycleShadowRef.current.status = {
+            ...lifecycleShadowRef.current.status,
+            [threadId]: { isProcessing: previous?.isProcessing ?? false,
+              hasUnread: previous?.hasUnread ?? false,
+              isReviewing: action.isReviewing,
+              processingStartedAt: previous?.processingStartedAt ?? null,
+              lastDurationMs: previous?.lastDurationMs ?? null },
+          };
+          break;
+        }
+        case "setActiveTurnId":
+          projectionWrite = (lifecycleShadowRef.current.turns[threadId] ?? null) !== action.turnId;
+          lifecycleShadowRef.current.turns = { ...lifecycleShadowRef.current.turns, [threadId]: action.turnId };
+          break;
+        case "setThreadParent":
+          projectionWrite = Boolean(action.parentId && action.parentId !== threadId &&
+            lifecycleShadowRef.current.parents[threadId] !== action.parentId);
+          lifecycleShadowRef.current.parents = { ...lifecycleShadowRef.current.parents, [threadId]: action.parentId };
+          break;
+        case "hideThread":
+        case "removeThread":
+        case "addAssistantMessage":
+        case "appendAgentDelta":
+        case "completeAgentMessage":
+        case "upsertItem":
+        case "setThreadItems":
+        case "appendReasoningSummary":
+        case "appendReasoningSummaryBoundary":
+        case "appendReasoningContent":
+        case "appendPlanDelta":
+        case "appendToolOutput":
+        case "setThreadName":
+        case "setThreadPlan":
+        case "clearThreadPlan":
+        case "setLastAgentMessage":
+          projectionWrite = true;
+          break;
+      }
+      if (projectionWrite) {
+        const event = activeEventRef.current;
+        const source = event?.threadId === threadId &&
+          ("workspaceId" in action ? action.workspaceId === event.workspaceId : true)
+          ? event.source : null;
+        projectionReadsRef.current[threadId]?.forEach((read) => read.changes.push(source));
+      }
+    }
+    dispatchToReducer(action);
+  }, []);
+  const beginNativeProjectionRead = useCallback((threadId: string): NativeProjectionRead => {
+    const reads = projectionReadsRef.current[threadId] ?? new Set<NativeProjectionRead>();
+    projectionReadsRef.current[threadId] = reads;
+    const read: NativeProjectionRead = {
+      changes: [],
+      release: () => {
+        reads.delete(read);
+        if (reads.size === 0) delete projectionReadsRef.current[threadId];
+      },
+    };
+    reads.add(read);
+    return read;
+  }, []);
   useEffect(() => {
     dispatch({ type: "setMaxItemsPerThread", maxItemsPerThread });
   }, [dispatch, maxItemsPerThread]);
@@ -196,6 +304,11 @@ export function useThreads({
   }, [onMessageActivity]);
 
   const setThreadLoaded = useCallback((threadId: string, isLoaded: boolean) => {
+    // Closing or unloading invalidates a read even when its reducer status was
+    // already stopped. A prior snapshot cannot restore this cache entry.
+    if (!isLoaded) {
+      projectionReadsRef.current[threadId]?.forEach((read) => read.changes.push(null));
+    }
     loadedThreadsRef.current[threadId] = isLoaded;
   }, []);
 
@@ -536,14 +649,61 @@ export function useThreads({
   );
 
   const handlers = useMemo(
-    () => ({
+    () => {
+      const routed = {
       ...threadHandlers,
       onThreadStarted: handleThreadStarted,
       onThreadArchived: handleThreadArchived,
       onThreadUnarchived: handleThreadUnarchived,
       onAccountUpdated: handleAccountUpdated,
       onAccountLoginCompleted: handleAccountLoginCompleted,
-    }),
+      };
+      const wrapped = Object.fromEntries(Object.entries(routed).map(([name, callback]) => {
+        if (name === "onAppServerEvent" || typeof callback !== "function") return [name, callback];
+        return [name, (...args: unknown[]) => {
+          const previous = activeEventRef.current;
+          const event = pendingEventRef.current;
+          activeEventRef.current = event;
+          try { return (callback as (...values: unknown[]) => unknown)(...args); }
+          finally {
+            activeEventRef.current = previous;
+            if (pendingEventRef.current === event &&
+                !(name === "onItemCompleted" && event?.hasSecondCallback)) {
+              pendingEventRef.current = null;
+            }
+          }
+        }];
+      })) as typeof routed;
+      wrapped.onAppServerEvent = (event: AppServerEvent) => {
+        // A previous event still awaiting its route could be nested here.
+        // With no router end callback, neither event can borrow its source.
+        const routeOverlap = pendingEventRef.current !== null;
+        const method = getAppServerRawMethod(event);
+        if (!method || !METHODS_ROUTED_IN_USE_APP_SERVER_EVENTS.some((routedMethod) => routedMethod === method)) {
+          pendingEventRef.current = null;
+          routed.onAppServerEvent?.(event);
+          return;
+        }
+        const params = getAppServerParams(event);
+        const thread = params.thread as Record<string, unknown> | undefined;
+        const threadId = params.threadId ?? params.thread_id ?? thread?.threadId ?? thread?.thread_id ?? thread?.id;
+        const raw = event as unknown as Record<string, unknown>;
+        let source: NativeProjectionSource | null = null;
+        try {
+          const ref = nativeSourceRef(raw.nativeSourceRef);
+          if (!routeOverlap && raw.nativeAssociation && typeof raw.nativeAssociation === "object" && !Array.isArray(raw.nativeAssociation)) {
+            source = { identity: ref.identity, raw: ref.raw, association: JSON.stringify(raw.nativeAssociation) };
+          }
+        } catch { /* An unqualified event must not authorize replacement. */ }
+        const item = params.item as Record<string, unknown> | undefined;
+        pendingEventRef.current = { workspaceId: event.workspace_id,
+          threadId: typeof threadId === "string" ? threadId : "", source,
+          hasSecondCallback: method === "item/completed" &&
+            item?.type === "agentMessage" && Boolean(item.id) };
+        routed.onAppServerEvent?.(event);
+      };
+      return wrapped;
+    },
     [
       threadHandlers,
       handleThreadStarted,
@@ -567,6 +727,7 @@ export function useThreads({
     loadOlderThreadsForWorkspace,
     archiveThread,
   } = useThreadActions({
+    beginNativeProjectionRead,
     dispatch,
     itemsByThread: state.itemsByThread,
     threadsByWorkspace: state.threadsByWorkspace,
@@ -593,6 +754,7 @@ export function useThreads({
         return;
       }
       try {
+        if ("__TAURI_INTERNALS__" in window && await nativeConversationAssociation(workspaceId)) return;
         await ensureWorkspaceRuntimeCodexArgs(workspaceId, threadId);
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
@@ -675,13 +837,17 @@ export function useThreads({
       if (!threadId) {
         return null;
       }
-    } else if (!loadedThreadsRef.current[threadId]) {
-      await ensureWorkspaceRuntimeCodexArgsBestEffort(
-        activeWorkspace.id,
-        threadId,
-        "resume",
-      );
-      await resumeThreadForWorkspace(activeWorkspace.id, threadId);
+    } else {
+      try {
+        if (!loadedThreadsRef.current[threadId] ||
+            ("__TAURI_INTERNALS__" in window && await nativeConversationAssociation(activeWorkspace.id))) {
+          await ensureWorkspaceRuntimeCodexArgsBestEffort(activeWorkspace.id, threadId, "resume");
+          if (!await resumeThreadForWorkspace(activeWorkspace.id, threadId)) return null;
+        }
+      } catch (error) {
+        pushThreadErrorMessage(threadId, error instanceof Error ? error.message : String(error));
+        return null;
+      }
     }
     return threadId;
   }, [
@@ -689,6 +855,7 @@ export function useThreads({
     activeThreadId,
     ensureWorkspaceRuntimeCodexArgsBestEffort,
     resumeThreadForWorkspace,
+    pushThreadErrorMessage,
     startThreadForWorkspace,
   ]);
 
@@ -704,9 +871,17 @@ export function useThreads({
         if (!threadId) {
           return null;
         }
-      } else if (!loadedThreadsRef.current[threadId]) {
-        await ensureWorkspaceRuntimeCodexArgsBestEffort(workspaceId, threadId, "resume");
-        await resumeThreadForWorkspace(workspaceId, threadId);
+      } else {
+        try {
+          if (!loadedThreadsRef.current[threadId] ||
+              ("__TAURI_INTERNALS__" in window && await nativeConversationAssociation(workspaceId))) {
+            await ensureWorkspaceRuntimeCodexArgsBestEffort(workspaceId, threadId, "resume");
+            if (!await resumeThreadForWorkspace(workspaceId, threadId)) return null;
+          }
+        } catch (error) {
+          pushThreadErrorMessage(threadId, error instanceof Error ? error.message : String(error));
+          return null;
+        }
       }
       if (shouldActivate && currentActiveThreadId !== threadId) {
         dispatch({ type: "setActiveThreadId", workspaceId, threadId });
@@ -719,6 +894,7 @@ export function useThreads({
       ensureWorkspaceRuntimeCodexArgsBestEffort,
       loadedThreadsRef,
       resumeThreadForWorkspace,
+      pushThreadErrorMessage,
       startThreadForWorkspace,
       state.activeThreadIdByWorkspace,
     ],
@@ -816,7 +992,9 @@ export function useThreads({
       if (threadId) {
         void (async () => {
           const hasLocalSnapshot = hasLocalThreadSnapshot(threadId);
-          if (hasLocalSnapshot) {
+          const native = "__TAURI_INTERNALS__" in window &&
+            Boolean(await nativeConversationAssociation(targetId));
+          if (hasLocalSnapshot && !native) {
             loadedThreadsRef.current[threadId] = true;
             return;
           }
@@ -824,8 +1002,10 @@ export function useThreads({
           if (!hasActiveTurnInWorkspace) {
             await ensureWorkspaceRuntimeCodexArgsBestEffort(targetId, threadId, "resume");
           }
-          await resumeThreadForWorkspace(targetId, threadId);
-        })();
+          await resumeThreadForWorkspace(targetId, threadId, native);
+        })().catch((error) => {
+          pushThreadErrorMessage(threadId, error instanceof Error ? error.message : String(error));
+        });
       }
     },
     [
@@ -835,6 +1015,7 @@ export function useThreads({
       hasProcessingThreadInWorkspace,
       loadedThreadsRef,
       resumeThreadForWorkspace,
+      pushThreadErrorMessage,
       state.activeThreadIdByWorkspace,
     ],
   );

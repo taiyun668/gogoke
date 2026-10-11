@@ -8,7 +8,7 @@ import type {
   WorkspaceInfo,
 } from "../../../types";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
-import type { MouseEvent, RefObject } from "react";
+import type { MouseEvent, ReactNode, RefObject } from "react";
 import { useI18n } from "@/i18n";
 import { FolderOpen } from "lucide-react";
 import { SidebarBottomRail } from "./SidebarBottomRail";
@@ -98,6 +98,7 @@ function groupFlatThreadRowsByTimeBucket(
 }
 
 type SidebarProps = {
+  secretaryEntry?: ReactNode;
   workspaces: WorkspaceInfo[];
   groupedWorkspaces: WorkspaceGroupSection[];
   hasWorkspaceGroups: boolean;
@@ -159,6 +160,7 @@ type SidebarProps = {
 };
 
 export const Sidebar = memo(function Sidebar({
+  secretaryEntry,
   workspaces,
   groupedWorkspaces,
   hasWorkspaceGroups,
@@ -911,6 +913,7 @@ export const Sidebar = memo(function Sidebar({
           {tx(workspaceDropText)}
         </div>
       </div>
+      {secretaryEntry}
       <div
         className={`sidebar-body${scrollFade.top ? " fade-top" : ""}${
           scrollFade.bottom ? " fade-bottom" : ""

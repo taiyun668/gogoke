@@ -1,0 +1,19 @@
+{
+  "schema": "gogoke.37.checkpoint.v1",
+  "stage": "M2_PROVIDER_CACHE_INTEGRATED_CLOUD_IN_PROGRESS",
+  "acceptance": false,
+  "changed": "Provider 普通登录和已登录状态检查在原进程 durable stop 后复用既有精确缓存入口清理；四条清理失败路径保留原错误和状态检查 stderr 诊断。集成后准备下一候选版本，尚未签名或安装。",
+  "results": [
+    "原已安装候选的三家席位准备成功；Claude 模型启动前严格目录检查拒绝，原未创建准入已实际释放，候选正常退出。",
+    "实际 no-follow Windows 句柄元数据确认仅一个生成缓存入口违反物理目录要求。通用严格树检查、固定 CLI、LPAC 边界和凭据内容权限未修改。",
+    "独立风险复核和错误保全聚焦复核无剩余静态阻断；云端 release 构建与卫生检查通过，完整库测试尚在执行。",
+    "Codex 当前真实主控流程已完成接管问题回答和子席位第一轮；后续停止、封存、合并与关闭态回读仍未结算。"
+  ],
+  "failureOriginal": "native session launch [grant-model-home]: DirectoryNotPhysical; uncreated credential settlement: Ok(()).",
+  "decision": "该产品失败阻塞已登录 Claude 的模型端到端，属于阶段阻塞项；云测通过后安排一次候选链验证，无新登录或 Owner 触点。测试实例创建显式填写上限 4；缺持久字段仍拒绝准入。",
+  "reference": [
+    "既有 v37_login_cache 精确生成入口清理和 Codex durable-stop 生命周期；Provider 沿用相同原注册身份、句柄与删除后回读。",
+    "原 m2-win11、m2-extra-win11 和闭合态只读账本读回，分别记录主控、规则、旁聊与跨项目证据。"
+  ],
+  "next": "保全当前真实主控流程并完成 H stop 和回读；等待修复源码云测，冻结候选后验证旧登录实例状态检查、真实模型及其余 M2 流程。"
+}

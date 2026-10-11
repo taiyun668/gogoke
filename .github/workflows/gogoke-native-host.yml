@@ -2,6 +2,59 @@ name: gogoke native-host CI
 
 on:
   workflow_dispatch:
+    inputs:
+      focused_library:
+        description: Affected checks only (seat-scope, policy-unset-stage, ledger-scope, native-takeover, pipe-evidence, grok-permission, claude-holder, claude-initialize, m2-provider-current or model-options); all full and formal gates are NOT_RUN
+        type: string
+        default: ""
+      secretary_routine_fixture_only:
+        description: Build and test original USER secretary routine boundaries with production mutation; full library and other formal gates are NOT_RUN
+        type: boolean
+        default: false
+      dependency_lock_only:
+        description: Generate the pinned native dependency lock as data only; build, library, mutation and server gates are NOT_RUN
+        type: boolean
+        default: false
+      security_remainder_source:
+        description: Run only unfinished security groups against this exact ancestor source SHA; other gates are NOT_RUN
+        type: string
+        default: ""
+      trace_canonicalize:
+        description: Record actual pinned CLI Win32 return values with the existing cloud SDK debugger
+        type: boolean
+        default: false
+      job_descendant_fixture_only:
+        description: Verify real Job descendant and protocol-write deadline fixtures; full library and mutation gates are NOT_RUN
+        type: boolean
+        default: false
+      stop_124_fixture_only:
+        description: Verify the changed natural-exit fixture only; full library and mutation gates are NOT_RUN
+        type: boolean
+        default: false
+      ordinary_oauth_fixture_only:
+        description: Verify ordinary OAuth callback and stderr repairs only; full library, mutation and server gates are NOT_RUN
+        type: boolean
+        default: false
+      code_mode_fixture_only:
+        description: Verify fixed Code Mode file permission binding and its production grant mutation only; full library, other mutations and server gates are NOT_RUN
+        type: boolean
+        default: false
+      private_history_fixture_only:
+        description: Build and verify F history and credential metadata boundaries only; full library, mutations and server gates are NOT_RUN
+        type: boolean
+        default: false
+      grok_home_fixture_only:
+        description: Select thirteen Grok HOME boundaries and initial-auth mutation within private_history_fixture_only; other F, full library and server gates are NOT_RUN
+        type: boolean
+        default: false
+      full_library_only:
+        description: Run the unchanged formal native library and LPAC shim commands; separate process, focused, mutation and server suites are NOT_RUN
+        type: boolean
+        default: false
+      catalog_program_fixture_only:
+        description: Verify real catalog hardlinks and three compiled isolation mutations only; other native, library, mutation and server gates are NOT_RUN
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -11,10 +64,257 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  native-host-windows-real-axes:
-    name: Native host Windows real process axes
-    timeout-minutes: 30
+  native-focused-library:
+    if: ${{ inputs.focused_library }}
+    name: Affected native library checks only
+    timeout-minutes: 20
     runs-on: windows-latest
+    env:
+      RUSTUP_TOOLCHAIN: 1.85.1
+      FOCUSED_LIBRARY: ${{ inputs.focused_library }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.13.1
+      - uses: dtolnay/rust-toolchain@1.85.1
+      - name: Pin identical Claude CLI for direct initialize component
+        id: fixed-claude-initialize
+        if: ${{ inputs.focused_library == 'claude-initialize' || inputs.focused_library == 'm2-provider-current' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $prefix = Join-Path $env:APPDATA 'npm'
+          & npm install --global --prefix $prefix --ignore-scripts '@anthropic-ai/claude-code@2.1.196'
+          if ($LASTEXITCODE -ne 0) { throw "Claude CLI install failed: $LASTEXITCODE" }
+          $package = Join-Path $prefix 'node_modules\@anthropic-ai\claude-code'
+          $platform = Join-Path $package 'node_modules\@anthropic-ai\claude-code-win32-x64'
+          foreach ($fact in @(@{ path=$package; name='@anthropic-ai/claude-code' }, @{ path=$platform; name='@anthropic-ai/claude-code-win32-x64' })) {
+            $metadata = Get-Content -LiteralPath (Join-Path $fact.path 'package.json') -Raw | ConvertFrom-Json
+            if ($metadata.name -ne $fact.name -or $metadata.version -ne '2.1.196') { throw 'Fixed Claude package identity mismatch' }
+          }
+          $original = Join-Path $platform 'claude.exe'
+          if (-not (Test-Path -LiteralPath $original -PathType Leaf)) { throw 'Fixed Claude platform image missing' }
+          # The product catalog uses the installed package's bin image. Keep
+          # the official bytes identical without running npm postinstall code.
+          $bin = Join-Path $package 'bin'
+          New-Item -ItemType Directory -Path $bin -Force | Out-Null
+          $binary = Join-Path $bin 'claude.exe'
+          $digest = (Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash
+          if ($digest -cne '180D7B279455E8B89D4353A5146447BE2F80B80FB0DB14BDC6DD9CB98C0AEF09') { throw "Official fixed Claude platform digest differs: $digest" }
+          if (Test-Path -LiteralPath $binary) {
+            $existing = Get-Item -LiteralPath $binary -Force
+            Write-Output "Existing cloud catalog leaf: directory=$($existing.PSIsContainer) attributes=$($existing.Attributes) linkType=$($existing.LinkType)"
+            if ($existing.PSIsContainer) { throw 'Cloud catalog leaf unexpectedly became a directory' }
+            Write-Output "Existing cloud catalog leaf SHA256=$((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash)"
+            # This is the cloud fixture's package leaf, not an Owner installation.
+            # Remove only that name; a file symlink's target is never removed.
+            Remove-Item -LiteralPath $binary -ErrorAction Stop
+          }
+          New-Item -ItemType HardLink -Path $binary -Target $original -ErrorAction Stop | Out-Null
+          if ((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash -ne $digest) { throw 'Fixed Claude bytes changed during layout preparation' }
+          $version = & $binary --version
+          if ($LASTEXITCODE -ne 0 -or $version -ne '2.1.196 (Claude Code)') { throw "Fixed Claude CLI version mismatch: $version" }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CLAUDE_CLI_PATH=$binary"
+          Write-Output "Fixed Claude CLI SHA256=$digest"
+      - name: Run the explicitly selected affected tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $filters = switch ($env:FOCUSED_LIBRARY) {
+            'seat-scope' { @('store::seat::orchestration::tests',
+              'store::seat::tests::owner_policy_head_read_requires_current_owner_and_preserves_absent_or_existing_fact',
+              'store::seat::tests::native_child_scope_cap_refuses_a_second_seat_without_minting_a_grant',
+              'store::seat::tests::native_child_create_derives_only_first_exact_dispatch_grant',
+              'store::session_transport::admission::tests::one_boundary_survives_reopen_unknown_replay_and_home_fence',
+              'store::product_database::v37_seat::tests::owner_orchestration_bounds_have_a_separate_receipt_and_preserve_project_cap') }
+            'policy-unset-stage' { @('store::seat::tests::owner_policy_head_read_requires_current_owner_and_preserves_absent_or_existing_fact',
+              'store::seat::tests::owner_unset_stage_requires_explicit_metadata_and_one_cas_stage_setting',
+              'store::seat::tests::exact_old_policy_head_schema_migrates_without_rewriting_policy_facts',
+              'store::seat::tests::unset_stage_refuses_gate_and_transition_without_recording_events',
+              'store::seat::tests::native_child_create_requires_existing_policy_head',
+              'store::seat::tests::native_child_create_derives_only_first_exact_dispatch_grant',
+              'store::seat::tests::e2_gate_rejection_stops_stage_and_reserves_one_escalation',
+              'store::product_database::v37_seat::tests::owner_policy_metadata_ingress_preserves_unset_and_original_stage_conflicts') }
+            'ledger-scope' { @('work_source_cannot_mint_a_secretary_global_reader',
+              'native_user_ledger_scopes_replay_and_subscription_survive_reopen') }
+            'model-options' { @('store::instance::management::original_model_efforts_follow_the_cached_source_and_current_pin',
+              'store::instance::management::qualified_account_observation_invalidates_prior_models_even_when_mask_collides') }
+            'native-takeover' { @('native_takeover_') }
+            'grok-permission' { @('grok_permission') }
+            'claude-holder' { @('claude_holder') }
+            'claude-initialize' { @('real_claude_initialize_with_fixed_lpac_compat_persistent_stdio') }
+            'm2-provider-current' { @('grok_permission', 'claude_holder',
+              'real_claude_initialize_with_fixed_lpac_compat_persistent_stdio',
+              'stop_requires_clean_original_eof_not_a_generic_source_error',
+              'persistent_reader_keeps_eof_unknown_after_exact_child_exit') }
+            'pipe-evidence' { @('stop_requires_clean_original_eof_not_a_generic_source_error',
+              'persistent_reader_keeps_eof_unknown_after_exact_child_exit') }
+            default { throw 'Unknown affected-check selection; no arbitrary shell or test filter is accepted.' }
+          }
+          $node = Get-Command node.exe -CommandType Application | Select-Object -First 1 -ExpandProperty Source
+          $env:GOGOKE_CONTROLLED_NODE_PATH = $node
+          if ($env:FOCUSED_LIBRARY -eq 'm2-provider-current') {
+            # The composed F/H fixture uses the real backend image, like the
+            # existing full-library job; the git.exe launcher is not its pin.
+            $execPath = & git --exec-path
+            if ($LASTEXITCODE -ne 0) { throw 'Git exec path unavailable' }
+            $mingw = Split-Path -Parent (Split-Path -Parent $execPath.Trim())
+            $backend = Join-Path $mingw 'bin/git.exe'
+            if (-not (Test-Path -LiteralPath $backend -PathType Leaf)) { throw 'Actual Git backend image unavailable; no launcher substitute' }
+            $env:GOGOKE_CONTROLLED_GIT_PATH = $backend
+            Write-Output "Git backend SHA256=$((Get-FileHash -LiteralPath $backend -Algorithm SHA256).Hash)"
+          }
+          $evidence = Join-Path $env:RUNNER_TEMP "native-affected-$env:GITHUB_RUN_ID"
+          New-Item -ItemType Directory -Path $evidence | Out-Null
+          $results = @()
+          $failures = @()
+          foreach ($filter in $filters) {
+            $timer = [Diagnostics.Stopwatch]::StartNew()
+            $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib $filter -- --nocapture --show-output 2>&1
+            $code = $LASTEXITCODE
+            $timer.Stop()
+            $output | Set-Content (Join-Path $evidence ($filter.Replace(':','_') + '.log')) -Encoding utf8NoBOM
+            $output | Write-Host
+            $summary = @($output | Select-String -Pattern '^test result: ok\. ([0-9]+) passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out')
+            if ($code -ne 0 -or $summary.Count -ne 1 -or [int]$summary[0].Matches[0].Groups[1].Value -lt 1) {
+              $results += [ordered]@{ filter=$filter; state='FAILED'; exitCode=$code; seconds=$timer.Elapsed.TotalSeconds }
+              $failures += $filter
+              if ($output -match 'could not compile') { break }
+              continue
+            }
+            $results += [ordered]@{ filter=$filter; passed=[int]$summary[0].Matches[0].Groups[1].Value; seconds=$timer.Elapsed.TotalSeconds }
+          }
+          [ordered]@{ sourceCommit=$env:GITHUB_SHA; state='AFFECTED_CHECKS_ONLY'; results=$results; fullLibrary='NOT_RUN'; formalGates='NOT_RUN' } |
+            ConvertTo-Json -Depth 6 | Set-Content (Join-Path $evidence 'result.json') -Encoding utf8NoBOM
+          if ($env:FOCUSED_LIBRARY -eq 'pipe-evidence') {
+            $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml -p gogoke-lpac-path-compat --lib -- --nocapture 2>&1
+            $code = $LASTEXITCODE
+            $output | Set-Content (Join-Path $evidence 'lpac-path-shim.log') -Encoding utf8NoBOM
+            $output | Write-Host
+            $summary = @($output | Select-String -Pattern '^test result: ok\. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out')
+            $shimPassed = $code -eq 0 -and $summary.Count -eq 1
+            [ordered]@{ sourceCommit=$env:GITHUB_SHA; scope='PIPE_EVIDENCE_SAME_SOURCE_SHIM'; state=$(if ($shimPassed) { 'PASS' } else { 'FAIL' }); passed=$(if ($shimPassed) { 2 } else { 0 }); exitCode=$code; fullLibrary='NOT_RUN'; formalGates='NOT_RUN' } |
+              ConvertTo-Json | Set-Content (Join-Path $evidence 'lpac-path-shim-result.json') -Encoding utf8NoBOM
+            if (-not $shimPassed) { $failures += 'lpac-path-shim' }
+          }
+          'Affected checks only; full library, full LPAC, process, mutation and server gates: NOT_RUN. The pipe-evidence selection also runs the two focused same-source shim tests.' >> $env:GITHUB_STEP_SUMMARY
+          if ($failures.Count -gt 0) { throw "Affected checks failed or had no completed tests: $($failures -join ', ')" }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-affected-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/native-affected-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 14
+
+  native-dependency-lock:
+    if: ${{ inputs.dependency_lock_only && !inputs.focused_library }}
+    name: Resolve pinned native dependency lock only
+    timeout-minutes: 10
+    runs-on: windows-latest
+    env:
+      RUSTUP_TOOLCHAIN: 1.85.1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.1
+      - name: Generate lock data without native compilation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Keep every existing locked registry package; resolve only the
+          # workspace's new exact dependencies and their missing transitive set.
+          cargo update --workspace --manifest-path apps/desktop/native-host/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { throw "Pinned dependency resolution failed: $LASTEXITCODE" }
+          $source = (git rev-parse HEAD).Trim()
+          $lock = 'apps/desktop/native-host/Cargo.lock'
+          $manifest = 'apps/desktop/native-host/Cargo.toml'
+          [ordered]@{ schema='gogoke.native-dependency-lock.v1'; sourceCommit=$source;
+            manifestSha256=(Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash.ToLowerInvariant();
+            lockSha256=(Get-FileHash -LiteralPath $lock -Algorithm SHA256).Hash.ToLowerInvariant();
+            compilerExecuted=$false; formalGates='NOT_RUN' } |
+            ConvertTo-Json | Set-Content -LiteralPath native-dependency-lock-result.json -Encoding utf8NoBOM
+          'Native compilation, tests, mutations and product gates: NOT_RUN' >> $env:GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-dependency-lock-${{ github.sha }}-${{ github.run_id }}
+          path: |
+            apps/desktop/native-host/Cargo.lock
+            native-dependency-lock-result.json
+          if-no-files-found: error
+          retention-days: 14
+
+  native-secretary-routine-boundaries:
+    if: ${{ inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only && !inputs.focused_library }}
+    name: Native Secretary original USER routine boundaries
+    # Original routine run used 19m47s; history-source mutation adds two
+    # measured 4-5 minute test rebuilds without changing production budgets.
+    timeout-minutes: 35
+    runs-on: windows-latest
+    env:
+      RUSTUP_TOOLCHAIN: 1.85.1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.13.1
+      - uses: dtolnay/rust-toolchain@1.85.1
+      - name: Build and verify Secretary source and transaction boundaries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (@('${{ inputs.full_library_only }}','${{ inputs.private_history_fixture_only }}','${{ inputs.code_mode_fixture_only }}','${{ inputs.catalog_program_fixture_only }}') -contains 'true' -or '${{ inputs.security_remainder_source }}' -ne '') { throw 'Secretary scope cannot be combined with a different evidence scope' }
+          $env:GOGOKE_CONTROLLED_NODE_PATH = (Get-Command node.exe -CommandType Application | Select-Object -First 1 -ExpandProperty Source)
+          $evidence = Join-Path $env:RUNNER_TEMP 'gogoke-secretary-routine-evidence'
+          New-Item -ItemType Directory -Path $evidence | Out-Null
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cargo build --release --locked --manifest-path apps/desktop/native-host/Cargo.toml 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'release-build.log') | Write-Host
+          if ($LASTEXITCODE -ne 0) { throw "Secretary release build failed: $LASTEXITCODE" }
+          $results = @()
+          $failures = @()
+          foreach ($filter in @('v37_secretary_routine_model_tests','secretary_scheduled_occurrence','secretary_schedule::tests','due_qualification_tests','read_snapshot_tests','secretary_history_filters_original_identity_before_paging','secretary_routines_replay_absence_and_unknown_are_fail_closed','secretary_thread_registers_only_global_read_and_user_routine_and_rejects_tool_substitution','only_exact_live_user_input_adds_an_atomic_fixed_presence_witness','secretary_configuration_ingress_preserves_unset_and_exact_owner_bytes','secretary_routine_user_commands_read_original_rows_and_preserve_history','secretary_original_user_pages_preserve_historical_provenance_and_gaps')) {
+            $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib $filter -- --nocapture --show-output 2>&1
+            $exitCode = $LASTEXITCODE
+            $label = $filter.Replace('::','-')
+            $output | Tee-Object -FilePath (Join-Path $evidence "$label.log") | Write-Host
+            $joined = $output -join "`n"
+            $summary = [regex]::Matches($joined,'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;')
+            $valid = $summary.Count -eq 1 -and $exitCode -eq 0 -and [int]$summary[0].Groups[2].Value -gt 0 -and [int]$summary[0].Groups[3].Value -eq 0 -and [int]$summary[0].Groups[4].Value -eq 0
+            $results += [ordered]@{ filter=$filter; exitCode=$exitCode; state=$(if($valid){'PASS'}else{'FAIL_OR_NOT_EXECUTED'}); passed=$(if($summary.Count -eq 1){[int]$summary[0].Groups[2].Value}else{$null}); failed=$(if($summary.Count -eq 1){[int]$summary[0].Groups[3].Value}else{$null}); ignored=$(if($summary.Count -eq 1){[int]$summary[0].Groups[4].Value}else{$null}) }
+            if (-not $valid) { $failures += $filter }
+            # Independent compiled cases continue after a behavioral failure.
+            # A missing summary cannot prove execution; stop repeating a broken
+            # test build and retain all later filters as NOT_RUN.
+            if ($exitCode -ne 0 -and $summary.Count -eq 0) { break }
+          }
+          [ordered]@{ schema='gogoke.secretary-routine-boundaries.v1'; sourceCommit=(git rev-parse HEAD).Trim(); state=$(if($failures.Count -eq 0){'PASS_DIRECTED_BOUNDARIES_ONLY'}else{'FAIL_DIRECTED_BOUNDARIES'}); library='NOT_RUN'; product='NOT_RUN'; results=$results } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidence 'boundary-results.json') -Encoding utf8NoBOM
+          if ($failures.Count -ne 0) { throw "Secretary directed boundary failed or did not execute: $($failures -join ', ')" }
+          & ./tools/ci/gogoke37-secretary-routine-mutation.ps1 -EvidenceDirectory $evidence
+          if ($LASTEXITCODE -ne 0) { throw "Secretary production mutation failed: $LASTEXITCODE" }
+          & ./tools/ci/gogoke37-secretary-routine-mutation.ps1 -EvidenceDirectory $evidence -History
+          if ($LASTEXITCODE -ne 0) { throw "Secretary history production mutation failed: $LASTEXITCODE" }
+          'Only actual directed boundary cases and compile-valid production mutation ran. Full library, other native/security/server gates and Win11 product: NOT_RUN.' >> $env:GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: secretary-routine-boundaries-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/gogoke-secretary-routine-evidence/*
+          if-no-files-found: error
+          retention-days: 30
+
+  native-host-windows-real-axes:
+    if: ${{ !inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only && !inputs.catalog_program_fixture_only && !inputs.security_remainder_source && !inputs.focused_library }}
+    name: ${{ matrix.shard == 'all' && 'Native host Windows real process axes' || format('Native host Windows library {0}', matrix.shard) }}
+    # Full-library shards use independent runners so their fixed native fixtures
+    # never execute in separate test processes on the same Windows host.
+    # Compile-heavy security mutations run independently below: the combined
+    # exact-source run exhausted 105 minutes after the library had passed.
+    timeout-minutes: 105
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(inputs.full_library_only && '["runtime","login","session","remainder"]' || '["all"]') }}
     env:
       RUSTUP_TOOLCHAIN: 1.85.1
     steps:
@@ -28,12 +328,79 @@ jobs:
           $node = Get-Command node.exe -CommandType Application | Select-Object -First 1 -ExpandProperty Source
           if (-not (Test-Path -LiteralPath $node -PathType Leaf)) { throw 'Controlled Node runtime unavailable' }
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CONTROLLED_NODE_PATH=$node"
+      - name: Bind F tests to the installed Git backend image
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $entry = Get-Command git.exe -CommandType Application | Select-Object -First 1 -ExpandProperty Source
+          $execPath = & $entry --exec-path
+          if ($LASTEXITCODE -ne 0 -or @($execPath).Count -ne 1) { throw 'Git backend discovery failed' }
+          $mingw = Split-Path -Parent (Split-Path -Parent $execPath.Trim())
+          $backend = Join-Path $mingw 'bin/git.exe'
+          if (-not (Test-Path -LiteralPath $backend -PathType Leaf)) { throw 'Actual Git backend image unavailable; no launcher substitute' }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CONTROLLED_GIT_PATH=$backend"
+          Write-Output "Git backend SHA256=$((Get-FileHash -LiteralPath $backend -Algorithm SHA256).Hash)"
       - uses: dtolnay/rust-toolchain@1.85.1
+      - name: Pin Codex CLI for native instance registration tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $prefix = Join-Path $env:APPDATA 'npm'
+          & npm install --global --prefix $prefix --ignore-scripts '@openai/codex@0.160.0'
+          if ($LASTEXITCODE -ne 0) { throw "Codex CLI install failed: $LASTEXITCODE" }
+          $binary = Join-Path $prefix 'node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe'
+          if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw 'Pinned Codex CLI image missing' }
+          $version = & $binary --version
+          if ($LASTEXITCODE -ne 0 -or $version -ne 'codex-cli 0.160.0') { throw "Pinned Codex CLI version mismatch: $version" }
+      - name: Pin fixed Claude CLI for native provider output controls
+        id: fixed-claude
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $prefix = Join-Path $env:APPDATA 'npm'
+          & npm install --global --prefix $prefix --ignore-scripts '@anthropic-ai/claude-code@2.1.196'
+          if ($LASTEXITCODE -ne 0) { throw "Claude CLI install failed: $LASTEXITCODE" }
+          $package = Join-Path $prefix 'node_modules\@anthropic-ai\claude-code'
+          $platform = Join-Path $package 'node_modules\@anthropic-ai\claude-code-win32-x64'
+          foreach ($fact in @(@{ path=$package; name='@anthropic-ai/claude-code' }, @{ path=$platform; name='@anthropic-ai/claude-code-win32-x64' })) {
+            $metadata = Get-Content -LiteralPath (Join-Path $fact.path 'package.json') -Raw | ConvertFrom-Json
+            if ($metadata.name -ne $fact.name -or $metadata.version -ne '2.1.196') { throw 'Fixed Claude package identity mismatch' }
+          }
+          $original = Join-Path $platform 'claude.exe'
+          if (-not (Test-Path -LiteralPath $original -PathType Leaf)) { throw 'Fixed Claude platform image missing' }
+          # The product catalog uses the installed package's bin image. Keep
+          # the official bytes identical without running npm postinstall code.
+          $bin = Join-Path $package 'bin'
+          New-Item -ItemType Directory -Path $bin -Force | Out-Null
+          $binary = Join-Path $bin 'claude.exe'
+          $digest = (Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash
+          if ($digest -cne '180D7B279455E8B89D4353A5146447BE2F80B80FB0DB14BDC6DD9CB98C0AEF09') { throw "Official fixed Claude platform digest differs: $digest" }
+          if (Test-Path -LiteralPath $binary) {
+            $existing = Get-Item -LiteralPath $binary -Force
+            Write-Output "Existing cloud catalog leaf: directory=$($existing.PSIsContainer) attributes=$($existing.Attributes) linkType=$($existing.LinkType)"
+            if ($existing.PSIsContainer) { throw 'Cloud catalog leaf unexpectedly became a directory' }
+            Write-Output "Existing cloud catalog leaf SHA256=$((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash)"
+            # This is the cloud fixture's package leaf, not an Owner installation.
+            # Remove only that name; a file symlink's target is never removed.
+            Remove-Item -LiteralPath $binary -ErrorAction Stop
+          }
+          New-Item -ItemType HardLink -Path $binary -Target $original -ErrorAction Stop | Out-Null
+          if ((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash -ne $digest) { throw 'Fixed Claude bytes changed during layout preparation' }
+          $version = & $binary --version
+          if ($LASTEXITCODE -ne 0 -or $version -ne '2.1.196 (Claude Code)') { throw "Fixed Claude CLI version mismatch: $version" }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CLAUDE_CLI_PATH=$binary"
+          Write-Output "Fixed Claude CLI SHA256=$digest"
       - name: Build native-host release image and check test-hook exclusion
         id: release-build
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          if ('${{ inputs.full_library_only }}' -eq 'true') {
+            if (@('${{ inputs.trace_canonicalize }}','${{ inputs.job_descendant_fixture_only }}','${{ inputs.stop_124_fixture_only }}','${{ inputs.ordinary_oauth_fixture_only }}','${{ inputs.code_mode_fixture_only }}','${{ inputs.private_history_fixture_only }}') -contains 'true') {
+              throw 'Full library scope cannot be combined with a directed fixture scope'
+            }
+            Write-Host 'Formal native library and LPAC shim only; separate process, focused, mutation and server suites NOT_RUN.'
+          }
           $PSNativeCommandUseErrorActionPreference = $false
           $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
           New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
@@ -60,10 +427,18 @@ jobs:
           if ($state -ne 'PASS') { throw "Native-host release build failed or lacked a release-profile completion marker: $state (exit $exitCode)" }
       - name: Build and run required native-host process axes
         id: native-axes
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.release-build.outcome == 'success' && !inputs.full_library_only && !inputs.catalog_program_fixture_only }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          if ('${{ inputs.code_mode_fixture_only }}' -eq 'true' -and
+              @('${{ inputs.trace_canonicalize }}','${{ inputs.job_descendant_fixture_only }}','${{ inputs.stop_124_fixture_only }}','${{ inputs.ordinary_oauth_fixture_only }}') -contains 'true') {
+            throw 'Code Mode fixture scope cannot be combined with another directed scope'
+          }
+          if ('${{ inputs.private_history_fixture_only }}' -eq 'true' -and
+              @('${{ inputs.trace_canonicalize }}','${{ inputs.job_descendant_fixture_only }}','${{ inputs.stop_124_fixture_only }}','${{ inputs.ordinary_oauth_fixture_only }}','${{ inputs.code_mode_fixture_only }}') -contains 'true') {
+            throw 'Private-history boundary scope cannot be combined with another directed scope'
+          }
           $manifest = 'apps/desktop/native-host/Cargo.toml'
           $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
           New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
@@ -146,26 +521,63 @@ jobs:
             run_attempt = '${{ github.run_attempt }}'
             runner_os = '${{ runner.os }}'
             runner_image = $env:ImageOS
-            evidence_scope = 'WINDOWS_SERVER_REAL_RUN_NOT_WINDOWS_11_DESKTOP'
+            evidence_scope = if ('${{ inputs.grok_home_fixture_only }}' -eq 'true') { 'FOCUSED_GROK_HOME_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.private_history_fixture_only }}' -eq 'true') { 'FOCUSED_F_PRIVATE_HISTORY_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.code_mode_fixture_only }}' -eq 'true') { 'FOCUSED_CODE_MODE_MEMBER_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.job_descendant_fixture_only }}' -eq 'true') { 'FOCUSED_JOB_DESCENDANT_AND_WRITE_DEADLINE_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.stop_124_fixture_only }}' -eq 'true') { 'FOCUSED_STOP_124_FIXTURE_ONLY_NOT_FULL_LIBRARY_GATE' } elseif ('${{ inputs.ordinary_oauth_fixture_only }}' -eq 'true') { 'FOCUSED_ORDINARY_OAUTH_REPAIRS_ONLY_NOT_FULL_LIBRARY_GATE' } else { 'WINDOWS_SERVER_REAL_RUN_NOT_WINDOWS_11_DESKTOP' }
             release_build = $releaseResult
             axes = $results
           } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $machineResult -Encoding utf8NoBOM
           "machine_result=$machineResult" >> $env:GITHUB_OUTPUT
           if ($failed -or $releaseResult.state -ne 'PASS') { throw 'Release build or one or more required native-host axes failed or did not execute.' }
       - name: Run focused native-host lib failure probes
-        if: ${{ !cancelled() }}
+        id: focused-lib-probes
+        if: ${{ !cancelled() && steps.release-build.outcome == 'success' && !inputs.full_library_only && !inputs.catalog_program_fixture_only }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          if ('${{ inputs.code_mode_fixture_only }}' -eq 'true' -and
+              @('${{ inputs.trace_canonicalize }}','${{ inputs.job_descendant_fixture_only }}','${{ inputs.stop_124_fixture_only }}','${{ inputs.ordinary_oauth_fixture_only }}') -contains 'true') {
+            throw 'Code Mode fixture scope cannot be combined with another directed scope'
+          }
           $PSNativeCommandUseErrorActionPreference = $false
           $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
           New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
           $probes = @(
+            @{ id = 'job-second-stop'; filter = 'actual_kernel_rejects_invalid_job_handle_and_second_stop_retains_custody' },
+            @{ id = 'legacy-product-recovery'; filter = 'legacy_original_home_preserves_unknown_and_reopens_exact_holder_fence' },
+            @{ id = 'legacy-partial-physical'; filter = 'two_real_legacy_sids_resume_after_first_acl_write_and_baseline_readback' },
+            @{ id = 'legacy-snapshot-negative'; filter = 'snapshot_rejects_tampering_and_unknown_package_grants' },
+            @{ id = 'stalled-new-generation-original'; filter = 'stalled_health_new_generation_suppresses_original_physical_cause' },
             @{ id = 'ipc-dacl'; filter = 'applies_current_user_only_dacl_and_first_instance_guard' },
             @{ id = 'prepare-activate'; filter = 'native_host_prepare_and_activate_are_separate_fail_closed_phases' },
             @{ id = 'job-descendant'; filter = 'real_windows_job_keeps_descendant_after_parent_exit_and_then_stops_tree' },
+            @{ id = 'holder-gone-job-close'; filter = 'holder_gone_requires_job_close_to_remove_live_descendant_before_root_recovery' },
+            @{ id = 'holder-gone-composed'; filter = 'actual_two_disappeared_holders_recover_in_one_call_replay_without_acl_effect_and_admit_cold_source' },
+            @{ id = 'holder-gone-live-and-source-negative'; filter = 'composed_disappearance_rejects_actual_live_identity_and_wrong_physical_source_without_resource_effects' },
+            @{ id = 'holder-gone-partial-cold'; filter = 'actual_partial_holder_recovery_cold_reuses_original_capture_at_each_durable_boundary' },
             @{ id = 'protocol-stdio'; filter = 'suspended_job_child_receives_only_explicit_protocol_handles' },
+            @{ id = 'protocol-input-close'; filter = 'native_input_close_delivers_eof_and_preserves_graceful_stop_proof' },
+            @{ id = 'lpac-file-lifecycle'; filter = 'app_container_child_writes_only_granted_fresh_directory' },
+            @{ id = 'bound-instance-acl'; filter = 'bound_nonempty_tree_grants_only_its_recorded_instance_identity' },
+            @{ id = 'pinned-codex-account-read'; filter = 'pinned_codex_empty_home_reports_native_logout_and_durable_stop' },
+            @{ id = 'pinned-codex-cold-account-read'; filter = 'cold_pinned_codex_account_observer_reports_logout_and_durable_stop' },
+            @{ id = 'provider-system-helper-lookup'; filter = 'registered_provider_login_system_lookup_is_explicit_and_not_inherited' },
+            @{ id = 'pinned-codex-credential-files'; filter = 'pinned_codex_isolated_credential_file_lifecycle_uses_cli_without_host_reads' },
+            @{ id = 'single-opener-real-callback'; filter = 'pinned_cli_ordinary_oauth_callback_reaches_exact_owned_child' },
+            @{ id = 'login-rpc-ordered-completion'; filter = 'owned_login_rpc_completion_closes_stdin_and_reads_real_lpac_account' },
+            @{ id = 'persisted-permission-intent'; filter = 'permission_intent_is_persisted_validated_and_never_defaulted' },
+            @{ id = 'native-worktree-core'; filter = 'real_custodied_git_creates_bound_linked_worktree_and_fences_unknown' },
+            @{ id = 'native-codex-session-open'; filter = 'actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_call' },
+            @{ id = 'code-mode-member-binding'; filter = 'fixed_codex_component_rejects_unpinned_bytes_before_grant_and_pins_exact_file' },
+            @{ id = 'native-current-install-pin'; filter = 'pin_is_read_from_same_verified_store_and_requires_observed_login' },
+            @{ id = 'manual-repin-product'; filter = 'user_manual_program_repin_observes_fixed_cli_and_preserves_original_instance' },
+            @{ id = 'manual-repin-preservation'; filter = 'manual_repin_preserves_home_creation_credentials_and_legacy_unknown_exactly' },
+            @{ id = 'manual-repin-conflicts'; filter = 'manual_repin_rejects_pending_claim_episode_and_generation_change_without_writes' },
+            @{ id = 'manual-repin-witness'; filter = 'manual_repin_does_not_legitimize_changed_creation_pin_or_damaged_witness' },
+            @{ id = 'native-install-admission'; filter = 'product_admission_enforces_persisted_caps_and_rolls_back_busy_on_denial' },
+            @{ id = 'native-missing-program'; filter = 'rejects_root_or_platform_version_mismatch_and_missing_program' },
+            @{ id = 'persistent-partial-eof'; filter = 'persistent_reader_distinguishes_unterminated_output_from_empty_eof' },
             @{ id = 'process-coordination'; filter = 'prepared_process_identity_is_durable_before_activation' },
+            @{ id = 'stop-124-negative'; filter = 'natural_exit_124_and_close_error_still_reject_stop_proof' },
+            @{ id = 'cancel-stderr'; filter = 'cancelled_pinned_cli_preserves_stderr_before_confirmed_release' },
             @{ id = 'protocol-deadline'; filter = 'protocol_write_deadline_stops_non_reader_job' },
             @{ id = 'job-at-create'; filter = 'both_stdio_modes_are_in_the_exact_job_at_creation_and_allow_explicit_assign' },
             @{ id = 'job-assign-cleanup'; filter = 'failed_launch_cleanup_retains_exact_handles_on_timeout_or_failed_wait' },
@@ -173,6 +585,104 @@ jobs:
             @{ id = 'record-before-activate'; filter = 'failed_production_prepared_record_does_not_activate_child' },
             @{ id = 'root-poison-after-precheck'; filter = 'poison_published_after_precheck_blocks_same_physical_root_before_lock_publication' }
           )
+          if ('${{ inputs.job_descendant_fixture_only }}' -eq 'true') {
+            $probes = @($probes | Where-Object { $_.id -in @('job-descendant', 'job-second-stop', 'holder-gone-job-close', 'protocol-deadline') })
+            Write-Host 'Focused changed Job fixture only; full library and mutation suites NOT_RUN.'
+          } elseif ('${{ inputs.stop_124_fixture_only }}' -eq 'true') {
+            $probes = @($probes | Where-Object { $_.id -eq 'stop-124-negative' })
+            Write-Host 'Focused changed natural-exit fixture only; full library and mutation suites NOT_RUN.'
+          } elseif ('${{ inputs.ordinary_oauth_fixture_only }}' -eq 'true') {
+            $probes = @(
+              @{ id = 'ordinary-cache-entry'; filter = 'generated_cache_junction_unlinks_only_entry_and_preserves_target' },
+              @{ id = 'first-cli-failure-cache'; filter = 'owner_first_cli_factory_failures_keep_original_results_and_custody' },
+              @{ id = 'ordinary-oauth-callback'; filter = 'pinned_cli_ordinary_oauth_callback_reaches_exact_owned_child' },
+              @{ id = 'final-stderr-drain'; filter = 'zero_exit_tail_stderr_settles_failure_without_cancellation_or_account_read' },
+              @{ id = 'mixed-output-budget'; filter = 'mixed_login_output_limit_is_failure_even_when_child_exits_zero' },
+              @{ id = 'stop-124-negative'; filter = 'natural_exit_124_and_close_error_still_reject_stop_proof' },
+              @{ id = 'cancel-stderr'; filter = 'cancelled_pinned_cli_preserves_stderr_before_confirmed_release' }
+            )
+            Write-Host 'Focused ordinary OAuth repairs only; full library, compiled mutations and server suites NOT_RUN.'
+          } elseif ('${{ inputs.code_mode_fixture_only }}' -eq 'true') {
+            $probes = @($probes | Where-Object { $_.id -in @('code-mode-member-binding') })
+            Write-Host 'Fixed Code Mode file permission binding and grant mutation only; real CLI tool execution remains Win11 E2E NOT_RUN; full library, other mutations and server suites NOT_RUN.'
+          }
+          if ('${{ inputs.private_history_fixture_only }}' -eq 'true') {
+            if (@('${{ inputs.trace_canonicalize }}','${{ inputs.job_descendant_fixture_only }}','${{ inputs.stop_124_fixture_only }}','${{ inputs.ordinary_oauth_fixture_only }}','${{ inputs.code_mode_fixture_only }}') -contains 'true') { throw 'Directed scopes cannot be combined' }
+            $probes = @(
+              @{ id = 'legacy-holder-query'; filter = 'class_three_requires_exact_length_positive_boot_and_preserves_status' },
+              @{ id = 'legacy-holder-seal'; filter = 'exact_boundary_and_canonical_seal_reject_changes' },
+              @{ id = 'legacy-holder-reuse'; filter = 'reused_pid_requires_a_different_creation_time' },
+              @{ id = 'legacy-holder-open-error'; filter = 'only_invalid_parameter_proves_absent_pid' },
+              @{ id = 'legacy-holder-alive'; filter = 'current_process_cannot_be_a_legacy_holder' },
+              @{ id = 'legacy-holder-current-boot'; filter = 'stopped_process_created_this_boot_still_cannot_pass' },
+              @{ id = 'legacy-holder-boot-query'; filter = 'native_boot_query_is_stable_within_one_boot' },
+              @{ id = 'legacy-original-product'; filter = 'legacy_original_home_preserves_unknown_and_reopens_exact_holder_fence' },
+              @{ id = 'legacy-original-store'; filter = 'exact_schema_reopen_and_two_persistent_intents' },
+              @{ id = 'private-history-owner'; filter = 'initial_is_fresh_resume_selects_exact_source_and_cross_scope_is_refused' },
+              @{ id = 'private-history-intent'; filter = 'absent_physical_commit_preserves_existing_or_missing_leaf_without_recreation' },
+              @{ id = 'private-history-replaced'; filter = 'replaced_leaf_is_refused_and_original_history_is_preserved' },
+              @{ id = 'private-history-h-source'; filter = 'h_source_attachment_requires_response_transaction_and_never_rebinds' },
+              @{ id = 'private-history-pre-cap-schema'; filter = 'exact_pre_cap_schema_migrates_without_setting_cap_or_losing_instance' },
+              @{ id = 'private-history-four-table-schema'; filter = 'exact_four_table_schema_migrates_preserving_instance_and_cap' }
+              @{ id = 'credential-backend-source'; filter = 'credential_backend_requires_startup_selector_current_pin_and_original_stopped_custody' }
+              @{ id = 'credential-alias-intent'; filter = 'credential_alias_unknown_intent_preserves_identity_and_complete_registry_link_count' }
+              @{ id = 'credential-profile-rebind'; filter = 'credential_profile_original_identity_and_quiescent_source_rebind_are_enforced' }
+              @{ id = 'credential-exact-schema'; filter = 'credential_schema_exact_family_reopen_preserves_rows_and_rejects_unknown_shadow_trigger' }
+              @{ id = 'credential-original-config'; filter = 'credential_configuration_preserves_missing_default_and_non_file_sources' }
+              @{ id = 'credential-two-profiles'; filter = 'exact_credential_alias_custody_allows_two_profiles_and_precise_revocation' }
+              @{ id = 'credential-unknown-alias'; filter = 'unknown_link_and_replaced_alias_fail_complete_metadata_registration' }
+              @{ id = 'history-real-generation'; filter = 'stalled_health_new_generation_suppresses_original_physical_cause' }
+              @{ id = 'credential-owner-observer'; filter = 'owner_account_observer_reads_only_registered_auth_object_and_fresh_runtime' }
+              @{ id = 'credential-empty-observer'; filter = 'empty_owner_account_observer_initializes_only_fresh_runtime' }
+              @{ id = 'credential-real-empty-cli'; filter = 'pinned_codex_empty_home_reports_native_logout_and_durable_stop' }
+              @{ id = 'credential-real-cold-cli'; filter = 'cold_pinned_codex_account_observer_reports_logout_and_durable_stop' }
+              @{ id = 'provider-system-helper-lookup'; filter = 'registered_provider_login_system_lookup_is_explicit_and_not_inherited' }
+              @{ id = 'credential-quiescent-remove'; filter = 'quiescent_alias_removal_preserves_source_and_other_registered_alias' }
+              @{ id = 'credential-legacy-migration'; filter = 'legacy_owner_login_whole_home_grant_migrates_to_exact_account_observer' }
+              @{ id = 'credential-real-file-startup'; filter = 'pinned_codex_isolated_credential_file_lifecycle_uses_cli_without_host_reads' }
+              @{ id = 'credential-no-source-quiescence'; filter = 'credential_cleanup_without_source_rejects_unknown_global_custody' }
+              @{ id = 'credential-original-remove-recovery'; filter = 'credential_cleanup_new_login_recovers_original_pending_remove_without_delete_retry' }
+              @{ id = 'credential-uncreated-attempt'; filter = 'credential_uncreated_cleanup_requires_this_attempt_and_preserves_alias_namespace' }
+              @{ id = 'credential-real-dual-scope'; filter = 'actual_pinned_codex_two_scope_file_history_and_stopped_revocation_without_model' }
+              @{ id = 'grok-inherited-directory'; filter = 'inherited_directory_residue_uses_its_exact_physical_type_and_preserves_peer' }
+              @{ id = 'grok-inherited-auth-residue'; filter = 'inherited_auth_residue_removes_only_original_sid_before_home_revoke' }
+              @{ id = 'grok-inherited-successor'; filter = 'inherited_auth_successor_is_normalized_without_changing_peer_aces' }
+              @{ id = 'grok-protected-peer'; filter = 'protected_original_auth_grant_replacement_and_peer_sid_survive_revoke' }
+              @{ id = 'grok-link-refusal'; filter = 'multiple_links_refuse_original_auth_binding' }
+              @{ id = 'grok-cold-original'; filter = 'cold_old_file_id_reacquires_only_inside_original_home' }
+              @{ id = 'grok-home-refusal'; filter = 'wrong_home_and_reparse_refuse_without_target_sid_write' }
+              @{ id = 'grok-intent-recovery'; filter = 'inherited_successor_intent_recovers_after_acl_write_before_finish' }
+              @{ id = 'grok-applied-peer'; filter = 'applied_root_effect_survives_later_authorized_peer_sid_revocation' }
+              @{ id = 'grok-resume-original'; filter = 'before_promote_resume_uses_old_stopped_claim_and_exact_new_episode' }
+              @{ id = 'grok-deleted-revoked'; filter = 'deleted_revoked_old_auth_cold_recovery_preserves_original_receipts' }
+              @{ id = 'grok-deleted-unrevoked'; filter = 'deleted_unrevoked_old_auth_cold_recovery_rejects_without_acl_or_journal_write' }
+              @{ id = 'grok-initial-auth'; filter = 'original_inherited_auth_is_journaled_protected_and_revoked_without_process' }
+              @{ id = 'grok-active-rotation'; filter = 'active_original_root_authority_survives_two_auth_file_replacements' }
+              @{ id = 'grok-inherited-peer-stop'; filter = 'active_inherited_successor_peer_stop_and_original_final_cleanup' }
+              @{ id = 'grok-three-retired-before'; filter = 'three_peer_retired_cold_residue_before_write' }
+              @{ id = 'grok-three-retired-after'; filter = 'three_peer_retired_cold_residue_after_write' }
+              @{ id = 'grok-three-revoke-before'; filter = 'three_peer_revoke_pending_cold_residue_before_write' }
+              @{ id = 'grok-three-revoke-after'; filter = 'three_peer_revoke_pending_cold_residue_after_write' }
+              @{ id = 'grok-promoted-rebase'; filter = 'old_stopped_grok_grant_rebases_after_h_claim_resume_promotion' }
+            )
+            Write-Host 'F private-history/credential and Grok exact HOME ACL/journal boundaries only; full library, compiled mutations and server suites NOT_RUN.'
+          }
+          if ('${{ inputs.grok_home_fixture_only }}' -eq 'true') {
+            if ('${{ inputs.private_history_fixture_only }}' -ne 'true') { throw 'Grok HOME subset requires the existing private-history directed scope' }
+            $probes = @($probes | Where-Object { $_.id -in @('grok-inherited-directory', 'grok-inherited-auth-residue', 'grok-protected-peer', 'grok-link-refusal', 'grok-cold-original', 'grok-home-refusal', 'grok-intent-recovery', 'grok-applied-peer', 'grok-resume-original', 'grok-deleted-revoked', 'grok-deleted-unrevoked', 'grok-initial-auth', 'grok-active-rotation', 'grok-inherited-peer-stop', 'grok-three-retired-before', 'grok-three-retired-after', 'grok-three-revoke-before', 'grok-three-revoke-after', 'grok-promoted-rebase', 'grok-inherited-successor') })
+            if ($probes.Count -ne 20) { throw 'Grok HOME boundary selection is incomplete' }
+            Write-Host 'Twenty Grok HOME boundaries including three-peer cold retirement and pending-revoke states; other F, full library and server suites NOT_RUN.'
+          }
+          if ('${{ inputs.trace_canonicalize }}' -eq 'true') {
+            $debugger = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'
+            if (-not (Test-Path -LiteralPath $debugger -PathType Leaf)) {
+              throw 'Existing SDK debugger unavailable; directed measurement did not run.'
+            }
+            $env:GOGOKE_CI_CDB = $debugger
+            $env:GOGOKE_CI_CDB_LOGROOT = $evidenceRoot
+            $probes = @($probes | Where-Object { $_.id -eq 'lpac-file-lifecycle' })
+            Write-Host "Directed trace only: debugger SHA256=$((Get-FileHash -LiteralPath $debugger -Algorithm SHA256).Hash); full library suite NOT_RUN."
+          }
           $results = @()
           foreach ($probe in $probes) {
             $log = Join-Path $evidenceRoot "focused-$($probe.id).log"
@@ -205,11 +715,168 @@ jobs:
               state = $state
               log = "focused-$($probe.id).log"
             }
+            # A compilation failure discovers no test. Preserve its original
+            # log and leave remaining cases NOT_RUN instead of recompiling the
+            # same broken source once for every filter.
+            if ($exitCode -ne 0 -and $running.Count -eq 0) { break }
           }
           $results | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'focused-lib-probes.json') -Encoding utf8NoBOM
           if (@($results | Where-Object state -ne 'PASS').Count -ne 0) { throw 'One or more focused native-host lib probes failed.' }
+      - name: Verify initial Grok auth admission with a compiled production mutation
+        id: grok-initial-mutation
+        if: ${{ !cancelled() && steps.focused-lib-probes.outcome == 'success' && inputs.grok_home_fixture_only }}
+        shell: pwsh
+        run: |
+          ./tools/ci/gogoke37-grok-initial-auth-mutation.ps1 -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence')
+      - name: Verify active inherited Grok successor with a compiled production mutation
+        id: grok-successor-mutation
+        if: ${{ !cancelled() && steps.grok-initial-mutation.outcome == 'success' && inputs.grok_home_fixture_only }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
+          $sourcePath = 'apps/desktop/native-host/src/store/session_transport/grok_home_launch.rs'
+          $manifest = 'apps/desktop/native-host/Cargo.toml'
+          $test = 'store::session_transport::grok_home_launch::tests::active_inherited_successor_peer_stop_and_original_final_cleanup'
+          $original = [IO.File]::ReadAllBytes($sourcePath)
+          $source = [Text.Encoding]::UTF8.GetString($original)
+          $hash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash
+          $pattern = '(?m)^                \(None,None,_\) if acl\.target_aces==format!\("1:\{RIGHTS\}:16"\) &&\r?\n                    has_original_root_source\(&effects,&grant\.home_identity\) => \{\r?\n                    expected_sids\.push\(peer\.profile_sid\.clone\(\)\);None\r?\n                \},\r?\n'
+          if ([regex]::Matches($source, $pattern).Count -ne 1) { throw 'Exact production inherited-source branch must occur once.' }
+          $testStart = $source.IndexOf('#[cfg(test)]')
+          if ($testStart -lt 0 -or [regex]::Match($source, $pattern).Index -ge $testStart) { throw 'Mutation must touch production only.' }
+          $mutated = [regex]::new($pattern).Replace($source, '', 1)
+          if ($source.Substring($testStart) -cne $mutated.Substring($mutated.IndexOf('#[cfg(test)]'))) { throw 'Test source changed during mutation.' }
+          $records = @()
+          $restored = $false
+          function Invoke-SuccessorTest([string]$phase, [bool]$expectFailure) {
+            $output = & cargo test --locked --manifest-path $manifest --lib $test -- --exact --nocapture 2>&1
+            $exitCode = $LASTEXITCODE
+            $output | Tee-Object -FilePath (Join-Path $evidenceRoot "grok-successor-$phase.log") | Write-Host
+            $text = ($output | ForEach-Object { $_.ToString() }) -join "`n"
+            $compiled = [regex]::IsMatch($text, 'Finished.*test.*profile')
+            $one = [regex]::IsMatch($text, '(?m)^running 1 test\s*$')
+            $summary = if ($expectFailure) { 'test result: FAILED\. 0 passed; 1 failed; 0 ignored;' }
+                else { 'test result: ok\. 1 passed; 0 failed; 0 ignored;' }
+            $behavior = $text.Contains('held auth peer effect lifecycle changed')
+            $valid = $compiled -and $one -and [regex]::IsMatch($text, $summary) -and
+                $(if ($expectFailure) { $exitCode -ne 0 -and $behavior } else { $exitCode -eq 0 })
+            $script:records += [ordered]@{ phase=$phase; exit_code=$exitCode; compiled=$compiled;
+                exact_one_test=$one; expected_summary=[regex]::IsMatch($text,$summary);
+                expected_behavior=$behavior; state=$(if ($valid) {'PASS'} else {'FAIL'}) }
+            if (-not $valid) { throw "Grok inherited successor $phase failed its compiled behavior proof." }
+          }
+          try {
+            Invoke-SuccessorTest 'baseline' $false
+            try {
+              [IO.File]::WriteAllText($sourcePath, $mutated, [Text.UTF8Encoding]::new($false))
+              Invoke-SuccessorTest 'production-branch-removed' $true
+            } finally {
+              [IO.File]::WriteAllBytes($sourcePath, $original)
+              $restored = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash -ceq $hash
+              if (-not $restored) { throw 'Exact successor production source restoration failed.' }
+            }
+            Invoke-SuccessorTest 'restored' $false
+          } finally {
+            [ordered]@{ head_sha=(git rev-parse HEAD); production_source_sha256=$hash.ToLowerInvariant();
+                source_restored=$restored; records=$records } |
+                ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'grok-successor-mutation.json') -Encoding utf8NoBOM
+          }
+      - name: Verify Grok peer chain and cold residue recovery with compiled production mutations
+        if: ${{ !cancelled() && steps.grok-successor-mutation.outcome == 'success' && inputs.grok_home_fixture_only }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
+          $sourcePath = 'apps/desktop/native-host/src/store/session_transport/grok_home_launch.rs'
+          $manifest = 'apps/desktop/native-host/Cargo.toml'
+          $original = [IO.File]::ReadAllBytes($sourcePath)
+          $source = [Text.Encoding]::UTF8.GetString($original)
+          $hash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash
+          $testStart = $source.IndexOf('#[cfg(test)]')
+          if ($testStart -lt 0) { throw 'Original Grok test region absent.' }
+          $newline = if ($source.Contains("`r`n")) { "`r`n" } else { "`n" }
+          $cases = @(
+            @{ id='peer-chain'; test='three_peer_retired_cold_residue_before_write';
+              needle='!applied_inherited_residue_witness(db,&peers,&auth,&acl,home)?';
+              replacement='true'; marker='Grok private HOME' },
+            @{ id='retired-intent'; test='three_peer_retired_cold_residue_after_write';
+              needle=('    if effects.iter().any(|e|e.phase!="APPLIED" &&' + $newline +
+                  '        !(e.action=="REVOKE_RESIDUE" &&e.phase=="INTENT")) ||');
+              replacement='    if effects.iter().any(|e|e.phase!="APPLIED") ||';
+              marker='retired stopped ACL effects incomplete' },
+            @{ id='pending-intent'; test='three_peer_revoke_pending_cold_residue_after_write';
+              needle=('            if pending_inherited_residue_after(db,&pending,profile,&self.home,intent)? {' + $newline +
+                  '                instance::finish_grok_effect(db,intent)?;' + $newline +
+                  '            }');
+              replacement='            let _=intent;'; marker='Grok private HOME' }
+          )
+          $records = @()
+          $restored = $false
+          function Invoke-PeerCase($case, [string]$phase, [bool]$expectFailure) {
+            $test = "store::session_transport::grok_home_launch::tests::$($case.test)"
+            $output = & cargo test --locked --manifest-path $manifest --lib $test -- --exact --nocapture 2>&1
+            $exitCode = $LASTEXITCODE
+            $output | Tee-Object -FilePath (Join-Path $evidenceRoot "grok-peer-mutations-$($case.id)-$phase.log") | Write-Host
+            $text = ($output | ForEach-Object { $_.ToString() }) -join "`n"
+            $compiled = [regex]::IsMatch($text, 'Finished.*test.*profile')
+            $one = [regex]::IsMatch($text, '(?m)^running 1 test\s*$')
+            $summary = if ($expectFailure) { 'test result: FAILED\. 0 passed; 1 failed; 0 ignored;' }
+                else { 'test result: ok\. 1 passed; 0 failed; 0 ignored;' }
+            $marker = $text.Contains($case.marker)
+            $valid = $compiled -and $one -and [regex]::IsMatch($text,$summary) -and
+                $(if ($expectFailure) { $exitCode -ne 0 -and $marker } else { $exitCode -eq 0 })
+            $script:records += [ordered]@{ id=$case.id; phase=$phase; exit_code=$exitCode;
+                compiled=$compiled; exact_one_test=$one; expected_summary=[regex]::IsMatch($text,$summary);
+                behavior_marker=$marker; state=$(if ($valid) {'PASS'} else {'FAIL'}) }
+            if (-not $valid) { throw "Grok peer mutation $($case.id) $phase did not show the required compiled behavior." }
+          }
+          try {
+            foreach ($case in $cases) {
+              if ([regex]::Matches($source,[regex]::Escape($case.needle)).Count -ne 1 -or
+                  $source.IndexOf($case.needle) -ge $testStart) { throw "Production mutation target not unique: $($case.id)" }
+              $mutated = $source.Replace($case.needle,$case.replacement)
+              if ($source.Substring($testStart) -cne $mutated.Substring($mutated.IndexOf('#[cfg(test)]'))) {
+                throw "Test region changed: $($case.id)"
+              }
+              Invoke-PeerCase $case 'baseline' $false
+              try {
+                [IO.File]::WriteAllText($sourcePath,$mutated,[Text.UTF8Encoding]::new($false))
+                Invoke-PeerCase $case 'production-branch-removed' $true
+              } finally {
+                [IO.File]::WriteAllBytes($sourcePath,$original)
+                $restored = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash -ceq $hash
+                if (-not $restored) { throw 'Exact Grok peer production source restoration failed.' }
+              }
+              Invoke-PeerCase $case 'restored' $false
+            }
+          } finally {
+            [ordered]@{ head_sha=(git rev-parse HEAD); production_source_sha256=$hash.ToLowerInvariant();
+                source_restored=$restored; records=$records } |
+                ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'grok-peer-mutations.json') -Encoding utf8NoBOM
+          }
+      - name: Retain initial Grok auth mutation source and original transcripts
+        if: ${{ always() && inputs.grok_home_fixture_only }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-host-grok-initial-auth-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/gogoke-native-host-evidence/grok-initial-auth-*
+            ${{ runner.temp }}/gogoke-native-host-evidence/grok-successor-*
+            ${{ runner.temp }}/gogoke-native-host-evidence/grok-peer-mutations-*
+            ${{ runner.temp }}/gogoke-native-host-evidence/grok-peer-mutations.json
+          if-no-files-found: error
+      - name: Retain original focused logs before the full library run
+        if: ${{ !cancelled() && steps.release-build.outcome == 'success' && !inputs.trace_canonicalize && !inputs.full_library_only && !inputs.catalog_program_fixture_only }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-host-focused-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/gogoke-native-host-evidence/focused-*
+          if-no-files-found: error
       - name: Run all native-host library unit tests
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.release-build.outcome == 'success' && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.catalog_program_fixture_only }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -217,9 +884,45 @@ jobs:
           $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
           New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
           $log = Join-Path $evidenceRoot 'lib-tests.log'
-          $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib -- --nocapture 2>&1
+          $shard = '${{ matrix.shard }}'
+          $arguments = @('test','--locked','--manifest-path','apps/desktop/native-host/Cargo.toml','--lib')
+          if ($shard -ne 'all') {
+            $prefixes = [ordered]@{
+              runtime = 'store::product_database::v37_runtime::'
+              login = 'store::product_database::v37_login::'
+              session = 'store::product_database::v37_session::'
+            }
+            if ($shard -notin @('runtime','login','session','remainder')) { throw "Unknown native library shard: $shard" }
+            $listing = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib -- --list 2>&1
+            $listExit = $LASTEXITCODE
+            $listing | Set-Content -LiteralPath (Join-Path $evidenceRoot 'lib-tests-list.log') -Encoding utf8NoBOM
+            $fullNames = @($listing | ForEach-Object { if ($_ -match '^(.+): test$') { $Matches[1] } })
+            $fullSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            foreach ($name in $fullNames) { if (-not $fullSet.Add($name)) { throw "Duplicate original library test: $name" } }
+            $listSummary = [regex]::Matches(($listing -join "`n"), '(?m)^(\d+) tests?, (\d+) benchmarks?$')
+            if ($listExit -ne 0 -or $listSummary.Count -ne 1 -or $fullNames.Count -eq 0 -or
+                $fullNames.Count -ne [int]$listSummary[0].Groups[1].Value -or
+                [int]$listSummary[0].Groups[2].Value -ne 0) { throw "Original native library --list invalid: $shard" }
+            $selected = @($fullNames | Where-Object {
+              $name = $_
+              if ($shard -eq 'remainder') {
+                -not @($prefixes.Values | Where-Object { $name.StartsWith($_, [StringComparison]::Ordinal) }).Count
+              } else {
+                $name.StartsWith($prefixes[$shard], [StringComparison]::Ordinal)
+              }
+            })
+            if ($selected.Count -eq 0) { throw "Original native library shard has zero tests: $shard" }
+            if ($shard -ne 'remainder') { $arguments += $prefixes[$shard] }
+          }
+          # Preserve all test output after completion so concurrent fixture
+          # println! calls cannot split libtest's original status lines.
+          $arguments += @('--','--show-output')
+          if ($shard -eq 'remainder') {
+            foreach ($prefix in $prefixes.Values) { $arguments += @('--skip',$prefix) }
+          }
+          $output = & cargo @arguments 2>&1 |
+            Tee-Object -FilePath $log | ForEach-Object { Write-Host $_; $_ }
           $exitCode = $LASTEXITCODE
-          $output | Tee-Object -FilePath $log | Write-Host
           $text = $output -join "`n"
           $running = [regex]::Matches($text, '(?m)^running (\d+) tests?$')
           $summaries = [regex]::Matches($text, 'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out')
@@ -234,6 +937,36 @@ jobs:
             'FAIL'
           } else {
             'PASS'
+          }
+          if ($shard -ne 'all') {
+            # Rust libtest's original bare result lines identify completed names.
+            $completed = @($output | ForEach-Object { if ($_ -match '^test (.+) \.\.\. (ok|FAILED|ignored)$') { $Matches[1] } })
+            $selectedSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            $completedSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            foreach ($name in $selected) { [void]$selectedSet.Add($name) }
+            foreach ($name in $completed) { [void]$completedSet.Add($name) }
+            $measured = if ($summaries.Count -eq 1) { [int]$summaries[0].Groups[5].Value } else { 0 }
+            $filtered = if ($summaries.Count -eq 1) { [int]$summaries[0].Groups[6].Value } else { 0 }
+            if ($running.Count -ne 1 -or $summaries.Count -ne 1 -or
+                $selectedSet.Count -ne $selected.Count -or
+                $completed.Count -ne $selected.Count -or $completedSet.Count -ne $completed.Count -or
+                -not $completedSet.SetEquals([string[]]$selected) -or
+                $discovered -ne ($passed + $testFailed + $skipped + $measured) -or
+                $completed.Count -ne ($passed + $testFailed + $skipped) -or
+                $filtered -ne ($fullNames.Count - $selected.Count)) { $state = 'FAIL_INSTRUMENT' }
+            if ($measured -ne 0 -or $passed -ne $selected.Count) {
+              if ($state -eq 'PASS') { $state = 'FAIL' }
+            }
+            [ordered]@{
+              schema='gogoke.native-library-partition.v1'
+              commit_sha='${{ github.sha }}'
+              run_id='${{ github.run_id }}'
+              run_attempt='${{ github.run_attempt }}'
+              shard=$shard
+              full_names=$fullNames
+              selected_names=$selected
+              completed_names=$completed
+            } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'lib-name-manifest.json') -Encoding utf8NoBOM
           }
           $machineResult = Join-Path $evidenceRoot 'machine-result.json'
           $machine = if (Test-Path -LiteralPath $machineResult -PathType Leaf) {
@@ -251,7 +984,7 @@ jobs:
             }
           }
           $machine['lib_tests'] = [ordered]@{
-            command = 'cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib -- --nocapture'
+            command = 'cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib -- --show-output'
             exit_code = $exitCode
             discovered = $discovered
             executed = $executed
@@ -261,6 +994,16 @@ jobs:
             state = $state
             log = 'lib-tests.log'
           }
+          if ($shard -ne 'all') {
+            $machine['evidence_scope'] = 'FULL_LIBRARY_PARTITION_NOT_OTHER_GATES'
+            $machine['release_build'] = Get-Content -LiteralPath (Join-Path $evidenceRoot 'release-build-result.json') -Raw | ConvertFrom-Json
+            $machine['lib_tests']['command'] = 'cargo ' + ($arguments -join ' ')
+            $machine['lib_tests']['shard'] = $shard
+            $machine['lib_tests']['full_discovered'] = $fullNames.Count
+            $machine['lib_tests']['selected'] = $selected.Count
+            $machine['lib_tests']['measured'] = $measured
+            $machine['lib_tests']['filtered'] = $filtered
+          }
           $focusedPath = Join-Path $evidenceRoot 'focused-lib-probes.json'
           $machine['focused_lib_probes'] = if (Test-Path -LiteralPath $focusedPath -PathType Leaf) {
             @(Get-Content -LiteralPath $focusedPath -Raw | ConvertFrom-Json)
@@ -269,17 +1012,665 @@ jobs:
           }
           $machine | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $machineResult -Encoding utf8NoBOM
           if ($state -ne 'PASS') { throw "Native-host library unit tests failed or did not execute: $state (exit $exitCode)" }
+      - name: Test production LPAC path shim behavior in cloud
+        if: ${{ !cancelled() && (matrix.shard == 'all' || matrix.shard == 'remainder') }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP 'gogoke-native-host-evidence'
+          New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
+          $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml -p gogoke-lpac-path-compat --lib -- --nocapture 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath (Join-Path $evidenceRoot 'lpac-path-shim.log') | Write-Host
+          $text = $output -join "`n"
+          $summary = [regex]::Match($text, 'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out')
+          $valid = $summary.Success -and [int]$summary.Groups[2].Value -eq 2 -and [int]$summary.Groups[3].Value -eq 0 -and [int]$summary.Groups[4].Value -eq 0 -and [int]$summary.Groups[6].Value -eq 0
+          $state = if ($exitCode -eq 0 -and $valid) { 'PASS' } else { 'FAIL' }
+          [ordered]@{ axis = 'lpac_path_same_source_shim'; state = $state; exit_code = $exitCode; passed = if ($summary.Success) { [int]$summary.Groups[2].Value } else { 0 }; failed = if ($summary.Success) { [int]$summary.Groups[3].Value } else { 0 }; skipped = if ($summary.Success) { [int]$summary.Groups[4].Value } else { 0 } } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidenceRoot 'lpac-path-shim-result.json') -Encoding utf8NoBOM
+          if ($state -ne 'PASS') { throw "Production LPAC shim tests failed or did not execute: $exitCode" }
       - name: Upload native-host machine evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: native-host-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ matrix.shard == 'all' && format('native-host-evidence-{0}-{1}-{2}', github.sha, github.run_id, github.run_attempt) || format('native-host-evidence-{0}-{1}-{2}-{3}', github.sha, github.run_id, github.run_attempt, matrix.shard) }}
           path: ${{ runner.temp }}/gogoke-native-host-evidence
           if-no-files-found: error
           retention-days: 30
 
+  native-host-library-partitions:
+    if: ${{ always() && !inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only && inputs.full_library_only && !inputs.security_remainder_source && !inputs.focused_library }}
+    needs: native-host-windows-real-axes
+    name: Verify complete native-host library partitions
+    timeout-minutes: 15
+    runs-on: windows-latest
+    steps:
+      - name: Download the four independent original evidence artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-host-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: ${{ runner.temp }}/native-library-partitions
+      - name: Prove original library coverage and all four results
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'native-library-partitions'
+          $shards = @('runtime','login','session','remainder')
+          $baseline = $null
+          $unionSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+          $summary = @()
+          foreach ($shard in $shards) {
+            $artifact = Join-Path $root ('native-host-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-' + $shard)
+            $manifestPath = Join-Path $artifact 'lib-name-manifest.json'
+            $machinePath = Join-Path $artifact 'machine-result.json'
+            $shimPath = Join-Path $artifact 'lpac-path-shim-result.json'
+            if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf) -or
+                -not (Test-Path -LiteralPath $machinePath -PathType Leaf)) { throw "Library partition evidence missing: $shard" }
+            $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+            $machine = Get-Content -LiteralPath $machinePath -Raw | ConvertFrom-Json
+            if ($manifest.schema -cne 'gogoke.native-library-partition.v1' -or
+                $manifest.shard -cne $shard -or $machine.lib_tests.shard -cne $shard -or
+                $manifest.commit_sha -cne '${{ github.sha }}' -or
+                $machine.commit_sha -cne '${{ github.sha }}' -or
+                $manifest.run_id -cne '${{ github.run_id }}' -or
+                $machine.run_id -cne '${{ github.run_id }}' -or
+                $manifest.run_attempt -cne '${{ github.run_attempt }}' -or
+                $machine.run_attempt -cne '${{ github.run_attempt }}' -or
+                $machine.release_build.state -cne 'PASS' -or
+                $machine.lib_tests.state -cne 'PASS' -or
+                [int]$machine.lib_tests.exit_code -ne 0 -or
+                [int]$machine.lib_tests.failed -ne 0 -or
+                [int]$machine.lib_tests.skipped -ne 0 -or
+                [int]$machine.lib_tests.measured -ne 0) { throw "Library partition identity, build or result invalid: $shard" }
+            $full = @($manifest.full_names)
+            $selected = @($manifest.selected_names)
+            $completed = @($manifest.completed_names)
+            $fullSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            foreach ($name in $full) { [void]$fullSet.Add($name) }
+            $selectedSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            foreach ($name in $selected) { [void]$selectedSet.Add($name) }
+            $completedSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            foreach ($name in $completed) { [void]$completedSet.Add($name) }
+            if ($null -eq $baseline) { $baseline = $full }
+            if ($full.Count -eq 0 -or $selected.Count -eq 0 -or
+                $fullSet.Count -ne $full.Count -or
+                -not $fullSet.SetEquals([string[]]$baseline) -or
+                $selected.Count -ne $completed.Count -or
+                $selectedSet.Count -ne $selected.Count -or
+                $completedSet.Count -ne $completed.Count -or
+                -not $completedSet.SetEquals([string[]]$selected) -or
+                [int]$machine.lib_tests.full_discovered -ne $full.Count -or
+                [int]$machine.lib_tests.selected -ne $selected.Count -or
+                [int]$machine.lib_tests.discovered -ne $selected.Count -or
+                [int]$machine.lib_tests.passed -ne $selected.Count -or
+                [int]$machine.lib_tests.executed -ne $selected.Count) { throw "Library partition names or counts invalid: $shard" }
+            $prefixes = @('store::product_database::v37_runtime::','store::product_database::v37_login::','store::product_database::v37_session::')
+            $expected = @($full | Where-Object {
+              $name = $_
+              if ($shard -eq 'remainder') {
+                -not @($prefixes | Where-Object { $name.StartsWith($_, [StringComparison]::Ordinal) }).Count
+              } else {
+                $prefix = $prefixes[@{runtime=0;login=1;session=2}[$shard]]
+                $name.StartsWith($prefix, [StringComparison]::Ordinal)
+              }
+            })
+            if ($expected.Count -ne $selected.Count -or -not $selectedSet.SetEquals([string[]]$expected)) {
+              throw "Library partition selection differs from the full original list: $shard"
+            }
+            if ($shard -eq 'remainder') {
+              if (-not (Test-Path -LiteralPath $shimPath -PathType Leaf)) { throw 'Production LPAC shim result missing' }
+              $shim = Get-Content -LiteralPath $shimPath -Raw | ConvertFrom-Json
+              if ($shim.state -cne 'PASS' -or [int]$shim.exit_code -ne 0 -or
+                  [int]$shim.passed -ne 2 -or [int]$shim.failed -ne 0 -or [int]$shim.skipped -ne 0) {
+                throw 'Production LPAC shim did not pass on the remainder runner'
+              }
+            }
+            foreach ($name in $selected) {
+              if (-not $unionSet.Add($name)) { throw "Library partition overlap: $name" }
+            }
+            $summary += [ordered]@{ shard=$shard; selected=$selected.Count; passed=[int]$machine.lib_tests.passed; artifact=(Split-Path -Leaf $artifact) }
+          }
+          if ($unionSet.Count -ne $baseline.Count -or -not $unionSet.SetEquals([string[]]$baseline)) {
+            throw 'Four completed partitions are not a disjoint union of the full original library list'
+          }
+          [ordered]@{
+            schema='gogoke.native-library-aggregate.v1'
+            commit_sha='${{ github.sha }}'
+            run_id='${{ github.run_id }}'
+            run_attempt='${{ github.run_attempt }}'
+            state='PASS_COMPLETE_ORIGINAL_LIBRARY_AND_LPAC_SHIM'
+            full_discovered=$baseline.Count
+            passed=$unionSet.Count
+            failed=0
+            skipped=0
+            lpac_shim_passed=2
+            partitions=$summary
+            other_native_process_focused_mutation_server_gates='NOT_RUN'
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $root 'native-library-aggregate.json') -Encoding utf8NoBOM
+      - name: Upload complete library partition result
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-library-aggregate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-library-partitions/native-library-aggregate.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  native-host-windows-security-mutations:
+    # These two directed runs execute their relevant checks and Grok mutation
+    # in real-process-axes; the separate core job only adds unrelated tests.
+    if: ${{ !inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only && (!inputs.full_library_only || inputs.security_remainder_source) && !inputs.focused_library && !inputs.job_descendant_fixture_only && !inputs.private_history_fixture_only }}
+    name: Native host Windows security mutations (${{ matrix.group }})
+    # Keep unchanged mutation commands, but separate compile-heavy groups.
+    # A remainder run tests the explicitly checked-out ancestor, not workflow SHA.
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        group: ${{ fromJSON(inputs.security_remainder_source && '["f1","legacy","installation"]' || (inputs.trace_canonicalize || inputs.job_descendant_fixture_only || inputs.stop_124_fixture_only || inputs.ordinary_oauth_fixture_only || inputs.code_mode_fixture_only || inputs.private_history_fixture_only || inputs.catalog_program_fixture_only) && '["core"]' || '["core","f1","legacy","installation"]') }}
+    timeout-minutes: 90
+    runs-on: windows-latest
+    env:
+      RUSTUP_TOOLCHAIN: 1.85.1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.security_remainder_source || github.sha }}
+          fetch-depth: 0
+      - name: Bind actual checked-out security source and unchanged tests
+        id: security-source
+        shell: pwsh
+        env:
+          REQUESTED_SOURCE: ${{ inputs.security_remainder_source }}
+          WORKFLOW_SOURCE: ${{ github.sha }}
+          SECURITY_GROUP: ${{ matrix.group }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actual -cnotmatch '^[0-9a-f]{40}$') { throw 'Actual test source unavailable' }
+          if ($env:REQUESTED_SOURCE) {
+            if ($env:REQUESTED_SOURCE -cnotmatch '^[0-9a-f]{40}$' -or $actual -cne $env:REQUESTED_SOURCE) { throw 'Exact remainder source mismatch' }
+            if (@('${{ inputs.trace_canonicalize }}','${{ inputs.job_descendant_fixture_only }}','${{ inputs.stop_124_fixture_only }}','${{ inputs.ordinary_oauth_fixture_only }}','${{ inputs.code_mode_fixture_only }}','${{ inputs.private_history_fixture_only }}','${{ inputs.full_library_only }}','${{ inputs.catalog_program_fixture_only }}') -contains 'true') { throw 'Remainder scope cannot be combined with a directed scope' }
+            & git merge-base --is-ancestor $actual $env:WORKFLOW_SOURCE
+            if ($LASTEXITCODE -ne 0) { throw 'Remainder source must be a workflow-source ancestor' }
+          } elseif ($actual -cne $env:WORKFLOW_SOURCE) { throw 'Default security source differs from workflow source' }
+          if (@(& git status --porcelain --untracked-files=no).Count) { throw 'Test source must begin unchanged' }
+          $evidence = Join-Path $env:RUNNER_TEMP 'security-group-originals'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $files = @(& git ls-files apps/desktop/native-host)
+          if ($LASTEXITCODE -ne 0 -or $files.Count -eq 0) { throw 'Tracked native source unavailable' }
+          $hashes = @($files | ForEach-Object { [ordered]@{path=$_; sha256=(Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()} })
+          [ordered]@{schema='gogoke.security-source.v1'; sourceCommit=$actual; workflowCommit=$env:WORKFLOW_SOURCE; sourceTree=(& git rev-parse 'HEAD:apps/desktop/native-host').Trim(); group=$env:SECURITY_GROUP; runId='${{ github.run_id }}'; runAttempt='${{ github.run_attempt }}'; acceptance=$false; files=$hashes} | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $evidence 'source-before.json') -Encoding utf8NoBOM
+          "sha=$actual" >> $env:GITHUB_OUTPUT
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.13.1
+      - name: Bind native-host build to controlled Node runtime
+        shell: pwsh
+        run: |
+          $node = Get-Command node.exe -CommandType Application | Select-Object -First 1 -ExpandProperty Source
+          if (-not (Test-Path -LiteralPath $node -PathType Leaf)) { throw 'Controlled Node runtime unavailable' }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CONTROLLED_NODE_PATH=$node"
+      - name: Bind F tests to the installed Git backend image
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $entry = Get-Command git.exe -CommandType Application | Select-Object -First 1 -ExpandProperty Source
+          $execPath = & $entry --exec-path
+          if ($LASTEXITCODE -ne 0 -or @($execPath).Count -ne 1) { throw 'Git backend discovery failed' }
+          $mingw = Split-Path -Parent (Split-Path -Parent $execPath.Trim())
+          $backend = Join-Path $mingw 'bin/git.exe'
+          if (-not (Test-Path -LiteralPath $backend -PathType Leaf)) { throw 'Actual Git backend image unavailable; no launcher substitute' }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CONTROLLED_GIT_PATH=$backend"
+          Write-Output "Git backend SHA256=$((Get-FileHash -LiteralPath $backend -Algorithm SHA256).Hash)"
+      - uses: dtolnay/rust-toolchain@1.85.1
+      - name: Pin Codex CLI for native instance registration tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $prefix = Join-Path $env:APPDATA 'npm'
+          & npm install --global --prefix $prefix --ignore-scripts '@openai/codex@0.160.0'
+          if ($LASTEXITCODE -ne 0) { throw "Codex CLI install failed: $LASTEXITCODE" }
+          $binary = Join-Path $prefix 'node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe'
+          if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw 'Pinned Codex CLI image missing' }
+          $version = & $binary --version
+          if ($LASTEXITCODE -ne 0 -or $version -ne 'codex-cli 0.160.0') { throw "Pinned Codex CLI version mismatch: $version" }
+      - name: Pin fixed Claude CLI for native provider output controls
+        id: fixed-claude
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $prefix = Join-Path $env:APPDATA 'npm'
+          & npm install --global --prefix $prefix --ignore-scripts '@anthropic-ai/claude-code@2.1.196'
+          if ($LASTEXITCODE -ne 0) { throw "Claude CLI install failed: $LASTEXITCODE" }
+          $package = Join-Path $prefix 'node_modules\@anthropic-ai\claude-code'
+          $platform = Join-Path $package 'node_modules\@anthropic-ai\claude-code-win32-x64'
+          foreach ($fact in @(@{ path=$package; name='@anthropic-ai/claude-code' }, @{ path=$platform; name='@anthropic-ai/claude-code-win32-x64' })) {
+            $metadata = Get-Content -LiteralPath (Join-Path $fact.path 'package.json') -Raw | ConvertFrom-Json
+            if ($metadata.name -ne $fact.name -or $metadata.version -ne '2.1.196') { throw 'Fixed Claude package identity mismatch' }
+          }
+          $original = Join-Path $platform 'claude.exe'
+          if (-not (Test-Path -LiteralPath $original -PathType Leaf)) { throw 'Fixed Claude platform image missing' }
+          # The product catalog uses the installed package's bin image. Keep
+          # the official bytes identical without running npm postinstall code.
+          $bin = Join-Path $package 'bin'
+          New-Item -ItemType Directory -Path $bin -Force | Out-Null
+          $binary = Join-Path $bin 'claude.exe'
+          $digest = (Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash
+          if ($digest -cne '180D7B279455E8B89D4353A5146447BE2F80B80FB0DB14BDC6DD9CB98C0AEF09') { throw "Official fixed Claude platform digest differs: $digest" }
+          if (Test-Path -LiteralPath $binary) {
+            $existing = Get-Item -LiteralPath $binary -Force
+            Write-Output "Existing cloud catalog leaf: directory=$($existing.PSIsContainer) attributes=$($existing.Attributes) linkType=$($existing.LinkType)"
+            if ($existing.PSIsContainer) { throw 'Cloud catalog leaf unexpectedly became a directory' }
+            Write-Output "Existing cloud catalog leaf SHA256=$((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash)"
+            # This is the cloud fixture's package leaf, not an Owner installation.
+            # Remove only that name; a file symlink's target is never removed.
+            Remove-Item -LiteralPath $binary -ErrorAction Stop
+          }
+          New-Item -ItemType HardLink -Path $binary -Target $original -ErrorAction Stop | Out-Null
+          if ((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash -ne $digest) { throw 'Fixed Claude bytes changed during layout preparation' }
+          $version = & $binary --version
+          if ($LASTEXITCODE -ne 0 -or $version -ne '2.1.196 (Claude Code)') { throw "Fixed Claude CLI version mismatch: $version" }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CLAUDE_CLI_PATH=$binary"
+          Write-Output "Fixed Claude CLI SHA256=$digest"
+      - name: Verify holder-gone Job lifetime with compiled production mutation
+        if: ${{ matrix.group == 'core' && !cancelled() && steps.fixed-claude.outcome == 'success' && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.catalog_program_fixture_only }}
+        shell: pwsh
+        run: |
+          ./tools/ci/gogoke37-holder-gone-job-mutation.ps1 -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'holder-gone-security')
+      - name: Verify holder-gone composed recovery with compiled production mutations
+        if: ${{ matrix.group == 'core' && !cancelled() && steps.fixed-claude.outcome == 'success' && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.catalog_program_fixture_only }}
+        shell: pwsh
+        run: |
+          ./tools/ci/gogoke37-holder-gone-composition-mutations.ps1 -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'holder-gone-security')
+      - name: Upload holder-gone recovery originals
+        if: ${{ always() && matrix.group == 'core' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: holder-gone-security-${{ steps.security-source.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/holder-gone-security
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Verify catalog program and unchanged data boundaries with compiled mutations
+        if: ${{ matrix.group == 'core' && !cancelled() && steps.fixed-claude.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $path = 'apps/desktop/native-host/src/process/session/isolation.rs'
+          $test = 'apps/desktop/native-host/src/process/session/catalog_program_tests.rs'
+          $original = [IO.File]::ReadAllBytes($path)
+          $source = [Text.Encoding]::UTF8.GetString($original)
+          $sourceHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+          $testHash = (Get-FileHash -LiteralPath $test -Algorithm SHA256).Hash
+          $evidence = Join-Path $env:RUNNER_TEMP 'catalog-program-security'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $machine = [ordered]@{ schema='gogoke.catalog-program-security.v1'; sourceCommit='${{ steps.security-source.outputs.sha }}'; runId='${{ github.run_id }}'; acceptance=$false; sourceHash=$sourceHash; testHash=$testHash; cases=@() }
+          function Invoke-CatalogTest([string]$label, [string]$filter, [int]$passed, [int]$failed) {
+            $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $filter --lib -- --nocapture 2>&1 | Tee-Object -FilePath (Join-Path $evidence "$label.log")
+            $code = $LASTEXITCODE
+            $output | Out-Host
+            $summaries = [regex]::Matches(($output -join "`n"), 'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out')
+            $valid = $summaries.Count -eq 1 -and [int]$summaries[0].Groups[2].Value -eq $passed -and [int]$summaries[0].Groups[3].Value -eq $failed -and [int]$summaries[0].Groups[4].Value -eq 0 -and [int]$summaries[0].Groups[5].Value -eq 0 -and (($failed -eq 0 -and $code -eq 0) -or ($failed -gt 0 -and $code -ne 0))
+            $script:machine.cases += [ordered]@{ label=$label; filter=$filter; exitCode=$code; expectedPassed=$passed; expectedFailed=$failed; state=$(if($valid){'PASS'}else{'FAIL_INSTRUMENT_OR_BEHAVIOR'}); originalLog="$label.log" }
+            $script:machine | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $evidence 'machine-result.json') -Encoding utf8NoBOM
+            if (-not $valid) { throw "Catalog boundary $label did not execute the unchanged expected behavior" }
+          }
+          Invoke-CatalogTest 'baseline' 'catalog_program_tests::' 2 0
+          $filter = 'catalog_program_hardlinks_bind_one_file_with_exact_rx_and_keep_data_strict'
+          foreach ($axis in @('program-single-link','data-alias','program-write')) {
+            try {
+              if ($axis -ceq 'program-single-link') {
+                $needle = '        info.links == 0 {'
+                if ([regex]::Matches($source,[regex]::Escape($needle)).Count -ne 1) { throw 'Catalog opener production locator must match once' }
+                $mutated = $source.Replace($needle,'        info.links != 1 {')
+              } elseif ($axis -ceq 'data-alias') {
+                $needle = '            && self.links == 1'
+                if ([regex]::Matches($source,[regex]::Escape($needle)).Count -ne 1) { throw 'Writable data production locator must match once' }
+                $mutated = $source.Replace($needle,'')
+              } else {
+                $start = $source.IndexOf('    pub(crate) fn grant_bound_catalog_program(')
+                $end = $source.IndexOf('    /// Inspect the exact suspended process handle', $start)
+                if ($start -lt 0 -or $end -le $start) { throw 'Catalog grant/verification production section absent' }
+                $section = $source.Substring($start,$end-$start)
+                $needle = 'FILE_GENERIC_READ | FILE_GENERIC_EXECUTE'
+                if ([regex]::Matches($section,[regex]::Escape($needle)).Count -ne 2) { throw 'Catalog RX production grant and verification must match exactly twice' }
+                $section = $section.Replace($needle,'FILE_GENERIC_READ | FILE_GENERIC_EXECUTE | FILE_GENERIC_WRITE')
+                $mutated = $source.Substring(0,$start) + $section + $source.Substring($end)
+              }
+              [IO.File]::WriteAllText($path,$mutated,[Text.UTF8Encoding]::new($false))
+              if ((Get-FileHash -LiteralPath $test -Algorithm SHA256).Hash -cne $testHash) { throw 'Security test changed during mutation' }
+              Invoke-CatalogTest "mutation-$axis" $filter 0 1
+            } finally {
+              [IO.File]::WriteAllBytes($path,$original)
+              if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -cne $sourceHash -or (Get-FileHash -LiteralPath $test -Algorithm SHA256).Hash -cne $testHash) { throw 'Exact unchanged production and test restoration failed' }
+            }
+          }
+          Invoke-CatalogTest 'restored' 'catalog_program_tests::' 2 0
+          $machine['state'] = 'PASS_COMPILED_BEHAVIOR_MUTATIONS_AND_EXACT_RESTORATION'
+          $machine | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $evidence 'machine-result.json') -Encoding utf8NoBOM
+      - name: Upload original catalog program security evidence
+        if: ${{ always() && matrix.group == 'core' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: catalog-program-security-${{ steps.security-source.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/catalog-program-security
+          if-no-files-found: error
+          retention-days: 30
+      - name: Verify fixed CLI component grant with a compiled behavioral mutation
+        if: ${{ matrix.group == 'core' && !cancelled() && steps.fixed-claude.outcome == 'success' && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.private_history_fixture_only && !inputs.catalog_program_fixture_only }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $path = 'apps/desktop/native-host/src/store/session_transport/codex_component.rs'
+          $original = [IO.File]::ReadAllBytes($path)
+          $source = [Text.Encoding]::UTF8.GetString($original)
+          $hash = (Get-FileHash -LiteralPath $path).Hash
+          $needle = '        profile.grant_bound_program(path, &identity)' + "`n" +
+            '            .map_err(|error| format!("native Codex component grant: {error:?}"))?;' + "`n"
+          if ([regex]::Matches($source,[regex]::Escape($needle)).Count -ne 1) {
+            throw 'Exact component production grant must match once'
+          }
+          $filter = 'fixed_codex_component_rejects_unpinned_bytes_before_grant_and_pins_exact_file'
+          try {
+            [IO.File]::WriteAllText($path,$source.Replace($needle,''),[Text.UTF8Encoding]::new($false))
+            $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $filter --lib -- --nocapture 2>&1
+            $code = $LASTEXITCODE
+            $output | Out-Host
+            if ($code -eq 0 -or @($output | Where-Object { $_ -match 'test result: FAILED\. 0 passed; 1 failed; 0 ignored' }).Count -ne 1) {
+              throw 'Removed production helper grant must compile and fail its unchanged behavior test'
+            }
+          } finally {
+            [IO.File]::WriteAllBytes($path,$original)
+            if ((Get-FileHash -LiteralPath $path).Hash -cne $hash) { throw 'Exact component source restoration failed' }
+          }
+          $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $filter --lib -- --nocapture 2>&1
+          $output | Out-Host
+          if ($LASTEXITCODE -ne 0 -or @($output | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+            throw 'Unchanged helper behavior test must pass after exact production restoration'
+          }
+      - name: Verify F.1 production fixes with compiled failing mutations
+        if: ${{ matrix.group == 'f1' && !cancelled() && steps.fixed-claude.outcome == 'success' && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.catalog_program_fixture_only }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Start-Transcript -Path (Join-Path (Join-Path $env:RUNNER_TEMP 'security-group-originals') 'f1.log') -Force
+          try {
+            $ErrorActionPreference = 'Stop'
+            $PSNativeCommandUseErrorActionPreference = $false
+            $path = 'apps/desktop/native-host/src/store/product_database/v37_login.rs'
+            $original = [IO.File]::ReadAllBytes($path)
+            $source = [Text.Encoding]::UTF8.GetString($original)
+            $baselineHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            $cases = @(
+              @{ axis='R1'; filter='owner_instance_list_reads_only_registered_native_state_and_rejects_other_frames' },
+              @{ axis='R2'; filter='owner_login_preflight_errors_settle_original_request_without_process_custody' },
+              @{ axis='R4'; filter='owner_login_retains_second_cli_custody_until_its_own_stop_is_confirmed' },
+              @{ axis='R5'; filter='owner_first_cli_factory_failures_keep_original_results_and_custody' },
+              @{ axis='R6'; filter='pinned_codex_owner_login_stop_failure_reconciles_same_proof_and_stderr' },
+              @{ axis='R7'; filter='owner_account_execution_and_cleanup_failures_preserve_both_original_causes' },
+              @{ axis='R9'; filter='cancelled_pinned_cli_preserves_stderr_before_confirmed_release' }
+            )
+            foreach ($case in $cases) {
+              try {
+                if ($case.axis -ceq 'R1') {
+                  $start = $source.IndexOf('            let install_state = match source.as_ref() {')
+                  $end = $source.IndexOf('            let login_state = match source.as_ref() {', $start)
+                  if ($start -lt 0 -or $end -le $start) { throw 'R1 production fix locator missing' }
+                  $stale = '            let stale = Statement::prepare(self.connection.as_ptr(), "SELECT install_state FROM main.gogoke_v37_instances WHERE instance_id=?1")?;' + "`n" +
+                    '            stale.bind_text(1, &instance_id)?;' + "`n" +
+                    '            if !stale.step_row()? { return Err(OrchestrationError::AccessDenied); }' + "`n" +
+                    '            let install_state = stale.column_text(0)?;' + "`n"
+                  $mutated = $source.Substring(0,$start) + $stale + $source.Substring($end)
+                } elseif ($case.axis -ceq 'R2') {
+                  $helper = $source.IndexOf('    fn settle_owner_login_preflight_error(')
+                  $start = $source.IndexOf('        self.owner_login = Some(OwnerLoginSession::Final {', $helper)
+                  $end = $source.IndexOf('        });', $start) + '        });'.Length
+                  if ($helper -lt 0 -or $start -lt $helper -or $end -le $start) { throw 'R2 production fix locator missing' }
+                  $mutated = $source.Remove($start,$end-$start)
+                } elseif ($case.axis -ceq 'R4') {
+                  $start = $source.IndexOf('        if let Some(OwnerLoginSession::PendingAccount(pending)) = &mut self.owner_login {')
+                  $end = $source.IndexOf('        let state = state_result.as_ref().cloned()', $start)
+                  if ($start -lt 0 -or $end -le $start) { throw 'R4 production fix locator missing' }
+                  $mutated = $source.Remove($start,$end-$start)
+                } elseif ($case.axis -ceq 'R5') {
+                  $start = $source.IndexOf('    fn preserve_owner_login_failure(')
+                  $end = $source.IndexOf('    fn begin_owner_device_login(', $start)
+                  if ($start -lt 0 -or $end -le $start) { throw 'R5 production fix locator missing' }
+                  $oldBehavior = '    fn preserve_owner_login_failure(&mut self, command: &OwnerLoginCommand, failure: AccountObservationFailure) -> OrchestrationError { failure.error }' + "`n"
+                  $mutated = $source.Substring(0,$start) + $oldBehavior + $source.Substring($end)
+                } elseif ($case.axis -ceq 'R6') {
+                  $start = $source.IndexOf('    fn progress_pending_first_stop(')
+                  $end = $source.IndexOf('    fn finish_owner_device_login(', $start)
+                  if ($start -lt 0 -or $end -le $start) { throw 'R6 production fix locator missing' }
+                  $oldBehavior = '    fn progress_pending_first_stop(&mut self, command: &OwnerLoginCommand, pending: PendingFirstStop) -> Result<Vec<u8>> {' + "`n" +
+                    '        let reply = owner_login_reply(command, "UNKNOWN", &pending_first_stop_output(&pending));' + "`n" +
+                    '        self.owner_login = Some(OwnerLoginSession::PendingFirstStop(pending)); Ok(reply)' + "`n" + '    }' + "`n"
+                  $mutated = $source.Substring(0,$start) + $oldBehavior + $source.Substring($end)
+                } elseif ($case.axis -ceq 'R9') {
+                  $start = $source.IndexOf('    fn finish_owner_device_login(')
+                  $end = $source.IndexOf('    fn append_owner_login_stderr(', $start)
+                  if ($start -lt 0 -or $end -le $start) { throw 'R9 finish method locator missing' }
+                  $method = $source.Substring($start,$end-$start)
+                  $live = 'self.append_owner_login_stderr(&mut active)'
+                  if ([regex]::Matches($method,[regex]::Escape($live)).Count -ne 1) { throw 'R9 final live stderr locator must match once' }
+                  $method = $method.Replace($live,'Ok::<(), OrchestrationError>(())')
+                  $cancelAnchor = '// Cancellation still owns the original CLI diagnostic.'
+                  if ([regex]::Matches($method,[regex]::Escape($cancelAnchor)).Count -ne 1) { throw 'R9 final cancellation diagnostic anchor must match once' }
+                  $cancelStart = $method.IndexOf('        if cancelled {', $method.IndexOf($cancelAnchor))
+                  $cancelEnd = $method.IndexOf('        let login_failure =', $cancelStart)
+                  if ($cancelStart -lt 0 -or $cancelEnd -le $cancelStart) { throw 'R9 cancellation stderr locator missing' }
+                  $method = $method.Remove($cancelStart,$cancelEnd-$cancelStart)
+                  $mutated = $source.Substring(0,$start) + $method + $source.Substring($end)
+                } else {
+                  $start = $source.IndexOf('    fn finish_confirmed_account_observation(')
+                  $end = $source.IndexOf('    fn record_account_and_credential_backend(', $start)
+                  if ($start -lt 0 -or $end -le $start) { throw 'R7 production fix locator missing' }
+                  $method = $source.Substring($start,$end-$start)
+                  $fixedStart = $method.IndexOf('        let frame = match execution {')
+                  $fixedEnd = $method.IndexOf('        self.record_account_and_credential_backend(', $fixedStart)
+                  if ($fixedStart -lt 0 -or $fixedEnd -le $fixedStart) { throw 'R7 primary/cleanup fix locator missing' }
+                  $method = $method.Substring(0,$fixedStart) + '        cleanup?; let frame = execution?;' + "`n" + $method.Substring($fixedEnd)
+                  $mutated = $source.Substring(0,$start) + $method + $source.Substring($end)
+                }
+                [IO.File]::WriteAllText($path,$mutated,[Text.UTF8Encoding]::new($false))
+                $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $case.filter --lib -- --nocapture 2>&1
+                $exitCode = $LASTEXITCODE
+                Write-Host "GOGOKE_SECURITY_EXIT phase=mutated code=$exitCode"
+                $output | Out-Host
+                if ($exitCode -eq 0 -or @($output | Where-Object { $_ -match 'test result: FAILED\. 0 passed; 1 failed; 0 ignored' }).Count -ne 1) {
+                  throw "$($case.axis) mutation must compile and fail its unchanged behavioral test"
+                }
+              } finally {
+                [IO.File]::WriteAllBytes($path,$original)
+                if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -cne $baselineHash) { throw 'Native production source restoration hash mismatch' }
+              }
+              $restored = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $case.filter --lib -- --nocapture 2>&1
+            Write-Host "GOGOKE_SECURITY_EXIT phase=restored code=$LASTEXITCODE"
+              $restored | Out-Host
+              if ($LASTEXITCODE -ne 0 -or @($restored | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+                throw "$($case.axis) unchanged test must pass after exact production restoration"
+              }
+            }
+          } finally { Stop-Transcript }
+      - name: Verify legacy credential recovery with compiled failing mutations
+        if: ${{ matrix.group == 'legacy' && !cancelled() && steps.fixed-claude.outcome == 'success' && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.catalog_program_fixture_only }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Start-Transcript -Path (Join-Path (Join-Path $env:RUNNER_TEMP 'security-group-originals') 'legacy.log') -Force
+          try {
+            $ErrorActionPreference = 'Stop'
+            $PSNativeCommandUseErrorActionPreference = $false
+            $productTest = 'legacy_original_home_preserves_unknown_and_reopens_exact_holder_fence'
+            $cases = @(
+              @{ axis='legacy-R4-partial'; path='apps/desktop/native-host/src/process/session/legacy_acl.rs';
+                 filter='two_real_legacy_sids_resume_after_first_acl_write_and_baseline_readback' },
+              @{ axis='legacy-R5-prewrite'; path='apps/desktop/native-host/src/store/product_database/v37_login.rs'; filter=$productTest },
+              @{ axis='legacy-R6-cold-model'; path='apps/desktop/native-host/src/store/product_database/v37_login.rs'; filter=$productTest },
+              @{ axis='legacy-R7-cache-custody'; path='apps/desktop/native-host/src/store/product_database/v37_login.rs'; filter=$productTest }
+            )
+            foreach ($case in $cases) {
+              $original = [IO.File]::ReadAllBytes($case.path)
+              $source = [Text.Encoding]::UTF8.GetString($original)
+              $hash = (Get-FileHash -LiteralPath $case.path -Algorithm SHA256).Hash
+              if ($case.axis -ceq 'legacy-R4-partial') {
+                $start = $source.IndexOf('fn legal_home_progress(')
+                $end = $source.IndexOf('fn baseline_target()', $start)
+                if ($start -lt 0 -or $end -le $start) { throw 'Legacy partial production locator missing' }
+                $stale = 'fn legal_home_progress(observed: &Dacl, original: &Dacl, historical: &[(String, String)]) -> bool {' + "`n" +
+                  '    acl_equal(observed, original) || acl_equal(observed, &home_target(original, historical))' + "`n" + '}' + "`n"
+                $mutated = $source.Substring(0,$start) + $stale + $source.Substring($end)
+              } elseif ($case.axis -ceq 'legacy-R5-prewrite') {
+                $needle = '            failure(instance::validate_legacy_acl_write(&self.connection, &home_step, &proof))?;'
+                if ([regex]::Matches($source,[regex]::Escape($needle)).Count -ne 1) { throw 'Legacy pending HOME validator must match once' }
+                $mutated = $source.Replace($needle,'')
+              } elseif ($case.axis -ceq 'legacy-R6-cold-model') {
+                $start = $source.IndexOf('    pub(super) fn ensure_native_credential_backend(')
+                $end = $source.IndexOf('        for file_bound in [false,true] {', $start)
+                if ($start -lt 0 -or $end -le $start) { throw 'Legacy durable backend production locator missing' }
+                $method = $source.Substring($start,$end-$start)
+                $needle = '                self.recover_legacy_account_baseline(instance_id, &home, &profile)?;'
+                if ([regex]::Matches($method,[regex]::Escape($needle)).Count -ne 1) { throw 'Legacy durable File adoption must match once' }
+                $mutated = $source.Substring(0,$start) + $method.Replace($needle,'') + $source.Substring($end)
+              } else {
+                $needle = '                    && matches!(row.state.as_str(), "UNKNOWN" | "PREPARED"))'
+                if ([regex]::Matches($source,[regex]::Escape($needle)).Count -ne 1) { throw 'Legacy cached uncertain custody check must match once' }
+                $mutated = $source.Replace($needle,'                    && false)')
+              }
+              try {
+                [IO.File]::WriteAllText($case.path,$mutated,[Text.UTF8Encoding]::new($false))
+                $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $case.filter --lib -- --nocapture 2>&1
+                $code = $LASTEXITCODE
+                Write-Host "GOGOKE_SECURITY_EXIT phase=mutated code=$code"
+                $output | Out-Host
+                if ($code -eq 0 -or @($output | Where-Object { $_ -match 'test result: FAILED\. 0 passed; 1 failed; 0 ignored' }).Count -ne 1) {
+                  throw "$($case.axis) must compile and fail its unchanged physical/product boundary test"
+                }
+              } finally {
+                [IO.File]::WriteAllBytes($case.path,$original)
+                if ((Get-FileHash -LiteralPath $case.path -Algorithm SHA256).Hash -cne $hash) { throw 'Legacy exact production source restoration failed' }
+              }
+              $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $case.filter --lib -- --nocapture 2>&1
+              Write-Host "GOGOKE_SECURITY_EXIT phase=restored code=$LASTEXITCODE"
+              $output | Out-Host
+              if ($LASTEXITCODE -ne 0 -or @($output | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+                throw "$($case.axis) unchanged test must pass after exact restoration"
+              }
+            }
+          } finally { Stop-Transcript }
+      - name: Verify native installation facts with independent compiled mutations
+        if: ${{ matrix.group == 'installation' && !cancelled() && steps.fixed-claude.outcome == 'success' && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.catalog_program_fixture_only }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Start-Transcript -Path (Join-Path (Join-Path $env:RUNNER_TEMP 'security-group-originals') 'installation.log') -Force
+          try {
+            $ErrorActionPreference = 'Stop'
+            $PSNativeCommandUseErrorActionPreference = $false
+            $cases = @(
+              @{ axis='R10-admission'; path='apps/desktop/native-host/src/store/session_transport/runtime.rs';
+                 needle="WHERE instance_id=?1 AND login_state='LOGGED_IN'";
+                 stale="WHERE instance_id=?1 AND install_state='INSTALLED' AND login_state='LOGGED_IN'";
+                 filter='pin_is_read_from_same_verified_store_and_requires_observed_login' },
+              @{ axis='R10-rpc'; path='apps/desktop/native-host/src/store/session_transport/rpc_journal.rs';
+                 needle="JOIN main.gogoke_v37_instances i ON i.instance_id=a.instance_id";
+                 stale="JOIN main.gogoke_v37_instances i ON i.instance_id=a.instance_id AND i.install_state='INSTALLED'";
+                 filter='actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_call' },
+              @{ axis='R10-resume'; path='apps/desktop/native-host/src/store/session_transport/episodes.rs';
+                 needle="AND i.login_state='LOGGED_IN'";
+                 stale="AND i.install_state='INSTALLED' AND i.login_state='LOGGED_IN'";
+                 filter='actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_call' }
+            )
+            foreach ($case in $cases) {
+              $original = [IO.File]::ReadAllBytes($case.path)
+              $source = [Text.Encoding]::UTF8.GetString($original)
+              $hash = (Get-FileHash -LiteralPath $case.path).Hash
+              if ([regex]::Matches($source,[regex]::Escape($case.needle)).Count -ne 1) {
+                throw "$($case.axis) native fact predicate must match once"
+              }
+              try {
+                [IO.File]::WriteAllText($case.path,$source.Replace($case.needle,$case.stale),[Text.UTF8Encoding]::new($false))
+                $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $case.filter --lib -- --nocapture 2>&1
+                $code = $LASTEXITCODE
+                Write-Host "GOGOKE_SECURITY_EXIT phase=mutated code=$code"
+                $output | Out-Host
+                if ($code -eq 0 -or @($output | Where-Object { $_ -match 'test result: FAILED\. 0 passed; 1 failed; 0 ignored' }).Count -ne 1) {
+                  throw "$($case.axis) must compile and fail its unchanged native behavior test"
+                }
+              } finally {
+                [IO.File]::WriteAllBytes($case.path,$original)
+                if ((Get-FileHash -LiteralPath $case.path).Hash -cne $hash) { throw "$($case.axis) exact source restoration failed" }
+              }
+              $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $case.filter --lib -- --nocapture 2>&1
+              Write-Host "GOGOKE_SECURITY_EXIT phase=restored code=$LASTEXITCODE"
+              $output | Out-Host
+              if ($LASTEXITCODE -ne 0 -or @($output | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+                throw "$($case.axis) unchanged test must pass after exact restoration"
+              }
+            }
+          } finally { Stop-Transcript }
+      - name: Verify confirmed forced Job stop with a compiled failing mutation
+        if: ${{ (matrix.group == 'installation' || (matrix.group == 'core' && inputs.trace_canonicalize)) && !cancelled() && steps.fixed-claude.outcome == 'success' && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.catalog_program_fixture_only }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Start-Transcript -Path (Join-Path (Join-Path $env:RUNNER_TEMP 'security-group-originals') 'forced-stop.log') -Force
+          try {
+            $ErrorActionPreference = 'Stop'
+            $PSNativeCommandUseErrorActionPreference = $false
+            $path = 'apps/desktop/native-host/src/process/windows.rs'
+            $original = [IO.File]::ReadAllBytes($path)
+            $source = [Text.Encoding]::UTF8.GetString($original)
+            $hash = (Get-FileHash -LiteralPath $path).Hash
+            $fixed = 'if let Err(error) = terminate_job(self.job.raw(), STOP_FORCED_EXIT_CODE) {'
+            if ([regex]::Matches($source,[regex]::Escape($fixed)).Count -ne 1) { throw 'R8 stop proof fix must match once' }
+            try {
+              [IO.File]::WriteAllText($path,$source.Replace($fixed,'if let Err(error) = terminate_job(self.job.raw(), STOP_TIMEOUT_EXIT_CODE) {'),[Text.UTF8Encoding]::new($false))
+              $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml prepared_process_identity_is_durable_before_activation --lib -- --nocapture 2>&1
+              $code = $LASTEXITCODE
+              Write-Host "GOGOKE_SECURITY_EXIT phase=mutated code=$code"
+              $output | Out-Host
+              if ($code -eq 0 -or @($output | Where-Object { $_ -match 'test result: FAILED\. 0 passed; 1 failed; 0 ignored' }).Count -ne 1) {
+                throw 'R8 must compile and fail its unchanged actual forced-stop durable-confirmation test'
+              }
+            } finally {
+              [IO.File]::WriteAllBytes($path,$original)
+              if ((Get-FileHash -LiteralPath $path).Hash -cne $hash) { throw 'R8 exact source restoration failed' }
+            }
+            $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml prepared_process_identity_is_durable_before_activation --lib -- --nocapture 2>&1
+            Write-Host "GOGOKE_SECURITY_EXIT phase=restored code=$LASTEXITCODE"
+            $output | Out-Host
+            if ($LASTEXITCODE -ne 0 -or @($output | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+              throw 'R8 unchanged test must pass after exact restoration'
+            }
+          } finally { Stop-Transcript }
+      - name: Read back exact production and test source restoration
+        if: ${{ !cancelled() && steps.security-source.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'security-group-originals'
+          $before = Get-Content -LiteralPath (Join-Path $evidence 'source-before.json') -Raw | ConvertFrom-Json
+          if ((& git rev-parse HEAD).Trim() -cne $before.sourceCommit -or $LASTEXITCODE -ne 0) { throw 'Test source commit drifted' }
+          foreach ($file in $before.files) {
+            if ((Get-FileHash -LiteralPath $file.path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $file.sha256) { throw "Exact source or test restoration differs: $($file.path)" }
+          }
+          if (@(& git status --porcelain --untracked-files=no).Count) { throw 'Tracked test source changed' }
+          [ordered]@{schema='gogoke.security-restoration.v1'; sourceCommit=$before.sourceCommit; workflowCommit=$before.workflowCommit; group=$before.group; state='PASS_EXACT_SOURCE_AND_TEST_RESTORATION'; fileCount=@($before.files).Count; acceptance=$false} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence 'source-restored.json') -Encoding utf8NoBOM
+      - name: Upload security group source and original mutation transcripts
+        if: ${{ always() && steps.security-source.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-group-originals-${{ steps.security-source.outputs.sha }}-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/security-group-originals
+          if-no-files-found: error
+          retention-days: 30
+
   gogoke-server-tests:
-    name: Gogoke server 51-file cloud tests
+    if: ${{ !inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only && !inputs.security_remainder_source && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.full_library_only && !inputs.catalog_program_fixture_only && !inputs.focused_library }}
+    name: Gogoke server cloud tests
     timeout-minutes: 45
     runs-on: windows-latest
     env:

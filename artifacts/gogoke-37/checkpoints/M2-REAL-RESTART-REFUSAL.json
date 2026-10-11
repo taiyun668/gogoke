@@ -1,0 +1,30 @@
+{
+  "schema": "gogoke.37.stage-checkpoint.v1",
+  "state": "PLAN_BOOT_IDENTITY_SEMANTICS_CONFLICT_PRESERVED",
+  "candidate": "Installed 0.1.24, frozen source8866c3c0f18332f731fe3640f93ea1a6141186d3; shell, native host and resource index hashes verified against the original frozen case.",
+  "changed": "Only private measurement evidence paths shortened after an ordinary-view snapshot copy failed at a long destination path. Original product, instance HOME, physical source, claim, session, generation and raw request retained. No product or plan edit.",
+  "result": {
+    "actual_restart": "Owner reported restart; Windows Kernel-General event12 records OS start2026-10-05T03:46:31.500Z. This is diagnostic corroboration, not a replacement recovery authority.",
+    "original_request": "One exact original retained K-SESSION open invocation at2026-10-05T04:01:45.475Z; refused before a model turn. Earlier failed measurement invoked no product operation.",
+    "kernel_query": "Ordinary-view direct call to the product's exact NtQuerySystemInformation class90: status0, returned32 bytes, nonzero16-byte identifier, exactly equal to the pre-restart immutable fence. Identifier retained only in private evidence.",
+    "normal_close": "Actual caption close, parent exit0; no force kill.",
+    "original_custody": "35 captured rows exactly equal to live original rows; 2 UNKNOWN and NULL stop proofs unchanged.",
+    "original_claim": "COMMITTED generation3; process_operation_id and stop_fact_id remain NULL.",
+    "acl_step_count": 0,
+    "model_episode_count": 0,
+    "formal_changed": [],
+    "credentials_read": false,
+    "measurement_sql_writes": false,
+    "post_boot_model_flow": "NOT_RUN_REFUSED"
+  },
+  "failure_original": "legacy account scope requires original stopped observer custody; exact metadata fence saved, Windows system restart required",
+  "measurement_failure_original": "FileNotFoundError at shutil.copyfile opening the private memory-byte-snapshot destination. Full ordinary-view traceback retained; original DB/WAL/SHM unchanged. Short private evidence directory passed the same snapshot reader.",
+  "logic": "The selected identifier was assumed to change for each real Windows restart. Actual native query after a confirmed restart equals the original fence, falsifying that assumption on this machine. Successful cloud same-value queries and simulated different identifiers prove neither per-restart semantics nor real recovery. This is our mechanism/plan error; no further Owner restart or CLI modification follows from the evidence.",
+  "independent_review": "Fresh Sol high read-only review agrees the per-restart-change premise is falsified by the real evidence. Fixed phnt declares layout only; Microsoft public API documentation does not guarantee per-restart change. Equality with a BCD boot-entry identifier remains an unproven mechanism hypothesis, not a claimed fact. Plan conflict requires revision before this recovery path continues.",
+  "next": "Resolve the PLAN.md boot-identity implementation conflict through plan review before product recovery changes. The corrected mechanism must establish genuine boot-session semantics and specify how the existing immutable legacy fence can be qualified without rewriting it, inventing STOPPED or using elapsed time/PID as authority. Preserve original custody and physical objects. Do not request another restart or login while that decision is unresolved.",
+  "references": "Current main AGENTS, PLAN.md permission-migration detail including its selected class90 interface, native boot_identity.rs and v37_login.rs equality refusal, original retained ActualProduct E2E and G4/formal readbacks. Reused the original caption-close and immutable fence reader; direct stderr/traceback and native query facts replace speculation. No replacement product or copied identity was tested.",
+  "route_reflection": "The prior cloud fixture varied a synthetic GUID and checked query stability, but never established that the native field changes across a real restart. Preserve that limited evidence; establish the replacement field's semantics before another build/install/restart roundtrip.",
+  "acceptance": false,
+  "public_release": false,
+  "main_modified": false
+}

@@ -1,0 +1,60 @@
+# M2：53 原记录保全，54 换装
+
+## 改了什么
+
+Owner 2026-10-10 允许 53 正常关闭、停止照实记未确认、不补 StopFact，保留原记录后换 54；以后同类测试实例停止证明不完整、旧进程精确已消失的处置，由 Controller 按“谁来决定”判断并记录理由。
+
+直接读回时，53 产品及原宿主已经不存在，原任务退出码为 `0xC000013A`。Controller 未发送 caption close，也未强杀，不能声称正常退出成功。逐一按 PID 与创建时间核对，原七条持有者身份均已消失；原 custody 仍为 UNKNOWN，StopFact 仍为空，原 RPC 与 episode 保留。
+
+54 采用已经集成的 Grok 权限回包、Claude 精确持有者消失后的有限资源恢复、原始诊断，以及 F 存储 tier 拼写修正。安装及复现工具沿用 53 已使用的普通 Interactive/Limited 任务、原卸载器与安装器、正式版五组保护快照；原数据库按只读 WAL 视图核对，不复制数据库或实例 home。
+
+## 结果
+
+- 53 原卸载器退出零，实际 finalizer 为 `DELETED`；原安装登记已移除，仅留确认空的钉住候选根，保留待审，未删除原测试记录。
+- 54 轻构建三项通过。九个冻结成员、资源签名产物、清单与公钥验签已回读；安装包没有重新打包。
+- 54 已普通视图安装；实际 shell、native host、resource index 与已验证的冻结字节一致，安装登记及新安装身份正确。
+- 退 53、装 54 的前后正式文件、正式数据、快捷方式、登记及原实例目录身份/元数据、原七条 custody、数据库与 WAL 核对通过。未读凭据内容、未补 StopFact。
+- 原十五项受影响原生检查保持原测试源码归属；之后仅检查点提交改变，产品、工具、CI、第三方四棵树机械比较完全一致。新冻结构建使用签名时的施工分支当前 HEAD。
+- 完整原生库、双构建字节比对、完整同字节云端装机和稳定验收链仍为 NOT_RUN。安装通过不代表 Claude 模型或完整 M2/M3 已通过，不自行验收。
+
+## 失败原文与处置
+
+第一次资源签名预检返回 `Candidate source is not the current HEAD of the controlled branch.`：Controller 在冻结后先提交了检查点，导致源码不再是分支 HEAD。保留原拒绝，按当前 HEAD 重跑轻构建；没有松绑签名器，也没有删改原提交。
+
+一次只读测量报告 `Authoritative DB/WAL changed during read`，但未先保存前后数值；该仪器失败保留，不推断其原因。补齐读前读后原件后，当前原库/WAL 读取连续性与原记录保全通过。一次保全核对使用了错误的原日志路径，修正为原 evidence 下的结果文件后通过，未重跑任何产品请求。
+
+私有换装脚本的返回字段缺项及执行前进程检查缺项均在执行前修正；三项已结束测量任务按确切 custody 清理，XML 与日志保留。
+
+## 下一步
+
+54 上已经使用原 `claudeTestM2` 的真实产品路径。首次读取实例列表返回 `Invalid("Claude original open effect absent")`，尚未开新 H 或调用模型。产品正常 caption close、退出零，正式/记忆/账本保护通过。
+
+直接读回显示原两个失败 H 的 open 记录实际存在，状态是 UNKNOWN，原 raw、session 与 episode 精确匹配；episode 是 PREPARED，custody 是 UNKNOWN/空 StopFact，原七条持有者均已消失。恢复代码却只接受 APPLIED，把“原 open 必须成功”误当成“旧持有者可以收尾”的前提。现有云组合只覆盖成功 initialize 后关闭，漏掉此真实失败形状。正在修这处产品逻辑并补对应安全回归；不是新增授权，不把 UNKNOWN 改成成功。
+
+补充只读测量的实际差异：54 关闭后第一次 mode=ro 观察仅使缺席 WAL 变成空 WAL，主数据库哈希前后相同；原失败及前后原件保留。再次观察既有 WAL 后，主库/WAL、原 custody 和失败原文完整读回且前后一致。没有以非空 WAL 的忽略视图冒充通过。
+
+最小修已落实：只接受唯一且原 raw/open/session 精确匹配的 APPLIED 或 UNKNOWN；把原 openStatus 写入 capture，并在续接、释放事务内重读及已释放结果重读时比较。没有改原 open/RPC/episode/custody，不补 StopFact。全新 Sol 聚焦静态复核通过；新增安全回归用真实 H/E/F 与进程消失/ACL 生产者，明确将 UNKNOWN/PREPARED 持久形状标为合成投影，覆盖双旧 H 部分释放、状态漂移拒绝、恢复后原记录不变。云端结果尚待读回，不代表真机恢复通过。
+
+复核提出的旧 capture 兼容条件已直接核对：目标实例的 Claude recovery journal 为零，原库/WAL 前后相同，七条旧记录完整。没有为补字段迁移或改写旧记录。55 包含这项真实产品修正；所有提交在冻结前完成，避免再次移动签名所绑定的分支 HEAD。
+
+首轮新增安全回归失败：`left: "UNKNOWN", right: "PREPARED"`。直接源码说明，未完成意图遇到记录漂移会持久拒绝为 UNKNOWN，不能复原字段后自动续跑；错误在测试预期。保留云端原失败，修正为先检验无漂移的部分释放续接，再检验已完成回执的 capture 状态重比；没有放松生产拒绝。原冻结构建取消，尚未签名或换装 55。
+
+Owner 已合并 PR #83，并于 2026-10-10 关闭 SAC；Controller 实际读回 `VerifiedAndReputablePolicyState=0`。采用 main 的本机开发例外：D 盘独立数据与测试实例、产物与临时目录直接 D、并行不超过八。开发运行只用于诊断，不作正式证据、不进入候选；正式改动继续云检。稳定实测/验收前先提醒 Owner 开启 SAC，并读回为一后才能安装。此前 SAC 为一的换装快照保留为历史，新活动不套用旧状态。
+
+本机开发编译完成约 141 秒，只产出 D 盘测试程序。第一项安全组合因旧的 CI-only fixture guard 拒绝，未启动 CLI；测试辅助加入本机明确 opt-in、实际注册表 SAC DWORD 为零、规范化 TEMP 在 D 的条件，原 CI 与固定官方 archive/hash/H probe 不变。全新 Sol 聚焦静态复核无阻塞；这只校验 fixture 的 TEMP，编译目标/工作目录/测试根仍由实际运行配置保证直接 D，不伪造 CI 身份。
+
+本机该测试辅助的首轮读回返回 Win32 87，未启动 CLI：`RegGetValueW` 的类型标志错误地为零。原失败保留，直接 SDK `winreg.h` 定义确认 `RRF_RT_REG_DWORD=0x00000010`，已修为该精确类型；没有改注册表或放松 SAC DWORD/值的断言。恢复修正的正式受影响云检十六项及卫生已通过，原产物逐成员与日志回读；本机辅助最新改动仍须自己的云检，不沿用旧源码证明。
+
+现成 Claude 组件的外层脚本曾用 PowerShell 保留变量、又把测试父进程 profile 改为空目录，两次仪器失败保留。恢复普通父 profile、只重定向父 TEMP/TMP 后，实际 CLI 子进程仍由原 Rust 生产者配置独立 D 空 HOME/session/worktree；一次真实固定 Claude initialize ACK，stdin close 成功，正常停止退出零、Job 归零、未 kill。原 stdout/stderr、任务 XML 与 custody 保留，自建任务逐项清理。stderr 中 Win32 231 的 uv pipe 行与成功 ACK 共存，不据此宣称原超时根因。仅为空凭据组件诊断，原 53 已登录 H、模型与 M2/M3 未通过。
+
+本机显式 opt-in 的 UNKNOWN/PREPARED 安全组合已退出零，原输出保留；这项使用合成登录 presence，不代表已安装实例恢复或真实认证通过。实际普通视图任务已按确切 custody 注销并回读不存在。最新测试辅助源码自己的受影响云检十六项及卫生通过，原压缩包、成员和日志回读通过；没有沿用前一源码的结果。
+
+同字节 Claude 空凭据组件在实际 217 字符的 session HOME 下约三秒取得原 initialize ACK，并正常退出、Job 空、无 kill；它证伪了“该长度单独导致空凭据组件超时”，不能外推为原已登录 H 的根因已解决。进一步直接核对原失败 custody：其 image 正是本机组件已测的同一路径和同字节 CLI，所以不做自管路径差异试验。Sol 正在独立工作树只读比较实际 H 和组件的环境、ACL、参数、初始化与读取顺序；Luna 并行定位真实 Grok 权限帧的原生产者，不把 decoder fixture 或首次测试的测量失败覆盖后来真实回读。
+
+继续在原身份上验证冷恢复与真实对话，旧失败请求不重发；55 只采用已经云检的真实恢复修正，后续冻结前完成检查点，冻结后不移动源码 HEAD。Grok 原工具权限轴并行推进。稳定后再走完整链。
+
+普通关闭/换装的理由：测试候选、同一当前用户，原持有者精确已消失，不改变授权/隔离边界；停止未确认及原证据保留，正式保护核对通过。以后同类按 Owner 最新决定自行判断，不再新增 Owner 触点。
+
+## 参照
+
+采用此前 52→53 的真实退装/装机脚本、正式五组快照、原产品 CDP/硬断言测试链，以及 main 的 AGENTS.md。恢复修正直接参照 v37_runtime 的原 UNKNOWN 写入、成功后 APPLIED 转换、authority/process_custody 的冷启动 UNKNOWN，以及已有 Claude 双 H 组合；沿用精确持有者消失与有限 ACL 退休，不自创成功停止记录。区别是本次原产品已经消失，所以记录独立的“持有者消失”和退出未确认，不套用正常 caption close 成功；WAL 观察使用原库只读视图，不把忽略 WAL 的替身当作当前状态。所有新临时材料与候选证据直接保存在 D 盘的私有证据区，公开提交不含本机路径、账户或凭据。

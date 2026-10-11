@@ -1,0 +1,13 @@
+{
+  "schema": "gogoke.37.checkpoint.v1",
+  "changes": "Read the actual Owner merge of PR62 and integrated that authorized main into the M1 and M2 construction branches.",
+  "result": "PASS_EXACT_MAIN_RECEIPT_AND_SCOPE_READBACK. GitHub merged_by is taiyun668; the merge has the reviewed PR head as its second parent. Main receipt bytes and all three main signing-chain pins agree. This records authorization readback, not product acceptance.",
+  "main": "e43f1ac0b1492dce0f9ef5d469df4a240e11e7c9",
+  "receipt_blob": "fae816fb4e43f55623ffcee4c008d3febd63d7ad",
+  "receipt_introduction_main": "e43f1ac0b1492dce0f9ef5d469df4a240e11e7c9",
+  "main_verifier_blob": "9a2157d714e66c8f9dd28bb3935ef0a268205670",
+  "scope_digest": "e77f7348b84e6b30c27976383c80ab8163c915174d29d22c5274087d3be0fbe0",
+  "next": "Continue the M1 CMD environment cloud checks and real-flow repair, and compile/wire the independently reviewed M2 source packages. Stage checks do not sign, install or publish; run the complete frozen candidate chain at the M1 stable point.",
+  "references": "Used exact Git blobs from the merged main, main's verify_plan.py --scope-digest on main PLAN.json, the actual merge parents and GitHub PR62 merged_by. No candidate verifier was executed and no receipt pin was inferred from a branch name.",
+  "acceptance": false
+}

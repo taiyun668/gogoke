@@ -1,5 +1,6 @@
 import type { CSSProperties, MouseEvent } from "react";
 import { useI18n } from "@/i18n";
+import { useNowConversation } from "@/features/now/NowContext";
 
 import type { ThreadSummary } from "../../../types";
 import { getThreadStatusClass, type ThreadStatusById } from "../../../utils/threadStatus";
@@ -103,12 +104,21 @@ export function ThreadRow({
   const hasPendingUserInput = Boolean(
     pendingUserInputKeys?.has(`${workspaceId}:${thread.id}`),
   );
-  const statusClass = getThreadStatusClass(
+  const now = useNowConversation(workspaceId, thread.id);
+  const nowWord = now?.batchWord ?? null;
+  const legacyStatusClass = getThreadStatusClass(
     threadStatusById[thread.id],
     hasPendingUserInput,
   );
-  const statusLabel =
-    statusClass === "reviewing"
+  const statusClass = nowWord
+    ? nowWord === "待处理" ? "unread" : nowWord === "在运行" ? "processing" : nowWord === "改动就绪" ? "ready" : ""
+    : legacyStatusClass;
+  const frozenTime = now?.frozenAt ? new Date(now.frozenAt) : null;
+  const frozenTimeLabel = frozenTime && !Number.isNaN(frozenTime.getTime())
+    ? frozenTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }) : null;
+  const statusLabel = nowWord
+    ? now?.status === "frozen" ? `${nowWord} · ${frozenTimeLabel ?? "时间未知"} 最后读到` : nowWord
+    : legacyStatusClass === "reviewing"
       ? tx("Reviewing")
       : hasPendingUserInput
         ? tx("Waiting")
@@ -192,7 +202,7 @@ export function ThreadRow({
               </span>
             )}
             {statusLabel && (
-              <span className={`thread-state-chip ${statusClass}`}>{statusLabel}</span>
+              <span className={`thread-state-chip ${statusClass}`} title={now?.readError}>{statusLabel}</span>
             )}
             {contextLabel && (
               <span className="thread-context-label" title={contextLabel}>

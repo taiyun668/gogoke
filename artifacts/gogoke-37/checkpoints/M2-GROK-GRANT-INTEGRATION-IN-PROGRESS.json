@@ -1,0 +1,29 @@
+{
+  "schema": "gogoke.37.checkpoint.v1",
+  "state": "IN_PROGRESS_NOT_ACCEPTANCE",
+  "changed": [
+    "Corrected the new merge-denial test: the original M1 fixture legitimately has no optional F.2 lifecycle row; its registered worktree remains registered.",
+    "Integrated Grok-only original HOME ACL intents, physical auth FileID custody, same-domain observation revision advancement and native ingress wiring on a separate construction branch.",
+    "Preserved UNKNOWN episodes and NULL StopFacts during resource retirement; original H claims release separately after physical withdrawal."
+  ],
+  "results": {
+    "merge_native_run_37411647809": "720 passed, one test assertion failed; original LPAC shim tests passed; corrected exact-source full library rerun 37416938792 is in progress",
+    "grok_integration_source": "5274c6ab",
+    "grok_cloud": "NOT_QUALIFIED: release compilation exposed E0596 in the new F transaction closure; worker is correcting it",
+    "grok_independent_audit": "IN_PROGRESS: confirmed normal revision, FileID recovery, peer replay and native ingress defects are being corrected; resume candidate and exact peer ownership findings remain open",
+    "win11_rules": "IN_PROGRESS on installed 0.1.31: two original admitted sessions execute real policy tools; no pass claim until H stop, release, normal close and final readback",
+    "diagnostic_0_1_32": "Frozen desktop build and trusted candidate resource signing passed; same-byte installed smoke is in progress; local installation NOT_RUN",
+    "formal_data": "Last closed provider readback retained all five formal groups unchanged; current rules run remains open"
+  },
+  "next": [
+    "Finish Grok original resume-candidate and exact peer guards, rerun cloud Windows and obtain a frozen-source independent audit.",
+    "Complete the live rules flow and read back actual H stop/release before candidate close.",
+    "After native qualification and cloud smoke, use the frozen diagnostic candidate to read the original Win11 merge failure stage."
+  ],
+  "references": [
+    "Existing native holder-disappearance scope and immutable H/F/custody joins; reused scope algorithm, with visibility changes only.",
+    "Existing LaunchEvidence resume_old and original H generation promotion; candidate initialization must retain their authority shape.",
+    "Existing generic LPAC directory predicate and Codex/File credential custody remain unchanged; Grok uses its original F HOME and original auth FileIDs because the observed protected leaf and supported replacement differ from Codex's file alias custody.",
+    "AGENTS.md: direct errors, logical validation of findings, parallel ownership, cloud native tests and stage-light construction."
+  ]
+}

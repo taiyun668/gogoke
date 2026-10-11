@@ -1,0 +1,42 @@
+{
+  "version": "0.1.27",
+  "next": "Continue M2: complete exact-source 0.1.28 cloud/candidate chain for OpenCode xAI SuperGrok, preserve three completed logins, request only remaining OpenCode authorization in the same OT4b batch. Old unresolved records preserved. B5 UNSUPPORTED/NOT_RUN.",
+  "result": "Two logical sessions, five physical episodes, three recorded business turns plus one compact completion. Original question card answered, same-turn steer consumed, actual commands successful; compact, renew, normal close, product restart and resume observed. Both caption closes exit 0; final seat IDLE. Direct raw protocol and normalized ledger confirm original turns, continuous physical source cursors and durable stop facts. Formal five groups and memory observations unchanged; readonly ledger measurement preserved bytes. Actual new-instance admission/open/send did not trigger legacy account scope rejection.",
+  "cliSha256": "fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d",
+  "helperSha256": "1d448bfde19e7a280d600d8d0bcddf77afbe9feaec1e804905becc5f39bc9db6",
+  "sourceCommit": "097aeb46f019a092521cd15526e0424b26e92c2f",
+  "state": "M1_FRESH_INSTANCE_ACTUAL_E2E_DIRECT_READBACK_PASS",
+  "privateEvidenceSha256": {
+    "m1-protocol-session-2.json": "7f23ae6cec30f084ea5746b642f0e1c43c4dcf59cd470b6ed02f4f6190af51da",
+    "m1-direct-readback.json": "24d61a333d3fb5785e42a8afa2363d8a601d6f849530e6ff2fefea44f107434a",
+    "m1-protocol-session-1.json": "a5653e5496c6bda2ff360c088b2c0f520a540bad41ec833562cd7bb67aaf3ee6",
+    "m1-actual-e2e.json": "5717563d3aca56226be971759cb943ac5dd802630a171fb0976c75f844fd7c3b"
+  },
+  "acceptance": false,
+  "changed": "Ran the repeatable real installed 0.1.27 E2E with the Owner-approved fresh Codex identity and existing login. No authentication, credential copying, old-fence recovery or CLI change.",
+  "realCaptures": {
+    "session1": "302 frames, out 37 / in 265, normalized 165",
+    "session2": "93 frames, out 9 / in 84, normalized 53",
+    "baselineStatus": "REVIEW_REQUIRED",
+    "acceptance": "NOT_ASSESSED"
+  },
+  "public_release": false,
+  "instance": "codexTestM2Ready",
+  "candidateChain": {
+    "frozenArtifact": 11342080320,
+    "smokeAttempt": 2,
+    "frozenMemberMatches": 7,
+    "trustedMainSigning": 37303287516,
+    "sameByteInstalledSmoke": 37303529446,
+    "firstSmoke": "FAIL measurement tempRoot EPERM, original evidence retained. Same bytes passed attempt 2; root cause not claimed.",
+    "nativeCoverage": "35 probes plus 2 LPAC shim cases PASS; full library and mutations NOT_RUN",
+    "signedArtifact": 11342192336,
+    "desktop": 37298602615,
+    "nativeDirectedRun": 37298603783,
+    "hygiene": 37298602924
+  },
+  "schema": "gogoke.37.stage-checkpoint.v1",
+  "references": "Reused m1-win11.mjs, product-cdp.mjs, m1-readback.py, cli-protocol-golden.mjs and ordinary Interactive/Limited snapshots. Fresh fixture graph follows existing prepare-m2-fixture: STALE revision 0 is read at native observed revision 2 without replaying mutations. Closed real F metadata supplies the new worktree path. Official fixed CLI 0.160.0 and helper pins retained.",
+  "independentReview": "Sol read-only audit: no blocker; exact original completions and all 218 normalized events have original-frame associations; five stop facts and two exit-0 caption closes agree. 89 PENDING raw frames are retained, not a claim that every raw method was normalized. candidate-custody.ps1 source is identical, its byte-hash difference is CRLF/LF. Golden baseline remains REVIEW_REQUIRED, not acceptance.",
+  "independentReceiptSha256": "0b2a3dc76bf6c7a58d54d0243110a0250eb55c45ec381716e4da99c7f969c9d4"
+}

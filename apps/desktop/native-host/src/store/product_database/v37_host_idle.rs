@@ -1,0 +1,238 @@
+//! A positive current-episode Codex idle observation for automatic Host input.
+//! A missing in-memory turn, a stopped process, or an old generation is not idle.
+use super::*;
+use crate::store::atomic::Parser;
+use crate::store::ledger;
+use crate::store::session_transport::{self as h, codex_rpc};
+use std::collections::BTreeSet;
+
+fn value<'a>(fields: &'a BTreeMap<JsonString, Json>, name: &str) -> Option<&'a Json> {
+    fields.get(&JsonString::from_str(name))
+}
+fn object(value: &Json) -> Option<&BTreeMap<JsonString, Json>> {
+    if let Json::Object(fields) = value { Some(fields) } else { None }
+}
+fn string(value: Option<&Json>) -> Option<String> {
+    if let Some(Json::String(text)) = value { text.to_well_formed_string() } else { None }
+}
+fn fields(bytes: &[u8]) -> Result<BTreeMap<JsonString, Json>> {
+    let source = std::str::from_utf8(bytes).map_err(|error|
+        OrchestrationError::V37StoreFailure(format!("original Host idle UTF-8: {error}")))?;
+    let Json::Object(fields) = Parser::parse(source)? else {
+        return Err(OrchestrationError::Invalid("original Host idle source object"));
+    };
+    Ok(fields)
+}
+fn bytes(encoded: &str) -> Result<Vec<u8>> {
+    if encoded.len() % 2 != 0 { return Err(OrchestrationError::Invalid("Host idle command hex")); }
+    encoded.as_bytes().chunks_exact(2).map(|pair| {
+        let text = std::str::from_utf8(pair).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("Host idle command hex UTF-8: {error}")))?;
+        u8::from_str_radix(text, 16).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("Host idle command hex: {error}")))
+    }).collect()
+}
+fn positive_idle(status: Option<&Json>) -> bool {
+    let Some(status) = status.and_then(object) else { return false; };
+    status.len() == 1 && string(value(status, "type")).as_deref() == Some("idle")
+}
+fn original_thread_turns(thread: &BTreeMap<JsonString, Json>)
+    -> Option<(BTreeSet<String>, BTreeSet<String>)> {
+    let status = value(thread, "status").and_then(object)?;
+    if !matches!(string(value(status, "type")).as_deref(), Some("idle" | "active")) {
+        return None;
+    }
+    let Json::Array(turns) = value(thread, "turns")? else { return None; };
+    let mut seen = BTreeSet::new();
+    let mut unfinished = BTreeSet::new();
+    for turn in turns {
+        let turn = object(turn)?;
+        let id = string(value(turn, "id"))?;
+        if id.is_empty() || !seen.insert(id.clone()) { return None; }
+        match string(value(turn, "status"))?.as_str() {
+            "inProgress" => { unfinished.insert(id); }
+            "completed" | "failed" | "interrupted" => {}
+            _ => return None,
+        }
+    }
+    Some((seen, unfinished))
+}
+
+impl<'root> ProductDatabase<'root> {
+    /// Re-read original A at the authority safe point. Every observation is
+    /// tied to the retained process ticket/nonce and this exact generation.
+    pub(super) fn host_rule_recipient_idle(&mut self, key: &(String, String)) -> Result<bool> {
+        self.recipient_idle_with_purpose(key,ledger::SessionPurpose::Work)
+    }
+    pub(super) fn side_recipient_idle(&mut self,key:&(String,String),
+        purpose:ledger::SessionPurpose)->Result<bool> {
+        self.recipient_idle_with_purpose(key,purpose)
+    }
+    fn recipient_idle_with_purpose(&mut self, key:&(String,String),
+        purpose:ledger::SessionPurpose)->Result<bool> {
+        let Some(run) = self.native_sessions.get(key) else { return Ok(false); };
+        if run.evidence.driver_id() != "codex" || !run.allows_input() || run.turn_id.is_some() {
+            return Ok(false);
+        }
+        let Some(thread) = run.thread_id.clone() else { return Ok(false); };
+        let operation = run.operation_id.clone();
+        let custody = run.custody.clone();
+        let seat = run.evidence.seat_id().to_owned();
+        if ledger::read_registered_session(&self.connection, &key.1)?
+            .is_none_or(|registration| registration.domain_id != key.0 || registration.seat_id != seat
+                || registration.purpose != purpose) {
+            return Ok(false);
+        }
+        if h::generation_change::active_for_session(&self.connection, &key.0, &key.1)?.is_some() {
+            return Ok(false);
+        }
+        let live = Statement::prepare(self.connection.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_h_claim c
+               JOIN main.gogoke_v37_h_process_episode e ON e.domain_id=c.domain_id
+                 AND e.session_id=c.session_id AND e.generation=c.generation
+                 AND e.process_operation_id=c.process_operation_id AND e.phase='ACTIVE'
+               JOIN main.gogoke_coordination_process_custody p ON p.operation_id=c.process_operation_id
+                 AND p.domain_id=c.domain_id AND p.generation=c.generation AND p.state='ACTIVE'
+              WHERE c.domain_id=?1 AND c.session_id=?2 AND c.generation=?3
+                AND c.process_operation_id=?4 AND c.state='COMMITTED'
+                AND p.ticket=?5 AND p.custodian_nonce=?6")?;
+        for (index, text) in [key.0.as_str(), key.1.as_str(), custody.binding.generation.as_str(),
+            operation.as_str(), custody.ticket.opaque(), custody.custodian_nonce.as_str()].iter().enumerate() {
+            live.bind_text((index + 1) as i32, text)?;
+        }
+        if !live.step_row()? || live.step_row()? { return Ok(false); }
+        drop(live);
+        let questions = Statement::prepare(self.connection.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_qcard_native
+              WHERE domain_id=?1 AND seat_id=?2 AND generation=?3
+                AND state IN ('OPEN','ANSWER_UNKNOWN') LIMIT 1")?;
+        questions.bind_text(1, &key.0)?; questions.bind_text(2, &seat)?;
+        questions.bind_text(3, &custody.binding.generation)?;
+        if questions.step_row()? { return Ok(false); }
+        drop(questions);
+        let query = Statement::prepare(self.connection.as_ptr(),
+            "SELECT r.source_cursor,COALESCE(s.command_hex,'')
+               FROM main.v37_ledger_raw_source r
+               LEFT JOIN main.gogoke_v37_rpc_steps s ON s.domain_id=r.domain_id
+                 AND s.session_id=r.session_id AND s.generation=r.generation
+                 AND s.process_operation_id=r.operation_id AND s.ticket=r.process_ticket
+                 AND s.custodian_nonce=r.custodian_nonce AND s.source_epoch=r.source_epoch
+                 AND s.source_cursor=r.source_cursor AND s.phase='OBSERVED'
+              WHERE r.domain_id=?1 AND r.session_id=?2 AND r.generation=?3
+                AND r.operation_id=?4 AND r.process_ticket=?5 AND r.custodian_nonce=?6
+                AND r.source_epoch=?6 ORDER BY CAST(r.source_cursor AS INTEGER)")?;
+        for (index, text) in [key.0.as_str(), key.1.as_str(), custody.binding.generation.as_str(),
+            operation.as_str(), custody.ticket.opaque(), custody.custodian_nonce.as_str()].iter().enumerate() {
+            query.bind_text((index + 1) as i32, text)?;
+        }
+        let mut rows = Vec::new();
+        while query.step_row()? { rows.push((query.column_text(0)?, query.column_text(1)?)); }
+        drop(query);
+        let mut idle = false;
+        let mut opening_seen = false;
+        let mut known = BTreeSet::new();
+        let mut unfinished = BTreeSet::new();
+        let mut terminal = BTreeSet::new();
+        for (cursor, command_hex) in rows {
+            let source = ledger::read_captured_raw_source(&self.connection, &operation,
+                &custody.custodian_nonce, &cursor)?.ok_or(OrchestrationError::OperationConflict)?;
+            let raw = fields(&source.raw_bytes)?;
+            if let Some(result) = value(&raw, "result").and_then(object) {
+                if let Some(observed_thread) = value(result, "thread").and_then(object) {
+                    if opening_seen { return Ok(false); }
+                    if command_hex.is_empty() { return Ok(false); }
+                    let command = bytes(&command_hex)?;
+                    let encoded = fields(&command)?;
+                    let observed = match string(value(&encoded, "method")).as_deref() {
+                        Some("thread/start") => codex_rpc::decode_stored_thread_start(&command, &source.raw_bytes),
+                        Some("thread/resume") => codex_rpc::decode_stored_thread_resume(&command, &source.raw_bytes),
+                        _ => return Ok(false),
+                    }.map_err(|error| OrchestrationError::V37StoreFailure(
+                        format!("original Host idle thread ACK: {error:?}")))?;
+                    if observed != thread { return Ok(false); }
+                    let Some((turns, blockers)) = original_thread_turns(observed_thread) else { return Ok(false); };
+                    known.extend(turns);
+                    unfinished.extend(blockers.into_iter().filter(|id| !terminal.contains(id)));
+                    idle = positive_idle(value(observed_thread, "status"));
+                    opening_seen = true;
+                    continue;
+                }
+                // A later admitted input cannot inherit the opening idle ACK.
+                if let Some(turn) = value(result, "turn") {
+                    let Some(turn) = object(turn) else { return Ok(false); };
+                    let Some(id) = string(value(turn, "id")) else { return Ok(false); };
+                    if id.is_empty() || command_hex.is_empty() { return Ok(false); }
+                    let command_bytes = bytes(&command_hex)?;
+                    let (rpc_id, command) = codex_rpc::decode_stored_turn_start(&command_bytes)
+                        .map_err(|error| OrchestrationError::V37StoreFailure(
+                            format!("original Host idle turn command: {error:?}")))?;
+                    if !matches!(&command, codex_rpc::Command::TurnStart {thread_id, ..} if thread_id == &thread) {
+                        return Ok(false);
+                    }
+                    let reply = codex_rpc::decode(&source.raw_bytes, Some((&rpc_id, &command)))
+                        .map_err(|error| OrchestrationError::V37StoreFailure(
+                            format!("original Host idle turn ACK: {error:?}")))?;
+                    let codex_rpc::Reply::Turn {turn_id, status, ..} = reply else { return Ok(false); };
+                    if turn_id != id { return Ok(false); }
+                    known.insert(id.clone());
+                    if status != codex_rpc::TurnStatus::InProgress {
+                        // The original matched ACK can itself be terminal.
+                        // It does not manufacture a positive thread idle.
+                        terminal.insert(id.clone());
+                        unfinished.remove(&id);
+                    } else if !terminal.contains(&id) {
+                        // A late in-progress ACK cannot reopen an earlier
+                        // original terminal for this exact turn.
+                        unfinished.insert(id);
+                        idle = false;
+                    }
+                }
+            }
+            let Some(params) = value(&raw, "params").and_then(object) else { continue; };
+            if string(value(params, "threadId")).as_deref() != Some(thread.as_str()) { continue; }
+            let method = string(value(&raw, "method"));
+            if method.as_deref() == Some("thread/status/changed") {
+                if !opening_seen { continue; }
+                let Some(status) = value(params, "status").and_then(object) else { return Ok(false); };
+                if !matches!(string(value(status, "type")).as_deref(), Some("idle" | "active")) {
+                    return Ok(false);
+                }
+                idle = positive_idle(value(params, "status"));
+            } else if method.as_deref() == Some("turn/started") {
+                let Some(turn) = value(params, "turn").and_then(object) else { return Ok(false); };
+                let Some(id) = string(value(turn, "id")) else { return Ok(false); };
+                if id.is_empty() || string(value(turn, "status")).as_deref() != Some("inProgress") {
+                    return Ok(false);
+                }
+                known.insert(id.clone());
+                if !terminal.contains(&id) {
+                    unfinished.insert(id);
+                    idle = false;
+                }
+            } else if method.as_deref() == Some("turn/completed") {
+                let Some(turn) = value(params, "turn").and_then(object) else { return Ok(false); };
+                let Some(id) = string(value(turn, "id")) else { return Ok(false); };
+                if id.is_empty() || !matches!(string(value(turn, "status")).as_deref(),
+                    Some("completed" | "failed" | "interrupted")) {
+                    return Ok(false);
+                }
+                terminal.insert(id.clone());
+                unfinished.remove(&id);
+            } else if !opening_seen {
+                // The opening ACK is the first complete thread snapshot.
+                continue;
+            }
+            if source.state == ledger::RawSourceState::Pending {
+                if value(&raw, "id").is_some() { return Ok(false); }
+                if matches!(method.as_deref(), Some("item/started" | "item/completed")) {
+                    let item = value(params, "item").and_then(object);
+                    if !matches!(item.and_then(|item| string(value(item, "type"))).as_deref(),
+                        Some("agentMessage" | "reasoning" | "userMessage" | "contextCompaction")) {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+        Ok(opening_seen && idle && unfinished.is_empty() && terminal.is_subset(&known))
+    }
+}

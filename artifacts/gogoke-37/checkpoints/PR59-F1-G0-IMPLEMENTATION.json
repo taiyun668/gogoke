@@ -1,0 +1,690 @@
+{
+  "schema": "gogoke.37.controller-checkpoint.v1",
+  "state": "OWNER_LOGIN_ONLY_EXCEPTION_APPROVED_IMPLEMENTATION_CLOUD_PENDING",
+  "参照": "按 Owner 2026-10-01 新规依次查了自己的 gogo-party（accounts.ts 的 PROVIDER_LOGIN/loginEnv/登录会话，instances.ts，席位运行时和实例界面）、NaveHQ 的 Codex OAuth 容器门禁与实例环境契约、LoomOS 的手脚规格和轮子记录，再查仓库七份调研，最后核对 OpenAI 登录文档、固定 CLI 0.149.0 源码、CodexMonitor 来源的既有登录实现、T3 Code 协议、Paseo 和 Orca 源码。采用 gogo-party 已有的实例独立 home、厂商 CLI 自己写凭据、宿主管登录会话及状态检测的做法，登录模式应优先核对其普通 codex login；此前强制 --device-auth 没有桌面产品依据，容器的设备码方案不构成该依据。实例入口已按 PR58 移到实例页，旧 Codex 设置页不再放登录入口。不同处：gogoke 按已授权计划保留宿主持久结果及精确进程结算，并维持 LPAC，而历史 Room 主要使用环境隔离；不照搬 Room 的 taskkill、Orca 的凭据读取或复制，也不照搬 donor 的页面级请求 ID，因为它们不满足当前身份、凭据和重开界面要求。普通 OAuth 回调在现有 LPAC 下是否可达尚未实测，不能由 UWP 文档外推为当前产品失败；先核对现成路径，再决定最小实现。M2 四家登录须同样先查 PROVIDER_LOGIN 和对应官方文档。 本次回调对照沿用既有生产 prepare/start 和受控 Job 结算，不新增校验绕过：LPAC 专用 shim 必须绑定 profile，无隔离对照因此同时去除 shim，保留同一注册 home、CLI、环境、参数和工作目录；只比较两个启动组合，不据此独归因 LPAC token。 测试目录清理按现有 instance/temporary.rs 的逐对象删除及重解析点不跟随做法，先保留回调原始阶段结果，再报告具体被拒对象和 Windows 错误；不改权限、不加重试，不把清理失败当回调失败。 原位 0.1.16 已实测：同一固定 CLI 的 1455 回调连接超时，取消成功；云端无 LPAC/无 shim 对照返回预期 400。该对照不能独归因 token，也不能直接推出必须改变边界。gogo-party 已验证 loginEnv 为浏览器保留真实 APPDATA/LOCALAPPDATA；当前产品重定向这些目录，与参照不同，作为待核对差异，不直接照搬扩大权限。 聚焦机制复核核对 shim 仅处理 GetFinalPathNameByHandleW，不挂 socket/bind/listen；微软 loopback 例外属于系统网络隔离配置变更。没有找到满足原边界全部限制的现成修复。普通登录进程选项需 Owner 定边界；历史 loginEnv 的真实浏览器目录可复用，但不能把它宣称为 TCP 超时根因修复。",
+  "reference_recheck": {
+    "owner_rule_effective": "2026-10-01_IMMEDIATE_BEFORE_UNSPECIFIED_IMPLEMENTATION_DETAILS",
+    "research_order": [
+      "OWN_HISTORY",
+      "REPOSITORY_RESEARCH",
+      "OFFICIAL_AND_RESEARCHED_UPSTREAM_SOURCE"
+    ],
+    "completed_before_product_changes": true,
+    "gogo_party": {
+      "head": "8812d3c075d78e196819a60b467bf9cb26f41cb7",
+      "files": {
+        "packages/room/src/accounts.ts": "9fdaa1c4b6d99746d0bb0864553ffcf1250c778f",
+        "packages/room/src/instances.ts": "3133e61ed856225595e9c7888eeb9db4a74ccb56",
+        "packages/room/public/index.html": "f72cd876cb0c25c4d7b355ff2637bb56c3bdb374",
+        "packages/seat-runtime/src/seat-runtime.ts": "220c036e96f3aee911ced48f2f6ea4e09b5681fc",
+        "packages/room/src/server.ts": "0961b392a5a7d6e64fa72a3a6898f1dba5c39259"
+      },
+      "login_mode": "codex login; Grok explicitly uses --oauth to avoid pipe-triggered device mode",
+      "credential_boundary": "Vendor CLI writes its own instance credentials; do not transfer credential files",
+      "adopt": "Instance-keyed host session, provider login/status commands, browser URL from CLI, preserved output tail and ownership check before retiring old sessions",
+      "difference": "Existing LPAC, durable history and native process custody remain; Room environment-only isolation and PID/taskkill cleanup do not replace these boundaries",
+      "login_environment": "Historical loginEnv keeps independent HOME/USERPROFILE but restores real APPDATA/LOCALAPPDATA for the user browser; current product runtime redirection differs, not changed in this checkpoint"
+    },
+    "navehq": {
+      "head": "9975703cacd2fa091872fd3ee6241d6a6af58068",
+      "sources": [
+        "scripts/navehq_phase9_codex_oauth_contract_gate.sh",
+        "docs/navehq_worker_runtime_profile_codex_wrapper_contract_v0.1.md",
+        "runtime/agent_runtime_port.js",
+        "runtime/cao_runtime_adapter.js"
+      ],
+      "finding": "Device-auth example targets a headless container; the script records authentication NOT_RUN, not proof that desktop OAuth needs device mode",
+      "adopt": "Explicit per-instance CODEX_HOME and isolation boundary; no host-auth copy or mount",
+      "reference_only": true
+    },
+    "loomos": {
+      "head": "cea9f607ca48067fd591086ef8800a547750931b",
+      "sources": [
+        "README.md",
+        "03_specs_施工图/手脚包规格.md",
+        "06_lessons_坑与轮子/wheels.md"
+      ],
+      "finding": "Contains manual browser-profile authorization and no-credential-reading requirements; no implemented CLI login lifecycle found in this tree",
+      "reference_only": true
+    },
+    "repository_research_blobs": {
+      "docs/research/upstream-reference-map.md": "49591e075761db050394ee7c252cfdca4f417c72",
+      "docs/research/reuse-blueprint.md": "f1443cd38087441fb61eb26d633e40943270e668",
+      "docs/research/2026-09-25-parts-source-teardown.md": "c46c83e56ab5411a7e719336056266f3423e7f5b",
+      "docs/research/2026-09-25-substrate-source-teardown.md": "6db54ed24c991208fa18edb32ded4ef8125dc827",
+      "docs/research/2026-09-26-kernel-parts-harvest.md": "6a222c92edf277b9d3845f72c9c2b20f6765af65",
+      "docs/research/2026-09-26-execution-layer-capability-table.md": "6e685a1c6317895cb9c009f3e89001c0d7797029",
+      "docs/research/2026-09-26-antigravity-cli-facts.md": "e39ee3ed95eb8acc44464c353283761dec320285"
+    },
+    "upstream": {
+      "official_auth": "https://learn.chatgpt.com/docs/auth",
+      "fixed_codex_tag": "rust-v0.149.0",
+      "fixed_codex_source": "758ef40f50c1a458425c7cfbf1eb12cbc07af0b0",
+      "fixed_cli_login_source_sha256": "d97cd81c89bb36af68f09c7770ba96f1db7271443c9aac80744231ed858ea695",
+      "fixed_cli_server_source_sha256": "c93e0bda0d9ed7003e3935982c2432303dcadd5714ef5721394f4aea57d83202",
+      "ordinary_flow": "CLI owns PKCE/state/token exchange, default localhost:1455/auth/callback, fallback port 1457; device auth is a separate explicit mode",
+      "codexmonitor_existing_source": {
+        "apps/desktop/src-tauri/src/shared/codex_core.rs": "a09f9636737501e510e7e98df018cb951f486b3a",
+        "apps/desktop/src/features/app/hooks/useAccountSwitching.ts": "8e42d2e851223e9521d36efb9dd4dcba129efb17"
+      },
+      "codexmonitor_finding": "Existing donor integration requests account/login/start type chatgpt, receives authUrl, uses account/login/cancel and account/login/completed; its page-held IDs are not sufficient for current F.1/G.0",
+      "t3code": "Fixed imported donor d6f291303ddc0c9a14f570266a4d9eff6d431593 has account protocol schemas; schema presence is not a tested login product",
+      "paseo": {
+        "source": "aa3ffaeb6c194b40915eca2de1deec6c26e16c3f",
+        "file": "packages/server/src/server/agent/providers/codex-app-server-agent.ts",
+        "sha256": "777aee3dda44474490a860ceab2c2684ba109e5f2f33b735e6c001bd729bcc0c",
+        "finding": "Codex execution adapter resolves CODEX_HOME; no separate Codex account-login lifecycle found in this inspected source or login/auth file inventory"
+      },
+      "orca": {
+        "source": "ca2356c194122090982426128fbc4e33e407b677",
+        "file": "src/main/codex-accounts/codex-login-session.ts",
+        "sha256": "c586e50dd3300527cc2eb79174f4e8c1d717130130adf9e4fb9f3fcdf6148c3d",
+        "finding": "Managed-home ordinary login and original-output failures; credential-file watcher is outside gogoke host's credential boundary and will not be copied"
+      }
+    },
+    "prior_choices": {
+      "forced_device_auth": "NO_DESKTOP_REFERENCE_JUSTIFICATION_FOUND_REVIEW_FOR_ORDINARY_OAUTH",
+      "login_inside_lpac": "CURRENT_AUTHORIZED_BOUNDARY_NOT_PROOF_OF_DEVICE_MODE_REQUIREMENT",
+      "login_on_codex_settings_page": "SUPERSEDED_BY_OWNER_APPROVED_PR58_INSTANCE_PAGE"
+    },
+    "current_lpac_oauth_callback": "ACTUAL_WIN11_PORT1455_CONNECT_TIMEOUT_CANCEL_SETTLED_NO_REAL_AUTHORIZATION",
+    "product_changes_this_reference_pass": false,
+    "owner_account_security_settings_changed": false,
+    "M2_rule": "For each of the four remaining providers compare own PROVIDER_LOGIN and corresponding fixed-CLI official docs before login implementation; record adopted pattern and justified differences",
+    "ci_reference": "Reuse existing native-host changed-fixture modes for a focused OAuth/control run; full library, compiled mutation and server suites explicitly NOT_RUN in that mode. Default full workflow stays unchanged."
+  },
+  "authorization": {
+    "pr": 59,
+    "merged_by": "taiyun668",
+    "merge": "b75250c3b9987b9b09a0fa068f986e2c482a1044",
+    "manifest_blob": "9d540cbac609b5ba21cb12e1640b375bcc980736",
+    "receipt_blob": "671cb15b811048c883e6f2f2671ba8a15fc4b55c",
+    "exact_readback": "PASS"
+  },
+  "implementation": [
+    "Host-owned original login request, automatic progress/result/cancel across interface remounts",
+    "Owner-only native instance listing from actual database",
+    "G.0 instance Settings slot with four states, code copy and raw failure display",
+    "Trusted host authorization opener; old Codex settings login entry removed"
+  ],
+  "fixed_cli": {
+    "version": "0.149.0",
+    "sha256": "14b7e6b2356e82d1d9275579eaa588757b4e0a501b65dcc19fccdf77bd83dc00",
+    "modification": false
+  },
+  "isolation": "Existing LPAC and previously Owner-authorized lpacIdentityServices; no capability expansion",
+  "candidate_version": "0.1.15",
+  "local_checks": {
+    "typescript": "PASS",
+    "instance_ui_tests": {
+      "passed": 8,
+      "failed": 0
+    },
+    "localization_tests": {
+      "passed": 9,
+      "failed": 0
+    },
+    "localization_identity": "PASS"
+  },
+  "ci_dependency": {
+    "pr": 60,
+    "purpose": "Rebind trusted-main candidate chain to PR59 authorization literals",
+    "files": 3,
+    "owner_merge_required": true,
+    "review": "INDEPENDENT_FOCUSED_PASS",
+    "head": "bbd3d100f21cef8c73fd2faa78d0ea5ffd873fe1",
+    "hygiene_run": 36857438848,
+    "desktop_run": 36857438799,
+    "owner_merge": "30f5d9eb83e59c38a7c75eb60393c558f7876618",
+    "merged_by": "taiyun668",
+    "state": "EXACT_READBACK_PASS",
+    "desktop_result": "ALL_FIVE_JOBS_PASS"
+  },
+  "cloud_native_tests": "FULL_LIBRARY_572_PASS_SIX_PRODUCTION_MUTATIONS_PASS_AND_AFFECTED_JOB_FIXTURE_RECHECK_PASS",
+  "f014_native_results": {
+    "run": 36881078068,
+    "library": "572_PASSED_0_FAILED_0_IGNORED",
+    "compiled_fail_and_exact_restore_pass": [
+      "R1",
+      "R2",
+      "R4",
+      "R5",
+      "R6",
+      "R7"
+    ],
+    "lpac_shim": "PASS",
+    "whole_run": "FAIL_NOT_PASS",
+    "focused_failure": "Job descendant PowerShell fixture had not entered its script at the 15-second parent-exit assertion; the same test passed later in the full library",
+    "fixture_correction": "Use the cloud build-bound Node image for actual parent/child processes; retain Job identity, noninheritance, descendant and stop-proof assertions without increasing the wait",
+    "affected_recheck": {
+      "lpac_shim": "PASS",
+      "scope": "FOCUSED_JOB_DESCENDANT_FIXTURE_ONLY_NOT_FULL_LIBRARY_GATE",
+      "required_axes": "PASS_3_EXECUTED_0_FAILED_0_SKIPPED",
+      "mutations": "NOT_RUN",
+      "source": "63b172b0777963fddb582fd1a52c996cd6b7b083",
+      "run": 36888372514,
+      "server": "NOT_RUN",
+      "full_library": "NOT_RUN",
+      "release_build": "PASS",
+      "focused": {
+        "skipped": 0,
+        "passed": 1,
+        "failed": 0,
+        "executed": 1
+      }
+    }
+  },
+  "frozen_candidate": {
+    "source": "2d49a718147bab563b39834d2c294c0f912b23db",
+    "desktop_run": 36874585432,
+    "desktop_all_five_jobs": "PASS",
+    "frozen_artifact": 11170776265,
+    "signing_main": "30f5d9eb83e59c38a7c75eb60393c558f7876618",
+    "signing_run": 36881306144,
+    "signed_artifact": 11171622438,
+    "local_purpose_signature_and_seven_frozen_members": "PASS",
+    "first_cloud_smoke": {
+      "run": 36881857203,
+      "result": "FAIL_PUBLIC_GITHUB_ANONYMOUS_QUOTA_403_REMAINING_0"
+    },
+    "same_byte_fresh_runner_smoke": {
+      "run": 36884344861,
+      "result": "PASS",
+      "machine_readback": "PASS_SERVICE_POSITIVE_MODULE_NEGATIVE_REGISTRATION_LOCK_FAILURES_FINALIZER_AND_INSTALLER_NEGATIVE_AXES"
+    },
+    "credential_exclusion_boundary": "UNCHANGED",
+    "frozen_bytes_rebuilt_or_resigned": false,
+    "local_installation": "PASS_ACTUAL_ORDINARY_INSTALL_EXIT_0_FROZEN_HASHES_REGISTRY_AND_NATIVE_ROOT_HOME_IDENTITIES_PRESERVED"
+  },
+  "native_ci_budget_correction": {
+    "source": "2d49a718147bab563b39834d2c294c0f912b23db",
+    "run": 36874331696,
+    "library_step": "PASS",
+    "compiled_fail_and_exact_restore_pass": [
+      "R1",
+      "R2",
+      "R4",
+      "R5",
+      "R6"
+    ],
+    "R7": "CANCELLED_DURING_COMPILATION_BY_45_MINUTE_JOB_BUDGET",
+    "whole_run": "CANCELLED_NOT_PASS",
+    "instrument_fix": "55-minute cloud job budget for full gates and six measured mutation/restore pairs; rerun required",
+    "product_change": false
+  },
+  "late_cloud_failure": {
+    "source": "7ba45c1e19ae9fc368c2b22a113db942506ad292",
+    "run": 36867179669,
+    "lib_passed": 568,
+    "lib_failed": 1,
+    "lib_ignored": 0,
+    "test": "owner_login_retains_second_cli_custody_until_its_own_stop_is_confirmed",
+    "observed": "Original second-child release reported settled true, but the expected LOGGED_OUT state assertion failed",
+    "cause": "NOT_YET_OBSERVED; old assertion omitted actual reply",
+    "response": "Add direct failure reply to the fixed-CLI empty-home test and rerun; no guessed product correction or substituted account state"
+  },
+  "win11_candidate_tests": {
+    "pending_login_close_reopen": "NOT_RUN_REQUIRES_OT4",
+    "interface_reload_during_login": "NOT_RUN_REQUIRES_OT4",
+    "model_and_remaining_M1": "NOT_RUN_REQUIRES_OT4",
+    "installed_version": "0.1.14",
+    "source": "2d49a718147bab563b39834d2c294c0f912b23db",
+    "legacy_codex_login_entry": "ABSENT_CONFIG_PAGE_OBSERVED",
+    "settings_close_reopen": "PASS_SAME_HOST_SAME_INSTANCE",
+    "g0_page": "PASS_VISIBLE_INSTANCE_LIST_AND_ENABLED_ONE_CLICK_LOGIN",
+    "initial_instance": "PASS_ACTUAL_CODEX_TEST_INSTANCE_DRIVER_VERSION_0.149.0_REVISION_2_NOT_LOGGED_IN",
+    "acceptance": false
+  },
+  "OT4": "BROWSER_REJECTED_DEVICE_MODE_ACTUAL_CANCEL_PASS_ORDINARY_OAUTH_REVIEW_IN_PROGRESS",
+  "M1_complete": false,
+  "product_acceptance": false,
+  "preserved_untracked": [
+    "apps/desktop/native-host/src/process/session/compat/detours-extract/",
+    "apps/desktop/native-host/src/process/session/compat/detours-source.zip"
+  ],
+  "next_action": "Apply Owner's reference-before-implementation rule. Reuse ordinary vendor OAuth where compatible with existing LPAC; first resolve live stderr progress and actual authorization URL handling, then obtain exact fixed-CLI callback evidence through the installed product. No device-code account setting change, credential copy, CLI modification or unapproved capability.",
+  "source_audit": {
+    "reviewed_source": "9a8e6305a962b94945c52df03638fcd01c13bd9a",
+    "findings": [
+      "R1 current install fact, not stale registry field",
+      "R2 original request preflight failure settlement and continued custody observation",
+      "R3 successful result is authoritative over cancel intent"
+    ],
+    "implementation": "FIXES_SUBMITTED_FOR_FOCUSED_REVIEW_AND_CLOUD_TESTS",
+    "acceptance": false,
+    "focused_static": "INDEPENDENT_SOL_PASS",
+    "additional_correction": "Clear transient error only after the original request reports actual settled LOGGED_IN.",
+    "R4": "Retain actual second account/read custody and its own stop proof until durable confirmation; original status/cancel reconciles that same process and retained native frame, without another launch.",
+    "R4_phase_correction": "Non-LaunchCleanup preparation refusal and Resume with proven factory abort settle; LaunchCleanup remains unconfirmed, and retained suspended activation failure uses same-ticket abort. Tombstone alone is not proof.",
+    "R4_phase_tests": "Actual fixed-CLI factory digest refusal and suspended-child failed resume; test-only resume callback exercises the same production activation implementation, absent from release.",
+    "R4_result_retention": "Account/read errors with no remaining custody are appended to the original native Final output; extended real first-CLI control case verifies same-original status preserves the raw preflight failure.",
+    "R5": "First login CLI shares the same confirmed-release vs retained-custody classification at prepare, PREPARED record, activation and ACTIVE record failures. Same-original status retains cause and actually reconciles original ticket/proof.",
+    "R6": "PendingFirstStop retains the exact first-child proof, durable revision, original exit/stderr and cancellation/result causes; original status/cancel continues only mark/confirm before normal completion. Actual fixed-CLI parser failure plus first STOPPED SQL trigger tests held and recovered custody. No blanket unhalting or repeated stop. Independent focused static PASS; cloud pending.",
+    "R7": "Confirmed account/read completion preserves primary CLI execution and cleanup failures together, including PREPARED/confirmation causes. Actual fixed app-server parser failure, actual stop/mark/confirm and Windows no-share-delete handle exercise the production completion method. Independent focused static PASS; cloud pending."
+  },
+  "measurement_corrections": [
+    "Repository-relative edits first invoked from desktop subdirectory; no edit occurred; reran at repository root.",
+    "PowerShell/Python default decoding rejected non-ASCII GitHub commit text; explicit UTF-8 read resolved it before remote mutation.",
+    "Cloud SQLite CloseLedgerMissing generation diagnosed through same_open.rs: outstanding fixture Statement prevented sqlite3_close, so both affected fixtures now drop the Statement before checked close.",
+    "A completed worker received queued send_message followups without a new turn; Controller reclaimed the small remaining edits instead of treating running state as progress.",
+    "Installed service runtime path was assumed for a metadata helper; no script ran on the missing path. Used an Authenticode-valid measurement Node and actual frozen product hashes.",
+    "Original UI request metadata uses values[0,2,3], not named properties. First metadata run is invalid; corrected same-original status reads returned UNKNOWN on the old installed source. No login begin, device output, credential read or new-source acceptance.",
+    "Ordinary installation script attempted direct installation into nonempty old candidate root; actual frozen embedded-shell preflight returned GOGOKE_INSTALL_EXISTING_TARGET_REQUIRES_UPDATE. Correct the measurement to actual installed candidate uninstall, independent empty-directory audit, and frozen new install, preserving original instance data/home physical identities.",
+    "Signed candidate archive intentionally excludes standalone embedded shell; first direct preflight diagnostic referenced an absent member and did not run. Corrected to exact frozen shell bytes hash-bound to embedded installer while retaining signed sibling set. No CLI change.",
+    "First native-window snapshot captured an occluding window; activated the exact returned product window and re-observed correct product before any setting input. No authentication action was taken.",
+    "An additional endpoint registry read inherited the packaged view and found no candidate key; reran the existing endpoint custody read in ordinary Interactive/Limited view, PASS. Formal four remained unchanged."
+  ],
+  "cloud_mutation_axes": {
+    "R1": "Restore original stale registry install-state read, unchanged behavioral test must compile and fail, restore exact bytes and pass",
+    "R2": "Remove only original-request preflight Final assignment, unchanged behavioral test must compile and fail, restore exact bytes and pass",
+    "R3": "Restore cancel-intent override of settled success, unchanged behavioral test must compile and fail, restore exact bytes and all six host tests pass",
+    "R4": "Remove only the finish guard protecting pending second-child custody; real unchanged second-CLI test must compile and fail, restore exact bytes and pass.",
+    "R5": "Rollback only original-request failure preservation to one-shot Err; unchanged four-case actual factory/SQL-trigger test must compile and fail, exact restoration must pass.",
+    "R6": "Replace production same-proof progress with the old perpetual-held behavior; unchanged actual first-CLI STOPPED-fault test must compile and fail, exact restoration must pass.",
+    "R7": "Restore production completion cleanup-before-execution error propagation; unchanged actual fixed-CLI/Windows-delete double-failure test must compile and fail, exact restoration must pass."
+  },
+  "superseded_cloud_source": "2b8a5ceb9648a3edeb8a464809dff5a9b5d8baf0",
+  "ordinary_preparation": {
+    "true_local_and_roaming_paths": "PASS",
+    "limited_interactive_snapshot": "PASS",
+    "fixed_cli_hash": "PASS",
+    "protected_formal_comparison": "NO_CHANGES",
+    "new_source_installation": "PASS",
+    "failed_install_formal_comparison": "NO_CHANGES_FOUR_PROTECTED_OBJECTS",
+    "installed_product_readiness": "PASS_VERSION_0.1.14_SAME_FROZEN_GENERATION_AND_SET_ID",
+    "ordinary_endpoint_recheck": "PASS_ACTUAL_REGISTERED_PROCESS",
+    "pre_ot4_formal_four": "NO_CHANGES"
+  },
+  "superseded_cloud_validation": {
+    "source": "42f1927ede410e2a55f69d7b27d4ebdd12aedb74",
+    "native_run": 36859601994,
+    "lib_passed": 566,
+    "lib_failed": 1,
+    "lib_ignored": 0,
+    "failure": "R2 fixture retained an unfinalized SQL update statement at close_checked; finalize fixture, preserve product close evidence gate",
+    "R1_mutation": "COMPILED_BEHAVIORAL_FAIL_AND_RESTORED_PASS",
+    "R2_mutation": "COMPILED_BEHAVIORAL_FAIL_BUT_RESTORE_BLOCKED_BY_SAME_FIXTURE",
+    "desktop_run": 36859606692,
+    "use_for_install": false
+  },
+  "superseded_compile": {
+    "source": "75961cef499bc75c997025e82e27e7649f9aa08a",
+    "native_run": 36864420389,
+    "cause": "Validated empty operation payload was copied with Json Clone, unsupported by its actual type; preserve exact empty payload with BTreeMap::new without changing Json."
+  },
+  "native_job_timeout_minutes": 65,
+  "timeout_reason": "Measured full native library plus eight compiled native mutation and exact restoration pairs",
+  "ordinary_install_transition": {
+    "retirement_instrument_review": "INDEPENDENT_SOL_NO_BLOCKER",
+    "formal_four": "NO_CHANGES",
+    "new_install": "PASS_EXIT_0_EXACT_SIGNED_FROZEN_BYTES",
+    "first_installer_exit": 2,
+    "direct_preflight_error": "GOGOKE_INSTALL_EXISTING_TARGET_REQUIRES_UPDATE",
+    "old_source": "aae122c392393dc48fead2fa2f336d6af8af8267",
+    "authentication": "NOT_STARTED",
+    "retirement": "PASS_ACTUAL_CANDIDATE_DELETED_NATIVE_ROOT_AND_HOME_IDENTITIES_PRESERVED",
+    "candidate_sac_block": "NOT_OBSERVED",
+    "empty_directory_cleanup": "PASS_1091_NONRECURSIVE_REMOVALS_1091_ABSENT_READBACKS_ROOT_RETAINED_EMPTY",
+    "new_source": "2d49a718147bab563b39834d2c294c0f912b23db",
+    "retirement_formal_four": "NO_CHANGES",
+    "empty_directory_inventory": {
+      "sha256": "8713384dc4031eea9820cc5d0b9c0de4a043ff4f1a5da09351349c05bbae423e",
+      "audit": "INDEPENDENT_SOL_ALL_1091_DESCENDANTS_APPROVED_ZERO_FILES_REPARSE_OR_UNLISTED_CHILDREN",
+      "reparse": 0,
+      "remove_only_subdirectories": 1091,
+      "retain_install_root": true,
+      "files": 0,
+      "directories": 1092
+    },
+    "post_install_formal_four": "NO_CHANGES"
+  },
+  "owner_touchpoint": {
+    "state": "ORDINARY_OAUTH_PRODUCT_REPAIR_BEFORE_NEXT_OT4",
+    "type": "OT4_ACCOUNT_LOGIN",
+    "reason": "Only Owner can authenticate and authorize the Codex account in the browser",
+    "product_entry": "Settings / Instances / Codex test instance / One-click login",
+    "controller_next": "Read automatic actual login outcome; continue M1 product tests without asking Owner to refresh or supply request IDs"
+  },
+  "current_correction": {
+    "host": "Clear transient error only on actual settled CANCELLED; allow fresh original request after confirmed settlement",
+    "old_request": "UNSETTLED_PENDING_FIRST_STOP_INVALID_CACHED_PROOF",
+    "ui": "Bound instance-card flex width and wrap original error text",
+    "old_record_retroactively_settled": false,
+    "R8": "Only confirmed successful TerminateJobObject exempts its supplied exit124 from sentinel veto; all exact identity/Job0/fence/other error/durable receipt checks remain",
+    "R9": "Preserve original fixed CLI stderr even after Owner cancellation",
+    "cloud": "PRODUCT_RUNTIME_AXES_AND_MUTATIONS_PASS_ORIGINAL_NEGATIVE_FIXTURE_FAILED_FIXED_SUBSET_PASS",
+    "oauth_cause": "UNKNOWN_BROWSER_ERROR_ORIGINAL_UNAVAILABLE_NOT_IN_CAPTURED_CLI_OUTPUT",
+    "legacy_runtime": "ONE_AUDITED_EMPTY_DIRECTORY_REMOVED_AFTER_OLD_PRODUCT_AND_RELATED_PROCESSES_EXIT_HOME_AND_DATABASE_UNCHANGED",
+    "M1": false,
+    "actual_old_source": "2d49a718147bab563b39834d2c294c0f912b23db",
+    "static_review": "INDEPENDENT_SOL_STOP_PROOF_LOGIC_PASS",
+    "source": "8ba7adf33f6eb35486ee89533ea2acc406991d8a",
+    "native_run": 36896625823,
+    "desktop_run": 36896630987,
+    "hygiene_run": 36896631130,
+    "hygiene": "PASS",
+    "local_typecheck": "PASS",
+    "ui_tests": "8_PASS",
+    "fresh_astra": "NO_NEW_PRODUCT_BLOCKER_R1_R9_DYNAMIC_EVIDENCE_REVIEWED_NOT_ACCEPTANCE",
+    "legacy_object": {
+      "deletion": "PASS_NONRECURSIVE_ABSENT_READBACK",
+      "STOPPED_fabricated": false,
+      "relative_to_instance_home": "gogoke-login-runtime",
+      "independent_object_audit": "PASS_EXACT_FILEIDS_AND_TEN_PLAIN_ANCESTORS",
+      "scope": "ONE_EMPTY_DIRECTORY_NONRECURSIVE_ONLY_AFTER_OLD_PRODUCT_AND_RELATED_PROCESSES_EXIT",
+      "ordinary_view": "PASS",
+      "entries": 0,
+      "owner_permission": "OWNER_CONTINUED_CONCRETE_SINGLE_DIRECTORY_PROPOSAL_2026_10_01",
+      "instance": "codexTestM1",
+      "ledgerModified": false,
+      "credentialsRead": false,
+      "ordinary_inventory_sha256": "e5f60ba30540b3479807b2f2367f79de25b21e5902aa72856f47f72c3be0f159",
+      "historicalState": "UNKNOWN_RETAINED_NOT_RELABELLED_STOPPED",
+      "databaseSha256Unchanged": "0ad0197d557e93bea7b0c4ca85cca94f9de2929c855450f2995d4d7132e68d4d"
+    },
+    "completed_cloud": {
+      "browser": "1052_PASS_147_FILES_TYPECHECK_AND_BUILD_PASS",
+      "server": "642_PASS_0_FAIL_0_SKIP",
+      "native_library": "574_PASS_0_FAIL_0_IGNORE",
+      "required_axes": "3_OF_3_PASS",
+      "lpac_shim": "2_OF_2_PASS",
+      "native_mutations": "R1_R2_R4_R5_R6_R7_R9_R8_COMPILED_BEHAVIORAL_FAIL_EXACT_RESTORE_PASS",
+      "desktop_R3": "BOTH_LANES_COMPILED_BEHAVIORAL_FAIL_EXACT_RESTORE_6_OF_6_PASS"
+    },
+    "fixture_failure": {
+      "artifact": 11193631323,
+      "new_full_library_claim": "NOT_RUN_SUBSET_NOT_FULL_GATE",
+      "direct_evidence": "PARENT_GRACE_EXITED_JOB_ACTIVE_1_FORCE_TERMINATION_OCCURRED_ASSERT_NO_KILL_FALSE",
+      "old_native_whole_run": "FAIL_NOT_PASS",
+      "repair": "CFG_TEST_ONLY_HASH_BOUND_NODE_WITH_UNCHANGED_ASSERTIONS_AND_BUDGETS",
+      "remaining_member_identity": "QUERY_WIN32_5_UNRESOLVED_NOT_CONFIRMED_CONHOST",
+      "R8_forced_stop": "PASS",
+      "R9_fixed_cli_stderr": "PASS",
+      "new_subset_mode": "stop_124_fixture_only",
+      "focused_passed": 21,
+      "focused_failed": 1,
+      "case": "natural_exit_124_and_close_error_still_reject_stop_proof",
+      "focused_skipped": 0,
+      "repaired_subset_run": 36924065310,
+      "repaired_subset_source": "091c7cfa29eb4b610b62fc2bde3bd0e88884edfd",
+      "repaired_subset": "PASS_1_OF_1_0_FAIL_0_SKIP_PARENT_EXITED_JOB_0",
+      "original_failed_artifact": 11180535936
+    },
+    "candidate_0_1_15": {
+      "source": "091c7cfa29eb4b610b62fc2bde3bd0e88884edfd",
+      "controlled_build_run": 36924684723,
+      "source_event": "workflow_dispatch",
+      "build": "PASS_FIVE_JOBS_AND_SIX_REPRO_MEMBERS",
+      "signature": "PASS_TRUSTED_MAIN_AND_LOCAL_PURPOSE_BOUND_P256",
+      "same_byte_smoke": "PASS_ACTUAL_INSTALL_PRODUCT_UNINSTALL_AND_FIVE_NEGATIVE_AXES",
+      "Win11_install": "PASS_ORDINARY_LIMITED_EXIT_0_EXACT_FROZEN_FILES_AND_HKCU",
+      "OT4": "NOTIFIED_ONCE_OWNER_ACCOUNT_AUTHORIZATION_PENDING",
+      "old_sign_attempt": {
+        "run": 36924157093,
+        "result": "FAIL",
+        "original": "Candidate source run is not the exact successful controlled build.",
+        "cause": "36896630987_WAS_PULL_REQUEST_REQUIRED_WORKFLOW_DISPATCH",
+        "bypass": false
+      },
+      "old_0_1_14_retirement": "PASS_EXIT_0_DELETED_NATIVE_ROOT_AND_HOME_IDENTITIES_PRESERVED",
+      "formal_four": "NO_CHANGES_BEFORE_AFTER_INSTALL_AND_LIVE_UI",
+      "measurement_path_issue": "FIRST_TASK_EXIT64_WRONG_PACKAGED_PATH_CORRECTED_TO_REAL_LOCALCACHE_BEFORE_ACTUAL_UNINSTALL",
+      "residual_cleanup": "PASS_1089_NONRECURSIVE_REMOVALS_1089_ABSENT_READBACKS_INSTALL_ROOT_RETAINED_EMPTY",
+      "residual_inventory_sha256": "e58a2ef8cfe4c666f774c514b33ced59a8024786215fb03bb6b04abb8e73f88e",
+      "residual_directories": 1090,
+      "retain_install_root": true,
+      "residual_audit_sha256": "280d16cbea96d250377d528e6a01d75093c004e87c0782604f57a90b917855ba",
+      "residual_cleanup_receipt_sha256": "7b23f6b33ec234b41e19228877463348f61b6b0010116541ec45555c05771a0e",
+      "frozen_artifact": 11194657959,
+      "frozen_archive_sha256": "824326826993f7c2586dc976e4f8e4fcb71afe62eccce16d17ed33765649234c",
+      "repro_artifact": 11194898915,
+      "signing_run": 36930130557,
+      "signed_artifact": 11195383227,
+      "signed_archive_sha256": "1c490c0cc43231013bc41a59aca164ff629c29a4b53de1f37f24659c6efeb0ae",
+      "frozen_signed_member_matches": 7,
+      "same_byte_smoke_run": 36930309263,
+      "source_hygiene_run": 36924069710,
+      "source_hygiene": "PASS",
+      "local_hygiene": "PASS_24843_FILES_0_LEAKS",
+      "win11_scope": "ORIGINAL_REGISTERED_CANDIDATE_ROOT_AND_ORIGINAL_INSTANCE_HOME_NO_COPY_OR_MIGRATION",
+      "private_custody": "%USERPROFILE%/AppData/Local/Packages/OpenAI.Codex_2p2nqsd0c76g0/LocalCache/Local/gogoke-agent-tmp/gogoke37-cancel-091c7cfa",
+      "smoke_artifact": 11197455960,
+      "smoke_archive_sha256": "6e268480abf0198c0189acdfde39bd66632e0b89d1032ecb8c526288ab6d0567",
+      "negative_artifact": 11197231191,
+      "negative_archive_sha256": "907629246d8741910f808377badcd0c231c034cb0b0cc90bab6d204f25ee3dc0",
+      "bootstrap": "PASS_ACTUAL_PRODUCT_VERSION_0_1_15_AND_SIGNED_RESOURCE_GENERATION",
+      "generation_id": "755bc956c0e067c6b2a1c8447192c1891843d41ab3a823e7d9966cfc4d26e490",
+      "set_id": "4aef5e3440865419f4ab50412b1fa2f786c393e29cc324f686a3b90a969884d9",
+      "instance_readback": "codexTestM1_CODEX_0_149_0_REVISION_2_NOT_LOGGED_IN",
+      "actual_ui": "INSTANCE_PAGE_ONE_CLICK_LOGIN_ENABLED",
+      "actual_fresh_login_cancel_and_relogin": "ACTUAL_CANCEL_PASS_NEW_LOGIN_NOT_RUN",
+      "old_unknown": "RETAINED_NOT_STOPPED",
+      "completed_helper_tasks": "PASS_SIX_INDEPENDENTLY_AUDITED_REGISTRATIONS_REMOVED_EACH_ABSENT_ACTIVE_HOLDER_RETAINED",
+      "new_measurement_issue": "SKY_COORDINATE_GEOMETRY_UNAVAILABLE_REOBSERVED_SCREENSHOT_BACKED_STATE_BEFORE_ONE_INPUT_RETRY",
+      "acceptance": false,
+      "private_receipt_sha256": {
+        "replacement-installation-result.json": "65b93b72ab3557355545edd89ba19d2b23be2741c3493d1ec7531725160b884e",
+        "product-preparation-result.json": "9990c691005bd23504baffa38d8a42bcf0bc34eea5da5947cb9c17df279ec8f4",
+        "pre-ot4-readback.json": "ca7c5c5836aaaab585b0c2cb2577d24b45a9e9d61bbbee74995e0bc4454fb6db",
+        "completed-measurement-task-audit.json": "03b94ad6ec1e142748177b260f0d00b123edbcdc1047d639e8107e463f82fa8e",
+        "completed-measurement-task-cleanup.json": "5af694fdb70b5746e9256826651ae2e40a1f58fa3845e6cc70c6ecb03f633eb9"
+      }
+    },
+    "oauth_current_cause": "OWNER_BROWSER_DIRECT_ERROR_DEVICE_CODE_SIGN_IN_NOT_ENABLED_FOR_ACCOUNT",
+    "ordinary_current_cancel": {
+      "source": "091c7cfa29eb4b610b62fc2bde3bd0e88884edfd",
+      "product_version": "0.1.15",
+      "state": "PASS_ACTUAL_CANCELLED_SETTLED_TRUE_SAME_ORIGINAL_REQUEST_NO_ERROR",
+      "instance": "codexTestM1",
+      "private_metadata_sha256": "939a3a62689c53bac5807bfa075264d50ac35ab1b6b29ea99cf3acd89bfd363a",
+      "credentialsRead": false,
+      "new_login_started_by_controller": false
+    },
+    "oauth_mode_review": {
+      "current": "Native product hardcodes login --device-auth at v37_login.rs",
+      "default_vendor_flow": "codex login supports browser OAuth with localhost callback",
+      "isolation_forces_device_mode": "NOT_PROVEN",
+      "owner_security_change": "NOT_PERFORMED",
+      "next": "Complete ordinary-login live-stderr and validated original-URL bridge; verify no-code/state callback against the actual fixed CLI on cloud Windows and then the real installed Win11 product, without any new capability or CLI byte change",
+      "direct_cause": "Fixed CLI prints ordinary OAuth authorization URL on stderr, but current product only consumes stdout while PENDING and only opens a hardcoded device-auth URL",
+      "premise_check": "The reference implementations and fixed CLI support ordinary OAuth; changing the host bridge does not change CLI bytes, credentials ownership or LPAC. Callback reachability remains unproved until direct execution.",
+      "specialist_review": "oauth_reference_boundary_READ_ONLY_NO_PRODUCT_OR_RUNTIME_CHANGES",
+      "local_ui_tests": "PASS_1_FILE_8_TESTS_0_FAILURES",
+      "cloud_native": "NOT_RUN_FOR_ORDINARY_OAUTH_SOURCE",
+      "ordinary_win11_oauth": "NOT_RUN",
+      "candidate_version_prepared": "0.1.16",
+      "measurement_correction": "PowerShell JSON projection cannot represent npm package-lock empty-name root property; Python standard JSON readback verified all four version fields, with no product failure",
+      "native_implementation": "Ordinary fixed login; complete exact-child live stderr; capture failure blocks account-read; validated original OAuth URL opened once by existing host",
+      "cloud_test": "Non-skipped fixed CLI production registration and LPAC callback, exact listener PID/creation, missing code/state returns expected HTTP400, original-request cancellation; NOT_RUN",
+      "independent_audit": "artifacts/gogoke-37/checkpoints/M1-ORDINARY-OAUTH-E2B3-AUDIT.json",
+      "old_source_cloud": "e2b3_NATIVE_FULL_578_PASS_2_FAIL_DESKTOP_SEVEN_TESTS_PASS_OLD_SIX_COUNTER_FAIL",
+      "network_direct_evidence": "Fixed CLI owned listener verified; LPAC callback TCP connect timed out, raw_os_error None; cloud only, not a Win11 diagnosis",
+      "same_home_unisolated_control": "TEST_ONLY_AUTHORIZED_COMPARISON_LPAC_WITH_SHIM_VS_NO_LPAC_NO_SHIM_SAME_CLI_HOME_ENV_ARGS_CWD_NEXT_SOURCE_PENDING",
+      "source_fixes": "Drain after writer fence before final live validation; mixed output failure not cancellation; host count7; meaningful R9 all diagnostic retention withdrawn; close-binding fixture follows actual Job contract",
+      "focused_ci_plan": "Five exact real Windows regression/control filters; full library, compiled mutations and server NOT_RUN until callback root cause is resolved",
+      "ordinary_baseline": "PASS_REAL_LOCALCACHE_HOME_PRESENT_AUTH_FILE_ABSENT_METADATA_ONLY_0_CALLBACK_LISTENERS_NO_LOGIN_STARTED",
+      "measurement_corrections": [
+        "Existing signed PowerShell discovered after an unavailable assumed runtime path",
+        "Readonly automatic HOME variable replaced with instanceHome; failed snapshot retained and new ordinary snapshot captured",
+        "Static source count readback uses explicit UTF-8"
+      ],
+      "c3afa149_focused_cloud": {
+        "run": 36961350725,
+        "state": "FAIL_INSTRUMENT_CONTROL_REJECTED_BEFORE_START",
+        "real_probes_passed": 4,
+        "real_probes_failed": 1,
+        "direct_cause": "path_compat requires its LPAC profile; control cleared profile but retained module",
+        "full_library": "NOT_RUN",
+        "compiled_mutations": "NOT_RUN",
+        "server": "NOT_RUN",
+        "cleanup": "NOT_PROVEN_FOR_OLD_CONTROL_FAILURE"
+      },
+      "current_control_revision": "Remove test-only LPAC module with profile/caps, mechanically compare first/second launch fields; retain safe native start reason and both phase results, close custody and remove test root before final callback assertion. Production launcher validation unchanged.",
+      "c3afa149_desktop_run": 36961350699,
+      "6b2ed809_focused_cloud": {
+        "run": 36962224169,
+        "state": "FAIL_INSTRUMENT_FULL_BINDING_ASSERT_PRECONTROL",
+        "real_probes_passed": 4,
+        "real_probes_failed": 1,
+        "direct_evidence": "same digest/profile/domain; generation 1 then 2 after normal login settlement",
+        "no_product_revision_reset": true,
+        "unisolated_callback": "NOT_RUN",
+        "full_library": "NOT_RUN",
+        "compiled_mutations": "NOT_RUN",
+        "server": "NOT_RUN",
+        "cleanup": "NOT_PROVEN_FOR_OLD_ASSERT_PANIC",
+        "private_job_log_sha256": "fc7c58f9ec6afb411bd40091ef6817086ff38027d8293652dce87148a8a81a1c"
+      },
+      "control_comparison_correction": "Compare stable digest/profile/domain plus CLI/env/args/cwd; validate each generation against its own current revision. Mismatch returns through common custody and root cleanup, prints no environment values.",
+      "measurement_task_cleanup": {
+        "independentAudit": "oauth_known_findings_focus",
+        "objects": 2,
+        "removed": 2,
+        "absentReadbacks": 2,
+        "privateEvidenceRetained": true,
+        "receipt_sha256": "e06d437823cfa180fc56b0c4ccb38164072d79835443035c9383eb40f751fc94"
+      },
+      "6b2ed809_hygiene": {
+        "run": 36962310239,
+        "state": "PASS",
+        "local": "24844_FILES_0_LEAKS"
+      },
+      "c8e86e52_focused_cloud": {
+        "run": 36962989437,
+        "state": "FAIL_INSTRUMENT_CLEANUP_OS5_MASKED_STAGES",
+        "real_probes_passed": 4,
+        "real_probes_failed": 1,
+        "control_cli_started": true,
+        "cli_browser_children": "EDGE_STARTED_IN_CONTROL_JOB",
+        "authorizationPerformed": false,
+        "callback_results": "UNKNOWN_NOT_LOGGED_BEFORE_CLEANUP_PANIC",
+        "custodyClose": "PASS",
+        "rootDeletion": "FAIL_WIN32_5_OBJECT_UNKNOWN",
+        "full_library": "NOT_RUN",
+        "compiled_mutations": "NOT_RUN",
+        "server": "NOT_RUN",
+        "private_job_log_sha256": "8845dc73b1ece96d914665d736d43f849eecdea92b4c79900403f2b3bc0d612a",
+        "focused_artifact": 11208813466,
+        "focused_artifact_digest": "94a180d8b21deb36b6bc4122962880e82e1736593eacba36ec11747a62a417d0"
+      },
+      "measurement_result_retention": "Print safe measured phase/code results before teardown and preserve them with exact denied relative object/Win32 error on cleanup failure. Cleanup remains a required assertion; no permission change, retry or wait compensation.",
+      "c8e86e52_hygiene": {
+        "run": 36962992347,
+        "state": "PASS",
+        "local": "24844_FILES_0_LEAKS"
+      }
+    }
+  },
+  "route_reflection_current": "The callback investigation spent extra cloud trips because the fixture assumed identical ledger generations and placed result reporting after teardown. Record actual measured phase results before teardown, compare only stable identity fields while checking each current revision, and keep cleanup failure independent from product/network results. No unchanged retry or timing compensation.",
+  "M1Complete": false,
+  "acceptance": false,
+  "publicRelease": false,
+  "controllerMerge": false,
+  "callback_readback": "artifacts/gogoke-37/checkpoints/M1-ORDINARY-OAUTH-CALLBACK-READBACK.json",
+  "NEXT_ACTION": "Verify approved login-only same-user change in cloud full native suite and controlled desktop build; prepare exact signed 0.1.17 candidate and original Win11 callback test; notify OT4 once. No real LOGGED_IN claim before Owner authorization.",
+  "premise_correction": "Original Win11 is now measured. A timeout plus cloud combination comparison supports this measured failure but does not isolate token from shim or prove a boundary expansion is the only fix.",
+  "actual_win11_016": {
+    "runtimeSource": "c3afa1499c59cfbb7a5a1a9b4072ad90d1e60591",
+    "version": "0.1.16",
+    "state": "FAIL_ACTUAL_CALLBACK_CONNECT_TIMEOUT",
+    "actualInstallation": "PASS_FROZEN_BYTES_ORIGINAL_ROOT_AND_HOME_IDENTITIES_PRESERVED",
+    "instance": "codexTestM1",
+    "revision": 2,
+    "authFileRead": false,
+    "authFileContentsAccessed": false,
+    "authorizationPerformed": false,
+    "fixedCliModified": false,
+    "curl": {
+      "exit": 28,
+      "originalError": "Connection timed out after 5011 milliseconds",
+      "codeOrStateSent": false,
+      "responseBytes": 0,
+      "listener": "EXACT_FIXED_CLI_OWNED_BY_ACTUAL_NATIVE_HOST_PORT_1455"
+    },
+    "cancel": {
+      "state": "CANCELLED",
+      "settled": true,
+      "error": null
+    },
+    "formal": {
+      "files": "UNCHANGED",
+      "data": "UNCHANGED",
+      "registry": "UNCHANGED",
+      "shortcuts": "UNCHANGED"
+    },
+    "independentAudit": {
+      "seat": "oauth_known_findings_focus",
+      "verdict": "ACTUAL_INSTALL_IDENTITY_AND_ERROR_EVIDENCE_CHAIN_SUPPORTED",
+      "limitations": [
+        "This run only; not proof of all Win11 callback conditions",
+        "Cannot separate LPAC token and shim as causal variables",
+        "Packaged HKCU view is not ordinary Interactive/Limited registry authority",
+        "Product browser OPENED field is not proof of Owner-visible page"
+      ],
+      "acceptance": false
+    },
+    "privateEvidenceSha256": {
+      "verified-new-input.json": "d444395fdea8b8bff5af433194c3951cbd888cda772b6ff560ba1b94603c3d98",
+      "retirement-result.json": "65ce878de594e34cc52eb81a3966f164c16ee19e1d825e8bdcf36f8942c59291",
+      "empty-directory-inventory.json": "04b5b22ab83b56e0f0999bc950ec6bcd08fa80ff30c5c4e2ac9722bb775ecdbb",
+      "empty-directory-audit-result.json": "bd6abea200b2b397d28b1e3e9d570faac652009a40d60862479fd661b46833b0",
+      "empty-directory-cleanup-result.json": "73bda515daba88185f2f863b8274ded36b7a8e04510de7ef18006154e3ad7b0f",
+      "replacement-installation-result.json": "c49edc1c4366297b93fb317a2d6dca2cc43309c8d465c28a8b5d2ec6c4b28cb4",
+      "product-preparation-result.json": "648e76211b2773e4a5b2cd10ee15825b274c008ac5a8989f116d2a4f902d78e5",
+      "actual-oauth-callback-private-result.json": "69dd5e69ebe26eef0da8f523f4a8bb44ffdeeeddfe7d62a09c27372bfdb7b1ff",
+      "actual-callback-curl-original-stderr.txt": "aa115f021dbb85da7e547695c75936e2d512a0262f72cb21c70b6e34c02dbd9e",
+      "actual-cli-listener-custody.ps1": "96e197038ec247e0b0753432ae137978dddc2f4fa600233a600370e8e8bef787",
+      "post-callback-formal-readback.json": "e7291127d19328d0097c37d4a35f6f74b320a3f7a82e157d06bb1fad9c46fc05",
+      "pre-transition-formal.json": "4ef84081c52681f450d356f129997844745c2e3156dd0182b050fa4c534dfae5",
+      "post-callback-formal.json": "47c872268045d9775df01aaac73dac9376cfceb515d6dad0402dde9a1ccced8b",
+      "completed-measurement-task-cleanup.json": "ed80f9271f1423a181bbc6a8697b13d262a318d18c1af6ab76d7bd07a1f140b6"
+    },
+    "g4": {
+      "emptyDirectoriesRemoved": 1113,
+      "emptyDirectoryAbsentReadbacks": 1113,
+      "independentlyAudited": true,
+      "rootAndDataPreserved": true,
+      "measurementTasksRemoved": 6,
+      "taskAbsentReadbacks": 6,
+      "liveProductHolderRetained": true
+    },
+    "boundaryChanged": false,
+    "OT4Requested": false
+  },
+  "measurement_corrections_016": [
+    "Missing signed Node path located before operation",
+    "Old native exit observed before uninstall, no force kill",
+    "Missing previous private custody metadata restored; no product or credential copy",
+    "Failed preoperation snapshots preserved under exact private evidence subdirectory",
+    "Retirement wrapper now propagates nested measurement exit",
+    "Fresh 1114-directory inventory replaces stale 1090-directory cleanup assumptions before deletion and independent audit",
+    "All-PowerShell wrapper LASTEXITCODE assumption corrected; successful cleanup was not repeated",
+    "Readonly reserved input variable renamed before listener measurement",
+    "Null scheduled-task triggers filtered before count; first cleanup attempt stopped before any deletion",
+    "Reference-repo remote query was not product authority; exact gogoke remote/main/branch checked separately"
+  ],
+  "focused_mechanism_review": {
+    "seat": "oauth_reference_boundary",
+    "mode": "READ_ONLY_FOCUSED_REFERENCE_AND_MECHANISM_REVIEW",
+    "premise": "Actual fixed CLI listener exists but measured TCP callback connection times out; cloud no-LPAC/no-shim control returns HTTP400",
+    "finding": "Evidence supports presenting a login-only normal-current-user option, not claiming token-alone causation or Win11 OAuth success",
+    "shim": "GetFinalPathNameByHandleW import compatibility only; no socket/bind/listen hook found",
+    "unchangedBoundaryFix": "No existing implementation found satisfying no capability addition, no system security change, fixed CLI and host credential boundary",
+    "rejectedAlternatives": [
+      "App-server account/login/start still requires localhost callback",
+      "Host receiving/forwarding authorization codes changes credential boundary",
+      "AppContainer loopback exception changes system network-isolation configuration"
+    ],
+    "sources": [
+      "https://learn.microsoft.com/en-us/windows/win32/api/netfw/nf-netfw-networkisolationsetappcontainerconfig",
+      "https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/windows-firewall/troubleshooting-uwp-firewall"
+    ],
+    "acceptance": false
+  },
+  "hygiene_current_evidence": {
+    "localFiles": 24845,
+    "leaks": 0,
+    "acceptance": false
+  },
+  "login_phase_owner_decision": "artifacts/gogoke-37/checkpoints/M1-LOGIN-PHASE-OWNER-DECISION.json"
+}

@@ -1,0 +1,35 @@
+{
+  "schema": "gogoke.37.l0.windows-permission-boundary.v1",
+  "source_plan_manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d",
+  "status": "CANDIDATE_REQUIRES_CLOUD_AND_PRODUCT_PROOF",
+  "threat_model": {
+    "untrusted": "A launched CLI, its model-driven tools and descendants can choose arbitrary user-mode file paths and commands.",
+    "trusted": "The native host, verified database connection, Windows kernel and Owner-controlled installation resources.",
+    "boundary": "The CLI must not inherit the Owner's unrestricted same-user filesystem and credential access; its repository writes are confined to its host-created testbed worktree, while separately enumerated private instance and session runtime directories remain usable.",
+    "outside_scope": "An already unrestricted same-user process outside the launched CLI, administrator or kernel control."
+  },
+  "direct_source_facts": [
+    "Current process/windows.rs uses a kill-on-close Job Object and a suspended launch but does not create a restricted child token or AppContainer.",
+    "The existing protocol launch provides a small explicit environment; its non-protocol launch passes a null environment pointer and inherits the service environment.",
+    "Current ipc/mod.rs authenticates the connected user's SID, not a v37 seat or AppContainer identity; the existing service capability identifies the Node service only.",
+    "Job custody and native stop proof prevent an uncontrolled surviving child but do not restrict file access.",
+    "A linked Git worktree refers to shared repository metadata; granting the child broad metadata write access would defeat the main-tree boundary."
+  ],
+  "candidate": [
+    "Launch each isolation domain under a distinct less-privileged AppContainer identity with precisely scoped directory access and the existing Job custody.",
+    "A v37 seat operation must arrive through a native-owned channel bound to its actual child process and isolation identity; the current same-user pipe must not become a seat authority source.",
+    "Construct the child environment explicitly. Pin the executable identity and verify the actual suspended child's token, program image, directory identities and Job membership before durable admission and resume.",
+    "Allow repository file writes only in the assigned host-created testbed worktree. Give the child no direct write grant to shared Git metadata; authorized Git mutations and merges require a separate native host operation with current grants and recorded decisions.",
+    "The CLI's own instance authentication material is necessarily available to that CLI. Owner's regular profile and other instances remain outside this isolation domain.",
+    "If the requested permission tier or the real CLI cannot run with a measured boundary, report unavailable and refuse launch; do not fall back to an unrestricted launch."
+  ],
+  "logic_check": "Current directory, environment variables, a CLI mode or Job custody alone cannot restrict an arbitrary same-user child from choosing another path. Private runtime directories are required by H.1, so the write rule is expressed as repository writes plus enumerated private runtime state rather than an impossible claim of zero other filesystem writes.",
+  "required_proof": [
+    "Cloud Windows runs the production suspended-launch path with a pinned test binary and verifies actual child and descendant token and filesystem outcomes; fixture-only success is not a Codex product result.",
+    "Two simultaneous isolated seat channels retain distinct native origin binding; a direct request on the existing Node service pipe cannot perform a seat operation.",
+    "The real pinned Codex instance can use its private home, communicate through host-owned protocol I/O, edit its assigned testbed worktree, and stop with a durable native proof.",
+    "Main-tree files and Owner profile markers remain byte-identical before and after; inaccessible tiers are refused and no test is marked passed when skipped.",
+    "Owner Win11/SAC installed candidate is checked separately before a milestone claim."
+  ],
+  "completion_claim": false
+}

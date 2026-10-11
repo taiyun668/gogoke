@@ -1,0 +1,45 @@
+{
+  "schema": "gogoke.37.light-checkpoint.v1",
+  "changed": [
+    "Installed frozen 0.1.32 after independent retirement and exact empty-directory cleanup audit.",
+    "Made the private test source local core.autocrlf explicit; original README bytes, HEAD and directory identities were unchanged.",
+    "Added bounded original source-status details and precise Git subguards; preserved original error classifications.",
+    "Added the existing fixed host identity to merge_apply, matching child sealing and merge_commit; the existing safety fixture now removes its local identity before merge."
+  ],
+  "result": {
+    "win11Install": "PASS_IDENTITIES_PRESERVED",
+    "formalProtection": "FIVE_GROUPS_UNCHANGED_AFTER_INSTALL_AND_FIRST_DIAGNOSTIC",
+    "cleanup": "1117_EXACT_EMPTY_DIRECTORIES_EACH_ABSENT",
+    "originalMergeDiagnostic": "DENIED_AT_merge.source_status",
+    "fixtureCause": "SYSTEM_core.autocrlf_TRUE_WAS_NOT_LOCAL_AND_PRODUCT_IGNORES_SYSTEM_CONFIG",
+    "secondOriginalNativeMerge": "UNKNOWN_GIT_EXIT_128_COMMITTER_IDENTITY_UNKNOWN",
+    "childCommitPreserved": "e35c0cf49766774f0303aace78395cea27c4db0e",
+    "measurement": "SECOND_MODEL_TURN_COMPLETION_NOT_OBSERVED_WITHIN_EXISTING_BOUND",
+    "shutdown": "REAL_H_STOP_AND_RELEASE_APPLIED_NORMAL_PRODUCT_EXIT_ZERO",
+    "staticReview": "FOCUSED_INCREMENTAL_REVIEWS_NO_REMAINING_STATIC_BLOCKER",
+    "newCodeCloud": "NOT_RUN_YET",
+    "newCodeWin11": "NOT_RUN",
+    "acceptance": false
+  },
+  "next": "Read original UNKNOWN and physical Git facts without recovery or replay; cloud-build the fixed host operation and continue with fresh authorized test worktrees. Retain original UNKNOWN and its child seal evidence.",
+  "reference": {
+    "checked": [
+      "Original Controller private test-source registration scripts",
+      "Existing fixed native Git environment and real configuration origins",
+      "Same installed Git, source, README blob, status, attributes and command-only autocrlf comparison",
+      "Existing child and main commit host identity parameters",
+      "Git v2.53.0 builtin/merge.c IDENT_STRICT before merge strategy",
+      "Focused independent read-only source reviews"
+    ],
+    "adopted": "Use the existing host identity for the earlier merge step as well; preserve fixed Git configuration isolation and the clean-source guard.",
+    "difference": "The original clone creation command was not found. The explicit normalization change is limited to the existing private Controller fixture, not a general product line-ending policy."
+  },
+  "boundaries": [
+    "Original installed instance and all credentials retained",
+    "Fixed CLIs unchanged",
+    "No global Git or system-security setting changed",
+    "No main merge or public release",
+    "Original failed journals remain failed; UNKNOWN was not rewritten or resent"
+  ],
+  "retainedWorktrees": "Frozen source, independent audit and in-flight cloud worktrees retained until their evidence and integration are complete."
+}

@@ -1,0 +1,28 @@
+{
+  "schema": "gogoke.37.checkpoint.v1",
+  "state": "BASE_RULES_HAVE_DIRECT_EVIDENCE_V08_INCOMPLETE_NOT_ACCEPTANCE",
+  "changed": [
+    "The readback now recognizes fixed Codex 0.160.0 User message echoes with exact authorized input text and empty text_elements, requiring one matched started/completed pair per original turn.",
+    "Original baseline, case and loaded-reader hashes remain linked; the corrected final reader records its own distinct hash without rewriting the old journal or snapshots."
+  ],
+  "results": {
+    "installed_product": "0.1.31, original signed and frozen candidate",
+    "model_rule_calls": 13,
+    "actual_sessions": 2,
+    "h_stop_and_release": "Both original sessions stopped and released before normal product close; both product exits were zero",
+    "final_readback": "directCaseEvidence=true; measurementPreservedDatabaseBytes=true; databaseWrites=false; credentialReads=false",
+    "formal_protection": "Five formal groups unchanged after actual normal close",
+    "original_failure": "Reader omitted the genuine User input echo; the first strict correction omitted its official empty text_elements field. Both measurement failures and original requests remain preserved.",
+    "measurement_task": "The same Interactive/Limited task received a larger measurement execution budget so scheduled-task expiry could not interrupt bounded model calls before real H stop; product permissions and operation deadlines were unchanged.",
+    "not_run": ["Foreign project boundary case", "Subordinate Owner case", "Host delivery cases", "Host stall and recovery cases"]
+  },
+  "next": [
+    "Continue the unexecuted V08 cases after the native integration blockers are resolved.",
+    "Collect diagnostic 0.1.32 native qualification and the Grok original HOME exact-source cloud results; retain all original instance records."
+  ],
+  "references": [
+    "Fixed Codex protocol UserInput::Text contains text_elements with a serde default but no empty-field serialization omission: https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/app-server-protocol/src/protocol/v2/turn.rs",
+    "ThreadItem::UserMessage uses the same input content; existing desktop threadItems.conversion.ts already interprets it as User input, and native codex_output.rs does not classify it as a tool.",
+    "The normally closed actual database and original A captures showed the exact echo pair and precisely one bound policy tool call per rule turn; no model turn was replayed."
+  ]
+}

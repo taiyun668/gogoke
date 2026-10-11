@@ -1,0 +1,40 @@
+{
+  "schema": "gogoke.37.light-checkpoint.v1",
+  "recordedUtc": "2026-10-06T15:16:48.3082234Z",
+  "state": "COMPLETED_EXPIRED_TASK_DEFINITION_CLEANUP",
+  "changes": "Bound SAC thread automation to October 6-7 only: pause immediately on success; pause before the October 7 final observation regardless of its outcome; refuse later-date installation. Independently reviewed and removed the exact 292 expired test task definitions, retaining definitions, run facts and original evidence files.",
+  "results": {
+    "tasksReviewed": 292,
+    "expiredOnceTriggers": 286,
+    "completedManualOnceTasks": 6,
+    "deletedDefinitions": 292,
+    "perItemReadback": "ABSENT_292_OF_292",
+    "retainedTasks": 0,
+    "remainingGogoke37Tasks": 0,
+    "uniqueOriginalEvidenceFiles": 2662,
+    "evidenceMetadataChanged": 0,
+    "evidenceFilesDeleted": 0,
+    "taskHistoryLogCleared": false,
+    "credentialContentsRead": false,
+    "originalLastResults": {"0": 218, "1": 71, "2": 2, "267014": 1},
+    "failedTestsReclassifiedAsPassed": false,
+    "sacRetryExecutedDuringCleanup": false,
+    "candidateBytesChanged": false
+  },
+  "list": {
+    "path": "artifacts/gogoke-37/cleanup/EXPIRED-TASKS-20261006.csv",
+    "sha256": "3cfacb0a0ba71b06afdf48233a34ff07d4b8b8f48cfcec34ea262f09ff5b06fc"
+  },
+  "privateEvidence": {
+    "directory": "%TEMP%/g37-expired-task-cleanup-20261006-145609",
+    "retained": "292 original XML definitions and individual run-info snapshots, exact inventory, independent audit, per-item cleanup results, full CSV and original scripts/logs in place",
+    "inventorySha256": "24acc2b0e631e4303943817e9d1d0461b150a96ac84a8008d9e0e7e6ae443f22",
+    "auditSha256": "e3da3a93a2eaca640f358a518034c398799e8f3de00339d133f2f06710f66de6",
+    "executedCleanupScriptSha256": "7719ad79d81f875a0a00a41229b2841840a7ed380cae8cddf05a97ff36c6aabe"
+  },
+  "references": "Existing ordinary-task custody and completed-task cleanup pattern; Task Scheduler Export/Get/Unregister producers. Sol independent review checked all 292 archived/live definitions and 2662 unique file metadata records. Execution rechecked the exact live definition hash/run state before each unregister, then successfully enumerated the task folder to confirm each absence. Evidence file metadata matched before and after; no file content was read for this preservation check.",
+  "measurementCorrections": "Corrected a private inventory draft syntax error before execution; preserved JSON date strings and compared UTC instants to avoid DateTime/string formatting false mismatches; absence requires a successful folder enumeration rather than suppressed query errors. No task deletion preceded these corrections and independent review.",
+  "next": "Retain the private definition/run-info archive for evidence. Continue cloud work; observe original candidate bytes at the already scheduled times. Archive and remove each newly completed one-shot test task after its evidence is retained.",
+  "publicRelease": false,
+  "acceptance": false
+}

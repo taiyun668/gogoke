@@ -1,0 +1,33 @@
+{
+  "schema": "gogoke.37.light-checkpoint.v1",
+  "stage": "M2_IN_PROGRESS_OWNER_LOGIN_EXCEPTION_PENDING",
+  "acceptance": false,
+  "changes": [
+    "Owner approved Claude, OpenCode and Grok test-instance concurrency caps as 4; actual User configuration was read back. Future test-instance preparation uses 4 without another question; real-use caps remain Owner-controlled.",
+    "V08 driver now performs original live H stop-only operations before a closed database checkpoint. Source claims remain STOPPED for original resume; target release occurs after direct checkpoint readback.",
+    "Added actual non-reviewer caller-payload and foreign-project gate attempts. These are development instruments; their Win11 results remain NOT_RUN."
+  ],
+  "result": [
+    "The previous failed V08 case was normally closed without first obtaining H stop proofs. This was a Controller test-settlement error: normal window exit does not prove persistent STOPPED or credential revocation.",
+    "Two original Codex custody rows remain ACTIVE and their claims remain COMMITTED. Exact recorded PID and creation-time identities are no longer alive. The three earlier UNKNOWN rows are unchanged. No row, profile, StopFact or admission was rewritten.",
+    "Read-only independent review confirmed that the instance has two remaining capacity slots but cold credential initialization refuses the two old ACTIVE profiles. A new project cannot bypass this instance-level condition.",
+    "Ordinary-view baseline preserves all five unresolved custody records and all instance/home physical identities. The five formal protection groups are unchanged. The earlier three-row baseline failure is preserved as a measurement failure.",
+    "Frozen product source 5b9f6790 cloud process axes and the three catalog-program behavioral mutations passed; full library, remaining security checks and desktop builds were still running at this checkpoint. No signing, new installation or product acceptance is claimed here."
+  ],
+  "next": "Complete independent driver review and exact-source cloud checks. Owner was asked whether to permit an additional fresh Codex test-instance login: the prior same-batch OT4b rule cannot silently be replaced. Do not create a recovery proof, copy credentials or request another reboot. Other authorized preparation continues while that decision is pending.",
+  "reference": {
+    "checked": [
+      "origin/main AGENTS.md and docs/model-routing.md",
+      "Existing gogo-party lifecycle references recorded in tools/e2e/m2-rules.md",
+      "Native ProductDatabase::close_checked and v37_runtime stop/resume readback",
+      "credential_launch cold-holder ACTIVE-profile guard and instance admission counting",
+      "Existing actual User H stop, output-stream, resume and admission-release operations",
+      "Original failed V08 journal, immutable custody rows and exact OS process-identity readback"
+    ],
+    "adopted": "Reuse actual H stop proofs while the original runtime and Job handles still exist; closed readers verify those proofs rather than inferring them from window exit.",
+    "difference": "A failed original case cannot be repaired retroactively after custody handles have been lost. Preserve its records and ask for the Owner-only login exception instead of weakening the cold-start boundary."
+  },
+  "original_failure": "Exact retained custody identities changed; transition refused",
+  "underlying_cold_start_guard": "fresh holder cannot rebuild an old active profile DACL",
+  "publicRelease": false
+}

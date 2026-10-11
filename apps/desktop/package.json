@@ -1,7 +1,7 @@
 {
   "name": "gogoke",
   "private": true,
-  "version": "0.1.13",
+  "version": "0.1.57",
   "type": "module",
   "scripts": {
     "sync:material-icons": "node scripts/sync-material-icons.mjs",
@@ -22,7 +22,7 @@
     "codemod:toast-shell": "node scripts/codemods/toast-shell-codemod.mjs",
     "codemod:ds:dry": "npm run codemod:modal-shell -- --dry-run && npm run codemod:panel-shell -- --dry-run && npm run codemod:toast-shell -- --dry-run",
     "codemod:ds": "npm run codemod:modal-shell && npm run codemod:panel-shell && npm run codemod:toast-shell",
-    "test": "vitest run",
+    "test": "node ../../tools/e2e/design37-policy-receipt-check.mjs && vitest run",
     "test:localization": "vitest run src/i18n/i18n.test.ts src/features/home/components/Home.test.tsx && node scripts/check-localization.mjs",
     "check:product-identity": "node scripts/check-product-identity.mjs",
     "test:watch": "vitest",

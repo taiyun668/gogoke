@@ -1,0 +1,27 @@
+# M2 H fixed provider launch references
+
+This source-only change extends `LaunchEvidence` to construct a native `PrepareRequest` for the F-pinned Claude Code 2.1.196, OpenCode 1.18.32 and Grok Build 1.0.41 executables. Codex 0.160.0 keeps its existing argv, `CODEX_HOME`, official Code Mode component binding, LPAC grants and verification. Antigravity remains unsupported because the catalog has no qualified static version observation. The driver comes from `InstancePin`, never the wire.
+
+## Reference and choice
+
+| Driver | Direct fixed reference | H recipe |
+| --- | --- | --- |
+| Claude | `third_party/t3code/apps/server/src/gogoke/adapters/claude/{adapter,REFERENCES,SHARED_INTEGRATION}.ts/.md` | `--print --input-format stream-json --output-format stream-json --verbose`; registered instance home supplies `HOME`, `USERPROFILE`, `CLAUDE_CONFIG_DIR`; `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` is requested, not proved effective. |
+| OpenCode | `third_party/t3code/apps/server/src/gogoke/adapters/opencode/{protocol,PROBE}.ts/.md` | `acp`; registered instance home supplies `HOME`, `USERPROFILE`, XDG and OpenCode config selectors, empty config-content override and Claude-compatibility disables. Native session history is still available. |
+| Grok | `third_party/t3code/apps/server/src/gogoke/adapters/grok/session.ts`, `artifacts/gogoke-37/parallel/B4/SHARED_INTEGRATION.md` | `agent --no-leader stdio`; registered instance home supplies `HOME`, `USERPROFILE`, `GROK_HOME`. No unqualified model, sandbox, compatibility, memory, auth-path or login switch is inferred. |
+
+The non-Codex child receives an explicit environment: `SystemRoot`/`WINDIR`, the instance-root home and app-data selectors, and `TEMP`/`TMP` in the active session runtime home. The instance credential/config area and session scratch area remain distinct. There is no inherited host secret environment, credential read/copy, default user config write or CLI install/upgrade. `current_instance_pin`, provider home resolution, current H claim, F worktree physical binding, retained `.git` pointer, LPAC grant and `verify_snapshot` are reused. Codex's different established environment stays as it was. `internetClient` continues to follow the sealed seat tier; registry-read/LPAC identity services are unchanged.
+
+The historical GOGO PARTY seat environment comparison is recorded in `docs/design/22-seat-runtime-inheritance-ledger.md`: Grok used a persistent credential home with a separate invocation home. The frozen B4 handoff now requires `HOME`, `USERPROFILE` and `GROK_HOME` to remain under the registered instance area. NaveHQ's `docs/navehq_cao_true_launch_abort_cleanup_boundary_v0.1.md` and archived OpenCode engineering log require worker-local HOME/XDG/config routing, but supply no native H launch authority. LoomOS's repository handoff and agent notes supply no fixed CLI recipe. The repository research in `docs/research/adapter-spike/` separates protocol references from installed-runtime observations. The vendor argument templates in `provider_evidence/commands.rs` are a shape reference, not a complete launch plan and are not wired here.
+
+## Evidence and limits
+
+F's provider catalog re-observes each executable and compares the native pin. Its Claude/OpenCode catalog checks fixed root and platform package versions and binary bytes; Grok checks the exact SHA tied to its observed `--version`. The non-Codex executables are currently treated as self-contained entrypoints. That observation does **not** establish that future runtime-spawned components are safe or need no separate grant. If a pinned process attempts to start an unprovisioned image or read an ungranted asset, the real launch/tool error must be retained and the affected asset assessed before any new grant. No blanket package-directory grant or ordinary-user fallback is added.
+
+No CLI, model request, login, native build/test or installed Windows/SAC run was performed for this source package. Cloud compilation, actual child token/image/job, effective memory-off behavior, provider config/instruction discovery, provider protocol receipt, resume continuity, and Windows SAC execution are **NOT_RUN**. H only constructs a request; product entry routing, transport decode, journal and acceptance remain Controller/Owner work. A vendor native resume ID is not inferred from the H request ID, so this launch recipe adds no `--resume` argument.
+
+## Codex-only shim correction
+
+Fresh H review found that the generic launch initially retained Codex's import shim. The actual suspended-process gate compares its executable to the fixed Codex digest, so a valid non-Codex pin was necessarily refused before activation. The inference concerns an actual launch blocker, not a new attack or permission boundary.
+
+The correction factors the existing physical-root/ancestor pinning portion of `process/session/compat_module.rs` into `DirectoryRoots`, reusing its shared `Arc<File>` cache and identity readback. Non-Codex launch keeps those handles through prepared, managed and failed/unknown cleanup custody, plus F's retained `.git` pointer. It creates no compatibility DLL, adds no compatibility environment mapping and never enters the Codex import update. Codex retains the original shim preparation, mapping, DLL RX witness and fixed executable digest gate. All LPAC capabilities and sealed tier grants are unchanged. Non-Codex path canonicalization and vendor subprocess behavior still require actual cloud/Win11 evidence and are NOT_RUN.

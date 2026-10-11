@@ -29,3 +29,21 @@ jobs:
           python -m unittest discover -s tools/tests -p test_check_public_source.py -v
       - name: Scan every committed file in the candidate tree
         run: python tools/check-public-source.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.13.1"
+      - name: Parse development E2E scripts without running product flows
+        shell: bash
+        run: |
+          python - <<'PY'
+          import ast
+          import pathlib
+          import subprocess
+
+          scripts = pathlib.Path("tools/e2e")
+          for path in sorted(scripts.glob("*.mjs")):
+              subprocess.run(["node", "--check", str(path)], check=True)
+          for path in sorted(scripts.glob("*.py")):
+              ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+          print("Development E2E syntax parsed; product flows NOT_RUN")
+          PY

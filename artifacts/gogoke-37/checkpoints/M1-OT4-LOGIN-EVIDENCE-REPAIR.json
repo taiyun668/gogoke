@@ -1,0 +1,847 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "state": "OWNER_OT4_LOGIN_READY_ALL_AFFECTED_CLOUD_AND_WIN11_PREPARATION_PASS",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "prior_checkpoint": "fd65c84faf6c10bd065a73f4a200338c775a4114",
+  "installed_source": "aae122c392393dc48fead2fa2f336d6af8af8267",
+  "authorization": {
+    "main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
+    "manifestBlob": "2d3b34a7903e7b0223d043786863706c2297c78c",
+    "receiptBlob": "8020812e3abf35887829f50c78ec9f513272bf70",
+    "PR57Main": "e8ffe3205d79a7fa7b29b03ca96c79aaad35cd30"
+  },
+  "actual_owner_observation": "Owner clicked installed candidate login UI; screenshot shows registered instance revision1, Login request LOGGED_OUT, no sign-in guidance. No inferred successful authentication.",
+  "source_confirmed_defect": {
+    "file": "apps/desktop/native-host/src/store/product_database/v37_login.rs",
+    "cause": "The completed login process EOF/timeout branch ignored its stderr-bearing protocol error and stop proof exit code. Durable confirmation released child stderr; normal account/read then returned LOGGED_OUT with stdout-only output.",
+    "specific_real_cli_failure": "UNKNOWN_ORIGINAL_STDERR_AND_EXIT_CODE_NOT_RETAINED",
+    "fixed_official_cli_source": "758ef40f50c1a458425c7cfbf1eb12cbc07af0b0",
+    "official_source_observation": "Device-code request must succeed before stdout instructions; CLI failures print stderr and exit1. Compatible with screenshot but not proof of this failure cause.",
+    "logic_check": "Separately querying account state cannot explain why the device-code process failed. Preserve its original stderr and exit code before custody release; no inferred provider/network/OS cause."
+  },
+  "repair": {
+    "state": "EXACT_SOURCE_CLOUD_REGRESSION_PASS",
+    "change": "Capture exact child stderr before durable confirmation releases pipes. Noncancel failed/missing exit code yields Owner-private error and retained UNKNOWN original-request output, without a secondary account/read process. Success and cancel retain existing stop, cleanup and account read.",
+    "regression_control": "Actual pinned Codex CLI parser in existing isolated runtime receives an invalid synthetic flag; stderr and exit2, no device-auth or credential request. Production status/finish must preserve error, durable stop and runtime cleanup; same request readback starts no process. Cloud only.",
+    "security_boundary_changed": false,
+    "authorization_or_wire_schema_changed": false,
+    "timeouts_or_retries_added": false,
+    "private_output_to_public_ledger_or_service": false
+  },
+  "review": {
+    "official_source_lookup": "same Luna/high read-only explorer, no login/auth file/browser operation",
+    "fresh_focused_sol": {
+      "seat": "m1_login_error_review",
+      "result": "SOURCE_ONLY_NO_BLOCKING_FINDING",
+      "directInvariantChecks": [
+        "stderr captured before durable release",
+        "nonzero/missing exit fails without account/read",
+        "Owner-private error path only",
+        "cancel and success static paths unchanged",
+        "actual pinned CLI parser regression control"
+      ],
+      "nativeOrInstalledAcceptance": false
+    }
+  },
+  "SAC": "No related new CodeIntegrity events found in direct recent query; absence is not a claim about future component admission. No confirmed SAC stop condition.",
+  "formal_data": "All four protected ordinary-view domains equal before retirement, after replacement and while source1b product runs.",
+  "next": [
+    "Owner OT4: start codexTestM1 login from actual installed candidate settings once; Controller has not started authentication.",
+    "After real login continue authenticated M1 product testing under existing permission tiers; no acceptance claim."
+  ],
+  "M1Complete": false,
+  "acceptance": false,
+  "public_release": false,
+  "controller_merge": false,
+  "route_reflection": "Fix missing original stderr at the native source, then prove it with the actual pinned CLI in cloud and install those exact bytes in the same ordinary root. Local false timeout, receipt-parent mismatch, retained empty directories, duplicate snapshot names and stale preparation revision were instrument errors; corrected from actual product receipts without product scope changes or another cloud build.",
+  "repair_source": "8e1d6d0e8d226b077d36597f11537a93b5caeacb",
+  "observed_inbox_head": "b4f7e866029b8c5a9a1211100effadf01a03ffbc",
+  "cloud": {
+    "native": {
+      "runId": 36797428082,
+      "attempt": 1,
+      "state": "PASS",
+      "focusedPassed": 20,
+      "libraryPassed": 563,
+      "failed": 0,
+      "ignored": 0,
+      "realProcessAxes": 3,
+      "actualPinnedCliFailureRegression": "PASS_STDERR_EXIT_2_ORIGINAL_REQUEST_REPLAY_NO_SECOND_ACCOUNT_READ"
+    },
+    "desktop": {
+      "runId": 36797430935,
+      "attempt": 1,
+      "state": "PASS_ALL_FIVE_JOBS",
+      "frozenArtifactId": 11135153883,
+      "comparisonArtifactId": 11135476774,
+      "reproArtifactId": 11135665005,
+      "sixComparedMembers": "BYTE_IDENTICAL",
+      "setupWrapperReproducibleClaim": false
+    },
+    "hygiene": {
+      "runId": 36797433959,
+      "state": "PASS"
+    },
+    "signing": {
+      "runId": 36801981769,
+      "attempt": 1,
+      "mainCommit": "e8ffe3205d79a7fa7b29b03ca96c79aaad35cd30",
+      "state": "PASS",
+      "signedArtifactId": 11136367237,
+      "localVerification": "PURPOSE_BOUND_P256_AND_7_FROZEN_MEMBERS_PASS",
+      "manifestSha256": "10aad0dfb64c25a94ea9dd9a8408c75902c0ebbc000458e30c7221a4d915c3ec",
+      "signatureSha256": "7e4b32b4ee071117c9fb95f291c0886799f6d978d5f0efbb8883f406bd57a29b"
+    },
+    "installedSmoke": {
+      "runId": 36802281937,
+      "attempt": 1,
+      "sourceCommit": "8e1d6d0e8d226b077d36597f11537a93b5caeacb",
+      "smokeCommit": "8e1d6d0e8d226b077d36597f11537a93b5caeacb",
+      "state": "PASS",
+      "smokeArtifactId": 11136756943,
+      "negativeArtifactId": 11136841642,
+      "smokeJsonSha256": "8dd110b25beb28910dadfdc04052445ade194803b5bdb01430ab52173daae10d",
+      "negativeJsonSha256": "3c1c29c757ed68ff81afd8e2dfeafaa18ab2f437488f9675c39d694d911dfc51",
+      "negativeAxesPassed": 5,
+      "actualInstalledProductPositiveAndNegative": "PASS",
+      "actualReadiness": "PASS",
+      "actualUninstall": "PASS",
+      "platform": "WINDOWS_SERVER_NOT_OWNER_WIN11"
+    }
+  },
+  "repair_bytes": {
+    "setupSha256": "a985f447961ea6159af4cc8dff68742a482cb7bae7c96dc0e0f6fad1579da8c2",
+    "installedShellSha256": "16972cc281d836014e14377c5ae6e37608001ca6ed39473169e6223af8c0ad4a",
+    "nativeHostSha256": "39432c29310a39255a359246702e9e63ac9e30738e957d7cbb54987c33f15323",
+    "nodeSha256": "e3be0545990c90995d7bf3a7af5d64af1f2e0fc1bbd9b79c27f7abc1e9676e50",
+    "resourceIndexSha256": "ba4990f7abae41c1b2af6503671a215a66257ab375406b0af7cd8a0170693a3b"
+  },
+  "ordinary_replacement": {
+    "state": "PASS_ACTUAL_ORDINARY_SAME_ROOT_INSTALL_AND_PRODUCT_READBACK",
+    "sameActualInstalledRoot": "%LOCALAPPDATA%/gogoke37-m1-b989cd53",
+    "candidateDataRoot": "%APPDATA%/app.gogoke.desktop.candidate/product-authority",
+    "oldUninstallReceipt": "DELETED",
+    "preReplacementCustody": "13_STOPPED_0_ACTIVE",
+    "preservedBeforeInstall": "NATIVE_ROOT_DEV_INO_INSTANCE_HOME_BINDING_AND_REVISION_IDENTICAL",
+    "measurementCorrections": [
+      "Original 30-second parent bound falsely reported timeout; actual product finalizer later wrote DELETED. Read receipt from the real installation parent, not cloud RunnerTemp. No uninstall replay.",
+      "Normal finalizer retains empty directories. Cloud harness removes those directories; local replacement initially omitted this retirement cleanup. Installer exit2 on nonempty directory; no product byte change.",
+      "Snapshot script correctly refuses existing output. Give corrected continuation unique output names; preserve failed instrument records.",
+      "Instance registration request replay retains original revision1. The prior Owner login advanced the actual instance to2; corrected preparation uses the native STALE revision2 receipt without recreating data or changing product."
+    ],
+    "emptyDirectoryCleanup": {
+      "independentSeat": "m1_retired_empty_directory_audit",
+      "auditSha256": "c11fdf49ebe14ae740ee673ad06890f3f8eaff6e78c19a73e494c2b2fae36bde",
+      "directoriesAudited": 1092,
+      "files": 0,
+      "reparsePoints": 0,
+      "directoriesRemoved": 1092,
+      "individualAbsentReadbacks": 1092,
+      "state": "PASS",
+      "rule": "Every exact path remained within retired candidate installation root; dev/ino/plain-directory/empty-leaf rechecked before nonrecursive removal. Native data roots excluded.",
+      "receiptSha256": "123da521bbe397800fd91e232c9afa538a1db57066615f203433b650ec03ec35",
+      "individualReadbacksSha256": "f9031acc5aeae4c90e0913e18cd11ef8d3b36f4e9640e25b6d15e104d100763f"
+    },
+    "formalFilesDataHKCUShortcuts": "UNCHANGED_BEFORE_AFTER_INSTALL_AND_WHILE_REPAIRED_PRODUCT_RUNNING",
+    "actualRepairedProductBootstrap": {
+      "generationId": "d372affd736d409ba85f5d67b8ccdd38f099f22284d4e2cda7519634ab09a787",
+      "setId": "ba4990f7abae41c1b2af6503671a215a66257ab375406b0af7cd8a0170693a3b",
+      "version": "0.1.13"
+    },
+    "actualLoginRetry": "OWNER_EXECUTED_REQUEST_SEND_FAILED_EXIT_1",
+    "installerExitCode": 0,
+    "actualInstalledHashes": "ALL_FOUR_MATCH_EXACT_FROZEN_INPUT",
+    "nativeDataIdentity": "PRESERVED_DEV_INO_HOME_BINDING_VERSION_AND_REVISION",
+    "actualNativeInstanceInstalled": true,
+    "actualInstanceRevision": "2",
+    "actualInstanceCapacity": "4",
+    "originalHostWorktreeReplay": "SAME_ORIGINAL_REQUEST_RESULT_NO_NEW_WORKTREE",
+    "runningShellAndNativeHost": "LIVE_PROCESS_PATHS_AND_EXECUTABLE_HASHES_MATCH_SAME_ACTUAL_INSTALLATION",
+    "replacementReceiptSha256": "0561eccb16990c91c9cd8c7a0cb782a89b7a1b92069346be6f321ab19275b504",
+    "runtimeReadbackReceiptSha256": "0332a457b2571701b95f80912ebbaafef1636e47b6d09eb4f77bbad3aa6b526f",
+    "activeFormalSnapshotSha256": "85cfc70107131102f5cbdfa0e70834f4149d23071000b987f992da09c7f9a901"
+  },
+  "private_evidence": {
+    "directory": "%USERPROFILE%/AppData/Local/Packages/OpenAI.Codex_2p2nqsd0c76g0/LocalCache/Local/gogoke-agent-tmp/gogoke37-m1-login-repair-8e1d6d0e",
+    "custody": "Actual installation and native data identities retained; original snapshots/failed instruments/audit/per-item readbacks retained. No credentials read.",
+    "publicRawStderrOrAuthenticationMaterial": false,
+    "heldTaskNameFile": "held-task-name.txt",
+    "heldTask": "Interactive/Limited; actual installed product retained for OT4; existing four-hour task limit. No Controller authentication call or sensitive page automation.",
+    "productEndpointFile": "installed-product-endpoint.json",
+    "completedOwnedTasksRemoved": 7,
+    "latestReopen": "latest-reopen.json; ordinary same installation reopened on Owner request; before/after four formal domains unchanged; actual running process retained",
+    "privateFailureEvidence": "owner-device-login-network-failure.png, owner-device-login-default-log.txt, ordinary-network-config-readback.json; no authentication material publicly committed"
+  },
+  "prior_installed_source": "1b14a7e0b12c9f4c01f3a193db386acaf41fb634",
+  "actual_owner_retry": {
+    "sourceCommit": "8e1d6d0e8d226b077d36597f11537a93b5caeacb",
+    "actualUIInstanceRevision": "2",
+    "diagnosticRepair": "PASS_ORIGINAL_CHILD_EXIT_AND_STDERR_REACHED_REAL_OWNER_UI",
+    "childExitCode": 1,
+    "failurePhase": "DEVICE_CODE_USERCODE_REQUEST_SEND",
+    "endpoint": "https://auth.openai.com/api/accounts/deviceauth/usercode",
+    "specificDNS_TCP_TLS_ProxyOrIsolationCause": "UNKNOWN",
+    "ownedRuntimeCleanup": "OK",
+    "screenshotSha256": "ee8f191b085f150ad559389e7077d5763249acc0cdf81a4c5e7c94fdef19971e",
+    "credentialsOrCodeObtained": "NOT_OBSERVED",
+    "publicRawOwnerOutput": false
+  },
+  "direct_network_evidence": {
+    "ordinaryUserProxy": {
+      "enabled": false,
+      "serverPresent": false,
+      "autoConfigPresent": false,
+      "HTTP_HTTPS_ALL_NO_PROXY": "UNSET"
+    },
+    "customCertOverrideVariables": "SSL_CERT_FILE_SSL_CERT_DIR_CODEX_CA_CERTIFICATE_UNSET",
+    "readOnlyWindowsEvents": "NO_MATCHING_RECENT_WFP_OR_SECURITY_BLOCKED_CONNECTION_EVENTS; no audit/security setting changed",
+    "existingExactCliLoginLog": {
+      "relative": "log/codex-login.log",
+      "length": 168,
+      "sha256": "4369ce460b0b62b337de5da78963f22b656fbd0d9b07e77aa3f2c595188259c3",
+      "contentClass": "ONLY_DEVICE_LOGIN_START_INFO_LINES_NO_DEEPER_ERROR"
+    },
+    "actualLaunchSource": "clean_environment is explicit; internetClient and registryRead capabilities are present; compatibility module changes path spelling only",
+    "logicCheck": "Unconfigured proxy/certificate env cannot explain a missing configured value. CLI top-level request-send Display cannot identify DNS/TCP/TLS cause. Disabled Codex request logging does not prove lower-layer tracing is unavailable; inspect exact client stack before changing environment or permissions.",
+    "sourceReview": "Same Sol read-only reviewer: no evidenced causal omission; current cause UNKNOWN; existing cloud tests have no actual device-auth HTTPS positive coverage",
+    "officialCLI": "758ef40f50c1a458425c7cfbf1eb12cbc07af0b0",
+    "controllerAuthenticationOrSystemSettingsChanges": false
+  },
+  "pending_connect_diagnostics": {
+    "change": "clean_environment pins the existing CLI file-layer filter to its previous three info targets plus hyper_util::client::legacy::connect::http=trace; shared by login and account/read.",
+    "file": "apps/desktop/native-host/src/store/product_database/v37_login.rs",
+    "networkCauseFixed": false,
+    "newNetworkProbeOrComponent": false,
+    "capabilitiesProxyCertificatesRequestsAndTimeoutsChanged": false,
+    "headersBodyTokenAndDeviceCodeLogging": "NOT_ENABLED; source-reviewed exact TCP connector target has none of these output statements",
+    "logLocation": "CLI configured login log; default registered F home/log/codex-login.log; actual existing default file observed privately",
+    "coverageLimit": "Only destination/progress and some TCP errors. DNS, TLS and early socket setup errors may bypass these trace statements. Absence of a record is not success or a specific cause.",
+    "logicCheck": "Official device CLI prints only top-level Reqwest Display. The existing file subscriber filters out connector events by default. Enable only an already-present direct connector target to distinguish actual TCP progress/failure; no inferred cause or security change.",
+    "freshSolReview": {
+      "seat": "m1_connect_log_privacy_review",
+      "state": "SOURCE_ONLY_NO_BLOCKING_FINDING_AFTER_COMMENT_PRECISION_CORRECTIONS",
+      "corrections": "TCP-only wording and configured/default log-directory wording; acknowledge account/read shares filter",
+      "nativeOrInstalledAcceptance": false
+    },
+    "nativeTests": "CLOUD_PASS_563_LIBRARY_20_FOCUSED_3_REAL_PROCESS_CASES_0_FAIL_0_SKIP",
+    "officialSources": [
+      "https://github.com/openai/codex/blob/758ef40f50c1a458425c7cfbf1eb12cbc07af0b0/codex-rs/cli/src/login.rs",
+      "https://docs.rs/hyper-util/0.1.20/src/hyper_util/client/legacy/connect/http.rs.html",
+      "https://github.com/hyperium/hyper-tls/blob/v0.6.0/src/client.rs"
+    ],
+    "routeReflection": "Use the fixed CLI already writing the request and existing private file layer. Source lookup narrowed the target before modification and avoided blanket trace or a new transport probe. HTTPS root cause remains unknown.",
+    "cloud": {
+      "native": {
+        "runId": 36808338894,
+        "attempt": 1,
+        "state": "PASS",
+        "finalArtifactId": 11139202025,
+        "focusedArtifactId": 11139370358,
+        "serverArtifactId": 11138129680,
+        "machineResultSha256": "fd620bf4055c74421bd4ccfcb7d365af1f8e7e9ac76ee277d142fe9648c9c30c"
+      },
+      "desktop": {
+        "runId": 36808339064,
+        "attempt": 1,
+        "state": "PASS_ALL_FIVE_JOBS",
+        "frozenArtifactId": 11139658219,
+        "reproArtifactId": 11139214556,
+        "comparisonArtifactId": 11139836638,
+        "sixMembers": "BYTE_IDENTICAL",
+        "NSISWrapperReproducibleClaim": false
+      },
+      "hygiene": {
+        "runId": 36808338967,
+        "state": "PASS"
+      },
+      "signing": {
+        "runId": 36812033410,
+        "attempt": 1,
+        "state": "PASS",
+        "mainCommit": "e8ffe3205d79a7fa7b29b03ca96c79aaad35cd30",
+        "signedArtifactId": 11139709496,
+        "artifactDeclaredDigest": "sha256:6e947b5535ae5cfd85d3f3cda2e3cb8e2edb1e5f7985d4fccaa5cb149839f0c3",
+        "localVerification": "PURPOSE_BOUND_P256_AND_7_FROZEN_MEMBERS_PASS"
+      },
+      "installedSmoke": {
+        "runId": 36812306177,
+        "attempt": 1,
+        "sourceCommit": "1b14a7e0b12c9f4c01f3a193db386acaf41fb634",
+        "state": "PASS",
+        "platform": "WINDOWS_SERVER_NOT_OWNER_WIN11",
+        "smokeArtifactId": 11141230233,
+        "negativeArtifactId": 11141075717,
+        "smokeJsonSha256": "130a2efce9e5f97e35bcac47d2c57b1697677233314db99f70bfac073529beec",
+        "negativeJsonSha256": "82f0830d01f6c849ea8f626cb38c6f264e1fa75749b057cf29abfe7aac824c1f",
+        "negativeAxesPassed": 5,
+        "failed": 0,
+        "actualInstalledProductPositiveAndNegative": "PASS",
+        "actualReadiness": "PASS",
+        "actualUninstall": "PASS"
+      }
+    },
+    "bytes": {
+      "members": {
+        "gogoke-0.1.13-windows-x64-unsigned-setup.exe": {
+          "length": 56535389,
+          "sha256": "b5be75d92ef610e9d9357d5d5cb1e91c58cf1b5e1be567bd478931d2fba17bed"
+        },
+        "gogoke-installed-shell.nsis.exe": {
+          "length": 26921984,
+          "sha256": "16972cc281d836014e14377c5ae6e37608001ca6ed39473169e6223af8c0ad4a"
+        },
+        "gogoke-native-host.exe": {
+          "length": 7143424,
+          "sha256": "4f9c88c21d1a6507a029b94921545c8e994cd21f0c11dde3751ad02f3259b1ba"
+        },
+        "gogoke-package-hashes.json": {
+          "length": 1754322,
+          "sha256": "9f9ede6f709d830ddb1a228ac45c32a9683171ca62502d5630d295d62fef85c5"
+        },
+        "gogoke-portable.exe": {
+          "length": 26921984,
+          "sha256": "96d1a9de5f74d30f8555fe021defa7c9c1e3fd5fa202808d3bd4dc28e1c87d14"
+        },
+        "gogoke-resources.windows.zip": {
+          "length": 49980652,
+          "sha256": "8acd05baac243c2a0f375ca4c5674405005e7a7f2aca85e6a892690d70c99889"
+        },
+        "node.exe": {
+          "length": 91406496,
+          "sha256": "e3be0545990c90995d7bf3a7af5d64af1f2e0fc1bbd9b79c27f7abc1e9676e50"
+        },
+        "resource-index.json": {
+          "length": 2898334,
+          "sha256": "8b9b93ed8151f3b205ee3224951bb39a2f9835ef767b70866d1bd338708596a9"
+        }
+      },
+      "manifestSha256": "d5ad399618cd52dee1a52d7fe50a9b8e6b41c819109e621919848dfb592ae159",
+      "signatureSha256": "45b7c47376e48101163b3c5034a52b239a022e21bfa510e74022bf8aee0f6522"
+    },
+    "ordinaryReplacement": {
+      "state": "PASS_ACTUAL_ORDINARY_SAME_ROOT_INSTALL_AND_LIVE_PRODUCT_READBACK",
+      "sameActualRoot": "%LOCALAPPDATA%/gogoke37-m1-b989cd53",
+      "privateDirectory": "%USERPROFILE%/AppData/Local/Packages/OpenAI.Codex_2p2nqsd0c76g0/LocalCache/Local/gogoke-agent-tmp/gogoke37-m1-connect-1b14a7e0",
+      "oldUninstallExit": 0,
+      "oldReceipt": "DELETED",
+      "preRetirementCustody": "14_STOPPED_0_ACTIVE",
+      "retirementDataIdentity": "FRESH_PRE_POST_ROOT_DEV_INO_INSTANCE_HOME_BINDING_VERSION_AND_REVISION_IDENTICAL",
+      "retirementFormalFourDomains": "UNCHANGED",
+      "retirementReceiptSha256": "1e719d2471f242c6f7872ecfb4d68f2aaa7d1160af5be8f4b4f1154d9db9cb90",
+      "emptyDirectories": {
+        "independentSeat": "m1_retired_empty_directory_audit",
+        "auditSha256": "454ae0a8eaa8bf3230c6a0f3171ecedf7f723c5cf592a5e6082749cf34b589f0",
+        "directories": 1092,
+        "files": 0,
+        "reparsePoints": 0,
+        "deleted": 1092,
+        "individualAbsentReadbacks": 1092,
+        "cleanupReceiptSha256": "30cb19cb1833341f65ed810f53949caf2bc1b4b58a09502abae64c885ed8ce25",
+        "rule": "Fresh exact inventory; every path identity/plain-directory/empty-leaf checked before nonrecursive rmdir; data/formal domains excluded."
+      },
+      "measurementCorrections": [
+        "CloseMainWindow did not terminate the candidate. Independent CIM readback established the exact two candidate processes and no active CLI; controlled candidate teardown only. No product shutdown defect inferred.",
+        "Initial teardown script mistakenly assigned reserved PowerShell $host. Assignment failed and its native-path check was ineffective; do not claim that guard passed. Independent prior process/parent evidence identified the candidate; subsequent scripts use task-specific variables and Stop error mode."
+      ],
+      "installerExitCode": 0,
+      "installedHashes": "ALL_FOUR_MATCH_EXACT_FROZEN_INPUT",
+      "nativeDataIdentity": "PRESERVED_FRESH_DEV_INO_HOME_BINDING_VERSION_AND_REVISION",
+      "actualInstanceRevision": "2",
+      "actualInstanceCapacity": "4",
+      "originalHostWorktreeReplay": "SAME_ORIGINAL_REQUEST_AND_RESULT_NO_NEW_WORKTREE",
+      "actualBootstrap": {
+        "generationId": "8acd05baac243c2a0f375ca4c5674405005e7a7f2aca85e6a892690d70c99889",
+        "setId": "8b9b93ed8151f3b205ee3224951bb39a2f9835ef767b70866d1bd338708596a9",
+        "version": "0.1.13"
+      },
+      "runningProcessIdentity": "LIVE_SHELL_NATIVE_PATHS_PARENTS_AND_HASHES_PASS",
+      "formalFourDomains": "UNCHANGED_BEFORE_AFTER_INSTALL_AND_WHILE_NEW_PRODUCT_RUNNING",
+      "installationReceiptSha256": "16e9acd5defae0a556815355996f8e685cfdc1963aff2d3f36b2afb45f0fa298",
+      "runtimeReadbackReceiptSha256": "d1edf59320c446d872e8569fec8db9ddf8eeb8c35a9366d1b6f4e9ff62416b7d",
+      "activeReadbackReceiptSha256": "d464a7a23565da4ee60abe93917f3a6f2493bdfbf844f19c2ffa5a274542de44",
+      "activeFormalSnapshotSha256": "b39a1fbddf1b14b7d130dade1ebf956ad6f3970ff4934465ade1d3eff18a0dbd",
+      "controllerAuthenticationStarted": false,
+      "heldTask": "Interactive/Limited; same actual installed product retained for Owner OT4; four-hour bound",
+      "completedOwnedTasksRemoved": 3,
+      "taskCleanupReceiptSha256": "b9185144b86a20e7dd6bbc99882a3a3e9a5c0b9df1b3944e813497b2c0b78863"
+    },
+    "ownerActualRetry": {
+      "sourceCommit": "1b14a7e0b12c9f4c01f3a193db386acaf41fb634",
+      "childExit": 1,
+      "requestState": "UNKNOWN",
+      "failurePhase": "DEVICE_CODE_USERCODE_REQUEST_SEND",
+      "runtimeCleanup": "OK",
+      "privateScreenshotSha256": "200a8b6336520b670dc3f3407a01701c266636fafff6917f5ecdd8663f2d1424",
+      "privateExistingLogSha256": "e9913b6142d128a5cba20c23ea84bebfec8f9b681ce6009ac1dc3934980beae4",
+      "actualDirectConnectorEvents": "HTTPS auth host resolved; TCP connecting then connected to server port443; Owner request still failed afterward.",
+      "conclusion": "DNS resolution and TCP establishment succeeded for this observed request. No TLS/HTTP/root-cause proof.",
+      "specificFailureCause": "UNKNOWN",
+      "existingSchannelAndCodeIntegrityEvents": "NO_MATCHING_EVENTS_IN_REQUEST_TIME_RANGE; absence is not success",
+      "existingCAPI2LogRead": "ACCESS_DENIED_NO_ELEVATION_OR_LOG_SETTING_CHANGE",
+      "credentialsRead": false,
+      "authenticationSucceeded": false,
+      "controllerAuthInvoked": false,
+      "formalFourDomainsAfterRetry": "UNCHANGED",
+      "actualRuntimeIdentityAfterRetry": "LIVE_SHELL_NATIVE_PATHS_PARENT_HASHES_PASS",
+      "privatePostRetryReceiptSha256": "04f74ea445da6a48fecb6a9f258cf2f6d0dff20e7a8f041e72f818df230b25b1",
+      "privatePostRetryFormalSnapshotSha256": "3fceb02397c8763b278803ce4c986347d8aa634ce36576f45d6e7f68114f0061",
+      "completedOwnedPostRetryTaskRemoved": true,
+      "sourceLookup": {
+        "seat": "same Luna/high read-only m1_installed_entry_lookup",
+        "fixedCLICommit": "758ef40f50c1a458425c7cfbf1eb12cbc07af0b0",
+        "errorChain": "hyper-tls/tokio-native-tls/native-tls Windows/hyper-util/reqwest preserve the underlying error as source; request_device_code wraps it in io::Error::other.",
+        "confirmedOutputLoss": "cli/src/login.rs:357-359 uses Display for the final device login error; existing background-connect logging also uses Display. TCP connector events do not expose later TLS/source-chain failures.",
+        "officialNativeRPC": "account/login/start chatgptDeviceCode calls the same request_device_code, but account_processor.rs:517-523 also formats Display, so it cannot recover this error chain. It has different app-server config/custody context and was not used as a substitute.",
+        "causeStillUnknown": true,
+        "furtherNetworkProbeOrAuthRun": false,
+        "sources": [
+          "https://github.com/openai/codex/blob/758ef40f50c1a458425c7cfbf1eb12cbc07af0b0/codex-rs/cli/src/login.rs#L357-L359",
+          "https://github.com/openai/codex/blob/758ef40f50c1a458425c7cfbf1eb12cbc07af0b0/codex-rs/login/src/device_code_auth.rs",
+          "https://github.com/openai/codex/blob/758ef40f50c1a458425c7cfbf1eb12cbc07af0b0/codex-rs/app-server/src/account_processor.rs"
+        ]
+      }
+    }
+  },
+  "connector_source": "1b14a7e0b12c9f4c01f3a193db386acaf41fb634",
+  "owner_scope_decision": {
+    "reason": "Plan section8 treats manual CLI installation/upgrade or conflict with a decided boundary as Owner touchpoint. Existing pinned official CLI has no confirmed source-chain output entry; modifying/replacing its binary and rebinding identity is not Controller unilateral work.",
+    "proposedNarrowChange": "Retain fixed 0.149.0 source and device-code request/instance/permission/custody flow; only change its device-login failure output to retain the underlying error chain in Owner-private stderr, cloud build, then rebind exact new program identity and test the actual installation.",
+    "notAuthorizedOrExecuted": true,
+    "securityCapabilityChangesProposed": false,
+    "noBlindRetryOrMoreTraceBuild": true,
+    "routeReflection": "The existing connector target proved actual TCP success, then source lookup proved the remaining error is suppressed by the fixed CLI output. Another same-byte Owner retry or broader filter cannot retrieve an already omitted chain; pause at the specific pinned-component scope decision rather than repeat that path.",
+    "status": "SUPERSEDED_BY_OWNER_REJECTION_FIXED_CLI_MUST_REMAIN_IDENTICAL",
+    "executed": false
+  },
+  "owner_direct_transport_decision": {
+    "fixedCLIChangeAuthorized": false,
+    "fixedCLIUnchanged": true,
+    "authorized": "Same isolated identity/environment system curl or PowerShell to exact device-auth URL; same fixed CLI and same real home ordinary control; diagnose local TUN and repair our isolation/environment.",
+    "controllerBrowserOrLoginCompletion": false
+  },
+  "direct_transport_evidence": {
+    "schema": "gogoke.37.owner-directed-transport-evidence.v1",
+    "helperSha256": "8a0d2d7cadcd8885ee6519ce52ab0d2da4e4dad85a32d090883881aff5a1677a",
+    "systemCurl": "%SystemRoot%/System32/curl.exe",
+    "curlBackend": "SCHANNEL",
+    "curlVersion": "8.21.0",
+    "ordinary": {
+      "exitCode": 0,
+      "TLS": "SUCCESS_HTTP_400_EMPTY_POST",
+      "credentialRequestBody": "NONE"
+    },
+    "isolated": {
+      "exitCode": 35,
+      "failureStage": "SCHANNEL_ACQUIRE_CREDENTIALS_HANDLE",
+      "originalCode": "SEC_E_SECPKG_NOT_FOUND_0x80090305",
+      "sameRegisteredProfileSID": true,
+      "same12EnvironmentEntries": true,
+      "actualToken": {
+        "TokenIsAppContainer": 1,
+        "TokenIsLessPrivilegedAppContainer": {
+          "status": "unsupported",
+          "win32Error": 87,
+          "ntStatus": "0xc0000003",
+          "value": null
+        },
+        "AppContainerSidMatchesDerived": true,
+        "CapabilityCount": 2,
+        "InternetClientAndRegistryReadMatch": true,
+        "AllApplicationPackagesOptOutPolicyAtCreate": 1
+      },
+      "sameJobConfiguration": "KILL_ON_CLOSE_WITH_REAL_MEMBERSHIP_READBACK_NEW_INSTRUMENT_JOB_OBJECT",
+      "compatDLL": "NOT_INJECTED_SYSTEM_CURL; not a product replacement"
+    },
+    "fixedCLIControl": {
+      "sha256": "14b7e6b2356e82d1d9275579eaa588757b4e0a501b65dcc19fccdf77bd83dc00",
+      "sameRealInstanceHome": true,
+      "sameExplicitEnvironment": true,
+      "isolation": "NONE_OWNER_AUTHORIZED_CONTROL",
+      "actualDeviceGuidanceObserved": true,
+      "instrumentStopExit": 125,
+      "timedOut": false,
+      "stopped": true,
+      "authenticated": false,
+      "sensitiveStdout": "PRIVATE_ONLY_NO_PUBLIC_CONTENT_OR_HASH"
+    },
+    "TUN": {
+      "singboxTun": "RUNNING",
+      "IPv4RouteToBothObservedTargets": "SINGBOX_TUN",
+      "IPv6DefaultRoute": "PHYSICAL_ADAPTER",
+      "actualResolvedTargets": "PUBLIC_IPV4_IPV6_NOT_COMMON_FAKE_IP_RANGES",
+      "packetCapture": "NOT_RUN; route observation is not a packet-forwarding proof",
+      "specificFailure": "LOCAL_SSPI_INIT_BEFORE_TLS_NOT_A_DEMONSTRATED_TUN_FORWARDING_FAILURE"
+    },
+    "formalFourDomains": "UNCHANGED_BOTH_CONTROLS",
+    "privateReceiptSha256": "61e4f078be80418342b05c23d03c3c49c9fe1017e1f3bc13ba67c4bfefdc640e",
+    "privateCLIControlReceiptSha256": "9d634944f43a274a1dd600c39b75d91c38799b9b11db7a6bccc6c23de387860f",
+    "routingInventorySha256": "55c7e4c083b4950a4d6b735e102e59ca9848e6434aac5234becde537eaf3a77f",
+    "measurementCorrections": [
+      "PowerShell module lookup selected a bundled Security.types.ps1xml and failed Authenticode cmdlet load. Pin only system module path for signature check; Valid gate kept. No curl ran on that failed attempt.",
+      "Supplemental token class46 GetTokenInformation returned87, NtQueryInformationToken returnedSTATUS_INVALID_INFO_CLASS. Preserve unsupported status; native-required29/31/30 still actual strict checks. No isolated request ran before instrument correction.",
+      "Early instrument used only JOB_LIST config; added actual sameJob assignment and membership check and unconditional handle release before successful isolated run.",
+      "CLI guidance now observes only official stdout markers; error stderr device-code wording cannot count as guidance."
+    ],
+    "identityOnlyDifferential": {
+      "state": "SYSTEM_CURL_TLS_SUCCESS_HTTP_400",
+      "sameSystemProgramSha256": "73d24149ff289afc49ec41f08918ef9faa727d39ad993e929757dc2ddafab805",
+      "sameRegisteredProfileSID": true,
+      "samePhysicalHome": true,
+      "same12EnvironmentEntries": true,
+      "onlyAddedCapability": "lpacIdentityServices",
+      "actualToken": {
+        "TokenIsAppContainer": 1,
+        "TokenIsLessPrivilegedAppContainer": {
+          "status": "unsupported",
+          "win32Error": 87,
+          "ntStatus": "0xc0000003",
+          "value": null
+        },
+        "AppContainerSidMatchesDerived": true,
+        "CapabilityCount": 3,
+        "CapabilityNamesMatched": [
+          "internetClient",
+          "registryRead",
+          "lpacIdentityServices"
+        ],
+        "EveryCapabilitySidAndEnabledStateMatches": true,
+        "AllApplicationPackagesOptOutPolicyAtCreate": 1
+      },
+      "processExit": 0,
+      "timedOut": false,
+      "stopped": true,
+      "jobMembershipReadback": true,
+      "helperSha256": "e11d5b128693b151b242cbd3c36fa3a6042cac76e6f9bf18f0e16e9693e45bac",
+      "receiptSha256": "12bd2abe505b67b4a7df0195b65f3d23a296aeb0fb472ac9f83c91ab0fb0e515",
+      "formalFourDomains": "UNCHANGED_BEFORE_AFTER",
+      "TLSProbeIsNotProductLoginAcceptance": true,
+      "otherCandidateCapabilityRuns": "NOT_NEEDED; first single candidate already restored observed TLS path"
+    }
+  },
+  "production_service_scope_decision": {
+    "state": "SUPERSEDED_OWNER_AUTHORIZED_ALL_CLI_INSTANCE_SESSIONS_NOT_ONLY_LOGIN",
+    "knownFailure": "Registered LPAC internetClient+registryRead cannot initialize Schannel security package; actual system curl returns SEC_E_SECPKG_NOT_FOUND. Same identity with only lpacIdentityServices added completes TLS.",
+    "knownLimit": "System curl is an authorized layer diagnostic; repaired fixed-CLI product login still must be executed on the actual installation.",
+    "proposedScope": "Only native Owner-login and its account/read purpose; add exactly lpacIdentityServices to the existing profile token during preparation and actual CreateProcess creation, and require exact three-capability token readback. Generic H seats/sessions do not receive this purpose.",
+    "unchanged": "Fixed CLI bytes, registered profile SID, F home identity, LPAC policy, Job constraints, path module, explicit environment, permission-tier/operation bindings, TUN/proxy/certificate settings and system ACL.",
+    "affectedFiles": [
+      "apps/desktop/native-host/src/process/mod.rs",
+      "apps/desktop/native-host/src/process/windows.rs",
+      "apps/desktop/native-host/src/process/session/isolation.rs",
+      "apps/desktop/native-host/src/store/product_database/v37_login.rs"
+    ],
+    "scopeReason": "Owner authorized bounded diagnosis and repair, so a changed SID count alone is not a stop. Production adds an actual Windows identity-service access principal; full effective service permission scope and protection of ordinary Owner credentials are not yet proved by these TLS results. Existing plan section8/security boundary reserves unresolved service-access changes to Owner.",
+    "threatModel": "Protected boundary is the deliberately restricted child versus Windows identity services and ordinary Owner credentials; access requires control of that restricted child. This is distinct from same-user installation-directory legacy concerns. No attack reproduction.",
+    "controllerDiagnosticAuthorizationJudgment": "Trusted signed system curl with fixed anonymous request and private captures is within the Owner-directed control, which already permits the same fixed CLI under ordinary User privileges. This does not authorize granting service access to general untrusted product seats.",
+    "specialist": "fresh Astra/high read-only owner_schannel_boundary; supports local SSPI fault and plausible finite TLS correction but does not treat unknown service scope as proven unchanged.",
+    "followupChecks": [
+      "Exact-source cloud native/desktop/hygiene and trusted signing/same-byte smoke.",
+      "Actual same-root ordinary Win11 install and formal snapshot protection.",
+      "Exact fixed CLI Owner login retry and remaining authenticated M1; no substitution or self-acceptance."
+    ],
+    "sources": [
+      "https://learn.microsoft.com/en-us/windows/win32/secauthn/acquirecredentialshandle--schannel",
+      "https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer",
+      "https://chromium.googlesource.com/chromium/src/+/7b1ddbd7eb53dc059518b6aff53c6d6c44232503/sandbox/policy/win/sandbox_win.cc"
+    ],
+    "latestOwnerDecision": "Add only lpacIdentityServices for CLI instance sessions including HTTPS model calls; describe permission scope; rerun file/directory isolation; call Owner once for OT4 after readiness."
+  },
+  "fixed_cli_nonlogin_https": {
+    "schema": "gogoke.37.fixed-cli-nonlogin-https.v1",
+    "CLIsha256": "14b7e6b2356e82d1d9275579eaa588757b4e0a501b65dcc19fccdf77bd83dc00",
+    "results": [
+      {
+        "capabilityNames": [
+          "internetClient",
+          "registryRead",
+          "lpacIdentityServices"
+        ],
+        "actualToken": {
+          "TokenIsAppContainer": 1,
+          "TokenIsLessPrivilegedAppContainer": {
+            "status": "unsupported",
+            "win32Error": 87,
+            "ntStatus": "0xc0000003",
+            "value": null
+          },
+          "AppContainerSidMatchesDerived": true,
+          "CapabilityCount": 3,
+          "CapabilityNamesMatched": [
+            "internetClient",
+            "registryRead",
+            "lpacIdentityServices"
+          ],
+          "EveryCapabilitySidAndEnabledStateMatches": true,
+          "AllApplicationPackagesOptOutPolicyAtCreate": 1
+        },
+        "networkCheckStatus": "ok",
+        "actualHTTPStatus": 405,
+        "networkDetail": "https://chatgpt.com/backend-api/<redacted> reachable (HTTP 405)",
+        "durationMs": 835,
+        "wholeDoctorExit": 1,
+        "wholeDoctorPassClaim": false,
+        "privateReceiptSha256": "7c7e9baeea9b5214b8f2a4eb279665d419a7ce9dc9088507e270b5faa5694f83",
+        "sameActualCLI": true,
+        "sameProfileSID": true,
+        "helperHash": "3300548e59de9d1c55650f74f929a9be63942dc2f21acd85a55bfc3b5b5460e7",
+        "stopped": true,
+        "instrumentDifference": "No production Codex-pinned LPAC path compatibility DLL"
+      },
+      {
+        "capabilityNames": [
+          "internetClient",
+          "registryRead"
+        ],
+        "actualToken": {
+          "TokenIsAppContainer": 1,
+          "TokenIsLessPrivilegedAppContainer": {
+            "status": "unsupported",
+            "win32Error": 87,
+            "ntStatus": "0xc0000003",
+            "value": null
+          },
+          "AppContainerSidMatchesDerived": true,
+          "CapabilityCount": 2,
+          "CapabilityNamesMatched": [
+            "internetClient",
+            "registryRead"
+          ],
+          "EveryCapabilitySidAndEnabledStateMatches": true,
+          "AllApplicationPackagesOptOutPolicyAtCreate": 1
+        },
+        "networkCheckStatus": "fail",
+        "actualHTTPStatus": null,
+        "networkDetail": "https://chatgpt.com/backend-api/<redacted> TLS handshake or certificate validation failed (required)",
+        "durationMs": 197,
+        "wholeDoctorExit": 1,
+        "wholeDoctorPassClaim": false,
+        "privateReceiptSha256": "257901e1cc7c413b61aa6fcd65ed9ed26f76f28ff1735be9b2140ab783617c71",
+        "sameActualCLI": true,
+        "sameProfileSID": true,
+        "helperHash": "3300548e59de9d1c55650f74f929a9be63942dc2f21acd85a55bfc3b5b5460e7",
+        "stopped": true,
+        "instrumentDifference": "No production Codex-pinned LPAC path compatibility DLL"
+      }
+    ],
+    "productAcceptance": false,
+    "privateSafeReadbackSha256": "a44a4a73abeb232c4d875d4597f5d3214a27dde09514e70eecefe5b4c47318b7"
+  },
+  "cli_identity_services_implementation": {
+    "files": [
+      "apps/desktop/native-host/src/process/session/isolation.rs",
+      "apps/desktop/native-host/src/process/windows.rs",
+      "apps/desktop/native-host/src/store/product_database/v37_login.rs",
+      "apps/desktop/native-host/src/store/session_transport/launch.rs",
+      "docs/implementation/gogoke-37-cli-permissions.md"
+    ],
+    "state": "EXACT_SOURCE_CLOUD_AND_ACTUAL_WIN11_PREPARATION_PASS_OWNER_LOGIN_PENDING",
+    "onlyAddedCapability": "lpacIdentityServices",
+    "scope": "Ownerlogin/accountread and fixedCLI H session builds, requests and both actual suspended process creation paths; host-only flag, generic launch default unchanged",
+    "networkPermissionTiers": "EXISTING_NETWORKED_WRITE_ONLY_INTERNETCLIENT; no tier upgrades",
+    "nativeActualFileScopeRegression": "cli_identity_services_child_preserves_file_and_instance_scope; actual child authorized home/worktree write and readonly positive read, readonly delete/newwrite denied, Owner-sibling and otherSID read/write denied",
+    "sourceAudit": {
+      "seat": "fresh risk_auditor Astra/xhigh cli_identity_first_audit",
+      "state": "SOURCE_ONLY_NO_BLOCKING_FINDING",
+      "axes": [
+        "namedSID_RAII_actualToken",
+        "hostOnlyScope",
+        "allCLILaunchPropagation",
+        "networkTiers",
+        "fileBoundariesAndCustody",
+        "actualFixture",
+        "documentation",
+        "CLIAndSystemUnchanged",
+        "scopeAndCompile"
+      ],
+      "closedFindings": [
+        "Document independent host launch vs inherited CLI descendants precisely.",
+        "Actual readonly child positive read added before source cut; final audit report stale caveat corrected by direct source."
+      ],
+      "cloudNativeAcceptance": false
+    },
+    "localNativeBuildOrTest": false,
+    "cloudSource": "243e88b598782f254673eb8d6e24208843ca5871",
+    "cloud": {
+      "native": {
+        "runId": 36835887293,
+        "attempt": 1,
+        "state": "PASS",
+        "libraryPassed": 565,
+        "failed": 0,
+        "ignored": 0,
+        "focusedPassed": 20,
+        "realProcessCasesPassed": 3,
+        "newActualIsolationCase": "PASS",
+        "newActiveDirectoryCase": "PASS",
+        "sameActualPinnedCLIOpenAndResumeCase": "PASS_FULL_AND_FOCUSED",
+        "artifactId": 11149568905,
+        "independentReadbackSha256": "d1a0b883e939213432e4ddaee0c0a205e711f581bb0472db7ea2cd302ece2902",
+        "formalMutation": "NOT_EXECUTED"
+      },
+      "desktop": {
+        "runId": 36835887114,
+        "attempt": 1,
+        "state": "PASS_ALL_FIVE_JOBS",
+        "frozenArtifactId": 11150506780,
+        "reproArtifactId": 11149774581,
+        "comparisonArtifactId": 11151531098,
+        "sixComparedMembers": "BYTE_IDENTICAL",
+        "setupWrapperReproducibleClaim": false
+      },
+      "hygiene": {
+        "runId": 36835888102,
+        "state": "PASS"
+      },
+      "signing": {
+        "runId": 36840284034,
+        "attempt": 1,
+        "state": "PASS",
+        "mainCommit": "e8ffe3205d79a7fa7b29b03ca96c79aaad35cd30",
+        "signedArtifactId": 11151236837,
+        "keyPurpose": "TRUSTED_CI_CANDIDATE_NOT_OWNER_FORMAL",
+        "localVerification": "PASS_PURPOSE_BOUND_P256_AND_7_EXACT_FROZEN_MEMBERS",
+        "manifestSha256": "0973b061c45111ed76dc16afd1581d6148ca6e548d374902956d5997fbd47715",
+        "signatureSha256": "bdf1b49471763f16d15558dac93bb8f1c2ad0cf4c25bc6b4d5ff4da443f7d125"
+      },
+      "installedSmoke": {
+        "runId": 36840679004,
+        "attempt": 1,
+        "sourceCommit": "aae122c392393dc48fead2fa2f336d6af8af8267",
+        "smokeCommit": "aae122c392393dc48fead2fa2f336d6af8af8267",
+        "state": "PASS",
+        "platform": "WINDOWS_SERVER_NOT_OWNER_WIN11",
+        "smokeArtifactId": 11152571505,
+        "negativeArtifactId": 11152476348,
+        "smokeJsonSha256": "7c0ed4a1dbfb825d28ec55530ae8c726f5efcd34461f0606abb4ddd043c116f2",
+        "negativeJsonSha256": "aff1ed860563f8b5a671d027d0c6059e5fa81bd33983a87dd410240a120000a3",
+        "actualInstalledProductPositiveAndNegative": "PASS_TEST_RESULT_NOT_ADOPTED",
+        "readiness": "PASS",
+        "uninstall": "PASS",
+        "negativeAxesPassed": 5,
+        "actualRunnerMsixContext": "NOT_REPRODUCED_CONTEXT_REJECTION_CONTROLS_ONLY"
+      }
+    },
+    "aclDiagnostic": {
+      "change": "Only path and operation context with retained original io::Error; no permission, traversal, retry, wait or skip changes",
+      "cause": "Concrete missing object UNKNOWN; running CLI dynamic leaf removal is a hypothesis, not established root cause",
+      "logicCheck": "Same exact source focused case passed but full library failed live path ACL read. Generic NotFound cannot establish the object; preserve it at source before altering semantics."
+    },
+    "retirement": {
+      "source": "1b14a7e0b12c9f4c01f3a193db386acaf41fb634",
+      "state": "PASS_RETIRED_AND_AUDITED_EMPTY_DIRECTORY_CLEANUP_DATA_PRESERVED",
+      "sameRoot": "%LOCALAPPDATA%/gogoke37-m1-b989cd53",
+      "formalFourDomains": "UNCHANGED",
+      "nativeDataIdentity": "PRESERVED",
+      "finalizer": "DELETED",
+      "oldProductCurrentlyRunning": false,
+      "independentAuditSha256": "11310c30ea58d5cdc4889d50243312de301fa139775756fb80bfe808d58dc04b",
+      "manifestSha256": "33ad845d5c9a8868532a32edd901b2cef874cfcaba83b4d6890035585838117d",
+      "directoriesRemoved": 1092,
+      "individualAbsentReadbacks": 1092,
+      "filesDeleted": 0,
+      "cleanupReceiptSha256": "6349cce55ef6d1e41ae5ea8837df38d8435a1598cf754b1d190c99dedf51876a",
+      "cleanupIndividualReadbacksSha256": "7f90ebb361dc739ca89f2f1f09396bf2531a39280db5c327880cf87a3afa507f",
+      "diagnosticAndCleanupAuditSha256": "0eed764d4bcd2e2b4438f882e5366e40d5b8f5ceca136aa19467159f48845d2e",
+      "measurementCorrection": "Initial scheduled action selected Windows PowerShell5.1; incompatible snapshot wrapper exited before any deletion. Existing PowerShell7 action completed exact same audited objects; original error record retained."
+    },
+    "diagnosticSource": "de8444a1a3d337bd7d91a5f02312fae43c558be6",
+    "diagnosticCloud": {
+      "native": {
+        "runId": 36832766028,
+        "attempt": 1,
+        "state": "FAIL",
+        "libraryPassed": 563,
+        "failed": 1,
+        "ignored": 0,
+        "failedStage": "first capability-probe after activation",
+        "actualObject": "instanceA/.tmp/plugins-clone-<nonce>/plugins/<plugin>/tests/goldens/<file>.png",
+        "originalError": "open object Os code5 PermissionDenied",
+        "artifactId": 11148616203
+      },
+      "hygiene": {
+        "runId": 36833757740,
+        "state": "PASS"
+      },
+      "desktop": {
+        "runId": 36833753148,
+        "state": "CANCELLED_SUPERSEDED_IMPLEMENTATION"
+      }
+    },
+    "lifecycleRootCause": {
+      "directObjectSource": "Fixed 0.149.0 startup plugin synchronization owns CODEX_HOME/.tmp/plugins-clone-* and renames or cleans it during normal operation.",
+      "codeDefect": "Active authorization reused the preactivation recursive path snapshot although allowed CLI runtime descendants are dynamic; those descendants are not authorization inputs to capability/output/inbox/qcard/runtime calls.",
+      "exactWin32FiveSubcause": "NOT_ESTABLISHED; no claim that raw5 is delete-pending, no error-code swallowing",
+      "fixScope": "Keep strict grant/preactivation tree checks; Active validates stable roots on same ACL/identity handles plus all original Owner/E/F/H/pin/program/compat/Git bindings. Only two postactivation transaction checks switch to internal Active mode.",
+      "permissionScopeChanged": false,
+      "source": "https://raw.githubusercontent.com/openai/codex/rust-v0.149.0/codex-rs/core-plugins/src/startup_sync.rs",
+      "specialist": "owner_schannel_boundary read-only; call ordering and plan invariant confirmed; no additional Owner decision required",
+      "newRetriesWaitsOrCLIChanges": false,
+      "actualRegression": "active_root_grant_survives_delete_pending_child_without_accepting_wrong_root; actual Windows held-handle DeletePending, Active root valid, wrong-root/tier rejected, strict admission stable hardlink descendant rejected",
+      "instrumentCorrections": [
+        "FILE_DISPOSITION_INFO uses BOOLEAN u8.",
+        "Do not assume delete-pending entries remain enumerable; verify actual state on held handle. Use stable aliased child to test strict rejection."
+      ]
+    },
+    "sourceCommit": "aae122c392393dc48fead2fa2f336d6af8af8267",
+    "ordinaryWin11": {
+      "state": "PASS_ACTUAL_SIGNED_SAME_ROOT_INSTALL_BOOTSTRAP_PREPARATION_AND_READBACK_LOGIN_NOT_STARTED",
+      "installRoot": "%LOCALAPPDATA%/gogoke37-m1-b989cd53",
+      "candidateDataRoot": "%APPDATA%/app.gogoke.desktop.candidate/product-authority",
+      "taskView": "INTERACTIVE_LIMITED_REAL_LOCAL_AND_ROAMING_PATHS",
+      "installerExitCode": 0,
+      "actualInstalledHashes": "MATCH_FROZEN_INPUT",
+      "formalFourDomains": "UNCHANGED_BEFORE_AFTER_INSTALL_AND_WHILE_RUNNING",
+      "dataRootAndInstanceHomeIdentities": "PRESERVED",
+      "instanceRevision": "2",
+      "instanceCapacity": "4",
+      "originalWorktreeReplay": "SAME_ORIGINAL_REQUEST_AND_RESULT_NO_NEW_WORKTREE",
+      "liveProcessPathsParentsAndHashes": "MATCH_ACTUAL_INSTALLATION",
+      "independentProofSha256": "e706cc330cd3cef4757bbcbe347dd30b8f9eb49b376c0dcf27adff0c2bfc48e5",
+      "newInstallRootIdentity": "CHANGED_ON_REINSTALL_OLD_G4_MANIFEST_MUST_NOT_BE_REUSED",
+      "authentication": "NOT_STARTED",
+      "candidateNativeProgramSAC": "ACTUAL_NATIVE_HOST_RUNNING_NOT_FUTURE_CLI_ADMISSION_CLAIM",
+      "holderTask": "ONLY_CURRENT_INTERACTIVE_LIMITED_4_HOUR_PRODUCT_HOLDER_RETAINED",
+      "installationReceiptSha256": "22a610b44a574019cd592a398f25654d48e7fca831fc362a72ed949a50afbb8e",
+      "preparationReceiptSha256": "7521f2d490826843cbd01798e59771d456557d521645927f8867d175df9823cd",
+      "activeReadbackSha256": "8e8df1d05ce65d31e72471e22f4e8d7b3e64470b57cf0a2eed541e393a77e25d",
+      "activeFormalSnapshotSha256": "29a305d9f1e2458748042309e345536fcc20afc6d1306837a09bb83d1c8f30a8"
+    },
+    "exactBytes": {
+      "gogoke-0.1.13-windows-x64-unsigned-setup.exe": {
+        "length": 56543225,
+        "sha256": "bb6f617e9514d9da499cc00589fd2c0b112c79589cf3cd44fdb64039bb2bb207"
+      },
+      "gogoke-installed-shell.nsis.exe": {
+        "length": 26921984,
+        "sha256": "16972cc281d836014e14377c5ae6e37608001ca6ed39473169e6223af8c0ad4a"
+      },
+      "gogoke-native-host.exe": {
+        "length": 7154176,
+        "sha256": "240f722a1075f981513af83dd2553ace1d8d7c9233dcc40e017baa08acf94570"
+      },
+      "gogoke-package-hashes.json": {
+        "length": 1754322,
+        "sha256": "8927ce31a45ee946570bd8742d10f0f2ada83664a26683bf6a076672ebdcab42"
+      },
+      "gogoke-portable.exe": {
+        "length": 26921984,
+        "sha256": "96d1a9de5f74d30f8555fe021defa7c9c1e3fd5fa202808d3bd4dc28e1c87d14"
+      },
+      "gogoke-resources.windows.zip": {
+        "length": 49980652,
+        "sha256": "3d9d418f16cb753f2e11cc8c67cbfddfb73eacbe626d959fbbbb7ce7db55af2c"
+      },
+      "node.exe": {
+        "length": 91406496,
+        "sha256": "e3be0545990c90995d7bf3a7af5d64af1f2e0fc1bbd9b79c27f7abc1e9676e50"
+      },
+      "resource-index.json": {
+        "length": 2898334,
+        "sha256": "e8c7a112e2af4c29d328d3c81e744c2f225c0f53bf627d67ec16fb703fa2f058"
+      }
+    },
+    "privateEvidenceDirectory": "%USERPROFILE%/AppData/Local/Packages/OpenAI.Codex_2p2nqsd0c76g0/LocalCache/Local/gogoke-agent-tmp/gogoke37-m1-identity-243e88b5"
+  },
+  "historical_evidence_notice": "Top-level cloud, repair_bytes and ordinary_replacement retain prior stderr-repair history. Latest identity-services candidate evidence is under cli_identity_services_implementation."
+}

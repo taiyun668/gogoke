@@ -1,12 +1,14 @@
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use tauri::AppHandle;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -435,8 +437,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub(crate) struct WorkspaceSession {
     pub(crate) codex_args: Option<String>,
-    pub(crate) child: Mutex<Child>,
-    pub(crate) stdin: Mutex<ChildStdin>,
+    pub(crate) transport: SessionTransport,
     pub(crate) pending: Mutex<HashMap<u64, oneshot::Sender<Value>>>,
     pub(crate) request_context: Mutex<HashMap<u64, RequestContext>>,
     pub(crate) thread_workspace: Mutex<HashMap<String, String>>,
@@ -447,6 +448,284 @@ pub(crate) struct WorkspaceSession {
     pub(crate) owner_workspace_id: String,
     pub(crate) workspace_ids: Mutex<HashSet<String>>,
     pub(crate) workspace_roots: Mutex<HashMap<String, String>>,
+}
+
+pub(crate) enum SessionTransport {
+    Legacy {
+        child: Mutex<Child>,
+        stdin: Mutex<ChildStdin>,
+    },
+    Native {
+        app: AppHandle,
+        state: RwLock<NativeSessionState>,
+    },
+}
+
+pub(crate) struct NativeSessionState {
+    association: NativeAssociation,
+    confirmed_stop_fact: Option<String>,
+    event_reader_running: bool,
+    event_reader_error: Option<String>,
+    event_reader_id: u64,
+    event_position: Option<NativeEventPosition>,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct NativeEventPosition {
+    pub(crate) params: Value,
+    pub(crate) last_source: u64,
+    pub(crate) last_ordinal: u64,
+    pub(crate) operation: Option<String>,
+    pub(crate) epoch: Option<String>,
+    pub(crate) thread: Option<String>,
+    pub(crate) page_high: Option<String>,
+    pub(crate) seen_pages: HashSet<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct NativeAssociation {
+    pub(crate) domain_id: String,
+    pub(crate) session_id: String,
+    pub(crate) seat_id: String,
+    pub(crate) incarnation: String,
+    pub(crate) authorization_generation: String,
+    pub(crate) binding_generation: String,
+    pub(crate) instance_id: String,
+}
+
+impl WorkspaceSession {
+    pub(crate) fn new_native(
+        entry: &WorkspaceEntry,
+        app: AppHandle,
+        association: NativeAssociation,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            codex_args: None,
+            transport: SessionTransport::Native {
+                app,
+                state: RwLock::new(NativeSessionState {
+                    association,
+                    confirmed_stop_fact: None,
+                    event_reader_running: false,
+                    event_reader_error: None,
+                    event_reader_id: 0,
+                    event_position: None,
+                }),
+            },
+            pending: Mutex::new(HashMap::new()),
+            request_context: Mutex::new(HashMap::new()),
+            thread_workspace: Mutex::new(HashMap::new()),
+            hidden_thread_ids: Mutex::new(HashSet::new()),
+            next_id: AtomicU64::new(1),
+            background_thread_callbacks: Mutex::new(HashMap::new()),
+            owner_workspace_id: entry.id.clone(),
+            workspace_ids: Mutex::new(HashSet::from([entry.id.clone()])),
+            workspace_roots: Mutex::new(HashMap::from([(
+                entry.id.clone(),
+                normalize_root_path(&entry.path),
+            )])),
+        })
+    }
+
+    pub(crate) fn is_native(&self) -> bool {
+        matches!(self.transport, SessionTransport::Native { .. })
+    }
+
+    pub(crate) fn native_association(&self) -> Result<Option<NativeAssociation>, String> {
+        match &self.transport {
+            SessionTransport::Native { state, .. } => state
+                .read()
+                .map(|current| Some(current.association.clone()))
+                .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}")),
+            SessionTransport::Legacy { .. } => Ok(None),
+        }
+    }
+
+    /// This observer owns no process or H permission. A deliberate reconnect
+    /// may restart a failed observer; transport queries never silently retry it.
+    pub(crate) fn begin_native_events(&self) -> Result<Option<(AppHandle, u64, Option<NativeEventPosition>)>, String> {
+        let SessionTransport::Native { app, state } = &self.transport else { return Ok(None); };
+        let mut current = state.write()
+            .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?;
+        if current.event_reader_running || current.confirmed_stop_fact.is_some() { return Ok(None); }
+        // A failed synchronous emission has an unknown delivered prefix.
+        // Retain its original error instead of replaying that prefix on reconnect.
+        if let Some(error) = current.event_reader_error.as_ref()
+            .filter(|error| error.starts_with("GOGOKE_NATIVE_EVENT_DELIVERY_FAILED:")) {
+            return Err(error.clone());
+        }
+        current.event_reader_id = current.event_reader_id.checked_add(1)
+            .ok_or("GOGOKE_NATIVE_EVENT_READER_ID_OVERFLOW")?;
+        current.event_reader_running = true;
+        Ok(Some((app.clone(), current.event_reader_id, current.event_position.clone())))
+    }
+
+    /// These facts describe one locked attachment generation. A read failure
+    /// remains visible after stop; only the original H StopFact permits resume.
+    pub(crate) fn native_transport_snapshot(&self)
+        -> Result<Option<(NativeAssociation, Option<String>, bool)>, String> {
+        match &self.transport {
+            SessionTransport::Native { state, .. } => state.read()
+                .map(|current| Some((current.association.clone(),
+                    current.event_reader_error.clone(), current.confirmed_stop_fact.is_some())))
+                .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}")),
+            SessionTransport::Legacy { .. } => Ok(None),
+        }
+    }
+
+    pub(crate) fn native_event_error(&self) -> Result<Option<String>, String> {
+        match &self.transport {
+            SessionTransport::Native { state, .. } => state.read()
+                .map(|current| current.event_reader_error.clone())
+                .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}")),
+            SessionTransport::Legacy { .. } => Ok(None),
+        }
+    }
+
+    pub(crate) fn finish_native_events(&self, reader_id: u64, error: Option<String>) -> Result<(), String> {
+        let SessionTransport::Native { state, .. } = &self.transport else { return Ok(()); };
+        let mut current = state.write()
+            .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?;
+        if current.event_reader_id == reader_id {
+            current.event_reader_running = false;
+            current.event_reader_error = error;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn native_event_reader_current(&self, reader_id: u64,
+        expected: &NativeAssociation) -> Result<bool, String> {
+        let SessionTransport::Native { state, .. } = &self.transport else { return Ok(false); };
+        let current = state.read()
+            .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?;
+        Ok(current.event_reader_id == reader_id && &current.association == expected
+            && current.confirmed_stop_fact.is_none())
+    }
+
+    /// Emission and the successful read position share the association lock.
+    /// Failed reads retain the last delivered position for same-view recovery.
+    pub(crate) fn commit_native_events(&self, reader_id: u64, expected: &NativeAssociation,
+        position: NativeEventPosition, emit: impl FnOnce() -> Result<(), String>) -> Result<bool, String> {
+        let SessionTransport::Native { state, .. } = &self.transport else {
+            return Err("GOGOKE_NATIVE_EVENT_TRANSPORT_MISMATCH".into());
+        };
+        let mut current = state.write()
+            .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?;
+        if current.event_reader_id != reader_id || &current.association != expected
+            || current.confirmed_stop_fact.is_some() { return Ok(false); }
+        emit()?;
+        current.event_position = Some(position);
+        current.event_reader_error = None;
+        Ok(true)
+    }
+
+    pub(crate) fn advance_native_association(
+        &self,
+        expected: &NativeAssociation,
+        next: NativeAssociation,
+    ) -> Result<(), String> {
+        let SessionTransport::Native { state, .. } = &self.transport else {
+            return Err("GOGOKE_NATIVE_ASSOCIATION_TRANSPORT_MISMATCH".into());
+        };
+        let mut current = state
+            .write()
+            .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?;
+        if &current.association != expected {
+            return Err("GOGOKE_NATIVE_ASSOCIATION_CHANGED_BEFORE_COMMIT".into());
+        }
+        let next_reader_id = current.event_reader_id.checked_add(1)
+            .ok_or("GOGOKE_NATIVE_EVENT_READER_ID_OVERFLOW")?;
+        current.association = next;
+        current.confirmed_stop_fact = None;
+        current.event_reader_id = next_reader_id;
+        current.event_reader_running = false;
+        current.event_reader_error = None;
+        current.event_position = None;
+        Ok(())
+    }
+
+    pub(crate) fn note_native_stop_fact(
+        &self,
+        expected: &NativeAssociation,
+        stop_fact: String,
+    ) -> Result<(), String> {
+        match &self.transport {
+            SessionTransport::Native { state, .. } => {
+                let mut current = state
+                    .write()
+                    .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?;
+                if &current.association != expected {
+                    return Err("GOGOKE_NATIVE_ASSOCIATION_CHANGED_BEFORE_STOP_COMMIT".into());
+                }
+                if stop_fact.is_empty() {
+                    return Err("GOGOKE_NATIVE_STOP_FACT_MISSING".into());
+                }
+                let next_reader_id = current.event_reader_id.checked_add(1)
+                    .ok_or("GOGOKE_NATIVE_EVENT_READER_ID_OVERFLOW")?;
+                current.confirmed_stop_fact = Some(stop_fact);
+                current.event_reader_id = next_reader_id;
+                current.event_reader_running = false;
+                Ok(())
+            }
+            SessionTransport::Legacy { .. } => Err("GOGOKE_LEGACY_STOP_FACT_MISMATCH".into()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn legacy_child(&self) -> Option<&Mutex<Child>> {
+        match &self.transport {
+            SessionTransport::Legacy { child, .. } => Some(child),
+            SessionTransport::Native { .. } => None,
+        }
+    }
+
+    pub(crate) async fn is_alive(&self) -> Result<bool, String> {
+        match &self.transport {
+            SessionTransport::Legacy { child, .. } => child
+                .lock()
+                .await
+                .try_wait()
+                .map(|status| status.is_none())
+                .map_err(|error| error.to_string()),
+            SessionTransport::Native { app, state } => {
+                let association = state
+                    .read()
+                    .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?
+                    .association.clone();
+                crate::codex::native_visible_live_state(app, &self.owner_workspace_id, &association)
+                    .await
+            }
+        }
+    }
+
+    /// Only a durable H StopFact permits cleanup. An interrupt ACK is not a stop.
+    pub(crate) async fn stop(&self) -> Result<(), String> {
+        match &self.transport {
+            SessionTransport::Legacy { child, .. } => {
+                let mut child = child.lock().await;
+                kill_child_process_tree(&mut child).await;
+                match timeout(Duration::from_secs(5), child.wait()).await {
+                    Ok(Ok(_)) => Ok(()),
+                    Ok(Err(error)) => Err(format!("GOGOKE_LEGACY_STOP_STATUS_FAILED:{error}")),
+                    Err(_) => Err("GOGOKE_LEGACY_STOP_NOT_CONFIRMED".into()),
+                }
+            }
+            SessionTransport::Native { app, state } => {
+                let association = {
+                    let current = state
+                        .read()
+                        .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?;
+                    if current.confirmed_stop_fact.is_some() {
+                        return Ok(());
+                    }
+                    current.association.clone()
+                };
+                crate::codex::native_visible_stop(app, &self.owner_workspace_id, &association)
+                    .await
+            }
+        }
+    }
 }
 
 impl WorkspaceSession {
@@ -484,7 +763,10 @@ impl WorkspaceSession {
     }
 
     async fn write_message(&self, value: Value) -> Result<(), String> {
-        let mut stdin = self.stdin.lock().await;
+        let SessionTransport::Legacy { stdin, .. } = &self.transport else {
+            return Err("GOGOKE_NATIVE_RAW_STDIN_UNAVAILABLE".into());
+        };
+        let mut stdin = stdin.lock().await;
         let mut line = serde_json::to_string(&value).map_err(|e| e.to_string())?;
         line.push('\n');
         stdin
@@ -504,6 +786,21 @@ impl WorkspaceSession {
         method: &str,
         params: Value,
     ) -> Result<Value, String> {
+        if let SessionTransport::Native { app, state } = &self.transport
+        {
+            let association = state
+                .read()
+                .map_err(|error| format!("GOGOKE_NATIVE_ASSOCIATION_LOCK_FAILED:{error}"))?
+                .association.clone();
+            return crate::codex::native_visible_request(
+                app,
+                workspace_id,
+                &association,
+                method,
+                params,
+            )
+            .await;
+        }
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         self.register_workspace(workspace_id).await;
@@ -779,8 +1076,10 @@ pub(crate) async fn spawn_workspace_session<E: EventSink>(
 
     let session = Arc::new(WorkspaceSession {
         codex_args,
-        child: Mutex::new(child),
-        stdin: Mutex::new(stdin),
+        transport: SessionTransport::Legacy {
+            child: Mutex::new(child),
+            stdin: Mutex::new(stdin),
+        },
         pending: Mutex::new(HashMap::new()),
         request_context: Mutex::new(HashMap::new()),
         thread_workspace: Mutex::new(HashMap::new()),
@@ -1089,8 +1388,7 @@ pub(crate) async fn spawn_workspace_session<E: EventSink>(
     let init_response = match init_result {
         Ok(response) => response,
         Err(_) => {
-            let mut child = session.child.lock().await;
-            kill_child_process_tree(&mut child).await;
+            session.stop().await?;
             return Err(
                 "Codex app-server did not respond to initialize. Check that `codex app-server` works in Terminal."
                     .to_string(),

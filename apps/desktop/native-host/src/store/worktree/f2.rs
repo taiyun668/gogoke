@@ -1,0 +1,1742 @@
+//! F.2 reads the native worktree graph and fences lifecycle effects. The
+//! original linked-worktree row remains the physical source of truth.
+
+use super::*;
+use crate::store::atomic::{Json, JsonString};
+
+#[path = "host_seal.rs"]
+mod host_seal;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GraphMember {
+    pub(crate) worktree_id: String,
+    pub(crate) repository_id: String,
+    pub(crate) domain_id: String,
+    pub(crate) seat_id: String,
+    pub(crate) instance_id: String,
+    pub(crate) baseline_commit: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorktreeGraph {
+    pub(crate) space_id: String,
+    pub(crate) classification: String,
+    pub(crate) state: String,
+    pub(crate) revision: i64,
+    pub(crate) merge_reason: Option<String>,
+    pub(crate) merge_target_commit: Option<String>,
+    pub(crate) members: Vec<GraphMember>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RegisterReceipt {
+    pub(crate) worktree_id: String,
+    pub(crate) revision: i64,
+    pub(crate) replayed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CreateHistory {
+    pub(crate) worktree_id: String,
+    pub(crate) baseline_commit: String,
+    pub(crate) classification: String,
+    pub(crate) space_id: String,
+}
+
+/// Read only the original completed create fact. The physical directory may
+/// have been removed by later authorized cleanup; replay never runs Git.
+pub(crate) fn readback_create_receipt(db: &VerifiedDatabaseConnection<'_>,
+    request_id: &str, raw_request: &[u8], target_id: &str, repository_id: &str,
+    domain_id: &str, seat_id: &str) -> Result<Option<CreateHistory>> {
+    if ![request_id, target_id, repository_id, domain_id, seat_id].iter().all(|s| atom(s))
+        || raw_request.is_empty() || raw_request.len() > 65_536 {
+        return Err(WorktreeError::Invalid("create request"));
+    }
+    let row = Statement::prepare(db.as_ptr(),
+        "SELECT o.request_hash,o.phase,o.worktree_id,o.repository_id,o.domain_id,o.seat_id,COALESCE(w.baseline_commit,''),COALESCE(w.repository_id,''),COALESCE(w.domain_id,''),COALESCE(w.seat_id,''),COALESCE(w.state,''),COALESCE(m.space_id,''),COALESCE(s.classification,''),COALESCE(w.seat_incarnation,''),o.seat_incarnation FROM main.gogoke_v37_worktree_operations o LEFT JOIN main.gogoke_v37_worktrees w ON w.worktree_id=o.worktree_id LEFT JOIN main.gogoke_v37_worktree_members m ON m.worktree_id=w.worktree_id LEFT JOIN main.gogoke_v37_worktree_spaces s ON s.space_id=m.space_id WHERE o.request_id=?1")?;
+    row.bind_text(1, request_id)?;
+    if !row.step_row()? { return Ok(None); }
+    if row.column_text(0)? != sha256_hex(raw_request) || row.column_text(2)? != target_id
+        || row.column_text(3)? != repository_id || row.column_text(4)? != domain_id
+        || row.column_text(5)? != seat_id { return Err(WorktreeError::Conflict); }
+    if row.column_text(1)? != "REGISTERED" { return Err(WorktreeError::Unknown); }
+    if row.column_text(7)? != repository_id || row.column_text(8)? != domain_id
+        || row.column_text(9)? != seat_id || row.column_text(10)? != "REGISTERED"
+        || row.column_text(13)? != row.column_text(14)? {
+        return Err(WorktreeError::Unknown);
+    }
+    let member_space = row.column_text(11)?;
+    let member_classification = row.column_text(12)?;
+    let (classification, space_id) = if member_space.is_empty() {
+        if !member_classification.is_empty() { return Err(WorktreeError::Unknown); }
+        ("SINGLE".to_owned(), target_id.to_owned())
+    } else if member_classification == "MIXED"
+        && member_space == mixed_seat_space_id(domain_id, seat_id, &row.column_text(13)?)? {
+        (member_classification, member_space)
+    } else { return Err(WorktreeError::Unknown); };
+    let baseline = row.column_text(6)?;
+    if !hex_commit(&baseline) { return Err(WorktreeError::Unknown); }
+    let history = CreateHistory { worktree_id: target_id.to_owned(),
+        baseline_commit: baseline, classification, space_id };
+    if row.step_row()? { return Err(WorktreeError::SchemaDrift); }
+    Ok(Some(history))
+}
+
+/// F.2 registers an already created physical tree; it never repeats `git
+/// worktree add`. The old M1 create entry is intentionally still immediate.
+pub(crate) fn register_created_worktree(db: &mut VerifiedDatabaseConnection<'_>,
+    root: &RootLock, owner: &OwnerIssuer, raw_request: &[u8]) -> Result<RegisterReceipt> {
+    let request = crate::store::session_transport::decode_request(raw_request)
+        .map_err(|_| WorktreeError::Invalid("register request"))?;
+    register_created_worktree_request(db, root, owner, &request, |_| Ok(()))
+}
+
+pub(crate) fn register_created_worktree_request(db: &mut VerifiedDatabaseConnection<'_>,
+    root: &RootLock, owner: &OwnerIssuer,
+    request: &crate::store::session_transport::V37Request,
+    mut authorize: impl FnMut(&VerifiedDatabaseConnection<'_>) -> Result<()>,
+) -> Result<RegisterReceipt> {
+    if request.family!="K-WORKTREE" || request.operation!="register" ||
+        request.expected_revision!=1 || !request.payload.is_empty() ||
+        !atom(&request.target_id) || !atom(&request.request_id)
+        || !atom(&request.domain_id) || request.raw_bytes.is_empty()
+        || request.raw_bytes.len()>65_536 { return Err(WorktreeError::Invalid("register wire")); }
+    let fingerprint=sha256_hex(&request.raw_bytes);
+    let old=Statement::prepare(db.as_ptr(),
+        "SELECT request_hash,worktree_id,operation,phase FROM main.gogoke_v37_worktree_lifecycle_ops WHERE request_id=?1")?;
+    old.bind_text(1,&request.request_id)?;
+    if old.step_row()? {
+        authorize(db)?;
+        if old.column_text(0)?!=fingerprint || old.column_text(1)?!=request.target_id ||
+            old.column_text(2)?!="REGISTER" { return Err(WorktreeError::Conflict); }
+        if old.column_text(3)?!="APPLIED" { return Err(WorktreeError::Unknown); }
+        return Ok(RegisterReceipt {worktree_id:request.target_id.clone(),revision:2,replayed:true});
+    }
+    let physical=resolve_id(db,root,&request.target_id)?;
+    drop(physical);
+    transaction(db, |db| {
+        check_owner_in_current_transaction(db,owner)?;
+        authorize(db)?;
+        let row=Statement::prepare(db.as_ptr(),
+            "SELECT domain_id FROM main.gogoke_v37_worktrees WHERE worktree_id=?1 AND state='REGISTERED'")?;
+        row.bind_text(1,&request.target_id)?;
+        if !row.step_row()? || row.column_text(0)?!=request.domain_id || row.step_row()? {
+            return Err(WorktreeError::Denied);
+        }
+        let state=lifecycle(db,&request.target_id)?.ok_or(WorktreeError::Denied)?;
+        if state.0!="CREATED" || state.1!=1 { return Err(WorktreeError::Denied); }
+        let pending=Statement::prepare(db.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_worktree_lifecycle_ops WHERE worktree_id=?1 AND phase IN ('INTENT','UNKNOWN') LIMIT 1")?;
+        pending.bind_text(1,&request.target_id)?;
+        if pending.step_row()? { return Err(WorktreeError::Unknown); }
+        let update=Statement::prepare(db.as_ptr(),
+            "UPDATE main.gogoke_v37_worktree_lifecycle SET state='REGISTERED',revision=2 WHERE worktree_id=?1 AND state='CREATED' AND revision=1")?;
+        update.bind_text(1,&request.target_id)?; update.step_done()?;
+        let changed=Statement::prepare(db.as_ptr(),"SELECT changes()")?;
+        if !changed.step_row()? || changed.column_text(0)?!="1" {
+            return Err(WorktreeError::Unknown);
+        }
+        let insert=Statement::prepare(db.as_ptr(),
+            "INSERT INTO main.gogoke_v37_worktree_lifecycle_ops(request_id,request_hash,worktree_id,operation,phase) VALUES(?1,?2,?3,'REGISTER','APPLIED')")?;
+        insert.bind_text(1,&request.request_id)?; insert.bind_text(2,&fingerprint)?;
+        insert.bind_text(3,&request.target_id)?; insert.step_done()?;
+        Ok(RegisterReceipt {worktree_id:request.target_id.clone(),revision:2,replayed:false})
+    })
+}
+
+fn lifecycle(db: &VerifiedDatabaseConnection<'_>, worktree_id: &str)
+    -> Result<Option<(String, i64, Option<String>, Option<String>)>> {
+    let q = Statement::prepare(db.as_ptr(),
+        "SELECT state,revision,COALESCE(merge_reason,''),COALESCE(merge_target_commit,'') FROM main.gogoke_v37_worktree_lifecycle WHERE worktree_id=?1")?;
+    q.bind_text(1, worktree_id)?;
+    if !q.step_row()? { return Ok(None); }
+    let reason = q.column_text(2)?;
+    let target = q.column_text(3)?;
+    let result = (q.column_text(0)?, parse_i64(&q.column_text(1)?, "worktree lifecycle revision")?,
+        if reason.is_empty() { None } else { Some(reason) },
+        if target.is_empty() { None } else { Some(target) });
+    if q.step_row()? { return Err(WorktreeError::SchemaDrift); }
+    Ok(Some(result))
+}
+
+pub(super) fn launch_allowed(db: &VerifiedDatabaseConnection<'_>, worktree_id: &str) -> Result<()> {
+    if matches!(lifecycle(db, worktree_id)?, Some((state, ..)) if state != "REGISTERED") {
+        return Err(WorktreeError::Denied);
+    }
+    Ok(())
+}
+
+/// A graph read is a projection of the same native rows used for launch. It
+/// never accepts caller supplied paths, branch names or repository edges.
+pub(crate) fn graph_query(db: &VerifiedDatabaseConnection<'_>, worktree_id: &str)
+    -> Result<Option<WorktreeGraph>> {
+    if !atom(worktree_id) { return Err(WorktreeError::Invalid("worktree id")); }
+    let row = Statement::prepare(db.as_ptr(),
+        "SELECT repository_id,domain_id,seat_id,instance_id,baseline_commit FROM main.gogoke_v37_worktrees WHERE worktree_id=?1 AND state='REGISTERED'")?;
+    row.bind_text(1, worktree_id)?;
+    if !row.step_row()? { return Ok(None); }
+    let original = GraphMember { worktree_id: worktree_id.to_owned(), repository_id: row.column_text(0)?,
+        domain_id: row.column_text(1)?, seat_id: row.column_text(2)?, instance_id: row.column_text(3)?,
+        baseline_commit: row.column_text(4)? };
+    if row.step_row()? { return Err(WorktreeError::SchemaDrift); }
+    let state = lifecycle(db, worktree_id)?.unwrap_or(("REGISTERED".into(), 1, None, None));
+    if state.0 == "CLEANED" { return Ok(None); }
+    let member = Statement::prepare(db.as_ptr(),
+        "SELECT space_id FROM main.gogoke_v37_worktree_members WHERE worktree_id=?1")?;
+    member.bind_text(1, worktree_id)?;
+    if !member.step_row()? {
+        return Ok(Some(WorktreeGraph { space_id: worktree_id.to_owned(),
+            classification: "SINGLE".into(), state: state.0, revision: state.1,
+            merge_reason: state.2, merge_target_commit: state.3, members: vec![original] }));
+    }
+    let space_id = member.column_text(0)?;
+    if member.step_row()? { return Err(WorktreeError::SchemaDrift); }
+    let space = Statement::prepare(db.as_ptr(),
+        "SELECT classification,state FROM main.gogoke_v37_worktree_spaces WHERE space_id=?1")?;
+    space.bind_text(1, &space_id)?;
+    if !space.step_row()? { return Err(WorktreeError::SchemaDrift); }
+    let classification = space.column_text(0)?;
+    if space.column_text(1)? != "ACTIVE" || space.step_row()? { return Err(WorktreeError::Denied); }
+    let members = Statement::prepare(db.as_ptr(),
+        "SELECT w.worktree_id,w.repository_id,w.domain_id,w.seat_id,w.instance_id,w.baseline_commit FROM main.gogoke_v37_worktree_members m JOIN main.gogoke_v37_worktrees w ON w.worktree_id=m.worktree_id WHERE m.space_id=?1 ORDER BY w.worktree_id")?;
+    members.bind_text(1, &space_id)?;
+    let mut graph_members = Vec::new();
+    while members.step_row()? {
+        graph_members.push(GraphMember { worktree_id: members.column_text(0)?, repository_id: members.column_text(1)?,
+            domain_id: members.column_text(2)?, seat_id: members.column_text(3)?, instance_id: members.column_text(4)?,
+            baseline_commit: members.column_text(5)? });
+    }
+    if graph_members.is_empty() || !graph_members.iter().any(|item| item.worktree_id == worktree_id) {
+        return Err(WorktreeError::SchemaDrift);
+    }
+    Ok(Some(WorktreeGraph { space_id, classification, state: state.0,
+        revision: state.1, merge_reason: state.2, merge_target_commit: state.3,
+        members: graph_members }))
+}
+
+/// Look up the repository pin through the native row, never through an IPC
+/// path or a caller-selected program. This is shared by public merge/cleanup.
+pub(crate) fn repository_for_worktree(db: &VerifiedDatabaseConnection<'_>,
+    domain_id: &str, worktree_id: &str) -> Result<String> {
+    if !atom(domain_id) || !atom(worktree_id) { return Err(WorktreeError::Denied); }
+    let row = Statement::prepare(db.as_ptr(),
+        "SELECT repository_id FROM main.gogoke_v37_worktrees WHERE worktree_id=?1 AND domain_id=?2 AND state='REGISTERED'")?;
+    row.bind_text(1, worktree_id)?;
+    row.bind_text(2, domain_id)?;
+    if !row.step_row()? { return Err(WorktreeError::Denied); }
+    let repository = row.column_text(0)?;
+    if row.step_row()? { return Err(WorktreeError::SchemaDrift); }
+    Ok(repository)
+}
+
+/// H starts with its already resolved primary binding. This returns held
+/// physical witnesses for every active member of the same native seat group;
+/// neither an IPC space name nor a model-provided path can enlarge the roots.
+pub(crate) fn resolve_group_for_launch(db: &VerifiedDatabaseConnection<'_>,
+    root: &RootLock, primary: &ResolvedBinding) -> Result<Vec<ResolvedBinding>> {
+    launch_allowed(db, &primary.worktree_id)?;
+    let row = Statement::prepare(db.as_ptr(),
+        "SELECT domain_id,seat_id,seat_incarnation FROM main.gogoke_v37_worktrees WHERE worktree_id=?1 AND state='REGISTERED'")?;
+    row.bind_text(1, &primary.worktree_id)?;
+    if !row.step_row()? { return Err(WorktreeError::Denied); }
+    let domain = row.column_text(0)?;
+    let seat = row.column_text(1)?;
+    let incarnation = row.column_text(2)?;
+    if row.step_row()? || incarnation != primary.seat_incarnation {
+        return Err(WorktreeError::Denied);
+    }
+    drop(row);
+    let member = Statement::prepare(db.as_ptr(),
+        "SELECT m.space_id,s.classification,s.state FROM main.gogoke_v37_worktree_members m JOIN main.gogoke_v37_worktree_spaces s ON s.space_id=m.space_id WHERE m.worktree_id=?1")?;
+    member.bind_text(1, &primary.worktree_id)?;
+    let ids = if member.step_row()? {
+        let space_id = member.column_text(0)?;
+        if member.column_text(1)? != "MIXED" || member.column_text(2)? != "ACTIVE"
+            || member.step_row()?
+            || space_id != mixed_seat_space_id(&domain, &seat, &incarnation)? {
+            return Err(WorktreeError::Denied);
+        }
+        drop(member);
+        verify_mixed_members(db, &space_id, &domain, &seat, &incarnation)?;
+        let members = Statement::prepare(db.as_ptr(),
+            "SELECT m.worktree_id,COALESCE(l.state,'REGISTERED') FROM main.gogoke_v37_worktree_members m LEFT JOIN main.gogoke_v37_worktree_lifecycle l ON l.worktree_id=m.worktree_id WHERE m.space_id=?1 ORDER BY m.worktree_id")?;
+        members.bind_text(1, &space_id)?;
+        let mut ids = Vec::new();
+        while members.step_row()? {
+            let id = members.column_text(0)?;
+            match members.column_text(1)?.as_str() {
+                "REGISTERED" => ids.push(id),
+                "CLEANED" => {},
+                _ => return Err(WorktreeError::Denied),
+            }
+        }
+        ids
+    } else {
+        vec![primary.worktree_id.clone()]
+    };
+    if !ids.iter().any(|id| id == &primary.worktree_id) { return Err(WorktreeError::Denied); }
+    let mut bindings = Vec::with_capacity(ids.len());
+    for id in ids {
+        let binding = resolve_id(db, root, &id)?;
+        if binding.seat_incarnation != incarnation { return Err(WorktreeError::Denied); }
+        if id == primary.worktree_id && (binding.path != primary.path
+            || binding.identity != primary.identity
+            || binding.pointer_identity != primary.pointer_identity
+            || binding.pointer_hash != primary.pointer_hash) {
+            return Err(WorktreeError::Denied);
+        }
+        bindings.push(binding);
+    }
+    Ok(bindings)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExactStopFact {
+    pub(crate) process_operation_id: String,
+    pub(crate) stop_fact_id: String,
+    pub(crate) instance_id: String,
+    pub(crate) generation: String,
+}
+
+fn original_session_worktree(db: &VerifiedDatabaseConnection<'_>, domain: &str,
+    session: &str) -> Result<Option<String>> {
+    let rows=Statement::prepare(db.as_ptr(),
+        "SELECT raw_hex FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND session_id=?2 AND operation='open'")?;
+    rows.bind_text(1,domain)?; rows.bind_text(2,session)?;
+    let mut found: Option<String>=None;
+    while rows.step_row()? {
+        let raw=rows.column_text(0)?;
+        if raw.len()%2!=0 || raw.len()>131_072 { return Err(WorktreeError::Denied); }
+        let mut bytes=Vec::with_capacity(raw.len()/2);
+        for chunk in raw.as_bytes().chunks_exact(2) {
+            let hex=std::str::from_utf8(chunk).map_err(|_|WorktreeError::Denied)?;
+            bytes.push(u8::from_str_radix(hex,16).map_err(|_|WorktreeError::Denied)?);
+        }
+        let request=crate::store::session_transport::decode_request(&bytes)
+            .map_err(|_|WorktreeError::Denied)?;
+        if request.family!="K-SESSION" || request.operation!="open" ||
+            request.domain_id!=domain || request.target_id!=session {
+            return Err(WorktreeError::Denied);
+        }
+        let target=match request.payload.get(&JsonString::from_str("worktreeId")) {
+            Some(Json::String(value))=>value.to_well_formed_string()
+                .ok_or(WorktreeError::Denied)?,
+            _=>return Err(WorktreeError::Denied),
+        };
+        if !atom(&target) || found.as_ref().is_some_and(|old| old!=&target) {
+            return Err(WorktreeError::Denied);
+        }
+        found=Some(target);
+    }
+    Ok(found)
+}
+
+/// H grants every member of its original primary's native MIXED space. Those
+/// membership rows are append-only: all current members conservatively cover
+/// the originally sealed grant even across a restart. A later member may keep
+/// a process fenced; it must never make an original sibling invisible.
+fn original_granted_worktrees(db: &VerifiedDatabaseConnection<'_>, primary: &str) -> Result<Vec<String>> {
+    let member=Statement::prepare(db.as_ptr(),
+        "SELECT m.space_id,w.domain_id,w.seat_id,w.seat_incarnation,s.classification FROM main.gogoke_v37_worktree_members m JOIN main.gogoke_v37_worktrees w ON w.worktree_id=m.worktree_id JOIN main.gogoke_v37_worktree_spaces s ON s.space_id=m.space_id WHERE m.worktree_id=?1")?;
+    member.bind_text(1,primary)?;
+    if !member.step_row()? { return Ok(vec![primary.to_owned()]); }
+    let space=member.column_text(0)?;
+    let domain=member.column_text(1)?;
+    let seat=member.column_text(2)?;
+    let incarnation=member.column_text(3)?;
+    if member.column_text(4)?!="MIXED" || member.step_row()? ||
+        space!=mixed_seat_space_id(&domain,&seat,&incarnation)? { return Err(WorktreeError::Denied); }
+    verify_mixed_members(db,&space,&domain,&seat,&incarnation)?;
+    let rows=Statement::prepare(db.as_ptr(),
+        "SELECT worktree_id FROM main.gogoke_v37_worktree_members WHERE space_id=?1 ORDER BY worktree_id")?;
+    rows.bind_text(1,&space)?;
+    let mut ids=Vec::new();
+    while rows.step_row()? { ids.push(rows.column_text(0)?); }
+    if !ids.iter().any(|id| id==primary) { return Err(WorktreeError::Denied); }
+    Ok(ids)
+}
+
+fn original_group_overlaps(db: &VerifiedDatabaseConnection<'_>, primary: &str,
+    overlaps: &mut impl FnMut(&str)->Result<bool>) -> Result<bool> {
+    for id in original_granted_worktrees(db,primary)? {
+        if overlaps(&id)? { return Ok(true); }
+    }
+    Ok(false)
+}
+
+/// An unstarted reservation is still an active reservation. A STOPPED claim
+/// also occupies capacity until release. Every native model process whose
+/// sealed write root intersects this directory needs its own StopFact.
+fn physical_roots_overlap(target_path: &Path, target_identity: &RootIdentity,
+    target_pointer: &RootIdentity, other_path: &Path, other_identity: &RootIdentity,
+    other_pointer: &RootIdentity) -> bool {
+    target_identity == other_identity || target_pointer == other_pointer ||
+        target_path.starts_with(other_path) || other_path.starts_with(target_path)
+}
+
+fn sealed_roots_overlap(target: &ResolvedBinding, other: &ResolvedBinding) -> bool {
+    physical_roots_overlap(&target.path, &target.identity, &target.pointer_identity,
+        &other.path, &other.identity, &other.pointer_identity)
+}
+
+fn proven_cleaned_root(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
+    worktree_id: &str) -> Result<bool> {
+    let row = Statement::prepare(db.as_ptr(),
+        "SELECT w.worktree_path FROM main.gogoke_v37_worktrees w JOIN main.gogoke_v37_worktree_lifecycle l ON l.worktree_id=w.worktree_id WHERE w.worktree_id=?1 AND l.state='CLEANED' AND l.stop_fact_id IS NOT NULL AND EXISTS(SELECT 1 FROM main.gogoke_v37_worktree_lifecycle_ops o WHERE o.worktree_id=w.worktree_id AND o.operation='CLEANUP' AND o.phase='APPLIED')")?;
+    row.bind_text(1,worktree_id)?;
+    if !row.step_row()? { return Ok(false); }
+    let path=PathBuf::from(row.column_text(0)?);
+    if row.step_row()? || !path.starts_with(root.canonical_root().canonical_path.join("v37-worktrees")) {
+        return Err(WorktreeError::Denied);
+    }
+    require_absent(&path)?;
+    Ok(true)
+}
+
+pub(crate) fn cleanup_stop_gate(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
+    worktree_id: &str) -> Result<Vec<ExactStopFact>> {
+    // resolve_id verifies the graph member's host-generated canonical path,
+    // directory identity, Git pointer and common directory before comparing
+    // H's original sealed write root with the directory to be removed.
+    let target = resolve_id(db, root, worktree_id).map_err(|_| WorktreeError::Denied)?;
+    cleanup_stop_gate_with(db, worktree_id, |other_id| {
+        if other_id == worktree_id { return Ok(true); }
+        // A previously completed native cleanup cannot still provide a
+        // workspace write root. Its historical H rows need not pin every
+        // unrelated future cleanup once physical absence is rechecked.
+        if proven_cleaned_root(db, root, other_id)? { return Ok(false); }
+        let other = resolve_id(db, root, other_id).map_err(|_| WorktreeError::Denied)?;
+        Ok(sealed_roots_overlap(&target, &other))
+    })
+}
+
+fn cleanup_stop_gate_with<F>(db: &VerifiedDatabaseConnection<'_>, worktree_id: &str,
+    mut overlaps: F) -> Result<Vec<ExactStopFact>>
+where F: FnMut(&str) -> Result<bool> {
+    if !atom(worktree_id) { return Err(WorktreeError::Invalid("worktree id")); }
+    let binding = Statement::prepare(db.as_ptr(),
+        "SELECT domain_id,seat_id FROM main.gogoke_v37_worktrees WHERE worktree_id=?1 AND state='REGISTERED'")?;
+    binding.bind_text(1, worktree_id)?;
+    if !binding.step_row()? { return Err(WorktreeError::Denied); }
+    let domain = binding.column_text(0)?;
+    let seat = binding.column_text(1)?;
+    if binding.step_row()? { return Err(WorktreeError::SchemaDrift); }
+    // H's effective relationship includes both the original native selection
+    // (which exists before open) and the unchanged legacy seat binding.
+    let reservations = Statement::prepare(db.as_ptr(),
+        "SELECT a.domain_id,a.session_id,a.instance_id,COALESCE(b.seat_id,''),COALESCE(b.seat_incarnation,''),COALESCE(b.selected_instance_id,'') FROM main.gogoke_v37_h_claim a LEFT JOIN main.gogoke_v37_effective_seat b ON b.domain_id=a.domain_id AND b.session_id=a.session_id WHERE a.state!='RELEASED'")?;
+    while reservations.step_row()? {
+        let claim_domain=reservations.column_text(0)?;
+        let session=reservations.column_text(1)?;
+        let claim_instance=reservations.column_text(2)?;
+        let claim_seat=reservations.column_text(3)?;
+        let claim_incarnation=reservations.column_text(4)?;
+        let selected_instance=reservations.column_text(5)?;
+        // A missing or inconsistent original relationship cannot prove that
+        // an unstarted reservation is unrelated to this physical worktree.
+        if !atom(&claim_seat) || !atom(&claim_incarnation)
+            || selected_instance!=claim_instance { return Err(WorktreeError::Denied); }
+        // No open request means an unresolved reservation could still target
+        // this tree only when bound to its seat. A model session on another
+        // seat still needs a physical comparison once it has an open target.
+        match original_session_worktree(db,&claim_domain,&session)? {
+            Some(other) if !original_group_overlaps(db,&other,&mut overlaps)?=>continue,
+            Some(_)=>return Err(WorktreeError::Denied),
+            // The same seat cannot prove non-occupation without an original
+            // open root, even if its incarnation has since changed.
+            None if claim_domain==domain && claim_seat==seat=>return Err(WorktreeError::Denied),
+            None=>continue,
+        }
+    }
+    let episodes = Statement::prepare(db.as_ptr(),
+        "SELECT e.domain_id,e.session_id,COALESCE(e.process_operation_id,''),e.phase,COALESCE(e.stop_fact_id,''),COALESCE(c.state,''),COALESCE(c.stop_proof_hash,''),e.instance_id,e.generation FROM main.gogoke_v37_h_process_episode e LEFT JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id AND c.generation=e.generation ORDER BY e.process_operation_id")?;
+    let mut proofs = Vec::new();
+    while episodes.step_row()? {
+        let episode_domain=episodes.column_text(0)?;
+        let session=episodes.column_text(1)?;
+        let process=episodes.column_text(2)?;
+        let phase=episodes.column_text(3)?;
+        // H marks FAILED only for a cancelled resume INTENT that never
+        // acquired a process operation. It cannot hold a workspace handle.
+        if phase=="FAILED" && process.is_empty() { continue; }
+        match original_session_worktree(db,&episode_domain,&session)? {
+            Some(target) if !original_group_overlaps(db,&target,&mut overlaps)?=>continue,
+            Some(_)=>{},
+            // A historical H model process without its sealed root cannot
+            // prove non-overlap. Fixed account/read/login records are outside
+            // this H process-episode table.
+            None=>return Err(WorktreeError::Denied),
+        }
+        let fact = episodes.column_text(4)?;
+        let custody = episodes.column_text(5)?;
+        let proof = episodes.column_text(6)?;
+        let instance_id = episodes.column_text(7)?;
+        let generation = episodes.column_text(8)?;
+        if process.is_empty() || phase != "STOPPED" || fact.is_empty()
+            || custody != "STOPPED" || proof != fact || !atom(&instance_id) || !atom(&generation) {
+            return Err(WorktreeError::Denied);
+        }
+        proofs.push(ExactStopFact { process_operation_id: process, stop_fact_id: fact, instance_id, generation });
+    }
+    if proofs.is_empty() { return Err(WorktreeError::Denied); }
+    Ok(proofs)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CleanupReceipt {
+    pub(crate) worktree_id: String,
+    pub(crate) revision: i64,
+    pub(crate) stop_fact_id: String,
+    pub(crate) replayed: bool,
+}
+
+/// K-WORKTREE cleanup accepts only the exact User request. The native claim,
+/// episode and custody rows are rechecked in the same transaction that writes
+/// INTENT; no caller-provided stop assertion can authorize directory removal.
+pub(crate) fn cleanup_worktree(db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
+    owner: &OwnerIssuer, pin: &GitProgramPin, custodian: &mut ProcessCustodian,
+    raw_request: &[u8]) -> Result<CleanupReceipt> {
+    let request = crate::store::session_transport::decode_request(raw_request)
+        .map_err(|_| WorktreeError::Invalid("cleanup request"))?;
+    if request.family != "K-WORKTREE" || request.operation != "cleanup" ||
+        !request.payload.is_empty() || !atom(&request.target_id) ||
+        request.expected_revision == 0 || request.expected_revision >= i64::MAX as u64 {
+        return Err(WorktreeError::Invalid("cleanup wire"));
+    }
+    let fingerprint = sha256_hex(raw_request);
+    let existing = Statement::prepare(db.as_ptr(),
+        "SELECT request_hash,worktree_id,operation,phase FROM main.gogoke_v37_worktree_lifecycle_ops WHERE request_id=?1")?;
+    existing.bind_text(1, &request.request_id)?;
+    if existing.step_row()? {
+        if existing.column_text(0)? != fingerprint || existing.column_text(1)? != request.target_id ||
+            existing.column_text(2)? != "CLEANUP" { return Err(WorktreeError::Conflict); }
+        if existing.column_text(3)? != "APPLIED" { return Err(WorktreeError::Unknown); }
+        let done = lifecycle(db, &request.target_id)?.ok_or(WorktreeError::Unknown)?;
+        if done.0 != "CLEANED" { return Err(WorktreeError::Unknown); }
+        let fact = Statement::prepare(db.as_ptr(),
+            "SELECT stop_fact_id FROM main.gogoke_v37_worktree_lifecycle WHERE worktree_id=?1")?;
+        fact.bind_text(1, &request.target_id)?;
+        if !fact.step_row()? { return Err(WorktreeError::Unknown); }
+        return Ok(CleanupReceipt { worktree_id: request.target_id, revision: done.1,
+            stop_fact_id: fact.column_text(0)?, replayed: true });
+    }
+    let (source, path, fact) = transaction(db, |db| {
+        check_owner_in_current_transaction(db, owner)?;
+        let row = Statement::prepare(db.as_ptr(),
+            "SELECT w.repository_id,w.domain_id,w.worktree_path,s.source_path,s.git_digest,s.git_version FROM main.gogoke_v37_worktrees w JOIN main.gogoke_v37_worktree_sources s ON s.repository_id=w.repository_id WHERE w.worktree_id=?1 AND w.state='REGISTERED'")?;
+        row.bind_text(1, &request.target_id)?;
+        if !row.step_row()? { return Err(WorktreeError::Denied); }
+        let _repository = row.column_text(0)?;
+        if row.column_text(1)? != request.domain_id || row.column_text(4)? != pin.digest ||
+            row.column_text(5)? != pin.version { return Err(WorktreeError::Denied); }
+        let path = PathBuf::from(row.column_text(2)?);
+        let source = PathBuf::from(row.column_text(3)?);
+        if row.step_row()? { return Err(WorktreeError::SchemaDrift); }
+        let prior = lifecycle(db, &request.target_id)?.unwrap_or(("REGISTERED".into(), 1, None, None));
+        if !matches!(prior.0.as_str(), "REGISTERED" | "MERGED") ||
+            prior.1 != request.expected_revision as i64 { return Err(WorktreeError::Denied); }
+        let facts = cleanup_stop_gate(db, root, &request.target_id)?;
+        let fact = facts.last().ok_or(WorktreeError::Denied)?.stop_fact_id.clone();
+        let check = Statement::prepare(db.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_worktree_lifecycle_ops WHERE worktree_id=?1 AND phase IN ('INTENT','UNKNOWN') LIMIT 1")?;
+        check.bind_text(1, &request.target_id)?;
+        if check.step_row()? { return Err(WorktreeError::Unknown); }
+        let insert = Statement::prepare(db.as_ptr(),
+            "INSERT INTO main.gogoke_v37_worktree_lifecycle_ops(request_id,request_hash,worktree_id,operation,phase) VALUES(?1,?2,?3,'CLEANUP','INTENT')")?;
+        insert.bind_text(1, &request.request_id)?;
+        insert.bind_text(2, &fingerprint)?;
+        insert.bind_text(3, &request.target_id)?;
+        insert.step_done()?;
+        let update = Statement::prepare(db.as_ptr(),
+            "INSERT INTO main.gogoke_v37_worktree_lifecycle(worktree_id,state,revision,stop_fact_id) VALUES(?1,'CLEANUP_INTENT',?2,?3) ON CONFLICT(worktree_id) DO UPDATE SET state='CLEANUP_INTENT',stop_fact_id=excluded.stop_fact_id WHERE state IN ('REGISTERED','MERGED') AND revision=?4")?;
+        update.bind_text(1, &request.target_id)?;
+        update.bind_i64(2, prior.1)?;
+        update.bind_text(3, &fact)?;
+        update.bind_i64(4, prior.1)?;
+        update.step_done()?;
+        let changed = Statement::prepare(db.as_ptr(), "SELECT changes()")?;
+        if !changed.step_row()? || changed.column_text(0)? != "1" { return Err(WorktreeError::Unknown); }
+        Ok((source, path, fact))
+    })?;
+    let effect = (|| -> Result<()> {
+        // The pointer guard is dropped before Git removes the exact tree; no
+        // seat process is permitted after the checked stop/release boundary.
+        let binding = resolve_id(db, root, &request.target_id)?;
+        if binding.path != path { return Err(WorktreeError::Denied); }
+        drop(binding);
+        git(db, root, custodian, pin, "worktree_remove", Some(&source), &[
+            "worktree".into(), "remove".into(), "--quiet".into(),
+            git_launch_path(&path)?.to_string_lossy().into_owned(),
+        ], false)?;
+        require_absent(&path)?;
+        Ok(())
+    })();
+    match effect {
+        Ok(()) => transaction(db, |db| {
+            check_owner_in_current_transaction(db, owner)?;
+            let current = lifecycle(db, &request.target_id)?.ok_or(WorktreeError::Unknown)?;
+            if current.0 != "CLEANUP_INTENT" || current.1 != request.expected_revision as i64 {
+                return Err(WorktreeError::Unknown);
+            }
+            let next = current.1 + 1;
+            let update = Statement::prepare(db.as_ptr(),
+                "UPDATE main.gogoke_v37_worktree_lifecycle SET state='CLEANED',revision=?1 WHERE worktree_id=?2 AND state='CLEANUP_INTENT' AND revision=?3")?;
+            update.bind_i64(1, next)?;
+            update.bind_text(2, &request.target_id)?;
+            update.bind_i64(3, current.1)?;
+            update.step_done()?;
+            let update = Statement::prepare(db.as_ptr(),
+                "UPDATE main.gogoke_v37_worktree_lifecycle_ops SET phase='APPLIED' WHERE request_id=?1 AND phase='INTENT'")?;
+            update.bind_text(1, &request.request_id)?;
+            update.step_done()?;
+            Ok(CleanupReceipt { worktree_id: request.target_id.clone(), revision: next,
+                stop_fact_id: fact.clone(), replayed: false })
+        }).map_err(|error| { RootLock::poison_identity(&root.canonical_root().identity); error }),
+        Err(error) => {
+            let cause = format!("{error:?}");
+            let recorded = transaction(db, |db| {
+                check_owner_in_current_transaction(db, owner)?;
+                let update = Statement::prepare(db.as_ptr(),
+                    "UPDATE main.gogoke_v37_worktree_lifecycle SET state='CLEANUP_UNKNOWN' WHERE worktree_id=?1 AND state='CLEANUP_INTENT'")?;
+                update.bind_text(1, &request.target_id)?; update.step_done()?;
+                let update = Statement::prepare(db.as_ptr(),
+                    "UPDATE main.gogoke_v37_worktree_lifecycle_ops SET phase='UNKNOWN',cause=?1 WHERE request_id=?2 AND phase='INTENT'")?;
+                update.bind_text(1, &cause)?; update.bind_text(2, &request.request_id)?; update.step_done()?;
+                Ok(())
+            });
+            match recorded {
+                Ok(()) => Err(error),
+                Err(persist) => { RootLock::poison_identity(&root.canonical_root().identity);
+                    Err(joined("cleanup UNKNOWN persistence", error, persist)) }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MergeReceipt {
+    pub(crate) worktree_id: String,
+    pub(crate) revision: i64,
+    pub(crate) target_commit: String,
+    pub(crate) replayed: bool,
+    pub(crate) child_seal_intent: Option<String>,
+    pub(crate) child_commit: Option<String>,
+}
+
+// APPLIED has no failure cause. Reuse its existing cause field for the exact
+// immutable operation receipt; UNKNOWN continues to retain the original error.
+// This follows instance repin's canonical receipt comparison without a schema
+// migration that could discard an older operation's evidence.
+fn merge_receipt_record(request: &crate::store::session_transport::V37Request,
+    revision: i64, commit: &str) -> String {
+    let raw_hex = request.raw_bytes.iter().map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Json::Object([
+        ("schema", "gogoke.37.worktree-merge-result.v1".to_owned()),
+        ("requestId", request.request_id.clone()), ("rawHex", raw_hex),
+        ("requestHash", sha256_hex(&request.raw_bytes)),
+        ("family", request.family.clone()), ("operation", request.operation.clone()),
+        ("domainId", request.domain_id.clone()), ("worktreeId", request.target_id.clone()),
+        ("revision", revision.to_string()), ("targetCommit", commit.to_owned()),
+    ].into_iter().map(|(key, value)| (JsonString::from_str(key),
+        Json::String(JsonString::from_str(&value)))).collect()).canonical()
+}
+
+fn validate_merge_request(request: &crate::store::session_transport::V37Request) -> Result<String> {
+    if request.family != "K-WORKTREE" || request.operation != "merge" ||
+        request.expected_revision == 0 || request.expected_revision >= i64::MAX as u64 ||
+        !atom(&request.target_id) || request.payload.len() != 2 {
+        return Err(WorktreeError::Invalid("merge wire"));
+    }
+    let decision = request.payload.get(&JsonString::from_str("decision"));
+    if !matches!(decision, Some(Json::String(value)) if value.to_well_formed_string().as_deref()==Some("MERGE")) {
+        return Err(WorktreeError::Invalid("merge decision"));
+    }
+    let reason = match request.payload.get(&JsonString::from_str("reason")) {
+        Some(Json::String(value)) => value.to_well_formed_string()
+            .ok_or(WorktreeError::Invalid("merge reason"))?,
+        _ => return Err(WorktreeError::Invalid("merge reason")),
+    };
+    if reason.trim().is_empty() || reason.len() > 4096 || reason.chars().any(char::is_control) {
+        return Err(WorktreeError::Invalid("merge reason"));
+    }
+    if request.raw_bytes.is_empty() || request.raw_bytes.len() > 65_536
+        || !atom(&request.request_id) || !atom(&request.domain_id) {
+        return Err(WorktreeError::Invalid("merge request"));
+    }
+    Ok(reason)
+}
+
+/// First product entry: no Git pin, process custodian, or physical paths.
+/// An existing request always terminates here, including invalid/UNKNOWN
+/// history. A pending original operation also terminates a new request here;
+/// only absent history and absent pending work permit the normal effect path.
+pub(crate) fn readback_merge_receipt_request(
+    db: &mut VerifiedDatabaseConnection<'_>, request: &crate::store::session_transport::V37Request,
+    mut authorize: impl FnMut(&VerifiedDatabaseConnection<'_>, &str, &str, &str)->Result<Option<String>>,
+) -> Result<Option<MergeReceipt>> {
+    validate_merge_request(request).map_err(|error| error.at("merge.request"))?;
+    let fingerprint=sha256_hex(&request.raw_bytes);
+    let existing = Statement::prepare(db.as_ptr(),
+        "SELECT request_hash,worktree_id,operation,phase,COALESCE(result_commit,''),cause FROM main.gogoke_v37_worktree_lifecycle_ops WHERE request_id=?1")?;
+    existing.bind_text(1, &request.request_id)?;
+    let has_history = existing.step_row()?;
+    let pending = Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_worktree_lifecycle_ops WHERE worktree_id=?1 AND phase IN ('INTENT','UNKNOWN') LIMIT 1")?;
+    pending.bind_text(1, &request.target_id)?;
+    if has_history || pending.step_row()? {
+        return transaction(db, |db| {
+            // Read only native ownership metadata. A CLEANED physical tree no
+            // longer exists, so replay must not resolve it or invoke any Git.
+            let source = Statement::prepare(db.as_ptr(),
+                "SELECT domain_id,seat_id FROM main.gogoke_v37_worktrees WHERE worktree_id=?1")?;
+            source.bind_text(1, &request.target_id)?;
+            if !source.step_row()? || source.column_text(0)? != request.domain_id {
+                return Err(WorktreeError::Denied.at("merge.history_domain"));
+            }
+            let seat_id = source.column_text(1)?;
+            if source.step_row()? { return Err(WorktreeError::SchemaDrift); }
+            let turn = authorize(db, &request.domain_id, &seat_id, &request.target_id)
+                .map_err(|error| error.at("merge.history_authorize"))?
+                .ok_or(WorktreeError::Denied.at("merge.history_no_turn"))?;
+            if !atom(&turn) { return Err(WorktreeError::Denied.at("merge.history_turn_shape")); }
+            if !has_history {
+                // Current native authority was checked before disclosing the
+                // original cause. Do this before any pin or physical lookup.
+                ensure_no_pending_merge(db, &request.target_id)?;
+                return Ok(None);
+            }
+            if existing.column_text(0)? != fingerprint || existing.column_text(1)? != request.target_id ||
+                existing.column_text(2)? != "MERGE" { return Err(WorktreeError::Conflict); }
+            if existing.column_text(3)? != "APPLIED" {
+                return Err(joined("original merge UNKNOWN record",WorktreeError::Unknown,
+                    WorktreeError::Git(existing.column_text(5)?)));
+            }
+            let result = existing.column_text(4)?;
+            if !hex_commit(&result) { return Err(WorktreeError::Unknown); }
+            // Older APPLIED records hold only result_commit and the exact
+            // request hash. That request's expected revision uniquely fixes
+            // the historical result revision under the existing +1 transition.
+            let revision = request.expected_revision as i64 + 1;
+            let record = existing.column_text(5)?;
+            let legacy = merge_receipt_record(&request, revision, &result);
+            let child = if record.is_empty() || record == legacy { None }
+                else { Some(host_seal::read_record(&record, &legacy, request)?) };
+            Ok(Some(MergeReceipt { worktree_id: request.target_id.clone(), revision,
+                target_commit: result, replayed: true,
+                child_seal_intent: child.as_ref().map(|c| c.0.clone()),
+                child_commit: child.map(|c| c.1) }))
+        });
+    }
+    Ok(None)
+}
+
+/// `authorize` must read the current E.2 permission source and authenticate the
+/// current caller from trusted ingress, returning its observed turn ID. The
+/// stored source seat argument is provenance, not a caller equality condition.
+/// Historical receipt reads require the same current domain/MAIN/Merge grant.
+/// The native F module never accepts a Boolean permission from wire payload.
+pub(crate) fn merge_worktree(
+    db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
+    pin: &GitProgramPin, custodian: &mut ProcessCustodian, raw_request: &[u8],
+    authorize: impl FnMut(&VerifiedDatabaseConnection<'_>, &str, &str, &str)
+        -> Result<Option<String>>,
+) -> Result<MergeReceipt> {
+    let request = crate::store::session_transport::decode_request(raw_request)
+        .map_err(|_| WorktreeError::Invalid("merge request"))?;
+    merge_worktree_request(db, root, pin, custodian, &request, authorize)
+}
+
+/// The native H ingress already established the typed request from its exact
+/// A frame. Keep those bytes as the journal identity; do not decode them as a
+/// public K-WORKTREE wrapper or canonicalize them a second time.
+pub(crate) fn merge_worktree_request(
+    db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
+    pin: &GitProgramPin, custodian: &mut ProcessCustodian,
+    request: &crate::store::session_transport::V37Request,
+    mut authorize: impl FnMut(&VerifiedDatabaseConnection<'_>, &str, &str, &str)
+        -> Result<Option<String>>,
+) -> Result<MergeReceipt> {
+    let reason = validate_merge_request(request).map_err(|error| error.at("merge.request"))?;
+    if let Some(receipt)=readback_merge_receipt_request(db,request,&mut authorize)
+        .map_err(|error| error.at("merge.history"))? {
+        return Ok(receipt);
+    }
+    let fingerprint = sha256_hex(&request.raw_bytes);
+    let binding = resolve_id(db, root, &request.target_id)
+        .map_err(|error| error.at("merge.resolve_id"))?;
+    let source = Statement::prepare(db.as_ptr(),
+        "SELECT s.source_path,s.git_digest,s.git_version,w.domain_id,w.seat_id,s.common_path,w.repository_id FROM main.gogoke_v37_worktrees w JOIN main.gogoke_v37_worktree_sources s ON s.repository_id=w.repository_id WHERE w.worktree_id=?1")?;
+    source.bind_text(1, &request.target_id)?;
+    if !source.step_row()? { return Err(WorktreeError::Denied.at("merge.source_missing")); }
+    let source_path = PathBuf::from(source.column_text(0)?);
+    if source.column_text(1)? != pin.digest {
+        return Err(WorktreeError::Denied.at("merge.source_git_digest"));
+    }
+    if source.column_text(2)? != pin.version {
+        return Err(WorktreeError::Denied.at("merge.source_git_version"));
+    }
+    if source.column_text(3)? != request.domain_id {
+        return Err(WorktreeError::Denied.at("merge.source_domain"));
+    }
+    let seat_id = source.column_text(4)?;
+    let common = PathBuf::from(source.column_text(5)?);
+    let repository_id = source.column_text(6)?;
+    if source.step_row()? { return Err(WorktreeError::SchemaDrift); }
+    // Pending/UNKNOWN is a durable refusal, including a *new* request ID. Do
+    // not run preflight Git or inspect model content on behalf of a retry.
+    ensure_no_pending_merge(db, &request.target_id)
+        .map_err(|error| error.at("merge.pending"))?;
+    let stops = cleanup_stop_gate(db, root, &request.target_id)
+        .map_err(|error| error.at("merge.cleanup_stop_gate"))?;
+    let instances: Vec<_> = stops.iter().map(|stop|stop.instance_id.clone())
+        .collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    let source_identity = inspect_root(&source_path)
+        .map_err(|error| WorktreeError::from(error).at("merge.source_identity"))?.identity;
+    let mut snapshot = host_seal::Snapshot::capture(&binding.path)
+        .map_err(|error| error.at("merge.child_snapshot"))?;
+    let mut config = host_seal::Snapshot::capture(&common.join("config"))
+        .map_err(|error| error.at("merge.config_snapshot"))?;
+    host_seal::reject_worktree_config(&binding)
+        .map_err(|error| error.at("merge.worktree_config"))?;
+    let info = common.join("info");
+    let _info_guard = match fs::symlink_metadata(&info) {
+        Ok(_) => Some(host_seal::hold_directory(&info)
+            .map_err(|error| error.at("merge.info_directory"))?),
+        Err(error) if error.kind()==io::ErrorKind::NotFound => None,
+        Err(error) => return Err(WorktreeError::from(error).at("merge.info_metadata")),
+    };
+    source_checkout_has_no_external_drivers(db, root, custodian, pin,
+        &source_path, &common, &binding.baseline_commit)
+        .map_err(|error| error.at("merge.source_drivers_baseline"))?;
+    let child_index = git(db, root, custodian, pin, "child_index",
+        Some(&binding.path), &["ls-files".into(), "--stage".into()], true)
+        .map_err(|error| error.at("merge.child_index_read"))?;
+    host_seal::ordinary_git_entries(&child_index, true)
+        .map_err(|error| error.at("merge.child_index_shape"))?;
+    require_clean_source(db, root, custodian, pin, &source_path)
+        .map_err(|error| error.at("merge.source_status"))?;
+    let dirty = git(db, root, custodian, pin, "f2_status", Some(&binding.path), &[
+        "--no-optional-locks".into(), "status".into(), "--porcelain=v1".into(), "--untracked-files=all".into(),
+    ], true).map_err(|error| error.at("merge.child_status"))?;
+    let changed = !dirty.is_empty();
+    let before = git(db, root, custodian, pin, "merge_before", Some(&source_path), &[
+        "rev-parse".into(), "--verify".into(), "HEAD^{commit}".into(),
+    ], true).map_err(|error| error.at("merge.source_head"))?;
+    let child_before = git(db, root, custodian, pin, "merge_incoming", Some(&binding.path), &[
+        "rev-parse".into(), "--verify".into(), "HEAD^{commit}".into(),
+    ], true).map_err(|error| error.at("merge.child_head"))?;
+    if !hex_commit(&before) {
+        return Err(WorktreeError::Denied.at("merge.source_head_shape"));
+    }
+    if !hex_commit(&child_before) {
+        return Err(WorktreeError::Denied.at("merge.child_head_shape"));
+    }
+    if !changed && before == child_before {
+        return Err(WorktreeError::Denied.at("merge.no_child_delta"));
+    }
+    source_checkout_has_no_external_drivers(db, root, custodian, pin,
+        &source_path, &common, &before)
+        .map_err(|error| error.at("merge.source_drivers_head"))?;
+    source_checkout_has_no_external_drivers(db, root, custodian, pin,
+        &binding.path, &common, &child_before)
+        .map_err(|error| error.at("merge.child_drivers_head"))?;
+    let child_tree = git(db, root, custodian, pin, "child_tree",
+        Some(&binding.path), &["ls-tree".into(), "-r".into(), child_before.clone()], true)
+        .map_err(|error| error.at("merge.child_tree_read"))?;
+    host_seal::ordinary_git_entries(&child_tree, false)
+        .map_err(|error| error.at("merge.child_tree_shape"))?;
+    git(db, root, custodian, pin, "merge_baseline", Some(&binding.path), &[
+        "merge-base".into(), "--is-ancestor".into(), binding.baseline_commit.clone(), child_before.clone(),
+    ], false).map_err(|error| error.at("merge.baseline_ancestor"))?;
+    let (turn_id, seal_intent) = transaction(db, |db| {
+        let state = lifecycle(db, &request.target_id)?.unwrap_or(("REGISTERED".into(), 1, None, None));
+        if state.0 != "REGISTERED" || state.1 != request.expected_revision as i64 {
+            return Err(WorktreeError::Denied.at("merge.lifecycle_state_cas"));
+        }
+        if cleanup_stop_gate(db, root, &request.target_id)
+            .map_err(|error| error.at("merge.cleanup_stop_gate_cas"))? != stops {
+            return Err(WorktreeError::Denied.at("merge.stop_facts_cas"));
+        }
+        let turn = authorize(db, &request.domain_id, &seat_id, &request.target_id)
+            .map_err(|error| error.at("merge.authorize"))?
+            .ok_or(WorktreeError::Denied.at("merge.no_turn"))?;
+        if !atom(&turn) { return Err(WorktreeError::Denied.at("merge.turn_shape")); }
+        ensure_no_pending_merge(db, &request.target_id)
+            .map_err(|error| error.at("merge.pending_cas"))?;
+        let intent = host_seal::intent(request, &repository_id, &seat_id, &instances,
+            &turn, &binding, &before, &child_before, &snapshot.digest, changed, &stops);
+        let insert = Statement::prepare(db.as_ptr(),
+            "INSERT INTO main.gogoke_v37_worktree_lifecycle_ops(request_id,request_hash,worktree_id,operation,phase,cause) VALUES(?1,?2,?3,'MERGE','INTENT',?4)")?;
+        insert.bind_text(1, &request.request_id)?; insert.bind_text(2, &fingerprint)?;
+        insert.bind_text(3, &request.target_id)?;
+        insert.bind_text(4, &host_seal::record("", &intent, None, None))?; insert.step_done()?;
+        let update = Statement::prepare(db.as_ptr(),
+            "INSERT INTO main.gogoke_v37_worktree_lifecycle(worktree_id,state,revision,merge_reason) VALUES(?1,'MERGE_INTENT',?2,?3) ON CONFLICT(worktree_id) DO UPDATE SET state='MERGE_INTENT',merge_reason=excluded.merge_reason WHERE state='REGISTERED' AND revision=?4")?;
+        update.bind_text(1, &request.target_id)?; update.bind_i64(2, state.1)?;
+        update.bind_text(3, &reason)?; update.bind_i64(4, state.1)?; update.step_done()?;
+        let changed = Statement::prepare(db.as_ptr(), "SELECT changes()")?;
+        if !changed.step_row()? || changed.column_text(0)? != "1" { return Err(WorktreeError::Unknown); }
+        Ok((turn, intent))
+    }).map_err(|error| error.at("merge.intent_transaction"))?;
+    // Preserve partial child success even when merge or receipt completion
+    // fails. Nothing after durable INTENT may authorize a second execution.
+    let mut child_commit: Option<String> = None;
+    let effect = (|| -> Result<MergeReceipt> {
+        let recheck = |db: &VerifiedDatabaseConnection<'_>| -> Result<()> {
+            let actual = resolve_id(db, root, &request.target_id)?;
+            if !sealed_roots_overlap(&binding, &actual) || actual.path != binding.path ||
+                actual.identity != binding.identity || actual.pointer_hash != binding.pointer_hash ||
+                actual.common_identity != binding.common_identity ||
+                inspect_root(&source_path)?.identity != source_identity ||
+                cleanup_stop_gate(db, root, &request.target_id)? != stops {
+                return Err(WorktreeError::Denied);
+            }
+            host_seal::reject_worktree_config(&actual)?;
+            Ok(())
+        };
+        recheck(db)?;
+        snapshot.recheck(&binding.path)?;
+        config.recheck(&common.join("config"))?;
+        source_checkout_has_no_external_drivers(db, root, custodian, pin,
+            &binding.path, &common, &child_before)?;
+        require_clean_source(db, root, custodian, pin, &source_path)?;
+        if git(db, root, custodian, pin, "merge_recheck", Some(&source_path), &[
+            "rev-parse".into(), "--verify".into(), "HEAD^{commit}".into(),
+        ], true)? != before || git(db, root, custodian, pin, "child_recheck", Some(&binding.path), &[
+            "rev-parse".into(), "--verify".into(), "HEAD^{commit}".into(),
+        ], true)? != child_before { return Err(WorktreeError::Denied); }
+        let provenance = format!("Gogoke-Project: {}\nGogoke-Seat: {}\n{}\nGogoke-Turn: {}",
+            request.domain_id, seat_id, instances.iter().map(|id|format!("Gogoke-Instance: {id}"))
+                .collect::<Vec<_>>().join("\n"), turn_id);
+        let incoming = if changed {
+            git(db, root, custodian, pin, "child_stage", Some(&binding.path), &[
+                "add".into(), "-A".into(), "--".into(), ".".into(),
+            ], false)?;
+            snapshot.recheck(&binding.path)?;
+            config.recheck(&common.join("config"))?;
+            host_seal::ordinary_git_entries(&git(db, root, custodian, pin, "child_index",
+                Some(&binding.path), &["ls-files".into(), "--stage".into()], true)?, true)?;
+            recheck(db)?;
+            let message = format!("Seal worktree {}\n\n{}\n\n{}\nGogoke-Merge-Request: {}\nGogoke-Merge-Request-Hash: {}",
+                request.target_id, reason, provenance, request.request_id, fingerprint);
+            git(db, root, custodian, pin, "child_commit", Some(&binding.path), &[
+                "-c".into(), "commit.gpgsign=false".into(),
+                "-c".into(), "user.name=Gogoke Host".into(),
+                "-c".into(), "user.email=host@gogoke.invalid".into(),
+                "commit".into(), "--quiet".into(), "--cleanup=verbatim".into(), "-m".into(), message,
+            ], false)?;
+            let result = git(db, root, custodian, pin, "child_result", Some(&binding.path), &[
+                "rev-list".into(), "--parents".into(), "-n".into(), "1".into(), "HEAD".into(),
+            ], true)?;
+            let parts: Vec<_> = result.split_whitespace().collect();
+            if parts.len()!=2 || parts[1]!=child_before || !hex_commit(parts[0]) || parts[0]==child_before {
+                return Err(WorktreeError::Unknown);
+            }
+            parts[0].to_owned()
+        } else { child_before.clone() };
+        child_commit = Some(incoming.clone());
+        persist_child_receipt(db, request, &seal_intent, &incoming)?;
+        snapshot.recheck(&binding.path)?;
+        config.recheck(&common.join("config"))?;
+        recheck(db)?;
+        source_checkout_has_no_external_drivers(db, root, custodian, pin,
+            &binding.path, &common, &incoming)?;
+        host_seal::ordinary_git_entries(&git(db, root, custodian, pin, "child_tree",
+            Some(&binding.path), &["ls-tree".into(), "-r".into(), incoming.clone()], true)?, false)?;
+        require_clean_source(db, root, custodian, pin, &binding.path)?;
+        require_clean_source(db, root, custodian, pin, &source_path)?;
+        source_checkout_has_no_external_drivers(db, root, custodian, pin,
+            &source_path, &common, &before)?;
+        if git(db, root, custodian, pin, "merge_recheck", Some(&source_path), &[
+            "rev-parse".into(), "--verify".into(), "HEAD^{commit}".into(),
+        ], true)? != before { return Err(WorktreeError::Denied); }
+        git(db, root, custodian, pin, "merge_apply", Some(&source_path), &[
+            // Git checks the committer even with --no-commit. Keep the same
+            // explicit host identity as child sealing and merge_commit.
+            "-c".into(), "user.name=Gogoke Host".into(),
+            "-c".into(), "user.email=host@gogoke.invalid".into(),
+            "merge".into(), "--no-ff".into(), "--no-commit".into(), "--quiet".into(), incoming.clone(),
+        ], false)?;
+        let message = format!("Merge worktree {}\n\n{}\n\n{}", request.target_id, reason, provenance);
+        git(db, root, custodian, pin, "merge_commit", Some(&source_path), &[
+            "-c".into(), "commit.gpgsign=false".into(),
+            "-c".into(), "user.name=Gogoke Host".into(),
+            "-c".into(), "user.email=host@gogoke.invalid".into(),
+            "commit".into(), "--quiet".into(), "--cleanup=verbatim".into(), "-m".into(), message,
+        ], false)?;
+        let result = git(db, root, custodian, pin, "merge_result", Some(&source_path), &[
+            "rev-list".into(), "--parents".into(), "-n".into(), "1".into(), "HEAD".into(),
+        ], true)?;
+        let parts: Vec<_> = result.split_whitespace().collect();
+        if parts.len() != 3 || parts[1] != before || parts[2] != incoming || !hex_commit(parts[0]) {
+            return Err(WorktreeError::Unknown);
+        }
+        snapshot.recheck(&binding.path)?;
+        config.recheck(&common.join("config"))?;
+        recheck(db)?;
+        let commit = parts[0].to_owned();
+        transaction(db, |db| {
+            let state = lifecycle(db, &request.target_id)?.ok_or(WorktreeError::Unknown)?;
+            if state.0 != "MERGE_INTENT" || state.1 != request.expected_revision as i64 {
+                return Err(WorktreeError::Unknown);
+            }
+            let next = state.1 + 1;
+            let update = Statement::prepare(db.as_ptr(),
+                "UPDATE main.gogoke_v37_worktree_lifecycle SET state='MERGED',revision=?1,merge_target_commit=?2 WHERE worktree_id=?3 AND state='MERGE_INTENT' AND revision=?4")?;
+            update.bind_i64(1, next)?; update.bind_text(2, &commit)?;
+            update.bind_text(3, &request.target_id)?; update.bind_i64(4, state.1)?; update.step_done()?;
+            changed_one(db)?;
+            let update = Statement::prepare(db.as_ptr(),
+                "UPDATE main.gogoke_v37_worktree_lifecycle_ops SET phase='APPLIED',result_commit=?1,cause=?3 WHERE request_id=?2 AND phase='INTENT' AND request_hash=?4 AND cause=?5")?;
+            update.bind_text(1, &commit)?; update.bind_text(2, &request.request_id)?;
+            update.bind_text(3, &host_seal::record(&merge_receipt_record(request, next, &commit),
+                &seal_intent, Some(&incoming), None))?;
+            update.bind_text(4, &fingerprint)?;
+            update.bind_text(5, &host_seal::record("", &seal_intent, Some(&incoming), None))?;
+            update.step_done()?; changed_one(db)?;
+            Ok(MergeReceipt { worktree_id: request.target_id.clone(), revision: next,
+                target_commit: commit.clone(), replayed: false,
+                child_seal_intent: Some(seal_intent.clone()), child_commit: Some(incoming.clone()) })
+        })
+    })();
+    match effect {
+        Ok(receipt) => Ok(receipt),
+        Err(error) => {
+            let cause = host_seal::record("", &seal_intent, child_commit.as_deref(), Some(&format!("{error:?}")));
+            match record_merge_unknown(db, request, &cause) {
+                Ok(()) => Err(joined("merge UNKNOWN original cause",WorktreeError::Unknown,
+                    joined("merge original receipt",error,WorktreeError::Git(cause)))),
+                Err(persist) => { RootLock::poison_identity(&root.canonical_root().identity);
+                    Err(joined("merge UNKNOWN persistence", error, persist)) }
+            }
+        }
+    }
+}
+
+fn changed_one(db: &VerifiedDatabaseConnection<'_>) -> Result<()> {
+    let q = Statement::prepare(db.as_ptr(), "SELECT changes()")?;
+    if !q.step_row()? || q.column_text(0)?!="1" { return Err(WorktreeError::Unknown); }
+    Ok(())
+}
+
+fn ensure_no_pending_merge(db: &VerifiedDatabaseConnection<'_>, target: &str) -> Result<()> {
+    let pending = Statement::prepare(db.as_ptr(),
+        "SELECT cause FROM main.gogoke_v37_worktree_lifecycle_ops WHERE worktree_id=?1 AND phase IN ('INTENT','UNKNOWN') LIMIT 1")?;
+    pending.bind_text(1,target)?;
+    if pending.step_row()? { return Err(joined("pending original merge UNKNOWN record",
+        WorktreeError::Unknown,WorktreeError::Git(pending.column_text(0)?))); }
+    Ok(())
+}
+
+fn require_clean_source(db: &mut VerifiedDatabaseConnection<'_>, root: &RootLock,
+    custodian: &mut ProcessCustodian, pin: &GitProgramPin, path: &Path) -> Result<()> {
+    let status = git(db,root,custodian,pin,"f2_status",Some(path),&[
+        "--no-optional-locks".into(),"status".into(),"--porcelain=v1".into(),"--untracked-files=all".into(),
+    ],true)?;
+    if !status.is_empty() {
+        let original_bytes = status.len();
+        let mut detail = status;
+        if original_bytes > 8192 {
+            let mut end = 8192;
+            while !detail.is_char_boundary(end) { end -= 1; }
+            detail.truncate(end);
+            detail.push_str(&format!("\n[porcelain truncated; original bytes={original_bytes}]"));
+        }
+        return Err(WorktreeError::Denied.at_with_detail("git.source_status.not_clean", detail));
+    }
+    Ok(())
+}
+
+fn persist_child_receipt(db: &mut VerifiedDatabaseConnection<'_>,
+    request: &crate::store::session_transport::V37Request, intent: &str, child: &str) -> Result<()> {
+    transaction(db, |db| {
+        let q = Statement::prepare(db.as_ptr(),
+            "UPDATE main.gogoke_v37_worktree_lifecycle_ops SET cause=?1 WHERE request_id=?2 AND request_hash=?3 AND worktree_id=?4 AND operation='MERGE' AND phase='INTENT' AND cause=?5")?;
+        q.bind_text(1,&host_seal::record("",intent,Some(child),None))?;
+        q.bind_text(2,&request.request_id)?; q.bind_text(3,&sha256_hex(&request.raw_bytes))?;
+        q.bind_text(4,&request.target_id)?; q.bind_text(5,&host_seal::record("",intent,None,None))?;
+        q.step_done()?; changed_one(db)
+    })
+}
+
+fn record_merge_unknown(db: &mut VerifiedDatabaseConnection<'_>,
+    request: &crate::store::session_transport::V37Request, cause: &str) -> Result<()> {
+    transaction(db, |db| {
+        let update = Statement::prepare(db.as_ptr(),
+            "UPDATE main.gogoke_v37_worktree_lifecycle SET state='MERGE_UNKNOWN' WHERE worktree_id=?1 AND state='MERGE_INTENT'")?;
+        update.bind_text(1, &request.target_id)?; update.step_done()?; changed_one(db)?;
+        let update = Statement::prepare(db.as_ptr(),
+            "UPDATE main.gogoke_v37_worktree_lifecycle_ops SET phase='UNKNOWN',cause=?1 WHERE request_id=?2 AND phase='INTENT' AND request_hash=?3 AND worktree_id=?4")?;
+        update.bind_text(1, cause)?; update.bind_text(2, &request.request_id)?;
+        update.bind_text(3,&sha256_hex(&request.raw_bytes))?; update.bind_text(4,&request.target_id)?;
+        update.step_done()?; changed_one(db)
+    })
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use crate::store::{authority, instance, seat, session_transport};
+    use crate::store::same_open::{create_new, route_b_test_guard};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    const MERGE_RAW: &[u8] = br#"{"schema":"gogoke.37.operations.v1","family":"K-WORKTREE","operation":"merge","requestId":"mergeA","targetId":"treeA","domainId":"projectA","expectedRevision":"1","payload":{"decision":"MERGE","reason":"host seals stopped seat files"}}"#;
+
+    fn with_actual_h_episode(db: &mut VerifiedDatabaseConnection<'_>,root: &RootLock,pin: &GitProgramPin,
+        custodian: &mut ProcessCustodian,writer_seat: &seat::Seat,
+        session: &str,open: &str,operation: &str,
+        observe_active: impl FnOnce(&mut VerifiedDatabaseConnection<'_>)) {
+    let generation=writer_seat.generation.to_string();
+    let writer=writer_seat.instance_id.as_str();
+    let binding_id=format!("binding_{session}");
+    let mut launch=ProcessLaunch::new(&pin.path);
+    launch.arguments=vec!["hash-object".into(),"--stdin".into(),"--no-filters".into()];
+    launch.protocol_stdio=true;launch.persistent_protocol_stdio=true;
+    launch.current_directory=Some(git_launch_path(&root.canonical_root().canonical_path).unwrap());
+    launch.environment=Some(vec![("SystemRoot".into(),std::env::var("SystemRoot").unwrap()),
+        ("GIT_CONFIG_NOSYSTEM".into(),"1".into()),("GIT_CONFIG_GLOBAL".into(),"NUL".into())]);
+    let prepared=custodian.prepare(&PrepareRequest {binding:NativeBinding {
+        binary_digest_sha256:pin.digest.clone(),profile_id:pin.profile_id.clone(),
+        domain_id:"projectA".into(),generation:generation.clone(),
+    },launch}).unwrap();
+    record_prepared_process(db,operation,&prepared).unwrap();
+    let active=custodian.activate(&prepared).unwrap();
+    mark_process_active(db,operation,&active).unwrap();
+    let add=Statement::prepare(db.as_ptr(),
+        "INSERT INTO main.gogoke_v37_h_owner_binding VALUES(?3,?1,'projectA','SESSION',?4,?2,'ACTIVE')").unwrap();
+    add.bind_text(1,writer).unwrap();add.bind_text(2,&generation).unwrap();add.bind_text(3,&binding_id).unwrap();add.bind_text(4,session).unwrap();add.step_done().unwrap();drop(add);
+    let add=Statement::prepare(db.as_ptr(),
+        "INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id) VALUES('projectA',?4,?1,'homeA',?3,?2,'COMMITTED',1,?5)").unwrap();
+    add.bind_text(1,writer).unwrap();add.bind_text(2,&generation).unwrap();add.bind_text(3,&binding_id).unwrap();add.bind_text(4,session).unwrap();add.bind_text(5,operation).unwrap();add.step_done().unwrap();drop(add);
+    let add=Statement::prepare(db.as_ptr(),
+        "INSERT INTO main.gogoke_v37_h_seat_binding VALUES('projectA',?3,?4,?1,?2)").unwrap();
+    add.bind_text(1,&writer_seat.incarnation).unwrap();add.bind_text(2,&generation).unwrap();add.bind_text(3,session).unwrap();add.bind_text(4,&writer_seat.seat_id).unwrap();add.step_done().unwrap();drop(add);
+    session_transport::record_initial(db,"projectA",session,open,operation).unwrap();
+    session_transport::mark_active(db,operation).unwrap();
+    assert_eq!(custodian.active(&active.ticket).unwrap().exit_code().unwrap(),None,
+        "actual process must still be alive before native StopFact");
+    observe_active(db);
+    let proof=custodian.stop(&active.ticket,StopBudgets::production(),||Ok(())).unwrap();
+    let durable_revision=mark_process_stopped(db,operation,&proof).unwrap();
+    custodian.confirm_stop_durable(&DurableStopConfirmation {ticket:proof.ticket.clone(),
+        custodian_nonce:proof.custodian_nonce.clone(),identity:proof.identity.clone(),
+        proof_hash:proof.proof_hash(),durable_revision}).unwrap();
+    session_transport::record_session_stop_in_transaction(db,"projectA",session,operation).unwrap();
+    let release=Statement::prepare(db.as_ptr(),"UPDATE main.gogoke_v37_h_claim SET state='RELEASED',revision=revision+1 WHERE session_id=?1").unwrap();
+    release.bind_text(1,session).unwrap();release.step_done().unwrap();
+    }
+
+    fn register_test_tree(db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock,
+        owner:&OwnerIssuer,target:&str,request_id:&str) {
+        let raw=format!(r#"{{"schema":"gogoke.37.operations.v1","family":"K-WORKTREE","operation":"register","requestId":"{request_id}","targetId":"{target}","domainId":"projectA","expectedRevision":"1","payload":{{}}}}"#);
+        register_created_worktree(db,root,owner,raw.as_bytes()).unwrap();
+    }
+
+    fn with_real_child(label: &str, body: impl FnOnce(&mut VerifiedDatabaseConnection<'_>,
+        &RootLock, &GitProgramPin, &mut ProcessCustodian, &ResolvedBinding, &Path, &OwnerIssuer)) {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("gogoke-f2-{label}-{}-{nonce}",std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let mut db=create_new(&root,&path.join("state.sqlite")).unwrap();
+        let owner=authority::initialize_profile(&mut db,&root).unwrap();
+        authority::initialize_process_custody_schema(&mut db).unwrap();
+        instance::initialize_schema(&mut db).unwrap(); seat::initialize_schema(&mut db).unwrap();
+        session_transport::initialize_admission_schema(&mut db).unwrap();
+        session_transport::session_binding::initialize_schema(&mut db).unwrap();
+        initialize_schema(&mut db).unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_instances VALUES('instanceA','codex','homeA','identityA','sha256:test','0.160.0','INSTALLED','LOGGED_IN',1)").unwrap();
+        seat::store_template(&mut db,seat::NativeOrigin::user(&owner),seat::StoreTemplate {
+            domain_id:"projectA",template_id:"templateA",settings_json:br#"{"permissionTier":"ISOLATED_WRITE"}"#,
+        }).unwrap();
+        seat::create(&mut db,seat::NativeOrigin::user(&owner),seat::CreateSeat {
+            domain_id:"projectA",seat_id:"seatA",template_id:"templateA",instance_id:Some("instanceA"),
+            kind:seat::Kind::Long,request_id:"seat-create",request_bytes:b"seat create",
+        }).unwrap();
+        let git_path=std::env::var_os("GOGOKE_CONTROLLED_GIT_PATH").expect("cloud must pin actual Git backend");
+        let mut custodian=ProcessCustodian::new().unwrap();
+        let pin=GitProgramPin::observe(&mut db,&owner,&root,Path::new(&git_path),&mut custodian).unwrap();
+        let source=path.join("synthetic-source");
+        let mut run=|tag: &str,cwd: Option<&Path>,args: &[&str]| {
+            git(&mut db,&root,&mut custodian,&pin,tag,cwd,
+                &args.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>(),false).unwrap();
+        };
+        run("fixture_init",None,&["init","--quiet",source.to_str().unwrap()]);
+        run("fixture_name",Some(&source),&["config","--local","user.name","Fixture"]);
+        run("fixture_email",Some(&source),&["config","--local","user.email","fixture@example.invalid"]);
+        run("fixture_remote",Some(&source),&["config","--local","remote.origin.url",SOURCE_REMOTE]);
+        drop(run);
+        fs::write(source.join("README.md"),b"original stopped-seat baseline\n").unwrap();
+        git(&mut db,&root,&mut custodian,&pin,"fixture_add",Some(&source),
+            &["add".into(),"--".into(),"README.md".into()],false).unwrap();
+        git(&mut db,&root,&mut custodian,&pin,"fixture_commit",Some(&source),
+            &["commit".into(),"--quiet".into(),"-m".into(),"baseline".into()],false).unwrap();
+        register_source(&mut db,&root,&owner,&pin,&mut custodian,SourceRegistration {
+            repository_id:"repoA",source_path:&source,
+        }).unwrap();
+        let input=CreateWorktree {request_id:"createA",request_bytes:b"create child",repository_id:"repoA",target_id:"treeA",
+            domain_id:"projectA",seat_id:"seatA"};
+        let binding=if label=="seal-mixed-group" {
+            let binding=create_mixed_worktree(&mut db,&root,&owner,&pin,&mut custodian,input).unwrap();
+            register_test_tree(&mut db,&root,&owner,"treeA","registerA"); binding
+        } else {create_worktree(&mut db,&root,&owner,&pin,&mut custodian,input).unwrap()};
+        let original=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"open","requestId":"openA","targetId":"sessionA","domainId":"projectA","expectedRevision":"1","payload":{"repositoryId":"repoA","worktreeId":"treeA"}}"#;
+        let q=Statement::prepare(db.as_ptr(),
+            "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA','openA',?1,'open','sessionA','APPLIED',1,2)").unwrap();
+        q.bind_text(1,&original.iter().map(|b|format!("{b:02x}")).collect::<String>()).unwrap();
+        q.step_done().unwrap(); drop(q);
+        // This fixture exercises actual Windows Job/process StopFact custody
+        // and H's production episode/stop recording, without model/login calls.
+        // Vendor authentication and original A model-proof ingress are NOT_RUN.
+        let writer=if label=="seal-instance-rebind" {"instanceB"} else {"instanceA"};
+        if writer=="instanceB" {
+            db.execute("INSERT INTO main.gogoke_v37_instances VALUES('instanceB','codex','homeB','identityB','sha256:test','0.160.0','INSTALLED','LOGGED_IN',1)").unwrap();
+            let old=seat::get(&db,"projectA","seatA").unwrap().unwrap();
+            seat::change_instance(&mut db,seat::NativeOrigin::user(&owner),seat::SeatChange {
+                domain_id:"projectA",seat_id:"seatA",expected_generation:old.generation,
+                expected_revision:old.revision,request_id:"idle-rebind",request_bytes:b"idle rebind",
+            },writer).unwrap();
+        }
+        let writer_seat=seat::get(&db,"projectA","seatA").unwrap().unwrap();
+        with_actual_h_episode(&mut db,&root,&pin,&mut custodian,&writer_seat,
+            "sessionA","openA","processA",|_|{});
+        seat::create(&mut db,seat::NativeOrigin::user(&owner),seat::CreateSeat {
+            domain_id:"projectA",seat_id:"mergerSeat",template_id:"templateA",instance_id:Some("instanceA"),
+            kind:seat::Kind::Long,request_id:"merger-create",request_bytes:b"merger create",
+        }).unwrap();
+        let merger=seat::get(&db,"projectA","mergerSeat").unwrap().unwrap();
+        seat::set_dispatch_state(&mut db,&merger,true).unwrap();
+        seat::initialize_policy(&mut db,&owner,"projectA","WORK").unwrap();
+        seat::configure_call_grant(&mut db,&owner,"projectA","mergerSeat","MAIN",seat::CallAction::Merge,None,1).unwrap();
+        body(&mut db,&root,&pin,&mut custodian,&binding,&source,&owner);
+        drop(binding); drop(pin); drop(custodian); db.close_checked().unwrap(); drop(root);
+        let actual=fs::canonicalize(&path).unwrap();
+        assert!(actual.starts_with(fs::canonicalize(std::env::temp_dir()).unwrap()));
+        assert!(actual.file_name().unwrap().to_string_lossy().starts_with("gogoke-f2-"));
+        fs::remove_dir_all(actual).unwrap();
+    }
+
+    fn is_unknown(error:&WorktreeError)->bool {
+        match error.without_context() { WorktreeError::Unknown=>true,
+            WorktreeError::Multiple {primary,..}=>is_unknown(primary), _=>false }
+    }
+
+    fn assert_merge_denied_stage<T>(result: Result<T>, stage: &str) {
+        match result {
+            Err(error) => {
+                assert!(matches!(error.without_context(), WorktreeError::Denied), "{error:?}");
+                assert!(format!("{error:?}").contains(stage), "{error:?}");
+            }
+            Ok(_) => panic!("merge unexpectedly succeeded at {stage}"),
+        }
+    }
+
+    fn authorize_fixture_merger(db: &VerifiedDatabaseConnection<'_>, domain: &str, writer: &str, _: &str) -> Result<Option<String>> {
+        // Test-only trusted-turn construction is NOT original A authentication.
+        // F still calls the real current E.2 MAIN/MERGE policy gate each time.
+        let merger=seat::get(db,"projectA","mergerSeat")?.ok_or(WorktreeError::Denied)?;
+        let caller=seat::NativeSeatCall::from_verified_h_turn(&merger,"nativeTurnA")?;
+        seat::authorize_merge_for_f2(db,&caller,domain,writer).map_err(WorktreeError::Seat)
+    }
+    fn head(db: &mut VerifiedDatabaseConnection<'_>,root: &RootLock,pin: &GitProgramPin,
+        custodian: &mut ProcessCustodian,path: &Path) -> String {
+        git(db,root,custodian,pin,"fixture_head",Some(path),&[
+            "rev-parse".into(),"--verify".into(),"HEAD^{commit}".into(),
+        ],true).unwrap()
+    }
+
+    #[test]
+    fn unstarted_native_reservation_fences_cleanup_and_merge_after_real_stop() {
+        use session_transport::session_binding::{self, Provenance, SessionBinding};
+        with_real_child("native-reservation-guard",|db,root,pin,custodian,_binding,_source,owner| {
+            let stopped=cleanup_stop_gate(db,root,"treeA").unwrap();
+            assert_eq!(stopped.len(),1);
+            assert_eq!(stopped[0].process_operation_id,"processA");
+            let idle=seat::get(db,"projectA","seatA").unwrap().unwrap();
+            let busy=seat::set_dispatch_state(db,&idle,true).unwrap();
+            let generation=busy.generation.to_string();
+            db.execute("BEGIN IMMEDIATE").unwrap();
+            session_transport::bind_owner_in_transaction(db,&session_transport::OwnerBinding {
+                binding_id:"bindingNativeB",instance_id:"instanceA",domain_id:"projectA",
+                kind:"SESSION",owner_id:"sessionNativeB",generation:&generation,
+            }).unwrap();
+            db.execute("COMMIT").unwrap();
+            let home=Statement::prepare(db.as_ptr(),
+                "INSERT INTO main.gogoke_v37_instance_homes(home_id,instance_id,domain_id,kind,owner_id,generation,state,revision) VALUES('homeNativeB','instanceA','projectA','SESSION','sessionNativeB',?1,'ACTIVE',1)").unwrap();
+            home.bind_text(1,&generation).unwrap();home.step_done().unwrap();drop(home);
+            let reserve=session_transport::AdmissionRequest {
+                domain_id:"projectA",session_id:"sessionNativeB",request_id:"reserveNativeB",
+                raw_bytes:b"new native reservation",instance_id:"instanceA",home_id:"homeNativeB",
+                generation:&generation,expected_revision:0,
+            };
+            let selection=SessionBinding {domain_id:"projectA".into(),
+                session_id:"sessionNativeB".into(),seat_id:"seatA".into(),
+                seat_incarnation:busy.incarnation.clone(),
+                seat_authorization_generation:busy.generation,
+                selected_instance_id:"instanceA".into(),provenance:Provenance::NativeV2};
+            assert_eq!(session_transport::reserve_admission(db,&reserve,|db| {
+                session_binding::select_native_in_transaction(db,&selection)
+                    .map_err(|_|session_transport::AdmissionError::Denied)?;
+                Ok(session_transport::TrustedLimits {project_parallel:2,instance_concurrency:2})
+            }).unwrap(),session_transport::AdmissionResult::Applied(1));
+            assert!(original_session_worktree(db,"projectA","sessionNativeB").unwrap().is_none());
+            assert!(matches!(cleanup_stop_gate(db,root,"treeA"),Err(WorktreeError::Denied)));
+            assert_merge_denied_stage(merge_worktree(db,root,pin,custodian,MERGE_RAW,
+                authorize_fixture_merger),"merge.cleanup_stop_gate");
+            // A stale incarnation or missing original selection cannot turn an
+            // unreleased claim into proof that the directory is unoccupied.
+            db.execute("UPDATE main.gogoke_v37_native_selection SET seat_incarnation='wrongIncarnation' WHERE session_id='sessionNativeB'").unwrap();
+            assert!(matches!(cleanup_stop_gate(db,root,"treeA"),Err(WorktreeError::Denied)));
+            db.execute("UPDATE main.gogoke_v37_native_selection SET seat_incarnation=(SELECT incarnation FROM main.gogoke_v37_seats WHERE domain_id='projectA' AND seat_id='seatA') WHERE session_id='sessionNativeB'").unwrap();
+            db.execute("DELETE FROM main.gogoke_v37_native_selection WHERE session_id='sessionNativeB'").unwrap();
+            assert!(matches!(cleanup_stop_gate(db,root,"treeA"),Err(WorktreeError::Denied)));
+            session_binding::select_native_in_transaction(db,&selection).unwrap();
+            let release=session_transport::AdmissionRequest {request_id:"releaseNativeB",
+                raw_bytes:b"release unstarted native reservation",expected_revision:1,..reserve};
+            assert_eq!(session_transport::runtime::release_native(db,
+                &seat::NativeOrigin::user(owner),&release).unwrap(),
+                session_transport::AdmissionResult::Applied(2));
+            assert_eq!(cleanup_stop_gate(db,root,"treeA").unwrap(),stopped);
+        });
+    }
+
+    #[test]
+    fn mixed_h_actual_group_reservation_and_live_episode_fence_sibling_seal() {
+        with_real_child("seal-mixed-group",|db,root,pin,custodian,binding,source,owner| {
+            let source_b=source.parent().unwrap().join("synthetic-source-b");
+            git(db,root,custodian,pin,"fixture_clone",None,&[
+                "clone".into(),"--quiet".into(),"--no-hardlinks".into(),"--".into(),
+                source.to_str().unwrap().into(),source_b.to_str().unwrap().into(),
+            ],false).unwrap();
+            git(db,root,custodian,pin,"fixture_remote",Some(&source_b),&[
+                "config".into(),"--local".into(),"remote.origin.url".into(),SOURCE_REMOTE.into(),
+            ],false).unwrap();
+            register_source(db,root,owner,pin,custodian,SourceRegistration {
+                repository_id:"repoB",source_path:&source_b,
+            }).unwrap();
+            let sibling=create_mixed_worktree(db,root,owner,pin,custodian,CreateWorktree {
+                request_id:"createB",request_bytes:b"create sibling",repository_id:"repoB",target_id:"treeB",
+                domain_id:"projectA",seat_id:"seatA",
+            }).unwrap();
+            register_test_tree(db,root,owner,"treeB","registerB");
+            assert!(!sealed_roots_overlap(binding,&sibling),"physical siblings do not overlap by themselves");
+            let group=resolve_group_for_launch(db,root,&sibling).unwrap();
+            assert_eq!(group.iter().map(|r|r.worktree_id.as_str()).collect::<Vec<_>>(),vec!["treeA","treeB"]);
+            let original=r#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"open","requestId":"openB","targetId":"sessionB","domainId":"projectA","expectedRevision":"1","payload":{"repositoryId":"repoB","worktreeId":"treeB"}}"#;
+            let q=Statement::prepare(db.as_ptr(),
+                "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA','openB',?1,'open','sessionB','APPLIED',1,2)").unwrap();
+            q.bind_text(1,&original.bytes().map(|b|format!("{b:02x}")).collect::<String>()).unwrap();q.step_done().unwrap();drop(q);
+            let writer=seat::get(db,"projectA","seatA").unwrap().unwrap();
+            // sessionA already owns the prior incarnation/generation binding.
+            // A new admission uses E's next generation, never a duplicate slot.
+            let writer=seat::set_dispatch_state(db,&writer,true).unwrap();
+            with_actual_h_episode(db,root,pin,custodian,&writer,"sessionB","openB","processB",|db| {
+                assert!(matches!(cleanup_stop_gate(db,root,"treeA"),Err(WorktreeError::Denied)),
+                    "live sibling reservation covers target through original H group");
+                // A missing reservation cannot replace a live episode StopFact.
+                db.execute("UPDATE main.gogoke_v37_h_claim SET state='RELEASED' WHERE session_id='sessionB'").unwrap();
+                assert!(matches!(cleanup_stop_gate(db,root,"treeA"),Err(WorktreeError::Denied)),
+                    "old target StopFact must not hide still-live sibling episode");
+                db.execute("UPDATE main.gogoke_v37_h_claim SET state='COMMITTED' WHERE session_id='sessionB'").unwrap();
+            });
+            let stops=cleanup_stop_gate(db,root,"treeA").unwrap();
+            assert_eq!(stops.len(),2); assert!(stops.iter().any(|s|s.process_operation_id=="processB"));
+        });
+    }
+
+    #[test]
+    fn host_seal_uses_actual_stopped_rebound_instance_not_creation_or_merger() {
+        with_real_child("seal-instance-rebind",|db,root,pin,custodian,binding,_,_owner| {
+            assert_eq!(binding.instance_id,"instanceA");
+            assert_eq!(cleanup_stop_gate(db,root,"treeA").unwrap()[0].instance_id,"instanceB");
+            fs::write(binding.path.join("seat.txt"),b"instance B stopped output\n").unwrap();
+            let receipt=merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger).unwrap();
+            let child=receipt.child_commit.as_ref().unwrap();
+            let message=git(db,root,custodian,pin,"child_tree",Some(&binding.path),&[
+                "show".into(),"-s".into(),"--format=%B".into(),child.clone(),
+            ],true).unwrap();
+            assert!(message.contains("Gogoke-Instance: instanceB"));
+            assert!(!message.contains("Gogoke-Instance: instanceA"));
+            let replay=readback_merge_receipt_request(db,&session_transport::decode_request(MERGE_RAW).unwrap(),authorize_fixture_merger).unwrap().unwrap();
+            assert_eq!(replay.child_commit,receipt.child_commit);assert_eq!(replay.child_seal_intent,receipt.child_seal_intent);
+        });
+    }
+
+    #[test]
+    fn host_seal_effect_denial_is_unknown_and_retains_real_child_hash() {
+        with_real_child("seal-effect-denied",|db,root,pin,custodian,binding,_,_owner| {
+            fs::write(binding.path.join("seat.txt"),b"stopped output\n").unwrap();
+            db.execute(r#"CREATE TRIGGER change_stop_after_seal AFTER UPDATE OF cause ON gogoke_v37_worktree_lifecycle_ops WHEN NEW.phase='INTENT' AND instr(NEW.cause,'"childCommit":""')=0 BEGIN UPDATE gogoke_coordination_process_custody SET stop_proof_hash='changedAfterSeal' WHERE operation_id='processA'; END"#).unwrap();
+            let error=merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger).unwrap_err();
+            assert!(matches!(&error,WorktreeError::Multiple {primary,..} if matches!(primary.as_ref(),WorktreeError::Unknown)));
+            assert!(format!("{error:?}").contains("Denied"));
+            let child=head(db,root,pin,custodian,&binding.path);
+            assert!(format!("{error:?}").contains(&child),"first UNKNOWN response must retain the original child hash");
+            let q=Statement::prepare(db.as_ptr(),"SELECT phase,cause FROM main.gogoke_v37_worktree_lifecycle_ops WHERE request_id='mergeA'").unwrap();
+            assert!(q.step_row().unwrap());assert_eq!(q.column_text(0).unwrap(),"UNKNOWN");
+            assert!(q.column_text(1).unwrap().contains(&child));
+            assert_eq!(lifecycle(db,"treeA").unwrap().unwrap().0,"MERGE_UNKNOWN");
+        });
+    }
+
+    #[test]
+    fn host_seal_original_dirty_child_has_bound_receipt_and_safe_replay() {
+        with_real_child("seal-success",|db,root,pin,custodian,binding,source,_owner| {
+            // Real registered sources need not have a local committer. The
+            // host merge must work without the fixture's identity settings.
+            for key in ["user.name", "user.email"] {
+                git(db,root,custodian,pin,"fixture_unset_identity",Some(source),&[
+                    "config".into(),"--local".into(),"--unset".into(),key.into(),
+                ],false).unwrap();
+            }
+            // An Owner's ordinary Git cleanup preference must not remove the
+            // identity trailers the host is responsible for recording.
+            for (key,value) in [("commit.cleanup","strip"),("core.commentChar","G")] {
+                git(db,root,custodian,pin,"fixture_cleanup",Some(source),&[
+                    "config".into(),"--local".into(),key.into(),value.into(),
+                ],false).unwrap();
+            }
+            fs::write(binding.path.join("seat.txt"),b"seat only wrote this file\n").unwrap();
+            let receipt=merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger).unwrap();
+            let child=receipt.child_commit.as_ref().unwrap();
+            assert_ne!(child,&binding.baseline_commit);
+            assert_eq!(head(db,root,pin,custodian,&binding.path),*child);
+            assert_eq!(head(db,root,pin,custodian,source),receipt.target_commit);
+            assert_eq!(fs::read(source.join("seat.txt")).unwrap(),b"seat only wrote this file\n");
+            let intent=receipt.child_seal_intent.as_ref().unwrap();
+            assert!(intent.contains("nativeTurnA") && intent.contains(&cleanup_stop_gate(db,root,"treeA").unwrap()[0].stop_fact_id) && intent.contains(&sha256_hex(MERGE_RAW)));
+            let message=git(db,root,custodian,pin,"child_tree",Some(&binding.path),&[
+                "show".into(),"-s".into(),"--format=%B".into(),child.clone(),
+            ],true).unwrap();
+            assert!(message.contains("Gogoke-Project: projectA") && message.contains("Gogoke-Seat: seatA") &&
+                message.contains("Gogoke-Instance: instanceA") && message.contains("Gogoke-Turn: nativeTurnA"));
+            // Disable Git entirely: readback must retain the exact original
+            // hashes/intent even if the physical child is subsequently gone.
+            let inert=GitProgramPin { path:source.join("missing-git.exe"),digest:"unused".into(),version:"unused".into(),
+                _file:File::open(source.join("seat.txt")).unwrap(),profile_id:"unused".into(),
+                owner_seat_id:"unused".into(),policy_revision:"unused".into() };
+            let replay=merge_worktree(db,root,&inert,custodian,MERGE_RAW,authorize_fixture_merger).unwrap();
+            assert_eq!(replay.child_commit,receipt.child_commit); assert_eq!(replay.child_seal_intent,receipt.child_seal_intent);
+            assert!(replay.replayed);
+            let q=Statement::prepare(db.as_ptr(),"UPDATE main.gogoke_v37_worktree_lifecycle_ops SET cause=?1 WHERE request_id='mergeA'").unwrap();
+            let tampered=host_seal::record(&merge_receipt_record(&session_transport::decode_request(MERGE_RAW).unwrap(),2,&receipt.target_commit),
+                intent,Some(&binding.baseline_commit),None);
+            q.bind_text(1,&tampered).unwrap(); q.step_done().unwrap(); drop(q);
+            assert!(matches!(merge_worktree(db,root,&inert,custodian,MERGE_RAW,authorize_fixture_merger),
+                Err(error) if matches!(error.without_context(),WorktreeError::Unknown)));
+        });
+    }
+
+    #[test]
+    fn host_seal_receipt_failure_retains_child_and_freezes_old_and_new_requests() {
+        with_real_child("seal-receipt-failure",|db,root,pin,custodian,binding,source,_owner| {
+            fs::write(binding.path.join("seat.txt"),b"stopped child change\n").unwrap();
+            db.execute("CREATE TRIGGER fail_final_receipt BEFORE UPDATE ON gogoke_v37_worktree_lifecycle_ops WHEN NEW.phase='APPLIED' BEGIN SELECT RAISE(ABORT,'fixture final receipt unavailable'); END").unwrap();
+            let error=merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger).unwrap_err();
+            assert!(format!("{error:?}").contains("fixture final receipt unavailable"));
+            let child=head(db,root,pin,custodian,&binding.path);
+            assert_ne!(child,binding.baseline_commit);
+            let merged=head(db,root,pin,custodian,source);
+            let q=Statement::prepare(db.as_ptr(),"SELECT phase,cause FROM main.gogoke_v37_worktree_lifecycle_ops WHERE request_id='mergeA'").unwrap();
+            assert!(q.step_row().unwrap()); assert_eq!(q.column_text(0).unwrap(),"UNKNOWN");
+            let cause=q.column_text(1).unwrap(); drop(q);
+            assert!(cause.contains(&child) && cause.contains("fixture final receipt unavailable") && cause.contains("childSealIntent"));
+            assert_eq!(lifecycle(db,"treeA").unwrap().unwrap().0,"MERGE_UNKNOWN");
+            let original=merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger).unwrap_err();
+            assert!(is_unknown(&original));assert!(format!("{original:?}").contains(&child));
+            let raw=std::str::from_utf8(MERGE_RAW).unwrap().replace("mergeA","mergeB");
+            let fresh=merge_worktree(db,root,pin,custodian,raw.as_bytes(),authorize_fixture_merger).unwrap_err();
+            assert!(is_unknown(&fresh));assert!(format!("{fresh:?}").contains(&child));
+            let inert=GitProgramPin { path:source.join("missing-git.exe"),digest:"changed digest".into(),version:"changed version".into(),
+                _file:File::open(source.join("README.md")).unwrap(),profile_id:"unused".into(),
+                owner_seat_id:"unused".into(),policy_revision:"unused".into() };
+            let fresh=merge_worktree(db,root,&inert,custodian,raw.as_bytes(),authorize_fixture_merger).unwrap_err();
+            assert!(is_unknown(&fresh));assert!(format!("{fresh:?}").contains(&child));
+            assert_eq!(head(db,root,pin,custodian,&binding.path),child);
+            assert_eq!(head(db,root,pin,custodian,source),merged);
+        });
+    }
+
+    #[test]
+    fn host_seal_child_success_merge_conflict_is_unknown_with_original_git_error() {
+        with_real_child("seal-merge-conflict",|db,root,pin,custodian,binding,source,_owner| {
+            fs::write(source.join("README.md"),b"source conflict\n").unwrap();
+            git(db,root,custodian,pin,"fixture_add",Some(source),&[
+                "add".into(),"--".into(),"README.md".into(),
+            ],false).unwrap();
+            git(db,root,custodian,pin,"fixture_commit",Some(source),&[
+                "commit".into(),"--quiet".into(),"-m".into(),"source changed".into(),
+            ],false).unwrap();
+            let source_before=head(db,root,pin,custodian,source);
+            fs::write(binding.path.join("README.md"),b"child conflict\n").unwrap();
+            let error=merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger).unwrap_err();
+            assert!(format!("{error:?}").contains("Git exit Some(1)"),"original Git failure retained: {error:?}");
+            let child=head(db,root,pin,custodian,&binding.path);
+            assert_ne!(child,binding.baseline_commit);
+            assert_eq!(head(db,root,pin,custodian,source),source_before);
+            let q=Statement::prepare(db.as_ptr(),"SELECT phase,cause FROM main.gogoke_v37_worktree_lifecycle_ops WHERE request_id='mergeA'").unwrap();
+            assert!(q.step_row().unwrap()); assert_eq!(q.column_text(0).unwrap(),"UNKNOWN");
+            let cause=q.column_text(1).unwrap(); drop(q);
+            assert!(cause.contains(&child) && cause.contains("Git exit Some(1)"));
+            assert_eq!(lifecycle(db,"treeA").unwrap().unwrap().0,"MERGE_UNKNOWN");
+        });
+    }
+
+    #[test]
+    fn host_seal_requires_persisted_original_intent_before_child_effect() {
+        with_real_child("seal-intent-failure",|db,root,pin,custodian,binding,_,_owner| {
+            let pointer=fs::read_to_string(binding.path.join(".git")).unwrap();
+            let index=Path::new(pointer.strip_prefix("gitdir: ").unwrap().trim()).join("index");
+            let index_before=fs::read(&index).unwrap();
+            // Unchanged contents with fresh metadata would allow ordinary
+            // status to refresh the index before the MERGE reservation.
+            fs::write(binding.path.join("README.md"),b"original stopped-seat baseline\n").unwrap();
+            fs::write(binding.path.join("seat.txt"),b"stopped child change\n").unwrap();
+            db.execute("CREATE TRIGGER fail_seal_intent BEFORE INSERT ON gogoke_v37_worktree_lifecycle_ops WHEN NEW.operation='MERGE' BEGIN SELECT RAISE(ABORT,'fixture seal intent unavailable'); END").unwrap();
+            let error=merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger).unwrap_err();
+            assert!(format!("{error:?}").contains("fixture seal intent unavailable"));
+            assert_eq!(fs::read(index).unwrap(),index_before,"preflight must not refresh child index");
+            assert_eq!(head(db,root,pin,custodian,&binding.path),binding.baseline_commit);
+            let q=Statement::prepare(db.as_ptr(),"SELECT count(*) FROM main.gogoke_coordination_process_custody WHERE operation_id LIKE 'f_git_child_stage_%' OR operation_id LIKE 'f_git_child_commit_%'").unwrap();
+            assert!(q.step_row().unwrap()); assert_eq!(q.column_text(0).unwrap(),"0");
+        });
+    }
+
+    #[test]
+    fn host_seal_refuses_attribute_and_hardlink_before_host_reads_content() {
+        with_real_child("seal-rejected-files",|db,root,pin,custodian,binding,source,_owner| {
+            fs::write(binding.path.join(".gitattributes"),b"* filter=external\n").unwrap();
+            assert_merge_denied_stage(merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger), "merge.child_snapshot");
+            fs::remove_file(binding.path.join(".gitattributes")).unwrap();
+            let outside=source.parent().unwrap().join("outside.txt");
+            fs::write(&outside,b"outside model scope\n").unwrap();
+            fs::hard_link(&outside,binding.path.join("alias.txt")).unwrap();
+            assert_merge_denied_stage(merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger), "merge.child_snapshot");
+            assert_eq!(head(db,root,pin,custodian,&binding.path),binding.baseline_commit);
+            assert_eq!(fs::read(&outside).unwrap(),b"outside model scope\n");
+            fs::remove_file(binding.path.join("alias.txt")).unwrap();
+            std::os::windows::fs::symlink_dir(source,binding.path.join("redirected"))
+                .expect("cloud reparse fixture must run, never silently skip");
+            assert_merge_denied_stage(merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger), "merge.child_snapshot");
+            fs::remove_dir(binding.path.join("redirected")).unwrap();
+            let pointer=fs::read_to_string(binding.path.join(".git")).unwrap();
+            let per_tree=Path::new(pointer.strip_prefix("gitdir: ").unwrap().trim()).join("config.worktree");
+            fs::write(&per_tree,b"[include]\n path = outside-config\n").unwrap();
+            assert_merge_denied_stage(merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger), "merge.worktree_config");
+            fs::remove_file(per_tree).unwrap();
+            let attributes=source.join(".git/info/attributes");
+            fs::write(&attributes,b"* filter=external\n").unwrap();
+            assert_merge_denied_stage(merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger), "merge.source_drivers_baseline");
+            fs::remove_file(attributes).unwrap();
+            fs::write(binding.path.join("seat.txt"),b"stopped child change\n").unwrap();
+            fs::write(source.join("dirty-source.txt"),b"source must remain clean\n").unwrap();
+            let denied = merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger).unwrap_err();
+            assert!(matches!(denied.without_context(), WorktreeError::Denied));
+            let original = format!("{denied:?}");
+            assert!(original.contains("merge.source_status"), "{original}");
+            assert!(original.contains("git.source_status.not_clean"), "{original}");
+            assert!(original.contains("?? dirty-source.txt"), "{original}");
+            fs::remove_file(source.join("dirty-source.txt")).unwrap();
+            let original_proof=cleanup_stop_gate(db,root,"treeA").unwrap()[0].stop_fact_id.clone();
+            db.execute("UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash='differentStop' WHERE operation_id='processA'").unwrap();
+            assert_merge_denied_stage(merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger), "merge.cleanup_stop_gate");
+            let q=Statement::prepare(db.as_ptr(),"UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash=?1 WHERE operation_id='processA'").unwrap();
+            q.bind_text(1,&original_proof).unwrap();q.step_done().unwrap();drop(q);
+            db.execute("UPDATE main.gogoke_v37_h_claim SET state='RESERVED' WHERE session_id='sessionA'").unwrap();
+            assert_merge_denied_stage(merge_worktree(db,root,pin,custodian,MERGE_RAW,authorize_fixture_merger), "merge.cleanup_stop_gate");
+            assert_eq!(head(db,root,pin,custodian,&binding.path),binding.baseline_commit);
+        });
+    }
+
+    #[test]
+    fn merge_preintent_denial_retains_guard_and_writes_no_intent() {
+        with_real_child("merge-no-turn-stage", |db, root, pin, custodian, binding, _source, _owner| {
+            fs::write(binding.path.join("seat.txt"), b"stopped child change\n").unwrap();
+            assert_merge_denied_stage(merge_worktree(db, root, pin, custodian, MERGE_RAW,
+                |_, _, _, _| Ok(None)), "merge.no_turn");
+            let pending = Statement::prepare(db.as_ptr(),
+                "SELECT count(*) FROM main.gogoke_v37_worktree_lifecycle_ops WHERE worktree_id='treeA' AND operation='MERGE'").unwrap();
+            assert!(pending.step_row().unwrap());
+            assert_eq!(pending.column_text(0).unwrap(), "0");
+            // This M1 fixture creates an already registered tree without the
+            // optional F.2 lifecycle row. Refusal must preserve that shape.
+            assert!(lifecycle(db, "treeA").unwrap().is_none());
+            assert_eq!(graph_query(db, "treeA").unwrap().unwrap().state, "REGISTERED");
+        });
+    }
+
+    #[test]
+    fn merge_replay_after_cleanup_requires_current_authority_and_no_git() {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("gogoke-f2-merge-replay-{}-{nonce}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root = RootLock::acquire(&path).unwrap();
+        let mut db = create_new(&root, &path.join("state.sqlite")).unwrap();
+        authority::initialize_profile(&mut db, &root).unwrap();
+        authority::initialize_process_custody_schema(&mut db).unwrap();
+        initialize_schema(&mut db).unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_worktree_sources VALUES('repoA','absent-source','sourceIdentity','absent-common','commonIdentity','HTTPS','baseline','gitDigest','gitVersion',1)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_worktrees(worktree_id,path_id,repository_id,domain_id,seat_id,seat_incarnation,seat_generation,seat_revision,permission_tier,instance_id,source_revision,worktree_path,worktree_identity,git_pointer_hash,git_pointer_len,git_pointer_identity,common_identity,baseline_commit,state,revision) VALUES('treeA','wtA','repoA','projectA','writerSeat','incarnationA',1,1,'NetworkedWrite','instanceA',1,'absent-cleaned-tree','pathIdentity','pointerHash',10,'pointerIdentity','commonIdentity','baseline','REGISTERED',1)").unwrap();
+        // Cleanup has legitimately advanced the lifecycle past the merge's
+        // original revision. Neither source nor linked physical tree exists.
+        db.execute("INSERT INTO main.gogoke_v37_worktree_lifecycle VALUES('treeA','CLEANED',4,'accepted merge',NULL,'stopA')").unwrap();
+        let raw = br#"{"schema":"gogoke.37.operations.v1","family":"K-WORKTREE","operation":"merge","requestId":"mergeA","targetId":"treeA","domainId":"projectA","expectedRevision":"2","payload":{"decision":"MERGE","reason":"accepted merge"}}"#;
+        let request = session_transport::decode_request(raw).unwrap();
+        let commit = "a".repeat(40);
+        let record = merge_receipt_record(&request, 3, &commit);
+        let insert = Statement::prepare(db.as_ptr(),
+            "INSERT INTO main.gogoke_v37_worktree_lifecycle_ops(request_id,request_hash,worktree_id,operation,phase,cause,result_commit) VALUES('mergeA',?1,'treeA','MERGE','APPLIED',?2,?3)").unwrap();
+        insert.bind_text(1, &sha256_hex(raw)).unwrap();
+        insert.bind_text(2, &record).unwrap(); insert.bind_text(3, &commit).unwrap();
+        insert.step_done().unwrap(); drop(insert);
+        // An inert file pin cannot launch Git; a replay accidentally entering
+        // physical/Git code fails this test before it can manufacture evidence.
+        let pin = GitProgramPin { path: path.join("missing-git.exe"), digest: "gitDigest".into(),
+            version: "gitVersion".into(), _file: File::open(path.join("state.sqlite")).unwrap(),
+            profile_id: "unused".into(), owner_seat_id: "unused".into(), policy_revision: "unused".into() };
+        let mut custodian = ProcessCustodian::new().unwrap();
+        let authorize = |_: &VerifiedDatabaseConnection<'_>, domain: &str, source_seat: &str, target: &str| {
+            assert_eq!((domain, source_seat, target), ("projectA", "writerSeat", "treeA"));
+            // Shared ingress authenticates its current merger independently
+            // of the historical writer seat; this is the observed current turn.
+            Ok(Some("currentMergerTurn".into()))
+        };
+        let expected = MergeReceipt { worktree_id: "treeA".into(), revision: 3,
+            target_commit: commit.clone(), replayed: true, child_seal_intent: None, child_commit: None };
+        assert_eq!(merge_worktree(&mut db, &root, &pin, &mut custodian, raw, authorize).unwrap(), expected);
+        assert_merge_denied_stage(merge_worktree(&mut db, &root, &pin, &mut custodian, raw,
+            |_, _, _, _| Ok(None)), "merge.history_no_turn");
+        assert_merge_denied_stage(merge_worktree(&mut db, &root, &pin, &mut custodian, raw,
+            |_, _, _, _| Ok(Some(String::new()))), "merge.history_turn_shape");
+        let other_domain = std::str::from_utf8(raw).unwrap().replace("projectA", "projectB");
+        assert_merge_denied_stage(merge_worktree(&mut db, &root, &pin, &mut custodian, other_domain.as_bytes(),
+            |_, _, _, _| panic!("different domain must be denied before reading receipt")), "merge.history_domain");
+        let different_bytes = [raw.as_slice(), b" "].concat();
+        assert!(matches!(merge_worktree(&mut db, &root, &pin, &mut custodian, &different_bytes,
+            authorize), Err(error) if matches!(error.without_context(),WorktreeError::Conflict)),
+            "same parsed request with changed raw bytes is not replay");
+        db.execute("UPDATE main.gogoke_v37_worktree_lifecycle_ops SET cause='{}'").unwrap();
+        assert!(matches!(merge_worktree(&mut db, &root, &pin, &mut custodian, raw,
+            authorize), Err(error) if matches!(error.without_context(),WorktreeError::Unknown)),
+            "incomplete receipt is never inferred from lifecycle");
+        // An exact older-schema APPLIED row keeps its original commit and uses
+        // its hash-bound request's +1 revision, without rewriting evidence.
+        db.execute("UPDATE main.gogoke_v37_worktree_lifecycle_ops SET cause=''").unwrap();
+        assert_eq!(merge_worktree(&mut db, &root, &pin, &mut custodian, raw, authorize).unwrap(), expected);
+        db.execute("UPDATE main.gogoke_v37_worktree_lifecycle_ops SET phase='UNKNOWN',cause='original uncertain Git error'").unwrap();
+        let unknown=merge_worktree(&mut db,&root,&pin,&mut custodian,raw,authorize).unwrap_err();
+        assert!(is_unknown(&unknown),"UNKNOWN must never resend");
+        assert!(format!("{unknown:?}").contains("original uncertain Git error"));
+        let unchanged = Statement::prepare(db.as_ptr(),
+            "SELECT phase,cause FROM main.gogoke_v37_worktree_lifecycle_ops WHERE request_id='mergeA'").unwrap();
+        assert!(unchanged.step_row().unwrap());
+        assert_eq!((unchanged.column_text(0).unwrap(), unchanged.column_text(1).unwrap()),
+            ("UNKNOWN".into(), "original uncertain Git error".into()));
+        drop(unchanged);
+        let count = Statement::prepare(db.as_ptr(),
+            "SELECT count(*) FROM main.gogoke_coordination_process_custody").unwrap();
+        assert!(count.step_row().unwrap()); assert_eq!(count.column_text(0).unwrap(), "0");
+        drop(count);
+        // H's typed native call keeps the original A bytes, which are not a
+        // public K-WORKTREE wrapper. The same receipt is recoverable only
+        // from that exact source, without entering a Git effect.
+        let mut native = session_transport::decode_request(raw).unwrap();
+        native.raw_bytes = b"{\"method\":\"item/tool/call\",\"id\":44}\n".to_vec();
+        let native_record = merge_receipt_record(&native, 3, &commit);
+        let update = Statement::prepare(db.as_ptr(),
+            "UPDATE main.gogoke_v37_worktree_lifecycle_ops SET phase='APPLIED',request_hash=?1,cause=?2 WHERE request_id='mergeA'").unwrap();
+        update.bind_text(1, &sha256_hex(&native.raw_bytes)).unwrap();
+        update.bind_text(2, &native_record).unwrap(); update.step_done().unwrap(); drop(update);
+        assert_eq!(merge_worktree_request(&mut db, &root, &pin, &mut custodian,
+            &native, authorize).unwrap(), expected);
+        native.raw_bytes.push(b' ');
+        assert!(matches!(merge_worktree_request(&mut db, &root, &pin, &mut custodian,
+            &native, authorize), Err(error) if matches!(error.without_context(),WorktreeError::Conflict)));
+        drop(pin); drop(custodian);
+        db.close_checked().unwrap(); drop(root); fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn physical_overlap_includes_mixed_parent_and_child_but_not_sibling() {
+        let identity = |id| RootIdentity { volume_serial: 1, file_id: [id; 16] };
+        let base = std::env::temp_dir().join("gogoke-f2-overlap-fixture");
+        let mixed = base.join("mixed/space");
+        let single = mixed.join("member");
+        let sibling = base.join("mixed/other/member");
+        assert!(physical_roots_overlap(&mixed, &identity(1), &identity(2),
+            &single, &identity(3), &identity(4)));
+        assert!(physical_roots_overlap(&single, &identity(3), &identity(4),
+            &mixed, &identity(1), &identity(2)));
+        assert!(!physical_roots_overlap(&mixed, &identity(1), &identity(2),
+            &sibling, &identity(5), &identity(6)));
+        assert!(physical_roots_overlap(&mixed, &identity(1), &identity(2),
+            &sibling, &identity(1), &identity(6)), "path aliases share physical identity");
+    }
+
+    fn fixture_gate(db: &VerifiedDatabaseConnection<'_>, other_overlaps: bool)
+        -> Result<Vec<ExactStopFact>> {
+        cleanup_stop_gate_with(db,"treeA",|id| match id {
+            "treeA" => Ok(true),
+            "treeB" => Ok(other_overlaps),
+            _ => Err(WorktreeError::Denied),
+        })
+    }
+
+    #[test]
+    fn cleanup_needs_released_reservation_and_the_same_native_stop_fact() {
+        let _guard = route_b_test_guard();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("gogoke-f2-stop-gate-{}-{nonce}",std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root = RootLock::acquire(&path).unwrap();
+        let mut db = create_new(&root,&path.join("state.sqlite")).unwrap();
+        authority::initialize_profile(&mut db,&root).unwrap();
+        authority::initialize_process_custody_schema(&mut db).unwrap();
+        instance::initialize_schema(&mut db).unwrap();
+        seat::initialize_schema(&mut db).unwrap();
+        session_transport::initialize_admission_schema(&mut db).unwrap();
+        session_transport::session_binding::initialize_schema(&mut db).unwrap();
+        initialize_schema(&mut db).unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_instances VALUES('instanceA','codex','homeA','identityA','sha256:test','0.160.0','INSTALLED','LOGGED_IN',1)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('projectA','seatA','incarnationA','USER','LONG','instanceA','IDLE',1,1)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('projectA','seatB','incarnationB','USER','LONG','instanceA','IDLE',1,1)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_worktree_sources VALUES('repoA','sourceA','sourceIdentity','commonA','commonIdentity','HTTPS','baseline','gitDigest','gitVersion',1)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_worktrees(worktree_id,path_id,repository_id,domain_id,seat_id,seat_incarnation,seat_generation,seat_revision,permission_tier,instance_id,source_revision,worktree_path,worktree_identity,git_pointer_hash,git_pointer_len,git_pointer_identity,common_identity,baseline_commit,state,revision) VALUES('treeA','wtA','repoA','projectA','seatA','incarnationA',1,1,'NetworkedWrite','instanceA',1,'pathA','pathIdentity','pointerHash',10,'pointerIdentity','commonIdentity','baseline','REGISTERED',1)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_owner_binding VALUES('bindingA','instanceA','projectA','SESSION','sessionA','1','ACTIVE')").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision) VALUES('projectA','sessionA','instanceA','homeA','bindingA','1','STOPPED',3)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_seat_binding VALUES('projectA','sessionA','seatA','incarnationA','1')").unwrap();
+        assert!(matches!(fixture_gate(&db,false),Err(WorktreeError::Denied)));
+        db.execute("UPDATE main.gogoke_v37_h_claim SET state='RELEASED'").unwrap();
+        assert!(matches!(fixture_gate(&db,false),Err(WorktreeError::Denied)),
+            "released without exact StopFact is insufficient");
+        let original=r#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"open","requestId":"openA","targetId":"sessionA","domainId":"projectA","expectedRevision":"1","payload":{"repositoryId":"repoA","worktreeId":"treeA"}}"#;
+        let raw_hex=original.bytes().map(|byte|format!("{byte:02x}")).collect::<String>();
+        let insert=Statement::prepare(db.as_ptr(),
+            "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA','openA',?1,'open','sessionA','APPLIED',1,2)").unwrap();
+        insert.bind_text(1,&raw_hex).unwrap(); insert.step_done().unwrap(); drop(insert);
+        db.execute("INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase,stop_fact_id) VALUES('projectA','openA','sessionA','1','00',1,'processA','instanceA','homeA','bindingA','seatA','incarnationA','STOPPED','proofA')").unwrap();
+        assert!(matches!(fixture_gate(&db,false),Err(WorktreeError::Denied)));
+        db.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) VALUES('processA','ticketA','nonceA','42','99','fixture-image','fixture-digest','profileA','projectA','1','STOPPED','proofA')").unwrap();
+        assert_eq!(fixture_gate(&db,false).unwrap(),vec![ExactStopFact {
+            process_operation_id:"processA".into(),stop_fact_id:"proofA".into(),instance_id:"instanceA".into(),generation:"1".into() }]);
+        // Another seat on the same instance is decided by the sealed physical
+        // root, not by seat identity or a different worktree ID.
+        db.execute("INSERT INTO main.gogoke_v37_h_owner_binding VALUES('bindingB','instanceA','projectA','SESSION','sessionB','2','ACTIVE')").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision) VALUES('projectA','sessionB','instanceA','homeB','bindingB','2','RESERVED',1)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_seat_binding VALUES('projectA','sessionB','seatB','incarnationB','2')").unwrap();
+        let other=original.replace("openA","openB").replace("sessionA","sessionB").replace("treeA","treeB");
+        let other_hex=other.bytes().map(|byte|format!("{byte:02x}")).collect::<String>();
+        let insert=Statement::prepare(db.as_ptr(),
+            "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA','openB',?1,'open','sessionB','UNKNOWN',1,1)").unwrap();
+        insert.bind_text(1,&other_hex).unwrap(); insert.step_done().unwrap(); drop(insert);
+        assert_eq!(fixture_gate(&db,false).unwrap().len(),1);
+        assert!(matches!(fixture_gate(&db,true),Err(WorktreeError::Denied)),
+            "a different ID whose sealed root intersects this tree still blocks");
+        db.execute("UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash='otherProof'").unwrap();
+        assert!(matches!(fixture_gate(&db,false),Err(WorktreeError::Denied)));
+        db.close_checked().unwrap(); drop(root); fs::remove_dir_all(path).unwrap();
+    }
+}

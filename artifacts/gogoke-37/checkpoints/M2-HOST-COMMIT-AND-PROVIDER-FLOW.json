@@ -1,0 +1,36 @@
+{
+  "schema": "gogoke.37.light-checkpoint.v1",
+  "stage": "M2_IN_PROGRESS",
+  "acceptance": false,
+  "changes": [
+    "Provider and independent V08 real-flow drivers integrated after focused independent review. They use the installed product and original H/A/F facts; V12 remains explicitly NOT_RUN in the independent V08 entry.",
+    "PR 67 detail amendment independently audited and merged under the Owner-authorized v2 amendment_rule. Read back main 93adb934 and identical trusted verifier/plan blobs; scope digest e77f7348b84e6b30c27976383c80ab8163c915174d29d22c5274087d3be0fbe0 and receipt blob fae816fb4e43f55623ffcee4c008d3febd63d7ad remain unchanged.",
+    "F.2 host child-commit implementation delegated on an exclusive branch. The original MERGE authorization, exact binding, stopped writer and no reservation precede sealing. No model PATH, Git executable or common Git directory grant is added.",
+    "Six disjoint extra seats prepared through actual User ingress for V08 and deferred V12, without model or authentication calls. Four test-instance concurrency caps remain 4.",
+    "Corrected two measurement issues: initialize the private release helper's actual User host before seat reads, and initialize the provider driver's launch/close journal arrays. Original failed requests and setup logs are retained; no model request was executed in the provider setup failure."
+  ],
+  "result": [
+    "Original native takeover, child create/dispatch, file patch and parent-issued native child stop completed. Child is IDLE; parent has an original durable StopFact and its retained admission was released separately.",
+    "Original M2 capture failed because the child tree was not committed. Product normally closed with exit 0; immutable raw capture preserved database bytes and remains capture-only, not M2 PASS.",
+    "Formal five groups, memory and ledger protection compared unchanged after normal closes. The snapshot package check now uses signed Python calling the system API, without compiling a native helper.",
+    "Fresh three-provider original-session case dispatched after the setup-only failure was normally closed and protection compared. Provider outcomes and golden baselines remain pending, not accepted."
+  ],
+  "next": "Continue actual provider sessions and standalone V08; implement the audited F.2 host seal, run affected cloud gates, then exercise the stable installed product. Do not ask Owner to repeat login for these changes.",
+  "reference": {
+    "checked": [
+      "gogo-party packages/room/src/server.ts commitForSeat and its call site",
+      "Native session_transport/launch.rs explicit environment and LPAC directory grants",
+      "Native worktree/f2.rs merge clean-tree prerequisite and source merge commit",
+      "PLAN F.2, K-WORKTREE catalog and V11; receipt v2 amendment_rule"
+    ],
+    "adopted": "Trusted Host packages the stopped seat's work into attributed Git commits; the model edits its worktree and cannot write Git metadata.",
+    "difference": "Use native F's fixed Git pin, original authority/StopFact and persistent intent/UNKNOWN receipts instead of Room's plain process call. Source clean and existing isolation remain required."
+  },
+  "original_errors": [
+    "'git' is not recognized as an internal or external command, operable program or batch file.",
+    "Child did not leave a clean committed worktree",
+    "GOGOKE_DESIGN37_USER_HOST_NOT_STARTED",
+    "TypeError: Cannot read properties of undefined (reading 'push')"
+  ],
+  "publicRelease": false
+}

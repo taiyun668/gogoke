@@ -9,6 +9,7 @@ param(
     [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{64}$')][string]$ExpectedNodeSha256,
     [Parameter(Mandatory = $true)][ValidatePattern('^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$')][string]$ExpectedVersion,
     [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedSourceCommit,
+    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedSmokeCommit,
     [Parameter(Mandatory = $true)][ValidateRange(1, 9223372036854775807)][long]$ExpectedRunId,
     [Parameter(Mandatory = $true)][ValidateRange(1, 2147483647)][int]$ExpectedRunAttempt,
     [Parameter(Mandatory = $true)][ValidateRange(1, 9223372036854775807)][long]$ExpectedArtifactId,
@@ -36,6 +37,7 @@ $script:result = [ordered]@{
     schema = 'gogoke.r2-06-candidate-installed-smoke.v1'
     state = 'RUNNING'
     sourceCommit = $ExpectedSourceCommit
+    smokeCommit = $ExpectedSmokeCommit
     sourceRunId = $ExpectedRunId
     sourceRunAttempt = $ExpectedRunAttempt
     sourceArtifactId = $ExpectedArtifactId
@@ -132,6 +134,51 @@ function Start-OneShot([string]$FilePath, [string[]]$Arguments, [int]$TimeoutMil
     }
 }
 
+function Protect-DiagnosticText([object]$Value, [int]$Limit = 6000) {
+    if ($null -eq $Value) { return $null }
+    $text = [string]$Value
+    $text = $text -replace '(?i)(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]+', '[redacted-token]'
+    $text = $text -replace '(?i)Bearer\s+\S+', 'Bearer [redacted-token]'
+    foreach ($privatePath in @($env:USERPROFILE, $env:RUNNER_TEMP, $env:GITHUB_WORKSPACE,
+        $env:TEMP, $env:TMP, $ArtifactDirectory, $script:targetRoot, $script:appDataRoot)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$privatePath)) {
+            $text = $text.Replace([string]$privatePath, '[private-path]')
+        }
+    }
+    if ($text.Length -gt $Limit) { return $text.Substring(0, $Limit) + '[truncated]' }
+    return $text
+}
+
+function Get-FailureDiagnostic([System.Management.Automation.ErrorRecord]$Record) {
+    $exceptionChain = @()
+    $exception = $Record.Exception
+    for ($depth = 0; $null -ne $exception -and $depth -lt 4; $depth++) {
+        $properties = $exception.PSObject.Properties
+        $entry = [ordered]@{
+            type = Protect-DiagnosticText $exception.GetType().FullName 256
+            message = Protect-DiagnosticText $exception.Message 6000
+            hresult = ('0x{0:X8}' -f [BitConverter]::ToUInt32([BitConverter]::GetBytes([int32]$exception.HResult), 0))
+            code = if ($properties['Code']) { Protect-DiagnosticText $properties['Code'].Value 256 } else { $null }
+            syscall = if ($properties['Syscall']) { Protect-DiagnosticText $properties['Syscall'].Value 256 } else { $null }
+            path = if ($properties['Path']) { Protect-DiagnosticText $properties['Path'].Value 1024 } elseif ($properties['FileName']) { Protect-DiagnosticText $properties['FileName'].Value 1024 } else { $null }
+            stack = Protect-DiagnosticText $exception.StackTrace 6000
+        }
+        if ($exception -is [System.ComponentModel.Win32Exception]) {
+            $entry.nativeErrorCode = $exception.NativeErrorCode
+        }
+        $exceptionChain += $entry
+        $exception = $exception.InnerException
+    }
+    return [ordered]@{
+        phase = Protect-DiagnosticText $script:stage 256
+        fullyQualifiedErrorId = Protect-DiagnosticText $Record.FullyQualifiedErrorId 1024
+        category = Protect-DiagnosticText ([string]$Record.CategoryInfo) 1024
+        message = Protect-DiagnosticText $Record.Exception.Message 6000
+        exceptionChain = $exceptionChain
+        scriptStackTrace = Protect-DiagnosticText $Record.ScriptStackTrace 6000
+    }
+}
+
 function Assert-RegistryRegistration {
     $uninstallPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\gogoke-candidate'
     $registration = Get-RegistryKey $uninstallPath
@@ -160,7 +207,7 @@ try {
         throw 'Candidate installed smoke requires GitHub-hosted Windows Actions'
     }
     if ($env:GITHUB_REF -cne 'refs/heads/codex/gogoke-37-l0' -or
-        $env:GITHUB_SHA -cne $ExpectedSourceCommit -or
+        $env:GITHUB_SHA -cne $ExpectedSmokeCommit -or
         $env:GITHUB_RUN_ID -cne [string]$ExpectedSmokeRunId -or
         $env:GITHUB_RUN_ATTEMPT -cne [string]$ExpectedSmokeRunAttempt) {
         throw 'Expected execution-branch smoke identity differs from the current GitHub Actions run'
@@ -414,7 +461,7 @@ try {
     if ($serviceSmoke.ExitCode -ne 0 -or
         -not (Test-Path -LiteralPath $script:serviceEvidencePath -PathType Leaf)) {
         if ($serviceSmoke.StdErr) {
-            $script:result.productServiceStderr = $serviceSmoke.StdErr.Substring(0, [Math]::Min(1500, $serviceSmoke.StdErr.Length))
+            $script:result.productServiceStderr = Protect-DiagnosticText $serviceSmoke.StdErr 24000
         }
         throw "Candidate installed service smoke failed with exit code $($serviceSmoke.ExitCode); retain install"
     }
@@ -517,6 +564,15 @@ try {
     $heldLock = [IO.File]::Open($registrationLock, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     try {
         $busy = Start-OneShot $productExe @('--uninstall', '--quiet') 0 $true $true
+        # Preserve the real child result before the assertion can fail. A
+        # timeout and a different product error are distinct observations.
+        $script:result.registrationBusyProbe = [ordered]@{
+            timedOut = $busy.TimedOut
+            exitCode = $busy.ExitCode
+            processId = $busy.Process.Id
+            stderrReadState = if ($busy.TimedOut) { $busy.ErrorTask.Status.ToString() } else { 'COMPLETED' }
+            stderr = if (-not $busy.TimedOut) { $busy.StdErr } elseif ($busy.ErrorTask.IsCompletedSuccessfully) { $busy.ErrorTask.GetAwaiter().GetResult() } else { $null }
+        }
         if ($busy.TimedOut -or $busy.ExitCode -ne 1 -or
             $busy.StdErr.Trim() -cne 'GOGOKE_UNINSTALL_REGISTRATION_DOMAIN_BUSY') {
             throw 'Actual installed shell did not propagate Win32 32 as the exact domain-busy code'
@@ -530,6 +586,13 @@ try {
     try {
         [void](New-Item -ItemType Directory -Path $registrationLock -ErrorAction Stop)
         $non32 = Start-OneShot $productExe @('--uninstall', '--quiet') 0 $true $true
+        $script:result.registrationNon32Probe = [ordered]@{
+            timedOut = $non32.TimedOut
+            exitCode = $non32.ExitCode
+            processId = $non32.Process.Id
+            stderrReadState = if ($non32.TimedOut) { $non32.ErrorTask.Status.ToString() } else { 'COMPLETED' }
+            stderr = if (-not $non32.TimedOut) { $non32.StdErr } elseif ($non32.ErrorTask.IsCompletedSuccessfully) { $non32.ErrorTask.GetAwaiter().GetResult() } else { $null }
+        }
         if ($non32.TimedOut -or $non32.ExitCode -ne 1 -or
             $non32.StdErr.Trim() -cne 'GOGOKE_UNINSTALL_REGISTRATION_LOCK_WIN32_5') {
             throw 'Actual installed shell did not propagate non-32 CreateFileW error 5'
@@ -627,11 +690,13 @@ try {
     $script:result | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $script:evidencePath -Encoding utf8
     Write-Output ($script:result | ConvertTo-Json -Depth 6 -Compress)
 } catch {
-    $message = [string]$_.Exception.Message
+    $failureRecord = $_
+    $message = [string]$failureRecord.Exception.Message
     if ($message.Length -gt 320) { $message = $message.Substring(0, 320) }
     $script:result.state = 'FAIL'
     $script:result.stage = $script:stage
     $script:result.error = $message
+    $script:result.failureDiagnostic = Get-FailureDiagnostic $failureRecord
     $script:result.installInvoked = $script:installInvoked
     $script:result.uninstallInvoked = $script:uninstallInvoked
     $script:result.retainedCandidateRoot = if ($script:installInvoked) { $script:targetRoot } else { $null }

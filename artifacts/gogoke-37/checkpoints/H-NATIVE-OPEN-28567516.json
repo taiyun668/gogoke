@@ -1,0 +1,80 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "state": "ACTIVE_CLOUD_VALIDATION_AND_CONTINUED_CONSTRUCTION",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "source": "28567516",
+  "authorization_main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
+  "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
+  "receipt_blob": "8020812e3abf35887829f50c78ec9f513272bf70",
+  "inbox_observed": "b4f7e866029b8c5a9a1211100effadf01a03ffbc",
+  "resume_basis": "Owner continued after the 039a8757 freeze. The earlier composition-scope stop remains withdrawn; existing all-line authorization applies.",
+  "prior_evidence": {
+    "source": "9bed95c3b7786933f1d5da5ca0a8df711e1133b8",
+    "native_run": 36665984324,
+    "release_build": "PASS",
+    "server": "PASS",
+    "required_axes": { "passed": 3, "failed": 0, "skipped": 0 },
+    "focused": { "passed": 18, "failed": 0, "skipped": 0 },
+    "library": { "executed": 526, "passed": 523, "failed": 3, "skipped": 0 },
+    "actual_git_worktree_and_product_entry": "PASS",
+    "schema_preservation_and_changed_git_refusal": "PASS",
+    "actual_cli_empty_home_and_credential_file_lifecycle": "PASS",
+    "desktop_run": 36665986789,
+    "desktop": "PASS_ALL_FIVE_JOBS_INCLUDING_INDEPENDENT_EXECUTABLE_BYTE_COMPARISON",
+    "hygiene_run": 36665988994,
+    "hygiene": "PASS"
+  },
+  "remaining_measured_failures": [
+    {
+      "name": "sealed_three_roots_are_distinct_and_reject_overlap_or_mapping_tamper",
+      "direct_cause": "Attributes-only handles did not bind the directory namespace; the original rename control succeeded.",
+      "repair": "2b78a476 shares same physical directory DELETE-owning/no-delete-share Arc custody across roots and simultaneous sessions, retaining the existing RootLock root pin. Added last-owner release and normal child-file lifecycle controls.",
+      "execution": "NOT_YET_VALIDATED_ON_THIS_REPAIR"
+    },
+    {
+      "name": "app_container_child_writes_only_granted_fresh_directory",
+      "direct_observation": "Actual cmd rename succeeds; own del fails before a leaf deletion call. Trace shows three root-directory SYNCHRONIZE opens returning access denied, consistent with three del stages; no actual deletion disposition was recorded.",
+      "threat_model": "The LPAC child is confined to the three granted native roots. The same current user's unrestricted host process is not a cross-privilege attacker. No public parent/root-directory ACL is broadened.",
+      "status": "ROOT_CALLER_UNKNOWN_ORIGINAL_STACK_CAPTURE_IN_PROGRESS",
+      "diagnostic_source": "2b78a476d6a729f0c6d391bb3102533a932cd2d2",
+      "diagnostic_run": 36668839019,
+      "diagnostic_artifact": 11076792747,
+      "limits": "Stage/NT trace is direct measurement, not acceptance; full library suite NOT_RUN in directed mode. Early startup ancestor failures did not prevent later successful creation and are not automatically the del cause."
+    },
+    {
+      "name": "native_input_close_delivers_eof_and_preserves_graceful_stop_proof",
+      "direct_observation": "Full suite received actual EOF frame and final exit0/Job0/writer fence, but entered kill path. Focused case passed. Pre-kill parent-wait result/elapsed/Job counters were missing.",
+      "status": "CAUSE_UNKNOWN_ORIGINAL_DECISION_VALUES_NOW_PRESERVED",
+      "limits": "No load explanation, grace-budget expansion, extra waiting, weakened assertion or EOF repair is inferred."
+    }
+  ],
+  "current_implementation": [
+    "Product User K-SESSION open now persists original intention before process side effects, checks current E/F/H/Owner evidence, records PREPARED and claim/A binding before activate, and performs initialize/initialized/effective-memory-config/thread-start through actual ProcessCustodian JSONL.",
+    "Same-store RPC journal separates v37 authority requests from fixed 0.149 provider commands. Only a new intent permits write; existing intents and uncertain steps do not resend. Actual provider bytes enter A before response interpretation; notifications are retained.",
+    "Actual process custody now retains the already held F .git pointer as well as compatibility directory/module guards, including retained failed suspended-child cleanup. Native stop requires durable custody and same-store H stop before confirming release.",
+    "A cloud product-entry test exercises the actual pinned CLI open/replay/stop/reopen without a model call. It arranges only the test login-admission field and does not claim Owner authentication, network model delivery, Win11 or M1 acceptance."
+  ],
+  "current_ci": {
+    "native_run": 36670141729,
+    "hygiene_run": 36670144383,
+    "cmd_stack_trace_run": 36670180571,
+    "cmd_trace_branch": "codex/gogoke-37-cmd-trace",
+    "state": "DISPATCHED_NOT_YET_READ_BACK",
+    "trace_separation": "Diagnostic branch points to the same exact source and uses its own workflow concurrency group, avoiding cancellation of the full evidence run. No diagnostic worktree, alternate executable or new release is created."
+  },
+  "review_limits": "Reused independent seats performed static cause and implementation checks; NON_FRESH_NOT_ACCEPTANCE. New native open package review is ongoing and cloud behavior remains pending.",
+  "not_done": [
+    "Native turn/send/steer/question-answer, B1 service transport and A normalization remain incomplete; open and stop alone are not M1.",
+    "Restart reconciliation, exactly observed operation outcomes and stop/release failure paths need the remaining actual candidate checks.",
+    "PR #57 trusted-main candidate signer activation is still pending Owner merge; no main-merge authority inferred.",
+    "Actual ordinary-view Win11 candidate and OT4 login not ready."
+  ],
+  "custody": "Previously rejected 159 Detours cleanup objects and the existing cli-state-trace worktree remain preserved, no deletion retry or approval workaround.",
+  "formal_product_data": "NOT_ACCESSED_OR_CHANGED_BY_THIS_CLOUD_ONLY_SEGMENT",
+  "m1_complete": false,
+  "ot4": "NOT_REQUESTED",
+  "acceptance": false,
+  "next_action": "Read current native/diagnostic machine outputs, fix direct failures, finish real turn/stop/recovery and normalization under the existing authorization; checkpoint is not a stop.",
+  "roundtrip_review": "One source batch includes real native open and direct old failures. Stack capture stays on the original failing command; the diagnostic ref prevents its workflow from cancelling full evidence. Keep provider/raw-v37 protocols distinct and never claim successful authentication or model output from a startup-only test."
+}

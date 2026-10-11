@@ -673,6 +673,7 @@ function buildPrimarySurface({
 function buildGitSurface({
   appSettings,
   activeWorkspace,
+  activeThreadId,
   gitState,
   composerWorkspaceState,
   promptActions,
@@ -685,8 +686,12 @@ function buildGitSurface({
   prompts,
   isPhone,
 }: MainAppLayoutSurfacesContext): LayoutNodesOptions["git"] {
+  const legacyPanelMode = gitState.filePanelMode === "seats" || gitState.filePanelMode === "sidechat"
+    ? "git" : gitState.filePanelMode;
   return {
     filePanelMode: gitState.filePanelMode,
+    panelTabsSelection: { active: gitState.filePanelMode, onSelect: gitState.setFilePanelMode },
+    project: { workspaceId: activeWorkspace?.id ?? null, threadId: activeThreadId },
     fileTreeProps: activeWorkspace
       ? {
           workspaceId: activeWorkspace.id,
@@ -699,7 +704,7 @@ function buildGitSurface({
             ]),
           ],
           isLoading: composerWorkspaceState.isFilesLoading,
-          filePanelMode: gitState.filePanelMode,
+          filePanelMode: legacyPanelMode,
           onFilePanelModeChange: gitState.setFilePanelMode,
           onInsertText: composerWorkspaceState.handleInsertComposerText,
           canInsertText: composerWorkspaceState.canInsertComposerText,
@@ -712,7 +717,7 @@ function buildGitSurface({
     promptPanelProps: {
       prompts,
       workspacePath: activeWorkspace?.path ?? null,
-      filePanelMode: gitState.filePanelMode,
+      filePanelMode: legacyPanelMode,
       onFilePanelModeChange: gitState.setFilePanelMode,
       onSendPrompt: composerWorkspaceState.handleSendPrompt,
       onSendPromptToNewAgent: promptActions.handleSendPromptToNewAgent,
@@ -729,7 +734,7 @@ function buildGitSurface({
       workspacePath: activeWorkspace?.path ?? null,
       mode: gitState.gitPanelMode,
       onModeChange: gitState.handleGitPanelModeChange,
-      filePanelMode: gitState.filePanelMode,
+      filePanelMode: legacyPanelMode,
       onFilePanelModeChange: gitState.setFilePanelMode,
       worktreeApplyLabel: "apply",
       worktreeApplyTitle: worktreeState.activeParentWorkspace?.name

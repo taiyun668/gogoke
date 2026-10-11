@@ -1,0 +1,62 @@
+{
+  "schema": "gogoke.37.controller-checkpoint.v1",
+  "recordedUtc": "2026-10-05T23:10:00Z",
+  "acceptance": false,
+  "productSourceCommit": "66dea790e641ab74133240e4f1899652f040dc24",
+  "candidateVersion": "0.1.30",
+  "changed": [
+    "沿用 Owner 授权的独立持有者消失通道；不新增登录、不读取凭据内容、不伪造旧 STOPPED。",
+    "安全检查超过 90 分钟后拆为独立组。补测显式 checkout 原产品源；workflow 提交和受测提交分别记录，结束核对生产源及测试字节恢复。",
+    "真实关闭前先执行 H stop，并读回原 StopFact；测量失败保留原宿主句柄和失败原文。"
+  ],
+  "results": {
+    "cloud": {
+      "nativeRun": "37368682832",
+      "nativeAttempt": 3,
+      "nativeLibrary": {"passed": 720, "failed": 0, "ignored": 0},
+      "lpacShim": {"passed": 2, "failed": 0, "ignored": 0},
+      "focusedPassed": 43,
+      "holderProductionMutations": "COMPILED_EXPECTED_FAILURES_AND_RESTORED_PASSES_INDEPENDENTLY_READ_BACK",
+      "desktopBuildRun": "37368686690",
+      "signingRun": "37378520662",
+      "installedSmokeRun": "37378686910",
+      "remainderRun": "37383626914",
+      "remainderWorkflowCommit": "19b500f30aa4408a151ba8e11888c7b0c455b7a1",
+      "remainderActualTestSource": "66dea790e641ab74133240e4f1899652f040dc24",
+      "remainderState": "IN_PROGRESS_NOT_OVERALL_PASS"
+    },
+    "win11": {
+      "sameInstance": "codexTestM2Ready",
+      "firstActualInstancePageRequest": "SUCCESS_LOGGED_IN",
+      "oldTwoCustody": "UNKNOWN_WITH_ORIGINAL_NULL_STOP_HASH",
+      "oldTwoProfiles": "REVOKED_REVISION_2_TO_4",
+      "oldTwoClaims": "RELEASED_WITH_ORIGINAL_NULL_STOP_FACT",
+      "independentHolderJournals": "TWO_APPLIED",
+      "oldThreeUnknown": "UNCHANGED",
+      "originalRootHomeSourceHistory": "PRESERVED",
+      "originalAliases": "EIGHT_PRESERVED_WITH_NINE_LINKS_AT_FIRST_RECOVERY",
+      "realModel": "SAME_INSTANCE_FIXED_CODEX_0_160_GPT_6_1_SOL_HIGH_ONE_TURN_COMPLETED",
+      "modelOriginalFrames": 46,
+      "modelFinalText": "ORIGINAL_FINAL_MESSAGE_AND_NINETEEN_ORDERED_DELTAS_MATCH_FRESH_MARKER",
+      "newSessionClosure": "GENUINE_H_STOP_AND_RELEASE_READ_BACK_BEFORE_CAPTION_EXIT_ZERO",
+      "formalProtection": "ALL_FIVE_GROUPS_UNCHANGED",
+      "newLogin": false,
+      "credentialContentsRead": false,
+      "cleanup": {"auditedEmptyDirectories": 1117, "eachReadback": "ABSENT", "filesDeleted": 0},
+      "fullM1Regression": "RUNNING_NOT_PASS"
+    }
+  },
+  "failuresPreserved": [
+    "The job has exceeded the maximum execution time of 1h30m0s",
+    "GOGOKE_DESIGN37_USER_HOST_NOT_STARTED: 初测绕过产品的宿主启动入口；尚未进入恢复。改用既有 G.0 实例入口后一次恢复成功。",
+    "Original real CLI output contains fresh recovery marker: 临时断言在序列化事件中查完整标记，误伤流式分片。未重发模型；按既有 M1 做法拼接同一 item/thread/turn 的原片段并核原最终消息。",
+    "ReferenceError: completed is not defined: 临时结算脚本在任何 H 操作前失败；修正后仅一次真实 H stop。"
+  ],
+  "next": "完成当前完整 M1 端到端与剩余云端安全组的直接读回，继续 M2 原实例流程；不新增 Owner 登录、不自行验收。",
+  "references": [
+    "PR #66 的 PID 与创建时间核对、PR #68 的独立资源释放细节；原 Job kill-on-close 与 RootLock 生命周期。",
+    "tools/e2e/m1-win11.mjs、product-cdp.mjs、m1-readback.py 的已验证启动、文本分片、真实 H stop 和闭合只读账本做法。临时脚本未完整照搬引入的测量问题已纠正，原文保留。",
+    "既有云端 workflow 固定源和分组做法；新增余项入口保持原生产变异、行为断言与源恢复，不以 workflow SHA 冒充产品 SHA。",
+    "Microsoft GetPackageFullName：签名 Python 调用系统元数据 API 查询实际 PowerShell 父进程身份，替代继承快照脚本的 Add-Type；正式五组比较字段保持。"
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "schema": "gogoke.37.light-checkpoint.v1",
+  "change": "The native two-scope control now observes only the fixed CLI's persisted sessions rollout subtree. The complete library uses libtest --show-output to retain every test's output after completion without concurrent fixture prints splitting original test result lines. Exact selected/completed name sets, fail/skip counts, reparse checks, one saved file per original thread and cross-scope UUID absence remain required.",
+  "result": "Run 37713545507 on df21ff94 failed runtime 11/12: the old observer traversed an unrelated .tmp plugin clone that disappeared with Win32 3. Remainder actually passed 713 tests but FAIL_INSTRUMENT correctly rejected 712 parsed names: an adjacent ACL fixture print split one passing test's original status line. Neither result is qualified or rewritten as PASS. The preceding four Node byte peers all passed their original real pipe/Job controls. These two changes are test/CI instrumentation only; frozen product 0.1.37 is not rebuilt or repacked.",
+  "next": "Complete a fresh focused source review and exact-source cloud library run before qualifying the existing frozen candidate. A sessions subtree access/path error still fails and retains its original Win32 error; it is not ignored or retried. Ordinary Win11 retirement, installation and model flows remain NOT_RUN.",
+  "reference": "Checked the existing H/F private-history mapping and original fixed CLI control, gogo-party room sources, available NaveHQ source and repository history research. No reusable precise rollout observer was found there. Official openai/codex rollout sources identify sessions as the persisted rollout subtree; this is a source reference, not a fixed-CLI dynamic result. Rust's official libtest documentation specifies --show-output retains success output contiguously after tests finish. The actual fixed CLI must verify the subtree in cloud. No new output parser or weakened result rule is added.",
+  "observed_inbox_head": "b4f7e866029b8c5a9a1211100effadf01a03ffbc",
+  "reference_urls": [
+    "https://doc.rust-lang.org/rustc/tests/index.html",
+    "https://github.com/openai/codex/blob/main/codex-rs/rollout/src/lib.rs",
+    "https://github.com/openai/codex/blob/main/codex-rs/rollout/src/recorder.rs"
+  ]
+}

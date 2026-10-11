@@ -1,8 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off - executable product boundary owns stdin/stdout.
 import * as NodeFS from "node:fs";
 import { createHash } from "node:crypto";
+import { basename, join } from "node:path";
+import { fixedOfficialCli, stageFixedOfficialCli } from "../instances/managedCli.ts";
 
-import { constructGogokeService } from "./index.ts";
+import { constructGogokeService, constructGogokeServiceOnExistingHost } from "./index.ts";
 import { parseStrictJsonBytes } from "../contracts/strictJson.ts";
 import { readAcceptedGitHubFact, readGitHubFact } from "../context/repository/gitFact.ts";
 import { createR2GhCredentialAccess, currentGhTokenIfAvailable } from "../context/repository/ghCredential.ts";
@@ -111,6 +113,28 @@ export interface ProductReadinessView {
   };
 }
 
+interface ExistingHostConnection {
+  readonly servicePipe: string;
+  readonly serviceCapability: string;
+}
+
+type ProductServicePaths = { readonly root: string; readonly hostBinary: string } &
+  Partial<ExistingHostConnection>;
+
+function openProductService(paths: ProductServicePaths) {
+  const input = { request: { authority: "public" as const,
+    requestedCapabilities: ["local-non-model"], enabledRuntimeDriverIds: [] },
+    root: paths.root, hostBinary: paths.hostBinary };
+  if (paths.servicePipe === undefined && paths.serviceCapability === undefined) {
+    return constructGogokeService(input);
+  }
+  if (paths.servicePipe === undefined || paths.serviceCapability === undefined) {
+    return invalid("existingHost", "requires both native service coordinates");
+  }
+  return constructGogokeServiceOnExistingHost({ ...input,
+    servicePipe: paths.servicePipe, serviceCapability: paths.serviceCapability });
+}
+
 const invalid = (path: string, detail: string): never => {
   throw new Error(`INVALID_PRODUCT_ENTRY: ${path} ${detail}`);
 };
@@ -214,19 +238,45 @@ export function decodeProductGoalRequest(bytes: Uint8Array): ProductGoalRequest 
 
 export function parseProductProcessArgs(
   argv: readonly string[],
-): { readonly root: string; readonly hostBinary: string } {
-  if (argv.length !== 4 || argv[0] !== "--root" || argv[2] !== "--native-host") {
+): { readonly root: string; readonly hostBinary: string; readonly existingHost?: true } {
+  if ((argv.length !== 4 && argv.length !== 5) || argv[0] !== "--root" ||
+      argv[2] !== "--native-host" ||
+      (argv.length === 5 && argv[4] !== "--existing-design37-host")) {
     return invalid("argv", "expected exactly --root <path> --native-host <path>");
   }
   return Object.freeze({
     root: text(argv[1], "argv.root"),
     hostBinary: text(argv[3], "argv.nativeHost"),
+    ...(argv.length === 5 ? { existingHost: true as const } : {}),
   });
+}
+
+export function decodeExistingHostEnvelope(bytes: Uint8Array): ExistingHostConnection & {
+  readonly requestBytes: Uint8Array;
+} {
+  const root = exactRecord(parseStrictJsonBytes(bytes), "existingHost", [
+    "servicePipe", "serviceCapability", "requestBytesBase64",
+  ]);
+  const servicePipe = text(root.servicePipe, "existingHost.servicePipe");
+  if (!/^\\\\\.\\pipe\\gogoke\.current-user\.v1\.[A-Za-z0-9._-]{1,120}$/u.test(servicePipe)) {
+    return invalid("existingHost.servicePipe", "is not a service endpoint");
+  }
+  const serviceCapability = text(root.serviceCapability, "existingHost.serviceCapability");
+  if (!/^[0-9a-f]{64}$/u.test(serviceCapability)) {
+    return invalid("existingHost.serviceCapability", "is not a native service capability");
+  }
+  const encoded = text(root.requestBytesBase64, "existingHost.requestBytesBase64");
+  const requestBytes = Buffer.from(encoded, "base64");
+  if (requestBytes.length === 0 || requestBytes.length > 4 * 1024 * 1024 ||
+      requestBytes.toString("base64") !== encoded) {
+    return invalid("existingHost.requestBytesBase64", "is not canonical bounded bytes");
+  }
+  return Object.freeze({ servicePipe, serviceCapability, requestBytes });
 }
 
 export async function handleProductGoalRequest(
   request: ProductGoalRequest,
-  paths: { readonly root: string; readonly hostBinary: string;
+  paths: ProductServicePaths & {
     readonly executionEvidenceSha?: string; readonly serviceEntrySha256?: string;
     readonly testWritePort?: GitFactWritePort; readonly testFetcher?: typeof fetch },
 ): Promise<ProductGoalView> {
@@ -251,15 +301,7 @@ export async function handleProductGoalRequest(
   if (novel !== undefined && novel.driverId !== request.fixtureDriverId) {
     throw new Error("R2_NOVEL_FIXTURE_DRIVER_IDENTITY_MISMATCH");
   }
-  const service = await constructGogokeService({
-    request: {
-      authority: "public",
-      requestedCapabilities: ["local-non-model"],
-      enabledRuntimeDriverIds: [],
-    },
-    root: paths.root,
-    hostBinary: paths.hostBinary,
-  });
+  const service = await openProductService(paths);
   try {
     if (typeof service.store.admitControllerCaller !== "function") {
       throw new Error("PRODUCT_CALLER_ADMISSION_UNAVAILABLE");
@@ -454,14 +496,35 @@ export async function handleProductGoalRequest(
 }
 
 export async function runGogokeProductProcess(argv: readonly string[]): Promise<void> {
-  const paths = parseProductProcessArgs(argv);
+  const parsedPaths = parseProductProcessArgs(argv);
   const input = NodeFS.readFileSync(0);
-  if (input.equals(Buffer.from('{"operation":"readiness"}'))) {
+  const existing = parsedPaths.existingHost === true ? decodeExistingHostEnvelope(input) : undefined;
+  const paths = existing === undefined ? parsedPaths : {
+    root: parsedPaths.root, hostBinary: parsedPaths.hostBinary,
+    servicePipe: existing.servicePipe, serviceCapability: existing.serviceCapability,
+  };
+  const requestBytes = existing?.requestBytes ?? input;
+  if (Buffer.from(requestBytes).equals(Buffer.from('{"operation":"readiness"}'))) {
     const response = await handleProductReadiness(paths);
     NodeFS.writeFileSync(1, `${JSON.stringify(response)}\n`);
     return;
   }
-  const request = decodeProductGoalRequest(input);
+  const parsed: unknown = parseStrictJsonBytes(requestBytes);
+  if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) &&
+      (parsed as Record<string, unknown>).operation === "managed-cli-stage") {
+    const action = exactRecord(parsed, "managedCliStage", ["operation", "driverId"]);
+    const driverId = text(action.driverId, "managedCliStage.driverId");
+    if (!fixedOfficialCli(driverId)) throw new Error("MANAGED_CLI_DRIVER_UNSUPPORTED");
+    const root = join(paths.root, "v37-managed-cli", "staging");
+    const staged = await stageFixedOfficialCli(root, driverId as "codex" | "claude" | "opencode" | "grok");
+    NodeFS.writeFileSync(1, `${JSON.stringify({
+      schema: "gogoke.37.managed-cli-stage.v1",
+      driverId: staged.driver, version: staged.version,
+      stageName: basename(staged.stagePath),
+    })}\n`);
+    return;
+  }
+  const request = decodeProductGoalRequest(requestBytes);
   const response = await handleProductGoalRequest(request, paths);
   // @effect-diagnostics-next-line preferSchemaOverJson:off - local process response DTO.
   NodeFS.writeFileSync(1, `${JSON.stringify(response)}\n`);
@@ -469,17 +532,9 @@ export async function runGogokeProductProcess(argv: readonly string[]): Promise<
 
 
 export async function handleProductReadiness(
-  paths: { readonly root: string; readonly hostBinary: string },
+  paths: ProductServicePaths,
 ): Promise<ProductReadinessView> {
-  const service = await constructGogokeService({
-    request: {
-      authority: "public",
-      requestedCapabilities: ["local-non-model"],
-      enabledRuntimeDriverIds: [],
-    },
-    root: paths.root,
-    hostBinary: paths.hostBinary,
-  });
+  const service = await openProductService(paths);
   try {
     if (typeof service.store.admitControllerCaller !== "function") {
       throw new Error("PRODUCT_CALLER_ADMISSION_UNAVAILABLE");

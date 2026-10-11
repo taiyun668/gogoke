@@ -3,10 +3,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tauri::Manager;
 use sha2::{Digest, Sha256};
-#[cfg(target_os = "windows")]
 use std::sync::Arc;
 
 const SERVICE_TIMEOUT: Duration = Duration::from_secs(20);
+const MANAGED_CLI_STAGE_TIMEOUT: Duration = Duration::from_secs(600);
 // The draft path performs bounded Git preflight, CAS write and immutable readback
 // after the controlled process; each remote request has its own 10s limit.
 const DRAFT_SERVICE_TIMEOUT: Duration = Duration::from_secs(180);
@@ -155,8 +155,53 @@ struct ProductRuntimePaths {
     native_host: PathBuf,
     product_root: PathBuf,
     source_commit: Option<String>,
+    resource_set_id: Option<String>,
     #[cfg(target_os = "windows")]
     runtime_lease: Option<Arc<crate::resource_trust::RuntimeLease>>,
+}
+
+#[derive(Clone)]
+struct ExistingHostAttachment {
+    service_pipe: String,
+    service_capability: String,
+}
+
+struct Design37ProductOwner {
+    host: Arc<super::design37_host::Design37Host>,
+    paths: ProductRuntimePaths,
+}
+
+static DESIGN37_PRODUCT_OWNER: std::sync::Mutex<Option<Design37ProductOwner>> =
+    std::sync::Mutex::new(None);
+
+fn same_product_resource_generation(left: &ProductRuntimePaths, right: &ProductRuntimePaths) -> bool {
+    let same = left.node_runtime == right.node_runtime
+        && left.service_entry == right.service_entry
+        && left.native_host == right.native_host
+        && left.product_root == right.product_root
+        && left.source_commit == right.source_commit
+        && left.resource_set_id == right.resource_set_id;
+    #[cfg(target_os = "windows")]
+    let same = same && left.runtime_lease.is_some() == right.runtime_lease.is_some();
+    same
+}
+
+fn retained_design37_host(
+    paths: &ProductRuntimePaths,
+) -> Result<Option<(Arc<super::design37_host::Design37Host>, ExistingHostAttachment)>, String> {
+    let owner = DESIGN37_PRODUCT_OWNER.lock()
+        .map_err(|_| "GOGOKE_DESIGN37_OWNER_LOCK_POISONED".to_string())?;
+    let Some(owner) = owner.as_ref() else { return Ok(None) };
+    if !same_product_resource_generation(&owner.paths, paths) {
+        return Err("GOGOKE_DESIGN37_RESOURCE_GENERATION_CHANGED".to_string());
+    }
+    if !owner.host.is_running()? {
+        return Err("GOGOKE_DESIGN37_HOST_EXITED".to_string());
+    }
+    Ok(Some((Arc::clone(&owner.host), ExistingHostAttachment {
+        service_pipe: owner.host.service_pipe().to_string(),
+        service_capability: owner.host.capability().to_string(),
+    })))
 }
 
 fn require_file(path: PathBuf, component: &'static str) -> Result<PathBuf, String> {
@@ -255,6 +300,7 @@ fn resolve_runtime_paths(app: &tauri::AppHandle) -> Result<ProductRuntimePaths, 
         native_host,
         product_root,
         source_commit: verified.as_ref().map(|resources| resources.source_commit.clone()),
+        resource_set_id: verified.as_ref().map(|resources| resources.set_id.clone()),
         runtime_lease: verified.as_ref().map(|resources| resources.runtime_lease()),
     })
 }
@@ -356,18 +402,9 @@ async fn run_product_service(
         // Keep this guard in the detached owner through process-tree exit;
         // a cancelled caller must not admit another native-host early.
         let service_guard = PRODUCT_SERVICE_GATE.lock().await;
-        // The blocking owner outlives this caller future. Dropping the join
-        // receiver cannot release the verified handles or the Job while its
-        // Node/native-host consumers are still running.
-        let request = request_bytes.to_vec();
-        let identity = draft_identity.map(|(sha, hash)| (sha.to_owned(), hash.to_owned()));
-        let (reply, receiver) = tokio::sync::oneshot::channel();
-        tokio::task::spawn_blocking(move || {
-            managed_service::run(paths, request, timeout, identity, product_guard, service_guard, reply);
-        });
-        return receiver
-            .await
-            .map_err(|_| "GOGOKE_PRODUCT_SERVICE_OWNER_FAILED".to_string())?;
+        let existing = retained_design37_host(&paths)?;
+        return run_product_service_with_guard(paths, request_bytes, timeout,
+            draft_identity, product_guard, service_guard, existing).await;
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -377,8 +414,36 @@ async fn run_product_service(
 }
 
 #[cfg(target_os = "windows")]
+async fn run_product_service_with_guard(
+    paths: ProductRuntimePaths,
+    request_bytes: &[u8],
+    timeout: Duration,
+    draft_identity: Option<(&str, &str)>,
+    product_guard: Option<tokio::sync::MutexGuard<'static, ()>>,
+    service_guard: tokio::sync::MutexGuard<'static, ()>,
+    existing: Option<(Arc<super::design37_host::Design37Host>, ExistingHostAttachment)>,
+) -> Result<Vec<u8>, String> {
+    // The blocking owner outlives this caller future. Dropping the join
+    // receiver cannot release verified handles, the host or the Node Job.
+    let request = request_bytes.to_vec();
+    let identity = draft_identity.map(|(sha, hash)| (sha.to_owned(), hash.to_owned()));
+    let (reply, receiver) = tokio::sync::oneshot::channel();
+    tokio::task::spawn_blocking(move || {
+        if let Some((host, attachment)) = existing {
+            let _retained_host = host;
+            managed_service::run_existing(paths, request, timeout, identity,
+                product_guard, service_guard, attachment, reply);
+        } else {
+            managed_service::run(paths, request, timeout, identity,
+                product_guard, service_guard, reply);
+        }
+    });
+    receiver.await.map_err(|_| "GOGOKE_PRODUCT_SERVICE_OWNER_FAILED".to_string())?
+}
+
+#[cfg(target_os = "windows")]
 mod managed_service {
-    use super::{node_compatible_windows_path, ProductRuntimePaths};
+    use super::{node_compatible_windows_path, ExistingHostAttachment, ProductRuntimePaths};
     use base64::Engine;
     use sha2::{Digest, Sha256};
     use std::cmp::Ordering;
@@ -424,6 +489,27 @@ mod managed_service {
     const RETRY_WAIT: Duration = Duration::from_secs(1);
     const FAILURE_OUTPUT_TAIL_BYTES: usize = 4096;
 
+    enum LaunchMode {
+        Legacy,
+        Existing(ExistingHostAttachment),
+    }
+
+    fn service_input(mode: &LaunchMode, request: Vec<u8>) -> Result<Vec<u8>, String> {
+        match mode {
+            LaunchMode::Legacy => Ok(request),
+            LaunchMode::Existing(attachment) => {
+                if request.is_empty() || request.len() > 4 * 1024 * 1024 {
+                    return Err("GOGOKE_DESIGN37_SERVICE_REQUEST_SIZE_INVALID".to_string());
+                }
+                serde_json::to_vec(&serde_json::json!({
+                    "servicePipe": attachment.service_pipe.as_str(),
+                    "serviceCapability": attachment.service_capability.as_str(),
+                    "requestBytesBase64": base64::engine::general_purpose::STANDARD.encode(request),
+                })).map_err(|_| "GOGOKE_DESIGN37_SERVICE_ENVELOPE_FAILED".to_string())
+            }
+        }
+    }
+
     fn read_tail(mut reader: impl Read) -> std::io::Result<Vec<u8>> {
         let mut tail = Vec::new();
         let mut chunk = [0u8; 1024];
@@ -446,6 +532,13 @@ mod managed_service {
             error.push_str(&String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(FAILURE_OUTPUT_TAIL_BYTES)..]));
         }
         error
+    }
+
+    fn with_io_error(label: &str, error: std::io::Error) -> String {
+        match error.raw_os_error() {
+            Some(code) => format!("{label}:WIN32_{code}:{error}"),
+            None => format!("{label}:{error}"),
+        }
     }
 
     struct ModulePolicy {
@@ -598,7 +691,8 @@ mod managed_service {
         out
     }
 
-    fn command_line(paths: &ProductRuntimePaths, policy: Option<&ModulePolicy>) -> Vec<u16> {
+    fn command_line(paths: &ProductRuntimePaths, policy: Option<&ModulePolicy>,
+        mode: &LaunchMode) -> Vec<u16> {
         let mut args: Vec<&OsStr> = vec![paths.node_runtime.as_os_str()];
         if let Some(policy) = policy {
             args.push(OsStr::new(policy.import_specifier.as_str()));
@@ -608,6 +702,9 @@ mod managed_service {
             paths.product_root.as_os_str(), OsStr::new("--native-host"),
             paths.native_host.as_os_str(),
         ]);
+        if matches!(mode, LaunchMode::Existing(_)) {
+            args.push(OsStr::new("--existing-design37-host"));
+        }
         let mut result = Vec::new();
         for (index, arg) in args.into_iter().enumerate() {
             if index != 0 {
@@ -858,6 +955,7 @@ mod managed_service {
     fn launch(
         paths: &ProductRuntimePaths,
         policy: Option<&ModulePolicy>,
+        mode: &LaunchMode,
         identity: Option<&(String, String)>,
         reply: &mut Option<oneshot::Sender<Result<Vec<u8>, String>>>,
     ) -> Result<(ManagedProcess, OwnedHandle, OwnedHandle, OwnedHandle), String> {
@@ -894,7 +992,7 @@ mod managed_service {
         startup.StartupInfo.hStdError = inherited[2];
         startup.lpAttributeList = attributes.ptr();
         let executable = wide(paths.node_runtime.as_os_str())?;
-        let mut command = command_line(paths, policy);
+        let mut command = command_line(paths, policy, mode);
         let service_root = paths.service_entry.parent().and_then(std::path::Path::parent)
             .ok_or("GOGOKE_PRODUCT_SERVICE_ROOT_UNAVAILABLE")?;
         let current_dir = wide(service_root.as_os_str())?;
@@ -960,10 +1058,11 @@ mod managed_service {
             native_host: root.join("unused-native-host.exe"),
             product_root: root.join("product"),
             source_commit: None,
+            resource_set_id: None,
             runtime_lease: None,
         };
         let mut reply = None;
-        let _ = launch(&paths, None, None, &mut reply)
+        let _ = launch(&paths, None, &LaunchMode::Legacy, None, &mut reply)
             .expect("test Node launch reaches post-CreateProcess pause");
         panic!("post-CreateProcess pause returned unexpectedly");
     }
@@ -975,6 +1074,34 @@ mod managed_service {
         identity: Option<(String, String)>,
         _product_guard: Option<tokio::sync::MutexGuard<'static, ()>>,
         _service_guard: tokio::sync::MutexGuard<'static, ()>,
+        reply: oneshot::Sender<Result<Vec<u8>, String>>,
+    ) {
+        run_with_mode(paths, request, timeout, identity, _product_guard,
+            _service_guard, LaunchMode::Legacy, reply);
+    }
+
+    pub(super) fn run_existing(
+        paths: ProductRuntimePaths,
+        request: Vec<u8>,
+        timeout: Duration,
+        identity: Option<(String, String)>,
+        product_guard: Option<tokio::sync::MutexGuard<'static, ()>>,
+        service_guard: tokio::sync::MutexGuard<'static, ()>,
+        attachment: ExistingHostAttachment,
+        reply: oneshot::Sender<Result<Vec<u8>, String>>,
+    ) {
+        run_with_mode(paths, request, timeout, identity, product_guard,
+            service_guard, LaunchMode::Existing(attachment), reply);
+    }
+
+    fn run_with_mode(
+        paths: ProductRuntimePaths,
+        request: Vec<u8>,
+        timeout: Duration,
+        identity: Option<(String, String)>,
+        _product_guard: Option<tokio::sync::MutexGuard<'static, ()>>,
+        _service_guard: tokio::sync::MutexGuard<'static, ()>,
+        mode: LaunchMode,
         reply: oneshot::Sender<Result<Vec<u8>, String>>,
     ) {
         let mut reply = Some(reply);
@@ -991,7 +1118,14 @@ mod managed_service {
                 return;
             }
         };
-        let (managed, stdin, stdout, stderr) = match launch(&paths, policy.as_ref(), identity.as_ref(), &mut reply) {
+        let request = match service_input(&mode, request) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                send_reply(&mut reply, Err(error));
+                return;
+            }
+        };
+        let (managed, stdin, stdout, stderr) = match launch(&paths, policy.as_ref(), &mode, identity.as_ref(), &mut reply) {
             Ok(value) => value,
             Err(error) => {
                 send_reply(&mut reply, Err(error));
@@ -1006,9 +1140,12 @@ mod managed_service {
         });
         let stderr_reader = std::thread::spawn(move || read_tail(File::from(stderr)));
         let writer = std::thread::spawn(move || File::from(stdin).write_all(&request));
-        let failure = match unsafe {
+        let wait_result = unsafe {
             WaitForSingleObject(raw(&managed.process), timeout.as_millis() as u32)
-        } {
+        };
+        // Read the original failure before terminate can replace last-error.
+        let wait_error = (wait_result == u32::MAX).then(|| unsafe { GetLastError() });
+        let failure = match wait_result {
             WAIT_OBJECT_0 => None,
             WAIT_TIMEOUT => {
                 terminate(&managed);
@@ -1016,7 +1153,9 @@ mod managed_service {
             }
             _ => {
                 terminate(&managed);
-                Some("GOGOKE_PRODUCT_SERVICE_WAIT_FAILED".to_string())
+                let mut error = format!("GOGOKE_PRODUCT_SERVICE_WAIT_FAILED:RESULT_{wait_result}");
+                if let Some(code) = wait_error { error.push_str(&format!(":WIN32_{code}")); }
+                Some(error)
             }
         };
         if !wait_settled(&managed, CLEANUP_WAIT).unwrap_or(false) {
@@ -1029,30 +1168,41 @@ mod managed_service {
         }
         let write_result = writer.join()
             .map_err(|_| "GOGOKE_PRODUCT_SERVICE_REQUEST_FAILED".to_string())
-            .and_then(|value| value.map_err(|_| "GOGOKE_PRODUCT_SERVICE_REQUEST_FAILED".to_string()));
+            .and_then(|value| value.map_err(|error| with_io_error("GOGOKE_PRODUCT_SERVICE_REQUEST_FAILED", error)));
         let output = stdout_reader.join()
             .map_err(|_| "GOGOKE_PRODUCT_SERVICE_OUTPUT_FAILED".to_string())
-            .and_then(|value| value.map_err(|_| "GOGOKE_PRODUCT_SERVICE_OUTPUT_FAILED".to_string()));
+            .and_then(|value| value.map_err(|error| with_io_error("GOGOKE_PRODUCT_SERVICE_OUTPUT_FAILED", error)));
         let stderr_tail = stderr_reader.join()
             .map_err(|_| "GOGOKE_PRODUCT_SERVICE_STDERR_READ_FAILED".to_string())
-            .and_then(|value| value.map_err(|error| format!("GOGOKE_PRODUCT_SERVICE_STDERR_READ_FAILED:WIN32_{}", error.raw_os_error().unwrap_or(0))));
+            .and_then(|value| value.map_err(|error| with_io_error("GOGOKE_PRODUCT_SERVICE_STDERR_READ_FAILED", error)));
         let mut exit_code = 0;
         let exit_code_available = unsafe { GetExitCodeProcess(raw(&managed.process), &mut exit_code) } != 0;
-        let result = if let Some(error) = failure {
-            Err(error)
+        let exit_error = (!exit_code_available).then(|| unsafe { GetLastError() });
+        let failure = if let Some(error) = failure {
+            Some(error)
         } else if !exit_code_available {
-            Err("GOGOKE_PRODUCT_SERVICE_WAIT_FAILED".to_string())
+            Some(format!("GOGOKE_PRODUCT_SERVICE_WAIT_FAILED:EXIT_CODE:WIN32_{}", exit_error.expect("failed exit-code query captured last-error")))
         } else if exit_code != 0 {
-            let mut error = format!("GOGOKE_PRODUCT_SERVICE_FAILED:{exit_code}");
-            if let Ok(bytes) = &output {
-                error = with_failure_output(error, "STDOUT", bytes);
+            Some(format!("GOGOKE_PRODUCT_SERVICE_FAILED:{exit_code}"))
+        } else {
+            write_result.as_ref().err().cloned().or_else(|| output.as_ref().err().cloned())
+        };
+        // All failures preserve the already captured original streams, including
+        // timeout. Settlement and lease ownership above remain unchanged.
+        let result = if let Some(mut error) = failure {
+            match &output {
+                Ok(bytes) => error = with_failure_output(error, "STDOUT", bytes),
+                Err(read_error) => {
+                    if !error.starts_with(read_error) { error.push_str(&format!(":{read_error}")); }
+                }
             }
             match &stderr_tail {
                 Ok(bytes) => error = with_failure_output(error, "STDERR", bytes),
                 Err(read_error) => error.push_str(&format!(":{read_error}")),
             }
-            Err(error)
-        } else if let Err(error) = write_result {
+            if let Err(write_error) = &write_result {
+                if !error.starts_with(write_error) { error.push_str(&format!(":{write_error}")); }
+            }
             Err(error)
         } else {
             output
@@ -1140,10 +1290,8 @@ struct ProductReadinessView {
     caller: ProductReadinessCaller,
 }
 
-pub(crate) async fn verify_product_startup(app: &tauri::AppHandle) -> Result<(), String> {
-    let paths = resolve_runtime_paths(app)?;
-    let output = run_product_service(paths, b"{\"operation\":\"readiness\"}", SERVICE_TIMEOUT, None, None).await?;
-    let response: ProductReadinessView = serde_json::from_slice(&output)
+fn validate_product_readiness(output: &[u8]) -> Result<(), String> {
+    let response: ProductReadinessView = serde_json::from_slice(output)
         .map_err(|_| "GOGOKE_PRODUCT_READINESS_DECODE_FAILED".to_string())?;
     if response.state != "PRODUCT_SERVICE_NATIVE_CONTROLLER_ADMITTED"
         || !response.caller.admitted
@@ -1156,6 +1304,384 @@ pub(crate) async fn verify_product_startup(app: &tauri::AppHandle) -> Result<(),
         return Err("GOGOKE_PRODUCT_READINESS_NOT_ADMITTED".to_string());
     }
     Ok(())
+}
+
+pub(crate) async fn verify_product_startup(app: &tauri::AppHandle) -> Result<(), String> {
+    let paths = resolve_runtime_paths(app)?;
+    let output = run_product_service(paths, b"{\"operation\":\"readiness\"}", SERVICE_TIMEOUT, None, None).await?;
+    validate_product_readiness(&output)
+}
+
+/// Start the long-lived host and retain the exact resource generation used for
+/// its executable. The service connector receives only this host's endpoint.
+fn spawn_design37_host(
+    app: &tauri::AppHandle,
+) -> Result<(super::design37_host::Design37Host, ProductRuntimePaths), String> {
+    let paths = resolve_runtime_paths(app)?;
+    let host = super::design37_host::Design37Host::spawn(&paths.native_host, &paths.product_root)?;
+    Ok((host, paths))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct Design37RegisterCodexRequest {
+    request_id: String,
+    instance_id: String,
+}
+
+impl Design37RegisterCodexRequest {
+    pub(super) fn for_instance(instance_id: String) -> Self {
+        // Existing registration replay stays bound to the original instance.
+        Self { request_id: instance_id.clone(), instance_id }
+    }
+}
+
+/// Read-only instance-page startup. No instance home or login is created here.
+pub(crate) async fn ensure_design37_user_host(app: &tauri::AppHandle) -> Result<(), String> {
+    let _product_guard = PRODUCT_RUNTIME_GATE.lock().await;
+    let service_guard = PRODUCT_SERVICE_GATE.lock().await;
+    let paths = resolve_runtime_paths(app)?;
+    if retained_design37_host(&paths)?.is_some() { return Ok(()); }
+    let app_for_spawn = app.clone();
+    let (spawned, service_guard) = tokio::task::spawn_blocking(move || {
+        (spawn_design37_host(&app_for_spawn), service_guard)
+    }).await.map_err(|error| format!("GOGOKE_DESIGN37_HOST_OWNER_FAILED:{error}"))?;
+    let (spawned, pinned_paths) = spawned?;
+    if !same_product_resource_generation(&paths, &pinned_paths) {
+        return Err("GOGOKE_DESIGN37_RESOURCE_GENERATION_CHANGED".into());
+    }
+    let host = Arc::new(spawned);
+    let attachment = ExistingHostAttachment {
+        service_pipe: host.service_pipe().to_owned(), service_capability: host.capability().to_owned(),
+    };
+    {
+        let mut owner = DESIGN37_PRODUCT_OWNER.lock()
+            .map_err(|error| format!("GOGOKE_DESIGN37_OWNER_LOCK_FAILED:{error}"))?;
+        if owner.is_some() { return Err("GOGOKE_DESIGN37_OWNER_ALREADY_STARTED".into()); }
+        *owner = Some(Design37ProductOwner { host:Arc::clone(&host), paths:pinned_paths.clone() });
+    }
+    let output = run_product_service_with_guard(pinned_paths, b"{\"operation\":\"readiness\"}",
+        SERVICE_TIMEOUT, None, None, service_guard, Some((host, attachment))).await?;
+    validate_product_readiness(&output)
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct Design37RegisterCodexReceipt {
+    schema: String,
+    family: String,
+    operation: String,
+    request_id: String,
+    target_id: String,
+    status: String,
+    previous_revision: String,
+    revision: String,
+    result: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Design37RegisterCodexReceipt {
+    pub(super) fn require_applied(&self) -> Result<(), String> {
+        if ["APPLIED", "REPLAYED"].contains(&self.status.as_str()) { return Ok(()); }
+        Err(format!("GOGOKE_INSTANCE_REGISTRATION_{}:{}", self.status,
+            serde_json::Value::Object(self.result.clone())))
+    }
+}
+
+fn canonical_v37_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (1..=128).contains(&bytes.len())
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1..].iter().all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_' || *byte == b'-')
+}
+
+/// The installed product's Owner plane forwards exact request bytes over its
+/// retained process-object-verified User pipe. It never accepts a host path,
+/// endpoint, process identity, capacity proof or service capability from JS.
+#[tauri::command]
+pub(crate) async fn gogoke_design37_user_operation(
+    app: tauri::AppHandle,
+    frame: String,
+) -> Result<String, String> {
+    if frame.is_empty() || frame.len() > 4 * 1024 * 1024 {
+        return Err("GOGOKE_DESIGN37_USER_FRAME_SIZE_INVALID".to_string());
+    }
+    let product_guard = PRODUCT_RUNTIME_GATE.lock().await;
+    let paths = resolve_runtime_paths(&app)?;
+    let (host, _) = retained_design37_host(&paths)?
+        .ok_or_else(|| "GOGOKE_DESIGN37_USER_HOST_NOT_STARTED".to_string())?;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    tokio::task::spawn_blocking(move || {
+        let _product_guard = product_guard;
+        // Cancellation drops only the response receiver. The blocking owner
+        // retains the guard until the native operation has settled.
+        if sender.send(host.request_user(frame.as_bytes())).is_err() {
+            eprintln!("GOGOKE_DESIGN37_USER_RESPONSE_RECEIVER_CLOSED");
+        }
+    });
+    let response = receiver.await
+        .map_err(|error| format!("GOGOKE_DESIGN37_USER_OWNER_FAILED:{error}"))??;
+    let response = String::from_utf8(response)
+        .map_err(|error| format!("GOGOKE_DESIGN37_USER_RESPONSE_UTF8_FAILED:{error}"))?;
+    if response.starts_with("ERR\t") {
+        return Err(format!("GOGOKE_DESIGN37_NATIVE_USER_OPERATION_FAILED:{response}"));
+    }
+    Ok(response)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+pub(crate) struct Design37InstallCliRequest {
+    driver_id: String,
+    request_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+struct ManagedCliStageReply {
+    schema: String,
+    driver_id: String,
+    version: String,
+    stage_name: String,
+}
+
+fn managed_cli_user_reply(bytes: Vec<u8>, step: &str) -> Result<Vec<u8>, String> {
+    // The native User transport returns an explicit ERR frame for a failed
+    // operation. It is not a JSON receipt and must stop the next stage.
+    // Reuse the ordinary User entry's original-error rule before decoding.
+    if bytes.starts_with(b"ERR\t") {
+        let original = std::str::from_utf8(&bytes).map_err(|error| {
+            format!("GOGOKE_MANAGED_CLI_NATIVE_{step}_UTF8:{error}; original bytes:{bytes:?}")
+        })?;
+        return Err(format!("GOGOKE_MANAGED_CLI_NATIVE_{step}:{original}"));
+    }
+    Ok(bytes)
+}
+
+/// One Owner click uses the already retained User host and signed Node service.
+/// Only the driver and operation ID come from UI; URL, bytes, root and program
+/// digest are fixed by the installed product and rechecked by native F/H.
+#[tauri::command]
+pub(crate) async fn gogoke_design37_install_cli(
+    app: tauri::AppHandle,
+    request: Design37InstallCliRequest,
+) -> Result<serde_json::Value,String> {
+    if !["codex","claude","opencode","grok"].contains(&request.driver_id.as_str()) ||
+        !canonical_v37_id(&request.request_id) || request.request_id.len()>64 {
+        return Err("GOGOKE_MANAGED_CLI_REQUEST_INVALID".into());
+    }
+    #[cfg(target_os="windows")]
+    {
+        ensure_design37_user_host(&app).await?;
+        let product_guard=PRODUCT_RUNTIME_GATE.lock().await;
+        let service_guard=PRODUCT_SERVICE_GATE.lock().await;
+        let paths=resolve_runtime_paths(&app)?;
+        let (host,attachment)=retained_design37_host(&paths)?
+            .ok_or_else(||"GOGOKE_DESIGN37_USER_HOST_NOT_STARTED".to_string())?;
+        let status_frame=serde_json::to_vec(&serde_json::json!({
+            "schema":"gogoke.37.managed-cli.v1","command":"status",
+            "driverId":request.driver_id,
+        })).map_err(|error|format!("GOGOKE_MANAGED_CLI_STATUS_ENCODE:{error}"))?;
+        let status=managed_cli_user_reply(host.request_user(&status_frame)?,"STATUS")?;
+        let status:serde_json::Value=serde_json::from_slice(&status)
+            .map_err(|error|format!("GOGOKE_MANAGED_CLI_STATUS_DECODE:{error}"))?;
+        if status.get("state").and_then(serde_json::Value::as_str)==Some("READY") {
+            return Ok(status);
+        }
+        if matches!(status.get("state").and_then(serde_json::Value::as_str),
+            Some("STAGED"|"PROBED")) {
+            let resume=serde_json::to_vec(&serde_json::json!({
+                "schema":"gogoke.37.managed-cli.v1","command":"resume",
+                "driverId":request.driver_id,"requestId":request.request_id,
+            })).map_err(|error|format!("GOGOKE_MANAGED_CLI_RESUME_ENCODE:{error}"))?;
+            let (sender,receiver)=tokio::sync::oneshot::channel();
+            tokio::task::spawn_blocking(move||{
+                let _guard=product_guard;
+                let _=sender.send(host.request_user(&resume)
+                    .and_then(|bytes|managed_cli_user_reply(bytes,"RESUME")));
+            });
+            let response=receiver.await.map_err(|error|
+                format!("GOGOKE_MANAGED_CLI_RESUME_OWNER:{error}"))??;
+            return serde_json::from_slice(&response)
+                .map_err(|error|format!("GOGOKE_MANAGED_CLI_RESUME_DECODE:{error}"));
+        }
+        let root_frame=serde_json::to_vec(&serde_json::json!({
+            "schema":"gogoke.37.managed-cli.v1","command":"root"}))
+            .map_err(|error|format!("GOGOKE_MANAGED_CLI_ROOT_ENCODE:{error}"))?;
+        let native_root=managed_cli_user_reply(host.request_user(&root_frame)?,"ROOT")?;
+        let native_root:serde_json::Value=serde_json::from_slice(&native_root)
+            .map_err(|error|format!("GOGOKE_MANAGED_CLI_ROOT_DECODE:{error}"))?;
+        let root=native_root.get("root").and_then(serde_json::Value::as_str)
+            .ok_or_else(||"GOGOKE_MANAGED_CLI_ROOT_MISSING".to_string())?;
+        let expected=paths.product_root.join("v37-managed-cli").join("staging");
+        if std::fs::canonicalize(root).map_err(|error|format!("GOGOKE_MANAGED_CLI_ROOT:{error}"))? !=
+            std::fs::canonicalize(&expected).map_err(|error|format!("GOGOKE_MANAGED_CLI_EXPECTED_ROOT:{error}"))? {
+            return Err("GOGOKE_MANAGED_CLI_ROOT_MISMATCH".into());
+        }
+        let begin_frame=serde_json::to_vec(&serde_json::json!({
+            "schema":"gogoke.37.managed-cli.v1","command":"begin",
+            "driverId":request.driver_id,
+        })).map_err(|error|format!("GOGOKE_MANAGED_CLI_BEGIN_ENCODE:{error}"))?;
+        managed_cli_user_reply(host.request_user(&begin_frame)?,"BEGIN")?;
+        let node_request=serde_json::to_vec(&serde_json::json!({
+            "operation":"managed-cli-stage","driverId":request.driver_id}))
+            .map_err(|error|format!("GOGOKE_MANAGED_CLI_STAGE_ENCODE:{error}"))?;
+        let stage_result=run_product_service_with_guard(paths,&node_request,
+            MANAGED_CLI_STAGE_TIMEOUT,None,Some(product_guard),service_guard,
+            Some((Arc::clone(&host),attachment))).await;
+        let stage_bytes=match stage_result {
+            Ok(bytes)=>bytes,
+            Err(error)=>{
+                let raw=error.chars().take(16_000).collect::<String>();
+                let failure=serde_json::to_vec(&serde_json::json!({
+                    "schema":"gogoke.37.managed-cli.v1","command":"failure",
+                    "driverId":request.driver_id,"state":"INSTALL_FAILED","raw":raw,
+                })).map_err(|cause|format!("GOGOKE_MANAGED_CLI_FAILURE_ENCODE:{cause}; source:{error}"))?;
+                let record=host.request_user(&failure).map_err(|cause|
+                    format!("GOGOKE_MANAGED_CLI_STAGE:{error}; failure record:{cause}"))?;
+                managed_cli_user_reply(record,"FAILURE_RECORD").map_err(|cause|
+                    format!("GOGOKE_MANAGED_CLI_STAGE:{error}; failure record:{cause}"))?;
+                return Err(format!("GOGOKE_MANAGED_CLI_STAGE:{error}"));
+            },
+        };
+        let stage:ManagedCliStageReply=serde_json::from_slice(&stage_bytes)
+            .map_err(|error|format!("GOGOKE_MANAGED_CLI_STAGE_DECODE:{error}"))?;
+        if stage.schema!="gogoke.37.managed-cli-stage.v1" ||
+            stage.driver_id!=request.driver_id || stage.version.is_empty() ||
+            stage.stage_name.is_empty() {
+            return Err("GOGOKE_MANAGED_CLI_STAGE_MISMATCH".into());
+        }
+        let stage_frame=serde_json::to_vec(&serde_json::json!({
+            "schema":"gogoke.37.managed-cli.v1","command":"stage",
+            "driverId":request.driver_id,"stageName":stage.stage_name,
+        })).map_err(|error|format!("GOGOKE_MANAGED_CLI_RECORD_ENCODE:{error}"))?;
+        let probe_frame=serde_json::to_vec(&serde_json::json!({
+            "schema":"gogoke.37.managed-cli.v1","command":"probe",
+            "driverId":request.driver_id,"stageName":stage.stage_name,
+            "requestId":request.request_id,
+        })).map_err(|error|format!("GOGOKE_MANAGED_CLI_PROBE_ENCODE:{error}"))?;
+        let migrate_frame=serde_json::to_vec(&serde_json::json!({
+            "schema":"gogoke.37.managed-cli.v1","command":"migrate",
+            "driverId":request.driver_id,"stageName":stage.stage_name,
+        })).map_err(|error|format!("GOGOKE_MANAGED_CLI_MIGRATE_ENCODE:{error}"))?;
+        let product_guard=PRODUCT_RUNTIME_GATE.lock().await;
+        let (sender,receiver)=tokio::sync::oneshot::channel();
+        tokio::task::spawn_blocking(move||{
+            let _guard=product_guard;
+            let outcome=(||{
+                managed_cli_user_reply(host.request_user(&stage_frame)?,"STAGE")?;
+                managed_cli_user_reply(host.request_user(&probe_frame)?,"PROBE")?;
+                managed_cli_user_reply(host.request_user(&migrate_frame)?,"MIGRATE")
+            })();
+            let _=sender.send(outcome);
+        });
+        let probe=receiver.await.map_err(|error|
+            format!("GOGOKE_MANAGED_CLI_PROBE_OWNER:{error}"))??;
+        let reply:serde_json::Value=serde_json::from_slice(&probe)
+            .map_err(|error|format!("GOGOKE_MANAGED_CLI_PROBE_DECODE:{error}"))?;
+        if reply.get("schema").and_then(serde_json::Value::as_str)!=Some("gogoke.37.managed-cli.v1") ||
+            reply.get("state").and_then(serde_json::Value::as_str)!=Some("READY") ||
+            reply.get("driverId").and_then(serde_json::Value::as_str)!=Some(request.driver_id.as_str()) {
+            return Err("GOGOKE_MANAGED_CLI_PROBE_MISMATCH".into());
+        }
+        Ok(reply)
+    }
+    #[cfg(not(target_os="windows"))]
+    {
+        let _=app;
+        Err("GOGOKE_PRODUCT_WINDOWS_OWNER_PATH_ONLY".into())
+    }
+}
+
+fn validate_design37_register_receipt(
+    bytes: &[u8], request: &Design37RegisterCodexRequest,
+) -> Result<Design37RegisterCodexReceipt, String> {
+    let receipt: Design37RegisterCodexReceipt = serde_json::from_slice(bytes)
+        .map_err(|error| format!("GOGOKE_DESIGN37_USER_RECEIPT_DECODE_FAILED:{error}"))?;
+    if receipt.schema != "gogoke.37.operations.v1" || receipt.family != "K-INSTANCE"
+        || receipt.operation != "register" || receipt.request_id != request.request_id
+        || receipt.target_id != request.instance_id
+        || !["APPLIED", "REPLAYED", "DENIED", "STALE", "CONFLICT", "UNSUPPORTED", "UNKNOWN", "FAILED"]
+            .contains(&receipt.status.as_str())
+        || receipt.previous_revision.parse::<u64>().ok()
+            .is_none_or(|value| value.to_string() != receipt.previous_revision)
+        || receipt.revision.parse::<u64>().ok()
+            .is_none_or(|value| value.to_string() != receipt.revision)
+    {
+        return Err("GOGOKE_DESIGN37_USER_RECEIPT_MISMATCH".to_string());
+    }
+    Ok(receipt)
+}
+
+/// Explicit product User action. The frontend supplies only two canonical IDs;
+/// Tauri chooses the native host, User pipe, domain, operation and driver.
+#[tauri::command]
+pub(crate) async fn gogoke_design37_register_codex_instance(
+    app: tauri::AppHandle,
+    request: Design37RegisterCodexRequest,
+) -> Result<Design37RegisterCodexReceipt, String> {
+    if !canonical_v37_id(&request.request_id) || !canonical_v37_id(&request.instance_id) {
+        return Err("GOGOKE_DESIGN37_REGISTER_IDS_INVALID".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let product_guard = PRODUCT_RUNTIME_GATE.lock().await;
+        let service_guard = PRODUCT_SERVICE_GATE.lock().await;
+        let current_paths = resolve_runtime_paths(&app)?;
+        let (host, attachment, paths, service_guard) = match retained_design37_host(&current_paths)? {
+            Some((host, attachment)) => (host, attachment, current_paths, service_guard),
+            None => {
+                let app_for_spawn = app.clone();
+                // Keep the service gate in the blocking owner if this command
+                // is cancelled while the exact native host starts.
+                let (spawned, service_guard) = tokio::task::spawn_blocking(move || {
+                    (spawn_design37_host(&app_for_spawn), service_guard)
+                }).await.map_err(|_| "GOGOKE_DESIGN37_HOST_OWNER_FAILED".to_string())?;
+                let (spawned, pinned_paths) = spawned?;
+                if !same_product_resource_generation(&current_paths, &pinned_paths) {
+                    return Err("GOGOKE_DESIGN37_RESOURCE_GENERATION_CHANGED".to_string());
+                }
+                let host = Arc::new(spawned);
+                let attachment = ExistingHostAttachment {
+                    service_pipe: host.service_pipe().to_string(),
+                    service_capability: host.capability().to_string(),
+                };
+                let mut owner = DESIGN37_PRODUCT_OWNER.lock()
+                    .map_err(|_| "GOGOKE_DESIGN37_OWNER_LOCK_POISONED".to_string())?;
+                if owner.is_some() {
+                    return Err("GOGOKE_DESIGN37_OWNER_ALREADY_STARTED".to_string());
+                }
+                *owner = Some(Design37ProductOwner {
+                    host: Arc::clone(&host), paths: pinned_paths.clone(),
+                });
+                drop(owner);
+                (host, attachment, pinned_paths, service_guard)
+            }
+        };
+        let output = run_product_service_with_guard(paths,
+            b"{\"operation\":\"readiness\"}", SERVICE_TIMEOUT, None, None,
+            service_guard, Some((Arc::clone(&host), attachment))).await?;
+        validate_product_readiness(&output)?;
+        let frame = serde_json::to_vec(&serde_json::json!({
+            "schema": "gogoke.37.operations.v1",
+            "family": "K-INSTANCE", "operation": "register",
+            "requestId": request.request_id.as_str(), "targetId": request.instance_id.as_str(),
+            "domainId": "global", "expectedRevision": "0",
+            "payload": { "driverId": "codex" },
+        })).map_err(|_| "GOGOKE_DESIGN37_USER_REQUEST_ENCODE_FAILED".to_string())?;
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        tokio::task::spawn_blocking(move || {
+            let _product_guard = product_guard;
+            let _ = sender.send(host.request_user(&frame));
+        });
+        let response = receiver.await
+            .map_err(|_| "GOGOKE_DESIGN37_USER_OWNER_FAILED".to_string())??;
+        return validate_design37_register_receipt(&response, &request);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        Err("GOGOKE_PRODUCT_WINDOWS_OWNER_PATH_ONLY".to_string())
+    }
 }
 
 #[tauri::command]
@@ -1179,6 +1705,65 @@ pub(crate) async fn acquire_product_gate() -> tokio::sync::MutexGuard<'static, (
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn design37_product_composition_reuses_one_tauri_owned_host() {
+        // The cloud job stages the same Node, service bundle and native binary
+        // that the product resource verifier admits. Exercise the actual
+        // Tauri-side host owner and managed Node entry, not a parser stub.
+        let node = PathBuf::from(std::env::var_os("GOGOKE_CONTROLLED_NODE_PATH")
+            .expect("cloud test requires the staged signed Node runtime"));
+        assert!(node.is_file(), "staged signed Node runtime");
+        let resources = node.parent().and_then(Path::parent)
+            .expect("staged resource directory");
+        let service_entry = resources.join("dist/bin.mjs");
+        let native_host = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("binaries/gogoke-native-host-x86_64-pc-windows-msvc.exe");
+        assert!(service_entry.is_file(), "staged product service bundle");
+        assert!(native_host.is_file(), "staged native host");
+        let product_root = std::env::temp_dir().join(format!(
+            "gogoke-design37-composition-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir(&product_root).expect("owned product root");
+        let host = super::super::design37_host::Design37Host::spawn(&native_host, &product_root)
+            .expect("Tauri-side owner starts native host and binds User pipe");
+        let host_pid = host.host_pid();
+        let attachment = ExistingHostAttachment {
+            service_pipe: host.service_pipe().to_string(),
+            service_capability: host.capability().to_string(),
+        };
+        let paths = ProductRuntimePaths {
+            node_runtime: node,
+            service_entry,
+            native_host,
+            product_root: product_root.clone(),
+            source_commit: None,
+            resource_set_id: None,
+            runtime_lease: None,
+        };
+        let readiness = || {
+            let (reply, receiver) = tokio::sync::oneshot::channel();
+            let service_guard = PRODUCT_SERVICE_GATE.blocking_lock();
+            managed_service::run_existing(paths.clone(), b"{\"operation\":\"readiness\"}".to_vec(),
+                SERVICE_TIMEOUT, None, None, service_guard, attachment.clone(), reply);
+            let bytes = receiver.blocking_recv().expect("managed Node owner returns")
+                .expect("Node attaches to Tauri-owned native host");
+            validate_product_readiness(&bytes).expect("native controller admission");
+        };
+        readiness();
+        assert!(host.is_running().expect("retained host status"));
+        assert_eq!(host.host_pid(), host_pid, "Node disconnect cannot replace host");
+        let missing_instance_receipt = host.request_user(br#"{"schema":"gogoke.37.operations.v1","family":"K-INSTANCE","operation":"install-state","requestId":"probeA","targetId":"instanceA","domainId":"global","expectedRevision":"0","payload":{}}"#)
+            .expect("retained User pipe remains connected after Node exit");
+        let receipt: serde_json::Value = serde_json::from_slice(&missing_instance_receipt)
+            .expect("native User receipt");
+        assert_eq!(receipt["status"], "CONFLICT");
+        assert_eq!(receipt["requestId"], "probeA");
+        readiness();
+        assert_eq!(host.host_pid(), host_pid, "second Node connects to same host");
+        drop(host); // User EOF terminates the exact retained native host.
+        std::fs::remove_dir_all(&product_root).expect("owned root released on host drop");
+    }
 
     #[cfg(target_os = "windows")]
     #[test]
@@ -1310,6 +1895,7 @@ mod tests {
             native_host: root.join("unused-native-host.exe"),
             product_root: root.join("product"),
             source_commit: None,
+            resource_set_id: None,
             runtime_lease: None,
         };
         let (reply, receiver) = tokio::sync::oneshot::channel();
@@ -1358,6 +1944,7 @@ mod tests {
             native_host: root.join("unused-native-host.exe"),
             product_root: root.join("product"),
             source_commit: None,
+            resource_set_id: None,
             runtime_lease: Some(Arc::new(lease)),
         };
         let (reply, receiver) = tokio::sync::oneshot::channel();
@@ -1439,6 +2026,7 @@ mod tests {
             native_host: root.join("unused-native-host.exe"),
             product_root: root.join("product"),
             source_commit: None,
+            resource_set_id: None,
             runtime_lease: Some(lease),
         };
         let (reply, receiver) = tokio::sync::oneshot::channel();

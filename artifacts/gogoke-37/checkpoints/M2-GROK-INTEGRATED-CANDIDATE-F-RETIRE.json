@@ -1,0 +1,37 @@
+{
+  "schema": "gogoke.37.light-checkpoint.v1",
+  "changed": [
+    "Integrated the independently reviewed original Grok F HOME grant implementation.",
+    "Classify unpromoted original H candidates before the current-claim JOIN and retire only their F resources after exact holder disappearance proof.",
+    "Preserve the original STOPPED claim and genuine StopFact; candidate custody remains UNKNOWN with no invented stop proof."
+  ],
+  "result": {
+    "staticReview": "NO_NEW_INCREMENTAL_BLOCKER",
+    "implementationSource": "c3f1c03bf336ed25bca8dfe616cb46c8aed1325b",
+    "cloudRun": 37423435445,
+    "cloudState": "IN_PROGRESS_NOT_QUALIFIED",
+    "installedGrokFix": "NOT_RUN",
+    "acceptance": false
+  },
+  "knownLimits": [
+    "Unfinished compact or renew generation changes still obey the existing refusal fence.",
+    "INTENT peer ACL drift and missing historical file handles remain unqualified recovery windows."
+  ],
+  "next": "Read exact cloud results and test the original installed provider path at a stable candidate point. Complete the original merge diagnostic separately on frozen 0.1.32.",
+  "reference": {
+    "checked": [
+      "Existing exact H resume candidate and custody bindings",
+      "Existing holder-disappearance proof and gone_scope",
+      "Original F grant and retirement effects",
+      "Fresh focused independent source review"
+    ],
+    "adopted": "Reuse exact original H/F/custody and physical ACL evidence, with no current-claim release for an unpromoted candidate.",
+    "difference": "This closes F resource retirement only and does not assert whole-session recovery."
+  },
+  "boundaries": [
+    "Fixed CLI unchanged",
+    "No credential contents read",
+    "No new capability or Owner touch",
+    "No main merge or public release"
+  ]
+}
