@@ -98,6 +98,20 @@
 
 此草案仅细化既有 H/B2/A 恢复与 completion 约定，不增加写域、共享文件、持久写方、权限或 Owner 触点，scope digest 与原 v2 回执不变。按 amendment_rule，由新鲜独立审计确认边界后，Controller 合并细节修订才生效；本包停在产品施工前。后续开发遵守 [构建与发布治理](../../governance/gogoke-build-and-release.md)：本机开发先实际读 SAC=0，独立数据与产物/临时置于 D；正式原生检查在云端，安装、真实模型及验收结果本包均 NOT_RUN。
 
+### OpenCode 自有 uv 管道的 LOCAL 接线细节（2026-10-11；审查草案）
+
+固定 OpenCode 1.18.32 的开发原件在 LPAC、真实 F 路径别名与特定实验环境下取得 initialize ACK，原 Stop/Job 清零；它没有发送 session/new 或模型，清理校验原失败仍保留，后续临时 profile 清理成功不改整例结论。无兼容模块的原对照也有路径别名和不存在的 GIT_DIR，但 initialize 超时；这只支持验证自有 uv 管道的 LOCAL 名称机制，不能证明完整产品或模型已通过。
+
+仅在 H 既有 process/session/compat/build.rs、compat/native/shim.cpp、compat/src/lib.rs、process/session/compat_module.rs 与 store/session_transport/launch.rs 接入正式固定 OpenCode mode。沿用已有模块生成、实际悬挂进程映像和嵌入字节核验，限定上述固定 CLI 字节、当前进程及精确 uv 数字叶名的成对 CreateNamedPipe/CreateFile 映射；其他名称和参数直通，原安全参数与 Windows 错误保持。映射只供同一 AppContainer 内该进程的内部 IPC，不授予其他身份、路径或通用管道访问。
+
+产品保留真实已登记 Git F 与现有 H 自有路径别名的意图、物理 FileID、宿主登录命名空间、原 StopFact 及精确撤销。不得加入实验用不存在的 GIT_DIR，不隐藏、替换或伪造真实仓库；不加 PATH、Git common 目录许可、卷根 ACL、能力、登录或权限档位，不改固定 CLI 字节，不搬入开发 ACL/清理夹具，不忽略产品 DACL control 或有序 ACE 的原校验。若实际结果仍需要这些边界外行为，保留原错误，回到已有 Owner 条件触点，不自动扩展。
+
+先在上述唯一变动下验证真实产品 H 的 initialize、session/new 与模型/强度设置原 ACK；缺其中一项便不算 open，更不算模型通过。随后沿既有真实端到端用例核已授权实例的一次 USER、原 A/H 完成、同代身份、Stop、冷恢复与正式保护；未知不重发旧输入。安全边界仍核固定字节与 mode 拒绝、其他管道直通、原隔离/权限、模块来源和路径别名生命周期。开发结果、源码、单独 ACK 和云检不能替代真实安装结果。
+
+参照：先核 gogo-party 的 accounts.ts 与 ACP 席位运行时，其收口环境和真实 cwd 原则沿用，但没有 LPAC uv 管道实现；NaveHQ 的 cao_runtime_adapter/agent_runtime_port 与 LoomOS 事实源、施工图未提供此实现。仓库 parts/substrate teardown、reuse-blueprint、upstream-reference-map 与 execution-layer-capability-table 没有可直接搬入的该兼容路径。采用本仓库既有 Claude H 自有兼容模块和路径别名生命周期，差异仅为固定 Bun/OpenCode 的 uv 管道模式。固定 OpenCode 官方 core project/git 与 ACP/effect-cmd 实现没有公开的保留 Git 身份并跳过发现的参数；Bun 的 --no-git 只控制 bun create，不作为产品启动方案。
+
+此草案只细化既有 H/B3，五路径已在 H 写域；PLAN.json、scope digest、v2 回执及三处固定值均不变，不新增 Owner 步骤。独立审计通过、Controller 合并并精确读回后生效。正式原生检查在云端，本机开发遵守实际 SAC=0、独立数据、D 产物及并行上限；稳定点仍须重新开启 SAC 后实测，不自行验收。
+
 ## 5. 汇合点
 
 汇合点包含哪些线，由各线的阶段推导出来，不另外手写名单。
