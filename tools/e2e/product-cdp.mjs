@@ -6,12 +6,67 @@ import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { createInterface } from 'node:readline';
 
 export const readJson = file => JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
 export const sha256 = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 export const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 export const id = prefix => `${prefix}_${randomUUID().replaceAll('-', '')}`;
 const here = path.dirname(fileURLToPath(import.meta.url));
+
+function observeInstalledClose(config, shellPid) {
+  const helper = spawn(config.pwsh, ['-NoProfile', '-NonInteractive', '-File',
+    path.join(here, 'candidate-close-events.ps1'), '-Installed', config.installed,
+    '-ShellPid', String(shellPid), '-ShellSha256', config.installedSha256['gogoke.exe'],
+    '-NativeSha256', config.installedSha256['gogoke-native-host.exe']],
+  { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  let resolveReady, rejectReady, resolveDone, rejectDone;
+  const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+  const done = new Promise((resolve, reject) => { resolveDone = resolve; rejectDone = reject; });
+  done.catch(() => {}); // A READY failure can precede the caller's completion wait.
+  const events = []; let original = null, completed = false, error = null, stderr = '';
+  const timer = setTimeout(() => {
+    error = Error('Original shell/native handle readiness deadline; no caption dispatched');
+    rejectReady(error);
+  }, 15000);
+  helper.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-8192); });
+  const lines = createInterface({ input: helper.stdout });
+  lines.on('line', line => {
+    if (error) return;
+    try {
+      const item = JSON.parse(line);
+      if (item.kind === 'READY' && !original &&
+          item.shell?.pid === shellPid && item.native?.pid > 0 && item.native.pid !== shellPid &&
+          item.shell?.image?.sha256 === config.installedSha256['gogoke.exe'] &&
+          item.native?.image?.sha256 === config.installedSha256['gogoke-native-host.exe'] &&
+          item.shell?.image?.fileId && item.native?.image?.fileId &&
+          item.shell?.creationUtc && item.native?.creationUtc) {
+        original = item; clearTimeout(timer); resolveReady(item);
+      } else if (item.kind === 'EXIT' && original && !completed &&
+          ['shell', 'native'].includes(item.role) && events.every(event => event.role !== item.role) &&
+          item.pid === original[item.role].pid && item.creationUtc === original[item.role].creationUtc &&
+          typeof item.observedUtc === 'string') {
+        events.push(item);
+      } else if (item.kind === 'COMPLETE' && original && events.length === 2 &&
+                 item.installedCandidateProcesses === 0) {
+        completed = true;
+      } else {
+        throw Error('Original candidate close observer frame differs');
+      }
+    } catch (cause) {
+      error = cause; clearTimeout(timer); rejectReady(cause);
+    }
+  });
+  helper.once('error', cause => { error = cause; clearTimeout(timer); rejectReady(cause); rejectDone(cause); });
+  helper.once('close', code => {
+    clearTimeout(timer);
+    if (!original) rejectReady(error ?? Error(`Original candidate close observer exited before handles: ${code}; ${stderr}`));
+    if (code !== 0 || error || !completed || events.length !== 2) {
+      rejectDone(error ?? Error(`Original shell/native close event incomplete: helper=${code}; ${stderr}`));
+    } else resolveDone({ ready: original, events, completed: true });
+  });
+  return { ready, done, events };
+}
 
 export class ActualProduct {
   constructor(config, journal) {
@@ -283,20 +338,39 @@ export class ActualProduct {
   async closeNormally() {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) throw Error('Original caption requires the proven live product socket; no close dispatched');
     await this.custody();
+    const observer = observeInstalledClose(this.config, this.endpoint.pid);
+    const original = await observer.ready;
+    if (this.child.exitCode !== null || this.child.signalCode !== null || observer.events.length) {
+      throw Error('Original shell/native exited before the caption close');
+    }
+    this.journal.nativeCloseReadiness ??= [];
+    this.journal.nativeCloseReadiness.push(original); this.save();
     const exited = new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(Error('Original caption close did not exit; no force kill')), 30000);
       this.child.once('exit', code => { clearTimeout(timer); resolve(code); });
     });
     // A dispatch error still leaves the original bounded exit observer handled.
     exited.catch(() => {});
+    const captionStarted = new Date().toISOString();
     const dispatched = await this.evaluate('(()=>{const b=document.querySelector(".window-caption-control-close");if(!b)throw Error("Actual caption close absent");setTimeout(()=>b.click(),100);return "CAPTION_CLOSE_DISPATCHED"})()');
     if (dispatched !== 'CAPTION_CLOSE_DISPATCHED') throw Error('Actual caption close was not dispatched');
-    const code = await exited;
+    const [code, observed] = await Promise.all([exited, observer.done]);
+    if (observed.events.some(event => Date.parse(event.observedUtc) < Date.parse(captionStarted)) ||
+        observed.events.some(event => !Number.isFinite(Date.parse(event.observedUtc)))) {
+      throw Error('Original shell/native exit preceded the caption close');
+    }
+    const shell = observed.events.find(event => event.role === 'shell');
+    const native = observed.events.find(event => event.role === 'native');
+    if (!shell || !native || shell.code !== null && shell.code !== code) {
+      throw Error('Original shell/native exit code or process binding differs');
+    }
     this.socket.close();
     if (this.tester) {
       await this.tester.dispose(); this.tester = null;
     }
-    this.journal.closes.push({ pid: this.endpoint.pid, exitCode: code, forceKill: false }); this.save();
+    this.journal.closes.push({ pid: this.endpoint.pid, exitCode: code, forceKill: false,
+      captionStartedUtc: captionStarted, nativeExit: native, shellExit: shell,
+      nativeIdentity: observed.ready.native }); this.save();
     if (code !== 0) throw Error(`Actual product exit=${code}; ${this.stderr}`);
   }
   async preserveFailure() {
