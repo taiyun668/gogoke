@@ -65,9 +65,12 @@ export async function runRulesCase(product, config, journal) {
         qualification.gate.revision === before.foreignProject?.gate?.revision &&
         qualification.reviewGrant?.caller_seat_id === c.submitterSession.seatId &&
         qualification.reviewGrant.target_id === qualification.reviewerSeatId &&
-        qualification.reviewGrant.action === 'REVIEW' && qualification.reviewGrant.expires_at_ms === 0,
-      'Cross-project DENIED requires an actual same-scope A gate-submit/reviewer-REVIEW qualification');
+        qualification.reviewGrant.action === 'REVIEW' && qualification.reviewGrant.expires_at_ms === 0 &&
+        c.userPermissionTier === 'NETWORKED_WRITE' &&
+        qualification.callerMaxPermissionTier === c.userPermissionTier,
+      'Cross-project DENIED requires the selected test USER tier and actual same-scope A gate-submit/reviewer-REVIEW qualification');
       record.sameScopeQualification = qualification;
+      record.userPermissionTier = c.userPermissionTier;
       requireFact(before.sameScopeOwnerPolicy?.configuration === c.sameScopePolicy &&
         before.sameScopeOwnerPolicy.gate?.submitter_seat_id === c.submitterSession.seatId &&
         before.sameScopeOwnerPolicy.gate?.reviewer_seat_id === c.reviewerSession.seatId,

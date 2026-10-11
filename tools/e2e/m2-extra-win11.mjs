@@ -57,6 +57,9 @@ if (rules.foreignProject !== undefined && (
 if (crossProjectOnly && (rules.foreignProject === undefined || rules.host !== undefined)) {
   throw Error('CROSS_PROJECT_ONLY requires the original B head/gate bytes and excludes Host cases');
 }
+if (crossProjectOnly && rules.userPermissionTier !== 'NETWORKED_WRITE') {
+  throw Error('CROSS_PROJECT_ONLY requires the explicitly selected test USER permission tier NETWORKED_WRITE');
+}
 if (crossProjectOnly) {
   const foreign = rules.foreignProject;
   const head = JSON.parse(foreign.ownerHead.rawFrame);
@@ -179,7 +182,8 @@ const journal = {
   rulesCases: [],
   foreignProject: rules.foreignProject ?? null,
   rulesSelection: crossProjectOnly ? 'CROSS_PROJECT_ONLY' : 'ALL',
-  ...(crossProjectOnly ? { rulesSourceSelection: { ...rules.submitter }, sameScopePolicy: rules.sameScopePolicy } : {}),
+  ...(crossProjectOnly ? { rulesSourceSelection: { ...rules.submitter },
+    rulesUserPermissionTier: rules.userPermissionTier, sameScopePolicy: rules.sameScopePolicy } : {}),
   v12: 'NOT_RUN_ORIGINAL_M2_SIDE_WORKTREE_READBACK_REQUIRED',
   v08: 'RUNNING',
 };
