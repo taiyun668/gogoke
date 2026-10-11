@@ -30,6 +30,7 @@ volatile LONG g_server_observation = 0;
 volatile LONG g_server_w_observation = 0;
 volatile LONG g_client_observation = 0;
 volatile LONG g_diagnostic_write_error = 0;
+volatile LONG g_opencode_pipe_mode = 0;
 
 // libuv's fixed uv__unique_pipe_name uses a 64-byte buffer and the form
 // \\?\pipe\uv\<decimal>-<pid>. Both ends of its private pair use that name.
@@ -195,7 +196,9 @@ void report_pipe_observation(const char* api, const char* event, const char* tar
     };
     FILETIME now = {};
     GetSystemTimeAsFileTime(&now);
-    append("gogoke Claude pipe api="); append(api);
+    append(InterlockedCompareExchange(&g_opencode_pipe_mode, 0, 0) == 1
+        ? "gogoke OpenCode pipe api=" : "gogoke Claude pipe api=");
+    append(api);
     append(" event="); append(event);
     append(mapped ? " mapped=1" : " mapped=0");
     append(event[0] == 'e' ? " outcome=pending" :
@@ -220,7 +223,8 @@ void report_pipe_failure(const char* api, DWORD error) {
     // name, request, credential, or private path. Stderr is already host-held.
     char line[160] = {};
     DWORD len = 0;
-    const char* lead = "gogoke Claude ";
+    const char* lead = InterlockedCompareExchange(&g_opencode_pipe_mode, 0, 0) == 1
+        ? "gogoke OpenCode " : "gogoke Claude ";
     while (*lead) line[len++] = *lead++;
     while (*api) line[len++] = *api++;
     const char* middle = " failed win32=";
@@ -607,7 +611,9 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID) {
     switch (select_mode()) {
         case CompatMode::CodexPath: return patch_exact_main_import() ? TRUE : FALSE;
         case CompatMode::ClaudePipe:
+            return patch_exact_uv_pipe_imports() ? TRUE : FALSE;
         case CompatMode::OpenCodePipe:
+            InterlockedExchange(&g_opencode_pipe_mode, 1);
             return patch_exact_uv_pipe_imports() ? TRUE : FALSE;
         default: return FALSE;
     }
