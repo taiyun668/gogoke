@@ -1414,7 +1414,10 @@ impl LaunchEvidence {
                 },
                 // The pinned top-level --pure switch disables external plugins;
                 // it does not by itself prove memory isolation or model choice.
-                "opencode" => vec!["--pure".into(), "acp".into()],
+                // The fixed CLI normally keeps startup diagnostics in its own
+                // file. Route those diagnostics into H's existing bounded
+                // stderr evidence so an ACP handshake failure retains its cause.
+                "opencode" => vec!["--pure".into(), "--print-logs".into(), "acp".into()],
                 "grok" => {
                     let (model, effort) = self.settings()?;
                     evidence(commands::grok_launch_args(&model, &effort))?

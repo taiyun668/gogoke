@@ -19,7 +19,14 @@ Acceptance remains with Owner. M2/M3, stable full-chain gates, and SAC-enabled s
 
 ## Next
 
-Use original startup evidence and a bounded independent D-only development comparison to locate the OpenCode initialize timeout before attempting model input. Integrate the reviewed and cloud-tested failed-resume resource repair; continue Claude/Grok conversations and Secretary persistence work. No new Owner login or reboot is requested. Before stable observation/acceptance, remind Owner to re-enable SAC and read it back.
+The reviewed and cloud-tested failed-resume resource repair is now integrated. Integration-source Browser and hygiene passed; its exact affected native check is running. Original instance resources have not yet been changed by this fix. Use original startup evidence and the independent D-only development comparison to locate the OpenCode initialize timeout before attempting model input; continue Claude/Grok conversations and Secretary persistence work. No new Owner login or reboot is requested. Before stable observation/acceptance, remind Owner to re-enable SAC and read it back.
+
+## Non-elevated follow-up
+
+- A single literal-subst LPAC development experiment using the actual product's client version and session/new request number returned both ACKs; genuine stop, empty Job, writer fence, exact mapping removal and profile deletion succeeded. These values do not explain the product's missing initialize ACK. Its D-only unlogged home, program and F objects still differ from the product; this is not product acceptance.
+- An ordinary-view read of the original selected instance's CLI log metadata found only the older log, with no log from the failed initialize. No credential content was read. The fixed CLI's own help and official [CLI documentation](https://opencode.ai/docs/cli/#global-flags) both provide `--print-logs`, which directs original diagnostics to stderr. The narrow source change routes those into H's existing bounded stderr evidence, without changing the CLI bytes, log level, permissions, request or timeout. Independent Sol found no blocking defect: stdout remains ACP-only, stderr has an independent continuous reader and a bounded tail. This does not establish that the next real failure's cause has already been captured. Version 0.1.62 contains this evidence fix and the genuine failed-resume resource repair; its build/installation and original-resource validation are pending.
+- A separate worker is comparing only canonical Windows extended-path environment spellings in the same independent D experiment. Another Sol seat is investigating Secretary cold recovery from original thread/turn facts. These development comparisons cannot substitute for the installed-product run.
+- Routine progress is recorded in PR #54; no new installed-model capability is claimed. C-root ACL remains unchanged, and the fixed-group proposal is not implemented.
 
 ## References
 
