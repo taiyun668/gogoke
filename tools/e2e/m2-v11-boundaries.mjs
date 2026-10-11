@@ -151,6 +151,10 @@ export async function runV11FileBoundaries(product, config, journal) {
     caseRecord.events = tools.map(event => ({ itemId: event.toolCallId,
       type: event._meta.codexItemType, status: event.status, rawOutput: event.rawOutput,
       meta: event._meta }));
+    caseRecord.outputDeltas = session.events.filter(event =>
+      event._meta?.codexMethod === 'item/fileChange/outputDelta' &&
+      event._meta.turnId === caseRecord.turnId && event._meta.threadId === session.threadId)
+      .map(event => ({ itemId: event.toolCallId, rawOutput: event.rawOutput, meta: event._meta }));
     caseRecord.toolStatus = tools.length === 1 &&
       ['fileChange', 'commandExecution'].includes(tools[0]._meta.codexItemType) ?
       'LIVE_ORIGINAL_TOOL_OBSERVED_RAW_READBACK_REQUIRED' :
