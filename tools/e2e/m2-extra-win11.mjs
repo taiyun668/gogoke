@@ -401,20 +401,22 @@ async function reuseRulesWorktree(selection) {
 
 async function prepareNewHostSeat(selection, sourceCard) {
   const templateId = sourceCard.result.templateId;
-  const expected = sourceCard.result.settings;
-  check(atom(templateId) && expected && typeof expected === 'object' &&
-    typeof expected.model === 'string' && typeof expected.effort === 'string' &&
-    expected.permissionTier === 'NETWORKED_WRITE' &&
+  const observedSourceSettings = sourceCard.result.settings;
+  check(atom(templateId) && observedSourceSettings && typeof observedSourceSettings === 'object' &&
+    typeof observedSourceSettings.model === 'string' && typeof observedSourceSettings.effort === 'string' &&
+    observedSourceSettings.permissionTier === 'NETWORKED_WRITE' &&
     selection.instanceId === rules.submitter.instanceId,
-  'Host recipient needs an original complete USER template and the admitted Codex instance');
+  'Host recipient needs the original USER template identity/source model facts and admitted Codex instance');
   const created = await product.operation('K-SEAT', 'create-from-template', selection.seatId,
     { layer: 'USER', templateId }, '0');
   const createRequestId = journal.operations.at(-1).request.requestId;
   check(created.status === 'APPLIED' && created.result.layer === 'USER' &&
     created.result.kind === 'LONG' && created.result.state === 'IDLE' &&
     created.result.instanceId === null && created.result.templateId === templateId &&
-    JSON.stringify(created.result.settings) === JSON.stringify(expected),
-  'New Host E must copy the complete original A template, never infer missing settings');
+    created.result.settings?.model === observedSourceSettings.model &&
+    created.result.settings?.effort === observedSourceSettings.effort &&
+    created.result.settings?.permissionTier === observedSourceSettings.permissionTier,
+  'New Host E receipt must preserve the observed original model/effort/tier; full template is checked from immutable metadata');
   const bound = await product.operation('K-SEAT', 'bind-instance', selection.seatId,
     { instanceId: selection.instanceId }, created.revision);
   const bindRequestId = journal.operations.at(-1).request.requestId;
@@ -427,6 +429,38 @@ async function prepareNewHostSeat(selection, sourceCard) {
     createWorktreeRequestId: journal.operations.at(-2).request.requestId,
     registerWorktreeRequestId: journal.operations.at(-1).request.requestId });
   product.save();
+}
+
+function verifyHostTemplateReadback(baseline) {
+  const sourceReads = journal.hostSourceReadbacks ?? [];
+  const preparations = journal.hostUserPreparations ?? [];
+  const templateRows = baseline.hostTemplateSettings ?? [];
+  const operations = new Map(journal.operations.map(row => [row.request?.requestId, row]));
+  check(sourceReads.length === 2 && preparations.length === 2 && templateRows.length === 1 &&
+    sourceReads[0].selection.seatId === rules.submitter.seatId &&
+    sourceReads[1].selection.seatId === rules.reviewer.seatId &&
+    sourceReads.every(row => typeof row.cardRequestId === 'string'),
+  'Host-only requires two original source USER reads and one immutable template row');
+  const sourceCards = sourceReads.map(row => operations.get(row.cardRequestId));
+  const template = templateRows[0];
+  const settings = template.settings;
+  check(sourceCards.every(row => row?.receipt?.status === 'APPLIED') &&
+    sourceCards.every(row => row.receipt.result.templateId === template.templateId) &&
+    preparations.every(row => row.templateId === template.templateId) &&
+    settings && typeof settings === 'object' &&
+    !Object.hasOwn(settings, 'orchestrationScope') &&
+    settings.permissionTier === 'NETWORKED_WRITE' &&
+    sourceCards.every(row => row.receipt.result.settings?.model === settings.model &&
+      row.receipt.result.settings?.effort === settings.effort &&
+      row.receipt.result.settings?.permissionTier === settings.permissionTier),
+  'Immutable original USER template must bind source model/effort/tier without inheriting current orchestration scope');
+  for (const item of preparations) {
+    const create = operations.get(item.createRequestId);
+    check(create?.receipt?.status === 'APPLIED' &&
+      create.receipt.result.templateId === template.templateId &&
+      JSON.stringify(create.receipt.result.settings) === JSON.stringify(settings),
+    'New Host USER create receipt must exactly copy the immutable original template row');
+  }
 }
 
 async function runRules() {
@@ -474,6 +508,10 @@ async function runRules() {
   }
   if (!baselineReadback) await product.closeNormally();
   if (!baselineReadback) baselineReadback = await rulesReadback('before');
+  if (hostOnly) {
+    const baseline = readJson(path.join(evidencePath, baselineReadback.file));
+    verifyHostTemplateReadback(baseline);
+  }
   if (!crossProjectOnly) {
     await product.launch();
     await product.instances();
