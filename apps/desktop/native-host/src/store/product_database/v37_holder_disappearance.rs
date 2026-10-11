@@ -512,7 +512,25 @@ impl<'root> ProductDatabase<'root> {
                 return Err(refused("holder recovery unowned profile intent"));
             }
         }
-        let members:Vec<String>=if let Some(record)=records.values().find(|r|r.phase!=Phase::Applied) {
+        // A completed F-only failed child stays REVOKED. Its exact ordinary
+        // empty-thread release must be verified before it can stop selecting
+        // the old frozen group; phase or a release label alone is insufficient.
+        let mut originals=BTreeMap::new();let mut completed=Vec::new();
+        for (id,record) in &records {
+            let profile=profiles.iter().find(|p|&p.binding_id==id)
+                .ok_or_else(||refused("holder completed profile absent"))?;
+            let original=self.gone_original(profile)?;let capture=decode(record)?;
+            self.gone_validate_capture(&original,&capture,&object,&home.identity,&alias_physical,record)?;
+            if record.phase==Phase::Applied || (record.phase==Phase::Revoked
+                && get(&capture,"kind").ok().as_deref()==Some("FAILED_RESUME_PROFILE_ONLY_V1")
+                && get(&original,"claimState")?=="RELEASED"
+                && self.completed_empty_secretary_release(&capture)?) {
+                completed.push(id.clone());
+            }
+            originals.insert(id.clone(),original);
+        }
+        let members:Vec<String>=if let Some(record)=records.values()
+            .find(|r|r.phase!=Phase::Applied && !completed.contains(&r.input.binding_id)) {
             get(&decode(record)?,"members")?.split(',').map(str::to_owned).collect()
         } else {rows(&self.connection,
             "SELECT p.binding_id FROM main.gogoke_v37_credential_profiles p
@@ -533,9 +551,8 @@ impl<'root> ProductDatabase<'root> {
             && self.disappeared_credential_holders.get(&(instance_id.into(),object.file_identity.opaque()))
                 .is_some_and(|prior|std::sync::Arc::ptr_eq(prior,&binding));
         let retained=retained && fail(binding.acl_prepared_in_this_holder())?;
-        let mut originals=BTreeMap::new();
         for profile in &profiles {
-            if members.contains(&profile.binding_id) || records.contains_key(&profile.binding_id) {
+            if members.contains(&profile.binding_id) && !originals.contains_key(&profile.binding_id) {
                 originals.insert(profile.binding_id.clone(),self.gone_original(profile)?);
             }
         }

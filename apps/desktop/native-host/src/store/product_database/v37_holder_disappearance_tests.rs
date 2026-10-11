@@ -866,3 +866,124 @@ fn failed_resume_profile_only_cold_recovery_preserves_original_claim_at_each_bou
         product.close_checked().unwrap();drop(parent);drop(root);std::fs::remove_dir_all(path).unwrap();
     }
 }
+
+#[test]
+fn completed_empty_release_revoked_capture_does_not_select_next_failed_resume_group() {
+    fn captured(record:&gone::HolderDisappearanceRecord)->BTreeMap<String,String> {
+        let raw=(0..record.input.snapshot_hex.len()).step_by(2)
+            .map(|i|u8::from_str_radix(&record.input.snapshot_hex[i..i+2],16).unwrap()).collect::<Vec<_>>();
+        let Json::Object(fields)=crate::store::atomic::Parser::parse(std::str::from_utf8(&raw).unwrap()).unwrap() else {panic!("original capture object")};
+        fields.into_iter().map(|(key,value)|{
+            let Json::String(value)=value else {panic!("original capture field")};
+            (key.to_well_formed_string().unwrap(),value.to_well_formed_string().unwrap())
+        }).collect()
+    }
+    let _guard=route_b_test_guard();
+    let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path=std::env::temp_dir().join(format!("holder-group-{}-{stamp}",std::process::id()));
+    std::fs::create_dir(&path).unwrap();
+    let root=RootLock::acquire(&path).unwrap();let database=path.join("state.sqlite");
+    let mut product=ProductDatabase::open(&root,&database).unwrap();
+    managed_cli_test_setup::ready(&mut product,&root,"codex");
+    applied(&mut product,&operation("global","K-INSTANCE","register","group-register",INSTANCE,0,
+        r#"{"driverId":"codex"}"#));
+    qualify_file_backend(&mut product,&root);
+    instance::set_instance_concurrency_cap(&mut product.connection,&product.owner,INSTANCE,1).unwrap();
+    seat::set_project_parallel_cap(&mut product.connection,&product.owner,"global",1).unwrap();
+    seat::store_template(&mut product.connection,NativeOrigin::user(&product.owner),StoreTemplate {
+        domain_id:"global",template_id:"groupTemplate",settings_json:br#"{}"#,
+    }).unwrap();
+    let created=seat::create(&mut product.connection,NativeOrigin::user(&product.owner),CreateSeat {
+        domain_id:"global",seat_id:"groupSeat",template_id:"groupTemplate",instance_id:None,
+        kind:Kind::Long,request_id:"group-seat",request_bytes:b"test-created empty secretary seat",
+    }).unwrap().seat;
+    seat::designate_secretary(&mut product.connection,&product.owner,"groupSeat",
+        &created.incarnation,"group-designate",b"test-created secretary designation").unwrap();
+    product.connection.execute("UPDATE main.gogoke_v37_seats SET instance_id='instanceA'
+        WHERE domain_id='global' AND seat_id='groupSeat'").unwrap();
+    product.connection.execute(r#"UPDATE main.gogoke_v37_seat_settings
+        SET settings_json='{"effort":"high","model":"gpt-6-sol","permissionTier":"NETWORKED_WRITE"}'
+        WHERE domain_id='global' AND seat_id='groupSeat'"#).unwrap();
+    product.connection.execute("INSERT INTO main.gogoke_v37_instance_profiles
+        (instance_id,display_name,enabled,tombstoned,revision)
+        VALUES('instanceA','Synthetic fixture',1,0,1)").unwrap();
+    let mut completed=None;let mut first_history=Vec::new();let mut first_custody=Vec::new();
+    for (index,session) in ["groupSessionA","groupSessionB"].iter().enumerate() {
+        for (verb,revision) in [("admission-reserve",0),("admission-commit",1),("open",2)] {
+            applied(&mut product,&operation("global","K-SESSION",verb,&format!("group-{index}-{verb}"),session,revision,"{}"));
+        }
+        let generation=rows(&product,"SELECT generation FROM main.gogoke_v37_h_claim
+            WHERE domain_id='global' AND session_id=?1",&[session],1)[0][0].clone();
+        applied(&mut product,&operation("global","K-SESSION","stop",&format!("group-{index}-stop"),session,3,
+            &format!(r#"{{"seatId":"groupSeat","generation":"{generation}"}}"#)));
+        let stop=rows(&product,"SELECT generation,state,CAST(revision AS TEXT),stop_fact_id
+            FROM main.gogoke_v37_h_claim WHERE domain_id='global' AND session_id=?1",&[session],4);
+        assert_eq!(stop[0][1],"STOPPED");assert!(!stop[0][3].is_empty());
+        let request=operation("global","K-SESSION","resume",&format!("group-{index}-failed-resume"),session,4,
+            &format!(r#"{{"generation":"{generation}"}}"#));
+        let raw=product.dispatch_user_request(&request).unwrap();
+        assert_eq!(h::decode_receipt(&raw).unwrap().status,V37Status::Unknown,
+            "fixed CLI no-input thread returns its original typed rejection: {}",String::from_utf8_lossy(&raw));
+        let child=rows(&product,"SELECT e.binding_id,e.process_operation_id,c.pid,c.creation_time_100ns
+            FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_coordination_process_custody c
+              ON c.operation_id=e.process_operation_id
+            WHERE e.domain_id='global' AND e.session_id=?1 AND e.old_generation IS NOT NULL",&[session],4);
+        assert_eq!(child.len(),1);let pair=(child[0][2].parse().unwrap(),child[0][3].parse().unwrap());
+        let handle=pin_parent_metadata(pair.0,pair.1);
+        product.close_checked().unwrap();wait_actual_parent_exit(&handle,pair);
+        product=ProductDatabase::open(&root,&database).unwrap();
+        let before=resource_snapshot(&product);let claims=claim_rows(&product);
+        let writes=holder_gone_acl_write_count_for_test();
+        if let Some(old)=&completed {
+            assert!(instance::read_credential_profiles(&product.connection,INSTANCE).unwrap()
+                .iter().any(|p|p.binding_id==child[0][0] && p.state=="ACTIVE"));
+            // Each wrong original proof must refuse before adopting or changing
+            // either frozen group, even though the current new child is real.
+            let record: &gone::HolderDisappearanceRecord=old;
+            let snapshot=captured(record);
+            let release=super::v37_runtime::secretary_empty_release_request_id(
+                &root.canonical_root().identity.opaque(),&snapshot["session"],&snapshot["oldGeneration"],
+                &snapshot["claimRevision"],&snapshot["oldStopFact"]);
+            for column in ["raw_hex","previous_revision","revision"] {
+                let saved=rows(&product,&format!("SELECT CAST({column} AS TEXT) FROM main.gogoke_v37_h_operation
+                    WHERE domain_id='global' AND request_id=?1"),&[&release],1)[0][0].clone();
+                let change=Statement::prepare(product.connection.as_ptr(),&format!("UPDATE main.gogoke_v37_h_operation
+                    SET {column}=?1 WHERE domain_id='global' AND request_id=?2")).unwrap();
+                change.bind_text(1,if column=="raw_hex" {"00"} else {"999"}).unwrap();
+                change.bind_text(2,&release).unwrap();change.step_done().unwrap();drop(change);
+                let altered=resource_snapshot(&product);
+                assert!(product.recover_disappeared_credential_resources(INSTANCE,None).is_err(),"wrong original {column} release proof cannot exclude old capture");
+                assert_eq!(resource_snapshot(&product),altered);assert_eq!(holder_gone_acl_write_count_for_test(),writes);
+                let restore=Statement::prepare(product.connection.as_ptr(),&format!("UPDATE main.gogoke_v37_h_operation
+                    SET {column}=?1 WHERE domain_id='global' AND request_id=?2")).unwrap();
+                restore.bind_text(1,&saved).unwrap();restore.bind_text(2,&release).unwrap();restore.step_done().unwrap();drop(restore);
+            }
+            assert_eq!(resource_snapshot(&product),before);
+        }
+        product.recover_disappeared_credential_resources(INSTANCE,None)
+            .expect("one recovery selects only the new active failed child after verifying the old completed capture");
+        let new=gone::read_holder_disappearance(&product.connection,&child[0][0]).unwrap().unwrap();
+        assert_eq!(new.phase,HolderDisappearancePhase::Revoked);
+        let capture=captured(&new);
+        assert_eq!(capture["members"],child[0][0],"new group cannot expand the old frozen membership");
+        assert_eq!(holder_gone_acl_write_count_for_test()-writes,1,"only new child SID is revoked");
+        assert_eq!(claim_rows(&product),claims,"no fabricated StopFact or release of failed child's predecessor");
+        let current=rows(&product,"SELECT generation,CAST(revision AS TEXT) FROM main.gogoke_v37_h_claim
+            WHERE domain_id='global' AND session_id=?1",&[session],2);
+        assert!(product.settle_original_empty_secretary_thread(session,&current[0][0],&current[0][1]).unwrap());
+        if let Some(old)=&completed {
+            assert_eq!(gone::read_holder_disappearance(&product.connection,&old.input.binding_id).unwrap().unwrap(),*old,
+                "old REVOKED phase/members/snapshot/receipt bytes remain unchanged");
+            let history=episode_rows(&product);let custody=custody_rows(&product);
+            assert!(first_history.iter().all(|row|history.contains(row)),"old typed UNKNOWN and genuine stopped episode unchanged");
+            assert!(first_custody.iter().all(|row|custody.contains(row)),"old custody and StopFact unchanged");
+        } else {
+            first_history=episode_rows(&product);first_custody=custody_rows(&product);completed=Some(new);
+        }
+        product.close_checked().unwrap();drop(handle);product=ProductDatabase::open(&root,&database).unwrap();
+    }
+    let before=resource_snapshot(&product);let writes=holder_gone_acl_write_count_for_test();
+    product.recover_disappeared_credential_resources(INSTANCE,None).unwrap();
+    assert_eq!(resource_snapshot(&product),before);assert_eq!(holder_gone_acl_write_count_for_test(),writes);
+    product.close_checked().unwrap();drop(root);std::fs::remove_dir_all(path).unwrap();
+}
