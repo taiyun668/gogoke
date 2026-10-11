@@ -84,6 +84,20 @@
 
 验证覆盖同席位主会话与旁聊同时存在、各自停止并恢复、另一个会话继续有效，原授权不变而 H 物理代次改变；错实例、错 home、错 incarnation、授权变动、旧物理证明和缺原绑定均拒绝。这里细化既有 H 恢复和统一准入，不新增权限、持久写方、写入范围或 Owner 触点；原生验证只在云端执行，稳定点再在已安装候选上实测。
 
+### Claude 冷恢复的 ACK 与 init 时点细节（2026-10-11；审查草案）
+
+固定 Claude Code 2.1.196 的原实际协议结构显示：首次合法 USER 前只有 initialize ACK，`system/init` 在 USER 后出现；后续 USER 可再次收到同一厂商会话 ID 的 init。冷恢复不能要求 ACK 后、首 USER 前已取得 init，也不能把 ACK、旧代 init 或 `--resume` 参数当作新代 init 来源。此修订只纠正证明时点，不把原 ACK-only UNKNOWN 请求升级成成功。
+
+新合法冷恢复仍先核原 STOPPED/StopFact、未撤销绑定与当前授权、实例/F 私有历史、原已完成 A/H 厂商会话目标和新代 custody，再核新代 initialize 原命令与同 request ID 的真实成功 ACK。此时仅认 transport READY；回执 `readinessBasis=ORIGINAL_CLAUDE_INITIALIZE_ACK`，恢复身份仍未确认，对外观测 `threadId` 尚未确认时为 null。原目标 ID 只供受约束的恢复选择，不冒充已观察的新代身份。UNKNOWN 旧请求、旧 ACK 或旧物理证明不能借此成为新的 USER 写入依据。
+
+首次真实 USER 必须重新经过原 H prepare/begin、当前授权与物理调用证明，并且只写一次；其准入使用上述原 ACK 与封存目标，不能再把尚未发生的新 init 当作首 USER 前置。实际同代、同进程 custody 的 init 必须匹配原 STOPPED 会话已完成 A/H 的厂商 ID，才填写观测 threadId；多条相同 ID 的 init 保留第一条原 source，并逐条核一致，异 ID 拒绝。持久 completion 和成功回复读回都核同一原 ACK/绑定、原目标、同代 init、实际 USER 回显、result 与 A 来源关系；到结算或成功读回仍缺 init，或异 ID、错代/错 custody、来源不完整、关系不一致时，保留原错误和已写 USER 的 UNKNOWN，禁止成功交付，不重发、不换会话、不伪造历史。
+
+这里允许的是既有合法 USER 在已准入 transport 上的一次调用；实例、模型、effort、权限档位、F 历史可达域、LPAC/capabilities、CLI 固定字节及模型调用授权均保持。READY 不声明恢复上下文已证实，也不使模型回复或 `turn/start` 自动成为 completion；不加入等待、重试或 dummy 输入。验证沿原黄金协议与安全边界覆盖 ACK-only 就绪但身份未确认、原 STOPPED/ACK 拒绝、首次 USER 的同 ID/异 ID/缺 init、重复同 ID 首 source 保全以及完成/读回一致性；固定 CLI 无模型 ACK 对照不证明真实上下文恢复，原两轮与停止后恢复的上下文用例仍须实际端到端结算。
+
+参照：gogo-party `packages/seat-runtime/src/claude-seat.ts` 在真实事件流中由 init 更新厂商会话 ID，启动回执不充当 init；NaveHQ 的 host 证据/原请求恢复原则和 LoomOS 的已有轮子记录未提供可直接复用的 Claude 冷 ACK 身份实现；仓库 `docs/research/2026-09-25-substrate-source-teardown.md` 的 SDK 路径仅作线索。官方 [Python SDK Query.initialize/control_response](https://github.com/anthropics/claude-agent-sdk-python/blob/b6e9d12fe1cc98dde988ab7b7713c1feeee50c6c/src/claude_agent_sdk/_internal/query.py#L339) 与 [Client 的 initialize 后 USER 写入](https://github.com/anthropics/claude-agent-sdk-python/blob/b6e9d12fe1cc98dde988ab7b7713c1feeee50c6c/src/claude_agent_sdk/client.py#L242) 采用分离的 ACK 与数据消息；采用此顺序，不采用 SDK 的额外等待、后台任务或权限机制。固定 CLI 行为依据其原实际帧，SDK 源码和 mock 测试不替代本体。
+
+此草案仅细化既有 H/B2/A 恢复与 completion 约定，不增加写域、共享文件、持久写方、权限或 Owner 触点，scope digest 与原 v2 回执不变。按 amendment_rule，由新鲜独立审计确认边界后，Controller 合并细节修订才生效；本包停在产品施工前。后续开发遵守 [构建与发布治理](../../governance/gogoke-build-and-release.md)：本机开发先实际读 SAC=0，独立数据与产物/临时置于 D；正式原生检查在云端，安装、真实模型及验收结果本包均 NOT_RUN。
+
 ## 5. 汇合点
 
 汇合点包含哪些线，由各线的阶段推导出来，不另外手写名单。
