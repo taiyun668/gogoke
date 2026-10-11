@@ -227,9 +227,10 @@ export async function runRulesCase(product, config, journal) {
         requireFact(!reply.result.sourceError, 'Cross-project original A source error requires preservation without retry');
         return reply.result;
       };
-      const sent = await sessionOp(submitter, 'send', { body });
+      const sent = await product.operation('K-SESSION', 'send', submitter.id,
+        { generation: submitter.generation, body }, submitter.revision);
       action.sendRequestId = journal.operations.at(-1).request.requestId;
-      action.sendReceipt = sent; action.state = 'SENT';
+      action.sendReceipt = sent; submitter.revision = sent.revision; action.state = 'SENT';
       requireFact(sent.result.createdTurn === true && sent.result.turnId,
         'Cross-project test requires one actual original H model turn');
       action.turnId = sent.result.turnId; product.save();
