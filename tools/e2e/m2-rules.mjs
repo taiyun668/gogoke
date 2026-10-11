@@ -95,6 +95,148 @@ export async function runRulesCase(product, config, journal) {
       record.seatCards.push(journal.operations.at(-1).request.requestId); product.save();
     }
 
+    if (c.selection === 'CROSS_PROJECT_ONLY') {
+      const foreign = c.foreignProject;
+      requireFact(foreign && foreign.ownerHead && foreign.ownerGate &&
+        Object.keys(foreign.ownerHead).sort().join(',') === 'rawFrame,rawReceipt' &&
+        Object.keys(foreign.ownerGate).sort().join(',') === 'rawFrame,rawReceipt' &&
+        before.foreignProject?.configuration?.domainId === foreign.domainId &&
+        before.foreignProject?.configuration?.gateId === foreign.gateId &&
+        before.foreignProject?.policy?.head?.length === 1 &&
+        before.foreignProject?.gate?.state === 'READY' && before.foreignProject.gate.revision === 1 &&
+        !before.policy.gates.some(row => row.gate_id === foreign.gateId),
+      'CROSS_PROJECT_ONLY requires the existing closed B head/gate baseline and original bytes; it never initializes or changes Owner policy');
+      const headRequest = JSON.parse(foreign.ownerHead.rawFrame);
+      const headReceipt = JSON.parse(foreign.ownerHead.rawReceipt);
+      const gateRequest = JSON.parse(foreign.ownerGate.rawFrame);
+      const gateReceipt = JSON.parse(foreign.ownerGate.rawReceipt);
+      const keysEqual = (value, names) => JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...names].sort());
+      requireFact(keysEqual(headRequest, ['schema','command','domainId','requestId','stage','expectedRevision']) &&
+        headRequest.schema === 'gogoke.37.owner-configuration.v1' && headRequest.command === 'policy-initialize' &&
+        headRequest.domainId === foreign.domainId && headRequest.stage === before.foreignProject.policy.head[0].current_stage &&
+        headRequest.expectedRevision === '0' && headReceipt.schema === headRequest.schema &&
+        headReceipt.command === headRequest.command && headReceipt.requestId === headRequest.requestId &&
+        headReceipt.status === 'APPLIED' && headReceipt.revision === '1' &&
+        keysEqual(gateRequest, ['schema','command','domainId','requestId','gateId','submitterSeatId',
+          'reviewerSeatId','fromStage','toStage','rejectCap','expectedRevision']) &&
+        gateRequest.schema === 'gogoke.37.owner-configuration.v1' && gateRequest.command === 'policy-gate' &&
+        gateRequest.domainId === foreign.domainId && gateRequest.gateId === foreign.gateId &&
+        gateRequest.expectedRevision === headReceipt.revision && gateReceipt.schema === gateRequest.schema &&
+        gateReceipt.command === gateRequest.command && gateReceipt.requestId === gateRequest.requestId &&
+        gateReceipt.status === 'APPLIED' && gateReceipt.revision === '2',
+      'Foreign fixture must carry its original new-test-domain NativeUser head/gate frames and receipts');
+      requireFact(c.host === undefined, 'CROSS_PROJECT_ONLY cannot include Host cases');
+
+      record.selection = 'CROSS_PROJECT_ONLY';
+      record.selectedCase = 'V08_MODEL_CROSS_PROJECT';
+      record.foreignProject = foreign;
+      record.initialSessions = [binding(submitter), binding(reviewer)];
+      record.submitterSession = submitter.id; record.reviewerSession = reviewer.id;
+      record.worktreeCards = []; record.capabilityProbes = [];
+      record.notRun = [
+        ...['V08_SUBMIT_REJECT_GATE','V08_REJECT_WITH_REASON','V08_MODEL_BYPASS_GATE','V08_RESUBMIT',
+          'V08_REJECT_CAP_STATE_ONLY','V08_MODEL_CAP_BLOCKS_SUBMIT','V08_MODEL_EXPIRED_GRANT',
+          'V08_SUBMIT_PASS_GATE','V08_MODEL_FORGED_SENDER','V08_MODEL_WRONG_REVIEWER',
+          'V08_MODEL_EMPTY_REJECT_REASON','V08_APPROVE','V08_LEGAL_STAGE'].map(caseId =>
+            ({ caseId, reason: 'NOT_RUN_IN_CROSS_PROJECT_ONLY_SELECTION; preserved as an explicit original V08 requirement.' })),
+        { caseId: 'V08_USER_POLICY_UNSUPPORTED', reason: 'NOT_RUN_IN_CROSS_PROJECT_ONLY_SELECTION; this run makes no User policy request.' },
+        { caseId: 'V08_MODEL_SUBORDINATE_OWNER', reason: 'No advertised/reachable Model MESSAGE/Owner producer exists in the current H tool path.' },
+        { caseId: 'V08_STALL_CHAIN', reason: 'No qualifying original failed WORK plus original compact -32601 Unsupported under the same custody.' },
+        { caseId: 'V08_REJECT_CAP_DELIVERY', reason: 'Host recipient/checkpoint case is outside CROSS_PROJECT_ONLY.' },
+        { caseId: 'V08_HOST_DELIVERED', reason: 'Host case is outside CROSS_PROJECT_ONLY.' },
+        { caseId: 'V08_HOST_BUSY_QUEUED', reason: 'Host case is outside CROSS_PROJECT_ONLY.' },
+        { caseId: 'V08_HOST_ROUTE_CHANGED', reason: 'Host case is outside CROSS_PROJECT_ONLY.' },
+        { caseId: 'V08_HOST_CANCELLED', reason: 'Host case is outside CROSS_PROJECT_ONLY.' },
+        { caseId: 'V08_HOST_BUSY_TO_IDLE_DELIVERY', reason: 'Host case is outside CROSS_PROJECT_ONLY.' },
+        { caseId: 'V08_HOST_LATE_ACK_AFTER_ROUTE_CHANGE', reason: 'Late-ACK host case is outside CROSS_PROJECT_ONLY.' },
+      ];
+      for (const session of [submitter, reviewer]) {
+        const tree = await product.operation('K-WORKTREE', 'graph-query', session.worktreeId, {}, '0', ['APPLIED', 'STALE']);
+        const observedTree = tree.status === 'STALE' ?
+          await product.operation('K-WORKTREE', 'graph-query', session.worktreeId, {}, tree.revision) : tree;
+        requireFact(observedTree.result.state === 'REGISTERED' && observedTree.result.members?.some(member =>
+          member.domainId === config.domainId && member.repositoryId === config.repositoryId &&
+          member.seatId === session.seatId && member.instanceId === session.instanceId &&
+          member.worktreeId === session.worktreeId),
+        'Cross-project A session requires its actual registered E/F worktree membership');
+        record.worktreeCards.push({ sessionId: session.id,
+          requestId: journal.operations.at(-1).request.requestId,
+          result: observedTree.result }); product.save();
+        const capability = await product.operation('K-SESSION', 'capability-probe', session.id,
+          { generation: session.generation }, session.revision);
+        session.revision = capability.revision; product.save();
+        requireFact(capability.result.driverId === 'codex' && capability.result.version &&
+          /^sha256:[a-f0-9]{64}$/.test(capability.result.binaryDigest),
+        'Cross-project H requires the actual current Codex CLI capability pin');
+        record.capabilityProbes.push({ sessionId: session.id,
+          requestId: journal.operations.at(-1).request.requestId, receipt: capability }); product.save();
+      }
+      const args = { operation: 'gate-submit', targetId: foreign.gateId,
+        expectedRevision: String(before.foreignProject.gate.revision), payload: {} };
+      const action = { caseId: 'V08_MODEL_CROSS_PROJECT', state: 'PREPARED', acceptance: false,
+        sessionId: submitter.id, seatId: submitter.seatId, binding: binding(submitter),
+        arguments: args, expected: { status: 'DENIED', state: null, reason: '',
+          policyRevision: String(before.policy.head[0].revision) }, readbackRequired: true };
+      const body = `Owner-authorized V08 cross-project test under the existing test scope. Make exactly one real gogoke_policy call with these exact arguments: ${JSON.stringify(args)}. No retries or other tool calls. Do not edit files, invoke processes, dispatch seats, contact anyone, request permission, or infer success from prose. Preserve the original native result and finish this turn.`;
+      action.askBytes = body; record.actions.push(action); product.save();
+      const start = submitter.events.length;
+      const readOutput = async () => {
+        let reply = await product.operation('K-SESSION', 'output-stream', submitter.id,
+          { generation: submitter.generation, afterCursor: submitter.cursor }, submitter.revision,
+          ['APPLIED', 'STALE']);
+        if (reply.status === 'STALE') {
+          submitter.revision = reply.revision; product.save();
+          reply = await product.operation('K-SESSION', 'output-stream', submitter.id,
+            { generation: submitter.generation, afterCursor: submitter.cursor }, submitter.revision);
+        }
+        requireFact(reply.result.generation === submitter.generation && decimal(reply.result.cursor) &&
+          BigInt(reply.result.cursor) >= BigInt(submitter.cursor),
+        'Cross-project original H output cursor must remain monotonic');
+        submitter.cursor = reply.result.cursor; submitter.revision = reply.revision;
+        submitter.events.push(...reply.result.events); product.save();
+        requireFact(!reply.result.sourceError, 'Cross-project original A source error requires preservation without retry');
+        return reply.result;
+      };
+      const sent = await sessionOp(submitter, 'send', { body });
+      action.sendRequestId = journal.operations.at(-1).request.requestId;
+      action.sendReceipt = sent; action.state = 'SENT';
+      requireFact(sent.result.createdTurn === true && sent.result.turnId,
+        'Cross-project test requires one actual original H model turn');
+      action.turnId = sent.result.turnId; product.save();
+      const deadline = Date.now() + 600000;
+      let completed;
+      while (Date.now() < deadline) {
+        await readOutput();
+        completed = submitter.events.slice(start).find(row => row._meta?.codexMethod === 'turn/completed' &&
+          row._meta.threadId === submitter.threadId && row._meta.turnId === action.turnId);
+        if (completed) break;
+        await delay(300);
+      }
+      requireFact(completed?._meta?.turnStatus === 'completed',
+        'Original cross-project CLI turn did not complete; the request is never resent');
+      const events = submitter.events.slice(start).filter(row => row._meta?.turnId === action.turnId);
+      const tools = events.filter(row => row._meta?.codexMethod === 'item/completed' &&
+        ['dynamicToolCall','mcpToolCall','commandExecution','fileChange'].includes(row._meta.codexItemType));
+      requireFact(tools.length === 1 && tools[0]._meta.codexItemType === 'dynamicToolCall' &&
+        tools[0].status === 'failed', 'Cross-project requires exactly one original failed dynamic tool completion');
+      const content = Array.isArray(tools[0].rawOutput) ? tools[0].rawOutput : tools[0].rawOutput?.contentItems;
+      requireFact(Array.isArray(content) && content.length === 1 && content[0].type === 'inputText' &&
+        typeof content[0].text === 'string', 'Original cross-project native tool receipt text is missing');
+      action.cliToolStatus = tools[0].status; action.rawToolReceipt = content[0].text;
+      action.receipt = JSON.parse(action.rawToolReceipt);
+      requireFact(action.receipt.schema === 'gogoke.37.operations.v1' &&
+        action.receipt.family === 'K-POLICY' && action.receipt.operation === 'gate-submit' &&
+        action.receipt.targetId === foreign.gateId && action.receipt.status === 'DENIED' &&
+        action.receipt.previousRevision === args.expectedRevision &&
+        action.receipt.revision === args.expectedRevision && JSON.stringify(action.receipt.result) === '{}',
+      'Cross-project model call did not return the exact original native DENIED result');
+      submitter.turns.push({ turnId: action.turnId, sendRequestId: action.sendRequestId });
+      action.state = 'ORIGINAL_DENIED_RECEIPT_OBSERVED_REQUIRES_CLOSED_READBACK';
+      record.state = 'FLOW_COMPLETE_DIRECT_LEDGER_READBACK_REQUIRED';
+      product.save();
+      return record;
+    }
+
     const configure = async (command, fields) => {
       const request = { schema: 'gogoke.37.owner-configuration.v1', command,
         domainId: config.domainId, requestId: id('v08Owner'), ...fields, expectedRevision: policyRevision };
