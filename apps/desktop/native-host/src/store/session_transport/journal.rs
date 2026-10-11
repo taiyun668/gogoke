@@ -888,7 +888,37 @@ fn claude_initialize_observed_in_transaction(
     match super::rpc_journal::read_observed_claude_ack_in_transaction(
         connection, owner, &step)? {
         Some((stream_json::ClaudeData::ControlResponse { success: true, .. }, _)) => Ok(()),
-        _ => Err(JournalError::Unknown),
+        Some(_) => Err(JournalError::Unknown),
+        None => {
+            // A late ACK after a read failure keeps the RPC step UNKNOWN.
+            // Only an already promoted resume on this same live H custody may
+            // use its independently verified original A ACK and new init.
+            let current=h_binding(connection,input.user.domain_id,
+                input.user.session_id,input.user.ticket,input.user.generation,
+                BindingUse::Prepare)?;
+            if current.ticket!=input.custody.ticket.opaque()
+                || current.custodian_nonce!=input.custody.custodian_nonce
+                || current.domain_id!=input.custody.binding.domain_id
+                || current.generation!=input.custody.binding.generation {
+                return Err(JournalError::Denied);
+            }
+            let resumed=Statement::prepare(connection.as_ptr(),
+                "SELECT 1 FROM main.gogoke_v37_h_process_episode
+                  WHERE domain_id=?1 AND session_id=?2 AND request_id=?3
+                    AND raw_hex=?4 AND generation=?5 AND process_operation_id=?6
+                    AND old_generation IS NOT NULL AND phase='ACTIVE'")?;
+            for (index,value) in [input.user.domain_id,input.user.session_id,
+                input.open_request_id,hex(input.open_request_bytes).as_str(),
+                input.user.generation,current.process_operation_id.as_str()]
+                .iter().enumerate() { resumed.bind_text((index+1) as i32,value)?; }
+            if !resumed.step_row()? { return Err(JournalError::Unknown); }
+            if resumed.step_row()? { return Err(JournalError::Conflict); }
+            drop(resumed);
+            if read_original_claude_resume_init(connection,input.user.domain_id,
+                input.user.session_id,input.open_request_id,input.user.generation,
+                &current.process_operation_id)?.is_some() { Ok(()) }
+            else { Err(JournalError::Unknown) }
+        }
     }
 }
 
