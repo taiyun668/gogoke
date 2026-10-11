@@ -631,7 +631,7 @@ fn empty_initial_secretary_release_refuses_input_source_and_claim_drift() {
                 "SELECT generation FROM main.gogoke_v37_h_claim WHERE domain_id='global'
                   AND session_id='emptySuccessor'",&[],1).unwrap();
             assert_eq!(claim.len(),1);
-            format!(r#"{{"generation":"{}"}}"#,claim[0][0])
+            format!(r#"{{"seatId":"emptySeat","generation":"{}"}}"#,claim[0][0])
         } else {"{}".to_owned()};
         let request=operation_in_domain("global","K-SESSION",verb,
             &format!("empty-successor-{verb}"),"emptySuccessor",revision,&payload);
