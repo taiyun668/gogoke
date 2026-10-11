@@ -611,6 +611,9 @@ fn empty_initial_secretary_release_refuses_input_source_and_claim_drift() {
           WHERE domain_id='global' AND session_id='emptySession' AND old_generation IS NOT NULL",
         &[],2).unwrap(),vec![vec!["UNKNOWN".to_owned(),String::new()]],
         "failed g4 UNKNOWN has no invented StopFact");
+    product.close_checked().unwrap();
+    let mut product=ProductDatabase::open(&root,&path.join("state.sqlite")).unwrap();
+    assert_eq!(claim(&product),released,"released claim survives a cold database open");
     product.recover_disappeared_credential_resources("instanceA",None)
         .expect("completed F-only revoke accepts exact ordinary H release successor");
     let release_id=secretary_empty_release_request_id(
