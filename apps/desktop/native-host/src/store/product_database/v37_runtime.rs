@@ -263,6 +263,9 @@ impl<'root> ProductDatabase<'root> {
             }
             failure(evidence.define_opencode_alias_after_intent(&mut self.connection,
                 &request.request_id,&request.raw_bytes))?;
+            // request() is a pure PrepareRequest construction and requires
+            // this durable fence; no OS child is created before C.prepare.
+            failure(evidence.mark_opencode_prepare_started(&mut self.connection))?;
             let launch = failure(evidence.request())?;
             Ok((launch,model,effort))
         })();
@@ -270,9 +273,6 @@ impl<'root> ProductDatabase<'root> {
             Ok(value) => value,
             Err(original) => return Err(self.failed_uncreated_native_launch(key,evidence,original,true)),
         };
-        if let Err(original)=failure(evidence.mark_opencode_prepare_started(&mut self.connection)) {
-            return Err(self.failed_uncreated_native_launch(key,evidence,original,true));
-        }
         let custody = match self.process_custodian.prepare(&launch) {
             Ok(custody) => custody,
             Err(error) => {
