@@ -43,8 +43,14 @@ if (process.platform !== 'win32' || !process.argv[2] || required.some(key => con
 }
 const writeCases = config.cases.filter(row => row.caseMode === 'grokWrite');
 const sequenceCases = config.cases.filter(row => row.caseMode === 'sequence');
+const contextAfterResumeCases = config.cases.filter(row => row.contextAfterResume === true);
 if (config.cases.some(row => row.caseMode !== undefined &&
       !['grokWrite', 'sequence'].includes(row.caseMode)) ||
+    config.cases.some(row => row.contextAfterResume !== undefined &&
+      typeof row.contextAfterResume !== 'boolean') ||
+    (contextAfterResumeCases.length > 0 && (contextAfterResumeCases.length !== 1 ||
+      sequenceCases.length !== 1 || contextAfterResumeCases[0].caseMode !== 'sequence' ||
+      contextAfterResumeCases[0].driverId !== 'grok')) ||
     (sequenceCases.length > 0 && (sequenceCases.length !== 1 || config.cases.length !== 1 ||
       sequenceCases[0].driverId !== 'grok')) ||
     (writeCases.length > 0 && (writeCases.length !== 1 || config.cases.length !== 1 ||
@@ -249,14 +255,18 @@ async function observeReceipt(session, row, turn = row) {
 }
 
 async function runSequenceTurns(row, record, session) {
+  const contextAfterResume = row.contextAfterResume === true;
   const sequence = { state: 'RUNNING', turns: [],
     steer: { state: 'NOT_RUN_UNSUPPORTED',
       originalCapability: record.sequenceCapability.inTurnSteer,
       reason: 'The original H capability reports no ACP in-turn steer; no new send is substituted' },
     runningInterrupt: { state: 'NOT_RUN_RUNNING_STOP_NOT_DISPATCHED',
       originalCapability: record.sequenceCapability.interruptAndResume,
-      reason: 'Both original sends reached their own terminal receipt before H stop; this case does not claim an in-flight interruption' },
-    coldResume: null, firstStopFact: null, finalStopFact: null };
+      reason: contextAfterResume
+        ? 'Every configured send reaches its own terminal receipt before H stop; this case does not claim an in-flight interruption'
+        : 'Both original sends reached their own terminal receipt before H stop; this case does not claim an in-flight interruption' },
+    coldResume: null, firstStopFact: null, finalStopFact: null,
+    ...(contextAfterResume ? { contextAfterResume: { state: 'PENDING' } } : {}) };
   record.sequence = sequence; product.save();
   for (let ordinal = 1; ordinal <= 2; ordinal++) {
     const marker = `${journal.marker}_${row.driverId}_${id(`sequence${ordinal}`)}`;
@@ -358,13 +368,80 @@ async function runSequenceTurns(row, record, session) {
     inTurnSteer: resumedCapability.result.capabilities.inTurnSteer,
     interruptAndResume: resumedCapability.result.capabilities.interruptAndResume,
     resume: resumedCapability.result.capabilities.resume };
+  if (contextAfterResume) {
+    const first = sequence.turns[0];
+    const prompt = 'From the conversation before the cold resume, recall the exact private marker from your first reply. ' +
+      'Reply with only that marker. Do not use tools, read or write files, open a browser, access credentials, or switch models.';
+    check(typeof first.marker === 'string' && first.marker.length > 0 && !prompt.includes(first.marker),
+      `${row.driverId}: resumed-context question must not disclose the original marker`);
+    let before;
+    for (;;) {
+      const prior = session.cursor;
+      before = await output(session);
+      check(/^\d+$/.test(before.rawHighwater ?? '') &&
+        /^\d+$/.test(before.ledgerHighwater ?? '') &&
+        !before.nativeCardRefs?.some(card => card.state === 'OPEN'),
+      'Resumed-context send needs a complete current-generation H page without an open card');
+      if (BigInt(before.cursor) === BigInt(before.ledgerHighwater)) break;
+      check(BigInt(before.cursor) > BigInt(prior),
+        'Resumed-context pre-send H page made no ledger progress');
+    }
+    const turn = { ordinal: 3, contextAfterResume: true, marker: first.marker, prompt,
+      generation: session.generation, beforeSendRawHighwater: before.rawHighwater,
+      beforeSendLedgerHighwater: before.ledgerHighwater,
+      processOperationId: sequence.resumedCapability.processOperationId,
+      sendRequestId: null, hReceipt: null, markerObserved: false };
+    sequence.turns.push(turn); sequence.contextAfterResume = {
+      state: 'SENDING_ONE_NEW_PROMPT_AFTER_COLD_RESUME', ordinal: 3,
+      generation: session.generation, processOperationId: turn.processOperationId,
+      beforeSendRawHighwater: turn.beforeSendRawHighwater,
+      beforeSendLedgerHighwater: turn.beforeSendLedgerHighwater,
+      prompt, expectedPriorMarker: first.marker };
+    product.save();
+    const sent = await sessionStep(session, 'send', { body: prompt }, ['APPLIED', 'UNKNOWN']);
+    turn.sendRequestId = journal.operations.at(-1).request.requestId;
+    turn.sendStatus = sent.status; product.save();
+    if (sent.status === 'UNKNOWN' && sent.result.reason) {
+      throw Error(`${row.driverId}: original resumed-context send UNKNOWN reason=${sent.result.reason}; no resend`);
+    }
+    const receipt = await observeReceipt(session, row, turn);
+    check(receipt.receipt?.result?.createdTurn === true &&
+      receipt.receipt.result.stopReason === 'end_turn' &&
+      typeof receipt.receipt.result.sourceEpoch === 'string' &&
+      receipt.receipt.result.sourceEpoch !== first.terminalSourceEpoch &&
+      /^\d+$/.test(receipt.receipt.result.sourceCursor ?? '') &&
+      BigInt(receipt.receipt.result.sourceCursor) > BigInt(turn.beforeSendRawHighwater),
+    `${row.driverId}: resumed-context H receipt lacks a new-generation terminal source boundary`);
+    const deadline = Date.now() + 600000;
+    let terminalObserved = false;
+    while (Date.now() < deadline) {
+      const page = await output(session);
+      if (/^\d+$/.test(page.rawHighwater ?? '') &&
+          BigInt(page.rawHighwater) >= BigInt(receipt.receipt.result.sourceCursor) &&
+          page.cursor === page.ledgerHighwater) {
+        terminalObserved = true; break;
+      }
+      await delay(300);
+    }
+    check(terminalObserved, `${row.driverId}: resumed-context terminal source was not fully observed`);
+    turn.hReceipt = receipt; turn.terminalSourceEpoch = receipt.receipt.result.sourceEpoch;
+    turn.terminalSourceCursor = receipt.receipt.result.sourceCursor;
+    sequence.contextAfterResume = { ...sequence.contextAfterResume,
+      state: 'ORIGINAL_NEW_CONTEXT_REPLY_AWAITS_CLOSED_RAW_READBACK',
+      sendRequestId: turn.sendRequestId, sendStatus: turn.sendStatus,
+      terminalSourceEpoch: turn.terminalSourceEpoch,
+      terminalSourceCursor: turn.terminalSourceCursor };
+    product.save();
+  }
   const finalStop = await sessionStep(session, 'stop', { seatId: row.seatId });
   check(/^sha256:[a-f0-9]{64}$/.test(finalStop.result.stopFact ?? '') &&
     finalStop.result.stopFact !== sequence.firstStopFact,
   `${row.driverId}: final original H StopFact missing or reused`);
   sequence.finalStopFact = finalStop.result.stopFact;
   await sessionStep(session, 'admission-release', { seatId: row.seatId });
-  sequence.state = 'ORIGINAL_TWO_TURNS_COLD_RESUME_STOP_RELEASE_READBACK_REQUIRED';
+  sequence.state = contextAfterResume
+    ? 'ORIGINAL_TWO_TURNS_COLD_RESUME_CONTEXT_ANSWER_STOP_RELEASE_READBACK_REQUIRED'
+    : 'ORIGINAL_TWO_TURNS_COLD_RESUME_STOP_RELEASE_READBACK_REQUIRED';
   record.result = 'DIRECT_H_RECEIPT_A_READBACK_REQUIRED'; product.save();
 }
 
@@ -373,6 +450,7 @@ async function runCase(row, instances) {
   const record = { driverId: row.driverId, instanceId: row.instanceId, seatId: row.seatId,
     worktreeId: row.worktreeId, fixedVersion: row.version, fixedSha256: row.sha256,
     expectedModel: row.model, expectedEffort: row.effort, caseMode: row.caseMode ?? 'singleAnswer',
+    ...(row.contextAfterResume === true ? { contextAfterResume: true } : {}),
     state: 'PREFLIGHT', acceptance: false };
   journal.cases.push(record); product.save();
   const instance = instances.instances.find(value => value.instanceId === row.instanceId && value.driverId === row.driverId);

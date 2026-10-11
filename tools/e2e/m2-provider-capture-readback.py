@@ -314,21 +314,26 @@ def acp_text(frame):
 
 
 def read_sequence():
-    """One original Grok H across two completed prompts and a cold process resume."""
+    """One original Grok H across two turns, cold resume, and an optional context question."""
     if supplement or failure_settlement or len(journal["cases"]) != 1:
         fail("Sequence readback cannot replace a failure or another provider case")
     case = journal["cases"][0]
     sequence = case.get("sequence", {})
     turns = sequence.get("turns", [])
+    context_after_resume = case.get("contextAfterResume") is True
+    expected_turn_count = 3 if context_after_resume else 2
+    expected_sequence_state = "ORIGINAL_TWO_TURNS_COLD_RESUME_CONTEXT_ANSWER_STOP_RELEASE_READBACK_REQUIRED" \
+        if context_after_resume else "ORIGINAL_TWO_TURNS_COLD_RESUME_STOP_RELEASE_READBACK_REQUIRED"
     sid = case.get("sessionId")
     opened = [item for item in journal["sessions"] if item.get("id") == sid]
     if case.get("driverId") != "grok" or case.get("caseMode") != "sequence" or \
             case.get("result") != "DIRECT_H_RECEIPT_A_READBACK_REQUIRED" or \
-            sequence.get("state") != "ORIGINAL_TWO_TURNS_COLD_RESUME_STOP_RELEASE_READBACK_REQUIRED" or \
-            len(turns) != 2 or len(opened) != 1 or \
+            sequence.get("state") != expected_sequence_state or \
+            len(turns) != expected_turn_count or len(opened) != 1 or \
+            ("contextAfterResume" in case and not isinstance(case["contextAfterResume"], bool)) or \
             sequence.get("steer", {}).get("state") != "NOT_RUN_UNSUPPORTED" or \
             sequence.get("runningInterrupt", {}).get("state") != "NOT_RUN_RUNNING_STOP_NOT_DISPATCHED":
-        fail("Sequence must retain its original two-turn and unsupported-action facts")
+        fail("Sequence must retain its selected turns and unsupported-action facts")
     session = opened[0]
     if session.get("seatId") != case.get("seatId") or \
             session.get("instanceId") != case.get("instanceId") or \
@@ -342,9 +347,30 @@ def read_sequence():
             int(resume["newGeneration"]) <= int(resume["oldGeneration"]) or \
             session.get("generation") != resume["newGeneration"] or \
             turns[1].get("generation") != turns[0].get("generation") or \
-            len({turn.get("sendRequestId") for turn in turns}) != 2 or \
-            len({turn.get("marker") for turn in turns}) != 2:
-        fail("Cold H continuation or original two distinct User inputs differ")
+            len({turn.get("sendRequestId") for turn in turns}) != expected_turn_count or \
+            len({turn.get("marker") for turn in turns[:2]}) != 2:
+        fail("Cold H continuation or original User input identities differ")
+    if context_after_resume:
+        context_turn = turns[2]
+        context = sequence.get("contextAfterResume", {})
+        if context_turn.get("ordinal") != 3 or context_turn.get("contextAfterResume") is not True or \
+                context_turn.get("generation") != resume["newGeneration"] or \
+                context_turn.get("marker") != turns[0].get("marker") or \
+                not isinstance(context_turn.get("prompt"), str) or \
+                context_turn["marker"] in context_turn["prompt"] or \
+                not str(context_turn.get("beforeSendRawHighwater", "")).isdecimal() or \
+                not str(context_turn.get("beforeSendLedgerHighwater", "")).isdecimal() or \
+                context_turn.get("processOperationId") != \
+                sequence.get("resumedCapability", {}).get("processOperationId") or \
+                context.get("state") != "ORIGINAL_NEW_CONTEXT_REPLY_AWAITS_CLOSED_RAW_READBACK" or \
+                context.get("ordinal") != 3 or context.get("generation") != resume["newGeneration"] or \
+                context.get("expectedPriorMarker") != turns[0].get("marker") or \
+                context.get("processOperationId") != context_turn.get("processOperationId") or \
+                context.get("beforeSendRawHighwater") != context_turn.get("beforeSendRawHighwater") or \
+                context.get("sendRequestId") != context_turn.get("sendRequestId") or \
+                context.get("terminalSourceEpoch") != context_turn.get("terminalSourceEpoch") or \
+                context.get("terminalSourceCursor") != context_turn.get("terminalSourceCursor"):
+            fail("Resumed-context question or fresh generation/process boundary differs")
     capability = case.get("sequenceCapability", {})
     if capability.get("inTurnSteer") != "UNSUPPORTED" or \
             capability.get("resume") != "SOURCE_PRESENT_NATIVE_RESUME_BEHAVIOUR_NOT_RUN" or \
@@ -568,14 +594,22 @@ def read_sequence():
             fail("Original sequence has no normalized provider output")
         observed_turns = []
         for ordinal, turn in enumerate(turns, 1):
+            episode_index = 0 if ordinal <= 2 else 1
+            expected_generation = resume["oldGeneration"] if episode_index == 0 else resume["newGeneration"]
             request_id = turn.get("sendRequestId")
             matching = [item for item in operations if item["request"].get("requestId") == request_id]
+            expected_marker_observed = not (ordinal == 3 and context_after_resume)
             if len(matching) != 1 or matching[0]["request"].get("operation") != "send" or \
                     matching[0]["request"].get("payload", {}).get("body") != turn.get("prompt") or \
-                    matching[0]["request"].get("payload", {}).get("generation") != resume["oldGeneration"] or \
-                    turn.get("generation") != resume["oldGeneration"] or \
-                    turn.get("ordinal") != ordinal or turn.get("markerObserved") is not True:
+                    matching[0]["request"].get("payload", {}).get("generation") != expected_generation or \
+                    turn.get("generation") != expected_generation or \
+                    turn.get("ordinal") != ordinal or \
+                    turn.get("markerObserved") is not expected_marker_observed:
                 fail("One original USER sequence send is missing or not bound to its prompt")
+            if ordinal == 3 and (turn.get("contextAfterResume") is not True or
+                    turn.get("processOperationId") != episodes[1][1] or
+                    turn.get("marker") in turn.get("prompt", "")):
+                fail("Third User prompt did not ask for the prior marker under resumed H context")
             stored = exact_one(db,
                 "SELECT phase,receipt_status,request_hex,session_id,generation,ticket,"
                 "process_operation_id,custodian_nonce,receipt_hex "
@@ -583,8 +617,8 @@ def read_sequence():
                 "AND operation='send'", (domain, request_id))
             receipt = turn.get("hReceipt", {}).get("receipt", {})
             if stored[:5] != ("RECEIPTED", "APPLIED", matching[0]["rawFrame"].encode().hex(),
-                              sid, resume["oldGeneration"]) or \
-                    stored[6] != episodes[0][1] or \
+                              sid, expected_generation) or \
+                    stored[6] != episodes[episode_index][1] or \
                     json.loads(bytes.fromhex(stored[8]).decode()) != receipt or \
                     receipt.get("status") != "APPLIED" or \
                     receipt.get("result", {}).get("createdTurn") is not True or \
@@ -598,15 +632,17 @@ def read_sequence():
                     not str(terminal_cursor).isdecimal() or \
                     int(terminal_cursor) <= int(turn["beforeSendRawHighwater"]):
                 fail("Original sequence terminal source boundary differs")
+            if ordinal == 3 and terminal_epoch in {row.get("terminalSourceEpoch") for row in turns[:2]}:
+                fail("Resumed-context response reused an original-generation ACP source epoch")
             scoped = [(key, frame) for key, (frame, state, _) in raw_lookup.items()
-                      if key[0] == stored[4] and key[1] == stored[6] and
+                      if key[0] == expected_generation and key[1] == stored[6] and
                       key[2] == terminal_epoch and key[4:6] == (stored[5], stored[7]) and
                       int(turn["beforeSendRawHighwater"]) < int(key[3]) <= int(terminal_cursor)]
             terminal = [frame for key, frame in scoped if key[3] == terminal_cursor]
             prompts = []
             for command in result["commands"]:
                 if not command["confirmedWrite"] or command["operationId"] != stored[6] or \
-                        command["generation"] != stored[4] or \
+                        command["generation"] != expected_generation or \
                         command["processTicket"] != stored[5] or \
                         command["custodianNonce"] != stored[7]:
                     continue
@@ -629,7 +665,7 @@ def read_sequence():
                     completions[0].get("params", {}).get("sessionId") != session["threadId"]:
                 fail("Original Grok promptId is not bound to the same completed turn")
             text = "".join(item["update"].get("content", {}).get("text", "") for item in updates
-                           if item["operationId"] == stored[6] and item["generation"] == stored[4] and
+                           if item["operationId"] == stored[6] and item["generation"] == expected_generation and
                            item["sourceEpoch"] == terminal_epoch and
                            item["update"].get("sessionUpdate") == "agent_message_chunk" and
                            str(item["update"].get("_meta", {}).get("rawSourceCursor", "")).isdecimal() and
@@ -639,25 +675,45 @@ def read_sequence():
                     frame.get("params", {}).get("update", {}).get("sessionUpdate") in
                     ("tool_call", "tool_call_update") for _, frame in scoped):
                 fail("Original no-tool sequence marker or raw/normalized source differs")
+            if ordinal == 3:
+                loaded_context = "".join(item["update"].get("content", {}).get("text", "") for item in updates
+                    if item["operationId"] == episodes[1][1] and item["generation"] == resume["newGeneration"] and
+                    item["sourceEpoch"] == terminal_epoch and
+                    item["update"].get("sessionUpdate") == "agent_message_chunk" and
+                    str(item["update"].get("_meta", {}).get("rawSourceCursor", "")).isdecimal() and
+                    int(item["update"]["_meta"]["rawSourceCursor"]) <=
+                    int(turn["beforeSendRawHighwater"]))
+                if not loads or loads[0][2] != terminal_epoch or \
+                        turn["beforeSendRawHighwater"] != context.get("beforeSendRawHighwater") or \
+                        turn["beforeSendLedgerHighwater"] != context.get("beforeSendLedgerHighwater") or \
+                        int(turn["beforeSendRawHighwater"]) < int(loads[0][3]) or \
+                        turn["marker"] not in loaded_context or text.strip() != turn["marker"]:
+                    fail("New answer is not the prior marker from post-load context after the new H high-water")
             observed_turns.append({"ordinal": ordinal, "requestId": request_id,
                 "promptId": prompt_id, "promptRpcId": prompts[0]["id"],
                 "generation": stored[4], "processOperationId": stored[6],
                 "terminalSourceEpoch": terminal_epoch,
-                "terminalSourceCursor": terminal_cursor, "markerObserved": True})
-        if len({turn["promptId"] for turn in observed_turns}) != 2 or \
-                len({str(turn["promptRpcId"]) for turn in observed_turns}) != 2:
-            fail("Two original Grok prompts did not carry distinct provider turn identities")
+                "terminalSourceCursor": terminal_cursor, "markerObserved": True,
+                **({"answersPriorTurnMarker": True} if ordinal == 3 else {})})
+        if len({turn["promptId"] for turn in observed_turns}) != expected_turn_count or \
+                len({str(turn["promptRpcId"]) for turn in observed_turns}) != expected_turn_count:
+            fail("Original Grok prompts did not carry distinct provider turn identities")
         if exact_one(db, "SELECT COUNT(*) FROM gogoke_v37_h_stdin_journal "
                      "WHERE domain_id=? AND session_id=? AND operation='send'",
-                     (domain, sid))[0] != 2:
+                      (domain, sid))[0] != expected_turn_count:
             fail("Original H session has an unaccounted send or replay")
         all_prompts = [(item, json.loads(item["originalFrame"])) for item in result["commands"]
                        if item["sessionId"] == sid and item["confirmedWrite"]]
         all_prompts = [(item, frame) for item, frame in all_prompts
                        if frame.get("method") == "session/prompt"]
-        if len(all_prompts) != 2 or {frame.get("id") for _, frame in all_prompts} != \
-                {turn["promptRpcId"] for turn in observed_turns} or \
-                any(item["operationId"] != episodes[0][1] for item, _ in all_prompts):
+        expected_prompt_ids = {turn["promptRpcId"] for turn in observed_turns}
+        prompt_bindings = {turn["promptRpcId"]: (turn["generation"], turn["processOperationId"])
+                           for turn in observed_turns}
+        if len(all_prompts) != expected_turn_count or {frame.get("id") for _, frame in all_prompts} != \
+                expected_prompt_ids or any((item["generation"], item["operationId"]) !=
+                    prompt_bindings[frame.get("id")] for item, frame in all_prompts) or \
+                (context_after_resume and sum(item["generation"] == resume["newGeneration"]
+                                              for item, _ in all_prompts) != 1):
             fail("Cold resume wrote an old input or an unaccounted ACP prompt")
         result["sessions"].append({"sessionId": sid, "seatId": case["seatId"],
             "instanceId": case["instanceId"], "worktreeId": case["worktreeId"],
@@ -672,6 +728,17 @@ def read_sequence():
             "markerObserved": True, "writeObserved": False, "writeEvidence": None,
             "answerObserved": False, "vendorSessionId": session["threadId"],
             "originalTurns": observed_turns,
+            **({"contextAfterResume": {"state": "DIRECT_NEW_GENERATION_CONTEXT_ANSWER",
+                "priorMarkerNotInPrompt": True, "loadedMarkerObservedBeforeSend": True,
+                "newPromptId": observed_turns[2]["promptId"],
+                "newPromptRpcId": observed_turns[2]["promptRpcId"],
+                "newGeneration": observed_turns[2]["generation"],
+                "newProcessOperationId": observed_turns[2]["processOperationId"],
+                "beforeSendRawHighwater": turns[2]["beforeSendRawHighwater"],
+                "beforeSendLedgerHighwater": turns[2]["beforeSendLedgerHighwater"],
+                "terminalSourceEpoch": observed_turns[2]["terminalSourceEpoch"],
+                "terminalSourceCursor": observed_turns[2]["terminalSourceCursor"]}}
+                if context_after_resume else {}),
             "steer": sequence["steer"], "runningInterrupt": sequence["runningInterrupt"],
             "coldResume": resume,
             "modelEffortEvidence": {"basis": "ACTUAL_PINNED_GROK_PROCESS_ARGV_TWO_EPISODES",
