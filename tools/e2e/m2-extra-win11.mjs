@@ -37,14 +37,53 @@ if (process.platform !== 'win32' || !/^\d+\.\d+\.\d+$/.test(config.version ?? ''
 }
 
 const rules = config.rules;
+const crossProjectOnly = rules.selection === 'CROSS_PROJECT_ONLY';
+if (rules.selection !== undefined && !crossProjectOnly) {
+  throw Error('The only V08 one-axis selection is CROSS_PROJECT_ONLY');
+}
 if (rules.foreignProject !== undefined && (
     !atom(rules.foreignProject?.domainId) || !atom(rules.foreignProject?.gateId) ||
     rules.foreignProject.domainId === config.domainId ||
     typeof rules.foreignProject.ownerGate?.rawFrame !== 'string' ||
     typeof rules.foreignProject.ownerGate?.rawReceipt !== 'string' ||
-    Object.keys(rules.foreignProject).length !== 3 ||
+    (crossProjectOnly ? typeof rules.foreignProject.ownerHead?.rawFrame !== 'string' ||
+      typeof rules.foreignProject.ownerHead?.rawReceipt !== 'string' ||
+      Object.keys(rules.foreignProject).sort().join(',') !== 'domainId,gateId,ownerGate,ownerHead' ||
+      Object.keys(rules.foreignProject.ownerHead).sort().join(',') !== 'rawFrame,rawReceipt' :
+      Object.keys(rules.foreignProject).length !== 3) ||
     Object.keys(rules.foreignProject.ownerGate).length !== 2)) {
-  throw Error('Foreign fixture requires a distinct real domain/gate and original NativeUser Owner gate bytes');
+  throw Error('Foreign fixture requires a distinct real domain/gate and original NativeUser Owner bytes');
+}
+if (crossProjectOnly && (rules.foreignProject === undefined || rules.host !== undefined)) {
+  throw Error('CROSS_PROJECT_ONLY requires the original B head/gate bytes and excludes Host cases');
+}
+if (crossProjectOnly) {
+  const foreign = rules.foreignProject;
+  const head = JSON.parse(foreign.ownerHead.rawFrame);
+  const headReceipt = JSON.parse(foreign.ownerHead.rawReceipt);
+  const gate = JSON.parse(foreign.ownerGate.rawFrame);
+  const gateReceipt = JSON.parse(foreign.ownerGate.rawReceipt);
+  const exactKeys = (value, names) => value && typeof value === 'object' &&
+    Object.keys(value).sort().join(',') === [...names].sort().join(',');
+  if (!exactKeys(head, ['schema','command','domainId','requestId','stage','expectedRevision']) ||
+      head.schema !== 'gogoke.37.owner-configuration.v1' || head.command !== 'policy-initialize' ||
+      head.domainId !== foreign.domainId || !atom(head.requestId) || !atom(head.stage) || head.expectedRevision !== '0' ||
+      !exactKeys(headReceipt, ['schema','command','requestId','status','revision']) ||
+      headReceipt.schema !== head.schema || headReceipt.command !== head.command ||
+      headReceipt.requestId !== head.requestId || headReceipt.status !== 'APPLIED' || headReceipt.revision !== '1' ||
+      !exactKeys(gate, ['schema','command','domainId','requestId','gateId','submitterSeatId','reviewerSeatId',
+        'fromStage','toStage','rejectCap','expectedRevision']) ||
+      gate.schema !== head.schema || gate.command !== 'policy-gate' || gate.domainId !== foreign.domainId ||
+      gate.gateId !== foreign.gateId || !atom(gate.requestId) || !atom(gate.submitterSeatId) ||
+      !atom(gate.reviewerSeatId) || gate.submitterSeatId === gate.reviewerSeatId || !atom(gate.fromStage) ||
+      !atom(gate.toStage) || gate.fromStage !== head.stage || gate.fromStage === gate.toStage ||
+      !Number.isInteger(gate.rejectCap) || gate.rejectCap < 1 ||
+      gate.expectedRevision !== headReceipt.revision ||
+      !exactKeys(gateReceipt, ['schema','command','requestId','status','revision']) ||
+      gateReceipt.schema !== gate.schema || gateReceipt.command !== gate.command ||
+      gateReceipt.requestId !== gate.requestId || gateReceipt.status !== 'APPLIED' || gateReceipt.revision !== '2') {
+    throw Error('CROSS_PROJECT_ONLY requires complete original NativeUser B initialize/gate frames and APPLIED receipts before launch');
+  }
 }
 if (rules.lifecycleOwnership !== 'EXCLUSIVE_V08_SUBMITTER_AND_REVIEWER' ||
     rules.policyOwnership !== 'EXCLUSIVE_V08_POLICY_DOMAIN') {
@@ -104,6 +143,7 @@ const journal = {
   sideChatCases: [],
   rulesCases: [],
   foreignProject: rules.foreignProject ?? null,
+  rulesSelection: crossProjectOnly ? 'CROSS_PROJECT_ONLY' : 'ALL',
   v12: 'NOT_RUN_ORIGINAL_M2_SIDE_WORKTREE_READBACK_REQUIRED',
   v08: 'RUNNING',
 };

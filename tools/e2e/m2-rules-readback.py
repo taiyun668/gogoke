@@ -50,12 +50,36 @@ def policy(db, domain):
 def foreign_snapshot(db, domain, configuration):
     if configuration is None:
         return None
-    check(isinstance(configuration, dict) and set(configuration) == {"domainId", "gateId", "ownerGate"} and
+    has_head = isinstance(configuration, dict) and "ownerHead" in configuration
+    check(isinstance(configuration, dict) and set(configuration) ==
+          ({"domainId", "gateId", "ownerHead", "ownerGate"} if has_head else {"domainId", "gateId", "ownerGate"}) and
           all(isinstance(configuration.get(key), str) and
               re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", configuration[key])
               for key in ("domainId", "gateId")) and configuration["domainId"] != domain,
           "Foreign fixture needs exact distinct atomic domain/gate selections")
     foreign_domain, gate_id = configuration["domainId"], configuration["gateId"]
+    head_event = None
+    if has_head:
+        owner_head = configuration["ownerHead"]
+        check(isinstance(owner_head, dict) and set(owner_head) == {"rawFrame", "rawReceipt"} and
+              all(isinstance(owner_head[key], str) for key in owner_head),
+              "Original new-test-domain NativeUser policy-initialize bytes required")
+        head_request, head_receipt = json.loads(owner_head["rawFrame"]), json.loads(owner_head["rawReceipt"])
+        check(set(head_request) == {"schema", "command", "domainId", "requestId", "stage", "expectedRevision"} and
+              head_request["schema"] == head_receipt["schema"] == "gogoke.37.owner-configuration.v1" and
+              head_request["command"] == head_receipt["command"] == "policy-initialize" and
+              head_request["domainId"] == foreign_domain and head_request["expectedRevision"] == "0" and
+              re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", head_request["requestId"]) and
+              head_receipt["requestId"] == head_request["requestId"] and head_receipt["status"] == "APPLIED" and
+              head_receipt["revision"] == "1", "Foreign head lacks its original NativeUser initialize request/receipt")
+        head_event = one(db, "SELECT * FROM gogoke_v37_seat_policy_events WHERE domain_id=? AND event_id=?",
+                         (foreign_domain, head_request["requestId"]))
+        check(head_event["domain_id"] == head_event["target_id"] == foreign_domain and
+              head_event["operation"] == "policy-initialize" and head_event["state"] == "APPLIED" and
+              head_event["detail"] == "" and head_event["policy_revision"] == 1 and
+              head_event["fingerprint"] == original_owner_fingerprint("policy-initialize", foreign_domain,
+                                                                         owner_head["rawFrame"]),
+              "B head does not match the original NativeUser policy-initialize event")
     owner = configuration["ownerGate"]
     check(isinstance(owner, dict) and set(owner) == {"rawFrame", "rawReceipt"} and
           all(isinstance(owner[key], str) for key in owner), "Original NativeUser Owner gate bytes required")
@@ -86,7 +110,13 @@ def foreign_snapshot(db, domain, configuration):
           event["policy_revision"] == int(receipt["revision"]) and
           event["fingerprint"] == original_owner_fingerprint("policy-gate", foreign_domain, owner["rawFrame"]),
           "B gate is not the original NativeUser-created READY object with its bound Owner event")
-    return {"configuration": configuration, "gate": gate, "ownerEvent": event, "policy": current}
+    if has_head:
+        check(head_receipt["revision"] == request["expectedRevision"] and
+              head_event["policy_revision"] == 1 and current["head"][0]["current_stage"] == head_request["stage"] and
+              current["head"][0]["revision"] >= int(receipt["revision"]),
+              "B head/gate CAS chain does not preserve the original initialization stage")
+    return {"configuration": configuration, "gate": gate, "ownerEvent": event,
+            **({"ownerHeadEvent": head_event} if head_event else {}), "policy": current}
 
 
 def typed_id(value):
@@ -360,7 +390,7 @@ def verify_recipient(db, domain, bound, operations):
           episode["phase"] == "STOPPED" and episode["stop_fact_id"], "Recipient has no original normal H open and physical stop")
     creation = one(db, "SELECT incarnation FROM gogoke_v37_seat_operations WHERE domain_id=? AND seat_id=? AND revision=1 AND generation=1",
                    (domain, bound["seatId"]))
-    pin = one(db, "SELECT i.driver_id,i.program_digest,c.* FROM gogoke_v37_instances i JOIN gogoke_coordination_process_custody c "
+    pin = one(db, "SELECT i.driver_id,i.version,i.program_digest,c.* FROM gogoke_v37_instances i JOIN gogoke_coordination_process_custody c "
               "ON c.operation_id=? WHERE i.instance_id=?", (episode["process_operation_id"], bound["instanceId"]))
     check(episode["seat_incarnation"] == creation["incarnation"] and pin["driver_id"] == "codex" and
           pin["program_digest"] == pin["binary_digest_sha256"] and pin["generation"] == bound["generation"] and
@@ -937,7 +967,244 @@ def verify_host(db, domain, case, host, operations, result):
     return final
 
 
+def verify_cross_project_only(db, journal, case, result):
+    domain = journal["domainId"]
+    reference = case.get("baselineReadback")
+    check(isinstance(reference, dict) and Path(reference.get("file", "")).name == reference.get("file") and
+          re.fullmatch(r"[a-f0-9]{64}", reference.get("sha256", "")),
+          "CROSS_PROJECT_ONLY requires its original private normal-close baseline")
+    before_bytes = (output.parent / reference["file"]).read_bytes()
+    check(digest(before_bytes) == reference["sha256"], "Original cross-project baseline bytes changed")
+    before = json.loads(before_bytes)
+    check(before["schema"] == result["schema"] and before["phase"] == "before" and
+          before["caseId"] == journal["caseId"] and before["sourceCommit"] == journal["sourceCommit"] and
+          before["domainId"] == domain and before["databasePath"] == result["databasePath"] and
+          before["rootIdentity"] == result["rootIdentity"] and before["measurementPreservedDatabaseBytes"] and
+          before["readerSha256"] == case["readerSha256"] == journal["driverBytes"]["m2-rules-readback.py"],
+          "Cross-project baseline is not the original closed candidate/domain/reader")
+    check(case.get("selection") == journal.get("rulesSelection") == "CROSS_PROJECT_ONLY" and
+          case["caseId"] == journal["caseId"] and case["sourceCommit"] == journal["sourceCommit"] and
+          case["driverSha256"] == digest(Path(__file__).with_name("m2-rules.mjs").read_bytes()) and
+          case.get("ownership") == {"lifecycle": "EXCLUSIVE_V08_SUBMITTER_AND_REVIEWER",
+                                    "policy": "EXCLUSIVE_V08_POLICY_DOMAIN"},
+          "Single-case selection/module/ownership identity differs")
+    foreign = journal.get("foreignProject")
+    check(foreign is not None and set(foreign) == {"domainId", "gateId", "ownerHead", "ownerGate"} and
+          case.get("foreignProject") == foreign and before.get("foreignProject") == result["foreignProject"] and
+          before["foreignProject"]["configuration"] == foreign and
+          before["policy"] == result["policy"] and before["inbox"] == result["inbox"] and
+          before["foreignProject"]["policy"] == result["foreignProject"]["policy"] and
+          before["foreignProject"]["gate"] == result["foreignProject"]["gate"],
+          "A/B native policies or A inbox changed from the original closed baseline")
+    check(result["foreignProject"]["ownerHeadEvent"] and result["foreignProject"]["ownerEvent"],
+          "B NativeUser initialize/gate source events are missing")
+
+    expected_not_run = {
+        "V08_SUBMIT_REJECT_GATE", "V08_REJECT_WITH_REASON", "V08_MODEL_BYPASS_GATE", "V08_RESUBMIT",
+        "V08_REJECT_CAP_STATE_ONLY", "V08_MODEL_CAP_BLOCKS_SUBMIT", "V08_MODEL_EXPIRED_GRANT",
+        "V08_SUBMIT_PASS_GATE", "V08_MODEL_FORGED_SENDER", "V08_MODEL_WRONG_REVIEWER",
+        "V08_MODEL_EMPTY_REJECT_REASON", "V08_APPROVE", "V08_LEGAL_STAGE", "V08_USER_POLICY_UNSUPPORTED",
+        "V08_MODEL_SUBORDINATE_OWNER", "V08_STALL_CHAIN", "V08_REJECT_CAP_DELIVERY",
+        "V08_HOST_DELIVERED", "V08_HOST_BUSY_QUEUED", "V08_HOST_ROUTE_CHANGED", "V08_HOST_CANCELLED",
+        "V08_HOST_BUSY_TO_IDLE_DELIVERY", "V08_HOST_LATE_ACK_AFTER_ROUTE_CHANGE",
+    }
+    not_run = case.get("notRun", [])
+    check({row.get("caseId") for row in not_run} == expected_not_run and len(not_run) == len(expected_not_run) and
+          all(row.get("reason") for row in not_run),
+          "Every unselected original V08 identity must remain explicitly NOT_RUN")
+    result["notRun"] = not_run
+
+    submitter, reviewer = case.get("initialSessions", [None, None])
+    check(isinstance(submitter, dict) and isinstance(reviewer, dict) and
+          [submitter["id"], reviewer["id"]] == [case.get("submitterSession"), case.get("reviewerSession")] and
+          submitter["id"] != reviewer["id"] and submitter["seatId"] != reviewer["seatId"] and
+          submitter["worktreeId"] != reviewer["worktreeId"], "Two distinct actual USER/E/F/H bindings required")
+    sessions = {row["id"]: row for row in journal.get("sessions", [])}
+    operations = {row["request"].get("requestId"): row for row in journal.get("operations", [])
+                  if row.get("request", {}).get("requestId")}
+    check(len(operations) == sum(bool(row.get("request", {}).get("requestId")) for row in journal["operations"]),
+          "Original mutating request IDs must be unique")
+    check(len(case.get("seatCards", [])) == 2 and len(case.get("worktreeCards", [])) == 2 and
+          len(case.get("capabilityProbes", [])) == 2, "Both source E/F/H identities need direct observations")
+    for bound in (submitter, reviewer):
+        check(bound["id"] in sessions and all(sessions[bound["id"]].get(key) == bound[key]
+              for key in ("seatId", "instanceId", "worktreeId", "generation", "threadId")),
+              "Original H binding differs from its retained session")
+        check(bound["generation"].isdecimal(), "H generation was not kept as a decimal native identifier")
+        actual = verify_recipient(db, domain, bound, operations)
+        result["sessions"].append({"binding": bound, **actual})
+        scoped = [row for row in journal["operations"] if row["request"].get("family") == "K-SESSION" and
+                  row["request"].get("targetId") == bound["id"]]
+        expected_operations = ["admission-reserve", "admission-commit", "open", "capability-probe"]
+        if bound["id"] == submitter["id"]:
+            expected_operations.append("send")
+        expected_operations.extend(("stop", "admission-release"))
+        check([row["request"]["operation"] for row in scoped] == expected_operations,
+              "One-shot H lifecycle contains a missing or additional request")
+        tree = one(db, "SELECT * FROM gogoke_v37_worktrees WHERE domain_id=? AND worktree_id=?",
+                   (domain, bound["worktreeId"]))
+        seat_row = one(db, "SELECT * FROM gogoke_v37_seats WHERE domain_id=? AND seat_id=?",
+                       (domain, bound["seatId"]))
+        check(tree["state"] == "REGISTERED" and tree["seat_id"] == bound["seatId"] and
+              tree["repository_id"] == journal["repositoryId"] and tree["instance_id"] == bound["instanceId"] and
+              seat_row["state"] == "IDLE" and seat_row["instance_id"] == bound["instanceId"],
+              "Original F is not registered to the actual released E identity")
+        admission = [row for row in scoped if row["request"]["operation"] in
+                     ("admission-reserve", "admission-commit")]
+        for expected_operation, entry in zip(("admission-reserve", "admission-commit"), admission):
+            request = entry["request"]
+            stored_operation = one(db, "SELECT * FROM gogoke_v37_h_operation WHERE domain_id=? AND request_id=?",
+                                   (domain, request["requestId"]))
+            check(request["operation"] == stored_operation["operation"] == expected_operation and
+                  request["payload"] == {"seatId": bound["seatId"], "generation": bound["generation"]} and
+                  bytes.fromhex(stored_operation["raw_hex"]).decode() == entry["rawFrame"] and
+                  stored_operation["status"] == entry["receipt"]["status"] == "APPLIED",
+                  "Original USER admission reserve/commit differs from the H ledger")
+        card_ids = [key for key in case["seatCards"]]
+        card_ops = [operations[key] for key in card_ids]
+        matching = [entry for entry in card_ops if entry["request"]["targetId"] == bound["seatId"]]
+        check(len(matching) == 1 and matching[0]["receipt"]["status"] == "APPLIED" and
+              matching[0]["receipt"]["result"]["state"] == "BUSY" and
+              matching[0]["receipt"]["result"]["instanceId"] == bound["instanceId"] and
+              str(matching[0]["receipt"]["result"]["generation"]) == bound["generation"],
+              "Actual E BUSY card does not bind the original H session")
+        worktree = [row for row in case["worktreeCards"] if row["sessionId"] == bound["id"]]
+        probe = [row for row in case["capabilityProbes"] if row["sessionId"] == bound["id"]]
+        check(len(worktree) == len(probe) == 1 and worktree[0]["result"]["state"] == "REGISTERED" and
+              any(member["domainId"] == domain and member["repositoryId"] == journal["repositoryId"] and
+                  member["seatId"] == bound["seatId"] and member["instanceId"] == bound["instanceId"] and
+                  member["worktreeId"] == bound["worktreeId"] for member in worktree[0]["result"]["members"]) and
+              probe[0]["receipt"]["result"]["driverId"] == "codex" and
+              probe[0]["receipt"]["result"]["version"] == actual["pin"]["version"] and
+              probe[0]["receipt"]["result"]["binaryDigest"] == "sha256:" + actual["pin"]["program_digest"] ==
+              "sha256:" + actual["pin"]["binary_digest_sha256"] and
+              re.fullmatch(r"sha256:[a-f0-9]{64}", probe[0]["receipt"]["result"]["binaryDigest"]),
+              "Actual F registration/current H Codex capability pin differs")
+        result.setdefault("worktrees", []).append(tree)
+        tail = [row["request"]["operation"] for row in scoped
+                if row["request"]["operation"] in ("stop", "admission-release")]
+        check(tail == ["stop", "admission-release"], "Each one-shot H must stop and release in order")
+        stop, release = scoped[-2:]
+        for row in (stop, release):
+            request, receipt = row["request"], row["receipt"]
+            stored = one(db, "SELECT * FROM gogoke_v37_h_operation WHERE domain_id=? AND request_id=?",
+                         (domain, request["requestId"]))
+            check(json.loads(row["rawFrame"]) == request and receipt["status"] == stored["status"] == "APPLIED" and
+                  bytes.fromhex(stored["raw_hex"]).decode() == row["rawFrame"] and
+                  stored["previous_revision"] == int(request["expectedRevision"]) and
+                  stored["revision"] == int(receipt["revision"]) and
+                  request["payload"] == {"generation": bound["generation"], "seatId": bound["seatId"]},
+                  "Original H stop/release operation bytes differ from the journal")
+        check(stop["receipt"]["result"]["stopFact"] and
+              release["receipt"]["revision"] == sessions[bound["id"]]["revision"],
+              "Original stop Fact/release revision is missing")
+        claim = one(db, "SELECT * FROM gogoke_v37_h_claim WHERE domain_id=? AND session_id=?", (domain, bound["id"]))
+        seat = one(db, "SELECT * FROM gogoke_v37_seats WHERE domain_id=? AND seat_id=?", (domain, bound["seatId"]))
+        episode = one(db, "SELECT * FROM gogoke_v37_h_process_episode WHERE domain_id=? AND session_id=? AND generation=?",
+                      (domain, bound["id"], bound["generation"]))
+        check(claim["state"] == "RELEASED" and claim["stop_fact_id"] == stop["receipt"]["result"]["stopFact"] ==
+              episode["stop_fact_id"] and episode["stop_request_id"] == stop["request"]["requestId"] and
+              episode["phase"] == "STOPPED" and seat["state"] == "IDLE",
+              "Closed original H StopFact/release/idle-E chain differs")
+
+    check(len(case.get("actions", [])) == 1 and case["selectedCase"] == "V08_MODEL_CROSS_PROJECT",
+          "Exactly one selected original Model case is required")
+    action = case["actions"][0]
+    session = submitter
+    expected_args = {"operation": "gate-submit", "targetId": foreign["gateId"],
+                     "expectedRevision": str(before["foreignProject"]["gate"]["revision"]), "payload": {}}
+    check(action.get("caseId") == "V08_MODEL_CROSS_PROJECT" and action.get("arguments") == expected_args and
+          action.get("expected") == {"status": "DENIED", "state": None, "reason": "",
+                                     "policyRevision": str(before["policy"]["head"][0]["revision"])} and
+          action.get("binding", {}).get("id") == session["id"] and action.get("askBytes") and
+          action.get("state") == "ORIGINAL_DENIED_RECEIPT_OBSERVED_REQUIRES_CLOSED_READBACK",
+          "Single real cross-project DENIED action or exact argument bytes differ")
+    sent = operations.get(action.get("sendRequestId"))
+    check(sent and sent["request"].get("family") == "K-SESSION" and sent["request"].get("operation") == "send" and
+          sent["request"].get("targetId") == session["id"] and
+          sent["request"].get("payload") == {"generation": session["generation"], "body": action["askBytes"]} and
+          sent["receipt"] == action["sendReceipt"], "Original one-time K-SESSION send bytes/receipt differ")
+    stdin = one(db, "SELECT * FROM gogoke_v37_h_stdin_journal WHERE domain_id=? AND request_id=?",
+                (domain, sent["request"]["requestId"]))
+    started = original_start(db, domain, stdin, session, action["askBytes"], action["turnId"])
+    incoming = select(db, "SELECT * FROM v37_ledger_raw_source WHERE domain_id=? AND session_id=? AND operation_id=? "
+                      "AND process_ticket=? AND custodian_nonce=? AND generation=? ORDER BY rowid",
+                      (domain, session["id"], stdin["process_operation_id"], stdin["ticket"],
+                       stdin["custodian_nonce"], session["generation"]))
+    decoded = [(row, json.loads(bytes(row["raw_bytes"]))) for row in incoming]
+    tool_items, calls, questions = turn_activity(decoded, session["threadId"], action["turnId"],
+                                                 expected_input=action["askBytes"])
+    check(not questions and len(calls) == 1, "Original model turn must contain exactly one tool call and no question")
+    source, frame = calls[0]
+    check(frame["params"]["tool"] == "gogoke_policy" and frame["params"]["arguments"] == expected_args and
+          source["state"] == "NO_EVENT" and source["no_event_reason"] == "NATIVE_HOST_TOOL_REPLY_WRITTEN",
+          "Original A dynamic tool frame/typed arguments differ")
+    replies = select(db, "SELECT * FROM gogoke_v37_rpc_steps WHERE domain_id=? AND session_id=? "
+                     "AND process_operation_id=? AND ticket=? AND custodian_nonce=? AND generation=?",
+                     (domain, session["id"], stdin["process_operation_id"], stdin["ticket"],
+                      stdin["custodian_nonce"], session["generation"]))
+    typed_replies = [(step, json.loads(bytes.fromhex(step["command_hex"]))) for step in replies]
+    typed_replies = [(step, value) for step, value in typed_replies if "method" not in value and "id" in value and
+                     typed_id(value["id"]) == typed_id(frame["id"])]
+    check(len(typed_replies) == 1 and typed_replies[0][0]["phase"] in ("WRITTEN", "OBSERVED"),
+          "Original tool call lacks its unique typed H reply")
+    reply, written = typed_replies[0]
+    content = written.get("result", {}).get("contentItems")
+    check(reply["step_id"] == action["receipt"]["requestId"] and written["result"]["success"] is False and
+          len(content or []) == 1 and content[0]["type"] == "inputText" and
+          content[0]["text"] == action["rawToolReceipt"], "Original H reply does not preserve native DENIED bytes")
+    native = json.loads(content[0]["text"])
+    check(native == action["receipt"] and native["schema"] == "gogoke.37.operations.v1" and
+          native["family"] == "K-POLICY" and native["operation"] == "gate-submit" and
+          native["targetId"] == foreign["gateId"] and native["status"] == "DENIED" and
+          native["previousRevision"] == native["revision"] == expected_args["expectedRevision"] and
+          native["result"] == {} and action["cliToolStatus"] == "failed",
+          "Native K-POLICY cross-project refusal is not the exact original DENIED result")
+    stored = one(db, "SELECT request_bytes,receipt_bytes FROM v37_ledger_receipt "
+                 "WHERE family='K-POLICY' AND domain_id=? AND request_id=?",
+                 (domain, native["requestId"]))
+    native_request = json.loads(bytes(stored["request_bytes"]))
+    native_receipt = json.loads(bytes(stored["receipt_bytes"]))
+    check(bytes(stored["receipt_bytes"]).decode() == content[0]["text"] and native_receipt == native and
+          native_request["operation"] == "gate-submit" and native_request["targetId"] == foreign["gateId"] and
+          native_request["payload"] == {} and native_request["expectedRevision"] == expected_args["expectedRevision"],
+          "Original native K-POLICY request/receipt differs from the immutable ledger")
+    completed_items = [(row, value) for row, value in tool_items if value["method"] == "item/completed"]
+    started_items = [(row, value) for row, value in tool_items if value["method"] == "item/started"]
+    check(len(started_items) <= 1 and all(
+          value["params"]["item"]["id"] == frame["params"]["callId"] and
+          value["params"]["item"]["tool"] == "gogoke_policy" and
+          value["params"]["item"]["arguments"] == expected_args for _, value in started_items),
+          "Original CLI tool start differs from its sole dynamic call")
+    check(len(completed_items) == 1 and completed_items[0][1]["params"]["item"]["type"] == "dynamicToolCall" and
+          completed_items[0][1]["params"]["item"]["id"] == frame["params"]["callId"] and
+          completed_items[0][1]["params"]["item"]["tool"] == "gogoke_policy" and
+          completed_items[0][1]["params"]["item"]["arguments"] == expected_args and
+          completed_items[0][1]["params"]["item"]["status"] == "failed",
+          "Original CLI dynamicToolCall completion differs")
+    completions = [(row, value) for row, value in decoded if value.get("method") == "turn/completed" and
+                   value.get("params", {}).get("threadId") == session["threadId"] and
+                   value.get("params", {}).get("turn", {}).get("id") == action["turnId"]]
+    check(len(completions) == 1 and completions[0][1]["params"]["turn"]["status"] == "completed" and
+          completions[0][0]["state"] != "PENDING", "Original denied tool turn must complete")
+    result["modelCalls"].append({"caseId": action["caseId"], "sessionId": session["id"],
+        "originalAsk": sent["rawFrame"], "originalSendReceipt": bytes.fromhex(stdin["receipt_hex"]).decode(),
+        "originalTurnStart": bytes.fromhex(started["step"]["command_hex"]).decode(),
+        "originalTurnAck": started["rawAck"], "originalAFrame": bytes(source["raw_bytes"]).decode(),
+        "originalHReply": bytes.fromhex(reply["command_hex"]).decode(),
+        "originalToolCompletion": bytes(completed_items[0][0]["raw_bytes"]).decode(),
+        "originalCompletion": bytes(completions[0][0]["raw_bytes"]).decode(),
+        "sourceEpoch": source["source_epoch"], "sourceCursor": source["source_cursor"],
+        "processOperationId": stdin["process_operation_id"], "processTicket": stdin["ticket"],
+        "custodianNonce": stdin["custodian_nonce"], "policyEvents": []})
+    result["verifiedCaseId"] = case["caseId"]
+    result["directCaseEvidence"] = True
+    result["state"] = "CROSS_PROJECT_ONLY_DIRECT_EVIDENCE_V08_INCOMPLETE"
+
+
 def verify_case(db, journal, case, result):
+    if case.get("selection") == "CROSS_PROJECT_ONLY":
+        return verify_cross_project_only(db, journal, case, result)
     domain = journal["domainId"]
     reference = case["baselineReadback"]
     check(Path(reference["file"]).name == reference["file"], "Baseline must be a private artifact basename")
