@@ -220,7 +220,66 @@ type SecretaryConversation = {
   verifiedSend: { requestId: string; body: string; hGeneration: string } | null;
   writer: { binding: SecretaryBinding; instanceId: string; model: string; effort: string; permissionTier: string;
     canSend: boolean; canStop: boolean } | null;
+  history?: Array<{ sessionId: string; threadId: string; messages: ConversationItem[]; historyGap: string | null }>;
 };
+
+type SecretaryEpisode = {
+  authorizationGeneration: string; sessionId: string; selectedInstanceId: string;
+  conversation: NonNullable<Extract<SecretaryConfiguration, { state: "DESIGNATED" }>["conversation"]>;
+};
+
+export type SecretaryHistoryGap = {
+  authorizationGeneration: string; sessionId: string; selectedInstanceId: string;
+  state: "UNKNOWN" | "CONFLICT"; reason: string;
+};
+
+async function readSecretaryEpisodes(configuration: Extract<SecretaryConfiguration, { state: "DESIGNATED" }>) {
+  const episodes: SecretaryEpisode[] = [];
+  const ids = new Set<string>();
+  const tokens = new Set<string>();
+  let continuation: string | null = null;
+  let latest = configuration;
+  for (;;) {
+    const raw = await design37UserFrame({ schema: "gogoke.37.owner-configuration.v1",
+      command: "secretary-configuration-read", episodesPage: continuation ? { continuation } : {} });
+    const parsed = parseSecretaryConfiguration(raw);
+    if (parsed.state !== "DESIGNATED" ||
+        (["seatId", "incarnation", "generation", "revision", "instanceId", "model", "effort", "permissionTier"] as const)
+          .some((key) => parsed[key] !== configuration[key]) ||
+        !record(raw) || !record(raw.episodesPage) || raw.episodesPage.state !== "FOUND" ||
+        !Array.isArray(raw.episodesPage.items)) {
+      throw new Error("Native Secretary episode page changed its current designation.");
+    }
+    latest = parsed;
+    for (const row of raw.episodesPage.items) {
+      if (!record(row) || !decimal(row.authorizationGeneration) || !nonempty(row.sessionId) ||
+          !nonempty(row.selectedInstanceId) || ids.has(row.sessionId)) {
+        throw new Error(`Native Secretary episode identity is invalid: ${JSON.stringify(row)}`);
+      }
+      const selected = parseSecretaryConfiguration({ ...parsed, conversation: row.conversation });
+      if (selected.state !== "DESIGNATED" || !selected.conversation) {
+        throw new Error("Native Secretary episode has no original conversation fact.");
+      }
+      const found = confirmedConversation(selected);
+      if (found && (found.fact.sessionId !== row.sessionId ||
+          (row.authorizationGeneration !== parsed.generation &&
+            (found.fact.historical !== true || found.fact.claimState !== "RELEASED")))) {
+        throw new Error("Native Secretary historical episode is not its exact released H selection.");
+      }
+      ids.add(row.sessionId);
+      episodes.push({ authorizationGeneration: row.authorizationGeneration, sessionId: row.sessionId,
+        selectedInstanceId: row.selectedInstanceId, conversation: selected.conversation });
+    }
+    const next = raw.episodesPage.nextContinuation;
+    if (next === null) break;
+    if (typeof next !== "string" || !/^[0-9a-fA-F]{64}$/.test(next) ||
+        raw.episodesPage.items.length === 0 || tokens.has(next)) {
+      throw new Error("Native Secretary episode continuation did not advance.");
+    }
+    tokens.add(next); continuation = next;
+  }
+  return { configuration: latest, episodes };
+}
 
 export type SecretaryBinding = {
   seatId: string; incarnation: string; eGeneration: string; eRevision: string;
@@ -371,7 +430,8 @@ function parseSecretaryInput(value: unknown, sessionId: string, threadId: string
 }
 
 async function readSecretaryInputHistory(configuration: Extract<SecretaryConfiguration, { state: "DESIGNATED" }>,
-  fact: NonNullable<Extract<SecretaryConfiguration, { state: "DESIGNATED" }>["conversation"]>):
+  fact: NonNullable<Extract<SecretaryConfiguration, { state: "DESIGNATED" }>["conversation"]>,
+  authorizationGeneration = configuration.generation):
   Promise<{ items: SecretaryOriginalInput[]; gap: string | null; rowsEnded: boolean }> {
   const items: SecretaryOriginalInput[] = [];
   const seen = new Set<string>();
@@ -381,7 +441,7 @@ async function readSecretaryInputHistory(configuration: Extract<SecretaryConfigu
     const reply = await design37UserFrame({ schema: "gogoke.37.owner-configuration.v1",
       command: "secretary-configuration-read", inputHistory: {
         seatId: configuration.seatId, incarnation: configuration.incarnation,
-        authorizationGeneration: configuration.generation, sessionId: fact.sessionId,
+        authorizationGeneration, sessionId: fact.sessionId,
         hGeneration: fact.generation,
         ...(continuation ? { continuation } : {}),
       } });
@@ -557,7 +617,9 @@ function secretaryEvent(state: SecretaryTranscript, value: unknown, threadId: st
 export function createDesign37SecretarySource(): {
   source: SecretarySource;
   readSnapshot: () => Promise<{ configuration: SecretaryConfiguration; page: SecretaryPage }>;
-  readConversation: (configuration: SecretaryConfiguration) => Promise<SecretaryConversation | null>;
+  readConversation: (configuration: SecretaryConfiguration) => Promise<{
+    conversation: SecretaryConversation | null; historyGaps: SecretaryHistoryGap[];
+  }>;
   invalidateTranscript: () => void;
   writeFacts: () => SecretaryWriteFact[];
   send: (binding: SecretaryBinding, body: string) => Promise<SecretaryWriteFact>;
@@ -762,7 +824,7 @@ export function createDesign37SecretarySource(): {
       throw new Error(`Native Secretary routine change failed: ${JSON.stringify(reply)}`);
     }
   };
-  let transcript: SecretaryTranscript | null = null;
+  const transcripts = new Map<string, SecretaryTranscript>();
   type OriginalWrite = { binding: SecretaryBinding; frame: string; requestId: string;
     expectedRevision: string; operation: "send" | "stop"; body: string | null;
     status: "UNKNOWN" | "ACCEPTED" | "REJECTED"; receipt: unknown | null; reason: string | null;
@@ -804,11 +866,25 @@ export function createDesign37SecretarySource(): {
       }
     }
   };
-  const invalidateTranscript = () => { transcript = null; };
-  const readConversation = async (configuration: SecretaryConfiguration): Promise<SecretaryConversation | null> => {
+  const invalidateTranscript = () => { transcripts.clear(); };
+  const readEpisodeConversation = async (configuration: SecretaryConfiguration,
+    selectedEpisode?: SecretaryEpisode): Promise<SecretaryConversation | null> => {
     const original = confirmedConversation(configuration);
-    if (!original) { transcript = null; return null; }
+    if (!original) return null;
     const { fact } = original;
+    const transcriptKey = JSON.stringify([original.configuration.seatId, original.configuration.incarnation,
+      fact.sessionId, fact.threadId, fact.ledgerEpoch]);
+    let transcript = transcripts.get(transcriptKey) ?? null;
+    const selectedConfiguration = async () => {
+      const fresh = await readSecretaryConfiguration();
+      if (!selectedEpisode) return confirmedConversation(fresh);
+      if (fresh.state !== "DESIGNATED") return null;
+      const roster = await readSecretaryEpisodes(fresh);
+      const episode = roster.episodes.find((row) => row.sessionId === selectedEpisode.sessionId &&
+        row.authorizationGeneration === selectedEpisode.authorizationGeneration &&
+        row.selectedInstanceId === selectedEpisode.selectedInstanceId);
+      return episode ? confirmedConversation({ ...roster.configuration, conversation: episode.conversation }) : null;
+    };
     let sourceGap: string | null = "原始输出和待处理问题未由当前运行实例复核";
     if (fact.historical === false && fact.runtimeAvailable === true && fact.claimState === "COMMITTED") {
       const output = (await secretaryOperation("K-SESSION", "output-stream", fact.sessionId!, fact.revision!,
@@ -828,7 +904,7 @@ export function createDesign37SecretarySource(): {
         output.nativeCardRefsIncomplete || output.nativeCardRefs.length > 0 ?
           `宿主仍有 ${output.nativeCardRefs.length} 个待处理问题引用${output.nativeCardRefsIncomplete ? "，列表未完整" : ""}` : null;
     }
-    const latest = confirmedConversation(await readSecretaryConfiguration());
+    const latest = await selectedConfiguration();
     if (!latest || latest.configuration.seatId !== original.configuration.seatId ||
         latest.configuration.incarnation !== original.configuration.incarnation ||
         latest.configuration.generation !== original.configuration.generation ||
@@ -842,7 +918,8 @@ export function createDesign37SecretarySource(): {
     let inputGap: string | null = null;
     let inputRowsEnded = false;
     try {
-      const read = await readSecretaryInputHistory(latest.configuration, latest.fact);
+      const read = await readSecretaryInputHistory(latest.configuration, latest.fact,
+        selectedEpisode?.authorizationGeneration);
       originalInputs = read.items;
       inputGap = read.gap;
       inputRowsEnded = read.rowsEnded;
@@ -866,7 +943,7 @@ export function createDesign37SecretarySource(): {
       turnFirstMessage: new Map(), vendorUserFacts: [], vendorGroups: new Map() };
     let pageGap: string | null = null;
     while (BigInt(state.cursor) < BigInt(state.target)) {
-      const current = confirmedConversation(await readSecretaryConfiguration());
+      const current = await selectedConfiguration();
       if (!current || current.configuration.seatId !== original.configuration.seatId ||
           current.configuration.incarnation !== original.configuration.incarnation ||
           current.configuration.generation !== original.configuration.generation ||
@@ -924,9 +1001,11 @@ export function createDesign37SecretarySource(): {
         groups: new Map(state.groups), statuses: [...state.statuses],
         turnFirstMessage: new Map(state.turnFirstMessage),
         vendorUserFacts: [...state.vendorUserFacts], vendorGroups: new Map(state.vendorGroups) };
+      transcripts.set(transcriptKey, transcript);
     }
     state.complete = !pageGap && state.cursor === state.target;
     transcript = state;
+    transcripts.set(transcriptKey, state);
     let verifiedSend: { requestId: string; body: string; hGeneration: string } | null = null;
     for (const send of sends) {
       if (send.binding.sessionId !== fact.sessionId) continue;
@@ -996,6 +1075,51 @@ export function createDesign37SecretarySource(): {
       historical: latest.fact.historical!, runtimeAvailable: latest.fact.runtimeAvailable!,
       messages, statuses: state.statuses, historyGap, writer,
       inputs: originalInputs, inputRowsEnded, vendorUserFacts, verifiedSend };
+  };
+  const readConversation = async (configuration: SecretaryConfiguration): Promise<{
+    conversation: SecretaryConversation | null; historyGaps: SecretaryHistoryGap[];
+  }> => {
+    if (configuration.state !== "DESIGNATED") {
+      invalidateTranscript(); return { conversation: null, historyGaps: [] };
+    }
+    const roster = await readSecretaryEpisodes(configuration);
+    const current = await readEpisodeConversation(roster.configuration);
+    const history: NonNullable<SecretaryConversation["history"]> = [];
+    const historyGaps: SecretaryHistoryGap[] = [];
+    const gap = (episode: SecretaryEpisode, state: "UNKNOWN" | "CONFLICT", reason: string) => {
+      historyGaps.push({ authorizationGeneration: episode.authorizationGeneration,
+        sessionId: episode.sessionId, selectedInstanceId: episode.selectedInstanceId, state, reason });
+    };
+    for (const episode of roster.episodes) {
+      if (episode.sessionId === current?.sessionId) continue;
+      if (episode.conversation.state !== "FOUND") {
+        const conflict = episode.conversation.state === "CONFLICT";
+        gap(episode, conflict ? "CONFLICT" : "UNKNOWN",
+          conflict ? "原始会话来源存在冲突" : "原始会话来源尚未核实");
+        continue;
+      }
+      if (episode.conversation.historical !== true || episode.conversation.claimState !== "RELEASED") {
+        gap(episode, "UNKNOWN", "非当前会话尚无已释放的原始事实"); continue;
+      }
+      const selected = await readEpisodeConversation({ ...roster.configuration,
+        conversation: episode.conversation }, episode);
+      if (selected) history.push({ sessionId: selected.sessionId, threadId: selected.threadId,
+        messages: selected.messages, historyGap: selected.historyGap });
+      else gap(episode, "UNKNOWN", "重新读取时无法确认原始会话");
+    }
+    if (current) return { conversation: { ...current, history }, historyGaps };
+    // Preserve a proven historical conversation even while the current
+    // selection is unknown; it never acquires a current writer.
+    const released = roster.episodes.filter((row) => row.conversation.state === "FOUND" &&
+      row.conversation.historical === true && row.conversation.claimState === "RELEASED");
+    const fallback = released[released.length - 1];
+    if (!fallback) return { conversation: null, historyGaps };
+    const selected = await readEpisodeConversation({ ...roster.configuration,
+      conversation: fallback.conversation }, fallback);
+    return { conversation: selected ? { ...selected, writer: null,
+      history: history.filter((row) => row.sessionId !== selected.sessionId),
+      historyGap: [selected.historyGap, "当前会话来源尚未核实"].filter(Boolean).join("；") } : null,
+      historyGaps };
   };
   const currentWriter = async (binding: SecretaryBinding, turnState: "IDLE" | "RUNNING") => {
     const selected = confirmedConversation(await readSecretaryConfiguration());

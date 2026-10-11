@@ -1,5 +1,5 @@
 import { lazy, useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
-import type { Messages } from "@/features/messages/components/Messages";
+import { Messages } from "@/features/messages/components/Messages";
 import type { Composer } from "@/features/composer/components/Composer";
 import { ComposerInput } from "@/features/composer/components/ComposerInput";
 import successSoundUrl from "@/assets/success-notification.mp3";
@@ -87,7 +87,7 @@ import { I18nProvider } from "@/i18n";
 import { hasNativeBackendTransport } from "@/platform/runtime";
 import { createDesign37SecretarySource, sameSecretaryWriter, signalGogokeUpdateReady,
   pendingNativeVisibleIntent, recoverPendingNativeVisibleIntent,
-  type SecretaryBinding, type SecretaryOriginalInput, type SecretaryVendorUserFact,
+  type SecretaryBinding, type SecretaryOriginalInput, type SecretaryVendorUserFact, type SecretaryHistoryGap,
   type SecretaryWriteFact } from "@/services/tauri";
 import { NowProvider, NowPinSlot, type NowSource } from "@/features/now/NowContext";
 import { SecretaryEntry, SecretaryPanel, SecretaryActionLine, type SecretarySource } from "@/features/secretary/Secretary";
@@ -122,6 +122,9 @@ export type SecretaryView = {
   } | null;
   outbound?: SecretaryWriteFact[];
   historyGap?: string | null;
+  historyGaps?: SecretaryHistoryGap[];
+  history?: Array<{ sessionId: string; historyGap: string | null;
+    messages: Omit<ComponentProps<typeof Messages>, "afterItem"> }>;
   statuses?: string[];
   originalInputs?: SecretaryOriginalInput[];
   vendorUserFacts?: SecretaryVendorUserFact[];
@@ -157,7 +160,8 @@ function useNativeSecretaryView(enabled: boolean): SecretaryView | null {
       pending = (async () => {
         try {
           const snapshot = await producer.readSnapshot();
-          const conversation = await producer.readConversation(snapshot.configuration);
+          const conversationRead = await producer.readConversation(snapshot.configuration);
+          const conversation = conversationRead.conversation;
           if (disposed) return;
           setView({
             association: conversation ? { workspaceId: null, threadId: conversation.threadId,
@@ -179,6 +183,13 @@ function useNativeSecretaryView(enabled: boolean): SecretaryView | null {
               send: producer.send, stop: producer.stop } : null,
             outbound: producer.writeFacts(),
             historyGap: conversation?.historyGap ?? null,
+            historyGaps: conversationRead.historyGaps,
+            history: conversation?.history?.map((episode) => ({
+              sessionId: episode.sessionId, historyGap: episode.historyGap,
+              messages: { items: episode.messages, threadId: episode.threadId,
+                workspaceId: null, workspacePath: null, isThinking: false,
+                openTargets: [], selectedOpenAppId: "" },
+            })) ?? [],
             statuses: conversation?.statuses ?? [],
             originalInputs: conversation?.inputs ?? [],
             vendorUserFacts: conversation?.vendorUserFacts ?? [],
@@ -2167,7 +2178,15 @@ function MainAppContent({
 
   const mainMessagesNode = secretaryActive && secretarySettingsOnly
     ? <div role="status">{entryLine(secretaryView!.entry).text}。右侧显示宿主读回的设置和定时任务。</div>
-    : !secretaryActive && showWorkspaceHome ? workspaceHomeNode : messagesNode;
+    : !secretaryActive && showWorkspaceHome ? workspaceHomeNode
+      : secretaryActive ? <>
+          {secretaryView?.history?.map((episode) => <details key={episode.sessionId}>
+            <summary>此前的对话（只读）</summary>
+            {episode.historyGap ? <div role="status">历史读取未完整：{episode.historyGap}</div> : null}
+            <Messages {...episode.messages} />
+          </details>)}
+          {messagesNode}
+        </> : messagesNode;
   const nativeInput = secretaryActive && secretaryHasAssociation && secretaryView?.readState === "known"
     ? secretaryView.nativeInput : null;
   const sendSecretary = async () => {
@@ -2279,6 +2298,13 @@ function MainAppContent({
   };
   const secretaryEvidenceNode = secretaryActive ? <>
     {secretaryView?.historyGap ? <div role="status">对话读取未完整：{secretaryView.historyGap}</div> : null}
+    {secretaryView?.historyGaps?.length ? <div role="status">
+      <div>有 {secretaryView.historyGaps.length} 段会话尚未完整核实：</div>
+      <ul>{secretaryView.historyGaps.map((episode, index) =>
+        <li key={`${episode.authorizationGeneration}:${episode.sessionId}`}>
+          第 {index + 1} 段：{episode.reason}
+        </li>)}</ul>
+    </div> : null}
     {!nativeInput && secretaryDraft ? <div role="status">此秘书长会话的草稿已保留：<pre>{secretaryDraft}</pre></div> : null}
     {secretaryView?.statuses?.length ? <details>
       <summary>宿主原始轮次状态</summary>
