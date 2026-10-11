@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       focused_library:
-        description: Affected checks only (seat-scope, policy-unset-stage, ledger-scope, native-takeover, pipe-evidence, grok-permission, claude-holder, claude-initialize, claude-second-init, m2-provider-current, secretary-configuration, opencode-alias or model-options); all full and formal gates are NOT_RUN
+        description: Affected checks only (seat-scope, policy-unset-stage, ledger-scope, native-takeover, pipe-evidence, grok-permission, claude-holder, claude-initialize, claude-second-init, m2-provider-current, codex-empty-persist, secretary-configuration, opencode-alias or model-options); all full and formal gates are NOT_RUN
         type: string
         default: ""
       secretary_routine_fixture_only:
@@ -121,6 +121,13 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $version -ne '2.1.196 (Claude Code)') { throw "Fixed Claude CLI version mismatch: $version" }
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CLAUDE_CLI_PATH=$binary"
           Write-Output "Fixed Claude CLI SHA256=$digest"
+      - name: Check the production configuration for Codex persistence
+        if: ${{ inputs.focused_library == 'codex-empty-persist' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo check --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib
+          if ($LASTEXITCODE -ne 0) { throw 'Production configuration check failed; test-only historical fixture is not production evidence.' }
       - name: Run the explicitly selected affected tests
         shell: pwsh
         run: |
@@ -161,13 +168,22 @@ jobs:
               'real_claude_initialize_with_fixed_lpac_compat_persistent_stdio',
               'stop_requires_clean_original_eof_not_a_generic_source_error',
               'persistent_reader_keeps_eof_unknown_after_exact_child_exit') }
+            'codex-empty-persist' { @(
+              'store::session_transport::codex_rpc::tests::empty_persistent_thread_read_binds_original_ack_and_refuses_other_history',
+              'store::product_database::v37_runtime::tests::actual_pinned_codex_same_seat_work_and_side_resume_preserve_authorization_without_model_call',
+              'store::product_database::v37_runtime::tests::actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_call',
+              'store::product_database::v37_runtime::tests::empty_initial_secretary_release_refuses_input_source_and_claim_drift',
+              'failed_resume_profile_source_cas_exact_and_replay',
+              'failed_resume_rpc_observed_remote_error_exact_binding',
+              'failed_resume_profile_only_cold_recovery_preserves_original_claim_at_each_boundary',
+              'completed_empty_release_revoked_capture_does_not_select_next_failed_resume_group') }
             'pipe-evidence' { @('stop_requires_clean_original_eof_not_a_generic_source_error',
               'persistent_reader_keeps_eof_unknown_after_exact_child_exit') }
             default { throw 'Unknown affected-check selection; no arbitrary shell or test filter is accepted.' }
           }
           $node = Get-Command node.exe -CommandType Application | Select-Object -First 1 -ExpandProperty Source
           $env:GOGOKE_CONTROLLED_NODE_PATH = $node
-          if ($env:FOCUSED_LIBRARY -eq 'm2-provider-current') {
+          if ($env:FOCUSED_LIBRARY -in @('m2-provider-current', 'codex-empty-persist')) {
             # The composed F/H fixture uses the real backend image, like the
             # existing full-library job; the git.exe launcher is not its pin.
             $execPath = & git --exec-path
