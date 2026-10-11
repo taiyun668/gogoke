@@ -1092,7 +1092,7 @@ impl LaunchEvidence {
             Err(error)=>("UNKNOWN".into(),error),
         };
         let updated=super::admission::record_opencode_dos_alias_cleanup(db,alias,
-            stop_fact,result.0,result.1)
+            stop_fact,&result.0,&result.1)
             .map_err(|error|format!("native OpenCode alias cleanup outcome: {error:?}"))?;
         self.opencode_alias=Some(updated);
         if result.0=="UNKNOWN" {
