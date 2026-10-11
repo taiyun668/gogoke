@@ -755,15 +755,13 @@ def read_sequence():
 
 
 CLAUDE_NATURAL_SEQUENCE_TURNS = (
-    {"prompt": "What is 241 + 537?", "expectedAnswer": "778"},
-    {"prompt": "What is 16 multiplied by 27?", "expectedAnswer": "432"},
+    {"prompt": "What is 241 + 537?", "expectedOutput": "241 + 537 = **778**",
+     "answerForContext": "778"},
+    {"prompt": "What is 16 multiplied by 27? Please answer with the number only.",
+     "expectedOutput": "432"},
 )
 CLAUDE_NATURAL_CONTEXT_PROMPT = \
     "What was the exact answer to my first arithmetic question? Reply with the number only."
-
-
-def contains_standalone_number(text, expected):
-    return re.search(r"(?<!\d)" + re.escape(expected) + r"(?!\d)", text) is not None
 
 
 def read_claude_sequence(case):
@@ -782,8 +780,8 @@ def read_claude_sequence(case):
             sequence.get("state") != "CLAUDE_CONTEXT_AFTER_RESUME_STOP_RELEASE_READBACK_REQUIRED" or \
             len(turns) != len(CLAUDE_NATURAL_SEQUENCE_TURNS) or session is None or \
             context.get("priorTurnOrdinal") != 1 or \
-            context.get("expectedPriorAnswer") != CLAUDE_NATURAL_SEQUENCE_TURNS[0]["expectedAnswer"] or \
-            context.get("expectedAnswer") != CLAUDE_NATURAL_SEQUENCE_TURNS[0]["expectedAnswer"] or \
+            context.get("expectedPriorAnswer") != CLAUDE_NATURAL_SEQUENCE_TURNS[0]["answerForContext"] or \
+            context.get("expectedOutput") != CLAUDE_NATURAL_SEQUENCE_TURNS[0]["answerForContext"] or \
             context.get("prompt") != CLAUDE_NATURAL_CONTEXT_PROMPT or \
             context.get("expectedPriorAnswer") in context.get("prompt", "") or \
             "marker" in context or \
@@ -807,8 +805,10 @@ def read_claude_sequence(case):
     for ordinal, (turn, spec) in enumerate(zip(turns, CLAUDE_NATURAL_SEQUENCE_TURNS), start=1):
         if turn.get("ordinal") != ordinal or \
                 turn.get("prompt") != spec["prompt"] or \
-                turn.get("expectedAnswer") != spec["expectedAnswer"] or \
-                spec["expectedAnswer"] in turn.get("prompt", "") or \
+                turn.get("expectedOutput") != spec["expectedOutput"] or \
+                spec["expectedOutput"] in turn.get("prompt", "") or \
+                turn.get("answerForContext") != spec.get("answerForContext") or \
+                (spec.get("answerForContext") and spec["answerForContext"] in turn.get("prompt", "")) or \
                 not str(turn.get("beforeSendLedgerHighwater", "")).isdecimal() or \
                 not str(turn.get("beforeSendEventCount", "")).isdecimal():
             fail("Claude original turns are not the configured natural questions")
@@ -1034,25 +1034,49 @@ def read_claude_sequence(case):
                 "originalFrame": bytes.fromhex(command).decode("utf-8"),
                 "confirmedWrite": phase in ("WRITTEN", "OBSERVED")})
         normalized = db.execute(
-            "SELECT i.cursor,i.source_epoch,i.source_cursor,i.update_json,r.operation_id,r.generation,"
-            "r.process_ticket,r.custodian_nonce,r.source_cursor,r.raw_bytes,r.state "
+            "SELECT i.cursor,i.source_epoch,i.source_cursor,i.update_json,i.source_event_id,"
+            "r.operation_id,r.generation,r.process_ticket,r.custodian_nonce,r.source_cursor,"
+            "r.raw_bytes,r.state,r.resolved_event_id "
             "FROM v37_ledger_index i LEFT JOIN v37_ledger_raw_source r "
             "ON r.resolved_event_id=i.source_event_id AND r.domain_id=i.domain_id AND r.session_id=i.session_id "
             "WHERE i.source_kind='v37' AND i.domain_id=? AND i.session_id=? ORDER BY i.cursor", (domain, sid)).fetchall()
         updates = []
-        for cursor, epoch, source, update_json, operation, generation, ticket, nonce, raw_cursor, raw, state in normalized:
+        for cursor, epoch, source, update_json, source_event_id, operation, generation, ticket, nonce, \
+                raw_cursor, raw, state, resolved_event_id in normalized:
             if raw is None or state != "RESOLVED" or not all((epoch, operation, generation, ticket, nonce, raw_cursor)):
                 fail("Claude normalized event lacks exact original raw/physical source")
             update = json.loads(update_json)
             raw_frame = json.loads(bytes(raw).decode("utf-8"))
-            original_update = raw_frame.get("params", {}).get("update", {})
-            if update.get("sessionUpdate") != original_update.get("sessionUpdate") or \
-                    update.get("_meta", {}).get("rawSourceCursor") != raw_cursor or \
-                    update.get("_meta", {}).get("threadId") != original_vendor_id:
-                fail("Claude raw-to-normalized event link differs")
+            raw_key = (generation, operation, epoch, raw_cursor, ticket, nonce)
+            physical = raw_lookup.get(raw_key)
+            message = raw_frame.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if raw_frame.get("type") != "assistant" or raw_frame.get("session_id") != original_vendor_id or \
+                    not isinstance(content, list) or not content or \
+                    any(not isinstance(block, dict) or block.get("type") != "text" or
+                        not isinstance(block.get("text"), str) for block in content) or \
+                    physical is None or physical[0] != raw_frame or physical[1] != "RESOLVED" or \
+                    physical[2] != source_event_id or source_event_id != resolved_event_id:
+                fail("Claude normalized source is not this generation's eligible original assistant frame")
+            assistant_text = "".join(block["text"] for block in content)
+            expected_update = {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": assistant_text},
+                "_meta": {
+                    "provider": "claude",
+                    "nativeSessionId": original_vendor_id,
+                    "threadId": original_vendor_id,
+                    "providerMethod": "assistant",
+                    "timeBasis": "NATIVE_NORMALIZATION_OBSERVATION",
+                    "rawSourceCursor": raw_cursor,
+                },
+            }
+            if update != expected_update:
+                fail("Claude normalized assistant projection differs from the production text mapping")
             updates.append({"cursor": str(cursor), "sourceEpoch": epoch, "ledgerSourceCursor": source,
                 "operationId": operation, "generation": generation, "processTicket": ticket,
-                "custodianNonce": nonce, "update": update})
+                "custodianNonce": nonce, "rawSourceCursor": raw_cursor,
+                "assistantText": assistant_text, "update": update})
         if not updates:
             fail("Claude original normalized output is absent")
 
@@ -1072,11 +1096,11 @@ def read_claude_sequence(case):
                     turn.get("generation") != expected_generation or not str(turn.get("beforeSendRawHighwater", "")).isdecimal():
                 fail("Claude USER input is not bound to its exact original generation and H request")
             spec = CLAUDE_NATURAL_SEQUENCE_TURNS[index] if index < 2 else None
-            expected_answer = spec["expectedAnswer"] if spec else turns[0]["expectedAnswer"]
+            expected_output = spec["expectedOutput"] if spec else turns[0]["answerForContext"]
             expected_prompt = spec["prompt"] if spec else CLAUDE_NATURAL_CONTEXT_PROMPT
-            if turn.get("prompt") != expected_prompt or turn.get("expectedAnswer") != expected_answer or \
-                    expected_answer in turn.get("prompt", "") or \
-                    (index == 2 and turn.get("expectedPriorAnswer") != expected_answer) or \
+            if turn.get("prompt") != expected_prompt or turn.get("expectedOutput") != expected_output or \
+                    expected_output in turn.get("prompt", "") or \
+                    (index == 2 and turn.get("expectedPriorAnswer") != expected_output) or \
                     (index == 2 and turn.get("contextAfterResume") is not True) or \
                     "marker" in turn:
                 fail("Claude natural prompt or prior-answer boundary differs")
@@ -1139,26 +1163,24 @@ def read_claude_sequence(case):
                     len(results) != 1 or terminal[0] != results[0] or \
                     sha(raw_bytes_lookup[terminal_keys[0]]) != receipt["result"].get("rawResultSha256"):
                 fail("Claude raw USER/typed result frames are not unique within the original H receipt")
-            text = "".join(claude_text(frame) for _, frame, _ in source_frames)
-            if (index == 2 and text.strip() != expected_answer) or \
-                    (index < 2 and not contains_standalone_number(text, expected_answer)):
-                fail("Claude expected answer is not present in this turn's original A frames")
+            text = "".join(claude_text(frame) for _, frame, state in source_frames if state == "RESOLVED")
+            if text.strip() != expected_output:
+                fail("Claude complete expected answer differs from this turn's original A frames")
             normalized_text = "".join(item["update"].get("content", {}).get("text", "") for item in updates
                 if item["operationId"] == process_operation and item["generation"] == expected_generation and
                 item["processTicket"] == stored[5] and item["custodianNonce"] == stored[7] and
                 item["sourceEpoch"] == terminal_epoch and item["update"].get("sessionUpdate") == "agent_message_chunk" and
                 str(item["update"].get("_meta", {}).get("rawSourceCursor", "")).isdecimal() and
                 int(turn["beforeSendRawHighwater"]) < int(item["update"]["_meta"]["rawSourceCursor"]) <= int(terminal_cursor))
-            if (index == 2 and normalized_text.strip() != expected_answer) or \
-                    (index < 2 and not contains_standalone_number(normalized_text, expected_answer)):
-                fail("Claude terminal answer does not link to normalized output in its exact source interval")
+            if normalized_text.strip() != expected_output:
+                fail("Claude complete expected answer does not link to normalized output in its exact source interval")
             if turn.get("observedAnswer") != normalized_text.strip():
                 fail("Claude captured H answer differs from normalized original A output")
             observed_turns.append({"ordinal": turn.get("ordinal"), "requestId": request_id,
                 "generation": expected_generation, "processOperationId": process_operation,
                 "vendorSessionId": original_vendor_id, "terminalSourceEpoch": terminal_epoch,
                 "terminalSourceCursor": terminal_cursor, "typedUserFrameCount": len(users),
-                "typedResultFrameCount": len(results), "expectedAnswer": expected_answer,
+                "typedResultFrameCount": len(results), "expectedOutput": expected_output,
                 "answerObserved": True})
         if len({row["requestId"] for row in observed_turns}) != 3 or \
                 exact_one(db, "SELECT COUNT(*) FROM gogoke_v37_h_stdin_journal "

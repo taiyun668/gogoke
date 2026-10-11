@@ -270,13 +270,11 @@ function claudeTerminalResult(result, beforeSendRawHighwater) {
 }
 
 const claudeNaturalSequenceTurns = [
-  { prompt: 'What is 241 + 537?', expectedAnswer: '778' },
-  { prompt: 'What is 16 multiplied by 27?', expectedAnswer: '432' }
+  { prompt: 'What is 241 + 537?', expectedOutput: '241 + 537 = **778**',
+    answerForContext: '778' },
+  { prompt: 'What is 16 multiplied by 27? Please answer with the number only.',
+    expectedOutput: '432' }
 ];
-
-function containsStandaloneNumber(text, expected) {
-  return new RegExp(`(?:^|\\D)${expected}(?:\\D|$)`).test(text);
-}
 
 function claudeAnswerForTurn(session, vendorSessionId, turn, terminalCursor) {
   return session.events.slice(turn.beforeSendEventCount).filter(event =>
@@ -288,7 +286,7 @@ function claudeAnswerForTurn(session, vendorSessionId, turn, terminalCursor) {
     .map(event => event.content?.type === 'text' ? event.content.text : '').join('');
 }
 
-async function observeClaudeAnswer(session, turn, result, expectedAnswer, exactAnswer, contextLabel) {
+async function observeClaudeAnswer(session, turn, result, expectedOutput, contextLabel) {
   const deadline = Date.now() + 600000;
   while (Date.now() < deadline) {
     const page = await output(session);
@@ -300,9 +298,7 @@ async function observeClaudeAnswer(session, turn, result, expectedAnswer, exactA
       const text = claudeAnswerForTurn(session, result.vendorSessionId, turn, result.sourceCursor);
       turn.terminalOutputPage = { rawHighwater: page.rawHighwater,
         ledgerCursor: page.cursor, ledgerHighwater: page.ledgerHighwater };
-      const answerPresent = exactAnswer ? text.trim() === expectedAnswer :
-        containsStandaloneNumber(text, expectedAnswer);
-      if (!answerPresent) {
+      if (text.trim() !== expectedOutput) {
         throw Error(`${contextLabel}: complete original raw result and consumed ledger lack its expected answer`);
       }
       turn.answerObserved = true;
@@ -528,7 +524,8 @@ async function runClaudeSequenceTurns(row, record, session) {
   for (let ordinal = 1; ordinal <= claudeNaturalSequenceTurns.length; ordinal++) {
     const spec = claudeNaturalSequenceTurns[ordinal - 1];
     const prompt = spec.prompt;
-    check(!prompt.includes(spec.expectedAnswer),
+    check(!prompt.includes(spec.expectedOutput) &&
+      (!spec.answerForContext || !prompt.includes(spec.answerForContext)),
       'Claude natural question must not disclose its expected answer');
     let before;
     for (;;) {
@@ -542,7 +539,8 @@ async function runClaudeSequenceTurns(row, record, session) {
       check(BigInt(before.cursor) > BigInt(prior),
         'Provider sequence pre-send H page made no ledger progress');
     }
-    const turn = { ordinal, prompt, expectedAnswer: spec.expectedAnswer,
+    const turn = { ordinal, prompt, expectedOutput: spec.expectedOutput,
+      ...(spec.answerForContext ? { answerForContext: spec.answerForContext } : {}),
       generation: session.generation, beforeSendRawHighwater: before.rawHighwater,
       beforeSendLedgerHighwater: before.ledgerHighwater,
       beforeSendEventCount: session.events.length, sendRequestId: null, hReceipt: null };
@@ -562,7 +560,7 @@ async function runClaudeSequenceTurns(row, record, session) {
     turn.userUuid = receipt.receipt.result.userUuid;
     turn.rawResultSha256 = receipt.receipt.result.rawResultSha256;
     await observeClaudeAnswer(session, turn, receipt.receipt.result,
-      spec.expectedAnswer, false, `Claude natural turn ${ordinal}`);
+      spec.expectedOutput, `Claude natural turn ${ordinal}`);
     turn.terminalSourceEpoch = receipt.receipt.result.sourceEpoch;
     turn.terminalSourceCursor = receipt.receipt.result.sourceCursor; product.save();
   }
@@ -623,7 +621,7 @@ async function runClaudeSequenceTurns(row, record, session) {
       inTurnSteer: resumedCapability.result.capabilities.inTurnSteer,
       resume: resumedCapability.result.capabilities.resume };
   if (claudeContext) {
-    const priorAnswer = sequence.turns[0].expectedAnswer;
+    const priorAnswer = sequence.turns[0].answerForContext;
     let before;
     for (;;) {
       const priorCursor = session.cursor;
@@ -640,7 +638,7 @@ async function runClaudeSequenceTurns(row, record, session) {
     check(!prompt.includes(priorAnswer),
       'Claude post-resume natural question must not disclose the earlier answer');
     const contextTurn = { ordinal: 3, contextAfterResume: true, priorTurnOrdinal: 1,
-      expectedPriorAnswer: priorAnswer, expectedAnswer: priorAnswer, prompt,
+      expectedPriorAnswer: priorAnswer, expectedOutput: priorAnswer, prompt,
       generation: session.generation, beforeSendRawHighwater: before.rawHighwater,
       beforeSendLedgerHighwater: before.ledgerHighwater,
       beforeSendEventCount: session.events.length,
@@ -663,7 +661,7 @@ async function runClaudeSequenceTurns(row, record, session) {
     contextTurn.userUuid = receipt.receipt.result.userUuid;
     contextTurn.rawResultSha256 = receipt.receipt.result.rawResultSha256;
     await observeClaudeAnswer(session, contextTurn, receipt.receipt.result,
-      priorAnswer, true, 'Claude post-resume context answer');
+      priorAnswer, 'Claude post-resume context answer');
     contextTurn.terminalSourceEpoch = receipt.receipt.result.sourceEpoch;
     contextTurn.terminalSourceCursor = receipt.receipt.result.sourceCursor;
     contextTurn.state = 'ORIGINAL_H_RECEIPTED'; product.save();
