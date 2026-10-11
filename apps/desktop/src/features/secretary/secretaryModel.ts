@@ -106,6 +106,10 @@ export type SecretarySettings = {
   model?: string;
   effort?: string;
   permission?: string;
+  /** The configured global parallel cap; absent means not set, never a default. */
+  globalParallelCap?: number;
+  /** The limit the host actually applies, when it says; shown only, never saved. */
+  globalEffectiveLimit?: number;
   instances: SettingsChoice[];
   efforts: string[];
   permissions: string[];

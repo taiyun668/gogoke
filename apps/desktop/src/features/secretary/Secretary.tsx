@@ -81,7 +81,14 @@ export type SecretaryActions = {
   deleteRoutine?: (id: string) => Promise<void>;
   resumeAll?: () => Promise<void>;
   openRoutineRecord?: (id: string) => void;
-  saveSettings?: (input: { instanceId: string; model?: string; effort?: string; permission?: string }) => Promise<void>;
+  saveSettings?: (input: {
+    instanceId: string;
+    model?: string;
+    effort?: string;
+    permission?: string;
+    /** Always explicit, a positive integer the user entered or kept. */
+    globalParallelCap: number;
+  }) => Promise<void>;
 };
 
 export type SecretarySource = {
@@ -326,7 +333,7 @@ function RoutineCard({
   );
 }
 
-type Values = { instanceId: string; model?: string; effort?: string; permission?: string };
+type Values = { instanceId: string; model?: string; effort?: string; permission?: string; cap: string };
 type Draft = Values & { base: Values; saved?: boolean };
 
 /** The form values the host's settings stand for. */
@@ -338,15 +345,25 @@ function fromSettings(settings: SecretarySettings): Values {
     model: settings.model && models.includes(settings.model) ? settings.model : models[0],
     effort: settings.effort ?? settings.efforts[0],
     permission: settings.permission ?? settings.permissions[0],
+    cap: settings.globalParallelCap !== undefined ? String(settings.globalParallelCap) : "",
   };
 }
 
+/** Use the host's exact unsigned 32-bit range; never round an input. */
+const capValue = (text: string) => {
+  const value = text.trim();
+  if (!/^[1-9][0-9]*$/.test(value)) return null;
+  const cap = Number(value);
+  return Number.isSafeInteger(cap) && cap <= 4294967295 ? cap : null;
+};
+
 const sameValues = (a: Values, b: Values) =>
-  a.instanceId === b.instanceId && a.model === b.model && a.effort === b.effort && a.permission === b.permission;
+  a.instanceId === b.instanceId && a.model === b.model && a.effort === b.effort && a.permission === b.permission && a.cap === b.cap;
 
 function settingsLine(values: Values, settings: SecretarySettings): string {
   const name = settings.instances.find((item) => item.id === values.instanceId)?.name;
-  return [name ?? "没选实例", values.model, values.effort, values.permission].filter(Boolean).join(" · ");
+  const cap = values.cap ? `同时最多 ${values.cap} 个` : "并发上限没设置";
+  return [name ?? "没选实例", values.model, values.effort, values.permission, cap].filter(Boolean).join(" · ");
 }
 
 function Settings({
@@ -373,8 +390,9 @@ function Settings({
 
   const edit = (patch: Partial<Values>) => setDraft({ ...form, ...patch, base: draft && !draft.saved ? draft.base : current, saved: false });
 
+  const cap = capValue(form.cap);
   const save = () => {
-    if (!form.instanceId || !actions.saveSettings) return;
+    if (!form.instanceId || cap === null || !actions.saveSettings) return;
     const chosen = form.model && models.includes(form.model) ? form.model : undefined;
     void run("settings", () =>
       actions.saveSettings!({
@@ -382,6 +400,7 @@ function Settings({
         ...(chosen ? { model: chosen } : {}),
         ...(form.effort ? { effort: form.effort } : {}),
         ...(form.permission ? { permission: form.permission } : {}),
+        globalParallelCap: cap,
       }),
     ).then((ok) => ok && setDraft((value) => value && { ...value, saved: true }));
   };
@@ -440,7 +459,26 @@ function Settings({
             </select>
           </>
         ) : null}
+        <label htmlFor="sec-cap">并发上限</label>
+        <input
+          id="sec-cap"
+          className="settings-input settings-input--compact"
+          inputMode="numeric"
+          value={form.cap}
+          placeholder="没设置"
+          disabled={!editable || locked}
+          onChange={(event) => edit({ cap: event.target.value })}
+        />
       </div>
+      <div className="sec-help">
+        同时最多运行几个，要你自己填，不会替你默认。
+        {settings.globalEffectiveLimit !== undefined ? ` 现在实际生效的是 ${settings.globalEffectiveLimit} 个。` : ""}
+      </div>
+      {form.cap.trim() && cap === null ? (
+        <div className="sec-help sec-error" role="alert">
+          并发上限要填 1 到 4294967295 之间的整数。
+        </div>
+      ) : null}
       {conflict ? (
         <div className="sec-help sec-error" role="alert">
           你改的还没保存，这期间设置已在别处改成：{settingsLine(current, settings)}。
@@ -448,7 +486,7 @@ function Settings({
       ) : null}
       {editable ? (
         <div className="sec-routine-actions">
-          <button type="button" className="ghost" disabled={locked || !form.instanceId} onClick={save}>
+          <button type="button" className="ghost" disabled={locked || !form.instanceId || cap === null} onClick={save}>
             {conflict ? "用我改的覆盖" : "保存"}
           </button>
           {draft ? (

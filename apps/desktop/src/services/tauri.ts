@@ -732,7 +732,7 @@ export function createDesign37SecretarySource(): {
     return { configuration: confirmed, page: { entry, routines, settings } };
   };
   const saveSettings = async (input: { instanceId: string; model?: string; effort?: string;
-    permission?: string; globalParallelCap?: number }) => {
+    permission?: string; globalParallelCap: number }) => {
     let configuration = await readSecretaryConfiguration();
     if (configuration.state === "REVOKED" ||
         (configuration.state === "DESIGNATED" && configuration.seatState !== "IDLE")) {
@@ -745,8 +745,7 @@ export function createDesign37SecretarySource(): {
         !choices.permissions.includes(input.permission)) {
       throw new Error("选择不在宿主当前已验证的实例、模型、强度或配置档位中；原配置未改。");
     }
-    const cap = input.globalParallelCap ?? (configuration.globalParallelCap
-      ? Number(configuration.globalParallelCap) : undefined);
+    const cap = input.globalParallelCap;
     if (cap === undefined || !Number.isSafeInteger(cap) || cap < 1 || cap > 4294967295) {
       throw new Error("全局并发上限还没设置；请在同一次保存中明确选择，不使用测试默认值。");
     }

@@ -22,6 +22,7 @@ function page(overrides: Partial<SecretaryPage> = {}): SecretaryPage {
       ],
       efforts: ["中", "高"],
       permissions: ["只读，能派活和转达"],
+      globalParallelCap: 2,
       can: ["给各项目的主控派活、追进度"],
       cannot: ["不直接改项目里的文件"],
     },
@@ -111,7 +112,7 @@ describe("SecretaryPanel", () => {
     fireEvent.change(screen.getByLabelText("实例"), { target: { value: "c1" } });
     expect(screen.queryByLabelText("模型")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
-    await waitFor(() => expect(saveSettings).toHaveBeenCalledWith({ instanceId: "c1", effort: "中", permission: "只读，能派活和转达" }));
+    await waitFor(() => expect(saveSettings).toHaveBeenCalledWith({ instanceId: "c1", effort: "中", permission: "只读，能派活和转达", globalParallelCap: 2 }));
     expect(screen.getByText("不直接改项目里的文件")).toBeTruthy();
   });
 
@@ -188,5 +189,62 @@ describe("lastRunLine", () => {
 
   it("keeps a dated last run as before", () => {
     expect(lastRunLine(routine({ lastRun: { at: "10:00", ok: true }, lastOutcome: { result: "UNKNOWN" } })).text).toBe("上次 10:00 · 跑完了");
+  });
+});
+
+describe("SecretaryPanel global parallel cap", () => {
+  afterEach(cleanup);
+
+  it("shows an unset cap as not set, never a default, and saves only what the user enters", async () => {
+    const base = page();
+    const unsetSettings = { ...base.settings };
+    delete unsetSettings.globalParallelCap;
+    const saveSettings = vi.fn(async () => {});
+    render(<SecretaryPanel source={source({ ...base, settings: { ...unsetSettings, globalEffectiveLimit: 4 } }, { saveSettings })} initialTab="settings" />);
+    const cap = (await screen.findByLabelText("并发上限")) as HTMLInputElement;
+    expect(cap.value).toBe("");
+    expect(cap.placeholder).toBe("没设置");
+    expect(screen.getByText(/现在实际生效的是 4 个/)).toBeTruthy();
+    const save = screen.getByRole("button", { name: "保存" }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    fireEvent.change(cap, { target: { value: "0" } });
+    expect(screen.getByText("并发上限要填 1 到 4294967295 之间的整数。")).toBeTruthy();
+    expect(save.disabled).toBe(true);
+    fireEvent.change(cap, { target: { value: "3" } });
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(saveSettings).toHaveBeenCalledWith({
+        instanceId: "g1",
+        model: "Grok 5",
+        effort: "中",
+        permission: "只读，能派活和转达",
+        globalParallelCap: 3,
+      }),
+    );
+  });
+
+  it("follows the host's configured cap while untouched", async () => {
+    render(<SecretaryPanel source={source(page())} initialTab="settings" />);
+    expect(((await screen.findByLabelText("并发上限")) as HTMLInputElement).value).toBe("2");
+  });
+
+  it.each(["4294967296", "9007199254740993", "9".repeat(400), "Infinity", "1e2", "1.5"])(
+    "rejects a cap outside the host's exact integer range: %s", async (value) => {
+      const saveSettings = vi.fn(async () => {});
+      render(<SecretaryPanel source={source(page(), { saveSettings })} initialTab="settings" />);
+      fireEvent.change(await screen.findByLabelText("并发上限"), { target: { value } });
+      const save = screen.getByRole("button", { name: "保存" }) as HTMLButtonElement;
+      expect(save.disabled).toBe(true);
+      fireEvent.click(save);
+      expect(saveSettings).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([1, 4294967295])("saves the exact inclusive host boundary %s", async (value) => {
+    const saveSettings = vi.fn(async () => {});
+    render(<SecretaryPanel source={source(page(), { saveSettings })} initialTab="settings" />);
+    fireEvent.change(await screen.findByLabelText("并发上限"), { target: { value: String(value) } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(saveSettings).toHaveBeenCalledWith(expect.objectContaining({ globalParallelCap: value })));
   });
 });
