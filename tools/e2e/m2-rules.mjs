@@ -80,7 +80,7 @@ export async function runRulesCase(product, config, journal) {
       record.projectParallelCap = c.projectParallelCap;
       record.capReferenceDomainId = c.capReferenceDomainId;
       record.capacityQualification = before.capacityQualification;
-      requireFact(before.sameScopeOwnerPolicy?.configuration === c.sameScopePolicy &&
+      requireFact(JSON.stringify(before.sameScopeOwnerPolicy?.configuration) === JSON.stringify(c.sameScopePolicy) &&
         before.sameScopeOwnerPolicy.gate?.submitter_seat_id === c.submitterSession.seatId &&
         before.sameScopeOwnerPolicy.gate?.reviewer_seat_id === c.reviewerSession.seatId,
       'Cross-project qualification must retain actual A NativeUser head/gate/grant frames for these two seats');
