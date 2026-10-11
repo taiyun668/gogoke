@@ -38,8 +38,19 @@ if (process.platform !== 'win32' || !/^\d+\.\d+\.\d+$/.test(config.version ?? ''
 
 const rules = config.rules;
 const crossProjectOnly = rules.selection === 'CROSS_PROJECT_ONLY';
-if (rules.selection !== undefined && !crossProjectOnly) {
-  throw Error('The only V08 one-axis selection is CROSS_PROJECT_ONLY');
+const hostOnly = rules.selection === 'HOST_BUSY_TO_IDLE_ONLY';
+if (rules.selection !== undefined && !crossProjectOnly && !hostOnly) {
+  throw Error('Unsupported V08 one-axis selection');
+}
+if (hostOnly && (rules.foreignProject !== undefined || rules.host?.busyToIdleOnly !== true ||
+    rules.userPermissionTier !== 'NETWORKED_WRITE' || rules.userMaxConcurrent !== 4 ||
+    rules.projectParallelCap !== 4 || !atom(rules.capReferenceDomainId) ||
+    rules.capReferenceDomainId === config.domainId ||
+    !rules.priorCore13 || !['journal','journalSha256','finalReadback','finalSha256'].every(key =>
+      typeof rules.priorCore13[key] === 'string') ||
+    !/^[a-f0-9]{64}$/.test(rules.priorCore13.journalSha256) ||
+    !/^[a-f0-9]{64}$/.test(rules.priorCore13.finalSha256))) {
+  throw Error('Host-only requires real A cap 4, one busy-to-idle case, and immutable core13 references');
 }
 if (rules.foreignProject !== undefined && (
     !atom(rules.foreignProject?.domainId) || !atom(rules.foreignProject?.gateId) ||
@@ -142,6 +153,31 @@ if (rules.host && (rules.host.lifecycleOwnership !== 'EXCLUSIVE_V08_HOST_RECIPIE
     !rules.host.busyQuestion.optionLabel.trim())) {
   throw Error('V08 Host recipients require their exact ownership marker and nonsecret busy-question fields');
 }
+let closedCore13 = null;
+if (hostOnly) {
+  const ref = rules.priorCore13;
+  for (const [name, key] of [['journal', 'journalSha256'], ['finalReadback', 'finalSha256']]) {
+    if (!fs.existsSync(ref[name]) || sha256(ref[name]) !== ref[key]) {
+      throw Error('Original closed core13 reference is absent or changed');
+    }
+  }
+  const original = readJson(ref.journal), final = readJson(ref.finalReadback);
+  const sources = original.rulesCases?.[0]?.initialSessions;
+  const releases = original.operations?.filter(row => row.request?.family === 'K-SESSION' &&
+    row.request.operation === 'admission-release' && row.receipt?.status === 'APPLIED') ?? [];
+  if (original.rulesCases?.length !== 1 ||
+      original.v08 !== 'IMPLEMENTED_CASES_HAVE_DIRECT_EVIDENCE_V08_INCOMPLETE' ||
+      final.state !== original.v08 || final.directCaseEvidence !== true ||
+      final.acceptance !== false || final.caseId !== original.caseId ||
+      original.domainId !== config.domainId || final.domainId !== config.domainId ||
+      final.sourceCommit !== original.sourceCommit || sources?.length !== 2 ||
+      ![rules.submitter, rules.reviewer].every((selection, index) =>
+        ['seatId', 'instanceId', 'worktreeId'].every(key => sources[index][key] === selection[key])) ||
+      !sources.every(source => releases.some(row => row.request.targetId === source.id))) {
+    throw Error('Host-only requires the two original released A source identities and closed core13 readback');
+  }
+  closedCore13 = { journal: original, final };
+}
 if (config.sideChat) {
   const side = config.sideChat;
   const sideSeats = [side.sourceSeatId, side.sideSeatId];
@@ -183,12 +219,13 @@ const journal = {
   sideChatCases: [],
   rulesCases: [],
   foreignProject: rules.foreignProject ?? null,
-  rulesSelection: crossProjectOnly ? 'CROSS_PROJECT_ONLY' : 'ALL',
-  ...(crossProjectOnly ? { rulesSourceSelection: { ...rules.submitter },
+  rulesSelection: crossProjectOnly ? 'CROSS_PROJECT_ONLY' : hostOnly ? 'HOST_BUSY_TO_IDLE_ONLY' : 'ALL',
+  ...((crossProjectOnly || hostOnly) ? { rulesSourceSelection: { ...rules.submitter },
     rulesUserPermissionTier: rules.userPermissionTier, rulesUserMaxConcurrent: rules.userMaxConcurrent,
     rulesProjectParallelCap: rules.projectParallelCap,
     rulesCapacityReferenceDomainId: rules.capReferenceDomainId,
-    sameScopePolicy: rules.sameScopePolicy } : {}),
+    ...(crossProjectOnly ? { sameScopePolicy: rules.sameScopePolicy } :
+      { priorCore13: rules.priorCore13 }) } : {}),
   v12: 'NOT_RUN_ORIGINAL_M2_SIDE_WORKTREE_READBACK_REQUIRED',
   v08: 'RUNNING',
 };
@@ -341,6 +378,57 @@ async function prepareRulesWorktree(selection, label) {
   check(registered.result.worktreeId === selection.worktreeId, `${label}: original F register receipt`);
 }
 
+async function reuseRulesWorktree(selection) {
+  const card = await seatCard(selection.seatId);
+  const cardRequestId = journal.operations.at(-1).request.requestId;
+  check(card.result.state === 'IDLE' && card.result.instanceId === selection.instanceId,
+    'Host-only source E must be the original idle, bound USER seat');
+  let tree = await product.operation('K-WORKTREE', 'graph-query', selection.worktreeId,
+    {}, '0', ['APPLIED', 'STALE']);
+  if (tree.status === 'STALE') tree = await product.operation('K-WORKTREE', 'graph-query',
+    selection.worktreeId, {}, tree.revision);
+  check(tree.result.state === 'REGISTERED' && tree.result.members?.some(member =>
+    member.domainId === config.domainId && member.repositoryId === config.repositoryId &&
+    member.seatId === selection.seatId && member.instanceId === selection.instanceId &&
+    member.worktreeId === selection.worktreeId),
+  'Host-only source F must be the existing registered original A worktree');
+  journal.hostSourceReadbacks ??= [];
+  journal.hostSourceReadbacks.push({ selection, cardRequestId,
+    treeRequestId: journal.operations.at(-1).request.requestId });
+  product.save();
+  return card;
+}
+
+async function prepareNewHostSeat(selection, sourceCard) {
+  const templateId = sourceCard.result.templateId;
+  const expected = sourceCard.result.settings;
+  check(atom(templateId) && expected && typeof expected === 'object' &&
+    typeof expected.model === 'string' && typeof expected.effort === 'string' &&
+    expected.permissionTier === 'NETWORKED_WRITE' &&
+    selection.instanceId === rules.submitter.instanceId,
+  'Host recipient needs an original complete USER template and the admitted Codex instance');
+  const created = await product.operation('K-SEAT', 'create-from-template', selection.seatId,
+    { layer: 'USER', templateId }, '0');
+  const createRequestId = journal.operations.at(-1).request.requestId;
+  check(created.status === 'APPLIED' && created.result.layer === 'USER' &&
+    created.result.kind === 'LONG' && created.result.state === 'IDLE' &&
+    created.result.instanceId === null && created.result.templateId === templateId &&
+    JSON.stringify(created.result.settings) === JSON.stringify(expected),
+  'New Host E must copy the complete original A template, never infer missing settings');
+  const bound = await product.operation('K-SEAT', 'bind-instance', selection.seatId,
+    { instanceId: selection.instanceId }, created.revision);
+  const bindRequestId = journal.operations.at(-1).request.requestId;
+  check(bound.status === 'APPLIED' && bound.result.instanceId === selection.instanceId &&
+    bound.result.state === 'IDLE' && bound.result.settings?.permissionTier === 'NETWORKED_WRITE',
+  'New Host E must have an original USER bind receipt');
+  await prepareRulesWorktree(selection, 'V08 Host recipient');
+  journal.hostUserPreparations ??= [];
+  journal.hostUserPreparations.push({ selection, templateId, createRequestId, bindRequestId,
+    createWorktreeRequestId: journal.operations.at(-2).request.requestId,
+    registerWorktreeRequestId: journal.operations.at(-1).request.requestId });
+  product.save();
+}
+
 async function runRules() {
   const instancePage = await product.instances();
   for (const selection of selections) {
@@ -369,7 +457,21 @@ async function runRules() {
     await product.launch();
     await product.instances();
   }
-  for (const selection of selections) await prepareRulesWorktree(selection, 'V08');
+  if (hostOnly) {
+    const sourceCards = [];
+    for (const selection of [rules.submitter, rules.reviewer]) {
+      sourceCards.push(await reuseRulesWorktree(selection));
+    }
+    check(sourceCards[0].result.templateId === sourceCards[1].result.templateId &&
+      JSON.stringify(sourceCards[0].result.settings) ===
+        JSON.stringify(sourceCards[1].result.settings),
+    'The two original A source seats must share the proven USER template settings');
+    for (const selection of [rules.host.destination, rules.host.alternateDestination]) {
+      await prepareNewHostSeat(selection, sourceCards[0]);
+    }
+  } else {
+    for (const selection of selections) await prepareRulesWorktree(selection, 'V08');
+  }
   if (!baselineReadback) await product.closeNormally();
   if (!baselineReadback) baselineReadback = await rulesReadback('before');
   if (!crossProjectOnly) {
@@ -383,6 +485,7 @@ async function runRules() {
   const { runRulesCase } = await import('./m2-rules.mjs');
   const record = await runRulesCase(product, { ...config, rules: { ...rules,
     baselineReadback, submitterSession, reviewerSession,
+    priorCore13Snapshot: closedCore13?.final,
     hostCheckpoint: async () => {
       await product.closeNormally();
       const reference = await rulesReadback('checkpoint');
