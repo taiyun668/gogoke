@@ -458,8 +458,7 @@ fn operation_in_domain(domain: &str, family: &str, verb: &str, id: &str,
 fn empty_initial_secretary_release_refuses_input_source_and_claim_drift() {
     let _guard=route_b_test_guard();
     let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    let base=std::env::var_os("CARGO_TARGET_DIR").map(std::path::PathBuf::from)
-        .expect("D-only development target");
+    let base=std::env::temp_dir();
     let path=base.join(format!("secretary-empty-control-{}-{stamp}",std::process::id()));
     std::fs::create_dir(&path).unwrap();
     let root=RootLock::acquire(&path).unwrap();
