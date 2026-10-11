@@ -123,7 +123,7 @@ if len(sys.argv) == 4 and sys.argv[1] == "--process-identity":
     print(json.dumps(observed, separators=(",", ":")))
     raise SystemExit(0)
 
-if len(sys.argv) not in (4, 7):
+if len(sys.argv) not in (4, 5, 7):
     raise RuntimeError("Expected state root, fresh private output, and original provider journal")
 
 def fail(message):
@@ -143,14 +143,18 @@ if output.exists():
 journal_bytes = journal_path.read_bytes()
 journal = json.loads(journal_bytes.decode("utf-8-sig"))
 supplement = len(sys.argv) == 7 and sys.argv[4] == "--original-failure-supplement"
-if len(sys.argv) not in (4, 7) or (len(sys.argv) == 7 and not supplement):
+failure_settlement = len(sys.argv) == 5 and sys.argv[4] == "--failure-settlement"
+if len(sys.argv) not in (4, 5, 7) or (len(sys.argv) == 7 and not supplement) or \
+        (len(sys.argv) == 5 and not failure_settlement):
     fail("Unexpected provider readback arguments")
 if supplement and (sha(journal_bytes) != sys.argv[5] or
         journal.get("driverBytes", {}).get("m2-provider-capture-readback.py") != sys.argv[6] or
         journal.get("state") != "FAIL_ORIGINAL_REQUEST_RETAINED" or
         journal.get("protection") != "PASS_FORMAL_MEMORY_LEDGER_FIELDS_UNCHANGED"):
     fail("Supplement must bind the unchanged original failure and executed reader")
-expected_phase = "FAIL_ORIGINAL_REQUEST_RETAINED" if supplement else "DIRECT_PROVIDER_H_RECEIPTS_A_READBACK_REQUIRED"
+expected_phase = ("FAIL" if failure_settlement else
+                  "FAIL_ORIGINAL_REQUEST_RETAINED" if supplement else
+                  "DIRECT_PROVIDER_H_RECEIPTS_A_READBACK_REQUIRED")
 if journal.get("schema") != "gogoke.37.m2-provider-win11-e2e.v1" or \
         journal.get("state") != expected_phase or \
         journal.get("acceptance") is not False or journal.get("observerDatabaseWrites") is not False or \
@@ -193,6 +197,90 @@ if supplement:
                    "originalFailureRetained": True, "originalJournalSha256": sys.argv[5],
                    "originalReaderSha256": sys.argv[6], "readerSha256": sha(Path(__file__).read_bytes())})
 domain = journal["domainId"]
+
+if failure_settlement:
+    if len(journal["cases"]) != 1 or journal["cases"][0].get("caseMode") != "grokWrite" or \
+            journal["cases"][0].get("driverId") != "grok" or not journal.get("error"):
+        fail("Failure settlement requires the one retained original Grok Write case")
+    case = journal["cases"][0]
+    sid = case.get("sessionId")
+    session = next((row for row in journal.get("sessions", []) if row.get("id") == sid), None)
+    if session is None or not isinstance(case.get("stopFact"), str) or \
+            not re.fullmatch(r"sha256:[a-f0-9]{64}", case["stopFact"]):
+        fail("Failure settlement has no exact H session and original StopFact")
+    actions = {}
+    for action in ("open", "stop", "admission-release"):
+        matches = [row for row in journal.get("operations", []) if
+                   row.get("request", {}).get("family") == "K-SESSION" and
+                   row["request"].get("targetId") == sid and
+                   row["request"].get("operation") == action]
+        if len(matches) != 1 or matches[0].get("receipt", {}).get("status") != "APPLIED":
+            fail(f"Failure settlement has no unique APPLIED original H {action}")
+        actions[action] = matches[0]
+    if actions["stop"]["receipt"].get("result", {}).get("stopFact") != case["stopFact"] or \
+            actions["admission-release"]["request"].get("expectedRevision") != \
+            actions["stop"]["receipt"].get("revision") or any(
+                actions[action]["request"].get("payload", {}).get("generation") != session["generation"]
+                for action in ("stop", "admission-release")):
+        fail("Failure settlement H StopFact, generation, or release revision differs")
+    sends = [row for row in journal.get("operations", []) if
+             row.get("request", {}).get("family") == "K-SESSION" and
+             row["request"].get("targetId") == sid and row["request"].get("operation") == "send"]
+    if len(sends) > 1 or (sends and sends[0].get("rawFrame") != json.dumps(
+            sends[0]["request"], ensure_ascii=False, separators=(",", ":"))):
+        fail("Failure settlement original H send was repeated or lost its bytes")
+    with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db:
+        db.execute("PRAGMA query_only=ON")
+        for action, item in actions.items():
+            request = item["request"]
+            wire = item.get("rawFrame")
+            if wire != json.dumps(request, ensure_ascii=False, separators=(",", ":")) or \
+                    request.get("domainId") != domain or \
+                    request.get("payload", {}).get("generation") != session["generation"]:
+                fail(f"Failure settlement original H {action} request bytes differ")
+            stored = exact_one(db,
+                "SELECT raw_hex,status FROM gogoke_v37_h_operation WHERE domain_id=? "
+                "AND session_id=? AND request_id=? AND operation=?",
+                (domain, sid, request["requestId"], action))
+            if stored != (wire.encode().hex(), "APPLIED"):
+                fail(f"Failure settlement durable original H {action} differs")
+        claim = exact_one(db, "SELECT state,stop_fact_id,instance_id,generation "
+                          "FROM gogoke_v37_h_claim WHERE domain_id=? AND session_id=?", (domain, sid))
+        if claim != ("RELEASED", case["stopFact"], case["instanceId"], session["generation"]):
+            fail("Failure settlement durable H claim is not RELEASED with original StopFact")
+        episode = exact_one(db, "SELECT phase,stop_fact_id,seat_id,instance_id "
+                            "FROM gogoke_v37_h_process_episode WHERE domain_id=? AND session_id=? "
+                            "AND generation=?", (domain, sid, session["generation"]))
+        if episode != ("STOPPED", case["stopFact"], case["seatId"], case["instanceId"]):
+            fail("Failure settlement physical H episode is not STOPPED")
+        tree = exact_one(db,
+            "SELECT domain_id,repository_id,seat_id,instance_id,worktree_path,worktree_identity,state "
+            "FROM gogoke_v37_worktrees WHERE worktree_id=?", (case["worktreeId"],))
+        write = case.get("write", {})
+        if tree[:4] != (domain, journal["repositoryId"], case["seatId"], case["instanceId"]) or \
+                tree[6] != "REGISTERED" or tree[5] != write.get("worktreeIdentity") or \
+                not same_local_path(tree[4], write.get("worktreePath", "")) or \
+                not beneath(root, tree[4]) or native_directory_identity(tree[4]) != tree[5]:
+            fail("Failure settlement original registered F physical identity differs")
+        target = Path(str(write.get("target", "")))
+        if target.name != write.get("marker") or not beneath(tree[4], target) or \
+                not same_local_path(target.parent, tree[4]):
+            fail("Failure settlement target differs from the original registered F")
+        result["epoch"] = exact_one(db, "SELECT epoch FROM v37_ledger_meta WHERE singleton=1")[0]
+        result["cursor"] = str(exact_one(db, "SELECT COALESCE(MAX(cursor),0) FROM v37_ledger_index")[0])
+    result["filesAfter"] = file_facts()
+    result.update({"state": "FAIL_ORIGINAL_WRITE_SETTLED", "originalFailureRetained": True,
+                   "originalJournalSha256": sha(journal_bytes), "originalStopRelease": True,
+                   "originalSendAttemptCount": len(sends),
+                   "registeredFIdentity": tree[5], "targetExistsAfterClose": target.exists(),
+                   "protection": journal.get("protection", "NOT_RUN"),
+                   "measurementPreservedDatabaseBytes": before == result["filesAfter"],
+                   "directProviderEvidence": False, "permissionCause": "UNATTRIBUTED",
+                   "actualOsAclDisposition": "NOT_RUN"})
+    output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if not result["measurementPreservedDatabaseBytes"]:
+        fail("Failure settlement immutable observer changed original database bytes")
+    raise SystemExit(0)
 
 def nested_text(value, parts):
     found = value
