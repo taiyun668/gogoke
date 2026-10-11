@@ -148,16 +148,19 @@ mod grok_permission_tests {
 
     #[test]
     fn codex_original_rollout_path_stays_in_its_bound_history_sessions() {
-        let home=Path::new(r"\\?\D:\private-history");
-        let original=r"D:\private-history\sessions\2026\10\11\rollout-original.jsonl";
-        assert_eq!(codex_rollout_relative_path(home,original).unwrap(),
+        let home=std::env::temp_dir().join("codex-history-path-fixture");
+        let original=home.join(r"sessions\2026\10\11\rollout-original.jsonl")
+            .to_string_lossy().into_owned();
+        assert_eq!(codex_rollout_relative_path(&home,&original).unwrap(),
             Path::new(r"sessions\2026\10\11\rollout-original.jsonl"));
-        assert!(codex_rollout_relative_path(home,&format!(r"\\?\{original}")).is_ok());
-        for denied in [r"D:\private-history-other\sessions\2026\10\11\rollout-original.jsonl",
-            r"D:\private-history\sessions\2026\10\..\rollout-original.jsonl",
-            r"D:\private-history\sessions\2026\10\11\rollout-original.jsonl:stream",
-            r"D:\private-history\auth.json",r"sessions\2026\10\11\rollout-original.jsonl"] {
-            assert!(codex_rollout_relative_path(home,denied).is_err());
+        assert!(codex_rollout_relative_path(&home,&format!(r"\\?\{original}")).is_ok());
+        let denied=[home.with_file_name("codex-history-path-fixture-other")
+                .join(r"sessions\2026\10\11\rollout-original.jsonl"),
+            home.join(r"sessions\2026\10\..\rollout-original.jsonl"),
+            home.join(r"sessions\2026\10\11\rollout-original.jsonl:stream"),
+            home.join("auth.json"),PathBuf::from(r"sessions\2026\10\11\rollout-original.jsonl")];
+        for denied in denied {
+            assert!(codex_rollout_relative_path(&home,&denied.to_string_lossy()).is_err());
         }
     }
 
