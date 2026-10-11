@@ -622,10 +622,17 @@ fn empty_initial_secretary_release_refuses_input_source_and_claim_drift() {
     // A later real no-model H open adds its own F history/physical alias.
     // Its ordinary StopFact and release leave the completed old F-only
     // capture unchanged. The next cold host must verify that original fact.
-    let generation=seat::get(&product.connection,"global","emptySeat").unwrap().unwrap().generation+1;
-    let payload=format!(r#"{{"seatId":"emptySeat","generation":"{generation}"}}"#);
     for (verb,revision) in [("admission-reserve",0),("admission-commit",1),("open",2),
         ("stop",3),("admission-release",4)] {
+        // Global secretary admission/open/release derives its seat and
+        // generation in H and requires the original empty USER payload.
+        let payload=if verb=="stop" {
+            let claim=empty_thread_rows(&product.connection,
+                "SELECT generation FROM main.gogoke_v37_h_claim WHERE domain_id='global'
+                  AND session_id='emptySuccessor'",&[],1).unwrap();
+            assert_eq!(claim.len(),1);
+            format!(r#"{{"generation":"{}"}}"#,claim[0][0])
+        } else {"{}".to_owned()};
         let request=operation_in_domain("global","K-SESSION",verb,
             &format!("empty-successor-{verb}"),"emptySuccessor",revision,&payload);
         let raw=product.dispatch_user_request(&request).unwrap();
