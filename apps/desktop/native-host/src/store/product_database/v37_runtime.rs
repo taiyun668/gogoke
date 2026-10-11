@@ -272,6 +272,33 @@ impl<'root> ProductDatabase<'root> {
 
     pub(super) fn original_native_continuation(&self, domain: &str, session: &str)
         -> Result<(String,String,String)> {
+        let (repository,worktree,original,operation,generation)=
+            self.original_native_open_context(domain,session)?;
+        let observed=Statement::prepare(self.connection.as_ptr(),
+            "SELECT s.ticket,s.custodian_nonce
+               FROM main.gogoke_v37_rpc_steps s
+               JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
+                 AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
+                 AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
+                 AND r.domain_id=s.domain_id AND r.session_id=s.session_id
+                 AND r.generation=s.generation
+              WHERE s.domain_id=?1 AND s.session_id=?2 AND s.generation=?3
+                AND s.process_operation_id=?4 AND s.step_id='thread-start'
+                AND s.phase='OBSERVED'")?;
+        for (index,value) in [domain,session,generation.as_str(),operation.as_str()].iter().enumerate() {
+            observed.bind_text((index+1) as i32,value)?;
+        }
+        if !observed.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        let ticket=observed.column_text(0)?;
+        let nonce=observed.column_text(1)?;
+        if observed.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        let thread=failure(rpc::observed_thread_id(&self.connection,domain,session,&operation,
+            &generation,&original.request_id,&ticket,&nonce))?;
+        Ok((repository,worktree,thread))
+    }
+
+    fn original_native_open_context(&self, domain:&str, session:&str)
+        -> Result<(String,String,V37Request,String,String)> {
         let initial=Statement::prepare(self.connection.as_ptr(),
             "SELECT e.process_operation_id,e.raw_hex,e.generation
                FROM main.gogoke_v37_h_process_episode e
@@ -306,31 +333,23 @@ impl<'root> ProductDatabase<'root> {
             (user_payload_string(&original,"repositoryId")?,
                 user_payload_string(&original,"worktreeId")?)
         };
-        let observed=Statement::prepare(self.connection.as_ptr(),
-            "SELECT s.ticket,s.custodian_nonce
-               FROM main.gogoke_v37_rpc_steps s
-               JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
-                 AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
-                 AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
-                 AND r.domain_id=s.domain_id AND r.session_id=s.session_id
-                 AND r.generation=s.generation
-              WHERE s.domain_id=?1 AND s.session_id=?2 AND s.generation=?3
-                AND s.process_operation_id=?4 AND s.step_id='thread-start'
-                AND s.phase='OBSERVED'")?;
-        for (index,value) in [domain,session,generation.as_str(),operation.as_str()].iter().enumerate() {
-            observed.bind_text((index+1) as i32,value)?;
-        }
-        if !observed.step_row()? {return Err(OrchestrationError::OperationConflict);}
-        let ticket=observed.column_text(0)?;
-        let nonce=observed.column_text(1)?;
-        if observed.step_row()? {return Err(OrchestrationError::OperationConflict);}
-        let thread=failure(rpc::observed_thread_id(&self.connection,domain,session,&operation,
-            &generation,&original.request_id,&ticket,&nonce))?;
-        Ok((repository,worktree,thread))
+        Ok((repository,worktree,original,operation,generation))
     }
 
     fn observed_resume_thread(&self,domain:&str,session:&str,operation:&str,
         generation:&str,request_id:&str)->Result<Option<String>> {
+        if self.is_claude_resume_episode(domain,session,operation,generation,request_id)? {
+            let Some(source)=failure(h::read_original_claude_resume_init(&self.connection,
+                domain,session,request_id,generation,operation))? else {return Ok(None);};
+            let raw=ledger::read_captured_raw_source(&self.connection,&source.operation_id,
+                &source.source_epoch,&source.source_cursor)?
+                .ok_or(OrchestrationError::OperationConflict)?;
+            return match stream_json::decode_claude_line(&raw.raw_bytes).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("Claude resume original init: {error:?}")))? {
+                stream_json::ClaudeData::Init {session_id,..}=>Ok(Some(session_id)),
+                _=>Err(OrchestrationError::OperationConflict),
+            };
+        }
         let q=Statement::prepare(self.connection.as_ptr(),
             "SELECT c.ticket,c.custodian_nonce FROM main.gogoke_coordination_process_custody c
               JOIN main.gogoke_v37_rpc_steps s ON s.process_operation_id=c.operation_id
@@ -348,6 +367,22 @@ impl<'root> ProductDatabase<'root> {
         if q.step_row()? {return Err(OrchestrationError::OperationConflict);}drop(q);
         failure(rpc::observed_thread_id(&self.connection,domain,session,operation,generation,
             request_id,&ticket,&nonce)).map(Some)
+    }
+
+    fn is_claude_resume_episode(&self,domain:&str,session:&str,operation:&str,
+        generation:&str,request_id:&str)->Result<bool> {
+        let q=Statement::prepare(self.connection.as_ptr(),
+            "SELECT i.driver_id FROM main.gogoke_v37_h_process_episode e
+               JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
+              WHERE e.domain_id=?1 AND e.session_id=?2 AND e.process_operation_id=?3
+                AND e.generation=?4 AND e.request_id=?5 AND e.old_generation IS NOT NULL")?;
+        for (index,value) in [domain,session,operation,generation,request_id].iter().enumerate() {
+            q.bind_text((index+1) as i32,value)?;
+        }
+        if !q.step_row()? {return Ok(false);}
+        let claude=q.column_text(0)?=="claude";
+        if q.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        Ok(claude)
     }
 
     pub(super) fn dispatch_native_resume(&mut self, request: &V37Request) -> Result<Vec<u8>> {
@@ -418,20 +453,30 @@ impl<'root> ProductDatabase<'root> {
                 if let Some(run)=self.native_sessions.get(&key) {
                     if run.operation_id==operation
                         && self.process_custodian.active(&run.custody.ticket).is_some() {
+                        let claude=run.evidence.driver_id()=="claude";
+                        let original_seat=run.evidence.seat_id().to_owned();
+                        let expected=if claude {
+                            run.evidence.claude_resume_id().map(str::to_owned)
+                                .ok_or(OrchestrationError::OperationConflict)?
+                        } else {self.original_native_continuation(&request.domain_id,
+                            &request.target_id)?.2};
                         // A captured response may have survived an H commit
                         // fault with its original RPC step still WRITTEN.
                         // Resolve that exact source; never resend the command.
-                        failure(rpc::reconcile_written_resume_from_a(&mut self.connection,
-                            &self.owner,&request.domain_id,&request.target_id,
-                            &request.request_id,&request.raw_bytes,&operation,&new_generation))?;
-                        let expected=self.original_native_continuation(&request.domain_id,
-                            &request.target_id)?.2;
+                        if claude {
+                            self.drain_native_output(&key)?;
+                            self.reconcile_claude_initialize_from_a(&key)?;
+                        } else {
+                            failure(rpc::reconcile_written_resume_from_a(&mut self.connection,
+                                &self.owner,&request.domain_id,&request.target_id,
+                                &request.request_id,&request.raw_bytes,&operation,&new_generation))?;
+                        }
                         if self.observed_resume_thread(&request.domain_id,&request.target_id,
                             &operation,&new_generation,&request.request_id)?
                             .as_deref()==Some(expected.as_str()) {
                             let current=failure(runtime::observe_claim(&self.connection,
                                 &NativeOrigin::user(&self.owner),&request.domain_id,
-                                run.evidence.seat_id(),&request.target_id))?
+                                &original_seat,&request.target_id))?
                                 .ok_or(OrchestrationError::AccessDenied)?;
                             failure(self.connection.execute("BEGIN IMMEDIATE"))?;
                             let promoted=(|| -> Result<i64> {
@@ -535,7 +580,7 @@ impl<'root> ProductDatabase<'root> {
         let driver_id=driver.column_text(0)?;
         if driver.step_row()? {return Err(OrchestrationError::OperationConflict);}
         drop(driver);
-        if !matches!(driver_id.as_str(),"codex"|"opencode"|"grok") {
+        if !matches!(driver_id.as_str(),"codex"|"opencode"|"grok"|"claude") {
             return Ok(encode_receipt(request,V37Status::Unsupported,effective_revision,
                 effective_revision,BTreeMap::from([(JsonString::from_str("reason"),
                     text("This fixed provider has no integrated native metadata resume"))])));
@@ -549,8 +594,11 @@ impl<'root> ProductDatabase<'root> {
             OrchestrationError::Invalid("native resume old generation"))?;
         let new_generation=old_number.checked_add(1).ok_or(
             OrchestrationError::Invalid("native resume generation overflow"))?.to_string();
-        let (repository_id,worktree_id,thread_id)=self.original_native_continuation(
-            &request.domain_id,&request.target_id)?;
+        let (repository_id,worktree_id,mut thread_id)=if driver_id=="claude" {
+            let (repository,worktree,_,_,_)=self.original_native_open_context(
+                &request.domain_id,&request.target_id)?;
+            (repository,worktree,String::new())
+        } else {self.original_native_continuation(&request.domain_id,&request.target_id)?};
         let (instance_id,home_id)=if let Some((proof,choice))=host {
             self.prepare_host_recipient_session_home(request,&seat_id,&new_generation,true,proof,choice)?
         } else {self.prepare_resume_session_home(request,&seat_id,&new_generation)?};
@@ -592,6 +640,10 @@ impl<'root> ProductDatabase<'root> {
                 &worktree_id,&request.request_id,&mut retained)
         };
         let evidence=self.finish_native_preparation(request,observed,retained)?;
+        if driver_id=="claude" {
+            thread_id=evidence.claude_resume_id().map(str::to_owned)
+                .ok_or(OrchestrationError::OperationConflict)?;
+        }
         let (evidence,custody,model,effort)=self.prepare_native_launch(request,evidence,host)?;
         let key=(request.domain_id.clone(),request.target_id.clone());
         let digest=crate::store::digest::sha256_hex(&request.raw_bytes);
@@ -668,6 +720,17 @@ impl<'root> ProductDatabase<'root> {
                     &request.request_id)?.ok_or(OrchestrationError::OperationConflict)?;
                 if observed!=thread_id {return Err(OrchestrationError::OperationConflict);}
                 self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?.thread_id=Some(thread_id.clone());
+                return Ok(());
+            }
+            if driver=="claude" {
+                self.native_claude_initialize(&key)?;
+                self.drain_native_output(&key)?;
+                let observed=self.observed_resume_thread(&key.0,&key.1,&operation_id,
+                    &new_generation,&request.request_id)?.ok_or(
+                        OrchestrationError::Invalid("Claude original resumed init is not observed"))?;
+                if observed!=thread_id {return Err(OrchestrationError::OperationConflict);}
+                self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?
+                    .thread_id=Some(thread_id.clone());
                 return Ok(());
             }
             if driver!="codex" {return Err(OrchestrationError::Invalid("native provider metadata resume unsupported"));}
@@ -759,6 +822,12 @@ impl<'root> ProductDatabase<'root> {
 
     pub(super) fn resume_source_receipt(&self,domain:&str,session:&str,operation:&str,
         generation:&str,request_id:&str)->Result<String> {
+        if self.is_claude_resume_episode(domain,session,operation,generation,request_id)? {
+            let source=failure(h::read_original_claude_resume_init(&self.connection,
+                domain,session,request_id,generation,operation))?
+                .ok_or(OrchestrationError::OperationConflict)?;
+            return Ok(format!("{}:{}:{}",source.operation_id,source.source_epoch,source.source_cursor));
+        }
         // Verify the typed original ACK and custody before projecting its A
         // source locator; ACP and Codex own distinct recovery step names.
         self.observed_resume_thread(domain,session,operation,generation,request_id)?
@@ -2735,6 +2804,18 @@ impl<'root> ProductDatabase<'root> {
         Ok((unique_step,reply))
     }
 
+    fn reconcile_claude_initialize_from_a(&mut self,key:&(String,String)) -> Result<()> {
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        let (step_id,request_id)=rpc::claude_initialize_identity(&run.open_request_bytes);
+        let command=vendor_commands::ClaudeCommand::Initialize {request_id:&request_id};
+        let step=rpc::ClaudeStep {domain_id:&key.0,session_id:&key.1,
+            open_request_id:&run.open_request_id,open_request_bytes:&run.open_request_bytes,
+            step_id:&step_id,custody:&run.custody,command:&command};
+        failure(rpc::reconcile_written_claude_initialize_from_a(&mut self.connection,
+            &self.owner,&step))?;
+        Ok(())
+    }
+
     /// Actual process-owned JSONL, with durable native step intent before
     /// writing and A's original provider bytes before interpreting responses.
     fn native_claude_initialize(&mut self,key:&(String,String)) -> Result<()> {
@@ -3075,6 +3156,12 @@ impl<'root> ProductDatabase<'root> {
 
     pub(super) fn native_claude_readiness(&self,key:&(String,String)) -> Result<bool> {
         let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        if self.is_claude_resume_episode(&key.0,&key.1,&run.operation_id,
+            &run.custody.binding.generation,&run.open_request_id)? {
+            return Ok(failure(h::read_original_claude_resume_init(&self.connection,
+                &key.0,&key.1,&run.open_request_id,&run.custody.binding.generation,
+                &run.operation_id))?.is_some());
+        }
         Ok(matches!(failure(rpc::read_original_claude_initialize_ack(&self.connection,
             &key.0,&key.1,&run.open_request_id,&run.open_request_bytes,
             &run.operation_id,&run.custody.binding.generation))?,
