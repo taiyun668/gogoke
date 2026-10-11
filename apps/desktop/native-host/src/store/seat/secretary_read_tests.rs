@@ -67,6 +67,14 @@ fn owned_errors_close_snapshot_and_borrowed_reads_never_end_caller_transaction()
         assert!(matches!(require_secretary_session(db,owner,"seatRead","incarnationRead"),Err(SeatError::Denied)));
         assert!(autocommit(db),"instance eligibility failure cannot leave the owned read open");
         db.execute("UPDATE gogoke_v37_instance_profiles SET enabled=1 WHERE instance_id='instanceRead'").unwrap();
+        db.execute("UPDATE gogoke_v37_instances SET login_state='LOGGED_OUT' WHERE instance_id='instanceRead'").unwrap();
+        assert!(matches!(require_secretary_session(db,owner,"seatRead","incarnationRead"),Err(SeatError::Denied)));
+        assert!(autocommit(db));
+        db.execute("UPDATE gogoke_v37_instances SET login_state='LOGGED_IN' WHERE instance_id='instanceRead'").unwrap();
+        db.execute("UPDATE gogoke_v37_instance_profiles SET tombstoned=1 WHERE instance_id='instanceRead'").unwrap();
+        assert!(matches!(require_secretary_session(db,owner,"seatRead","incarnationRead"),Err(SeatError::Denied)));
+        assert!(autocommit(db));
+        db.execute("UPDATE gogoke_v37_instance_profiles SET tombstoned=0 WHERE instance_id='instanceRead'").unwrap();
         db.execute("BEGIN IMMEDIATE").unwrap();
         db.execute("UPDATE gogoke_v37_seat_settings SET settings_json='{\"effort\":\"high\",\"model\":\"borrowed\",\"permissionTier\":\"READ_ONLY\"}' WHERE seat_id='seatRead'").unwrap();
         let configuration=read_secretary_configuration_in_transaction(db,owner).unwrap();
