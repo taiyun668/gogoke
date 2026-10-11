@@ -1825,8 +1825,8 @@ def verify_host_only(db, journal, case, result):
                           "V08_LEGAL_STAGE", "V08_USER_POLICY_UNSUPPORTED")}
     check({row["caseId"] for row in case["notRun"]} == required_not_run and
           case["state"] == "FLOW_COMPLETE_DIRECT_LEDGER_READBACK_REQUIRED" and
-          journal["v08"] == "IMPLEMENTED_CASES_HAVE_DIRECT_EVIDENCE_V08_INCOMPLETE",
-          "Host-only must preserve every other V08 axis as not run")
+          journal["v08"] == "RUNNING",
+          "Host-only must preserve every other V08 axis as not run at final read time")
     result["verifiedCaseId"] = case["caseId"]
     result["verifiedAxis"] = "V08_REJECT_CAP_DELIVERY_BUSY_TO_IDLE_ONLY"
     result["directCaseEvidence"] = True
