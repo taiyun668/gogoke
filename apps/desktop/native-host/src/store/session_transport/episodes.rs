@@ -240,6 +240,7 @@ pub(crate) fn promote_resume(connection: &VerifiedDatabaseConnection<'_>,
              AND c.binary_digest_sha256=oldc.binary_digest_sha256
            JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
              AND ((i.driver_id='codex' AND i.version='0.160.0')
+              OR (i.driver_id='claude' AND i.version='2.1.196')
                OR (i.driver_id='opencode' AND i.version='1.18.32')
                OR (i.driver_id='grok' AND i.version='1.0.41'))
              AND i.login_state='LOGGED_IN'
@@ -293,6 +294,17 @@ pub(crate) fn promote_resume(connection: &VerifiedDatabaseConnection<'_>,
     let driver=&row[7];
     let ticket=&row[8];
     let nonce=&row[9];
+    if driver=="claude" {
+        // The control initialize ACK cannot establish a vendor session ID.
+        // Only the new candidate's original A system/init, checked against the
+        // old stopped H/A User result, may promote this generation.
+        if super::journal::read_original_claude_resume_init(connection,domain,session,
+            request_id,new_generation,operation_id)
+            .map_err(|error|AtomicError::DurabilityContractFailed(
+                format!("Claude resume original init: {error:?}")))?.is_none() {
+            return Err(AtomicError::OperationConflict);
+        }
+    } else {
     let step_id=if driver=="codex" {format!("{operation_id}-thread-resume")}
         else {format!("{operation_id}-session-resume")};
     let observed=Statement::prepare(connection.as_ptr(),
@@ -329,6 +341,7 @@ pub(crate) fn promote_resume(connection: &VerifiedDatabaseConnection<'_>,
                 domain,session,operation_id,new_generation,request_id,ticket,nonce,&actual)
                 .map_err(|_|AtomicError::OperationConflict)?;
         }
+    }
     }
     // The original A/RPC response settles only this already-held candidate.
     // A separate process start remains forbidden while the request was UNKNOWN.

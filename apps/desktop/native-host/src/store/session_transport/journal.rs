@@ -1971,19 +1971,46 @@ pub(crate) fn read_original_claude_send_completed(
     input_matches(input, &request, &record)?;
     if record.state != JournalState::Receipted { return Ok(None); }
     let episode = Statement::prepare(connection.as_ptr(),
-        "SELECT e.request_id FROM main.gogoke_v37_h_process_episode e
-           JOIN main.gogoke_v37_h_operation o
+        "SELECT e.request_id,e.raw_hex,COALESCE(e.old_generation,'')
+           FROM main.gogoke_v37_h_process_episode e
+           JOIN main.gogoke_v37_h_generation g
+             ON g.domain_id=e.domain_id AND g.session_id=e.session_id
+            AND g.generation=e.generation AND g.request_id=e.request_id
+            AND g.process_operation_id=e.process_operation_id
+           LEFT JOIN main.gogoke_v37_h_operation o
              ON o.domain_id=e.domain_id AND o.request_id=e.request_id
             AND o.session_id=e.session_id AND o.raw_hex=e.raw_hex
             AND o.operation='open' AND o.status IN ('APPLIED','UNKNOWN')
+           LEFT JOIN main.gogoke_v37_h_process_episode olde
+             ON olde.domain_id=e.domain_id AND olde.session_id=e.session_id
+            AND olde.generation=e.old_generation AND olde.phase='STOPPED'
+            AND olde.instance_id=e.instance_id AND olde.stop_fact_id IS NOT NULL
+           LEFT JOIN main.gogoke_v37_h_generation oldg
+             ON oldg.domain_id=olde.domain_id AND oldg.session_id=olde.session_id
+            AND oldg.generation=olde.generation AND oldg.request_id=olde.request_id
+            AND oldg.process_operation_id=olde.process_operation_id
+           LEFT JOIN main.gogoke_v37_h_operation stopo
+             ON stopo.domain_id=olde.domain_id AND stopo.session_id=olde.session_id
+            AND stopo.request_id=olde.stop_request_id AND stopo.operation='stop'
+            AND stopo.status='APPLIED'
+           LEFT JOIN main.gogoke_coordination_process_custody oldc
+             ON oldc.operation_id=olde.process_operation_id
+            AND oldc.domain_id=olde.domain_id AND oldc.generation=olde.generation
+            AND oldc.state='STOPPED' AND oldc.stop_proof_hash=olde.stop_fact_id
            JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
            JOIN main.gogoke_coordination_process_custody c
              ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
             AND c.generation=e.generation
           WHERE e.domain_id=?1 AND e.session_id=?2 AND e.generation=?3
-            AND e.process_operation_id=?4 AND e.old_generation IS NULL
+            AND e.process_operation_id=?4
             AND c.ticket=?5 AND c.custodian_nonce=?6
             AND i.driver_id='claude' AND i.version='2.1.196'
+            AND i.program_digest=c.binary_digest_sha256
+            AND ((e.old_generation IS NULL AND o.request_id IS NOT NULL)
+              OR (e.old_generation IS NOT NULL AND oldg.request_id IS NOT NULL
+                  AND stopo.request_id IS NOT NULL
+                  AND oldc.operation_id IS NOT NULL
+                  AND oldc.binary_digest_sha256=c.binary_digest_sha256))
             AND ((e.phase='STOPPED' AND c.state='STOPPED'
                   AND e.stop_fact_id IS NOT NULL
                   AND e.stop_fact_id=c.stop_proof_hash)
@@ -1996,8 +2023,23 @@ pub(crate) fn read_original_claude_send_completed(
     }
     if !episode.step_row()? { return Err(JournalError::Denied); }
     let open_request_id = episode.column_text(0)?;
+    let episode_hex = episode.column_text(1)?;
+    let old_generation = episode.column_text(2)?;
     if episode.step_row()? { return Err(JournalError::Denied); }
     drop(episode);
+    if !old_generation.is_empty() {
+        let original = unhex(&episode_hex)?;
+        let resume = decode_request(&original)?;
+        if resume.family != "K-SESSION" || resume.operation != "resume"
+            || resume.domain_id != record.domain_id
+            || resume.target_id != record.session_id
+            || resume.request_id != open_request_id
+            || generation_from_payload(&resume)? != old_generation
+            || old_generation.parse::<u64>().ok().and_then(|value|value.checked_add(1))
+                .map(|value|value.to_string()).as_deref()!=Some(record.generation.as_str()) {
+            return Err(JournalError::Denied);
+        }
+    }
     let echo = Statement::prepare(connection.as_ptr(),
         "SELECT s.command_hex,hex(r.raw_bytes),s.source_epoch,s.source_cursor
            FROM main.gogoke_v37_rpc_steps s
@@ -2116,6 +2158,199 @@ pub(crate) fn read_original_claude_send_completed(
     Ok(Some(ClaudeSendCompleted {
         user: existing_decision(record), terminal, vendor_session_id,
     }))
+}
+
+/// Select only the old stopped H generation's vendor identity. A User UUID,
+/// H request ID, or an unreceipted input cannot become a Claude resume ID.
+pub(crate) fn read_stopped_claude_resume_id(
+    connection: &VerifiedDatabaseConnection<'_>, domain: &str, session: &str,
+    generation: &str, process_operation: &str, instance: &str, digest: &str,
+) -> Result<Option<String>, JournalError> {
+    let stopped = Statement::prepare(connection.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_h_process_episode e
+           JOIN main.gogoke_v37_h_generation g
+             ON g.domain_id=e.domain_id AND g.session_id=e.session_id
+            AND g.generation=e.generation AND g.request_id=e.request_id
+            AND g.process_operation_id=e.process_operation_id
+           JOIN main.gogoke_coordination_process_custody c
+             ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
+            AND c.generation=e.generation
+           JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
+          WHERE e.domain_id=?1 AND e.session_id=?2 AND e.generation=?3
+            AND e.process_operation_id=?4 AND e.instance_id=?5
+            AND e.phase='STOPPED' AND e.stop_fact_id IS NOT NULL
+            AND e.stop_request_id IS NOT NULL
+            AND c.state='STOPPED' AND c.stop_proof_hash=e.stop_fact_id
+            AND c.binary_digest_sha256=?6 AND i.program_digest=?6
+            AND i.driver_id='claude' AND i.version='2.1.196'
+            AND EXISTS(SELECT 1 FROM main.gogoke_v37_h_operation o
+                WHERE o.domain_id=e.domain_id AND o.session_id=e.session_id
+                  AND o.request_id=e.stop_request_id AND o.operation='stop'
+                  AND o.status='APPLIED')")?;
+    for (index, value) in [domain,session,generation,process_operation,instance,digest]
+        .iter().enumerate() { stopped.bind_text((index+1) as i32,value)?; }
+    if !stopped.step_row()? || stopped.step_row()? { return Err(JournalError::Denied); }
+    drop(stopped);
+    let sends = Statement::prepare(connection.as_ptr(),
+        "SELECT ticket,request_hex FROM main.gogoke_v37_h_stdin_journal
+          WHERE domain_id=?1 AND session_id=?2 AND generation=?3
+            AND process_operation_id=?4 AND operation='send'
+            AND phase='RECEIPTED' ORDER BY request_id")?;
+    for (index, value) in [domain,session,generation,process_operation]
+        .iter().enumerate() { sends.bind_text((index+1) as i32,value)?; }
+    let mut source = None;
+    let mut applied = false;
+    while sends.step_row()? {
+        let ticket = sends.column_text(0)?;
+        let bytes = unhex(&sends.column_text(1)?)?;
+        let input = StdinRequest { domain_id:domain,session_id:session,
+            ticket:&ticket,generation,request_bytes:&bytes };
+        let completed = read_original_claude_send_completed(connection,&input)?
+            .ok_or(JournalError::Unknown)?;
+        if completed.user.record.receipt_status == Some(V37Status::Applied) { applied = true; }
+        if let Some(prior) = &source {
+            if prior != &completed.vendor_session_id { return Err(JournalError::Conflict); }
+        } else { source = Some(completed.vendor_session_id); }
+    }
+    if applied { Ok(source) } else { Ok(None) }
+}
+
+/// Read the candidate's real init metadata while the original old claim is
+/// still stopped. An initialize control ACK has no vendor session ID; only a
+/// captured system/init from this new physical process can match the old one.
+/// None leaves H resume unresolved and grants no send or promotion.
+pub(crate) fn read_original_claude_resume_init(
+    connection: &VerifiedDatabaseConnection<'_>, domain: &str, session: &str,
+    request_id: &str, generation: &str, process_operation: &str,
+) -> Result<Option<RawSourceKey>, JournalError> {
+    let candidate = Statement::prepare(connection.as_ptr(),
+        "SELECT e.old_generation,e.raw_hex,e.previous_revision,e.instance_id,
+                olde.process_operation_id,c.ticket,c.custodian_nonce,c.binary_digest_sha256,e.phase
+           FROM main.gogoke_v37_h_process_episode e
+           LEFT JOIN main.gogoke_v37_h_claim a
+             ON a.domain_id=e.domain_id AND a.session_id=e.session_id
+           JOIN main.gogoke_v37_h_process_episode olde
+             ON olde.domain_id=e.domain_id AND olde.session_id=e.session_id
+            AND olde.generation=e.old_generation AND olde.instance_id=e.instance_id
+            AND olde.phase='STOPPED' AND olde.stop_fact_id IS NOT NULL
+           JOIN main.gogoke_v37_h_generation oldg
+             ON oldg.domain_id=olde.domain_id AND oldg.session_id=olde.session_id
+            AND oldg.generation=olde.generation AND oldg.request_id=olde.request_id
+            AND oldg.process_operation_id=olde.process_operation_id
+           JOIN main.gogoke_v37_h_operation stopo
+             ON stopo.domain_id=olde.domain_id AND stopo.session_id=olde.session_id
+            AND stopo.request_id=olde.stop_request_id AND stopo.operation='stop'
+            AND stopo.status='APPLIED'
+           JOIN main.gogoke_coordination_process_custody oldc
+             ON oldc.operation_id=olde.process_operation_id AND oldc.domain_id=olde.domain_id
+            AND oldc.generation=olde.generation AND oldc.state='STOPPED'
+            AND oldc.stop_proof_hash=olde.stop_fact_id
+           JOIN main.gogoke_coordination_process_custody c
+             ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
+            AND c.generation=e.generation
+            AND c.binary_digest_sha256=oldc.binary_digest_sha256
+           LEFT JOIN main.gogoke_v37_h_generation g
+             ON g.domain_id=e.domain_id AND g.session_id=e.session_id
+            AND g.generation=e.generation AND g.request_id=e.request_id
+            AND g.process_operation_id=e.process_operation_id
+           JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
+            AND i.driver_id='claude' AND i.version='2.1.196'
+            AND i.program_digest=c.binary_digest_sha256
+          WHERE e.domain_id=?1 AND e.session_id=?2 AND e.request_id=?3
+            AND e.generation=?4 AND e.process_operation_id=?5
+            AND e.old_generation IS NOT NULL
+            AND ((e.phase IN ('PREPARED','UNKNOWN') AND c.state IN ('ACTIVE','UNKNOWN')
+                  AND a.generation=e.old_generation AND a.process_operation_id=olde.process_operation_id
+                  AND a.state='STOPPED' AND a.stop_fact_id=olde.stop_fact_id
+                  AND a.revision=CASE WHEN e.phase='UNKNOWN' THEN e.result_revision
+                      ELSE e.previous_revision END)
+              OR (e.phase='ACTIVE' AND c.state='ACTIVE' AND g.request_id IS NOT NULL
+                  AND a.generation=e.generation AND a.process_operation_id=e.process_operation_id
+                  AND a.state='COMMITTED')
+              OR (e.phase='STOPPED' AND c.state='STOPPED' AND g.request_id IS NOT NULL
+                  AND e.stop_fact_id IS NOT NULL AND e.stop_fact_id=c.stop_proof_hash))")?;
+    for (index, value) in [domain,session,request_id,generation,process_operation]
+        .iter().enumerate() { candidate.bind_text((index+1) as i32,value)?; }
+    if !candidate.step_row()? { return Err(JournalError::Denied); }
+    let old_generation = candidate.column_text(0)?;
+    let resume_bytes = unhex(&candidate.column_text(1)?)?;
+    let previous_revision = candidate.column_text(2)?.parse::<u64>()
+        .map_err(|error| JournalError::Store(AtomicError::DurabilityContractFailed(
+            format!("Claude candidate revision: {error}"))))?;
+    let instance = candidate.column_text(3)?;
+    let old_process = candidate.column_text(4)?;
+    let ticket = candidate.column_text(5)?;
+    let nonce = candidate.column_text(6)?;
+    let digest = candidate.column_text(7)?;
+    let phase = candidate.column_text(8)?;
+    if candidate.step_row()? { return Err(JournalError::Conflict); }
+    drop(candidate);
+    let request = decode_request(&resume_bytes)?;
+    if request.family != "K-SESSION" || request.operation != "resume"
+        || request.domain_id != domain || request.target_id != session
+        || request.request_id != request_id
+        || (matches!(phase.as_str(),"PREPARED"|"UNKNOWN")
+            && request.expected_revision != previous_revision)
+        || generation_from_payload(&request)? != old_generation
+        || old_generation.parse::<u64>().ok().and_then(|value|value.checked_add(1))
+            .map(|value|value.to_string()).as_deref()!=Some(generation) {
+        return Err(JournalError::Denied);
+    }
+    let wanted = read_stopped_claude_resume_id(connection,domain,session,
+        &old_generation,&old_process,&instance,&digest)?.ok_or(JournalError::Unknown)?;
+    let (step_id, initialize_id) = super::rpc_journal::claude_initialize_identity(&resume_bytes);
+    let encoded = commands::encode_claude(commands::ClaudeCommand::Initialize {
+        request_id:&initialize_id,
+    }).map_err(|_|JournalError::Denied)?;
+    let ack = Statement::prepare(connection.as_ptr(),
+        "SELECT s.command_hex,hex(r.raw_bytes) FROM main.gogoke_v37_rpc_steps s
+           JOIN main.v37_ledger_raw_source r
+             ON r.operation_id=s.process_operation_id AND r.source_epoch=s.source_epoch
+            AND r.source_cursor=s.source_cursor AND r.process_ticket=s.ticket
+            AND r.custodian_nonce=s.custodian_nonce AND r.domain_id=s.domain_id
+            AND r.session_id=s.session_id AND r.generation=s.generation
+          WHERE s.domain_id=?1 AND s.session_id=?2 AND s.open_request_id=?3
+            AND s.process_operation_id=?4 AND s.generation=?5 AND s.ticket=?6
+            AND s.custodian_nonce=?7 AND s.step_id=?8 AND s.phase='OBSERVED'
+            AND s.requires_response=1 AND r.state='NO_EVENT'
+            AND r.no_event_reason='CLAUDE_STDIN_ACK'")?;
+    for (index, value) in [domain,session,request_id,process_operation,generation,
+        ticket.as_str(),nonce.as_str(),step_id.as_str()].iter().enumerate() {
+        ack.bind_text((index+1) as i32,value)?;
+    }
+    if !ack.step_row()? { return Ok(None); }
+    let command = unhex(&ack.column_text(0)?)?;
+    let response = unhex(&ack.column_text(1)?)?;
+    if ack.step_row()? { return Err(JournalError::Conflict); }
+    if command != encoded || !matches!(stream_json::decode_claude_line(&response),
+        Ok(stream_json::ClaudeData::ControlResponse { request_id, success:true })
+            if request_id==initialize_id) { return Err(JournalError::Denied); }
+    let sources = Statement::prepare(connection.as_ptr(),
+        "SELECT source_epoch,source_cursor,hex(raw_bytes) FROM main.v37_ledger_raw_source
+          WHERE domain_id=?1 AND session_id=?2 AND generation=?3
+            AND operation_id=?4 AND process_ticket=?5 AND custodian_nonce=?6
+          ORDER BY CAST(source_cursor AS INTEGER)")?;
+    for (index, value) in [domain,session,generation,process_operation,
+        ticket.as_str(),nonce.as_str()].iter().enumerate() {
+        sources.bind_text((index+1) as i32,value)?;
+    }
+    let mut found = None;
+    while sources.step_row()? {
+        let epoch = sources.column_text(0)?;
+        let cursor = sources.column_text(1)?;
+        let raw = unhex(&sources.column_text(2)?)?;
+        if let stream_json::ClaudeData::Init { session_id, .. } =
+            stream_json::decode_claude_line(&raw).map_err(|_|JournalError::Denied)? {
+            if session_id != wanted || epoch != nonce
+                || cursor.parse::<u64>().ok().filter(|value| *value>0
+                    && value.to_string()==cursor).is_none() || found.is_some() {
+                return Err(JournalError::Conflict);
+            }
+            found = Some(RawSourceKey { operation_id:process_operation.to_owned(),
+                source_epoch:epoch,source_cursor:cursor });
+        }
+    }
+    Ok(found)
 }
 
 fn prepare_decoded(connection: &mut VerifiedDatabaseConnection<'_>, input: &StdinRequest<'_>,
