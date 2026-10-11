@@ -871,14 +871,16 @@ def read_claude_sequence(case):
             "WHERE domain_id=? AND session_id=? ORDER BY rowid", (domain, sid)).fetchall()
         raw_lookup = {}
         for generation, operation, epoch, cursor, raw, state, ticket, nonce, reason, event_id in raw_source:
-            frame = json.loads(bytes(raw).decode("utf-8"))
+            original_frame = bytes(raw).decode("utf-8")
+            frame = json.loads(original_frame)
             key = (generation, operation, epoch, cursor, ticket, nonce)
             if key in raw_lookup:
                 fail("Claude raw source physical cursor repeated")
             raw_lookup[key] = (frame, state, event_id)
             result["frames"].append({"direction": "in", "sessionId": sid,
                 "generation": generation, "operationId": operation, "sourceEpoch": epoch,
-                "sourceCursor": cursor, "state": state,
+                "sourceCursor": cursor, "processTicket": ticket, "custodianNonce": nonce,
+                "state": state, "noEventReason": reason, "originalFrame": original_frame,
                 "classification": "PRESERVED_UNRESOLVED_RAW_SOURCE_NO_SUCCESS_CREDIT" if state == "PENDING" else None})
             if state == "PENDING":
                 result["unknownFrames"].append({"sessionId": sid, "sourceEpoch": epoch,
