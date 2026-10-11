@@ -155,24 +155,27 @@ if supplement and (sha(journal_bytes) != sys.argv[5] or
 expected_phase = ("FAIL" if failure_settlement else
                   "FAIL_ORIGINAL_REQUEST_RETAINED" if supplement else
                   "DIRECT_PROVIDER_H_RECEIPTS_A_READBACK_REQUIRED")
+sequence_mode = len(journal.get("cases", [])) == 1 and \
+    journal["cases"][0].get("caseMode") == "sequence"
+required_closes = 2 if sequence_mode and not (supplement or failure_settlement) else 1
 if journal.get("schema") != "gogoke.37.m2-provider-win11-e2e.v1" or \
         journal.get("state") != expected_phase or \
         journal.get("acceptance") is not False or journal.get("observerDatabaseWrites") is not False or \
         journal.get("hostOperationsWriteCandidateDatabase") is not True or \
         journal.get("credentialReads") is not False or not 1 <= len(journal.get("cases", [])) <= 3 or \
-        len(journal.get("launches", [])) != 1 or len(journal.get("closes", [])) != 1:
+        len(journal.get("launches", [])) != required_closes or \
+        len(journal.get("closes", [])) != required_closes:
     fail("Original standalone provider journal is incomplete or not at its readback phase")
-launch = journal["launches"][0]
-close = journal["closes"][0]
-if launch.get("sourceCommit") != journal["sourceCommit"] or \
-        launch.get("bootstrap", {}).get("version") != journal.get("installedVersion") or \
-        not all(name in journal.get("installedSha256", {}) for name in
-                ("gogoke.exe", "gogoke-native-host.exe", "resource-index.json")) or \
-        close.get("exitCode") != 0 or close.get("forceKill") is not False or \
-        close.get("pid") != launch.get("pid") or \
-        not any(event.get("pid") == launch.get("pid") and event.get("code") == 0
-                for event in journal.get("productExits", [])):
-    fail("Actual installed candidate identity or normal-close receipt differs")
+for launch, close in zip(journal["launches"], journal["closes"]):
+    if launch.get("sourceCommit") != journal["sourceCommit"] or \
+            launch.get("bootstrap", {}).get("version") != journal.get("installedVersion") or \
+            not all(name in journal.get("installedSha256", {}) for name in
+                    ("gogoke.exe", "gogoke-native-host.exe", "resource-index.json")) or \
+            close.get("exitCode") != 0 or close.get("forceKill") is not False or \
+            close.get("pid") != launch.get("pid") or \
+            not any(event.get("pid") == launch.get("pid") and event.get("code") == 0
+                    for event in journal.get("productExits", [])):
+        fail("Actual installed candidate identity or normal-close receipt differs")
 database = root / "state.sqlite"
 wal = Path(str(database) + "-wal")
 journal_file = Path(str(database) + "-journal")
@@ -308,6 +311,377 @@ def acp_text(frame):
     if isinstance(content, dict) and content.get("type") == "text" and isinstance(content.get("text"), str):
         return content["text"]
     return ""
+
+
+def read_sequence():
+    """One original Grok H across two completed prompts and a cold process resume."""
+    if supplement or failure_settlement or len(journal["cases"]) != 1:
+        fail("Sequence readback cannot replace a failure or another provider case")
+    case = journal["cases"][0]
+    sequence = case.get("sequence", {})
+    turns = sequence.get("turns", [])
+    sid = case.get("sessionId")
+    opened = [item for item in journal["sessions"] if item.get("id") == sid]
+    if case.get("driverId") != "grok" or case.get("caseMode") != "sequence" or \
+            case.get("result") != "DIRECT_H_RECEIPT_A_READBACK_REQUIRED" or \
+            sequence.get("state") != "ORIGINAL_TWO_TURNS_COLD_RESUME_STOP_RELEASE_READBACK_REQUIRED" or \
+            len(turns) != 2 or len(opened) != 1 or \
+            sequence.get("steer", {}).get("state") != "NOT_RUN_UNSUPPORTED" or \
+            sequence.get("runningInterrupt", {}).get("state") != "NOT_RUN_RUNNING_STOP_NOT_DISPATCHED":
+        fail("Sequence must retain its original two-turn and unsupported-action facts")
+    session = opened[0]
+    if session.get("seatId") != case.get("seatId") or \
+            session.get("instanceId") != case.get("instanceId") or \
+            session.get("worktreeId") != case.get("worktreeId") or \
+            not isinstance(session.get("threadId"), str) or not session["threadId"]:
+        fail("Sequence H session is not its original E/F/A binding")
+    resume = sequence.get("coldResume", {})
+    if resume.get("sessionId") != sid or resume.get("threadId") != session["threadId"] or \
+            resume.get("oldGeneration") != turns[0].get("generation") or \
+            not str(resume.get("newGeneration", "")).isdecimal() or \
+            int(resume["newGeneration"]) <= int(resume["oldGeneration"]) or \
+            session.get("generation") != resume["newGeneration"] or \
+            turns[1].get("generation") != turns[0].get("generation") or \
+            len({turn.get("sendRequestId") for turn in turns}) != 2 or \
+            len({turn.get("marker") for turn in turns}) != 2:
+        fail("Cold H continuation or original two distinct User inputs differ")
+    capability = case.get("sequenceCapability", {})
+    if capability.get("inTurnSteer") != "UNSUPPORTED" or \
+            capability.get("resume") != "SOURCE_PRESENT_NATIVE_RESUME_BEHAVIOUR_NOT_RUN" or \
+            capability.get("interruptAndResume") != "SOURCE_PRESENT_NATIVE_RESUME_BEHAVIOUR_NOT_RUN" or \
+            capability.get("evidenceBasis") != "NATIVE_ACP_INITIALIZE_DECLARATION":
+        fail("Original ACP capability did not disclose its actual limits")
+
+    with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db:
+        db.execute("PRAGMA query_only=ON")
+        result["epoch"] = exact_one(db, "SELECT epoch FROM v37_ledger_meta WHERE singleton=1")[0]
+        result["cursor"] = str(exact_one(db,
+            "SELECT COALESCE(MAX(cursor),0) FROM v37_ledger_index")[0])
+        claim = exact_one(db,
+            "SELECT state,stop_fact_id,instance_id,generation FROM gogoke_v37_h_claim "
+            "WHERE domain_id=? AND session_id=?", (domain, sid))
+        if claim != ("RELEASED", sequence.get("finalStopFact"),
+                     case["instanceId"], resume["newGeneration"]):
+            fail("Original final H release does not retain its second real StopFact")
+        seat = exact_one(db,
+            "SELECT incarnation,instance_id,state,settings_json FROM gogoke_v37_seats "
+            "JOIN gogoke_v37_seat_settings USING(domain_id,seat_id) "
+            "WHERE domain_id=? AND seat_id=?", (domain, case["seatId"]))
+        settings = json.loads(seat[3])
+        if seat[1:3] != (case["instanceId"], "IDLE") or \
+                settings.get("model") != case["expectedModel"] or \
+                settings.get("effort") != case["expectedEffort"]:
+            fail("Original E seat did not return to IDLE with the selected settings")
+        instance = exact_one(db,
+            "SELECT driver_id,version,program_digest,install_state,login_state "
+            "FROM gogoke_v37_instances WHERE instance_id=?", (case["instanceId"],))
+        if instance[:3] != ("grok", case["fixedVersion"], "sha256:" + case["fixedSha256"]) or \
+                instance[4] != "LOGGED_IN":
+            fail("Original F instance pin/login differs")
+        selection = exact_one(db,
+            "SELECT seat_id,seat_incarnation,selected_instance_id FROM gogoke_v37_native_selection "
+            "WHERE domain_id=? AND session_id=?", (domain, sid))
+        if selection != (case["seatId"], seat[0], case["instanceId"]):
+            fail("Original H selected E/F identity differs")
+        tree = exact_one(db,
+            "SELECT domain_id,repository_id,seat_id,instance_id,worktree_path,worktree_identity,state "
+            "FROM gogoke_v37_worktrees WHERE worktree_id=?", (case["worktreeId"],))
+        tree_path = Path(local_spelling(tree[4])).resolve(strict=True)
+        if tree[:4] != (domain, journal["repositoryId"], case["seatId"], case["instanceId"]) or \
+                tree[6] != "REGISTERED" or not beneath(root, tree_path) or \
+                native_directory_identity(Path(tree[4])) != tree[5]:
+            fail("Original F worktree physical identity differs")
+        result["providerWorktrees"].append({"driverId": "grok", "worktreeId": case["worktreeId"],
+            "domainId": domain, "repositoryId": journal["repositoryId"],
+            "seatId": case["seatId"], "instanceId": case["instanceId"],
+            "path": str(tree_path), "nativeOpaqueIdentity": tree[5]})
+        episodes = db.execute(
+            "SELECT generation,process_operation_id,phase,stop_fact_id,seat_id,seat_incarnation,"
+            "instance_id,request_id FROM gogoke_v37_h_process_episode "
+            "WHERE domain_id=? AND session_id=? ORDER BY rowid", (domain, sid)).fetchall()
+        if len(episodes) != 2 or [row[0] for row in episodes] != \
+                [resume["oldGeneration"], resume["newGeneration"]] or \
+                [row[3] for row in episodes] != \
+                [sequence.get("firstStopFact"), sequence.get("finalStopFact")] or \
+                any(row[2] != "STOPPED" or row[4:7] !=
+                    (case["seatId"], seat[0], case["instanceId"]) for row in episodes):
+            fail("Two original H process episodes and StopFacts differ")
+        for index, episode in enumerate(episodes):
+            process = case.get("processIdentity" if index == 0 else "resumedProcessIdentity", {})
+            custody = exact_one(db,
+                "SELECT pid,creation_time_100ns,binary_digest_sha256,profile_id,domain_id,"
+                "generation,state,stop_proof_hash FROM gogoke_coordination_process_custody "
+                "WHERE operation_id=?", (episode[1],))
+            if custody != (process.get("processId"), process.get("creationTime100ns"),
+                    "sha256:" + case["fixedSha256"], case["instanceId"], domain,
+                    episode[0], "STOPPED", episode[3]) or \
+                    process.get("productRootPid") != str(journal["launches"][index]["pid"]) or \
+                    process.get("basis") != "ACTUAL_PRODUCT_DESCENDANT_PROCESS_COMMAND_LINE_FILTERED" or \
+                    process.get("imageSha256") != case["fixedSha256"] or \
+                    process.get("modelArgCount") != 1 or process.get("effortArgCount") != 1 or \
+                    process.get("modelFlag") != "--model" or \
+                    process.get("effortFlag") != "--reasoning-effort" or \
+                    process.get("model") != settings.get("model") or \
+                    process.get("effort") != settings.get("effort") or \
+                    not isinstance(process.get("commandLineSha256"), str) or \
+                    len(process["commandLineSha256"]) != 64:
+                fail("Original H process identity or C physical StopFact differs")
+        operations = [item for item in journal["operations"] if
+                      item.get("request", {}).get("family") == "K-SESSION" and
+                      item["request"].get("targetId") == sid]
+        def original_action(name, count):
+            found = [item for item in operations if item["request"]["operation"] == name]
+            if len(found) != count or any(item.get("receipt", {}).get("status") != "APPLIED"
+                                          for item in found):
+                fail(f"Original H {name} count/receipt differs")
+            for item in found:
+                request = item["request"]
+                if item.get("rawFrame") != json.dumps(request, ensure_ascii=False,
+                                                     separators=(",", ":")):
+                    fail(f"Original H {name} request wire changed")
+            return found
+        opened_action = original_action("open", 1)[0]
+        resume_attempts = [item for item in operations if
+                           item["request"]["operation"] == "resume"]
+        if not resume_attempts or any(item["request"] != resume_attempts[0]["request"] or
+                item["rawFrame"] != resume_attempts[0]["rawFrame"] or
+                item.get("receipt", {}).get("status") not in
+                ("UNKNOWN", "APPLIED", "REPLAYED") for item in resume_attempts) or \
+                resume_attempts[-1].get("receipt", {}).get("status") not in \
+                ("APPLIED", "REPLAYED") or \
+                resume_attempts[-1].get("receipt") != resume.get("receipt"):
+            fail("Exact original cold resume request or reconciliation differs")
+        resumed_action = resume_attempts[0]
+        stops = original_action("stop", 2)
+        release = original_action("admission-release", 1)[0]
+        if [item["request"]["payload"].get("generation") for item in stops] != \
+                [resume["oldGeneration"], resume["newGeneration"]] or \
+                [item["receipt"]["result"].get("stopFact") for item in stops] != \
+                [sequence["firstStopFact"], sequence["finalStopFact"]] or \
+                release["request"]["payload"].get("generation") != resume["newGeneration"] or \
+                release["request"]["expectedRevision"] != stops[1]["receipt"]["revision"] or \
+                resumed_action["request"]["payload"].get("generation") != resume["oldGeneration"] or \
+                resumed_action["request"]["expectedRevision"] != stops[0]["receipt"]["revision"]:
+            fail("Original stop/no-release/resume/final stop/release sequence differs")
+        for item in [opened_action, *stops, release]:
+            request = item["request"]
+            stored = exact_one(db,
+                "SELECT raw_hex,status FROM gogoke_v37_h_operation "
+                "WHERE domain_id=? AND session_id=? AND request_id=? AND operation=?",
+                (domain, sid, request["requestId"], request["operation"]))
+            if stored != (item["rawFrame"].encode().hex(), "APPLIED"):
+                fail("Original H admission/control durable wire differs")
+        if exact_one(db,
+                "SELECT raw_hex FROM gogoke_v37_h_process_episode "
+                "WHERE domain_id=? AND session_id=? AND request_id=? AND old_generation=?",
+                (domain, sid, resumed_action["request"]["requestId"],
+                 resume["oldGeneration"]))[0].lower() != resumed_action["rawFrame"].encode().hex():
+            fail("Cold resume did not retain its exact original H request bytes")
+        for index, capability_id in enumerate((capability.get("requestId"),
+                sequence.get("resumedCapability", {}).get("requestId"))):
+            item = next((entry for entry in operations if
+                         entry["request"].get("requestId") == capability_id), None)
+            if item is None or item["request"].get("operation") != "capability-probe":
+                fail("Original ACP capability request is absent")
+            request_bytes, receipt_bytes = exact_one(db,
+                "SELECT request_bytes,receipt_bytes FROM v37_ledger_receipt "
+                "WHERE family='K-SESSION' AND domain_id=? AND request_id=?",
+                (domain, capability_id))
+            answer = json.loads(receipt_bytes)
+            if bytes(request_bytes) != item["rawFrame"].encode() or \
+                    answer.get("status") != "APPLIED" or \
+                    answer.get("result", {}).get("threadId") != session["threadId"] or \
+                    answer["result"].get("processOperationId") != episodes[index][1] or \
+                    answer["result"].get("capabilities", {}).get("inTurnSteer") != "UNSUPPORTED":
+                fail("Actual H capability facts do not bind the same cold thread/process")
+        load_steps = db.execute(
+            "SELECT command_hex,phase,source_epoch,source_cursor,ticket,custodian_nonce "
+            "FROM gogoke_v37_rpc_steps WHERE domain_id=? AND session_id=? "
+            "AND process_operation_id=?", (domain, sid, episodes[1][1])).fetchall()
+        loads = []
+        for command, phase, epoch, cursor, ticket, nonce in load_steps:
+            frame = json.loads(bytes.fromhex(command).decode())
+            if frame.get("method") == "session/load":
+                loads.append((frame, phase, epoch, cursor, ticket, nonce))
+        if len(loads) != 1 or loads[0][0].get("params", {}).get("sessionId") != \
+                session["threadId"] or loads[0][1] != "OBSERVED" or \
+                not loads[0][2] or not loads[0][3]:
+            fail("Original Grok cold resume did not observe session/load on the old thread")
+
+        incoming = db.execute(
+            "SELECT generation,operation_id,source_epoch,source_cursor,raw_bytes,state,"
+            "process_ticket,custodian_nonce,no_event_reason,resolved_event_id "
+            "FROM v37_ledger_raw_source WHERE domain_id=? AND session_id=? ORDER BY rowid",
+            (domain, sid)).fetchall()
+        raw_lookup = {}
+        for generation, operation, epoch, cursor, raw, state, ticket, nonce, reason, event_id in incoming:
+            data = bytes(raw).decode("utf-8")
+            frame = json.loads(data)
+            key = (generation, operation, epoch, cursor, ticket, nonce)
+            if key in raw_lookup:
+                fail("Original raw source physical cursor repeated")
+            raw_lookup[key] = (frame, state, event_id)
+            result["frames"].append({"direction": "in", "sessionId": sid,
+                "generation": generation, "operationId": operation, "sourceEpoch": epoch,
+                "sourceCursor": cursor, "processTicket": ticket, "custodianNonce": nonce,
+                "state": state, "noEventReason": reason, "originalFrame": data})
+            if state == "PENDING":
+                result["unknownFrames"].append({"sessionId": sid, "sourceEpoch": epoch,
+                    "sourceCursor": cursor, "method": frame.get("method", frame.get("type")),
+                    "state": state,
+                    "classification": "PRESERVED_UNRESOLVED_RAW_SOURCE_NO_SUCCESS_CREDIT"})
+        outgoing = db.execute(
+            "SELECT generation,process_operation_id,step_id,command_hex,phase,source_epoch,"
+            "source_cursor,ticket,custodian_nonce FROM gogoke_v37_rpc_steps "
+            "WHERE domain_id=? AND session_id=? ORDER BY rowid", (domain, sid)).fetchall()
+        for generation, operation, step, command, phase, epoch, cursor, ticket, nonce in outgoing:
+            result["commands"].append({"direction": "out", "sessionId": sid,
+                "generation": generation, "operationId": operation, "stepId": step,
+                "phase": phase, "sourceEpoch": epoch, "sourceCursor": cursor,
+                "processTicket": ticket, "custodianNonce": nonce,
+                "originalFrame": bytes.fromhex(command).decode("utf-8"),
+                "confirmedWrite": phase in ("WRITTEN", "OBSERVED")})
+        normalized = db.execute(
+            "SELECT i.cursor,i.source_epoch,i.source_cursor,i.update_json,r.operation_id,"
+            "r.generation,r.process_ticket,r.custodian_nonce,r.source_cursor,r.raw_bytes,r.state "
+            "FROM v37_ledger_index i LEFT JOIN v37_ledger_raw_source r "
+            "ON r.resolved_event_id=i.source_event_id AND r.domain_id=i.domain_id "
+            "AND r.session_id=i.session_id WHERE i.source_kind='v37' "
+            "AND i.domain_id=? AND i.session_id=? ORDER BY i.cursor", (domain, sid)).fetchall()
+        updates = []
+        for cursor, epoch, source, update_json, operation, generation, ticket, nonce, raw_cursor, raw, state in normalized:
+            if raw is None or state != "RESOLVED" or not all((epoch, operation, generation,
+                                                               ticket, nonce, raw_cursor)):
+                fail("Normalized sequence event lacks exact original raw/physical source")
+            update = json.loads(update_json)
+            raw_frame = json.loads(bytes(raw).decode())
+            original = raw_frame.get("params", {}).get("update", {})
+            if update.get("sessionUpdate") != original.get("sessionUpdate") or \
+                    update.get("_meta", {}).get("rawSourceCursor") != raw_cursor or \
+                    update.get("_meta", {}).get("threadId") != session["threadId"]:
+                fail("Original raw-to-normalized sequence identity differs")
+            updates.append({"cursor": str(cursor), "sourceEpoch": epoch,
+                "ledgerSourceCursor": source, "operationId": operation,
+                "generation": generation, "processTicket": ticket,
+                "custodianNonce": nonce, "update": update})
+        if not updates:
+            fail("Original sequence has no normalized provider output")
+        observed_turns = []
+        for ordinal, turn in enumerate(turns, 1):
+            request_id = turn.get("sendRequestId")
+            matching = [item for item in operations if item["request"].get("requestId") == request_id]
+            if len(matching) != 1 or matching[0]["request"].get("operation") != "send" or \
+                    matching[0]["request"].get("payload", {}).get("body") != turn.get("prompt") or \
+                    matching[0]["request"].get("payload", {}).get("generation") != resume["oldGeneration"] or \
+                    turn.get("generation") != resume["oldGeneration"] or \
+                    turn.get("ordinal") != ordinal or turn.get("markerObserved") is not True:
+                fail("One original USER sequence send is missing or not bound to its prompt")
+            stored = exact_one(db,
+                "SELECT phase,receipt_status,request_hex,session_id,generation,ticket,"
+                "process_operation_id,custodian_nonce,receipt_hex "
+                "FROM gogoke_v37_h_stdin_journal WHERE domain_id=? AND request_id=? "
+                "AND operation='send'", (domain, request_id))
+            receipt = turn.get("hReceipt", {}).get("receipt", {})
+            if stored[:5] != ("RECEIPTED", "APPLIED", matching[0]["rawFrame"].encode().hex(),
+                              sid, resume["oldGeneration"]) or \
+                    stored[6] != episodes[0][1] or \
+                    json.loads(bytes.fromhex(stored[8]).decode()) != receipt or \
+                    receipt.get("status") != "APPLIED" or \
+                    receipt.get("result", {}).get("createdTurn") is not True or \
+                    receipt["result"].get("stopReason") != "end_turn" or \
+                    not str(turn.get("beforeSendRawHighwater", "")).isdecimal():
+                fail("Original H send request, receipt or first process scope differs")
+            terminal_epoch = receipt["result"].get("sourceEpoch")
+            terminal_cursor = receipt["result"].get("sourceCursor")
+            if terminal_epoch != turn.get("terminalSourceEpoch") or \
+                    terminal_cursor != turn.get("terminalSourceCursor") or \
+                    not str(terminal_cursor).isdecimal() or \
+                    int(terminal_cursor) <= int(turn["beforeSendRawHighwater"]):
+                fail("Original sequence terminal source boundary differs")
+            scoped = [(key, frame) for key, (frame, state, _) in raw_lookup.items()
+                      if key[0] == stored[4] and key[1] == stored[6] and
+                      key[2] == terminal_epoch and key[4:6] == (stored[5], stored[7]) and
+                      int(turn["beforeSendRawHighwater"]) < int(key[3]) <= int(terminal_cursor)]
+            terminal = [frame for key, frame in scoped if key[3] == terminal_cursor]
+            prompts = []
+            for command in result["commands"]:
+                if not command["confirmedWrite"] or command["operationId"] != stored[6] or \
+                        command["generation"] != stored[4] or \
+                        command["processTicket"] != stored[5] or \
+                        command["custodianNonce"] != stored[7]:
+                    continue
+                frame = json.loads(command["originalFrame"])
+                if frame.get("method") == "session/prompt" and \
+                        frame.get("params", {}).get("sessionId") == session["threadId"] and \
+                        frame.get("params", {}).get("prompt") == [{"type": "text", "text": turn["prompt"]}]:
+                    prompts.append(frame)
+            if len(prompts) != 1 or len(terminal) != 1 or \
+                    type(prompts[0].get("id")) is not type(terminal[0].get("id")) or \
+                    prompts[0].get("id") != terminal[0].get("id") or \
+                    terminal[0].get("result", {}).get("stopReason") != "end_turn":
+                fail("Original ACP prompt command and typed end response are not unique")
+            prompt_id = terminal[0].get("result", {}).get("_meta", {}).get("promptId")
+            completions = [frame for _, frame in scoped if
+                           frame.get("method") == "_x.ai/session/prompt_complete" and
+                           frame.get("params", {}).get("promptId") == prompt_id and
+                           frame.get("params", {}).get("stopReason") == "end_turn"]
+            if not isinstance(prompt_id, str) or not prompt_id or len(completions) != 1 or \
+                    completions[0].get("params", {}).get("sessionId") != session["threadId"]:
+                fail("Original Grok promptId is not bound to the same completed turn")
+            text = "".join(item["update"].get("content", {}).get("text", "") for item in updates
+                           if item["operationId"] == stored[6] and item["generation"] == stored[4] and
+                           item["sourceEpoch"] == terminal_epoch and
+                           item["update"].get("sessionUpdate") == "agent_message_chunk" and
+                           str(item["update"].get("_meta", {}).get("rawSourceCursor", "")).isdecimal() and
+                           int(turn["beforeSendRawHighwater"]) <
+                           int(item["update"]["_meta"]["rawSourceCursor"]) <= int(terminal_cursor))
+            if turn["marker"] not in text or any(frame.get("method") == "session/request_permission" or
+                    frame.get("params", {}).get("update", {}).get("sessionUpdate") in
+                    ("tool_call", "tool_call_update") for _, frame in scoped):
+                fail("Original no-tool sequence marker or raw/normalized source differs")
+            observed_turns.append({"ordinal": ordinal, "requestId": request_id,
+                "promptId": prompt_id, "promptRpcId": prompts[0]["id"],
+                "generation": stored[4], "processOperationId": stored[6],
+                "terminalSourceEpoch": terminal_epoch,
+                "terminalSourceCursor": terminal_cursor, "markerObserved": True})
+        if len({turn["promptId"] for turn in observed_turns}) != 2 or \
+                len({str(turn["promptRpcId"]) for turn in observed_turns}) != 2:
+            fail("Two original Grok prompts did not carry distinct provider turn identities")
+        if exact_one(db, "SELECT COUNT(*) FROM gogoke_v37_h_stdin_journal "
+                     "WHERE domain_id=? AND session_id=? AND operation='send'",
+                     (domain, sid))[0] != 2:
+            fail("Original H session has an unaccounted send or replay")
+        all_prompts = [(item, json.loads(item["originalFrame"])) for item in result["commands"]
+                       if item["sessionId"] == sid and item["confirmedWrite"]]
+        all_prompts = [(item, frame) for item, frame in all_prompts
+                       if frame.get("method") == "session/prompt"]
+        if len(all_prompts) != 2 or {frame.get("id") for _, frame in all_prompts} != \
+                {turn["promptRpcId"] for turn in observed_turns} or \
+                any(item["operationId"] != episodes[0][1] for item, _ in all_prompts):
+            fail("Cold resume wrote an old input or an unaccounted ACP prompt")
+        result["sessions"].append({"sessionId": sid, "seatId": case["seatId"],
+            "instanceId": case["instanceId"], "worktreeId": case["worktreeId"],
+            "driverId": "grok", "caseMode": "sequence", "version": case["fixedVersion"],
+            "binarySha256": "sha256:" + case["fixedSha256"],
+            "persistedInstallState": instance[3], "installObservationCredit": False,
+            "episodes": episodes, "normalized": updates, "missingNormalized": False,
+            "rawFrameCount": len(incoming),
+            "unknownFrameCount": sum(row[5] == "PENDING" for row in incoming),
+            "allEpisodesStopped": True, "claimState": "RELEASED",
+            "providerPromptObserved": True, "providerEndTurn": True,
+            "markerObserved": True, "writeObserved": False, "writeEvidence": None,
+            "answerObserved": False, "vendorSessionId": session["threadId"],
+            "originalTurns": observed_turns,
+            "steer": sequence["steer"], "runningInterrupt": sequence["runningInterrupt"],
+            "coldResume": resume,
+            "modelEffortEvidence": {"basis": "ACTUAL_PINNED_GROK_PROCESS_ARGV_TWO_EPISODES",
+                "first": case["processIdentity"], "resumed": case["resumedProcessIdentity"]}})
+    result["filesAfter"] = file_facts()
+    result["measurementPreservedDatabaseBytes"] = before == result["filesAfter"]
+    result["directProviderEvidence"] = result["measurementPreservedDatabaseBytes"]
+    output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if not result["directProviderEvidence"]:
+        fail("Original sequence immutable readback changed database bytes")
 
 
 def grok_write_evidence(db, domain, case, session, send, prompt_command,
@@ -474,6 +848,10 @@ def grok_write_evidence(db, domain, case, session, send, prompt_command,
             "rawToolFrameCount": len(raw_tools), "permission": permission,
             "targetSha256": sha(expected_bytes), "actualOsAclDisposition": "NOT_RUN",
             "permissionCause": "UNATTRIBUTED"}
+
+if sequence_mode:
+    read_sequence()
+    raise SystemExit(0)
 
 with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db:
     db.execute("PRAGMA query_only=ON")
