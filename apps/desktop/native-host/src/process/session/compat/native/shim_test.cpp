@@ -673,9 +673,41 @@ void test_mode_selection() {
     CHECK(select_mode() == CompatMode::CodexPath);
     SetEnvironmentVariableW(kModeEnv, kClaudeMode);
     CHECK(select_mode() == CompatMode::ClaudePipe);
+    SetEnvironmentVariableW(kModeEnv, kOpenCodeMode);
+    CHECK(select_mode() == CompatMode::OpenCodePipe);
+    SetEnvironmentVariableW(kModeEnv, L"OPENCODE_PIPE_V1-extra");
+    CHECK(select_mode() == CompatMode::Invalid);
+    SetEnvironmentVariableW(kModeEnv, L"opencode_pipe_v1");
+    CHECK(select_mode() == CompatMode::Invalid);
     SetEnvironmentVariableW(kModeEnv, L"CODEX_PATH");
     CHECK(select_mode() == CompatMode::Invalid);
     SetEnvironmentVariableW(kModeEnv, nullptr);
+}
+
+void test_opencode_diagnostic_origin_and_error() {
+    InterlockedExchange(&g_opencode_pipe_mode, 1);
+    g_pipe_a = mock_named_pipe_a;
+    g_test_stderr = mock_stderr;
+    g_test_pipe_observation = mock_pipe_observation;
+    g_pipe_capture = 0;
+    g_server_observation = 0;
+    g_diagnostic_write_error = 0;
+    fail_pipe_observation = false;
+    pipe_observation_calls = 0;
+    stderr_calls = 0;
+    mock_pipe_result = INVALID_HANDLE_VALUE;
+    mock_pipe_error = ERROR_ACCESS_DENIED;
+    SECURITY_ATTRIBUTES security = {};
+    constexpr char name[] = "\\\\?\\pipe\\uv\\private-random-name";
+    HANDLE result = observed_pipe_a(name, 1, 2, 3, 4, 5, 6, &security);
+    CHECK(result == INVALID_HANDLE_VALUE && GetLastError() == ERROR_ACCESS_DENIED);
+    CHECK(observed_name_a == name && observed_security == &security);
+    CHECK(stderr_calls == 1 &&
+        strcmp(captured_stderr, "gogoke OpenCode CreateNamedPipeA failed win32=5 prefix=uv\n") == 0);
+    CHECK(pipe_observation_calls == 2 &&
+        strstr(captured_pipe_observations[0], "gogoke OpenCode pipe api=CreateNamedPipeA") != nullptr);
+    CHECK(strstr(captured_stderr, "private") == nullptr);
+    InterlockedExchange(&g_opencode_pipe_mode, 0);
 }
 } // namespace
 
@@ -692,6 +724,7 @@ int main() {
     test_first_non_uv_a_w_calls_and_stderr_delivery_failure();
     test_claude_iat_shape();
     test_mode_selection();
+    test_opencode_diagnostic_origin_and_error();
     if (failures) fprintf(stderr, "%d fixed shim tests failed\n", failures);
     return failures ? 1 : 0;
 }
