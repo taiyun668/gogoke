@@ -1461,6 +1461,13 @@ impl ProductDatabase<'_> {
         drop(query);
         if count > 1 { return Err(OrchestrationError::OperationConflict); }
         if let Some((existing, old_generation, revision)) = stopped {
+            // Only the exact original failed empty-thread continuation may
+            // release its genuine stopped predecessor. Standard admission
+            // release preserves history and permits a fresh resident session;
+            // all other stopped sessions keep the existing continuation path.
+            if self.settle_original_empty_secretary_thread(&existing, &old_generation, &revision)? {
+                return self.ensure_due_secretary_session();
+            }
             // Only a genuine stopped claim may enter the existing native
             // continuation. Neither PID disappearance nor old open ACK is a
             // StopFact; dispatch_native_resume verifies the original C/H fact.
