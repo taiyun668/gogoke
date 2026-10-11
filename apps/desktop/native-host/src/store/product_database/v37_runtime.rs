@@ -242,24 +242,37 @@ impl<'root> ProductDatabase<'root> {
         let cleanup = if no_child_confirmed {
             evidence.revoke_uncreated_credential(&mut self.connection,self.root)
         } else { Err("original process launch cleanup is unconfirmed".into()) };
-        if cleanup.is_err() { self.pending_native_launches.insert(key,evidence); }
+        // OpenCode may already own a durable alias or PREPARE_STARTED fence.
+        // Keep that witness even when the credential-only cleanup succeeded.
+        if cleanup.is_err() || evidence.driver_id()=="opencode" {
+            self.pending_native_launches.insert(key,evidence);
+        }
         OrchestrationError::V37StoreFailure(format!("native launch: {original:?}; credential settlement: {cleanup:?}"))
     }
 
-    fn prepare_native_launch(&mut self, request: &V37Request, evidence: LaunchEvidence,
+    fn prepare_native_launch(&mut self, request: &V37Request, mut evidence: LaunchEvidence,
         host: Option<(&HostEscalationProof,&HostRecipient)>)
         -> Result<(LaunchEvidence,PreparedCustody,String,String)> {
         let key = (request.domain_id.clone(),request.target_id.clone());
         let preflight = (|| -> Result<_> {
             let (model,effort) = failure(evidence.settings())?;
-            let launch = failure(evidence.request())?;
             if let Some((proof,choice)) = host { self.check_host_recipient_choice(proof,choice)?; }
+            if evidence.driver_id()=="opencode" {
+                failure(evidence.verify(&mut self.connection,self.root,&self.owner,None))?;
+                self.reconcile_original_opencode_aliases(&request.domain_id,&request.target_id)?;
+            }
+            failure(evidence.define_opencode_alias_after_intent(&mut self.connection,
+                &request.request_id,&request.raw_bytes))?;
+            let launch = failure(evidence.request())?;
             Ok((launch,model,effort))
         })();
         let (launch,model,effort) = match preflight {
             Ok(value) => value,
             Err(original) => return Err(self.failed_uncreated_native_launch(key,evidence,original,true)),
         };
+        if let Err(original)=failure(evidence.mark_opencode_prepare_started(&mut self.connection)) {
+            return Err(self.failed_uncreated_native_launch(key,evidence,original,true));
+        }
         let custody = match self.process_custodian.prepare(&launch) {
             Ok(custody) => custody,
             Err(error) => {
@@ -268,6 +281,31 @@ impl<'root> ProductDatabase<'root> {
             }
         };
         Ok((evidence,custody,model,effort))
+    }
+
+    fn reconcile_original_opencode_aliases(&mut self,domain:&str,session:&str)->Result<()> {
+        let query=Statement::prepare(self.connection.as_ptr(),
+            "SELECT generation FROM main.gogoke_v37_h_dos_alias
+              WHERE domain_id=?1 AND session_id=?2
+                AND cleanup_status IN ('NOT_REQUESTED','UNKNOWN') ORDER BY revision")?;
+        query.bind_text(1,domain)?;query.bind_text(2,session)?;
+        let mut original=Vec::new();
+        while query.step_row()? {original.push(query.column_text(0)?);}
+        drop(query);
+        for generation in original {
+            // H retains UNKNOWN and its original reason for missing child/Job
+            // proof. No STOPPED or unrelated-provider startup failure is made.
+            if let Err(error)=h::recover_orphan_opencode_dos_alias(
+                &mut self.connection,domain,session,&generation) {
+                let reason=Statement::prepare(self.connection.as_ptr(),
+                    "SELECT COALESCE(cleanup_result,'') FROM main.gogoke_v37_h_dos_alias
+                      WHERE domain_id=?1 AND session_id=?2 AND generation=?3")?;
+                reason.bind_text(1,domain)?;reason.bind_text(2,session)?;reason.bind_text(3,&generation)?;
+                let raw=if reason.step_row()? {reason.column_text(0)?} else {String::new()};
+                eprintln!("original OpenCode alias retained: {error:?}; original cleanup result: {raw}");
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn original_native_continuation(&self, domain: &str, session: &str)
@@ -658,6 +696,8 @@ impl<'root> ProductDatabase<'root> {
             startup_observed:StartupObservationTimes::prepared_now(),
         });
         authority::record_prepared_process(&mut self.connection,&operation_id,&custody)?;
+        failure(self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?
+            .evidence.bind_opencode_process_custody(&mut self.connection,&operation_id,&custody))?;
         failure(self.connection.execute("BEGIN IMMEDIATE"))?;
         let attached=(|| -> Result<()> {
             authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
@@ -695,7 +735,7 @@ impl<'root> ProductDatabase<'root> {
                 let init_step=failure(rpc::acp_candidate_step_id(&operation_id,&init))?;
                 self.native_acp_rpc(&key,&init_step,Some(1),&init)?;
                 let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
-                let cwd=run.evidence.cwd().to_string_lossy().into_owned();
+                let cwd=run.evidence.protocol_cwd().to_string_lossy().into_owned();
                 let model=run.model.clone();let effort=run.effort.clone();
                 let resume=if driver=="opencode" {
                     vendor_commands::AcpCommand::SessionResume {session_id:&thread_id,cwd:&cwd,advertised:true}
@@ -1979,6 +2019,8 @@ impl<'root> ProductDatabase<'root> {
             return Err(OrchestrationError::V37StoreFailure(format!(
                 "native open PREPARED record: {error:?}; abort: {abort:?}")));
         }
+        failure(self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?
+            .evidence.bind_opencode_process_custody(&mut self.connection,&operation_id,&custody))?;
         failure(self.connection.execute("BEGIN IMMEDIATE"))?;
         let bind = (|| -> Result<()> {
             authority::check_owner_in_current_transaction(&self.connection, &self.owner)?;
@@ -2015,7 +2057,7 @@ impl<'root> ProductDatabase<'root> {
             authority::mark_process_active(&mut self.connection, &operation_id, &custody)?;
             let run = self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
             let driver=run.evidence.driver_id().to_owned();
-            let cwd=run.evidence.cwd().to_string_lossy().into_owned();
+            let cwd=run.evidence.protocol_cwd().to_string_lossy().into_owned();
             let model=run.model.clone();
             let host_tools=run.evidence.host_tools_enabled() ||
                 matches!(purpose,SessionPurpose::SideChat|SessionPurpose::Secretary);
@@ -2457,13 +2499,17 @@ impl<'root> ProductDatabase<'root> {
         let revision = row.column_text(0)?.parse::<u64>().map_err(|error|
             OrchestrationError::V37StoreFailure(format!("native stop durable revision: {error}")))?;
         drop(row);
+        let confirmation=DurableStopConfirmation {
+            ticket:run.custody.ticket.clone(),custodian_nonce:run.custody.custodian_nonce.clone(),
+            identity:run.custody.identity.clone(),proof_hash:proof.proof_hash(),durable_revision:revision,
+        };
+        failure(self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?
+            .evidence.cleanup_opencode_alias_after_stop(&mut self.connection,&confirmation.proof_hash))?;
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
         failure(run.evidence.revoke_stopped_credential(&mut self.connection,self.root,
             &run.operation_id,&run.custody))?;
         if self.process_custodian.active(&run.custody.ticket).is_some() {
-            self.process_custodian.confirm_stop_durable(&DurableStopConfirmation {
-                ticket: run.custody.ticket.clone(), custodian_nonce: run.custody.custodian_nonce.clone(),
-                identity: run.custody.identity.clone(), proof_hash: proof.proof_hash(), durable_revision: revision,
-            })?;
+            self.process_custodian.confirm_stop_durable(&confirmation)?;
         }
         self.native_sessions.remove(key);
         Ok(())
