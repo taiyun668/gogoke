@@ -171,11 +171,7 @@ impl Design37Host {
         // taken before the original reader consumed the last bytes.
         let capture = self.stderr_reader.lock()
             .map_err(|error| format!("GOGOKE_DESIGN37_HOST_STDERR_READER_LOCK_FAILED:{error}"))
-            .and_then(|mut reader| match reader.take() {
-                None => Ok(()),
-                Some(reader) => reader.join()
-                    .map_err(|_| "GOGOKE_DESIGN37_HOST_STDERR_READER_PANICKED".to_string())?,
-            });
+            .and_then(|mut reader| finish_stderr_reader(&mut reader));
         if let Err(error) = capture { original.push_str(&format!(":{error}")); }
         Err(with_stderr_tail(original, &self.stderr_tail))
     }
@@ -222,17 +218,50 @@ impl Drop for Design37Host {
         }
         if let Ok(child) = self.child.get_mut() {
             for _ in 0..50 {
-                if child.try_wait().ok().flatten().is_some() {
+                if let Ok(Some(status)) = child.try_wait() {
+                    report_closed_host(status, &mut self.stderr_reader, &self.stderr_tail);
                     return;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
             if child.try_wait().ok().flatten().is_none() {
-                let _ = child.kill();
-                let _ = child.wait();
+                if let Err(error) = child.kill() {
+                    eprintln!("GOGOKE_DESIGN37_HOST_CLOSE_KILL_FAILED:WIN32_{}:{error}", error.raw_os_error().unwrap_or(0));
+                }
+                match child.wait() {
+                    Ok(status) => report_closed_host(status, &mut self.stderr_reader, &self.stderr_tail),
+                    Err(error) => eprintln!("GOGOKE_DESIGN37_HOST_CLOSE_WAIT_FAILED:WIN32_{}:{error}", error.raw_os_error().unwrap_or(0)),
+                }
+            } else if let Ok(Some(status)) = child.try_wait() {
+                report_closed_host(status, &mut self.stderr_reader, &self.stderr_tail);
             }
         }
     }
+}
+
+fn finish_stderr_reader(
+    reader: &mut Option<std::thread::JoinHandle<Result<(), String>>>,
+) -> Result<(), String> {
+    match reader.take() {
+        None => Ok(()),
+        Some(reader) => reader.join()
+            .map_err(|_| "GOGOKE_DESIGN37_HOST_STDERR_READER_PANICKED".to_string())?,
+    }
+}
+
+/// Closing the UI is also a host exit observation. Do not discard the exact
+/// host's final stderr when no later request can call `is_running`.
+fn report_closed_host(
+    status: std::process::ExitStatus,
+    reader: &mut Mutex<Option<std::thread::JoinHandle<Result<(), String>>>>,
+    tail: &Arc<Mutex<Vec<u8>>>,
+) {
+    let capture = reader.get_mut()
+        .map_err(|error| format!("GOGOKE_DESIGN37_HOST_STDERR_READER_LOCK_FAILED:{error}"))
+        .and_then(finish_stderr_reader);
+    let mut original = format!("GOGOKE_DESIGN37_HOST_EXITED:EXIT_STATUS:{status}");
+    if let Err(error) = capture { original.push_str(&format!(":{error}")); }
+    eprintln!("{}", with_stderr_tail(original, tail));
 }
 
 #[cfg(target_os = "windows")]
