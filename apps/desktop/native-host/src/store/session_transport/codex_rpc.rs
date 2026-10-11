@@ -95,6 +95,11 @@ pub(crate) enum Command {
         cwd: String,
         model: String,
     },
+    /// Fixed 0.160 persists a loaded Paginated thread before returning full turns.
+    /// This is the new empty-thread handshake, never a user/model input.
+    ThreadReadEmptyPersistent {
+        thread_id: String,
+    },
     TurnStart {
         thread_id: String,
         cwd: String,
@@ -145,6 +150,7 @@ impl Command {
             Self::ThreadStart { .. } | Self::ThreadStartHostTools { .. } |
                 Self::ThreadStartSideTools { .. } | Self::ThreadStartSecretaryTools { .. } => Some("thread/start"),
             Self::ThreadResume { .. } => Some("thread/resume"),
+            Self::ThreadReadEmptyPersistent { .. } => Some("thread/read"),
             Self::TurnStart { .. } => Some("turn/start"),
             Self::TurnSteer { .. } => Some("turn/steer"),
             Self::TurnInterrupt { .. } => Some("turn/interrupt"),
@@ -298,6 +304,13 @@ impl Command {
                     ("cwd", s(cwd)),
                     ("model", s(model)),
                     ("config", memory_off()),
+                ]));
+            }
+            Self::ThreadReadEmptyPersistent { thread_id } => {
+                required(thread_id, "thread id")?;
+                return Ok(obj([
+                    ("threadId", s(thread_id)),
+                    ("includeTurns", Json::Bool(true)),
                 ]));
             }
             Self::TurnStart {
@@ -617,7 +630,7 @@ pub(crate) fn decode(frame: &[u8], pending: Option<(&RpcId, &Command)>) -> Resul
         }
         Command::ThreadStart { .. } | Command::ThreadStartHostTools { .. } |
             Command::ThreadStartSideTools { .. } | Command::ThreadStartSecretaryTools { .. } |
-            Command::ThreadResume { .. } => {
+            Command::ThreadResume { .. } | Command::ThreadReadEmptyPersistent { .. } => {
             let thread = object(field(object(result, "thread result")?, "thread")?, "thread")?;
             let found = string(field(thread, "id")?, "thread id")?;
             let actual_cwd = string(field(thread, "cwd")?, "thread cwd")?;
@@ -627,6 +640,9 @@ pub(crate) fn decode(frame: &[u8], pending: Option<(&RpcId, &Command)>) -> Resul
                 if &found != thread_id {
                     return Err(RpcError::Invalid("thread id mismatch"));
                 }
+            }
+            if let Command::ThreadReadEmptyPersistent { thread_id } = command {
+                verify_empty_persistent_paginated_thread(frame, thread_id)?;
             }
             Ok(Reply::Thread {
                 id,
@@ -712,6 +728,24 @@ pub(crate) fn decode(frame: &[u8], pending: Option<(&RpcId, &Command)>) -> Resul
             Err(RpcError::Invalid("unexpected response"))
         }
     }
+}
+
+/// Applies only to a new native open/read, not historical start/resume bytes.
+/// A preallocated path is deliberately not accepted as durability evidence.
+pub(crate) fn verify_empty_persistent_paginated_thread(
+    frame: &[u8], expected_thread: &str,
+) -> Result<(), RpcError> {
+    let value = Parser::parse(std::str::from_utf8(frame_body(frame)?)?)?;
+    let thread = object(field(object(field(object(&value, "thread frame")?, "result")?,
+        "thread result")?, "thread")?, "thread")?;
+    if string(field(thread, "id")?, "thread id")? != expected_thread
+        || string(field(thread, "historyMode")?, "thread history mode")? != "paginated"
+        || !matches!(thread.get(&k("ephemeral")), Some(Json::Bool(false)))
+        || !matches!(thread.get(&k("turns")), Some(Json::Array(turns)) if turns.is_empty())
+    {
+        return Err(RpcError::Invalid("new thread is not empty persistent Paginated"));
+    }
+    Ok(())
 }
 
 /// Re-decode only a canonical command and the original matching response kept
@@ -1244,6 +1278,31 @@ fn optional_bool(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn empty_persistent_thread_read_binds_original_ack_and_refuses_other_history() {
+        let id=RpcId::Number(4);
+        let command=Command::ThreadReadEmptyPersistent {thread_id:"original-thread".into()};
+        let encoded=command.encode(Some(&id)).unwrap();
+        assert_eq!(std::str::from_utf8(&encoded).unwrap(),
+            "{\"id\":4,\"method\":\"thread/read\",\"params\":{\"includeTurns\":true,\"threadId\":\"original-thread\"}}\n");
+        let original="{\"id\":4,\"result\":{\"thread\":{\"id\":\"original-thread\",\"cwd\":\"D:/sealed-tree\",\"historyMode\":\"paginated\",\"ephemeral\":false,\"turns\":[]}}}\n";
+        assert!(matches!(decode(original.as_bytes(),Some((&id,&command))).unwrap(),
+            Reply::Thread {thread_id,..} if thread_id=="original-thread"));
+        for invalid in [original.replace("original-thread","other-thread"),
+            original.replace("paginated","legacy"),original.replace("false","true"),
+            original.replace("[]","[{}]"),original.replace("\"id\":4","\"id\":5")] {
+            assert!(decode(invalid.as_bytes(),Some((&id,&command))).is_err());
+        }
+        let remote=b"{\"id\":4,\"error\":{\"code\":-32600,\"message\":\"original persist failure\"}}\n";
+        assert!(matches!(decode(remote,Some((&id,&command))).unwrap(),
+            Reply::RemoteError {raw_frame,..} if raw_frame==remote));
+        // Historic start observations need not expose this new mode contract.
+        let start=Command::ThreadStart {cwd:"D:/sealed-tree".into(),model:"m".into()};
+        let historical=b"{\"id\":4,\"result\":{\"thread\":{\"id\":\"original-thread\",\"cwd\":\"D:/sealed-tree\"}}}\n";
+        assert!(decode(historical,Some((&id,&start))).is_ok());
+        assert!(verify_empty_persistent_paginated_thread(historical,"original-thread").is_err());
+    }
+
     #[test]
     fn side_thread_registers_only_message_tool_and_recovers_exact_original() {
         let id=RpcId::Number(2);

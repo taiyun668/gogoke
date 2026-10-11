@@ -15,6 +15,28 @@ use std::time::{Duration, Instant};
 #[cfg(test)]
 thread_local! {
     static FAIL_AFTER_DURABLE_STOP_BEFORE_CREDENTIAL_REVOKE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static HISTORICAL_UNMATERIALIZED_CODEX_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Reconstructs the old empty-thread source for existing recovery safety tests.
+/// Never enabled by production or by the current empty-thread capability test.
+#[cfg(test)]
+pub(super) struct HistoricalUnmaterializedCodexThreadFixture {
+    _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+#[cfg(test)]
+pub(super) fn historical_unmaterialized_codex_thread_fixture()
+    -> HistoricalUnmaterializedCodexThreadFixture {
+    HISTORICAL_UNMATERIALIZED_CODEX_THREAD.with(|flag| assert!(!flag.replace(true)));
+    HistoricalUnmaterializedCodexThreadFixture {_not_send:std::marker::PhantomData}
+}
+
+#[cfg(test)]
+impl Drop for HistoricalUnmaterializedCodexThreadFixture {
+    fn drop(&mut self) {
+        HISTORICAL_UNMATERIALIZED_CODEX_THREAD.with(|flag| flag.set(false));
+    }
 }
 
 pub(super) struct NativeSession {
@@ -2435,9 +2457,35 @@ impl<'root> ProductDatabase<'root> {
                         else if purpose==SessionPurpose::Secretary {Command::ThreadStartSecretaryTools {cwd,model}}
                         else if host_tools {Command::ThreadStartHostTools {cwd,model}}
                         else {Command::ThreadStart {cwd,model}};
-                    let Some(Reply::Thread {thread_id,..})=self.native_rpc(&key,"thread-start",Some(3),&start)? else {
+                    let started=self.native_rpc_observation(&key,"thread-start",Some(3),&start)?
+                        .ok_or(OrchestrationError::Invalid("native open thread response absent"))?;
+                    let Reply::Thread {thread_id,..}=started.reply else {
                         return Err(OrchestrationError::Invalid("native open thread response"));
                     };
+                    failure(codex_rpc::verify_empty_persistent_paginated_thread(
+                        started.frame.bytes(),&thread_id))?;
+                    // Official fixed 0.160 thread/read materializes the loaded
+                    // empty Paginated thread before H can publish APPLIED open.
+                    // Keep the original request/ACK in the existing RPC/A source.
+                    #[cfg(not(test))]
+                    let persist_empty=true;
+                    #[cfg(test)]
+                    let persist_empty=HISTORICAL_UNMATERIALIZED_CODEX_THREAD.with(|flag| !flag.get());
+                    if persist_empty {
+                        let run=self.native_sessions.get_mut(&key)
+                            .ok_or(OrchestrationError::AccessDenied)?;
+                        let persist_id=run.next_rpc_id;
+                        run.next_rpc_id=persist_id.checked_add(1)
+                            .ok_or(OrchestrationError::Invalid("native RPC ordinal overflow"))?;
+                        let Some(Reply::Thread {thread_id:observed,..})=self.native_rpc(
+                            &key,"thread-persist",Some(persist_id),
+                            &Command::ThreadReadEmptyPersistent {thread_id:thread_id.clone()})? else {
+                            return Err(OrchestrationError::Invalid("native empty thread persistence response"));
+                        };
+                        if observed!=thread_id {
+                            return Err(OrchestrationError::Invalid("native empty thread persistence id mismatch"));
+                        }
+                    }
                     Some(thread_id)
                 },
                 "claude" => {

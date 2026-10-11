@@ -203,14 +203,47 @@ fn actual_pinned_codex_same_seat_work_and_side_resume_preserve_authorization_wit
             "ambiguous turn candidates remain visible to the caller's refusal");
         product.native_sessions.get_mut(&main_key).unwrap().turn_id=prior_main;
         product.native_sessions.get_mut(&side_key).unwrap().turn_id=prior_side;
-        for session in ["sessionA","sideSession"] {
+        let original_threads:Vec<_>=["sessionA","sideSession"].into_iter().map(|session| {
             let key=("projectA".to_owned(),session.to_owned());
             let thread=product.native_sessions.get(&key).unwrap().thread_id.clone().unwrap();
-            let ack=product.native_append_rpc(&key,&format!("dual-history-{session}"),&thread,
-                "cloud no-model durable history marker".into()).unwrap();
-            assert!(matches!(ack,Some(Reply::Ack {..})),"actual history response: {ack:?}");
-        }
+            let history=Statement::prepare(product.connection.as_ptr(),
+                "SELECT history_id FROM main.gogoke_v37_instance_histories WHERE instance_id='instanceA' AND domain_id='projectA' AND session_id=?1 AND state='READY'").unwrap();
+            history.bind_text(1,session).unwrap();assert!(history.step_row().unwrap());
+            let history_id=history.column_text(0).unwrap();assert!(!history.step_row().unwrap());drop(history);
+            let directory=instance::resolve_private_history_directory(&product.connection,
+                product.root,&history_id).unwrap();
+            let physical=actual_saved_thread_files(&directory.path,&thread);
+            assert_eq!(physical.len(),1,
+                "original fixed CLI must materialize empty rollout before APPLIED open");
+            let metadata=std::fs::symlink_metadata(&physical[0]).unwrap();
+            assert!(metadata.is_file() && metadata.len()>0,"real CLI SessionMeta must exist on disk");
+            eprintln!("GOGOKE_EMPTY_THREAD_PHYSICAL session={session} thread={thread} path={:?} bytes={} modified={:?}",
+                physical[0],metadata.len(),metadata.modified().unwrap());
+            let source=Statement::prepare(product.connection.as_ptr(),
+                "SELECT s.command_hex,hex(r.raw_bytes) FROM main.gogoke_v37_rpc_steps s JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor WHERE s.domain_id='projectA' AND s.session_id=?1 AND s.step_id='thread-persist' AND s.phase='OBSERVED' AND r.state='NO_EVENT'").unwrap();
+            source.bind_text(1,session).unwrap();assert!(source.step_row().unwrap(),"original persistence RPC/A ACK absent");
+            let command=empty_thread_frame(&source.column_text(0).unwrap()).unwrap();
+            assert!(command.canonical().contains("\"includeTurns\":true"));
+            let ack=unhex(&source.column_text(1).unwrap()).unwrap();
+            eprintln!("GOGOKE_EMPTY_THREAD_ORIGINAL_READ session={session} request={} response={}",
+                String::from_utf8(unhex(&source.column_text(0).unwrap()).unwrap()).unwrap(),
+                std::str::from_utf8(&ack).unwrap());
+            codex_rpc::verify_empty_persistent_paginated_thread(&ack,&thread).unwrap();
+            assert!(!source.step_row().unwrap());drop(source);
+            let input=Statement::prepare(product.connection.as_ptr(),
+                "SELECT command_hex FROM main.gogoke_v37_rpc_steps WHERE domain_id='projectA' AND session_id=?1").unwrap();
+            input.bind_text(1,session).unwrap();
+            while input.step_row().unwrap() {
+                let Json::Object(command)=empty_thread_frame(&input.column_text(0).unwrap()).unwrap() else {panic!("original command object");};
+                let Some(Json::String(method))=command.get(&JsonString::from_str("method")) else {panic!("original command method");};
+                let method=method.to_well_formed_string().unwrap();
+                assert!(!method.starts_with("turn/") && method!="thread/inject_items",
+                    "empty original thread must have no model input or injected history");
+            }
+            thread
+        }).collect();
         for (index,session) in ["sessionA","sideSession","sessionA","sideSession"].into_iter().enumerate() {
+            let key=("projectA".to_owned(),session.to_owned());
             let sibling=if session=="sessionA" {"sideSession"} else {"sessionA"};
             let old=runtime::observe_claim_bound(&product.connection,"projectA","seatA",session).unwrap().unwrap();
             let sibling_before=runtime::observe_claim_bound(&product.connection,"projectA","seatA",sibling).unwrap().unwrap();
@@ -225,6 +258,22 @@ fn actual_pinned_codex_same_seat_work_and_side_resume_preserve_authorization_wit
             let current=runtime::observe_claim_bound(&product.connection,"projectA","seatA",session).unwrap().unwrap();
             assert_ne!(current.generation,old.generation);
             assert_ne!(current.process_operation_id,old.process_operation_id);
+            let original_index=if session=="sessionA" {0} else {1};
+            assert_eq!(product.native_sessions.get(&key).unwrap().thread_id.as_deref(),
+                Some(original_threads[original_index].as_str()),"cold actual CLI resumes the original empty thread ID");
+            let resume_source=Statement::prepare(product.connection.as_ptr(),
+                "SELECT s.command_hex,hex(r.raw_bytes) FROM main.gogoke_v37_rpc_steps s JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor WHERE s.process_operation_id=?1 AND s.step_id=?2 AND s.phase='OBSERVED' AND r.state='NO_EVENT'").unwrap();
+            let resumed_operation=current.process_operation_id.as_deref().unwrap();
+            resume_source.bind_text(1,resumed_operation).unwrap();
+            resume_source.bind_text(2,&format!("{resumed_operation}-thread-resume")).unwrap();
+            assert!(resume_source.step_row().unwrap(),"cold original resume RPC/A response absent");
+            let resumed_ack=unhex(&resume_source.column_text(1).unwrap()).unwrap();
+            codex_rpc::verify_empty_persistent_paginated_thread(&resumed_ack,
+                &original_threads[original_index]).unwrap();
+            eprintln!("GOGOKE_EMPTY_THREAD_ORIGINAL_COLD_RESUME session={session} request={} response={}",
+                String::from_utf8(unhex(&resume_source.column_text(0).unwrap()).unwrap()).unwrap(),
+                std::str::from_utf8(&resumed_ack).unwrap());
+            assert!(!resume_source.step_row().unwrap());drop(resume_source);
             assert_eq!(seat::get(&product.connection,"projectA","seatA").unwrap().as_ref(),Some(&original_seat));
             assert_eq!(runtime::observe_claim_bound(&product.connection,"projectA","seatA",sibling).unwrap().unwrap(),sibling_before);
             for (i,name) in ["sessionA","sideSession"].into_iter().enumerate() {
@@ -492,6 +541,11 @@ fn empty_initial_secretary_release_refuses_input_source_and_claim_drift() {
         "emptySeat",&created.incarnation).is_ok());
     for (verb,id,revision) in [("admission-reserve","empty-reserve",0),
         ("admission-commit","empty-commit",1),("open","empty-open",2)] {
+        // Historical failed-resume safety input: the old source did not persist
+        // its new empty thread. This is not the new capability's default path.
+        let _historical=if verb=="open" {
+            Some(historical_unmaterialized_codex_thread_fixture())
+        } else {None};
         let request=operation_in_domain("global","K-SESSION",verb,id,"emptySession",revision,"{}");
         let raw=product.dispatch_user_request(&request).unwrap();
         assert_eq!(h::decode_receipt(&raw).unwrap().status,V37Status::Applied,
@@ -783,7 +837,7 @@ fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_c
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&collision).unwrap()).unwrap().status,V37Status::Conflict);
     let row = Statement::prepare(product.connection.as_ptr(), "SELECT count(*) FROM main.gogoke_v37_rpc_steps WHERE phase='OBSERVED'").unwrap();
     assert!(row.step_row().unwrap());
-    assert_eq!(row.column_text(0).unwrap(), "3", "initialize, effective config and real thread response; initialized has no ACK");
+    assert_eq!(row.column_text(0).unwrap(), "4", "initialize, effective config, real thread start and persistence response; initialized has no ACK");
     drop(row);
     let native_flags=operation("K-SESSION","capability-probe","loaded-features-open","sessionA",3,
         r#"{"generation":"2"}"#);
@@ -1424,7 +1478,7 @@ fn actual_pinned_codex_two_scope_file_history_and_stopped_revocation_without_mod
             "SELECT count(*) FROM main.gogoke_v37_rpc_steps WHERE domain_id=?1 AND session_id=?2 AND phase='OBSERVED'").unwrap();
         observed.bind_text(1, domain).unwrap(); observed.bind_text(2, session_id).unwrap();
         assert!(observed.step_row().unwrap());
-        assert_eq!(observed.column_text(0).unwrap(), "3", "original initialize/config/thread-start replies");
+        assert_eq!(observed.column_text(0).unwrap(), "4", "original initialize/config/thread-start/thread-read persistence replies");
     }
     let key_a = ("projectA".to_owned(), "sessionA".to_owned());
     let key_b = ("projectB".to_owned(), "sessionB".to_owned());
