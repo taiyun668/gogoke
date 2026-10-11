@@ -136,7 +136,7 @@ async function readback() {
     proof.normalClosePid === journal.closes.at(-1)?.pid &&
     proof.measurementPreservedDatabaseBytes === true && proof.acceptance === false &&
     proof.directCaseEvidence === false && Array.isArray(proof.cases) &&
-    proof.cases.length === (c.onlyMainWrite === true ? 1 : 2),
+    proof.cases.length === (c.onlyMainWrite === true || c.mainAndOutsideOnly === true ? 1 : 2),
   'V11 immutable readback is not bound to the original normal close');
   journal.readbacks.push({ phase: 'file', file, sha256: sha256(output), acceptance: false });
   product.save();
