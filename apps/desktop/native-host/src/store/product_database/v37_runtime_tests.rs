@@ -514,39 +514,13 @@ fn empty_initial_secretary_release_refuses_input_source_and_claim_drift() {
     let original=claim(&product);
     assert_eq!(original[2],"STOPPED");assert!(!original[3].is_empty());
     assert!(product.original_empty_secretary_thread("emptySession",&original[0],&original[1])
-        .unwrap().is_some());
+        .unwrap().is_none(),"initial STOPPED alone cannot qualify without original failed resume");
+    assert!(!product.settle_original_empty_secretary_thread("emptySession",&original[0],&original[1]).unwrap());
+    assert_eq!(claim(&product),original,"pre-resume original claim remains STOPPED");
     let source=empty_thread_rows(&product.connection,
         "SELECT ticket,custodian_nonce FROM main.gogoke_coordination_process_custody
           WHERE operation_id=?1",&[&original[4]],2).unwrap();
     assert_eq!(source.len(),1);
-    let intent=Statement::prepare(product.connection.as_ptr(),
-        "INSERT INTO main.gogoke_v37_h_stdin_journal(domain_id,request_id,operation,ticket,
-            process_operation_id,custodian_nonce,session_id,generation,request_hex,phase,
-            expected_revision) VALUES('global','empty-intent','send',?1,?2,?3,
-            'emptySession','2','00','PREPARED','4')").unwrap();
-    intent.bind_text(1,&source[0][0]).unwrap();intent.bind_text(2,&original[4]).unwrap();
-    intent.bind_text(3,&source[0][1]).unwrap();intent.step_done().unwrap();drop(intent);
-    assert!(!product.settle_original_empty_secretary_thread("emptySession",&original[0],&original[1]).unwrap());
-    assert_eq!(claim(&product),original,"any input intent leaves original StopFact and claim");
-    product.connection.execute("DELETE FROM main.gogoke_v37_h_stdin_journal
-        WHERE request_id='empty-intent'").unwrap();
-    let wrong=Statement::prepare(product.connection.as_ptr(),
-        "UPDATE main.gogoke_v37_rpc_steps SET ticket='wrong-source'
-          WHERE domain_id='global' AND session_id='emptySession' AND step_id LIKE '%config-read%'").unwrap();
-    wrong.step_done().unwrap();drop(wrong);
-    assert!(!product.settle_original_empty_secretary_thread("emptySession",&original[0],&original[1]).unwrap());
-    assert_eq!(claim(&product),original,"wrong source cannot release");
-    let restore=Statement::prepare(product.connection.as_ptr(),
-        "UPDATE main.gogoke_v37_rpc_steps SET ticket=?1
-          WHERE domain_id='global' AND session_id='emptySession' AND step_id LIKE '%config-read%'").unwrap();
-    restore.bind_text(1,&source[0][0]).unwrap();restore.step_done().unwrap();drop(restore);
-    product.connection.execute("UPDATE main.gogoke_v37_h_claim SET stop_fact_id='sha256:changed'
-        WHERE domain_id='global' AND session_id='emptySession'").unwrap();
-    assert!(!product.settle_original_empty_secretary_thread("emptySession",&original[0],&original[1]).unwrap());
-    let restore=Statement::prepare(product.connection.as_ptr(),
-        "UPDATE main.gogoke_v37_h_claim SET stop_fact_id=?1
-          WHERE domain_id='global' AND session_id='emptySession'").unwrap();
-    restore.bind_text(1,&original[3]).unwrap();restore.step_done().unwrap();drop(restore);
     let resume=operation_in_domain("global","K-SESSION","resume","empty-failed-resume",
         "emptySession",original[1].parse().unwrap(),r#"{"generation":"2"}"#);
     let resumed=product.dispatch_user_request(&resume).unwrap();
@@ -576,6 +550,38 @@ fn empty_initial_secretary_release_refuses_input_source_and_claim_drift() {
     assert!(profile.iter().any(|p|p.binding_id==child[0][5] && p.state=="REVOKED"));
     assert!(product.original_empty_secretary_thread("emptySession",&pending[0],&pending[1])
         .unwrap().is_some(),"only original typed no-rollout and completed F revoke qualify");
+    let intent=Statement::prepare(product.connection.as_ptr(),
+        "INSERT INTO main.gogoke_v37_h_stdin_journal(domain_id,request_id,operation,ticket,
+            process_operation_id,custodian_nonce,session_id,generation,request_hex,phase,
+            expected_revision) VALUES('global','empty-intent','send',?1,?2,?3,
+            'emptySession','2','00','PREPARED','4')").unwrap();
+    intent.bind_text(1,&source[0][0]).unwrap();intent.bind_text(2,&original[4]).unwrap();
+    intent.bind_text(3,&source[0][1]).unwrap();intent.step_done().unwrap();drop(intent);
+    assert!(!product.settle_original_empty_secretary_thread("emptySession",&pending[0],&pending[1]).unwrap());
+    assert_eq!(claim(&product),pending,"any input intent leaves original StopFact and claim");
+    product.connection.execute("DELETE FROM main.gogoke_v37_h_stdin_journal
+        WHERE request_id='empty-intent'").unwrap();
+    let wrong=Statement::prepare(product.connection.as_ptr(),
+        "UPDATE main.gogoke_v37_rpc_steps SET ticket='wrong-source'
+          WHERE domain_id='global' AND session_id='emptySession' AND generation='2'
+            AND step_id LIKE '%config-read%'").unwrap();
+    wrong.step_done().unwrap();drop(wrong);
+    assert!(!product.settle_original_empty_secretary_thread("emptySession",&pending[0],&pending[1]).unwrap());
+    assert_eq!(claim(&product),pending,"wrong source cannot release");
+    let restore=Statement::prepare(product.connection.as_ptr(),
+        "UPDATE main.gogoke_v37_rpc_steps SET ticket=?1
+          WHERE domain_id='global' AND session_id='emptySession' AND generation='2'
+            AND step_id LIKE '%config-read%'").unwrap();
+    restore.bind_text(1,&source[0][0]).unwrap();restore.step_done().unwrap();drop(restore);
+    product.connection.execute("UPDATE main.gogoke_v37_h_claim SET stop_fact_id='sha256:changed'
+        WHERE domain_id='global' AND session_id='emptySession'").unwrap();
+    assert!(!product.settle_original_empty_secretary_thread("emptySession",&pending[0],&pending[1]).unwrap());
+    let restore=Statement::prepare(product.connection.as_ptr(),
+        "UPDATE main.gogoke_v37_h_claim SET stop_fact_id=?1
+          WHERE domain_id='global' AND session_id='emptySession'").unwrap();
+    restore.bind_text(1,&original[3]).unwrap();restore.step_done().unwrap();drop(restore);
+    assert!(product.original_empty_secretary_thread("emptySession",&pending[0],&pending[1])
+        .unwrap().is_some(),"restored original facts permit exact classification");
     product.connection.execute("UPDATE main.v37_ledger_raw_source
         SET raw_bytes=CAST(replace(CAST(raw_bytes AS TEXT),'no rollout found','other remote error') AS BLOB)
         WHERE domain_id='global' AND session_id='emptySession' AND generation='3'
