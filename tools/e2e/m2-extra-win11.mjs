@@ -372,9 +372,10 @@ async function runRules() {
   for (const selection of selections) await prepareRulesWorktree(selection, 'V08');
   if (!baselineReadback) await product.closeNormally();
   if (!baselineReadback) baselineReadback = await rulesReadback('before');
-  if (crossProjectOnly) await product.closeNormally();
-  await product.launch();
-  await product.instances();
+  if (!crossProjectOnly) {
+    await product.launch();
+    await product.instances();
+  }
   const submitterSession = await openUserSession(...['seatId', 'instanceId', 'worktreeId']
     .map(name => rules.submitter[name]), 'V08 submitter');
   const reviewerSession = await openUserSession(...['seatId', 'instanceId', 'worktreeId']
