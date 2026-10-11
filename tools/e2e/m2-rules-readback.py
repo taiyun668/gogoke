@@ -1570,6 +1570,235 @@ def verify_cross_project_only(db, journal, case, result):
     result["state"] = "CROSS_PROJECT_ONLY_DIRECT_EVIDENCE_V08_INCOMPLETE"
 
 
+def original_host_recipient(db, domain, repository, operations, item, template):
+    selection = item["selection"]
+    seat_id, instance_id, worktree_id = (selection[key] for key in ("seatId", "instanceId", "worktreeId"))
+    create, bind, tree_create, tree_register = (operations[item[key]] for key in
+        ("createRequestId", "bindRequestId", "createWorktreeRequestId", "registerWorktreeRequestId"))
+    expected = ((create, "K-SEAT", "create-from-template", seat_id, "0",
+                 {"layer": "USER", "templateId": template["templateId"]}),
+                (bind, "K-SEAT", "bind-instance", seat_id, "1", {"instanceId": instance_id}),
+                (tree_create, "K-WORKTREE", "create", worktree_id, "0",
+                 {"repositoryId": repository, "seatId": seat_id, "layout": "single"}),
+                (tree_register, "K-WORKTREE", "register", worktree_id, "1", {}))
+    for entry, family, operation, target, revision, payload in expected:
+        request, receipt = entry["request"], entry["receipt"]
+        check(json.loads(entry["rawFrame"]) == request and
+              request == {"schema": "gogoke.37.operations.v1", "family": family,
+                          "operation": operation, "requestId": request["requestId"],
+                          "domainId": domain, "targetId": target,
+                          "expectedRevision": revision, "payload": payload} and
+              receipt["schema"] == request["schema"] and receipt["family"] == family and
+              receipt["operation"] == operation and receipt["requestId"] == request["requestId"] and
+              receipt["targetId"] == target and receipt["previousRevision"] == revision and
+              receipt["revision"] == str(int(revision) + 1) and receipt["status"] == "APPLIED",
+              "Original Host E/F request bytes and APPLIED receipt differ")
+    settings = template["settings"]
+    check(create["receipt"]["result"] == {"generation": "1", "instanceId": None,
+          "kind": "LONG", "layer": "USER", "settings": settings, "state": "IDLE",
+          "templateId": template["templateId"]} and
+          bind["receipt"]["result"] == {"generation": "2", "instanceId": instance_id,
+          "kind": "LONG", "layer": "USER", "settings": settings, "state": "IDLE",
+          "templateId": template["templateId"]},
+          "Original Host E create/bind result differs from immutable USER template")
+    first = one(db, "SELECT * FROM gogoke_v37_seat_operations WHERE domain_id=? AND request_id=?",
+                (domain, create["request"]["requestId"]))
+    second = one(db, "SELECT * FROM gogoke_v37_seat_operations WHERE domain_id=? AND request_id=?",
+                 (domain, bind["request"]["requestId"]))
+    create_fp = native_fingerprint(("create", domain, seat_id, template["templateId"], "",
+                                    "LONG", "USER", "", "", ""), create["rawFrame"])
+    bind_fp = native_fingerprint(("bind-instance", domain, seat_id, "1", "1", instance_id,
+                                  "", "", ""), bind["rawFrame"])
+    check(first["fingerprint"] == create_fp and second["fingerprint"] == bind_fp and
+          first["seat_id"] == second["seat_id"] == seat_id and
+          first["incarnation"] == second["incarnation"] and first["incarnation"] and
+          first["layer"] == second["layer"] == "USER" and
+          first["parent_seat_id"] is None and second["parent_seat_id"] is None and
+          first["kind"] == second["kind"] == "LONG" and
+          first["instance_id"] == "" and second["instance_id"] == instance_id and
+          first["state"] == second["state"] == "IDLE" and
+          (first["revision"], first["generation"], second["revision"], second["generation"]) == (1, 1, 2, 2),
+          "Original Host E operation fingerprint/incarnation/generation differs")
+    for entry in (create, bind):
+        snap = one(db, "SELECT template_id,settings_json FROM gogoke_v37_seat_operation_snapshots "
+                   "WHERE domain_id=? AND request_id=?", (domain, entry["request"]["requestId"]))
+        check(snap["template_id"] == template["templateId"] and
+              json.loads(snap["settings_json"]) == settings,
+              "Original Host E operation snapshot differs from immutable template")
+    current = one(db, "SELECT * FROM gogoke_v37_seats WHERE domain_id=? AND seat_id=?",
+                  (domain, seat_id))
+    current_settings = one(db, "SELECT template_id,settings_json FROM gogoke_v37_seat_settings "
+                           "WHERE domain_id=? AND seat_id=?", (domain, seat_id))
+    check(current["incarnation"] == first["incarnation"] and current["layer"] == "USER" and
+          current["parent_seat_id"] is None and current["kind"] == "LONG" and
+          current["instance_id"] == instance_id and current["state"] != "RECLAIMED" and
+          current_settings["template_id"] == template["templateId"] and
+          json.loads(current_settings["settings_json"]) == settings,
+          "Current Host E identity/settings no longer match original preparation")
+    worktree_op = one(db, "SELECT * FROM gogoke_v37_worktree_operations WHERE request_id=?",
+                      (tree_create["request"]["requestId"],))
+    lifecycle_op = one(db, "SELECT * FROM gogoke_v37_worktree_lifecycle_ops WHERE request_id=?",
+                       (tree_register["request"]["requestId"],))
+    tree = one(db, "SELECT * FROM gogoke_v37_worktrees WHERE domain_id=? AND worktree_id=?",
+               (domain, worktree_id))
+    lifecycle = one(db, "SELECT * FROM gogoke_v37_worktree_lifecycle WHERE worktree_id=?",
+                    (worktree_id,))
+    check(settings["permissionTier"] == "NETWORKED_WRITE" and
+          worktree_op["request_hash"] == digest(tree_create["rawFrame"].encode()) and
+          worktree_op["phase"] == "REGISTERED" and
+          worktree_op["repository_id"] == repository and worktree_op["domain_id"] == domain and
+          worktree_op["seat_id"] == seat_id and worktree_op["worktree_id"] == worktree_id and
+          worktree_op["seat_incarnation"] == first["incarnation"] and
+          (worktree_op["seat_generation"], worktree_op["seat_revision"]) == (2, 2) and
+          worktree_op["instance_id"] == instance_id and
+          worktree_op["permission_tier"] == "NetworkedWrite" and
+          lifecycle_op["request_hash"] == digest(tree_register["rawFrame"].encode()) and
+          lifecycle_op["worktree_id"] == worktree_id and lifecycle_op["operation"] == "REGISTER" and
+          lifecycle_op["phase"] == "APPLIED" and lifecycle_op["cause"] == "" and
+          lifecycle["state"] == "REGISTERED" and lifecycle["revision"] == 2 and
+          tree["repository_id"] == repository and tree["seat_id"] == seat_id and
+          tree["seat_incarnation"] == first["incarnation"] and tree["instance_id"] == instance_id and
+          tree["path_id"] == worktree_op["path_id"] and
+          (tree["seat_generation"], tree["seat_revision"]) == (2, 2) and
+          tree["permission_tier"] == "NetworkedWrite" and tree["state"] == "REGISTERED" and
+          tree["baseline_commit"] == tree_create["receipt"]["result"]["baselineCommit"] and
+          not select(db, "SELECT 1 FROM gogoke_v37_worktree_members WHERE worktree_id=?", (worktree_id,)),
+          "Original Host SINGLE F operation/lifecycle/current binding differs")
+    check(tree_create["receipt"]["result"] == {"baselineCommit": tree["baseline_commit"],
+          "classification": "SINGLE", "repositoryId": repository, "seatId": seat_id,
+          "spaceId": worktree_id, "state": "CREATED", "worktreeId": worktree_id} and
+          tree_register["receipt"]["result"] == {"worktreeId": worktree_id},
+          "Original Host F create/register result differs from production F state")
+    return {"selection": selection, "incarnation": first["incarnation"],
+            "baselineCommit": tree["baseline_commit"],
+            "originalRequestIds": [entry["request"]["requestId"] for entry in
+                                   (create, bind, tree_create, tree_register)]}
+
+
+def host_recipient_reuse_snapshot(db, journal, preparations, template, phase):
+    reference = journal.get("hostRecipientReuse")
+    check(isinstance(reference, dict) and set(reference) ==
+          {"originalJournal", "originalJournalSha256"} and
+          Path(reference["originalJournal"]).is_absolute() and
+          re.fullmatch(r"[a-f0-9]{64}", reference["originalJournalSha256"]),
+          "Host-only reuse needs a pinned absolute original preparation journal")
+    original_path = Path(reference["originalJournal"]).resolve(strict=True)
+    check(original_path != Path(sys.argv[3]).resolve(strict=True),
+          "Host-only reuse cannot use its own current journal as prior preparation")
+    original_bytes = original_path.read_bytes()
+    check(digest(original_bytes) == reference["originalJournalSha256"],
+          "Original failed Host preparation journal bytes changed")
+    original = json.loads(original_bytes)
+    domain, repository = journal["domainId"], journal["repositoryId"]
+    check(original.get("schema") == journal["schema"] and original.get("domainId") == domain and
+          original.get("repositoryId") == repository and
+          original.get("rulesSelection") == "HOST_BUSY_TO_IDLE_ONLY" and
+          original.get("state") == "FAIL_ORIGINAL_REQUESTS_RETAINED" and
+          original.get("v08") == "FAIL_ORIGINAL_CASE_RETAINED" and
+          not original.get("rulesCases") and not original.get("sessions") and
+          len(original.get("hostUserPreparations", [])) == len(preparations) == 2,
+          "Original failed Host journal is not exactly the preparation-only A subject")
+    original_operations = {row["request"]["requestId"]: row for row in original["operations"]
+                           if row.get("request", {}).get("requestId")}
+    current_operations = {row["request"]["requestId"]: row for row in journal["operations"]
+                          if row.get("request", {}).get("requestId")}
+    check(len(original_operations) == sum(bool(row.get("request", {}).get("requestId"))
+                                          for row in original["operations"]) and
+          len(current_operations) == sum(bool(row.get("request", {}).get("requestId"))
+                                         for row in journal["operations"]),
+          "Host original/current request IDs must be unique")
+    summaries = []
+    for old, fresh in zip(original["hostUserPreparations"], preparations):
+        selection = old["selection"]
+        check(fresh.get("mode") == "REUSE_PREPARED" and fresh.get("selection") == selection and
+              old.get("templateId") == fresh.get("templateId") == template["templateId"] and
+              set(old) == {"selection", "templateId", "createRequestId", "bindRequestId",
+                           "createWorktreeRequestId", "registerWorktreeRequestId"} and
+              set(fresh) == {"mode", "selection", "templateId", "cardRequestId", "treeRequestId"},
+              "Fresh Host recipient selection must be an explicit read of the pinned original E/F")
+        summary = original_host_recipient(db, domain, repository, original_operations, old, template)
+        seat_id, instance_id, worktree_id = (selection[key] for key in
+                                             ("seatId", "instanceId", "worktreeId"))
+        mutations = [row for row in journal["operations"] if
+                     row["request"].get("targetId") in (seat_id, worktree_id) and
+                     (row["request"].get("family"), row["request"].get("operation")) in
+                     {("K-SEAT", "create-from-template"), ("K-SEAT", "bind-instance"),
+                      ("K-WORKTREE", "create"), ("K-WORKTREE", "register")}]
+        check(not mutations and not any(key in current_operations for key in summary["originalRequestIds"]),
+              "Reused Host recipient must not be recreated, rebound or copied into the new journal")
+        card, graph = (current_operations[fresh[key]] for key in ("cardRequestId", "treeRequestId"))
+        for entry, family, operation, target in ((card, "K-SEAT", "state-card", seat_id),
+                                                  (graph, "K-WORKTREE", "graph-query", worktree_id)):
+            req, receipt = entry["request"], entry["receipt"]
+            check(json.loads(entry["rawFrame"]) == req and req["schema"] ==
+                  "gogoke.37.operations.v1" and req["family"] == family and
+                  req["operation"] == operation and req["domainId"] == domain and
+                  req["targetId"] == target and req["payload"] == {} and
+                  receipt["schema"] == req["schema"] and receipt["family"] == family and
+                  receipt["operation"] == operation and receipt["requestId"] == req["requestId"] and
+                  receipt["targetId"] == target and receipt["status"] == "APPLIED",
+                  "Fresh Host recipient read request/receipt differs from exact E/F identity")
+        stored_card = one(db, "SELECT request_bytes,receipt_bytes FROM v37_ledger_receipt "
+                          "WHERE family='K-SEAT' AND domain_id=? AND request_id=?",
+                          (domain, card["request"]["requestId"]))
+        check(bytes(stored_card["request_bytes"]).decode() == card["rawFrame"] and
+              json.loads(bytes(stored_card["receipt_bytes"])) == card["receipt"],
+              "Fresh Host E state-card differs from its native read ledger")
+        tree = one(db, "SELECT * FROM gogoke_v37_worktrees WHERE domain_id=? AND worktree_id=?",
+                   (domain, worktree_id))
+        lifecycle = one(db, "SELECT * FROM gogoke_v37_worktree_lifecycle WHERE worktree_id=?",
+                        (worktree_id,))
+        expected_graph = {"classification": "SINGLE", "spaceId": worktree_id,
+                          "state": "REGISTERED", "mergeReason": None, "mergeTargetCommit": None,
+                          "members": [{"worktreeId": worktree_id, "repositoryId": repository,
+                                       "domainId": domain, "seatId": seat_id,
+                                       "instanceId": instance_id,
+                                       "baselineCommit": summary["baselineCommit"]}]}
+        check(graph["receipt"]["result"] == expected_graph and
+              graph["receipt"]["revision"] == graph["receipt"]["previousRevision"] ==
+              graph["request"]["expectedRevision"] == str(lifecycle["revision"]) == "2" and
+              tree["baseline_commit"] == summary["baselineCommit"],
+              "Fresh Host SINGLE F graph is not the current original registered worktree")
+        seat = one(db, "SELECT * FROM gogoke_v37_seats WHERE domain_id=? AND seat_id=?",
+                   (domain, seat_id))
+        card_result = card["receipt"]["result"]
+        check(card_result["layer"] == "USER" and card_result["kind"] == "LONG" and
+              card_result["instanceId"] == instance_id and
+              card_result["templateId"] == template["templateId"] and
+              card_result["settings"] == template["settings"] and
+              card_result["state"] == "IDLE" and
+              card_result["generation"] == "2" and
+              card["receipt"]["revision"] == card["request"]["expectedRevision"] == "2" and
+              seat["incarnation"] == summary["incarnation"],
+              "Fresh Host E state-card is not the original prepared USER incarnation")
+        if phase == "before":
+            check(seat["state"] == "IDLE" and seat["generation"] == seat["revision"] == 2 and
+                  not select(db, "SELECT 1 FROM gogoke_v37_h_process_episode "
+                                 "WHERE domain_id=? AND seat_id=?", (domain, seat_id)) and
+                  not select(db, "SELECT 1 FROM gogoke_v37_h_seat_binding "
+                                 "WHERE domain_id=? AND seat_id=?", (domain, seat_id)) and
+                  not select(db, "SELECT 1 FROM gogoke_v37_effective_seat "
+                                 "WHERE domain_id=? AND seat_id=?", (domain, seat_id)),
+                  "Host recipient had an H/UNKNOWN or advanced E generation before the fresh case")
+        summaries.append(summary)
+    ids = [key for item in summaries for key in item["originalRequestIds"]]
+    targets = {value for item in summaries for value in
+               (item["selection"]["seatId"], item["selection"]["worktreeId"])}
+    original_mutations = [row["request"]["requestId"] for row in original["operations"] if
+                          row["request"].get("targetId") in targets and
+                          (row["request"].get("family"), row["request"].get("operation")) in
+                          {("K-SEAT", "create-from-template"), ("K-SEAT", "bind-instance"),
+                           ("K-WORKTREE", "create"), ("K-WORKTREE", "register")}]
+    check(len(set(ids)) == 8 and len({item["selection"]["seatId"] for item in summaries}) == 2 and
+          len({item["selection"]["worktreeId"] for item in summaries}) == 2 and
+          len(original_mutations) == 8 and set(original_mutations) == set(ids),
+          "Host reuse must pin exactly eight distinct original E/F requests and two recipients")
+    return {"state": "PREPARED_REUSE_CONFIRMED", "originalJournalSha256": reference["originalJournalSha256"],
+            "originalSourceCommit": original["sourceCommit"],
+            "selections": [item["selection"] for item in summaries],
+            "originalRequestIds": ids, "recipients": summaries}
+
+
 def verify_host_only(db, journal, case, result):
     domain = journal["domainId"]
     check(case.get("selection") == journal.get("rulesSelection") == "HOST_BUSY_TO_IDLE_ONLY" and
@@ -1600,7 +1829,9 @@ def verify_host_only(db, journal, case, result):
     template = result["hostTemplateSettings"][0]
     original_template_settings = template["settings"]
     check(template["templateId"] and isinstance(original_template_settings, dict) and
-          "orchestrationScope" not in original_template_settings and
+          set(original_template_settings) == {"effort", "instruction", "model", "permissionTier"} and
+          all(isinstance(original_template_settings[key], str) and original_template_settings[key]
+              for key in original_template_settings) and
           original_template_settings.get("permissionTier") == "NETWORKED_WRITE",
           "Host recipient template must be the original USER template without copied lead orchestration scope")
     ref = case.get("priorCore13")
@@ -1679,13 +1910,28 @@ def verify_host_only(db, journal, case, result):
                        ("worktreeId", selection["worktreeId"])))
                   for member in tree["receipt"]["result"]["members"]),
               "Original A source did not have its read-back E/F membership before fresh H")
-        for entry in (card, tree):
-            stored = one(db, "SELECT request_bytes,receipt_bytes FROM v37_ledger_receipt "
-                         "WHERE family=? AND domain_id=? AND request_id=?",
-                         (entry["request"]["family"], domain, entry["request"]["requestId"]))
-            check(bytes(stored["request_bytes"]).decode() == entry["rawFrame"] and
-                  json.loads(bytes(stored["receipt_bytes"])) == entry["receipt"],
-                  "Source E/F read receipt differs from native ledger")
+        stored = one(db, "SELECT request_bytes,receipt_bytes FROM v37_ledger_receipt "
+                     "WHERE family='K-SEAT' AND domain_id=? AND request_id=?",
+                     (domain, card["request"]["requestId"]))
+        check(bytes(stored["request_bytes"]).decode() == card["rawFrame"] and
+              json.loads(bytes(stored["receipt_bytes"])) == card["receipt"],
+              "Source E state-card read differs from its native ledger")
+        source_tree = one(db, "SELECT * FROM gogoke_v37_worktrees WHERE domain_id=? AND worktree_id=?",
+                          (domain, selection["worktreeId"]))
+        source_lifecycle = one(db, "SELECT * FROM gogoke_v37_worktree_lifecycle WHERE worktree_id=?",
+                               (selection["worktreeId"],))
+        check(json.loads(tree["rawFrame"]) == tree["request"] and
+              tree["receipt"]["result"] == {"classification": "SINGLE", "state": "REGISTERED",
+              "spaceId": selection["worktreeId"], "mergeReason": None, "mergeTargetCommit": None,
+              "members": [{"worktreeId": selection["worktreeId"],
+                           "repositoryId": journal["repositoryId"], "domainId": domain,
+                           "seatId": selection["seatId"], "instanceId": selection["instanceId"],
+                           "baselineCommit": source_tree["baseline_commit"]}]} and
+              source_lifecycle["state"] == "REGISTERED" and source_lifecycle["revision"] == 2 and
+              source_tree["state"] == "REGISTERED" and
+              source_tree["seat_id"] == selection["seatId"] and
+              source_tree["instance_id"] == selection["instanceId"],
+              "Source F graph-query is not the current native SINGLE F state")
         source_settings = card["receipt"]["result"].get("settings", {})
         check(card["receipt"]["result"].get("templateId") == template["templateId"] and
               source_settings.get("model") == original_template_settings.get("model") and
@@ -1701,54 +1947,24 @@ def verify_host_only(db, journal, case, result):
           "Host-only recipient IDs must be two new disjoint USER E/F identities")
     preparations = journal.get("hostUserPreparations", [])
     check(len(preparations) == 2 and [row["selection"] for row in preparations] == recipients,
-          "Two original USER recipient creation/bind/F preparations required")
-    for item in preparations:
-        selection = item["selection"]
-        create, bind, tree_create, tree_register = (operations[item[key]] for key in
-            ("createRequestId", "bindRequestId", "createWorktreeRequestId", "registerWorktreeRequestId"))
-        check(create["request"]["family"] == "K-SEAT" and
-              create["request"]["operation"] == "create-from-template" and
-              create["request"]["targetId"] == selection["seatId"] and
-              create["request"]["expectedRevision"] == "0" and
-              create["request"]["payload"] == {"layer": "USER", "templateId": item["templateId"]} and
-              create["receipt"]["status"] == "APPLIED" and
-              create["receipt"]["result"]["layer"] == "USER" and
-              create["receipt"]["result"]["kind"] == "LONG" and
-              create["receipt"]["result"]["instanceId"] is None and
-              create["receipt"]["result"]["templateId"] == template["templateId"] == item["templateId"] and
-              create["receipt"]["result"]["settings"] == original_template_settings and
-              bind["request"]["family"] == "K-SEAT" and bind["request"]["operation"] == "bind-instance" and
-              bind["request"]["targetId"] == selection["seatId"] and
-              bind["request"]["expectedRevision"] == create["receipt"]["revision"] and
-              bind["request"]["payload"] == {"instanceId": selection["instanceId"]} and
-              bind["receipt"]["status"] == "APPLIED" and
-              bind["receipt"]["result"]["settings"]["permissionTier"] == "NETWORKED_WRITE" and
-              tree_create["request"]["family"] == tree_register["request"]["family"] == "K-WORKTREE" and
-              tree_create["request"]["operation"] == "create" and
-              tree_register["request"]["operation"] == "register" and
-              tree_create["request"]["targetId"] == tree_register["request"]["targetId"] ==
-              selection["worktreeId"] and
-              tree_create["receipt"]["status"] == tree_register["receipt"]["status"] == "APPLIED",
-              "New Host recipient has no exact USER E bind and F registration receipts")
-        for entry in (create, bind, tree_create, tree_register):
-            stored = one(db, "SELECT request_bytes,receipt_bytes FROM v37_ledger_receipt "
-                         "WHERE family=? AND domain_id=? AND request_id=?",
-                         (entry["request"]["family"], domain, entry["request"]["requestId"]))
-            check(bytes(stored["request_bytes"]).decode() == entry["rawFrame"] and
-                  json.loads(bytes(stored["receipt_bytes"])) == entry["receipt"],
-                  "Host USER E/F original ledger receipt differs")
-        seat = one(db, "SELECT * FROM gogoke_v37_seats WHERE domain_id=? AND seat_id=?",
-                   (domain, selection["seatId"]))
-        tree = one(db, "SELECT * FROM gogoke_v37_worktrees WHERE domain_id=? AND worktree_id=?",
-                   (domain, selection["worktreeId"]))
-        first = one(db, "SELECT * FROM gogoke_v37_seat_operations WHERE domain_id=? "
-                    "AND request_id=?", (domain, create["request"]["requestId"]))
-        check(first["seat_id"] == selection["seatId"] and first["revision"] == 1 and
-              first["generation"] == 1 and
-              seat["incarnation"] == first["incarnation"] == tree["seat_incarnation"] and
-              seat["instance_id"] == tree["instance_id"] == selection["instanceId"] and
-              tree["seat_id"] == selection["seatId"] and tree["repository_id"] == journal["repositoryId"] and
-              tree["state"] == "REGISTERED", "Host USER E/F current identity differs from original create")
+          "Two exact USER recipient E/F preparations required")
+    if case.get("hostRecipientReuse") is not None:
+        check(case["hostRecipientReuse"] == journal.get("hostRecipientReuse") and
+              before.get("hostRecipientReuse", {}).get("state") == "PREPARED_REUSE_CONFIRMED" and
+              before["hostRecipientReuse"]["originalJournalSha256"] ==
+              result["hostRecipientReuse"]["originalJournalSha256"] ==
+              case["hostRecipientReuse"]["originalJournalSha256"] and
+              before["hostRecipientReuse"]["selections"] ==
+              result["hostRecipientReuse"]["selections"] == recipients and
+              before["hostRecipientReuse"]["originalRequestIds"] ==
+              result["hostRecipientReuse"]["originalRequestIds"],
+              "Original failed preparation pin and fresh before/final E/F read differ")
+    else:
+        check(journal.get("hostRecipientReuse") is None and
+              all(item.get("mode") is None for item in preparations),
+              "Fresh Host recipient branch must not carry reuse markers")
+        for item in preparations:
+            original_host_recipient(db, domain, journal["repositoryId"], operations, item, template)
     head = before["policy"]["head"][0]
     owner = [operations[key] for key in case["ownerConfigurations"]]
     route, gate = owner
@@ -2265,25 +2481,30 @@ try:
             for evidence in source_reads:
                 card = operations.get(evidence.get("cardRequestId"))
                 if card is None or card.get("receipt", {}).get("status") != "APPLIED":
-                    fail("Host template source requires its original USER state-card receipt")
+                    check(False, "Host template source requires its original USER state-card receipt")
                 source_template_ids.append(card["receipt"]["result"].get("templateId"))
             target_template_ids = [row.get("templateId") for row in preparations]
             template_ids = set(source_template_ids + target_template_ids)
             if len(source_reads) != 2 or len(preparations) != 2 or \
                     len(template_ids) != 1 or None in template_ids:
-                fail("Host-only source and recipient must identify one original USER template")
+                check(False, "Host-only source and recipient must identify one original USER template")
             host_template_settings = []
             for template_id in sorted(template_ids):
                 rows = select(db, "SELECT settings_json,revision FROM gogoke_v37_seat_templates "
                               "WHERE domain_id=? AND template_id=?", (journal["domainId"], template_id))
                 if len(rows) != 1:
-                    fail("Original immutable Host USER template row is missing or ambiguous")
+                    check(False, "Original immutable Host USER template row is missing or ambiguous")
                 settings = json.loads(rows[0]["settings_json"])
-                if not isinstance(settings, dict) or "orchestrationScope" in settings:
-                    fail("Host source template is not the original non-orchestrator template")
+                if not isinstance(settings, dict) or set(settings) != {
+                        "effort", "instruction", "model", "permissionTier"} or any(
+                        not isinstance(value, str) or not value for value in settings.values()):
+                    check(False, "Host source template is not the original non-orchestrator template")
                 host_template_settings.append({"templateId": template_id,
                     "revision": rows[0]["revision"], "settings": settings})
             result["hostTemplateSettings"] = host_template_settings
+            if journal.get("hostRecipientReuse") is not None:
+                result["hostRecipientReuse"] = host_recipient_reuse_snapshot(
+                    db, journal, preparations, host_template_settings[0], sys.argv[4])
         if journal.get("rulesSelection") == "CROSS_PROJECT_ONLY":
             check(journal.get("rulesUserPermissionTier") == "NETWORKED_WRITE" and
                   journal.get("rulesUserMaxConcurrent") == 4 and journal.get("rulesProjectParallelCap") == 4,
