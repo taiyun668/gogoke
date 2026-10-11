@@ -39,6 +39,15 @@ if (process.platform !== 'win32' || !/^\d+\.\d+\.\d+$/.test(config.version ?? ''
 const rules = config.rules;
 const crossProjectOnly = rules.selection === 'CROSS_PROJECT_ONLY';
 const hostOnly = rules.selection === 'HOST_BUSY_TO_IDLE_ONLY';
+const recipientReuse = rules.host?.reusePreparedRecipients;
+if (recipientReuse !== undefined && (!hostOnly || !recipientReuse ||
+    Object.keys(recipientReuse).sort().join(',') !== 'originalJournal,originalJournalSha256' ||
+    !path.isAbsolute(recipientReuse.originalJournal ?? '') ||
+    !/^[a-f0-9]{64}$/.test(recipientReuse.originalJournalSha256 ?? '') ||
+    !fs.existsSync(recipientReuse.originalJournal) ||
+    sha256(recipientReuse.originalJournal) !== recipientReuse.originalJournalSha256)) {
+  throw Error('Host recipient reuse requires the exact original preparation journal before launch');
+}
 if (rules.selection !== undefined && !crossProjectOnly && !hostOnly) {
   throw Error('Unsupported V08 one-axis selection');
 }
@@ -220,6 +229,7 @@ const journal = {
   rulesCases: [],
   foreignProject: rules.foreignProject ?? null,
   rulesSelection: crossProjectOnly ? 'CROSS_PROJECT_ONLY' : hostOnly ? 'HOST_BUSY_TO_IDLE_ONLY' : 'ALL',
+  ...(recipientReuse === undefined ? {} : { hostRecipientReuse: { ...recipientReuse } }),
   ...((crossProjectOnly || hostOnly) ? { rulesSourceSelection: { ...rules.submitter },
     rulesUserPermissionTier: rules.userPermissionTier, rulesUserMaxConcurrent: rules.userMaxConcurrent,
     rulesProjectParallelCap: rules.projectParallelCap,
@@ -399,6 +409,36 @@ async function reuseRulesWorktree(selection) {
   return card;
 }
 
+async function reusePreparedHostSeat(selection, sourceCard) {
+  const card = await seatCard(selection.seatId);
+  const cardRequestId = journal.operations.at(-1).request.requestId;
+  const fields = ['effort', 'instruction', 'model', 'permissionTier'];
+  check(card.status === 'APPLIED' && card.revision === '2' &&
+    card.result.generation === '2' && card.result.layer === 'USER' &&
+    card.result.kind === 'LONG' && card.result.state === 'IDLE' &&
+    card.result.instanceId === selection.instanceId &&
+    card.result.templateId === sourceCard.result.templateId &&
+    card.result.settings && Object.keys(card.result.settings).sort().join(',') === fields.join(',') &&
+    fields.every(key => card.result.settings[key] === sourceCard.result.settings?.[key]),
+  'Reused Host E must preserve its prepared USER identity and four immutable template fields');
+  let tree = await product.operation('K-WORKTREE', 'graph-query', selection.worktreeId,
+    {}, '0', ['APPLIED', 'STALE']);
+  if (tree.status === 'STALE') tree = await product.operation('K-WORKTREE', 'graph-query',
+    selection.worktreeId, {}, tree.revision);
+  check(tree.status === 'APPLIED' && tree.result.classification === 'SINGLE' &&
+    tree.result.spaceId === selection.worktreeId && tree.result.state === 'REGISTERED' &&
+    tree.result.members?.length === 1 && tree.result.members.every(member =>
+      member.domainId === config.domainId && member.repositoryId === config.repositoryId &&
+      member.seatId === selection.seatId && member.instanceId === selection.instanceId &&
+      member.worktreeId === selection.worktreeId),
+  'Reused Host F must be the exact existing SINGLE registered worktree');
+  journal.hostUserPreparations ??= [];
+  journal.hostUserPreparations.push({ mode: 'REUSE_PREPARED', selection,
+    templateId: card.result.templateId, cardRequestId,
+    treeRequestId: journal.operations.at(-1).request.requestId });
+  product.save();
+}
+
 async function prepareNewHostSeat(selection, sourceCard) {
   const templateId = sourceCard.result.templateId;
   const observedSourceSettings = sourceCard.result.settings;
@@ -455,6 +495,17 @@ function verifyHostTemplateReadback(baseline) {
       row.receipt.result.settings?.permissionTier === settings.permissionTier),
   'Immutable original USER template must bind source model/effort/tier without inheriting current orchestration scope');
   for (const item of preparations) {
+    if (recipientReuse !== undefined) {
+      const card = operations.get(item.cardRequestId);
+      check(item.mode === 'REUSE_PREPARED' && card?.receipt?.status === 'APPLIED' &&
+        card.request.family === 'K-SEAT' && card.request.operation === 'state-card' &&
+        card.request.targetId === item.selection.seatId &&
+        card.receipt.result.templateId === template.templateId &&
+        JSON.stringify(card.receipt.result.settings) === JSON.stringify(settings) &&
+        baseline.hostRecipientReuse?.state === 'PREPARED_REUSE_CONFIRMED',
+      'Reused Host recipient requires fresh USER read and independently verified original E/F preparation');
+      continue;
+    }
     const create = operations.get(item.createRequestId);
     check(create?.receipt?.status === 'APPLIED' &&
       create.receipt.result.templateId === template.templateId &&
@@ -501,7 +552,8 @@ async function runRules() {
         JSON.stringify(sourceCards[1].result.settings),
     'The two original A source seats must share the proven USER template settings');
     for (const selection of [rules.host.destination, rules.host.alternateDestination]) {
-      await prepareNewHostSeat(selection, sourceCards[0]);
+      if (recipientReuse !== undefined) await reusePreparedHostSeat(selection, sourceCards[0]);
+      else await prepareNewHostSeat(selection, sourceCards[0]);
     }
   } else {
     for (const selection of selections) await prepareRulesWorktree(selection, 'V08');
