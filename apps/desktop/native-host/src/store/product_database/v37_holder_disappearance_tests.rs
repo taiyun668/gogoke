@@ -768,7 +768,7 @@ fn actual_partial_holder_recovery_cold_reuses_original_capture_at_each_durable_b
 }
 
 #[test]
-fn actual_partial_holder_recovery_cold_reuses_original_capture_at_each_durable_boundary_failed_resume_profile_only() {
+fn failed_resume_profile_only_cold_recovery_preserves_original_claim_at_each_boundary() {
     use super::v37_holder_disappearance::set_holder_gone_cut_for_test;
     for cut in ["AFTER_CAPTURE","AFTER_ACL","AFTER_F_REVOKE","AFTER_REVOKED"] {
         let _guard=route_b_test_guard();
