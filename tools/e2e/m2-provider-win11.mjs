@@ -461,6 +461,57 @@ async function readbackAndGolden() {
   }
 }
 
+const hEntries = (session, action) => journal.operations.filter(entry =>
+  entry.request?.family === 'K-SESSION' && entry.request.targetId === session.id &&
+  entry.request.operation === action);
+function stoppedReleased(session) {
+  const stops = hEntries(session, 'stop'), releases = hEntries(session, 'admission-release');
+  return stops.length === 1 && releases.length === 1 && stops[0].receipt?.status === 'APPLIED' &&
+    /^sha256:[a-f0-9]{64}$/.test(stops[0].receipt.result?.stopFact ?? '') &&
+    releases[0].receipt?.status === 'APPLIED' &&
+    releases[0].request.expectedRevision === stops[0].receipt.revision &&
+    stops[0].request.payload?.generation === session.generation &&
+    releases[0].request.payload?.generation === session.generation;
+}
+async function settleFailedGrokWrite() {
+  const record = journal.cases.find(row => row.caseMode === 'grokWrite');
+  const session = journal.sessions.find(row => row.id === record?.sessionId);
+  if (!session || hEntries(session, 'open').length !== 1 ||
+      hEntries(session, 'open')[0].receipt?.status !== 'APPLIED') return false;
+  const stops = hEntries(session, 'stop');
+  if (stops.length > 1 || (stops.length === 1 && stops[0].receipt?.status !== 'APPLIED'))
+    throw Error('Original H stop already attempted with unresolved result; custody retained');
+  if (stops.length === 0) await sessionStep(session, 'stop', { seatId: session.seatId });
+  const stop = hEntries(session, 'stop')[0];
+  if (!/^sha256:[a-f0-9]{64}$/.test(stop?.receipt?.result?.stopFact ?? ''))
+    throw Error('Original H stop has no exact StopFact; custody retained');
+  record.stopFact = stop.receipt.result.stopFact; product.save();
+  const releases = hEntries(session, 'admission-release');
+  if (releases.length > 1 || (releases.length === 1 && releases[0].receipt?.status !== 'APPLIED'))
+    throw Error('Original H admission-release already attempted with unresolved result; custody retained');
+  if (releases.length === 0) await sessionStep(session, 'admission-release', { seatId: session.seatId });
+  if (!stoppedReleased(session)) throw Error('Original H stop/release receipt relation differs; custody retained');
+  return true;
+}
+async function failureReadback() {
+  const outputFile = path.join(config.evidenceDirectory, 'm2-provider-failure-settlement-readback.json');
+  if (fs.existsSync(outputFile)) throw Error('Original failure settlement readback already exists');
+  await new Promise((resolve, reject) => {
+    const child = spawn(config.python, [path.join(here, 'm2-provider-capture-readback.py'),
+      config.stateRoot, outputFile, config.result, '--failure-settlement'],
+      { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = ''; child.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-8192); });
+    child.once('error', reject);
+    child.once('exit', code => code === 0 ? resolve() :
+      reject(Error(`Original failure settlement immutable readback exit=${code}: ${stderr}`)));
+  });
+  const facts = readJson(outputFile);
+  check(facts.state === 'FAIL_ORIGINAL_WRITE_SETTLED' && facts.acceptance === false &&
+    facts.measurementPreservedDatabaseBytes === true && facts.originalStopRelease === true &&
+    facts.directProviderEvidence === false, 'Original Grok Write failure closed DB readback');
+  journal.readbacks.push({ file: path.basename(outputFile), sha256: sha256(outputFile) }); product.save();
+}
+
 try {
   journal.driverBytes = { ...journal.driverBytes,
     ...Object.fromEntries(['cli-protocol-golden.mjs', 'm2-provider-win11.mjs',
@@ -490,10 +541,40 @@ try {
 } catch (error) {
   journal.state = 'FAIL'; journal.error = String(error.stack ?? error);
   journal.currentEndpoint = product.endpoint ?? null; product.save(); process.exitCode = 1;
+  if (writeCases.length === 1 && journal.closes.length === 0) {
+    let settled = false;
+    if (product.child?.exitCode === null && product.socket?.readyState === WebSocket.OPEN) {
+      try { settled = await settleFailedGrokWrite(); }
+      catch (settlementError) {
+        journal.settlementError = String(settlementError.stack ?? settlementError); product.save();
+      }
+    }
+    if (settled) {
+      try { await product.closeNormally(); }
+      catch (closeError) { journal.closeError = String(closeError.stack ?? closeError); product.save(); }
+      if (journal.closes.length === 1) {
+        try { await snapshot('after'); }
+        catch (observerError) { journal.afterObserverError = String(observerError.stack ?? observerError); product.save(); }
+        try { await failureReadback(); }
+        catch (readbackError) { journal.failureReadbackError = String(readbackError.stack ?? readbackError); product.save(); }
+      }
+    }
+    if (journal.closes.length === 0) {
+      journal.custodyHold = 'PRODUCT_AND_ORIGINAL_H_RETAINED_STOP_RELEASE_OR_NORMAL_CLOSE_NOT_CONFIRMED';
+      journal.failedProductHeld = Boolean(product.child && product.child.exitCode === null);
+      product.save();
+      product.socket?.close();
+      if (product.tester) { try { await product.tester.dispose(); }
+        catch (disconnectError) { journal.disconnectError = String(disconnectError); product.save(); } }
+      product.child?.unref();
+    }
+    // The original error remains FAIL even when its H and product closed normally.
+  } else {
   // After a normal close, keep the already captured after snapshots and the
   // original readback error. Never dispatch a second after observer.
   if (journal.closes.length === 0) {
     try { await product.preserveFailure(); }
     catch (disconnectError) { journal.disconnectError = String(disconnectError); product.save(); }
+  }
   }
 }
