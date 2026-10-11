@@ -682,7 +682,8 @@ jobs:
               $probes = @(
                 @{ id = 'failed-resume-source-cas'; filter = 'failed_resume_profile_source_cas_exact_and_replay' },
                 @{ id = 'failed-resume-rpc-binding'; filter = 'failed_resume_rpc_observed_remote_error_exact_binding' },
-                @{ id = 'failed-resume-profile-cold'; filter = 'failed_resume_profile_only_cold_recovery_preserves_original_claim_at_each_boundary' }
+                @{ id = 'failed-resume-profile-cold'; filter = 'failed_resume_profile_only_cold_recovery_preserves_original_claim_at_each_boundary' },
+                @{ id = 'empty-initial-secretary-release'; filter = 'empty_initial_secretary_release_refuses_input_source_and_claim_drift' }
               )
             }
             Write-Host 'Directed private-history resource boundaries only; full library, compiled mutations and server suites NOT_RUN.'
