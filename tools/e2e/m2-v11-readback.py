@@ -34,6 +34,27 @@ def exactly(db, query, args=()):
     return rows[0]
 
 
+def indexed_original_updates(db, domain, session, epoch, expected_meta, item_id):
+    # The index's source_cursor counts normalized updates. The original A
+    # notification cursor is retained separately in _meta.rawSourceCursor.
+    found = []
+    for cursor, source_cursor, event_id, raw in db.execute(
+            "SELECT cursor,source_cursor,source_event_id,update_json "
+            "FROM v37_ledger_index WHERE source_kind='v37' AND domain_id=? "
+            "AND session_id=? AND source_epoch=?", (domain, session, epoch)):
+        update = json.loads(raw)
+        if update.get("toolCallId") != item_id or not all(
+                update.get("_meta", {}).get(key) == value
+                for key, value in expected_meta.items()):
+            continue
+        require(type(cursor) is int and cursor > 0 and
+                isinstance(source_cursor, str) and source_cursor.isdecimal() and
+                int(source_cursor) > 0 and isinstance(event_id, str) and event_id,
+                "V11 matched normalized ledger row has no valid own cursor or identity")
+        found.append(update)
+    return found
+
+
 def rpc_id(value):
     require(type(value) in (int, str), "V11 RPC ID must keep its original number/string type")
     return type(value).__name__, value
@@ -342,13 +363,12 @@ def file_boundaries(root, output, journal_file):
                 for (source_row, frame), observed in zip(delta_sources, journal_deltas):
                     params = frame["params"]
                     expected_meta = {"codexMethod": "item/fileChange/outputDelta",
+                                     "itemId": original_tool.get("id"),
                                      "threadId": session["threadId"], "turnId": item["turnId"],
                                      "rawSourceCursor": str(source_row[6])}
-                    indexed = db.execute(
-                        "SELECT update_json FROM v37_ledger_index WHERE source_kind='v37' "
-                        "AND domain_id=? AND session_id=? AND source_epoch=? AND source_cursor=?",
-                        (case["domainId"], item["sessionId"], source_row[5], source_row[6]))
-                    persisted = [json.loads(row[0]) for row in indexed]
+                    persisted = indexed_original_updates(
+                        db, case["domainId"], item["sessionId"], source_row[5],
+                        expected_meta, original_tool.get("id"))
                     delta_match = delta_match and isinstance(params.get("delta"), str) and \
                         params.get("itemId") == original_tool.get("id") and \
                         isinstance(observed, dict) and \
@@ -356,10 +376,7 @@ def file_boundaries(root, output, journal_file):
                         observed.get("rawOutput") == params["delta"] and \
                         all(observed.get("meta", {}).get(key) == value
                             for key, value in expected_meta.items()) and \
-                        any(all(update.get("_meta", {}).get(key) == value
-                                for key, value in expected_meta.items()) and
-                            update.get("toolCallId") == original_tool.get("id") and
-                            update.get("rawOutput") == params["delta"] for update in persisted)
+                        len(persisted) == 1 and persisted[0].get("rawOutput") == params["delta"]
                 delta_text = "".join(part["delta"] for part in original_deltas
                                      if isinstance(part["delta"], str))
                 h_file_change = False
@@ -367,22 +384,18 @@ def file_boundaries(root, output, journal_file):
                     source_row = next((row for row, frame in zip(sources, frames)
                                        if frame is completed[0]), None)
                     if source_row is not None:
-                        indexed = db.execute(
-                            "SELECT update_json FROM v37_ledger_index WHERE source_kind='v37' "
-                            "AND domain_id=? AND session_id=? AND source_epoch=? AND source_cursor=?",
-                            (case["domainId"], item["sessionId"], source_row[5], source_row[6]))
-                        persisted = [json.loads(row[0]) for row in indexed]
                         expected_meta = {"codexMethod": "item/completed", "codexItemType": "fileChange",
+                                         "itemId": original_tool["id"],
                                          "threadId": session["threadId"], "turnId": item["turnId"],
                                          "rawSourceCursor": str(source_row[6])}
-                        h_file_change = any(all(update.get("_meta", {}).get(key) == value
-                                                    for key, value in expected_meta.items()) and
-                                            update.get("toolCallId") == original_tool["id"] and
-                                            update.get("status") == "failed" and
-                                            update.get("rawOutput") == normalized[0].get("rawOutput") and
-                                            all(normalized[0].get("meta", {}).get(key) == value
-                                                for key, value in expected_meta.items())
-                                            for update in persisted)
+                        persisted = indexed_original_updates(
+                            db, case["domainId"], item["sessionId"], source_row[5],
+                            expected_meta, original_tool["id"])
+                        h_file_change = len(persisted) == 1 and \
+                            persisted[0].get("status") == "failed" and \
+                            persisted[0].get("rawOutput") == normalized[0].get("rawOutput") and \
+                            all(normalized[0].get("meta", {}).get(key) == value
+                                for key, value in expected_meta.items())
                 exact = pair and original_tool.get("type") == "fileChange" and \
                     original_tool.get("status") == "failed" and \
                     bool(completion_failure or delta_text) and delta_match and \
