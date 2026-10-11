@@ -737,14 +737,17 @@ impl<'root> ProductDatabase<'root> {
             || get(capture,"home")?!=home.opaque() || get(capture,"source")?!=object.file_identity.opaque() {
             return Err(refused("holder frozen physical object changed"));
         }
-        let original_aliases=parse_fields(&get(capture,"aliases")?)?;
-        if original_aliases.iter().any(|(key,value)|aliases.get(key)!=Some(value))
-            || (record.phase!=Phase::Applied && &original_aliases!=aliases) {
-            return Err(refused("holder frozen alias set changed"));
-        }
         let successor=kind==Some("FAILED_RESUME_PROFILE_ONLY_V1")
             && record.phase==Phase::Revoked && get(current,"claimState")?=="RELEASED"
             && self.completed_empty_secretary_release(capture)?;
+        let original_aliases=parse_fields(&get(capture,"aliases")?)?;
+        // The exact ordinary H release completes this F-only capture too.
+        // Later histories may add aliases, but every captured physical alias
+        // must remain present and unchanged; pending captures stay exact.
+        if original_aliases.iter().any(|(key,value)|aliases.get(key)!=Some(value))
+            || (!(record.phase==Phase::Applied || successor) && &original_aliases!=aliases) {
+            return Err(refused("holder frozen alias set changed"));
+        }
         let (state,revision)=if record.phase==Phase::Applied || successor {
             ("RELEASED".into(),number(capture,"claimRevision")?.checked_add(1)
                 .ok_or_else(||refused("holder released revision overflow"))?)

@@ -615,6 +615,66 @@ fn empty_initial_secretary_release_refuses_input_source_and_claim_drift() {
     assert_eq!(claim(&product),released,"released claim survives a cold database open");
     product.recover_disappeared_credential_resources("instanceA",None)
         .expect("completed F-only revoke accepts exact ordinary H release successor");
+    let original_aliases=instance::read_credential_aliases(&product.connection,"instanceA").unwrap();
+    let captures=empty_thread_rows(&product.connection,
+        "SELECT binding_id,snapshot_hex,snapshot_digest,phase,CAST(revision AS TEXT)
+           FROM main.gogoke_v37_holder_disappearance ORDER BY binding_id",&[],5).unwrap();
+    // A later real no-model H open adds its own F history/physical alias.
+    // Its ordinary StopFact and release leave the completed old F-only
+    // capture unchanged. The next cold host must verify that original fact.
+    let generation=seat::get(&product.connection,"global","emptySeat").unwrap().unwrap().generation+1;
+    let payload=format!(r#"{{"seatId":"emptySeat","generation":"{generation}"}}"#);
+    for (verb,revision) in [("admission-reserve",0),("admission-commit",1),("open",2),
+        ("stop",3),("admission-release",4)] {
+        let request=operation_in_domain("global","K-SESSION",verb,
+            &format!("empty-successor-{verb}"),"emptySuccessor",revision,&payload);
+        let raw=product.dispatch_user_request(&request).unwrap();
+        assert_eq!(h::decode_receipt(&raw).unwrap().status,V37Status::Applied,
+            "later real history {verb}: {}",String::from_utf8_lossy(&raw));
+    }
+    let expanded_aliases=instance::read_credential_aliases(&product.connection,"instanceA").unwrap();
+    assert_eq!(expanded_aliases.len(),original_aliases.len()+1,"actual F registration adds one alias");
+    for old in &original_aliases {
+        let current=expanded_aliases.iter().find(|a|a.history_id==old.history_id).unwrap();
+        assert_eq!(current.directory_identity,old.directory_identity);
+        assert_eq!(current.source_file_identity,old.source_file_identity);
+        assert_eq!(current.state,old.state);
+        assert_eq!(current.revision,old.revision);
+    }
+    product.close_checked().unwrap();
+    let mut product=ProductDatabase::open(&root,&path.join("state.sqlite")).unwrap();
+    let immutable=|product:&ProductDatabase<'_>|empty_thread_rows(&product.connection,
+        "SELECT binding_id,snapshot_hex,snapshot_digest,phase,CAST(revision AS TEXT)
+           FROM main.gogoke_v37_holder_disappearance ORDER BY binding_id",&[],5).unwrap();
+    let old_episodes=empty_thread_rows(&product.connection,
+        "SELECT generation,phase,COALESCE(stop_fact_id,'') FROM main.gogoke_v37_h_process_episode
+          WHERE domain_id='global' AND session_id='emptySession' ORDER BY generation",&[],3).unwrap();
+    let writes=crate::process::holder_gone_acl_write_count_for_test();
+    product.recover_disappeared_credential_resources("instanceA",None)
+        .expect("cold completed F-only successor accepts the later registered physical alias");
+    assert_eq!(immutable(&product),captures,"new history never expands or rewrites the old capture");
+    assert_eq!(claim(&product),released,"cold replay preserves the original H release and StopFact");
+    assert_eq!(empty_thread_rows(&product.connection,
+        "SELECT generation,phase,COALESCE(stop_fact_id,'') FROM main.gogoke_v37_h_process_episode
+          WHERE domain_id='global' AND session_id='emptySession' ORDER BY generation",&[],3).unwrap(),old_episodes,
+        "original stopped and failed UNKNOWN episodes remain exact");
+    assert_eq!(crate::process::holder_gone_acl_write_count_for_test(),writes,"completed replay makes no ACL writes");
+    let other_directory=expanded_aliases.iter().find(|a|
+        !original_aliases.iter().any(|old|old.history_id==a.history_id)).unwrap().directory_identity.opaque();
+    for (sql,replacement) in [("UPDATE main.gogoke_v37_credential_aliases SET state='REMOVED' WHERE history_id=?1",None),
+        ("UPDATE main.gogoke_v37_credential_aliases SET directory_identity=?2 WHERE history_id=?1",Some(other_directory.as_str()))] {
+        product.connection.execute("BEGIN IMMEDIATE").unwrap();
+        let altered=Statement::prepare(product.connection.as_ptr(),sql).unwrap();
+        altered.bind_text(1,&original_aliases[0].history_id).unwrap();
+        if let Some(identity)=replacement {altered.bind_text(2,identity).unwrap();}
+        altered.step_done().unwrap();drop(altered);
+        assert!(product.recover_disappeared_credential_resources("instanceA",None).is_err(),
+            "a completed capture still refuses missing or replaced original alias");
+        assert_eq!(immutable(&product),captures,"alias refusal preserves original captures");
+        assert_eq!(claim(&product),released,"alias refusal preserves original H receipt");
+        assert_eq!(crate::process::holder_gone_acl_write_count_for_test(),writes,"alias refusal has no ACL effects");
+        product.connection.execute("ROLLBACK").unwrap();
+    }
     let release_id=secretary_empty_release_request_id(
         &root.canonical_root().identity.opaque(),"emptySession",&pending[0],&pending[1],&original[3]);
     let altered=Statement::prepare(product.connection.as_ptr(),
@@ -622,8 +682,10 @@ fn empty_initial_secretary_release_refuses_input_source_and_claim_drift() {
           WHERE domain_id='global' AND request_id=?1 AND operation='admission-release'").unwrap();
     altered.bind_text(1,&release_id).unwrap();altered.step_done().unwrap();drop(altered);
     assert!(product.recover_disappeared_credential_resources("instanceA",None).is_err(),
-        "changed H release journal cannot justify the cold F-only successor");
+        "changed H release journal cannot justify the cold F-only successor or extra alias");
     assert_eq!(claim(&product),released,"refused recovery preserves original released claim");
+    assert_eq!(immutable(&product),captures,"receipt refusal preserves original captures");
+    assert_eq!(crate::process::holder_gone_acl_write_count_for_test(),writes,"receipt refusal has no ACL effects");
     let restore=Statement::prepare(product.connection.as_ptr(),
         "UPDATE main.gogoke_v37_h_operation SET status='APPLIED'
           WHERE domain_id='global' AND request_id=?1 AND operation='admission-release'").unwrap();
