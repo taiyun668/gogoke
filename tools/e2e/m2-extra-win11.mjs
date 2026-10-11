@@ -57,8 +57,10 @@ if (rules.foreignProject !== undefined && (
 if (crossProjectOnly && (rules.foreignProject === undefined || rules.host !== undefined)) {
   throw Error('CROSS_PROJECT_ONLY requires the original B head/gate bytes and excludes Host cases');
 }
-if (crossProjectOnly && rules.userPermissionTier !== 'NETWORKED_WRITE') {
-  throw Error('CROSS_PROJECT_ONLY requires the explicitly selected test USER permission tier NETWORKED_WRITE');
+if (crossProjectOnly && (rules.userPermissionTier !== 'NETWORKED_WRITE' || rules.userMaxConcurrent !== 4 ||
+    rules.projectParallelCap !== 4 || !atom(rules.capReferenceDomainId) ||
+    [config.domainId, rules.foreignProject?.domainId].includes(rules.capReferenceDomainId))) {
+  throw Error('CROSS_PROJECT_ONLY requires USER tier/cap and an exact distinct capacity-reference domain before launch');
 }
 if (crossProjectOnly) {
   const foreign = rules.foreignProject;
@@ -183,7 +185,10 @@ const journal = {
   foreignProject: rules.foreignProject ?? null,
   rulesSelection: crossProjectOnly ? 'CROSS_PROJECT_ONLY' : 'ALL',
   ...(crossProjectOnly ? { rulesSourceSelection: { ...rules.submitter },
-    rulesUserPermissionTier: rules.userPermissionTier, sameScopePolicy: rules.sameScopePolicy } : {}),
+    rulesUserPermissionTier: rules.userPermissionTier, rulesUserMaxConcurrent: rules.userMaxConcurrent,
+    rulesProjectParallelCap: rules.projectParallelCap,
+    rulesCapacityReferenceDomainId: rules.capReferenceDomainId,
+    sameScopePolicy: rules.sameScopePolicy } : {}),
   v12: 'NOT_RUN_ORIGINAL_M2_SIDE_WORKTREE_READBACK_REQUIRED',
   v08: 'RUNNING',
 };

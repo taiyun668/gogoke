@@ -67,10 +67,19 @@ export async function runRulesCase(product, config, journal) {
         qualification.reviewGrant.target_id === qualification.reviewerSeatId &&
         qualification.reviewGrant.action === 'REVIEW' && qualification.reviewGrant.expires_at_ms === 0 &&
         c.userPermissionTier === 'NETWORKED_WRITE' &&
-        qualification.callerMaxPermissionTier === c.userPermissionTier,
+        c.userMaxConcurrent === 4 && qualification.callerMaxPermissionTier === c.userPermissionTier &&
+        qualification.callerMaxConcurrent === c.userMaxConcurrent &&
+        before.capacityQualification?.state === 'CAPACITY_4_WITHIN_REFERENCE_OWNER_AND_HOST' &&
+        before.capacityQualification.referenceDomainId === c.capReferenceDomainId &&
+        before.capacityQualification.referenceOwnerCap >= 4 && before.capacityQualification.hostMachineLimit >= 4 &&
+        before.capacityQualification.testDomainOwnerCap === c.projectParallelCap && c.projectParallelCap === 4,
       'Cross-project DENIED requires the selected test USER tier and actual same-scope A gate-submit/reviewer-REVIEW qualification');
       record.sameScopeQualification = qualification;
       record.userPermissionTier = c.userPermissionTier;
+      record.userMaxConcurrent = c.userMaxConcurrent;
+      record.projectParallelCap = c.projectParallelCap;
+      record.capReferenceDomainId = c.capReferenceDomainId;
+      record.capacityQualification = before.capacityQualification;
       requireFact(before.sameScopeOwnerPolicy?.configuration === c.sameScopePolicy &&
         before.sameScopeOwnerPolicy.gate?.submitter_seat_id === c.submitterSession.seatId &&
         before.sameScopeOwnerPolicy.gate?.reviewer_seat_id === c.reviewerSession.seatId,

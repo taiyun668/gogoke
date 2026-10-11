@@ -121,7 +121,8 @@ def same_scope_owner_snapshot(db, domain, configuration):
             "ownerEvents": owner_events}
 
 
-def same_scope_submission_qualification(db, domain, source, target_gate_revision, expected_permission_tier):
+def same_scope_submission_qualification(db, domain, source, target_gate_revision,
+                                        expected_permission_tier, expected_max_concurrent):
     if not isinstance(source, dict) or set(source) != {"seatId", "instanceId", "worktreeId"}:
         return {"state": "MISSING_A_SUBMITTER_SELECTION"}
     caller_rows = select(db, "SELECT * FROM gogoke_v37_seats WHERE domain_id=? AND seat_id=?",
@@ -138,11 +139,13 @@ def same_scope_submission_qualification(db, domain, source, target_gate_revision
         caller_settings = json.loads(settings_rows[0]["settings_json"])
         caller_scope = caller_settings["orchestrationScope"]
         caller_max_tier = caller_scope["maxPermissionTier"]
+        caller_max_concurrent = caller_scope["maxConcurrent"]
     except (KeyError, TypeError, json.JSONDecodeError):
         return {"state": "A_CALLER_PERMISSION_SCOPE_UNKNOWN", "callerSeatId": source["seatId"]}
-    if caller_max_tier != expected_permission_tier:
-        return {"state": "A_CALLER_PERMISSION_TIER_MISMATCH", "callerSeatId": source["seatId"],
-                "callerMaxPermissionTier": caller_max_tier, "expectedPermissionTier": expected_permission_tier}
+    if caller_max_tier != expected_permission_tier or caller_max_concurrent != expected_max_concurrent:
+        return {"state": "A_CALLER_ORCHESTRATION_SCOPE_MISMATCH", "callerSeatId": source["seatId"],
+                "callerMaxPermissionTier": caller_max_tier, "expectedPermissionTier": expected_permission_tier,
+                "callerMaxConcurrent": caller_max_concurrent, "expectedMaxConcurrent": expected_max_concurrent}
     if caller["instance_id"] != source["instanceId"] or caller["state"] != "IDLE" or caller["layer"] != "USER":
         return {"state": "A_CALLER_NOT_CURRENT_IDLE_USER", "callerSeatId": source["seatId"],
                 "callerLayer": caller["layer"], "callerState": caller["state"]}
@@ -173,6 +176,7 @@ def same_scope_submission_qualification(db, domain, source, target_gate_revision
                 "callerSeatId": source["seatId"], "callerLayer": caller["layer"],
                 "callerState": caller["state"], "instanceId": caller["instance_id"],
                 "callerMaxPermissionTier": caller_max_tier,
+                "callerMaxConcurrent": caller_max_concurrent,
                 "policyRevision": head["revision"], "currentStage": head["current_stage"],
                 "gate": found["gate"], "reviewerSeatId": found["reviewer"]["seat_id"],
                 "reviewerState": found["reviewer"]["state"], "reviewGrant": found["reviewGrant"],
@@ -192,6 +196,25 @@ def same_scope_submission_qualification(db, domain, source, target_gate_revision
             "callerLayer": caller["layer"], "policyRevision": head["revision"],
             "currentStage": head["current_stage"], "targetGateRevision": target_gate_revision,
             "callerGates": scoped}
+
+
+def cross_project_capacity_qualification(db, domain, reference_domain, expected_test_cap):
+    if not isinstance(reference_domain, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+                                                                  reference_domain) or reference_domain == domain:
+        return {"state": "CAPACITY_REFERENCE_DOMAIN_MISSING_OR_NOT_DISTINCT"}
+    reference_rows = select(db, "SELECT parallel_cap FROM gogoke_v37_seat_project_caps WHERE domain_id=?",
+                            (reference_domain,))
+    test_rows = select(db, "SELECT parallel_cap FROM gogoke_v37_seat_project_caps WHERE domain_id=?", (domain,))
+    host_rows = select(db, "SELECT machine_limit FROM gogoke_v37_seat_host_resources WHERE singleton=1")
+    if len(reference_rows) != 1 or len(test_rows) != 1 or len(host_rows) != 1:
+        return {"state": "CAPACITY_OWNER_OR_HOST_FACT_MISSING"}
+    reference_cap, test_cap, machine_limit = (reference_rows[0]["parallel_cap"], test_rows[0]["parallel_cap"],
+                                               host_rows[0]["machine_limit"])
+    state = ("CAPACITY_4_WITHIN_REFERENCE_OWNER_AND_HOST" if reference_cap >= 4 and test_cap == expected_test_cap == 4
+             and machine_limit >= 4 else "CAPACITY_4_NOT_PROVEN")
+    return {"state": state, "referenceDomainId": reference_domain, "referenceOwnerCap": reference_cap,
+            "testDomainId": domain, "testDomainOwnerCap": test_cap, "hostMachineLimit": machine_limit,
+            "effectiveTestDomainCap": min(test_cap, machine_limit)}
 
 
 def foreign_snapshot(db, domain, configuration):
@@ -1135,8 +1158,16 @@ def verify_cross_project_only(db, journal, case, result):
           case.get("ownership") == {"lifecycle": "EXCLUSIVE_V08_SUBMITTER_AND_REVIEWER",
                                     "policy": "EXCLUSIVE_V08_POLICY_DOMAIN"},
           "Single-case selection/module/ownership identity differs")
-    check(journal.get("rulesUserPermissionTier") == case.get("userPermissionTier") == "NETWORKED_WRITE",
-          "CROSS_PROJECT_ONLY selected test USER permission tier is missing or changed")
+    check(journal.get("rulesUserPermissionTier") == case.get("userPermissionTier") == "NETWORKED_WRITE" and
+          journal.get("rulesUserMaxConcurrent") == case.get("userMaxConcurrent") == 4 and
+          journal.get("rulesProjectParallelCap") == case.get("projectParallelCap") == 4 and
+          journal.get("rulesCapacityReferenceDomainId") == case.get("capReferenceDomainId") and
+          before.get("capacityQualification", {}).get("state") == "CAPACITY_4_WITHIN_REFERENCE_OWNER_AND_HOST" and
+          before["capacityQualification"].get("referenceDomainId") == case["capReferenceDomainId"] and
+          before["capacityQualification"].get("testDomainOwnerCap") == 4 and
+          before["capacityQualification"].get("referenceOwnerCap", 0) >= 4 and
+          before["capacityQualification"].get("hostMachineLimit", 0) >= 4,
+          "CROSS_PROJECT_ONLY selected test USER/project cap is missing or outside reference/host capacity")
     foreign = journal.get("foreignProject")
     check(foreign is not None and set(foreign) == {"domainId", "gateId", "ownerHead", "ownerGate"} and
           case.get("foreignProject") == foreign and before.get("foreignProject") == result["foreignProject"] and
@@ -1156,6 +1187,9 @@ def verify_cross_project_only(db, journal, case, result):
     check(qualification and qualification.get("state") == "QUALIFIED_SAME_SCOPE_GATE_SUBMIT" and
           qualification["callerSeatId"] == qualified_submitter and
           qualification.get("callerMaxPermissionTier") == journal["rulesUserPermissionTier"] and
+          qualification.get("callerMaxConcurrent") == journal["rulesUserMaxConcurrent"] and
+          case.get("capacityQualification") == before["capacityQualification"] and
+          result.get("capacityQualification") == before["capacityQualification"] and
           case.get("sameScopeQualification") == qualification and
           qualification["gate"]["submitter_seat_id"] == qualified_submitter and
           qualification["gate"]["revision"] == before["foreignProject"]["gate"]["revision"] and
@@ -1779,15 +1813,21 @@ try:
         result["foreignProject"] = foreign_snapshot(db, journal["domainId"], journal.get("foreignProject"))
         result["inbox"] = inbox_rows(db, journal["domainId"])
         if journal.get("rulesSelection") == "CROSS_PROJECT_ONLY":
-            check(journal.get("rulesUserPermissionTier") == "NETWORKED_WRITE",
-                  "CROSS_PROJECT_ONLY needs the explicit selected test USER tier")
+            check(journal.get("rulesUserPermissionTier") == "NETWORKED_WRITE" and
+                  journal.get("rulesUserMaxConcurrent") == 4 and journal.get("rulesProjectParallelCap") == 4,
+                  "CROSS_PROJECT_ONLY needs explicit selected test USER and Owner project caps")
             result["sameScopeOwnerPolicy"] = same_scope_owner_snapshot(
                 db, journal["domainId"], journal.get("sameScopePolicy"))
+            result["capacityQualification"] = cross_project_capacity_qualification(
+                db, journal["domainId"], journal.get("rulesCapacityReferenceDomainId"),
+                journal["rulesProjectParallelCap"])
             target_revision = (result["foreignProject"]["gate"]["revision"]
                                if result["foreignProject"] else None)
             result["sameScopeQualification"] = same_scope_submission_qualification(
                 db, journal["domainId"], journal.get("rulesSourceSelection"), target_revision,
-                journal["rulesUserPermissionTier"])
+                journal["rulesUserPermissionTier"], journal["rulesUserMaxConcurrent"])
+            check(result["capacityQualification"]["state"] == "CAPACITY_4_WITHIN_REFERENCE_OWNER_AND_HOST",
+                  "Fresh A cap 4 is not supported by the original Owner cap and host source facts")
         check(len(result["policy"]["head"]) == 1, "Existing real Owner-initialized policy head required")
         if sys.argv[4] == "final":
             check(len(journal.get("rulesCases", [])) == 1, "One exclusive original V08 case required")
