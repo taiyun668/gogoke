@@ -758,26 +758,34 @@ export function createDesign37SecretarySource(): {
       }
     }
     if (configuration.state === "UNSET") {
+      const originalCandidate = (value: SecretaryConfiguration) => {
+        if (value.state !== "UNSET" || !Array.isArray(value.designationCandidates)) {
+          throw new Error("宿主未返回原候选事实，保留原结果而不猜测席位不存在。");
+        }
+        const seats = value.designationCandidates.filter((item) => item.seatId === "secretary-user");
+        if (seats.length > 1) throw new Error("原秘书长席位身份不唯一，保留原结果。");
+        return seats[0];
+      };
+      let seat = originalCandidate(configuration);
       // Stable native request identities survive page reload after a partial
       // configuration. A different operation never replaces an UNKNOWN one.
-      await initializeDesign37ProjectPolicyMetadata("global");
-      await design37UserConfiguration("seat-template", { domainId: "global",
-        requestId: "secretary-ui-template", templateId: "secretary-ui", settings: {} });
-      const create = await design37UserFrame({ schema: "gogoke.37.operations.v1",
-        family: "K-SEAT", operation: "create-from-template", requestId: "secretary-ui-create",
-        targetId: "secretary-user", domainId: "global", expectedRevision: "0",
-        payload: { layer: "USER", templateId: "secretary-ui" } });
-      if (!record(create) || create.schema !== "gogoke.37.operations.v1" ||
-          create.family !== "K-SEAT" || create.operation !== "create-from-template" ||
-          create.requestId !== "secretary-ui-create" || create.targetId !== "secretary-user" ||
-          !["APPLIED", "REPLAYED"].includes(String(create.status))) {
-        throw new Error(`Native Secretary original creation is unresolved: ${JSON.stringify(create)}`);
+      if (!seat) {
+        await initializeDesign37ProjectPolicyMetadata("global");
+        await design37UserConfiguration("seat-template", { domainId: "global",
+          requestId: "secretary-ui-template", templateId: "secretary-ui", settings: {} });
+        const create = await design37UserFrame({ schema: "gogoke.37.operations.v1",
+          family: "K-SEAT", operation: "create-from-template", requestId: "secretary-ui-create",
+          targetId: "secretary-user", domainId: "global", expectedRevision: "0",
+          payload: { layer: "USER", templateId: "secretary-ui" } });
+        if (!record(create) || create.schema !== "gogoke.37.operations.v1" ||
+            create.family !== "K-SEAT" || create.operation !== "create-from-template" ||
+            create.requestId !== "secretary-ui-create" || create.targetId !== "secretary-user" ||
+            !["APPLIED", "REPLAYED"].includes(String(create.status))) {
+          throw new Error(`Native Secretary original creation is unresolved: ${JSON.stringify(create)}`);
+        }
+        seat = originalCandidate(await readSecretaryConfiguration());
       }
-      const original = await readSecretaryConfiguration();
-      const seats = original.state === "UNSET"
-        ? original.designationCandidates?.filter((item) => item.seatId === "secretary-user") ?? [] : [];
-      const seat = seats[0];
-      if (seats.length !== 1 || !seat) {
+      if (!seat) {
         throw new Error("原秘书长席位身份未确认，保留创建结果而不再新建。");
       }
       await design37UserConfiguration("secretary-designate", { requestId: "secretary-ui-designate",
