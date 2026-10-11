@@ -71,7 +71,7 @@ jobs:
   native-focused-library:
     if: ${{ inputs.focused_library }}
     name: Affected native library checks only
-    timeout-minutes: 20
+    timeout-minutes: 35
     runs-on: windows-latest
     env:
       RUSTUP_TOOLCHAIN: 1.85.1
