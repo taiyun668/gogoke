@@ -224,7 +224,7 @@ pub(crate) fn promote_resume(connection: &VerifiedDatabaseConnection<'_>,
     }
     let candidate=Statement::prepare(connection.as_ptr(),
         "SELECT e.generation,e.old_generation,e.home_id,e.binding_id,e.seat_id,
-                e.seat_incarnation,e.instance_id,i.driver_id,c.ticket,c.custodian_nonce
+                e.seat_incarnation,e.instance_id,i.driver_id,c.ticket,c.custodian_nonce,e.phase
            FROM main.gogoke_v37_h_process_episode e
            JOIN main.gogoke_v37_h_claim a ON a.domain_id=e.domain_id
              AND a.session_id=e.session_id AND a.generation=e.old_generation
@@ -260,7 +260,7 @@ pub(crate) fn promote_resume(connection: &VerifiedDatabaseConnection<'_>,
     candidate.bind_i64(5,expected_revision)?;
     if !candidate.step_row()? {return Err(AtomicError::OperationConflict);}
     let mut row=Vec::new();
-    for index in 0..10 {row.push(candidate.column_text(index)?);}
+    for index in 0..11 {row.push(candidate.column_text(index)?);}
     if candidate.step_row()? {return Err(AtomicError::OperationConflict);}
     drop(candidate);
     let (new_generation,old_generation,home_id,binding_id,seat_id,incarnation,instance_id)=
@@ -295,13 +295,18 @@ pub(crate) fn promote_resume(connection: &VerifiedDatabaseConnection<'_>,
     let ticket=&row[8];
     let nonce=&row[9];
     if driver=="claude" {
-        // The control initialize ACK cannot establish a vendor session ID.
-        // Only the new candidate's original A system/init, checked against the
-        // old stopped H/A User result, may promote this generation.
-        if super::journal::read_original_claude_resume_init(connection,domain,session,
+        // PREPARED can establish transport readiness without claiming restored
+        // identity. UNKNOWN still requires real new init, never ACK-only replay.
+        if super::journal::read_original_claude_resume_ready(connection,domain,session,
             request_id,new_generation,operation_id)
             .map_err(|error|AtomicError::DurabilityContractFailed(
-                format!("Claude resume original init: {error:?}")))?.is_none() {
+                format!("Claude resume original ACK readiness: {error:?}")))?.is_none() {
+            return Err(AtomicError::OperationConflict);
+        }
+        if row[10]=="UNKNOWN" && super::journal::read_original_claude_resume_init(
+            connection,domain,session,request_id,new_generation,operation_id)
+            .map_err(|error|AtomicError::DurabilityContractFailed(
+                format!("Claude UNKNOWN resume original init: {error:?}")))?.is_none() {
             return Err(AtomicError::OperationConflict);
         }
     } else {

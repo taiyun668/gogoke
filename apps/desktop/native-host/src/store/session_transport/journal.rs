@@ -33,6 +33,10 @@ fn provider_failure_excerpt(raw: &[u8]) -> Result<(&str, bool), JournalError> {
 #[path = "secretary_occurrence_tests.rs"]
 mod secretary_scheduled_occurrence_tests;
 
+#[cfg(all(test, windows))]
+#[path = "claude_resume_tests.rs"]
+mod claude_resume_tests;
+
 #[derive(Debug)]
 pub(crate) enum JournalError {
     Invalid(&'static str),
@@ -190,6 +194,20 @@ pub(crate) struct ClaudeSendCompleted {
     pub(crate) user: JournalDecision,
     pub(crate) terminal: stream_json::ClaudeData,
     pub(crate) vendor_session_id: String,
+}
+
+/// Transport readiness comes from the original initialize ACK. The expected
+/// vendor ID is the stopped generation's target, not a new observed identity.
+pub(crate) struct ClaudeResumeReady {
+    pub(crate) ack_source: RawSourceKey,
+    pub(crate) expected_vendor_session_id: String,
+}
+
+struct ClaudeResumeEvidence {
+    ack_source: Option<RawSourceKey>,
+    init_source: Option<RawSourceKey>,
+    expected_vendor_session_id: String,
+    phase: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -876,6 +894,28 @@ fn claude_initialize_observed_in_transaction(
     connection: &mut VerifiedDatabaseConnection<'_>, owner: &OwnerIssuer,
     input: &ClaudeSendInput<'_>,
 ) -> Result<(), JournalError> {
+    // A resumed User may proceed before init exists, but must not disregard
+    // any init already captured on this custody. UNKNOWN ACKs grant no write.
+    let current=h_binding(connection,input.user.domain_id,input.user.session_id,
+        input.user.ticket,input.user.generation,BindingUse::Prepare)?;
+    let resumed=Statement::prepare(connection.as_ptr(),
+        "SELECT request_id,raw_hex FROM main.gogoke_v37_h_process_episode
+          WHERE domain_id=?1 AND session_id=?2 AND generation=?3
+            AND process_operation_id=?4 AND old_generation IS NOT NULL")?;
+    for (index,value) in [input.user.domain_id,input.user.session_id,
+        input.user.generation,current.process_operation_id.as_str()].iter().enumerate() {
+        resumed.bind_text((index+1) as i32,value)?;
+    }
+    if resumed.step_row()? {
+        let request=resumed.column_text(0)?;
+        let raw=unhex(&resumed.column_text(1)?)?;
+        if resumed.step_row()? || request!=input.open_request_id
+            || raw!=input.open_request_bytes { return Err(JournalError::Conflict); }
+        drop(resumed);
+        read_original_claude_resume_ready(connection,input.user.domain_id,
+            input.user.session_id,input.open_request_id,input.user.generation,
+            &current.process_operation_id)?.ok_or(JournalError::Unknown)?;
+    } else { drop(resumed); }
     let (step_id, request_id) = super::rpc_journal::claude_initialize_identity(
         input.open_request_bytes);
     let command = commands::ClaudeCommand::Initialize { request_id: &request_id };
@@ -1794,7 +1834,29 @@ fn claude_init_before_result(connection: &VerifiedDatabaseConnection<'_>,
             Err(_) => return Err(JournalError::Conflict),
         }
     }
-    if found { Ok(()) } else { Err(JournalError::Unknown) }
+    if !found { return Err(JournalError::Unknown); }
+    // A matching new User echo/result alone cannot prove cold restoration.
+    // Tie the real init to the sealed old completed H/A vendor identity too.
+    let resumed=Statement::prepare(connection.as_ptr(),
+        "SELECT request_id FROM main.gogoke_v37_h_process_episode
+          WHERE domain_id=?1 AND session_id=?2 AND generation=?3
+            AND process_operation_id=?4 AND old_generation IS NOT NULL")?;
+    for (index,value) in [record.domain_id.as_str(),record.session_id.as_str(),
+        record.generation.as_str(),record.process_operation_id.as_str()].iter().enumerate() {
+        resumed.bind_text((index+1) as i32,value)?;
+    }
+    if !resumed.step_row()? { return Ok(()); }
+    let resume_request=resumed.column_text(0)?;
+    if resumed.step_row()? { return Err(JournalError::Conflict); }
+    drop(resumed);
+    let evidence=read_claude_resume_evidence(connection,&record.domain_id,
+        &record.session_id,&resume_request,&record.generation,
+        &record.process_operation_id,false,true)?.ok_or(JournalError::Unknown)?;
+    if evidence.init_source.is_none() { return Err(JournalError::Unknown); }
+    if evidence.expected_vendor_session_id!=wanted_session {
+        return Err(JournalError::Conflict);
+    }
+    Ok(())
 }
 
 fn claude_result_is_first_after_echo(connection: &VerifiedDatabaseConnection<'_>,
@@ -2251,11 +2313,32 @@ pub(crate) fn read_stopped_claude_resume_id(
 /// Read the candidate's real init metadata while the original old claim is
 /// still stopped. An initialize control ACK has no vendor session ID; only a
 /// captured system/init from this new physical process can match the old one.
-/// None leaves H resume unresolved and grants no send or promotion.
+/// None supplies no observed identity; it is distinct from ACK transport ready.
 pub(crate) fn read_original_claude_resume_init(
     connection: &VerifiedDatabaseConnection<'_>, domain: &str, session: &str,
     request_id: &str, generation: &str, process_operation: &str,
 ) -> Result<Option<RawSourceKey>, JournalError> {
+    Ok(read_claude_resume_evidence(connection,domain,session,request_id,
+        generation,process_operation,false,false)?.and_then(|evidence|evidence.init_source))
+}
+
+pub(crate) fn read_original_claude_resume_ready(
+    connection: &VerifiedDatabaseConnection<'_>, domain: &str, session: &str,
+    request_id: &str, generation: &str, process_operation: &str,
+) -> Result<Option<ClaudeResumeReady>, JournalError> {
+    let Some(evidence)=read_claude_resume_evidence(connection,domain,session,
+        request_id,generation,process_operation,true,false)? else { return Ok(None); };
+    if evidence.phase=="UNKNOWN" && evidence.init_source.is_none() { return Ok(None); }
+    let ack_source=evidence.ack_source.ok_or(JournalError::Unknown)?;
+    Ok(Some(ClaudeResumeReady {ack_source,
+        expected_vendor_session_id:evidence.expected_vendor_session_id}))
+}
+
+fn read_claude_resume_evidence(
+    connection: &VerifiedDatabaseConnection<'_>, domain: &str, session: &str,
+    request_id: &str, generation: &str, process_operation: &str,
+    observed_ack_only: bool, completed_history: bool,
+) -> Result<Option<ClaudeResumeEvidence>, JournalError> {
     let candidate = Statement::prepare(connection.as_ptr(),
         "SELECT e.old_generation,e.raw_hex,e.previous_revision,e.instance_id,
                 olde.process_operation_id,c.ticket,c.custodian_nonce,c.binary_digest_sha256,e.phase
@@ -2301,9 +2384,16 @@ pub(crate) fn read_original_claude_resume_init(
                   AND a.generation=e.generation AND a.process_operation_id=e.process_operation_id
                   AND a.state='COMMITTED')
               OR (e.phase='STOPPED' AND c.state='STOPPED' AND g.request_id IS NOT NULL
-                  AND e.stop_fact_id IS NOT NULL AND e.stop_fact_id=c.stop_proof_hash))")?;
+                  AND e.stop_fact_id IS NOT NULL AND e.stop_fact_id=c.stop_proof_hash)
+              OR (?6=1 AND e.phase IN ('ACTIVE','UNKNOWN')
+                  AND c.state IN ('ACTIVE','UNKNOWN') AND g.request_id IS NOT NULL
+                  AND a.generation=e.generation AND a.process_operation_id=e.process_operation_id
+                  AND a.state IN ('COMMITTED','UNKNOWN')))")?;
     for (index, value) in [domain,session,request_id,generation,process_operation]
         .iter().enumerate() { candidate.bind_text((index+1) as i32,value)?; }
+    // Only completed historical readback keeps its existing UNKNOWN read
+    // states. This branch cannot supply new READY or promotion/write authority.
+    candidate.bind_i64(6,if completed_history {1} else {0})?;
     if !candidate.step_row()? { return Err(JournalError::Denied); }
     let old_generation = candidate.column_text(0)?;
     let resume_bytes = unhex(&candidate.column_text(1)?)?;
@@ -2337,7 +2427,14 @@ pub(crate) fn read_original_claude_resume_init(
     }).map_err(|error|JournalError::Store(AtomicError::DurabilityContractFailed(
         format!("Claude resume initialize command: {error:?}"))))?;
     let ack = Statement::prepare(connection.as_ptr(),
-        "SELECT s.command_hex,hex(r.raw_bytes) FROM main.gogoke_v37_rpc_steps s
+        "SELECT s.command_hex,hex(r.raw_bytes),r.source_epoch,r.source_cursor
+           FROM main.gogoke_v37_rpc_steps s
+           JOIN main.gogoke_coordination_process_custody c
+             ON c.operation_id=s.process_operation_id AND c.domain_id=s.domain_id
+            AND c.generation=s.generation AND c.ticket=s.ticket
+            AND c.custodian_nonce=s.custodian_nonce AND c.pid=s.pid
+            AND c.creation_time_100ns=s.creation_time AND c.image_path=s.image_path
+            AND c.binary_digest_sha256=s.binary_digest AND c.profile_id=s.profile_id
            JOIN main.v37_ledger_raw_source r
              ON r.operation_id=s.process_operation_id AND r.source_epoch=s.source_epoch
             AND r.source_cursor=s.source_cursor AND r.process_ticket=s.ticket
@@ -2355,13 +2452,19 @@ pub(crate) fn read_original_claude_resume_init(
     let observed_ack = if ack.step_row()? {
         let command = unhex(&ack.column_text(0)?)?;
         let response = unhex(&ack.column_text(1)?)?;
+        let epoch=ack.column_text(2)?;
+        let cursor=ack.column_text(3)?;
+        if epoch!=nonce || cursor.parse::<u64>().ok().filter(|value| *value>0
+            && value.to_string()==cursor).is_none() { return Err(JournalError::Conflict); }
         if ack.step_row()? { return Err(JournalError::Conflict); }
-        Some((command,response))
+        Some((command,response,Some(RawSourceKey {operation_id:process_operation.to_owned(),
+            source_epoch:epoch,source_cursor:cursor})))
     } else { None };
     drop(ack);
-    let (command,response) = if let Some(observed_ack) = observed_ack {
+    let (command,response,ack_source) = if let Some(observed_ack) = observed_ack {
         observed_ack
     } else {
+        if observed_ack_only { return Ok(None); }
         // A read timeout keeps the RPC step UNKNOWN and its original error
         // intact. The original captured ACK may still be settled in A. It is
         // usable only with this exact deterministic command and physical
@@ -2410,7 +2513,7 @@ pub(crate) fn read_original_claude_resume_init(
             }
         }
         let Some(response)=response else { return Ok(None); };
-        (command,response)
+        (command,response,None)
     };
     let ack_data = stream_json::decode_claude_line(&response).map_err(|error|
         JournalError::Store(AtomicError::DurabilityContractFailed(
@@ -2438,14 +2541,17 @@ pub(crate) fn read_original_claude_resume_init(
                     format!("Claude resume candidate source: {error:?}"))))? {
             if session_id != wanted || epoch != nonce
                 || cursor.parse::<u64>().ok().filter(|value| *value>0
-                    && value.to_string()==cursor).is_none() || found.is_some() {
+                    && value.to_string()==cursor).is_none() {
                 return Err(JournalError::Conflict);
             }
-            found = Some(RawSourceKey { operation_id:process_operation.to_owned(),
-                source_epoch:epoch,source_cursor:cursor });
+            if found.is_none() {
+                found = Some(RawSourceKey { operation_id:process_operation.to_owned(),
+                    source_epoch:epoch,source_cursor:cursor });
+            }
         }
     }
-    Ok(found)
+    Ok(Some(ClaudeResumeEvidence {ack_source,init_source:found,
+        expected_vendor_session_id:wanted,phase}))
 }
 
 fn prepare_decoded(connection: &mut VerifiedDatabaseConnection<'_>, input: &StdinRequest<'_>,
