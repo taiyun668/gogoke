@@ -53,6 +53,41 @@ pub(crate) struct PrivateHistoryGeneration {
     pub(crate) source: Option<PrivateHistorySource>,
 }
 
+impl PrivateHistoryGeneration {
+    /// The failed resume has an original H process and observed provider error,
+    /// but no successful continuation. Root verifies that error before this CAS.
+    /// This attaches resource ownership only; it grants no continuation.
+    pub(crate) fn bind_failed_resume_source_in_transaction(&self,
+        db: &VerifiedDatabaseConnection<'_>, source: &PrivateHistorySource)
+        -> Result<(), PrivateHistoryError> {
+        validate_source(source)?;
+        unsafe extern "C" { fn sqlite3_get_autocommit(database: *mut std::ffi::c_void) -> i32; }
+        if unsafe { sqlite3_get_autocommit(db.as_ptr()) } != 0 {
+            return Err(PrivateHistoryError::Invalid("failed resume transaction absent"));
+        }
+        let original=read_private_history_generation(db,&self.binding_id,&self.generation)?
+            .ok_or(PrivateHistoryError::Unknown)?;
+        if !same_generation(&original,self) || original.predecessor_binding_id.is_none()
+            || history(db,&original.history_id)?.state!="READY" {
+            return Err(PrivateHistoryError::Conflict);
+        }
+        if let Some(bound)=original.source {
+            return if bound==*source {Ok(())} else {Err(PrivateHistoryError::Conflict)};
+        }
+        let update=Statement::prepare(db.as_ptr(),
+            "UPDATE main.gogoke_v37_instance_history_generations
+                SET process_operation_id=?3,ticket=?4,custodian_nonce=?5
+              WHERE binding_id=?1 AND generation=?2 AND history_id=?6 AND request_id=?7
+                AND predecessor_binding_id=?8 AND process_operation_id IS NULL
+                AND ticket IS NULL AND custodian_nonce IS NULL")?;
+        bind(&update,&[&self.binding_id,&self.generation,&source.process_operation_id,
+            &source.ticket,&source.custodian_nonce,&self.history_id,&self.request_id,
+            self.predecessor_binding_id.as_deref().ok_or(PrivateHistoryError::Conflict)?])?;
+        update.step_done()?;
+        changed(db)
+    }
+}
+
 /// Root constructs this only after proving STOPPED and the same trusted
 /// continuation from the original H episode/custody/RPC reply and current A.
 pub(crate) struct StoppedPrivateHistory<'a> {
@@ -600,6 +635,33 @@ mod tests {
             db.execute("ROLLBACK").unwrap();
             assert_eq!(read_private_history_generation(db, "bindingA", "1").unwrap().unwrap().source, Some(source()));
             verify_private_history(db, root, &first, &launch()).unwrap();
+        });
+    }
+    #[test]
+    fn h_source_attachment_requires_response_transaction_and_never_rebinds_failed_resume_resource_cas() {
+        fixture(|db,root| {
+            let first=create_initial_private_history(db,root,&launch()).unwrap();
+            attach(db,&first);
+            let old_source=source();
+            let old=StoppedPrivateHistory {history_id:&first.generation.history_id,
+                binding_id:"bindingA",generation:"1",request_id:"openA",source:&old_source};
+            let next=PrivateHistoryLaunch {binding_id:"bindingB",generation:"2",request_id:"resumeB",..launch()};
+            let resumed=resume_private_history(db,root,&next,&old).unwrap();
+            let future=PrivateHistorySource {process_operation_id:"failed-operation".into(),
+                ticket:"failed-ticket".into(),custodian_nonce:"failed-nonce".into()};
+            assert!(matches!(resumed.generation.bind_failed_resume_source_in_transaction(db,&future),
+                Err(PrivateHistoryError::Invalid("failed resume transaction absent"))));
+            db.execute("BEGIN IMMEDIATE").unwrap();
+            assert!(matches!(first.generation.bind_failed_resume_source_in_transaction(db,&future),
+                Err(PrivateHistoryError::Conflict)));
+            resumed.generation.bind_failed_resume_source_in_transaction(db,&future).unwrap();
+            resumed.generation.bind_failed_resume_source_in_transaction(db,&future).unwrap();
+            let changed=PrivateHistorySource {ticket:"other-ticket".into(),..future.clone()};
+            assert!(matches!(resumed.generation.bind_failed_resume_source_in_transaction(db,&changed),
+                Err(PrivateHistoryError::Conflict)));
+            db.execute("COMMIT").unwrap();
+            assert_eq!(read_private_history_generation(db,"bindingB","2").unwrap().unwrap().source,Some(future));
+            assert_eq!(read_private_history_generation(db,"bindingA","1").unwrap().unwrap().source,Some(old_source));
         });
     }
 }

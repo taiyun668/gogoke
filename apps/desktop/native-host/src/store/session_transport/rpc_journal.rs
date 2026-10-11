@@ -757,6 +757,66 @@ pub(crate) fn observed_thread_id(db: &VerifiedDatabaseConnection<'_>,
     Ok(thread)
 }
 
+/// A failed Codex resume is a typed, already observed response from this exact
+/// H episode. It authorizes only retirement of that episode's F resources.
+pub(crate) fn observed_failed_codex_resume(db:&VerifiedDatabaseConnection<'_>,
+    domain:&str,session:&str,generation:&str,request:&str,operation:&str,
+    ticket:&str,nonce:&str,old_thread:&str)
+    -> Result<Option<crate::store::instance::PrivateHistorySource>> {
+    for value in [domain,session,generation,request,operation,ticket,nonce] {
+        if !atom(value) {return Err(RpcJournalError::Denied);}
+    }
+    let step=format!("{operation}-thread-resume");
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT s.command_hex,hex(r.raw_bytes)
+           FROM main.gogoke_v37_rpc_steps s
+           JOIN main.gogoke_v37_h_process_episode e ON e.domain_id=s.domain_id
+             AND e.session_id=s.session_id AND e.generation=s.generation
+             AND e.request_id=s.open_request_id AND e.process_operation_id=s.process_operation_id
+           JOIN main.gogoke_coordination_process_custody c ON c.operation_id=s.process_operation_id
+             AND c.domain_id=s.domain_id AND c.generation=s.generation AND c.ticket=s.ticket
+             AND c.custodian_nonce=s.custodian_nonce AND c.pid=s.pid
+             AND c.creation_time_100ns=s.creation_time AND c.image_path=s.image_path
+             AND c.binary_digest_sha256=s.binary_digest AND c.profile_id=s.profile_id
+           JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id AND i.instance_id=c.profile_id
+           JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
+             AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
+             AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
+             AND r.domain_id=s.domain_id AND r.session_id=s.session_id AND r.generation=s.generation
+          WHERE s.domain_id=?1 AND s.session_id=?2 AND s.generation=?3
+            AND s.open_request_id=?4 AND s.process_operation_id=?5 AND s.ticket=?6
+            AND s.custodian_nonce=?7 AND s.step_id=?8 AND s.phase='OBSERVED'
+            AND s.requires_response=1 AND e.phase='UNKNOWN' AND e.old_generation IS NOT NULL
+            AND e.stop_fact_id IS NULL AND i.driver_id='codex'
+            AND r.state='NO_EVENT' AND r.no_event_reason='CODEX_RPC_RESPONSE'")?;
+    for (index,value) in [domain,session,generation,request,operation,ticket,nonce,&step].iter().enumerate() {
+        q.bind_text((index+1) as i32,value)?;
+    }
+    if !q.step_row()? {return Ok(None);}
+    let command=unhex(&q.column_text(0)?)?;
+    let response=unhex(&q.column_text(1)?)?;
+    if q.step_row()? {return Err(RpcJournalError::Conflict);}
+    let Json::Object(fields)=Parser::parse(std::str::from_utf8(&command)
+        .map_err(|_|RpcJournalError::Denied)?.trim_end_matches('\n'))? else {
+        return Err(RpcJournalError::Denied);
+    };
+    let Some(Json::Object(params))=fields.get(&JsonString::from_str("params")) else {
+        return Err(RpcJournalError::Denied);
+    };
+    let Some(Json::String(thread))=params.get(&JsonString::from_str("threadId")) else {
+        return Err(RpcJournalError::Denied);
+    };
+    if thread.to_well_formed_string().as_deref()!=Some(old_thread) {
+        return Err(RpcJournalError::Denied);
+    }
+    match codex_rpc::decode_stored_thread_resume(&command,&response) {
+        Err(codex_rpc::RpcError::RemoteResponse(raw)) if raw==response =>
+            Ok(Some(crate::store::instance::PrivateHistorySource {
+                process_operation_id:operation.into(),ticket:ticket.into(),custodian_nonce:nonce.into() })),
+        _=>Err(RpcJournalError::Denied),
+    }
+}
+
 fn generation_episode_old(db: &VerifiedDatabaseConnection<'_>, domain: &str,
     session: &str, operation: &str, generation: &str,
     request_id: &str) -> Result<Option<(bool,String)>> {
@@ -3482,6 +3542,56 @@ mod tests {
         let value=query.column_text(0).unwrap();
         assert!(!query.step_row().unwrap());
         value
+    }
+
+    #[test]
+    fn h_source_attachment_requires_response_transaction_and_never_rebinds_failed_resume_typed_remote_error() {
+        let _guard=route_b_test_guard();
+        let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("gogoke-failed-resume-rpc-{}-{stamp}",std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let mut db=create_new(&root,&path.join("state.sqlite")).unwrap();
+        initialize_schema(&mut db).unwrap();
+        db.execute("CREATE TABLE gogoke_v37_h_process_episode(domain_id TEXT,session_id TEXT,generation TEXT,
+            request_id TEXT,process_operation_id TEXT,phase TEXT,old_generation TEXT,stop_fact_id TEXT,instance_id TEXT) STRICT").unwrap();
+        db.execute("CREATE TABLE gogoke_coordination_process_custody(operation_id TEXT,domain_id TEXT,generation TEXT,
+            ticket TEXT,custodian_nonce TEXT,pid TEXT,creation_time_100ns TEXT,image_path TEXT,
+            binary_digest_sha256 TEXT,profile_id TEXT) STRICT").unwrap();
+        db.execute("CREATE TABLE gogoke_v37_instances(instance_id TEXT,driver_id TEXT) STRICT").unwrap();
+        db.execute("CREATE TABLE v37_ledger_raw_source(operation_id TEXT,source_epoch TEXT,source_cursor TEXT,
+            process_ticket TEXT,custodian_nonce TEXT,domain_id TEXT,session_id TEXT,generation TEXT,
+            raw_bytes BLOB,state TEXT,no_event_reason TEXT) STRICT").unwrap();
+        db.execute("INSERT INTO gogoke_v37_h_process_episode VALUES('global','session','4','resume',
+            'process','UNKNOWN','3',NULL,'instance')").unwrap();
+        db.execute("INSERT INTO gogoke_coordination_process_custody VALUES('process','global','4',
+            'ticket','nonce','123','456','image','digest','instance')").unwrap();
+        db.execute("INSERT INTO gogoke_v37_instances VALUES('instance','codex')").unwrap();
+        let command=Command::ThreadResume {thread_id:"thread-old".into(),cwd:"C:\\fixture".into(),
+            model:"gpt-6-sol".into()}.encode(Some(&RpcId::client(3).unwrap())).unwrap();
+        let error=b"{\"error\":{\"code\":-32600,\"message\":\"no rollout found for thread id thread-old\"},\"id\":3}\n";
+        let step=Statement::prepare(db.as_ptr(),"INSERT INTO gogoke_v37_rpc_steps(domain_id,session_id,
+            open_request_id,step_id,process_operation_id,ticket,custodian_nonce,pid,creation_time,
+            image_path,binary_digest,profile_id,generation,command_hex,requires_response,phase,
+            source_epoch,source_cursor) VALUES('global','session','resume','process-thread-resume',
+            'process','ticket','nonce','123','456','image','digest','instance','4',?1,1,'OBSERVED','nonce','1')").unwrap();
+        step.bind_text(1,&command.iter().map(|b|format!("{b:02x}")).collect::<String>()).unwrap();
+        step.step_done().unwrap();drop(step);
+        let raw=Statement::prepare(db.as_ptr(),"INSERT INTO v37_ledger_raw_source VALUES('process','nonce','1',
+            'ticket','nonce','global','session','4',?1,'NO_EVENT','CODEX_RPC_RESPONSE')").unwrap();
+        raw.bind_blob(1,error).unwrap();raw.step_done().unwrap();drop(raw);
+        let observe=|db:&VerifiedDatabaseConnection<'_>,thread:&str| observed_failed_codex_resume(db,
+            "global","session","4","resume","process","ticket","nonce",thread);
+        assert!(observe(&db,"thread-old").unwrap().is_some());
+        assert!(observe(&db,"other-thread").is_err());
+        db.execute("UPDATE gogoke_v37_rpc_steps SET phase='UNKNOWN',source_epoch=NULL,source_cursor=NULL,
+            original_error='write failure'").unwrap();
+        assert!(observe(&db,"thread-old").unwrap().is_none());
+        db.execute("UPDATE gogoke_v37_rpc_steps SET phase='OBSERVED',source_epoch='nonce',
+            source_cursor='1',original_error=NULL").unwrap();
+        db.execute("UPDATE v37_ledger_raw_source SET no_event_reason='OTHER'").unwrap();
+        assert!(observe(&db,"thread-old").unwrap().is_none());
+        db.close_checked().unwrap();drop(root);fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

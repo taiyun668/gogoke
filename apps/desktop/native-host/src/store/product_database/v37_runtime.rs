@@ -815,6 +815,21 @@ impl<'root> ProductDatabase<'root> {
                 Ok(next)=>{self.finish_native_transaction(Ok(()))?;next},
                 Err(error)=>{self.finish_native_transaction(Err(error))?;unreachable!()}
             };
+            // An observed provider rejection still owns this generation's F
+            // credential profile. Bind its original physical source without
+            // promoting H or turning the rejection into a StopFact.
+            if driver_id=="codex" && failure(rpc::observed_failed_codex_resume(
+                &self.connection,&request.domain_id,&request.target_id,&new_generation,
+                &request.request_id,&operation_id,&custody.ticket.opaque(),
+                &custody.custodian_nonce,&thread_id))?.is_some() {
+                failure(self.connection.execute("BEGIN IMMEDIATE"))?;
+                let bound=(||->Result<()> {
+                    authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
+                    let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
+                    failure(run.evidence.bind_original_history_source(&self.connection,&custody,&operation_id))
+                })();
+                self.finish_native_transaction(bound)?;
+            }
             return Ok(encode_receipt(request,V37Status::Unknown,effective_revision,
                 u64::try_from(next).map_err(|_|OrchestrationError::OperationConflict)?,
                 BTreeMap::from([
