@@ -66,6 +66,7 @@ pub(crate) struct LaunchEvidence {
     tier: PermissionTier,
     resume_old: Option<ClaimObservation>,
     resume_request_id: Option<String>,
+    claude_resume_id: Option<String>,
     launch_admission: Option<seat::NativeLeadAdmission>,
     host_guard: Option<(HostEscalationProof,HostRecipient)>,
 }
@@ -507,6 +508,15 @@ impl LaunchEvidence {
         if !supported_driver_version(&pin) {
             return Err("native session launch: unsupported pinned driver/version".into());
         }
+        let claude_resume_id = if pin.driver_id == "claude" {
+            if let Some(old) = &resume_old {
+                let operation = old.process_operation_id.as_deref()
+                    .ok_or("native Claude resume: stopped process absent")?;
+                Some(evidence(super::journal::read_stopped_claude_resume_id(db,
+                    domain_id,session_id,&old.generation,operation,&old.instance_id,&pin.digest))?
+                    .ok_or("native Claude resume: verified old vendor session absent")?)
+            } else { None }
+        } else { None };
         let profile_name = original_session_profile_name(
             &root.canonical_root().identity.opaque(), domain_id, session_id,
             &seat.incarnation, &claim.generation);
@@ -641,7 +651,7 @@ impl LaunchEvidence {
             credential,grok_home,
             launch_request_id:request_id.into(),directory,
             profile, profile_name, program, program_identity, code_mode, module, directory_roots, tier,
-            resume_old,resume_request_id,launch_admission,
+            resume_old,resume_request_id,claude_resume_id,launch_admission,
             host_guard:host_guard.map(|(proof,choice)|(proof.clone(),choice.clone())) };
         if let Err(original) = observed.verify(db, root, owner, None) {
             let cleanup = observed.revoke_uncreated_credential(db,root);
@@ -751,6 +761,7 @@ impl LaunchEvidence {
         self.claim=next_claim;
         self.resume_old=None;
         self.resume_request_id=None;
+        self.claude_resume_id=None;
         Ok(())
     }
 
@@ -762,6 +773,18 @@ impl LaunchEvidence {
             || evidence(seat::get(db, &self.seat.domain_id, &self.seat.seat_id))?.as_ref() != Some(&self.seat)
             || evidence(runtime::current_instance_pin(db, &self.claim.instance_id))? != self.pin {
             return Err("native session launch: current identity/seat/pin changed".into());
+        }
+        if self.pin.driver_id == "claude" {
+            if let Some(old) = &self.resume_old {
+                let operation=old.process_operation_id.as_deref()
+                    .ok_or("native Claude resume: old process disappeared")?;
+                let verified=evidence(super::journal::read_stopped_claude_resume_id(db,
+                    &self.claim.domain_id,&self.claim.session_id,&old.generation,
+                    operation,&old.instance_id,&self.pin.digest))?;
+                if verified.as_deref()!=self.claude_resume_id.as_deref() {
+                    return Err("native Claude resume: original vendor source changed".into());
+                }
+            }
         }
         if matches!(&self.directory,LaunchDirectory::SecretarySessionHome(_)) {
             let current=evidence(seat::require_secretary_session(db,owner,
@@ -1044,6 +1067,12 @@ impl LaunchEvidence {
         Ok((field("model")?, evidence(seat::seat_effort(&self.seat))?))
     }
 
+    /// This identity was reconstructed from the old stopped H/A User result.
+    /// It is an argv input, not proof that the candidate restored context.
+    pub(crate) fn claude_resume_id(&self) -> Option<&str> {
+        self.claude_resume_id.as_deref()
+    }
+
     pub(crate) fn request(&self) -> Result<PrepareRequest, String> {
         let system_root = evidence(std::env::var("SystemRoot"))?;
         if !Path::new(&system_root).is_absolute() || system_root.contains('\0') {
@@ -1113,7 +1142,8 @@ impl LaunchEvidence {
             "app-server".into()] } else { match self.pin.driver_id.as_str() {
                 "claude" => {
                     let (model,effort)=self.settings()?;
-                    let mut args=evidence(commands::claude_launch_args(&model,&effort,None))?;
+                    let mut args=evidence(commands::claude_launch_args(&model,&effort,
+                        self.claude_resume_id.as_deref()))?;
                     // The fixed 2.1.196 stdio permission host is required for
                     // AskUserQuestion control_request frames. This flag does
                     // not grant approval for ordinary tool permissions.
