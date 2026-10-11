@@ -1784,7 +1784,10 @@ fn claude_init_before_result(connection: &VerifiedDatabaseConnection<'_>,
         let raw = unhex(&q.column_text(0)?)?;
         match stream_json::decode_claude_line(&raw) {
             Ok(stream_json::ClaudeData::Init { session_id, .. }) => {
-                if session_id != wanted_session || found { return Err(JournalError::Conflict); }
+                // The fixed CLI can repeat system/init before later turns in
+                // one process. Every observed identity must still agree with
+                // the exact User echo; a different session remains a conflict.
+                if session_id != wanted_session { return Err(JournalError::Conflict); }
                 found = true;
             }
             Ok(_) => {},
@@ -3107,6 +3110,65 @@ mod tests {
             generation: "1",
             request_bytes: bytes,
         }
+    }
+
+    #[test]
+    fn claude_second_result_accepts_same_session_init_and_rejects_changed_identity() {
+        // Redacted shape and ordering of the fixed 2.1.196 two-turn source:
+        // init 2, User 4, result 6, init 7, User 8, result 10. No account,
+        // usage, prompt, or local path from the original capture is stored here.
+        let _guard = route_b_test_guard();
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let folder = std::env::temp_dir().join(format!("gogoke-claude-init-{stamp}"));
+        std::fs::create_dir(&folder).unwrap();
+        let root = RootLock::acquire(&folder).unwrap();
+        let path = folder.join("state.sqlite");
+        let mut db = create_new(&root, &path).unwrap();
+        setup_schema(&mut db);
+        insert_fake_custody(&mut db);
+        db.execute("CREATE TABLE orchestration_events(event_id TEXT PRIMARY KEY,sequence INTEGER UNIQUE) STRICT").unwrap();
+        crate::store::ledger::initialize_schema(&mut db).unwrap();
+        let record = StdinJournalRecord {
+            domain_id: "projectA".into(), request_id: "sendB".into(), operation: "send".into(),
+            ticket: "pct1_ticketA".into(), process_operation_id: "processA".into(),
+            custodian_nonce: "nonceA".into(), session_id: "sessionA".into(), generation: "1".into(),
+            request_bytes: Vec::new(), state: JournalState::Prepared, receipt_bytes: None,
+            receipt_status: None, expected_revision: 4, receipt_previous_revision: None,
+            receipt_revision: None,
+        };
+        let frames: &[(i32, &[u8], &str, Option<&str>, Option<&str>)] = &[
+            (2, b"{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"vendorA\"}\n", "PENDING", None, None),
+            (4, b"{\"type\":\"user\",\"session_id\":\"vendorA\",\"uuid\":\"first\",\"parent_tool_use_id\":null,\"message\":{\"role\":\"user\",\"content\":\"first\"}}\n", "NO_EVENT", None, Some("CLAUDE_STDIN_ACK")),
+            (5, b"{\"type\":\"assistant\",\"session_id\":\"vendorA\"}\n", "RESOLVED", Some("event5"), None),
+            (6, b"{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"vendorA\"}\n", "NO_EVENT", None, Some(CLAUDE_RESULT_NO_EVENT)),
+            (7, b"{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"vendorA\"}\n", "PENDING", None, None),
+            (8, b"{\"type\":\"user\",\"session_id\":\"vendorA\",\"uuid\":\"second\",\"parent_tool_use_id\":null,\"message\":{\"role\":\"user\",\"content\":\"second\"}}\n", "NO_EVENT", None, Some("CLAUDE_STDIN_ACK")),
+            (9, b"{\"type\":\"assistant\",\"session_id\":\"vendorA\"}\n", "RESOLVED", Some("event9"), None),
+            (10, b"{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"vendorA\"}\n", "PENDING", None, None),
+        ];
+        for (cursor, raw, state, event, reason) in frames {
+            let q = Statement::prepare(db.as_ptr(),
+                "INSERT INTO main.v37_ledger_raw_source(operation_id,process_ticket,custodian_nonce,domain_id,session_id,generation,source_epoch,source_cursor,raw_bytes,state,resolved_event_id,no_event_reason) VALUES('processA','pct1_ticketA','nonceA','projectA','sessionA','1','nonceA',?1,?2,?3,?4,?5)").unwrap();
+            q.bind_text(1, &cursor.to_string()).unwrap();
+            q.bind_blob(2, raw).unwrap(); q.bind_text(3, state).unwrap();
+            if let Some(event) = event { q.bind_text(4, event).unwrap(); }
+            if let Some(reason) = reason { q.bind_text(5, reason).unwrap(); }
+            q.step_done().unwrap();
+        }
+        claude_init_before_result(&db, &record, "nonceA", 6, "vendorA").unwrap();
+        claude_result_is_first_after_echo(&db, &record, "nonceA", 4, 6).unwrap();
+        claude_init_before_result(&db, &record, "nonceA", 10, "vendorA").unwrap();
+        claude_result_is_first_after_echo(&db, &record, "nonceA", 8, 10).unwrap();
+        assert!(matches!(claude_result_is_first_after_echo(&db, &record, "nonceA", 4, 10),
+            Err(JournalError::Conflict)), "the old result cannot settle the second User");
+        let changed = Statement::prepare(db.as_ptr(),
+            "UPDATE main.v37_ledger_raw_source SET raw_bytes=?1 WHERE operation_id='processA' AND source_epoch='nonceA' AND source_cursor='7'").unwrap();
+        changed.bind_blob(1, b"{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"vendorB\"}\n").unwrap();
+        changed.step_done().unwrap();
+        drop(changed);
+        assert!(matches!(claude_init_before_result(&db, &record, "nonceA", 10, "vendorA"),
+            Err(JournalError::Conflict)), "a later init cannot switch vendor sessions");
+        db.close_checked().unwrap(); drop(root); std::fs::remove_dir_all(folder).unwrap();
     }
 
     #[test]
