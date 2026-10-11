@@ -451,7 +451,8 @@ fn candidate_binding_fields(db: &VerifiedDatabaseConnection<'_>,
     if q.step_row()? || !required_state.contains(&state.as_str())
         || !(matches!(phase.as_str(),"PREPARED"|"ACTIVE") || observation_of_unknown)
         || !matches!((driver.as_str(),version.as_str()),
-            ("codex","0.160.0") | ("opencode","1.18.32") | ("grok","1.0.41")) {
+            ("codex","0.160.0") | ("opencode","1.18.32") | ("grok","1.0.41")
+            | ("claude","2.1.196")) {
         return Err(RpcJournalError::Denied);
     }
     Ok(Some((operation,driver)))
@@ -594,7 +595,8 @@ fn plain_protocol_resume_episode(db: &VerifiedDatabaseConnection<'_>, domain: &s
         else {after.parse::<u64>().ok()==Some(claim)};
     Ok(adjacent && before==request.expected_revision && claim_matches
         && matches!((driver.as_str(),version.as_str()),
-            ("codex","0.160.0")|("opencode","1.18.32")|("grok","1.0.41")))
+            ("codex","0.160.0")|("opencode","1.18.32")|("grok","1.0.41")
+            |("claude","2.1.196")))
 }
 
 /// A native-only proof that a prepared C steer has no H writer step and that
@@ -2704,6 +2706,29 @@ pub(crate) fn mark_grok_permission_unknown(db:&mut VerifiedDatabaseConnection<'_
     transition_grok_permission(db,owner,step,Phase::Unknown,Some(original_error))
 }
 
+/// The sole pre-promotion Claude candidate writer is its deterministic
+/// initialize control request. The existing candidate verifier checks the
+/// stopped old claim/StopFact, exact resume User bytes, E/F/home, and new
+/// physical custody. An ordinary Claude User remains on current COMMITTED H.
+fn claude_initialize_binding(db:&VerifiedDatabaseConnection<'_>,step:&ClaudeStep<'_>,
+    required_state:&[&str],allow_unknown_claim:bool)->Result<(String,String)> {
+    if let commands::ClaudeCommand::Initialize { request_id }=step.command {
+        let (expected_step,expected_id)=claude_initialize_identity(step.open_request_bytes);
+        if step.step_id!=expected_step || *request_id!=expected_id {
+            return Err(RpcJournalError::Denied);
+        }
+        if let Some((operation,driver))=candidate_binding_fields(db,&step.fields(),required_state)? {
+            if driver!="claude" || !plain_protocol_resume_episode(db,step.domain_id,
+                step.session_id,step.open_request_id,&operation,
+                &step.custody.binding.generation,step.open_request_bytes)? {
+                return Err(RpcJournalError::Denied);
+            }
+            return Ok((operation,driver));
+        }
+    }
+    assert_current_binding(db,&step.fields(),required_state,allow_unknown_claim)
+}
+
 /// Persist original Claude stdin intent before the physical writer. An
 /// existing row is readback only; neither replay nor UNKNOWN permits resend.
 pub(crate) fn prepare_claude(db: &mut VerifiedDatabaseConnection<'_>,
@@ -2725,7 +2750,7 @@ pub(super) fn prepare_claude_in_transaction(db: &mut VerifiedDatabaseConnection<
     }
     check_owner_in_current_transaction(db, owner)?;
     original_open(db, &step.fields())?;
-    let (operation, driver) = assert_current_binding(db, &step.fields(),
+    let (operation, driver) = claude_initialize_binding(db, step,
         &["PREPARED", "ACTIVE"], false)?;
     let encoded = claude_bytes(step, &driver)?;
     if let Some(phase) = same_row(db, &step.fields(), &operation, &encoded)? {
@@ -2748,7 +2773,7 @@ fn transition_claude_in_transaction(db: &mut VerifiedDatabaseConnection<'_>,
     original_open(db, &step.fields())?;
     let states = if next == Phase::Unknown { &["ACTIVE", "UNKNOWN"][..] }
         else { &["ACTIVE"][..] };
-    let (operation, driver) = assert_current_binding(db, &step.fields(), states,
+    let (operation, driver) = claude_initialize_binding(db, step, states,
         next == Phase::Unknown)?;
     let encoded = claude_bytes(step, &driver)?;
     transition_row(db, &step.fields(), &operation, &encoded, next, error)
@@ -2783,7 +2808,7 @@ pub(super) fn observe_claude_captured_ack_in_transaction(
 ) -> Result<(stream_json::ClaudeData, Vec<u8>)> {
     check_owner_in_current_transaction(db, owner)?;
     original_open(db, &step.fields())?;
-    let (operation, driver) = assert_current_binding(db, &step.fields(),
+    let (operation, driver) = claude_initialize_binding(db, step,
         &["ACTIVE", "UNKNOWN"], false)?;
     let encoded = claude_bytes(step, &driver)?;
     if key.operation_id != operation { return Err(RpcJournalError::Denied); }
@@ -2834,7 +2859,7 @@ pub(super) fn read_observed_claude_ack_in_transaction(
 ) -> Result<Option<(stream_json::ClaudeData, Vec<u8>)>> {
     check_owner_in_current_transaction(db, owner)?;
     original_open(db, &step.fields())?;
-    let (operation, driver) = assert_current_binding(db, &step.fields(),
+    let (operation, driver) = claude_initialize_binding(db, step,
         &["ACTIVE", "UNKNOWN"], false)?;
     let encoded = claude_bytes(step, &driver)?;
     if same_row(db, &step.fields(), &operation, &encoded)? != Some(Phase::Observed) {
