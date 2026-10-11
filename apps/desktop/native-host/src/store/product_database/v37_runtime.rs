@@ -142,6 +142,351 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+// The request identity is shared with cold validation of the completed F-only
+// revoke. It names one ordinary H admission-release of the original stopped
+// claim; neither the failed resume nor its UNKNOWN receipt is replayed.
+pub(super) fn secretary_empty_release_request_id(root:&str,session:&str,
+    generation:&str,revision:&str,stop_fact:&str)->String {
+    let identity=format!("secretary-empty-release\n{root}\n{session}\n{generation}\n{revision}\n{stop_fact}");
+    format!("resident-release-{}",&crate::store::digest::sha256_hex(identity.as_bytes())[..40])
+}
+
+fn empty_thread_rows(db:&VerifiedDatabaseConnection<'_>,sql:&str,
+    args:&[&str],columns:usize)->Result<Vec<Vec<String>>> {
+    let q=Statement::prepare(db.as_ptr(),sql)?;
+    for (index,value) in args.iter().enumerate() {q.bind_text((index+1) as i32,value)?;}
+    let mut result=Vec::new();
+    while q.step_row()? {
+        let mut row=Vec::with_capacity(columns);
+        for column in 0..columns {row.push(q.column_text(column as i32)?);}
+        result.push(row);
+    }
+    Ok(result)
+}
+
+fn empty_thread_frame(source:&str)->Option<Json> {
+    if source.len()>262144 || source.len()%2!=0 || !source.bytes().all(|b|
+        b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || (b'A'..=b'F').contains(&b)) {return None;}
+    let bytes:Vec<u8>=source.as_bytes().chunks_exact(2).map(|pair|{
+        let digit=|b:u8|if b.is_ascii_digit(){b-b'0'}
+            else if b.is_ascii_lowercase(){b-b'a'+10}else{b-b'A'+10};
+        (digit(pair[0])<<4)|digit(pair[1])
+    }).collect();
+    Parser::parse(std::str::from_utf8(&bytes).ok()?.trim_end_matches('\n')).ok()
+}
+
+fn empty_thread_string(value:Option<&Json>)->Option<String> {
+    let Some(Json::String(value))=value else{return None};
+    value.to_well_formed_string()
+}
+
+fn empty_thread_object(value:Option<&Json>)->Option<&BTreeMap<JsonString,Json>> {
+    let Some(Json::Object(value))=value else{return None};
+    Some(value)
+}
+
+#[derive(Clone)]
+struct EmptySecretaryEpisode {
+    generation:String,old_generation:String,request:String,operation:String,
+    binding:String,instance:String,home:String,seat:String,incarnation:String,
+    phase:String,stop_fact:String,stop_request:String,ticket:String,nonce:String,
+    pid:String,creation:String,image:String,binary:String,custody_state:String,custody_stop:String,
+}
+
+struct EmptySecretaryThread {
+    generation:String,revision:String,stop_fact:String,
+}
+
+impl ProductDatabase<'_> {
+    // This is an original-fact classification, not a test for a missing rollout
+    // string. Every product send path first writes H stdin/RPC intent. A stopped
+    // initial generation with no such intent has never started a model turn by
+    // this product, even though stdout EOF is not a durable database field.
+    fn original_empty_secretary_thread(&self,session:&str,generation:&str,
+        revision:&str)->Result<Option<EmptySecretaryThread>> {
+        use crate::store::seat::SecretaryConfiguration;
+        let SecretaryConfiguration::Designated {seat_id,incarnation,
+            instance_id:Some(instance),..}=failure(seat::read_secretary_configuration_in_transaction(
+                &self.connection,&self.owner))? else{return Ok(None)};
+        let seat=failure(seat::require_secretary_session(&self.connection,&self.owner,
+            &seat_id,&incarnation))?;
+        if seat.state!=seat::State::Busy || seat.instance_id!=instance ||
+            failure(crate::store::ledger::read_registered_session(&self.connection,session))?
+                .is_none_or(|row|row.domain_id!="global" || row.seat_id!=seat_id ||
+                    row.purpose!=SessionPurpose::Secretary) {return Ok(None);}
+        let claim=empty_thread_rows(&self.connection,
+            "SELECT a.instance_id,a.home_id,a.binding_id,a.generation,a.state,CAST(a.revision AS TEXT),
+                    COALESCE(a.process_operation_id,''),COALESCE(a.stop_fact_id,''),
+                    s.seat_id,s.seat_incarnation,CAST(s.seat_authorization_generation AS TEXT),
+                    i.driver_id,i.version
+               FROM main.gogoke_v37_h_claim a JOIN main.gogoke_v37_effective_seat s
+                 ON s.domain_id=a.domain_id AND s.session_id=a.session_id AND s.generation=a.generation
+               JOIN main.gogoke_v37_instances i ON i.instance_id=a.instance_id
+              WHERE a.domain_id='global' AND a.session_id=?1",&[session],13)?;
+        if claim.len()!=1 {return Ok(None)};
+        let c=&claim[0];
+        if c[0]!=instance || c[3]!=generation || c[4]!="STOPPED" || c[5]!=revision ||
+            c[6].is_empty() || c[7].is_empty() || c[8]!=seat_id || c[9]!=incarnation ||
+            c[10]!=generation || c[11]!="codex" || c[12]!="0.160.0" ||
+            seat.generation.to_string()!=generation {return Ok(None)}
+        let episodes=empty_thread_rows(&self.connection,
+            "SELECT e.generation,COALESCE(e.old_generation,''),e.request_id,
+                    COALESCE(e.process_operation_id,''),e.binding_id,e.instance_id,e.home_id,
+                    COALESCE(e.seat_id,''),COALESCE(e.seat_incarnation,''),e.phase,
+                    COALESCE(e.stop_fact_id,''),COALESCE(e.stop_request_id,''),
+                    c.ticket,c.custodian_nonce,c.pid,c.creation_time_100ns,c.image_path,
+                    c.binary_digest_sha256,c.state,COALESCE(c.stop_proof_hash,'')
+               FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_coordination_process_custody c
+                 ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
+                AND c.generation=e.generation AND c.profile_id=e.instance_id
+              WHERE e.domain_id='global' AND e.session_id=?1 ORDER BY e.generation",&[session],20)?;
+        let episode_count=empty_thread_rows(&self.connection,
+            "SELECT CAST(COUNT(*) AS TEXT) FROM main.gogoke_v37_h_process_episode
+              WHERE domain_id='global' AND session_id=?1",&[session],1)?;
+        if episodes.is_empty() || episodes.len()>2 || episode_count!=vec![vec![episodes.len().to_string()]] {
+            return Ok(None);
+        }
+        let episode=|r:&Vec<String>|EmptySecretaryEpisode {
+            generation:r[0].clone(),old_generation:r[1].clone(),request:r[2].clone(),
+            operation:r[3].clone(),binding:r[4].clone(),instance:r[5].clone(),home:r[6].clone(),
+            seat:r[7].clone(),incarnation:r[8].clone(),phase:r[9].clone(),stop_fact:r[10].clone(),
+            stop_request:r[11].clone(),ticket:r[12].clone(),nonce:r[13].clone(),pid:r[14].clone(),
+            creation:r[15].clone(),image:r[16].clone(),binary:r[17].clone(),
+            custody_state:r[18].clone(),custody_stop:r[19].clone()};
+        let episodes:Vec<_>=episodes.iter().map(episode).collect();
+        let Some(old)=episodes.iter().find(|e|e.old_generation.is_empty()) else{return Ok(None)};
+        if episodes.iter().filter(|e|e.old_generation.is_empty()).count()!=1 ||
+            old.generation!=generation || old.operation!=c[6] || old.binding!=c[2] ||
+            old.instance!=instance || old.home!=c[1] || old.seat!=seat_id ||
+            old.incarnation!=incarnation || old.phase!="STOPPED" ||
+            old.custody_state!="STOPPED" || old.stop_fact!=c[7] ||
+            old.custody_stop!=c[7] || old.stop_request.is_empty() {return Ok(None)}
+        let stopped=empty_thread_rows(&self.connection,
+            "SELECT operation,status,CAST(revision AS TEXT) FROM main.gogoke_v37_h_operation
+              WHERE domain_id='global' AND session_id=?1 AND request_id=?2",
+            &[session,&old.stop_request],3)?;
+        if stopped.len()!=1 || stopped[0][0]!="stop" || stopped[0][1]!="APPLIED" {
+            return Ok(None);
+        }
+        let stop_revision=stopped[0][2].parse::<u64>().ok();
+        let child=episodes.iter().find(|e|!e.old_generation.is_empty());
+        if episodes.len()!=1+usize::from(child.is_some()) {return Ok(None)}
+        if let Some(child)=child {
+            let adjacent=generation.parse::<u64>().ok().and_then(|old|old.checked_add(1))
+                ==child.generation.parse::<u64>().ok();
+            if !adjacent || child.old_generation!=generation || child.instance!=instance ||
+                child.home.is_empty() || child.seat!=seat_id || child.incarnation!=incarnation ||
+                child.phase!="UNKNOWN" || !child.stop_fact.is_empty() ||
+                !child.custody_stop.is_empty() ||
+                !matches!(child.custody_state.as_str(),"ACTIVE"|"UNKNOWN") {return Ok(None)}
+            let f=empty_thread_rows(&self.connection,
+                "SELECT p.state,d.phase,g.request_id,COALESCE(g.predecessor_binding_id,''),
+                        COALESCE(g.process_operation_id,''),COALESCE(g.ticket,''),
+                        COALESCE(g.custodian_nonce,''),d.snapshot_hex
+                   FROM main.gogoke_v37_credential_profiles p
+                   JOIN main.gogoke_v37_instance_history_generations g ON g.binding_id=p.binding_id
+                   JOIN main.gogoke_v37_holder_disappearance d ON d.binding_id=p.binding_id
+                  WHERE p.binding_id=?1 AND p.instance_id=?2 AND p.generation=?3
+                    AND d.instance_id=p.instance_id AND d.process_operation_id=?4",
+                &[&child.binding,&instance,&child.generation,&child.operation],8)?;
+            if f.len()!=1 || f[0][0]!="REVOKED" || f[0][1]!="REVOKED" ||
+                f[0][2]!=child.request || f[0][3]!=old.binding ||
+                f[0][4]!=child.operation || f[0][5]!=child.ticket || f[0][6]!=child.nonce {
+                return Ok(None);
+            }
+            let pending=empty_thread_rows(&self.connection,
+                "SELECT request_id FROM main.gogoke_v37_h_operation
+                  WHERE domain_id='global' AND session_id=?1 AND request_id=?2",
+                &[session,&child.request],1)?;
+            if !pending.is_empty() {return Ok(None)}
+            let original=empty_thread_rows(&self.connection,
+                "SELECT raw_hex,CAST(previous_revision AS TEXT),
+                        COALESCE(CAST(result_revision AS TEXT),'')
+                   FROM main.gogoke_v37_h_process_episode WHERE domain_id='global'
+                    AND session_id=?1 AND request_id=?2 AND generation=?3
+                    AND process_operation_id=?4",
+                &[session,&child.request,&child.generation,&child.operation],3)?;
+            if original.len()!=1 || original[0][1].parse::<u64>().ok()!=stop_revision ||
+                original[0][2]!=revision || stop_revision.and_then(|value|value.checked_add(1))
+                    !=revision.parse::<u64>().ok() {return Ok(None)}
+            let Some(Json::Object(frame))=empty_thread_frame(&original[0][0]) else{return Ok(None)};
+            let Some(payload)=empty_thread_object(frame.get(&JsonString::from_str("payload")))
+                else{return Ok(None)};
+            if empty_thread_string(frame.get(&JsonString::from_str("family"))).as_deref()!=Some("K-SESSION")
+                || empty_thread_string(frame.get(&JsonString::from_str("operation"))).as_deref()!=Some("resume")
+                || empty_thread_string(frame.get(&JsonString::from_str("domainId"))).as_deref()!=Some("global")
+                || empty_thread_string(frame.get(&JsonString::from_str("targetId"))).as_deref()!=Some(session)
+                || empty_thread_string(frame.get(&JsonString::from_str("requestId"))).as_deref()!=Some(child.request.as_str())
+                || empty_thread_string(frame.get(&JsonString::from_str("expectedRevision")))
+                    !=Some(stopped[0][2].clone()) || payload.len()!=1
+                || empty_thread_string(payload.get(&JsonString::from_str("generation"))).as_deref()
+                    !=Some(generation) {return Ok(None)}
+            let Some(Json::Object(capture))=empty_thread_frame(&f[0][7]) else{return Ok(None)};
+            if empty_thread_string(capture.get(&JsonString::from_str("kind"))).as_deref()
+                !=Some("FAILED_RESUME_PROFILE_ONLY_V1") ||
+                empty_thread_string(capture.get(&JsonString::from_str("binding"))).as_deref()
+                !=Some(child.binding.as_str()) {return Ok(None)}
+        }
+        let unknown=empty_thread_rows(&self.connection,
+            "SELECT request_id FROM main.gogoke_v37_h_operation WHERE domain_id='global'
+              AND session_id=?1 AND status='UNKNOWN'",&[session],1)?;
+        if !unknown.is_empty() {return Ok(None)}
+        let stdin=empty_thread_rows(&self.connection,
+            "SELECT request_id FROM main.gogoke_v37_h_stdin_journal
+              WHERE domain_id='global' AND session_id=?1",&[session],1)?;
+        if !stdin.is_empty() {return Ok(None)}
+        let changes=empty_thread_rows(&self.connection,
+            "SELECT request_id FROM main.gogoke_v37_h_generation_change
+              WHERE domain_id='global' AND session_id=?1",&[session],1)?;
+        if !changes.is_empty() {return Ok(None)}
+        let thread=failure(rpc::observed_thread_id(&self.connection,"global",session,&old.operation,
+            generation,&old.request,&old.ticket,&old.nonce))?;
+        if thread.is_empty() {return Ok(None)}
+        let start=empty_thread_rows(&self.connection,
+            "SELECT s.command_hex,hex(r.raw_bytes) FROM main.gogoke_v37_rpc_steps s
+               JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id
+                AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce
+                AND r.domain_id=s.domain_id AND r.session_id=s.session_id
+                AND r.generation=s.generation AND r.source_epoch=s.source_epoch
+                AND r.source_cursor=s.source_cursor
+              WHERE s.domain_id='global' AND s.session_id=?1 AND s.generation=?2
+                AND s.open_request_id=?3 AND s.process_operation_id=?4
+                AND s.ticket=?5 AND s.custodian_nonce=?6 AND s.pid=?7
+                AND s.creation_time=?8 AND s.image_path=?9 AND s.binary_digest=?10
+                AND s.profile_id=?11 AND s.step_id='thread-start'
+                AND s.phase='OBSERVED' AND r.state='NO_EVENT'
+                AND r.no_event_reason='CODEX_RPC_RESPONSE'",
+            &[session,generation,&old.request,&old.operation,&old.ticket,&old.nonce,
+                &old.pid,&old.creation,&old.image,&old.binary,&instance],2)?;
+        if start.len()!=1 {return Ok(None)}
+        let Some(Json::Object(reply))=empty_thread_frame(&start[0][1]) else{return Ok(None)};
+        let Some(start_result)=empty_thread_object(reply.get(&JsonString::from_str("result")))
+            else{return Ok(None)};
+        let Some(start_thread)=empty_thread_object(start_result.get(&JsonString::from_str("thread")))
+            else{return Ok(None)};
+        if empty_thread_string(start_thread.get(&JsonString::from_str("id"))).as_deref()
+            !=Some(thread.as_str()) || !matches!(start_thread.get(&JsonString::from_str("turns")),
+                Some(Json::Array(turns)) if turns.is_empty()) {return Ok(None)}
+        let mut allowed_error=None;
+        if let Some(child)=child {
+            if failure(rpc::observed_failed_codex_resume(&self.connection,"global",session,
+                &child.generation,&child.request,&child.operation,&child.ticket,&child.nonce,
+                &thread))?.is_none() {return Ok(None)}
+            let failed=empty_thread_rows(&self.connection,
+                "SELECT hex(r.raw_bytes),s.source_epoch,s.source_cursor
+                   FROM main.gogoke_v37_rpc_steps s JOIN main.v37_ledger_raw_source r
+                     ON r.operation_id=s.process_operation_id AND r.process_ticket=s.ticket
+                    AND r.custodian_nonce=s.custodian_nonce AND r.domain_id=s.domain_id
+                    AND r.session_id=s.session_id AND r.generation=s.generation
+                    AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor
+                  WHERE s.domain_id='global' AND s.session_id=?1 AND s.generation=?2
+                    AND s.open_request_id=?3 AND s.process_operation_id=?4
+                    AND s.ticket=?5 AND s.custodian_nonce=?6 AND s.pid=?7
+                    AND s.creation_time=?8 AND s.image_path=?9 AND s.binary_digest=?10
+                    AND s.profile_id=?11 AND s.step_id=?12 AND s.phase='OBSERVED'
+                    AND r.state='NO_EVENT' AND r.no_event_reason='CODEX_RPC_RESPONSE'",
+                &[session,&child.generation,&child.request,&child.operation,&child.ticket,
+                    &child.nonce,&child.pid,&child.creation,&child.image,&child.binary,&instance,
+                    &format!("{}-thread-resume",child.operation)],3)?;
+            if failed.len()!=1 {return Ok(None)}
+            let Some(Json::Object(reply))=empty_thread_frame(&failed[0][0]) else{return Ok(None)};
+            let Some(error)=empty_thread_object(reply.get(&JsonString::from_str("error")))
+                else{return Ok(None)};
+            if !matches!(error.get(&JsonString::from_str("code")),Some(Json::Number(code))
+                if code=="-32600") ||
+                empty_thread_string(error.get(&JsonString::from_str("message")))
+                    !=Some(format!("no rollout found for thread id {thread}")) {return Ok(None)}
+            allowed_error=Some((child.operation.clone(),child.ticket.clone(),child.nonce.clone(),
+                child.generation.clone(),failed[0][1].clone(),failed[0][2].clone()));
+        }
+        let steps=empty_thread_rows(&self.connection,
+            "SELECT generation,open_request_id,process_operation_id,ticket,custodian_nonce,
+                    pid,creation_time,image_path,binary_digest,profile_id,step_id,phase,
+                    CAST(requires_response AS TEXT),command_hex
+               FROM main.gogoke_v37_rpc_steps WHERE domain_id='global' AND session_id=?1",
+            &[session],14)?;
+        let mut starts=0;let mut resumes=0;
+        for s in &steps {
+            let source=episodes.iter().find(|e|e.generation==s[0] && e.request==s[1]
+                && e.operation==s[2] && e.ticket==s[3] && e.nonce==s[4]
+                && e.pid==s[5] && e.creation==s[6] && e.image==s[7]
+                && e.binary==s[8] && e.instance==s[9]);
+            let Some(source)=source else{return Ok(None)};
+            let Some(Json::Object(command))=empty_thread_frame(&s[13]) else{return Ok(None)};
+            let Some(method)=empty_thread_string(command.get(&JsonString::from_str("method")))
+                else{return Ok(None)};
+            let safe=match method.as_str() {
+                "config/read"|"initialize" => s[11]=="OBSERVED" && s[12]=="1",
+                "initialized" => s[11]=="WRITTEN" && s[12]=="0",
+                "thread/start" if source.old_generation.is_empty() => {
+                    starts+=1;s[10]=="thread-start" && s[11]=="OBSERVED" && s[12]=="1"
+                },
+                "thread/resume" if !source.old_generation.is_empty() => {
+                    resumes+=1;s[10]==format!("{}-thread-resume",source.operation)
+                        && s[11]=="OBSERVED" && s[12]=="1"
+                },
+                _=>false,
+            };
+            if !safe {return Ok(None)}
+        }
+        if starts!=1 || resumes!=usize::from(child.is_some()) {return Ok(None)}
+        let raw=empty_thread_rows(&self.connection,
+            "SELECT generation,operation_id,process_ticket,custodian_nonce,source_epoch,
+                    source_cursor,state,hex(raw_bytes) FROM main.v37_ledger_raw_source
+              WHERE domain_id='global' AND session_id=?1",&[session],8)?;
+        for r in &raw {
+            if !episodes.iter().any(|e|e.generation==r[0] && e.operation==r[1]
+                && e.ticket==r[2] && e.nonce==r[3]) ||
+                !matches!(r[6].as_str(),"PENDING"|"RESOLVED"|"NO_EVENT") {return Ok(None)}
+            let Some(Json::Object(frame))=empty_thread_frame(&r[7]) else{return Ok(None)};
+            if let Some(method)=frame.get(&JsonString::from_str("method")) {
+                let Some(method)=empty_thread_string(Some(method)) else{return Ok(None)};
+                if method.starts_with("turn/") || method.starts_with("item/") {return Ok(None)}
+            } else if frame.contains_key(&JsonString::from_str("error")) {
+                if r[6]!="NO_EVENT" || allowed_error.as_ref().is_none_or(|e|e.0!=r[1] || e.1!=r[2]
+                    || e.2!=r[3] || e.3!=r[0] || e.4!=r[4] || e.5!=r[5]) {
+                    return Ok(None);
+                }
+            } else if r[6]!="NO_EVENT" || !frame.contains_key(&JsonString::from_str("result")) {
+                return Ok(None);
+            }
+        }
+        Ok(Some(EmptySecretaryThread {generation:generation.into(),revision:revision.into(),
+            stop_fact:old.stop_fact.clone()}))
+    }
+
+    /// Return true only after H's ordinary Owner admission-release has
+    /// durably moved this exact stopped initial claim to RELEASED. On false,
+    /// the caller keeps its original resume path and all UNKNOWN custody.
+    pub(super) fn settle_original_empty_secretary_thread(&mut self,session:&str,
+        generation:&str,revision:&str)->Result<bool> {
+        let Some(facts)=self.original_empty_secretary_thread(session,generation,revision)?
+            else{return Ok(false)};
+        let request_id=secretary_empty_release_request_id(
+            &self.root.canonical_root().identity.opaque(),session,&facts.generation,
+            &facts.revision,&facts.stop_fact);
+        let request=super::secretary_resident_request("admission-release",&request_id,
+            session,&facts.revision,BTreeMap::new())?;
+        let raw=self.dispatch_user_session(&request)?;
+        let receipt=failure(h::decode_receipt(&raw))?;
+        let before=facts.revision.parse::<u64>().map_err(|_|OrchestrationError::OperationConflict)?;
+        if receipt.request_id!=request_id || receipt.target_id!=session ||
+            receipt.family!="K-SESSION" || receipt.operation!="admission-release" ||
+            !matches!(receipt.status,V37Status::Applied|V37Status::Replayed) ||
+            receipt.previous_revision!=before || receipt.revision!=before+1 {
+            return Err(OrchestrationError::V37StoreFailure(format!(
+                "original empty Secretary release unconfirmed: {}",String::from_utf8_lossy(&raw))));
+        }
+        let after=empty_thread_rows(&self.connection,
+            "SELECT generation,state,CAST(revision AS TEXT),COALESCE(stop_fact_id,'')
+               FROM main.gogoke_v37_h_claim WHERE domain_id='global' AND session_id=?1",
+            &[session],4)?;
+        if after!=vec![vec![facts.generation,"RELEASED".into(),
+            (before+1).to_string(),facts.stop_fact]] {return Err(OrchestrationError::OperationConflict)}
+        Ok(true)
+    }
+}
+
 // RPC original_error is private failure evidence, not a decoded response or
 // an A raw source. Preserve the original read error and the exact tail of an
 // unfinished stdout frame without putting those bytes in the User error.

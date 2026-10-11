@@ -455,6 +455,176 @@ fn operation_in_domain(domain: &str, family: &str, verb: &str, id: &str,
 }
 
 #[test]
+fn empty_initial_secretary_release_refuses_input_source_and_claim_drift() {
+    let _guard=route_b_test_guard();
+    let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let base=std::env::var_os("CARGO_TARGET_DIR").map(std::path::PathBuf::from)
+        .expect("D-only development target");
+    let path=base.join(format!("secretary-empty-control-{}-{stamp}",std::process::id()));
+    std::fs::create_dir(&path).unwrap();
+    let root=RootLock::acquire(&path).unwrap();
+    let mut product=ProductDatabase::open(&root,&path.join("state.sqlite")).unwrap();
+    managed_cli_test_setup::ready(&mut product,&root,"codex");
+    let register=operation("K-INSTANCE","register","empty-register","instanceA",0,
+        r#"{"driverId":"codex"}"#);
+    assert_eq!(h::decode_receipt(&product.dispatch_user_request(&register).unwrap()).unwrap().status,
+        V37Status::Applied);
+    qualify_synthetic_file_backend(&mut product,&root);
+    instance::set_instance_concurrency_cap(&mut product.connection,&product.owner,"instanceA",1).unwrap();
+    seat::set_project_parallel_cap(&mut product.connection,&product.owner,"global",1).unwrap();
+    seat::store_template(&mut product.connection,NativeOrigin::user(&product.owner),StoreTemplate {
+        domain_id:"global",template_id:"emptyTemplate",settings_json:br#"{}"#,
+    }).unwrap();
+    let created=seat::create(&mut product.connection,NativeOrigin::user(&product.owner),CreateSeat {
+        domain_id:"global",seat_id:"emptySeat",template_id:"emptyTemplate",instance_id:None,
+        kind:Kind::Long,request_id:"empty-create-seat",request_bytes:b"test-created secretary seat",
+    }).unwrap().seat;
+    seat::designate_secretary(&mut product.connection,&product.owner,"emptySeat",
+        &created.incarnation,"empty-designate",b"test-created secretary designation").unwrap();
+    product.connection.execute("UPDATE main.gogoke_v37_seats SET instance_id='instanceA'
+        WHERE domain_id='global' AND seat_id='emptySeat'").unwrap();
+    product.connection.execute(r#"UPDATE main.gogoke_v37_seat_settings
+        SET settings_json='{"effort":"high","model":"gpt-6-sol","permissionTier":"NETWORKED_WRITE"}'
+        WHERE domain_id='global' AND seat_id='emptySeat'"#).unwrap();
+    product.connection.execute("INSERT INTO main.gogoke_v37_instance_profiles
+        (instance_id,display_name,enabled,tombstoned,revision)
+        VALUES('instanceA','Synthetic fixture',1,0,1)").unwrap();
+    assert!(seat::require_secretary_session(&product.connection,&product.owner,
+        "emptySeat",&created.incarnation).is_ok());
+    for (verb,id,revision) in [("admission-reserve","empty-reserve",0),
+        ("admission-commit","empty-commit",1),("open","empty-open",2)] {
+        let request=operation_in_domain("global","K-SESSION",verb,id,"emptySession",revision,"{}");
+        let raw=product.dispatch_user_request(&request).unwrap();
+        assert_eq!(h::decode_receipt(&raw).unwrap().status,V37Status::Applied,
+            "original empty thread {verb}: {}",String::from_utf8_lossy(&raw));
+    }
+    let stop=operation_in_domain("global","K-SESSION","stop","empty-stop","emptySession",3,
+        r#"{"seatId":"emptySeat","generation":"2"}"#);
+    let stopped=product.dispatch_user_request(&stop).unwrap();
+    assert_eq!(h::decode_receipt(&stopped).unwrap().status,V37Status::Applied,
+        "original physical StopFact: {}",String::from_utf8_lossy(&stopped));
+    let claim=|product:&ProductDatabase<'_>|{
+        let q=Statement::prepare(product.connection.as_ptr(),
+            "SELECT generation,CAST(revision AS TEXT),state,stop_fact_id,process_operation_id
+               FROM main.gogoke_v37_h_claim WHERE domain_id='global' AND session_id='emptySession'").unwrap();
+        assert!(q.step_row().unwrap());
+        let row=(0..5).map(|i|q.column_text(i).unwrap()).collect::<Vec<_>>();
+        assert!(!q.step_row().unwrap());row
+    };
+    let original=claim(&product);
+    assert_eq!(original[2],"STOPPED");assert!(!original[3].is_empty());
+    assert!(product.original_empty_secretary_thread("emptySession",&original[0],&original[1])
+        .unwrap().is_some());
+    let source=empty_thread_rows(&product.connection,
+        "SELECT ticket,custodian_nonce FROM main.gogoke_coordination_process_custody
+          WHERE operation_id=?1",&[&original[4]],2).unwrap();
+    assert_eq!(source.len(),1);
+    let intent=Statement::prepare(product.connection.as_ptr(),
+        "INSERT INTO main.gogoke_v37_h_stdin_journal(domain_id,request_id,operation,ticket,
+            process_operation_id,custodian_nonce,session_id,generation,request_hex,phase,
+            expected_revision) VALUES('global','empty-intent','send',?1,?2,?3,
+            'emptySession','2','00','PREPARED','4')").unwrap();
+    intent.bind_text(1,&source[0][0]).unwrap();intent.bind_text(2,&original[4]).unwrap();
+    intent.bind_text(3,&source[0][1]).unwrap();intent.step_done().unwrap();drop(intent);
+    assert!(!product.settle_original_empty_secretary_thread("emptySession",&original[0],&original[1]).unwrap());
+    assert_eq!(claim(&product),original,"any input intent leaves original StopFact and claim");
+    product.connection.execute("DELETE FROM main.gogoke_v37_h_stdin_journal
+        WHERE request_id='empty-intent'").unwrap();
+    let wrong=Statement::prepare(product.connection.as_ptr(),
+        "UPDATE main.gogoke_v37_rpc_steps SET ticket='wrong-source'
+          WHERE domain_id='global' AND session_id='emptySession' AND step_id LIKE '%config-read%'").unwrap();
+    wrong.step_done().unwrap();drop(wrong);
+    assert!(!product.settle_original_empty_secretary_thread("emptySession",&original[0],&original[1]).unwrap());
+    assert_eq!(claim(&product),original,"wrong source cannot release");
+    let restore=Statement::prepare(product.connection.as_ptr(),
+        "UPDATE main.gogoke_v37_rpc_steps SET ticket=?1
+          WHERE domain_id='global' AND session_id='emptySession' AND step_id LIKE '%config-read%'").unwrap();
+    restore.bind_text(1,&source[0][0]).unwrap();restore.step_done().unwrap();drop(restore);
+    product.connection.execute("UPDATE main.gogoke_v37_h_claim SET stop_fact_id='sha256:changed'
+        WHERE domain_id='global' AND session_id='emptySession'").unwrap();
+    assert!(!product.settle_original_empty_secretary_thread("emptySession",&original[0],&original[1]).unwrap());
+    let restore=Statement::prepare(product.connection.as_ptr(),
+        "UPDATE main.gogoke_v37_h_claim SET stop_fact_id=?1
+          WHERE domain_id='global' AND session_id='emptySession'").unwrap();
+    restore.bind_text(1,&original[3]).unwrap();restore.step_done().unwrap();drop(restore);
+    let resume=operation_in_domain("global","K-SESSION","resume","empty-failed-resume",
+        "emptySession",original[1].parse().unwrap(),r#"{"generation":"2"}"#);
+    let resumed=product.dispatch_user_request(&resume).unwrap();
+    assert_eq!(h::decode_receipt(&resumed).unwrap().status,V37Status::Unknown,
+        "fixed Codex empty thread has no original rollout");
+    let pending=claim(&product);
+    assert_eq!(pending[0],original[0]);assert_eq!(pending[2],"STOPPED");
+    assert_eq!(pending[3],original[3]);
+    let child=empty_thread_rows(&product.connection,
+        "SELECT e.generation,e.phase,COALESCE(e.stop_fact_id,''),c.pid,c.creation_time_100ns,
+                e.binding_id FROM main.gogoke_v37_h_process_episode e
+           JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id
+          WHERE e.domain_id='global' AND e.session_id='emptySession'
+            AND e.old_generation IS NOT NULL",&[],6).unwrap();
+    assert_eq!(child.len(),1);assert_eq!(child[0][1],"UNKNOWN");assert!(child[0][2].is_empty());
+    let pid=child[0][3].parse::<u32>().unwrap();
+    let creation=child[0][4].parse::<u64>().unwrap();
+    product.close_checked().unwrap();
+    let deadline=std::time::Instant::now()+Duration::from_secs(15);
+    while crate::process::NativeProcessHoldersGone::observe(&[(pid,creation)]).is_err() {
+        assert!(std::time::Instant::now()<deadline,"actual failed resume holder did not disappear");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let mut product=ProductDatabase::open(&root,&path.join("state.sqlite")).unwrap();
+    product.recover_disappeared_credential_resources("instanceA",None).unwrap();
+    let profile=instance::read_credential_profiles(&product.connection,"instanceA").unwrap();
+    assert!(profile.iter().any(|p|p.binding_id==child[0][5] && p.state=="REVOKED"));
+    assert!(product.original_empty_secretary_thread("emptySession",&pending[0],&pending[1])
+        .unwrap().is_some(),"only original typed no-rollout and completed F revoke qualify");
+    product.connection.execute("UPDATE main.v37_ledger_raw_source
+        SET raw_bytes=CAST(replace(CAST(raw_bytes AS TEXT),'no rollout found','other remote error') AS BLOB)
+        WHERE domain_id='global' AND session_id='emptySession' AND generation='3'
+          AND no_event_reason='CODEX_RPC_RESPONSE'
+          AND CAST(raw_bytes AS TEXT) LIKE '%no rollout found%'").unwrap();
+    assert!(!product.settle_original_empty_secretary_thread("emptySession",&pending[0],&pending[1]).unwrap(),
+        "another typed remote error cannot classify an original empty thread");
+    assert_eq!(claim(&product),pending,"other remote error cannot release original H claim");
+    product.connection.execute("UPDATE main.v37_ledger_raw_source
+        SET raw_bytes=CAST(replace(CAST(raw_bytes AS TEXT),'other remote error','no rollout found') AS BLOB)
+        WHERE domain_id='global' AND session_id='emptySession' AND generation='3'
+          AND no_event_reason='CODEX_RPC_RESPONSE'
+          AND CAST(raw_bytes AS TEXT) LIKE '%other remote error%'").unwrap();
+    assert!(product.settle_original_empty_secretary_thread("emptySession",&pending[0],&pending[1]).unwrap());
+    let released=claim(&product);
+    assert_eq!(released[2],"RELEASED");assert_eq!(released[3],original[3]);
+    assert_eq!(released[4],original[4]);
+    let history=empty_thread_rows(&product.connection,
+        "SELECT e.phase,e.stop_fact_id,c.state,c.stop_proof_hash
+           FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_coordination_process_custody c
+             ON c.operation_id=e.process_operation_id WHERE e.domain_id='global'
+            AND e.session_id='emptySession' AND e.old_generation IS NULL",&[],4).unwrap();
+    assert_eq!(history,vec![vec!["STOPPED".to_owned(),original[3].clone(),
+        "STOPPED".to_owned(),original[3].clone()]]);
+    assert_eq!(empty_thread_rows(&product.connection,
+        "SELECT phase,COALESCE(stop_fact_id,'') FROM main.gogoke_v37_h_process_episode
+          WHERE domain_id='global' AND session_id='emptySession' AND old_generation IS NOT NULL",
+        &[],2).unwrap(),vec![vec!["UNKNOWN".to_owned(),String::new()]],
+        "failed g4 UNKNOWN has no invented StopFact");
+    product.recover_disappeared_credential_resources("instanceA",None)
+        .expect("completed F-only revoke accepts exact ordinary H release successor");
+    let release_id=secretary_empty_release_request_id(
+        &root.canonical_root().identity.opaque(),"emptySession",&pending[0],&pending[1],&original[3]);
+    let altered=Statement::prepare(product.connection.as_ptr(),
+        "UPDATE main.gogoke_v37_h_operation SET status='UNKNOWN'
+          WHERE domain_id='global' AND request_id=?1 AND operation='admission-release'").unwrap();
+    altered.bind_text(1,&release_id).unwrap();altered.step_done().unwrap();drop(altered);
+    assert!(product.recover_disappeared_credential_resources("instanceA",None).is_err(),
+        "changed H release journal cannot justify the cold F-only successor");
+    assert_eq!(claim(&product),released,"refused recovery preserves original released claim");
+    let restore=Statement::prepare(product.connection.as_ptr(),
+        "UPDATE main.gogoke_v37_h_operation SET status='APPLIED'
+          WHERE domain_id='global' AND request_id=?1 AND operation='admission-release'").unwrap();
+    restore.bind_text(1,&release_id).unwrap();restore.step_done().unwrap();drop(restore);
+    product.recover_disappeared_credential_resources("instanceA",None).unwrap();
+    product.close_checked().unwrap();drop(root);std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_call() {
     let _guard = route_b_test_guard();
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();

@@ -232,8 +232,12 @@ impl<'root> ProductDatabase<'root> {
         if found.len()!=1 {return Err(refused("failed resume original is ambiguous"));}
         let r=&found[0];
         if r[10]!="UNKNOWN" {return Ok(None);}
+        let completed_release=if r[6]=="RELEASED" && profile.state=="REVOKED" {
+            fail(gone::read_holder_disappearance(&self.connection,&profile.binding_id))?
+                .is_some_and(|record|record.phase==Phase::Revoked)
+        } else {false};
         if !matches!(r[4].as_str(),"ACTIVE"|"UNKNOWN") || !r[5].is_empty()
-            || r[6]!="STOPPED" || r[14].is_empty() || r[15].is_empty()
+            || !(r[6]=="STOPPED" || completed_release) || r[14].is_empty() || r[15].is_empty()
             || r[15]!=r[17] || r[15]!=r[18] || r[16]!="STOPPED" {
             return Err(refused("failed resume old StopFact or child custody changed"));
         }
@@ -268,6 +272,37 @@ impl<'root> ProductDatabase<'root> {
             put(&mut f,key,value);
         }
         Ok(Some(f))
+    }
+
+    // H's ordinary release changes only the claim state/revision. The exact
+    // original request and APPLIED H journal prove this is the one approved
+    // successor of a completed F-only revoke, not a second resource cleanup.
+    fn completed_empty_secretary_release(&self,capture:&Fields)->Result<bool> {
+        if get(capture,"kind")?!="FAILED_RESUME_PROFILE_ONLY_V1" ||
+            get(capture,"domain")?!="global" || get(capture,"claimState")?!="STOPPED" {
+            return Ok(false);
+        }
+        let revision=number(capture,"claimRevision")?;
+        let Some(next)=revision.checked_add(1) else{return Ok(false)};
+        let request_id=super::v37_runtime::secretary_empty_release_request_id(
+            &self.root.canonical_root().identity.opaque(),&get(capture,"session")?,
+            &get(capture,"oldGeneration")?,&revision.to_string(),&get(capture,"oldStopFact")?);
+        let proof=rows(&self.connection,
+            "SELECT raw_hex,status,CAST(previous_revision AS TEXT),CAST(revision AS TEXT)
+               FROM main.gogoke_v37_h_operation WHERE domain_id='global' AND session_id=?1
+                AND request_id=?2 AND operation='admission-release'",
+            &[&get(capture,"session")?,&request_id],4)?;
+        if proof.len()!=1 || proof[0][1]!="APPLIED" || proof[0][2]!=revision.to_string()
+            || proof[0][3]!=next.to_string() {return Ok(false)}
+        let request=fail(crate::store::session_transport::decode_request(&unhex(&proof[0][0])?))?;
+        let expected=super::secretary_resident_request("admission-release",&request_id,
+            &get(capture,"session")?,&revision.to_string(),BTreeMap::new())?;
+        Ok(request.family=="K-SESSION" && request.operation=="admission-release"
+            && request.domain_id=="global" && request.target_id==get(capture,"session")?
+            && request.request_id==request_id && request.payload.is_empty()
+            && request.raw_bytes==expected.raw_bytes
+            && request.expected_revision==u64::try_from(revision)
+                .map_err(|_|refused("holder release old revision range"))?)
     }
 
     fn bind_failed_resume_resource_source(&mut self,profile:&instance::CredentialProfileRecord)
@@ -707,9 +742,13 @@ impl<'root> ProductDatabase<'root> {
             || (record.phase!=Phase::Applied && &original_aliases!=aliases) {
             return Err(refused("holder frozen alias set changed"));
         }
-        let (state,revision)=if record.phase==Phase::Applied {("RELEASED".into(),number(capture,"claimRevision")?.checked_add(1)
-            .ok_or_else(||refused("holder released revision overflow"))?)}
-            else {(get(capture,"claimState")?,number(capture,"claimRevision")?)};
+        let successor=kind==Some("FAILED_RESUME_PROFILE_ONLY_V1")
+            && record.phase==Phase::Revoked && get(current,"claimState")?=="RELEASED"
+            && self.completed_empty_secretary_release(capture)?;
+        let (state,revision)=if record.phase==Phase::Applied || successor {
+            ("RELEASED".into(),number(capture,"claimRevision")?.checked_add(1)
+                .ok_or_else(||refused("holder released revision overflow"))?)
+        } else {(get(capture,"claimState")?,number(capture,"claimRevision")?)};
         if get(current,"claimState")?!=state || number(current,"claimRevision")?!=revision {
             return Err(refused("holder frozen claim receipt changed"));
         }
