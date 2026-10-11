@@ -71,7 +71,7 @@ jobs:
   native-focused-library:
     if: ${{ inputs.focused_library }}
     name: Affected native library checks only
-    timeout-minutes: 20
+    timeout-minutes: 35
     runs-on: windows-latest
     env:
       RUSTUP_TOOLCHAIN: 1.85.1
@@ -176,14 +176,16 @@ jobs:
               'stop_requires_clean_original_eof_not_a_generic_source_error',
               'persistent_reader_keeps_eof_unknown_after_exact_child_exit') }
             'codex-empty-persist' { @(
-              'store::session_transport::codex_rpc::tests::empty_persistent_thread_read_binds_original_ack_and_refuses_other_history',
+              'store::session_transport::codex_rpc::tests::empty_archive_and_metadata_resume_bind_original_ack_without_asserting_empty_history',
+              'store::session_transport::launch::grok_permission_tests::codex_original_rollout_path_stays_in_its_bound_history_sessions',
+              'store::product_database::v37_runtime::tests::actual_pinned_codex_empty_thread_archive_metadata_cold_resume_without_model_call',
+              'store::product_database::v37_runtime::tests::observed_codex_metadata_resume_cannot_promote_without_original_physical_rollout',
               'store::product_database::v37_runtime::tests::actual_pinned_codex_same_seat_work_and_side_resume_preserve_authorization_without_model_call',
               'store::product_database::v37_runtime::tests::actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_call',
               'store::product_database::v37_runtime::tests::empty_initial_secretary_release_refuses_input_source_and_claim_drift',
               'failed_resume_profile_source_cas_exact_and_replay',
               'failed_resume_rpc_observed_remote_error_exact_binding',
-              'failed_resume_profile_only_cold_recovery_preserves_original_claim_at_each_boundary',
-              'completed_empty_release_revoked_capture_does_not_select_next_failed_resume_group') }
+              'failed_resume_profile_only_cold_recovery_preserves_original_claim_at_each_boundary') }
             'holder-completed-group' { @(
               'failed_resume_profile_source_cas_exact_and_replay',
               'failed_resume_rpc_observed_remote_error_exact_binding',

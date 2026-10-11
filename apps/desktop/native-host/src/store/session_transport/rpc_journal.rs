@@ -465,7 +465,8 @@ fn candidate_binding(db: &VerifiedDatabaseConnection<'_>, step: &Step<'_>,
     if driver!="codex" {return Err(RpcJournalError::Denied);}
     if !matches!(step.command,Command::Initialize { .. }
         |Command::InitializeHostTools { .. }|Command::Initialized
-        |Command::ConfigRead { .. }|Command::ThreadResume { .. }) {
+        |Command::ConfigRead { .. }|Command::ThreadResume { .. }
+        |Command::ThreadResumeMetadata { .. }) {
         return Err(RpcJournalError::Denied);
     }
     if let Some(change)=super::generation_change::active_for_session(db,
@@ -497,7 +498,8 @@ fn candidate_binding(db: &VerifiedDatabaseConnection<'_>, step: &Step<'_>,
     } else if !plain_protocol_resume_episode(db,step.domain_id,step.session_id,
         step.open_request_id,&operation,&step.custody.binding.generation,
         step.open_request_bytes)? {return Err(RpcJournalError::Denied);}
-    if let Command::ThreadResume {thread_id,..}=step.command {
+    if let Command::ThreadResume {thread_id,..} |
+        Command::ThreadResumeMetadata {thread_id,..}=step.command {
         if observed_old_acp_session_id(db,step.domain_id,step.session_id,&operation,
             &step.custody.binding.generation,step.open_request_id)?.as_str()!=thread_id.as_str() {
             return Err(RpcJournalError::Denied);
@@ -684,6 +686,32 @@ pub(crate) fn observed_thread_id(db: &VerifiedDatabaseConnection<'_>,
     domain: &str, session: &str, process_operation_id: &str,
     generation: &str, open_request_id: &str, ticket: &str,
     custodian_nonce: &str) -> Result<String> {
+    Ok(observed_thread_source(db,domain,session,process_operation_id,generation,
+        open_request_id,ticket,custodian_nonce)?.thread_id)
+}
+
+struct ObservedThreadSource {
+    thread_id:String,
+    driver:String,
+    resumed:bool,
+    command:Vec<u8>,
+    response:Vec<u8>,
+}
+
+/// Uses exactly the same original episode/custody/RPC/A binding as thread ID
+/// recovery. Legacy canonical resume bytes remain legacy observations.
+pub(crate) fn observed_codex_metadata_resume_path(db:&VerifiedDatabaseConnection<'_>,
+    domain:&str,session:&str,operation:&str,generation:&str,request:&str,
+    ticket:&str,nonce:&str)->Result<Option<String>> {
+    let source=observed_thread_source(db,domain,session,operation,generation,request,ticket,nonce)?;
+    if source.driver!="codex" || !source.resumed {return Err(RpcJournalError::Denied);}
+    Ok(codex_rpc::decode_stored_metadata_resume_path(&source.command,&source.response)?)
+}
+
+fn observed_thread_source(db: &VerifiedDatabaseConnection<'_>,
+    domain: &str, session: &str, process_operation_id: &str,
+    generation: &str, open_request_id: &str, ticket: &str,
+    custodian_nonce: &str) -> Result<ObservedThreadSource> {
     for (value,name) in [(domain,"domain"),(session,"session"),
         (process_operation_id,"process operation"),(generation,"generation"),
         (open_request_id,"open request"),(ticket,"ticket"),
@@ -754,7 +782,7 @@ pub(crate) fn observed_thread_id(db: &VerifiedDatabaseConnection<'_>,
             _=>return Err(RpcJournalError::Denied),
         }
     };
-    Ok(thread)
+    Ok(ObservedThreadSource {thread_id:thread,driver,resumed:older,command,response})
 }
 
 /// A failed Codex resume is a typed, already observed response from this exact
@@ -1303,7 +1331,8 @@ fn prepare_with_model_caller(
                 && step.open_request_id==change.request_id && operation!=change.old_operation
                 && matches!(step.command,Command::Initialize {..}
                     |Command::InitializeHostTools {..}|Command::Initialized
-                    |Command::ConfigRead {..}|Command::ThreadResume {..});
+                    |Command::ConfigRead {..}|Command::ThreadResume {..}
+                    |Command::ThreadResumeMetadata {..});
             if !original_compact && !candidate_handshake {return Err(RpcJournalError::Denied);}
         }
         if let Some(phase) = same_row(db, &step.fields(), &operation, &encoded)? {

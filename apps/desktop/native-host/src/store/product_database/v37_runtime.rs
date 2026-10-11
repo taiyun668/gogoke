@@ -15,6 +15,28 @@ use std::time::{Duration, Instant};
 #[cfg(test)]
 thread_local! {
     static FAIL_AFTER_DURABLE_STOP_BEFORE_CREDENTIAL_REVOKE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static HISTORICAL_UNMATERIALIZED_CODEX_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Reconstructs the old empty-thread source for existing recovery safety tests.
+/// Never enabled by production or by the current empty-thread capability test.
+#[cfg(test)]
+pub(super) struct HistoricalUnmaterializedCodexThreadFixture {
+    _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+#[cfg(test)]
+pub(super) fn historical_unmaterialized_codex_thread_fixture()
+    -> HistoricalUnmaterializedCodexThreadFixture {
+    HISTORICAL_UNMATERIALIZED_CODEX_THREAD.with(|flag| assert!(!flag.replace(true)));
+    HistoricalUnmaterializedCodexThreadFixture {_not_send:std::marker::PhantomData}
+}
+
+#[cfg(test)]
+impl Drop for HistoricalUnmaterializedCodexThreadFixture {
+    fn drop(&mut self) {
+        HISTORICAL_UNMATERIALIZED_CODEX_THREAD.with(|flag| flag.set(false));
+    }
 }
 
 pub(super) struct NativeSession {
@@ -771,6 +793,19 @@ impl<'root> ProductDatabase<'root> {
         Ok(claude)
     }
 
+    fn verify_original_codex_metadata_resume_file(&self,key:&(String,String),
+        operation:&str,generation:&str,request_id:&str)->Result<()> {
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        if run.evidence.driver_id()!="codex" {return Ok(());}
+        let path=failure(rpc::observed_codex_metadata_resume_path(&self.connection,
+            &key.0,&key.1,operation,generation,request_id,run.custody.ticket.opaque(),
+            &run.custody.custodian_nonce))?;
+        if let Some(path)=path {
+            failure(run.evidence.verify_codex_rollout_path(&path,true))?;
+        }
+        Ok(())
+    }
+
     pub(super) fn dispatch_native_resume(&mut self, request: &V37Request) -> Result<Vec<u8>> {
         self.dispatch_native_resume_at(request,request.expected_revision,None)
     }
@@ -870,6 +905,8 @@ impl<'root> ProductDatabase<'root> {
                                 if let Some((proof,choice))=host {
                                     self.check_host_recipient_choice_in_transaction(proof,choice)?;
                                 }
+                                 self.verify_original_codex_metadata_resume_file(&key,
+                                     &operation,&new_generation,&request.request_id)?;
                                 let run=self.native_sessions.get(&key)
                                     .ok_or(OrchestrationError::AccessDenied)?;
                                 // The original A response and retained custody above
@@ -1136,12 +1173,17 @@ impl<'root> ProductDatabase<'root> {
             let cwd=run.evidence.cwd().to_string_lossy().into_owned();
             let model=run.model.clone();
             self.native_credential_config_read(&key,&format!("{operation_id}-config-read"),cwd.clone())?;
-            let response=self.native_rpc(&key,&format!("{operation_id}-thread-resume"),
-                Some(3),&Command::ThreadResume {thread_id:thread_id.clone(),cwd,model})?;
-            let Some(Reply::Thread {thread_id:observed,..})=response else {
+            let resume_id=self.next_native_rpc_id(&key)?;
+            let response=self.native_rpc_observation(&key,&format!("{operation_id}-thread-resume"),
+                Some(resume_id),&Command::ThreadResumeMetadata {
+                    thread_id:thread_id.clone(),cwd,model})?
+                .ok_or(OrchestrationError::Invalid("native resume thread response absent"))?;
+            let Reply::Thread {thread_id:observed,..}=response.reply else {
                 return Err(OrchestrationError::Invalid("native resume thread response"));
             };
             if observed!=thread_id {return Err(OrchestrationError::OperationConflict);}
+            self.verify_original_codex_metadata_resume_file(&key,&operation_id,
+                &new_generation,&request.request_id)?;
             self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?.thread_id=
                 Some(thread_id.clone());
             Ok(())
@@ -1192,6 +1234,8 @@ impl<'root> ProductDatabase<'root> {
             if let Some((proof,choice))=host {
                 self.check_host_recipient_choice_in_transaction(proof,choice)?;
             }
+            self.verify_original_codex_metadata_resume_file(&key,&operation_id,
+                &new_generation,&request.request_id)?;
             let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
             failure(run.evidence.verify_active_in_transaction(&mut self.connection,self.root,
                 &self.owner,Some(&operation_id)))?;
@@ -2435,9 +2479,56 @@ impl<'root> ProductDatabase<'root> {
                         else if purpose==SessionPurpose::Secretary {Command::ThreadStartSecretaryTools {cwd,model}}
                         else if host_tools {Command::ThreadStartHostTools {cwd,model}}
                         else {Command::ThreadStart {cwd,model}};
-                    let Some(Reply::Thread {thread_id,..})=self.native_rpc(&key,"thread-start",Some(3),&start)? else {
+                    let started=self.native_rpc_observation(&key,"thread-start",Some(3),&start)?
+                        .ok_or(OrchestrationError::Invalid("native open thread response absent"))?;
+                    let Reply::Thread {thread_id,..}=started.reply else {
                         return Err(OrchestrationError::Invalid("native open thread response"));
                     };
+                    failure(codex_rpc::verify_new_empty_paginated_thread(
+                        started.frame.bytes(),&thread_id))?;
+                    let original_path=failure(codex_rpc::persistent_paginated_thread_path(
+                        started.frame.bytes(),&thread_id))?;
+                    failure(self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?
+                        .evidence.verify_codex_rollout_path(&original_path,false))?;
+                    // Fixed official archive materializes without input and
+                    // unloads. Unarchive restores its original path; metadata
+                    // resume restores real context without list_turns hydration.
+                    // Each original request/ACK remains in the existing RPC/A.
+                    #[cfg(not(test))]
+                    let persist_empty=true;
+                    #[cfg(test)]
+                    let persist_empty=HISTORICAL_UNMATERIALIZED_CODEX_THREAD.with(|flag| !flag.get());
+                    if persist_empty {
+                        let archive_id=self.next_native_rpc_id(&key)?;
+                        if !matches!(self.native_rpc(&key,"thread-persist-archive",Some(archive_id),
+                            &Command::ThreadArchive {thread_id:thread_id.clone()})?,Some(Reply::Ack {..})) {
+                            return Err(OrchestrationError::Invalid("native empty thread archive response"));
+                        }
+                        let unarchive_id=self.next_native_rpc_id(&key)?;
+                        let restored=self.native_rpc_observation(&key,"thread-persist-unarchive",Some(unarchive_id),
+                            &Command::ThreadUnarchive {thread_id:thread_id.clone()})?
+                            .ok_or(OrchestrationError::Invalid("native empty thread unarchive response absent"))?;
+                        let path=failure(codex_rpc::persistent_paginated_thread_path(
+                            restored.frame.bytes(),&thread_id))?;
+                        if path!=original_path {
+                            return Err(OrchestrationError::Invalid("native empty thread unarchive path changed"));
+                        }
+                        failure(self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?
+                            .evidence.verify_codex_rollout_path(&path,true))?;
+                        let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
+                        let resumed=Command::ThreadResumeMetadata {thread_id:thread_id.clone(),
+                            cwd:run.evidence.protocol_cwd().to_string_lossy().into_owned(),model:run.model.clone()};
+                        let resume_id=self.next_native_rpc_id(&key)?;
+                        let resumed=self.native_rpc_observation(&key,"thread-persist-resume",Some(resume_id),&resumed)?
+                            .ok_or(OrchestrationError::Invalid("native empty thread resume response absent"))?;
+                        let path=failure(codex_rpc::persistent_paginated_thread_path(
+                            resumed.frame.bytes(),&thread_id))?;
+                        if path!=original_path {
+                            return Err(OrchestrationError::Invalid("native empty thread resume path changed"));
+                        };
+                        failure(self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?
+                            .evidence.verify_codex_rollout_path(&path,true))?;
+                    }
                     Some(thread_id)
                 },
                 "claude" => {
@@ -3825,6 +3916,14 @@ impl<'root> ProductDatabase<'root> {
     pub(super) fn native_rpc(&mut self, key: &(String, String), step_id: &str,
         number: Option<u64>, command: &Command) -> Result<Option<Reply>> {
         self.native_rpc_observation(key, step_id, number, command).map(|result| result.map(|result| result.reply))
+    }
+
+    fn next_native_rpc_id(&mut self,key:&(String,String))->Result<u64> {
+        let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
+        let id=run.next_rpc_id;
+        run.next_rpc_id=id.checked_add(1)
+            .ok_or(OrchestrationError::Invalid("native RPC ordinal overflow"))?;
+        Ok(id)
     }
 
     fn native_credential_config_read(&mut self,key:&(String,String),step:&str,cwd:String)->Result<()> {

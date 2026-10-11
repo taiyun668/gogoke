@@ -812,8 +812,12 @@ fn failed_resume_profile_only_cold_recovery_preserves_original_claim_at_each_bou
             applied(&mut product,&operation("projectA","K-SESSION",verb,&format!("failed-{verb}"),
                 "sessionA",revision,&format!(r#"{{"seatId":"seatA","generation":"{generation}"}}"#)));
         }
-        applied(&mut product,&operation("projectA","K-SESSION","open","failed-open","sessionA",2,
-            &format!(r#"{{"seatId":"seatA","generation":"{generation}","repositoryId":"fixtureRepo","worktreeId":"treeA"}}"#)));
+        {
+            // Rebuild only the old source that never materialized its empty thread.
+            let _historical=super::v37_runtime::historical_unmaterialized_codex_thread_fixture();
+            applied(&mut product,&operation("projectA","K-SESSION","open","failed-open","sessionA",2,
+                &format!(r#"{{"seatId":"seatA","generation":"{generation}","repositoryId":"fixtureRepo","worktreeId":"treeA"}}"#)));
+        }
         let old_thread=product.native_sessions.get(&("projectA".into(),"sessionA".into())).unwrap()
             .thread_id.clone().unwrap();
         applied(&mut product,&operation("projectA","K-SESSION","stop","failed-stop","sessionA",3,
@@ -910,6 +914,10 @@ fn completed_empty_release_revoked_capture_does_not_select_next_failed_resume_gr
     let mut completed=None;let mut first_history=Vec::new();let mut first_custody=Vec::new();
     for (index,session) in ["groupSessionA","groupSessionB"].iter().enumerate() {
         for (verb,revision) in [("admission-reserve",0),("admission-commit",1),("open",2)] {
+            // This existing recovery fixture intentionally starts with the old
+            // unmaterialized thread; the production persistence cases do not.
+            let _historical=(verb=="open").then(
+                super::v37_runtime::historical_unmaterialized_codex_thread_fixture);
             applied(&mut product,&operation("global","K-SESSION",verb,&format!("group-{index}-{verb}"),session,revision,"{}"));
         }
         let generation=rows(&product,"SELECT generation FROM main.gogoke_v37_h_claim
