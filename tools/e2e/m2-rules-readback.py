@@ -47,6 +47,80 @@ def policy(db, domain):
             for name in ("head", "grants", "gates", "routes", "triggers", "escalations", "events")}
 
 
+def same_scope_owner_snapshot(db, domain, configuration):
+    check(isinstance(configuration, dict) and set(configuration) == {"ownerHead", "ownerGate", "ownerGrant"},
+          "CROSS_PROJECT_ONLY requires original A NativeUser policy receipts")
+    raw = {}
+    parsed = {}
+    for name in ("ownerHead", "ownerGate", "ownerGrant"):
+        item = configuration[name]
+        check(isinstance(item, dict) and set(item) == {"rawFrame", "rawReceipt"} and
+              all(isinstance(item[key], str) for key in item), "A NativeUser original policy bytes are incomplete")
+        raw[name] = item
+        parsed[name] = (json.loads(item["rawFrame"]), json.loads(item["rawReceipt"]))
+    head_request, head_receipt = parsed["ownerHead"]
+    gate_request, gate_receipt = parsed["ownerGate"]
+    grant_request, grant_receipt = parsed["ownerGrant"]
+    check(set(head_request) == {"schema", "command", "domainId", "requestId", "stage", "expectedRevision"} and
+          head_request["schema"] == "gogoke.37.owner-configuration.v1" and
+          head_request["command"] == "policy-initialize" and head_request["domainId"] == domain and
+          re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", head_request["requestId"]) and
+          head_request["expectedRevision"] == "0" and
+          head_receipt == {"schema": head_request["schema"], "command": head_request["command"],
+                           "requestId": head_request["requestId"], "status": "APPLIED", "revision": "1"},
+          "A has no exact original NativeUser policy-initialize receipt")
+    check(set(gate_request) == {"schema", "command", "domainId", "requestId", "gateId", "submitterSeatId",
+                                "reviewerSeatId", "fromStage", "toStage", "rejectCap", "expectedRevision"} and
+          gate_request["schema"] == head_request["schema"] and gate_request["command"] == "policy-gate" and
+          gate_request["domainId"] == domain and gate_request["fromStage"] == head_request["stage"] and
+          gate_request["expectedRevision"] == head_receipt["revision"] and
+          re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", gate_request["requestId"]) and
+          gate_receipt == {"schema": gate_request["schema"], "command": gate_request["command"],
+                           "requestId": gate_request["requestId"], "status": "APPLIED", "revision": "2"},
+          "A has no exact original NativeUser policy-gate receipt")
+    check(set(grant_request) == {"schema", "command", "domainId", "requestId", "callerSeatId", "targetId",
+                                 "action", "expiresAtMs", "expectedRevision"} and
+          grant_request["schema"] == head_request["schema"] and grant_request["command"] == "policy-call-grant" and
+          grant_request["domainId"] == domain and grant_request["callerSeatId"] == gate_request["submitterSeatId"] and
+          grant_request["targetId"] == gate_request["reviewerSeatId"] and grant_request["action"] == "REVIEW" and
+          grant_request["expiresAtMs"] is None and grant_request["expectedRevision"] == gate_receipt["revision"] and
+          re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", grant_request["requestId"]) and
+          grant_receipt == {"schema": grant_request["schema"], "command": grant_request["command"],
+                            "requestId": grant_request["requestId"], "status": "APPLIED", "revision": "3"},
+          "A has no exact original permanent NativeUser REVIEW grant receipt")
+
+    head = one(db, "SELECT * FROM gogoke_v37_seat_policy_head WHERE domain_id=?", (domain,))
+    gate = one(db, "SELECT * FROM gogoke_v37_seat_policy_gates WHERE domain_id=? AND gate_id=?",
+               (domain, gate_request["gateId"]))
+    grant = one(db, "SELECT * FROM gogoke_v37_seat_policy_grants WHERE domain_id=? AND caller_seat_id=? "
+                "AND target_id=? AND action='REVIEW'",
+                (domain, grant_request["callerSeatId"], grant_request["targetId"]))
+    check(head["revision"] == 3 and head["current_stage"] == head_request["stage"] and
+          gate == {"domain_id": domain, "gate_id": gate_request["gateId"],
+                   "submitter_seat_id": gate_request["submitterSeatId"], "reviewer_seat_id": gate_request["reviewerSeatId"],
+                   "from_stage": gate_request["fromStage"], "to_stage": gate_request["toStage"],
+                   "reject_cap": gate_request["rejectCap"], "reject_count": 0,
+                   "state": "READY", "reason": "", "revision": 1} and
+          grant == {"domain_id": domain, "caller_seat_id": grant_request["callerSeatId"],
+                    "target_id": grant_request["targetId"], "action": "REVIEW", "expires_at_ms": 0, "revision": 3},
+          "A's actual same-scope gate or permanent REVIEW grant differs from its NativeUser receipts")
+    owner_events = []
+    for request, operation, revision, original in (
+        (head_request, "policy-initialize", 1, raw["ownerHead"]["rawFrame"]),
+        (gate_request, "policy-gate", 2, raw["ownerGate"]["rawFrame"]),
+        (grant_request, "policy-call-grant", 3, raw["ownerGrant"]["rawFrame"]),
+    ):
+        event = one(db, "SELECT * FROM gogoke_v37_seat_policy_events WHERE domain_id=? AND event_id=?",
+                    (domain, request["requestId"]))
+        check(event["domain_id"] == event["target_id"] == domain and event["operation"] == operation and
+              event["state"] == "APPLIED" and event["detail"] == "" and event["policy_revision"] == revision and
+              event["fingerprint"] == original_owner_fingerprint(operation, domain, original),
+              "A stored NativeUser policy event does not match its original request bytes")
+        owner_events.append(event)
+    return {"configuration": configuration, "head": head, "gate": gate, "grant": grant,
+            "ownerEvents": owner_events}
+
+
 def same_scope_submission_qualification(db, domain, source, target_gate_revision):
     if not isinstance(source, dict) or set(source) != {"seatId", "instanceId", "worktreeId"}:
         return {"state": "MISSING_A_SUBMITTER_SELECTION"}
@@ -1057,6 +1131,10 @@ def verify_cross_project_only(db, journal, case, result):
           "A/B native policies or A inbox changed from the original closed baseline")
     check(result["foreignProject"]["ownerHeadEvent"] and result["foreignProject"]["ownerEvent"],
           "B NativeUser initialize/gate source events are missing")
+    check(before.get("sameScopeOwnerPolicy", {}).get("configuration") == journal.get("sameScopePolicy") and
+          case.get("sameScopePolicy") == journal.get("sameScopePolicy") and
+          before["sameScopeOwnerPolicy"] == result["sameScopeOwnerPolicy"],
+          "A same-scope gate/grant lacks its original NativeUser frames or changed after the baseline")
     qualification = before.get("sameScopeQualification")
     qualified_submitter = case.get("initialSessions", [{}])[0].get("seatId")
     check(qualification and qualification.get("state") == "QUALIFIED_SAME_SCOPE_GATE_SUBMIT" and
@@ -1684,6 +1762,8 @@ try:
         result["foreignProject"] = foreign_snapshot(db, journal["domainId"], journal.get("foreignProject"))
         result["inbox"] = inbox_rows(db, journal["domainId"])
         if journal.get("rulesSelection") == "CROSS_PROJECT_ONLY":
+            result["sameScopeOwnerPolicy"] = same_scope_owner_snapshot(
+                db, journal["domainId"], journal.get("sameScopePolicy"))
             target_revision = (result["foreignProject"]["gate"]["revision"]
                                if result["foreignProject"] else None)
             result["sameScopeQualification"] = same_scope_submission_qualification(

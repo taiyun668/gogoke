@@ -84,6 +84,41 @@ if (crossProjectOnly) {
       gateReceipt.requestId !== gate.requestId || gateReceipt.status !== 'APPLIED' || gateReceipt.revision !== '2') {
     throw Error('CROSS_PROJECT_ONLY requires complete original NativeUser B initialize/gate frames and APPLIED receipts before launch');
   }
+  const local = rules.sameScopePolicy;
+  if (!exactKeys(local, ['ownerHead','ownerGate','ownerGrant']) ||
+      !['ownerHead','ownerGate','ownerGrant'].every(name => exactKeys(local[name], ['rawFrame','rawReceipt']) &&
+        typeof local[name].rawFrame === 'string' && typeof local[name].rawReceipt === 'string')) {
+    throw Error('CROSS_PROJECT_ONLY requires the original A NativeUser initialize/gate/REVIEW-grant frames and receipts before launch');
+  }
+  const aHead = JSON.parse(local.ownerHead.rawFrame), aHeadReceipt = JSON.parse(local.ownerHead.rawReceipt);
+  const aGate = JSON.parse(local.ownerGate.rawFrame), aGateReceipt = JSON.parse(local.ownerGate.rawReceipt);
+  const aGrant = JSON.parse(local.ownerGrant.rawFrame), aGrantReceipt = JSON.parse(local.ownerGrant.rawReceipt);
+  if (!exactKeys(aHead, ['schema','command','domainId','requestId','stage','expectedRevision']) ||
+      aHead.schema !== 'gogoke.37.owner-configuration.v1' || aHead.command !== 'policy-initialize' ||
+      aHead.domainId !== config.domainId || !atom(aHead.requestId) || !atom(aHead.stage) || aHead.expectedRevision !== '0' ||
+      !exactKeys(aHeadReceipt, ['schema','command','requestId','status','revision']) ||
+      aHeadReceipt.schema !== aHead.schema || aHeadReceipt.command !== aHead.command ||
+      aHeadReceipt.requestId !== aHead.requestId || aHeadReceipt.status !== 'APPLIED' || aHeadReceipt.revision !== '1' ||
+      !exactKeys(aGate, ['schema','command','domainId','requestId','gateId','submitterSeatId','reviewerSeatId',
+        'fromStage','toStage','rejectCap','expectedRevision']) ||
+      aGate.schema !== aHead.schema || aGate.command !== 'policy-gate' || aGate.domainId !== config.domainId ||
+      !atom(aGate.requestId) || !atom(aGate.gateId) || !atom(aGate.submitterSeatId) || !atom(aGate.reviewerSeatId) ||
+      aGate.submitterSeatId !== rules.submitter.seatId || aGate.reviewerSeatId !== rules.reviewer.seatId ||
+      aGate.fromStage !== aHead.stage || !atom(aGate.toStage) || aGate.toStage === aGate.fromStage ||
+      !Number.isInteger(aGate.rejectCap) || aGate.rejectCap < 1 || aGate.expectedRevision !== aHeadReceipt.revision ||
+      !exactKeys(aGateReceipt, ['schema','command','requestId','status','revision']) ||
+      aGateReceipt.schema !== aGate.schema || aGateReceipt.command !== aGate.command ||
+      aGateReceipt.requestId !== aGate.requestId || aGateReceipt.status !== 'APPLIED' || aGateReceipt.revision !== '2' ||
+      !exactKeys(aGrant, ['schema','command','domainId','requestId','callerSeatId','targetId','action','expiresAtMs','expectedRevision']) ||
+      aGrant.schema !== aHead.schema || aGrant.command !== 'policy-call-grant' || aGrant.domainId !== config.domainId ||
+      !atom(aGrant.requestId) ||
+      aGrant.callerSeatId !== rules.submitter.seatId || aGrant.targetId !== rules.reviewer.seatId ||
+      aGrant.action !== 'REVIEW' || aGrant.expiresAtMs !== null || aGrant.expectedRevision !== aGateReceipt.revision ||
+      !exactKeys(aGrantReceipt, ['schema','command','requestId','status','revision']) ||
+      aGrantReceipt.schema !== aGrant.schema || aGrantReceipt.command !== aGrant.command ||
+      aGrantReceipt.requestId !== aGrant.requestId || aGrantReceipt.status !== 'APPLIED' || aGrantReceipt.revision !== '3') {
+    throw Error('CROSS_PROJECT_ONLY requires exact original A NativeUser policy receipts for the selected caller/reviewer and a permanent REVIEW grant');
+  }
 }
 if (rules.lifecycleOwnership !== 'EXCLUSIVE_V08_SUBMITTER_AND_REVIEWER' ||
     rules.policyOwnership !== 'EXCLUSIVE_V08_POLICY_DOMAIN') {
@@ -144,7 +179,7 @@ const journal = {
   rulesCases: [],
   foreignProject: rules.foreignProject ?? null,
   rulesSelection: crossProjectOnly ? 'CROSS_PROJECT_ONLY' : 'ALL',
-  ...(crossProjectOnly ? { rulesSourceSelection: { ...rules.submitter } } : {}),
+  ...(crossProjectOnly ? { rulesSourceSelection: { ...rules.submitter }, sameScopePolicy: rules.sameScopePolicy } : {}),
   v12: 'NOT_RUN_ORIGINAL_M2_SIDE_WORKTREE_READBACK_REQUIRED',
   v08: 'RUNNING',
 };

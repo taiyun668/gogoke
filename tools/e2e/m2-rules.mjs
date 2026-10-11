@@ -68,6 +68,11 @@ export async function runRulesCase(product, config, journal) {
         qualification.reviewGrant.action === 'REVIEW' && qualification.reviewGrant.expires_at_ms === 0,
       'Cross-project DENIED requires an actual same-scope A gate-submit/reviewer-REVIEW qualification');
       record.sameScopeQualification = qualification;
+      requireFact(before.sameScopeOwnerPolicy?.configuration === c.sameScopePolicy &&
+        before.sameScopeOwnerPolicy.gate?.submitter_seat_id === c.submitterSession.seatId &&
+        before.sameScopeOwnerPolicy.gate?.reviewer_seat_id === c.reviewerSession.seatId,
+      'Cross-project qualification must retain actual A NativeUser head/gate/grant frames for these two seats');
+      record.sameScopePolicy = c.sameScopePolicy;
     }
     const foreign = c.foreignProject ?? null;
     requireFact(JSON.stringify(foreign) === JSON.stringify(journal.foreignProject ?? null) &&
