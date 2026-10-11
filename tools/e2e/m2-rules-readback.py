@@ -1610,6 +1610,10 @@ def verify_host_only(db, journal, case, result):
           old["v08"] == old_final["state"] == "IMPLEMENTED_CASES_HAVE_DIRECT_EVIDENCE_V08_INCOMPLETE" and
           old_final["directCaseEvidence"] is True and old_final["acceptance"] is False and
           old["caseId"] == old_final["caseId"] and old["domainId"] == old_final["domainId"] == domain and
+          old["sourceCommit"] == old_final["sourceCommit"] and
+          old_final["databasePath"] == result["databasePath"] and
+          old_final["rootIdentity"] == result["rootIdentity"] and
+          old_final["measurementPreservedDatabaseBytes"] is True and
           all(before["policy"][name] == old_final["policy"][name]
               for name in ("head", "grants", "gates", "routes", "events")),
           "Host-only current A policy is not the closed original core13 continuation")
@@ -1626,6 +1630,21 @@ def verify_host_only(db, journal, case, result):
               all(row[key] == old_sources[index][key] for key in ("seatId", "instanceId", "worktreeId"))
               for index, row in enumerate(sources)),
           "Host-only source H must be new and retain the original A E/F identities")
+    for source in old_sources:
+        releases = [row for row in old["operations"] if row["request"].get("family") == "K-SESSION" and
+                    row["request"].get("operation") == "admission-release" and
+                    row["request"].get("targetId") == source["id"]]
+        check(len(releases) == 1 and releases[0]["receipt"]["status"] == "APPLIED",
+              "Closed core13 source lacks exactly one original release")
+        release = releases[0]
+        stored = one(db, "SELECT * FROM gogoke_v37_h_operation WHERE domain_id=? AND request_id=?",
+                     (domain, release["request"]["requestId"]))
+        claim = one(db, "SELECT * FROM gogoke_v37_h_claim WHERE domain_id=? AND session_id=?",
+                    (domain, source["id"]))
+        check(bytes.fromhex(stored["raw_hex"]).decode() == release["rawFrame"] and
+              stored["operation"] == "admission-release" and stored["status"] == "APPLIED" and
+              claim["state"] == "RELEASED" and claim["session_id"] == source["id"],
+              "Old source H release was not retained in the current A database")
     operations = {row["request"]["requestId"]: row for row in journal["operations"]
                   if row["request"].get("requestId")}
     check(len(operations) == sum(bool(row["request"].get("requestId")) for row in journal["operations"]),
