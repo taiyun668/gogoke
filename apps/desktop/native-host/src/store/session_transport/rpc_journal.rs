@@ -2889,9 +2889,10 @@ pub(crate) fn read_observed_claude_ack(
     transact(db, |db| read_observed_claude_ack_in_transaction(db, owner, step))
 }
 
-/// Reconcile only an already WRITTEN deterministic Claude initialize from
-/// its original captured A frame. This does no stdin write and cannot grant
-/// an ordinary User send while the old claim is still STOPPED.
+/// Reconcile a deterministic Claude initialize from its original captured A
+/// frame. An UNKNOWN step retains its original error; only A is terminalized.
+/// This does no stdin write and cannot grant an ordinary User send while the
+/// old claim is still STOPPED.
 pub(crate) fn reconcile_written_claude_initialize_from_a(
     db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,
     step:&ClaudeStep<'_>,
@@ -2908,11 +2909,11 @@ pub(crate) fn reconcile_written_claude_initialize_from_a(
             &["ACTIVE","UNKNOWN"],false)?;
         if driver!="claude" {return Err(RpcJournalError::Denied);}
         let encoded=claude_bytes(step,&driver)?;
-        match same_row(db,&step.fields(),&operation,&encoded)? {
-            Some(Phase::Written)=>{},
+        let phase=match same_row(db,&step.fields(),&operation,&encoded)? {
+            Some(phase @ (Phase::Written | Phase::Unknown))=>phase,
             Some(Phase::Observed)=>return Ok(None),
             _=>return Err(RpcJournalError::Conflict),
-        }
+        };
         let sources=Statement::prepare(db.as_ptr(),
             "SELECT source_epoch,source_cursor,hex(raw_bytes) FROM main.v37_ledger_raw_source
               WHERE operation_id=?1 AND domain_id=?2 AND session_id=?3
@@ -2939,7 +2940,19 @@ pub(crate) fn reconcile_written_claude_initialize_from_a(
         }
         drop(sources);
         if let Some(key)=&found {
-            observe_claude_captured_ack_in_transaction(db,owner,step,key)?;
+            match phase {
+                Phase::Written => {
+                    observe_claude_captured_ack_in_transaction(db,owner,step,key)?;
+                }
+                Phase::Unknown => {
+                    // UNKNOWN is the durable record of the original read error.
+                    // Its schema forbids an observed source without discarding
+                    // that error, so settle only the already captured A frame.
+                    ledger::resolve_raw_source_no_event(db,&key.operation_id,
+                        &key.source_epoch,&key.source_cursor,CLAUDE_ACK_NO_EVENT)?;
+                }
+                _ => return Err(RpcJournalError::Conflict),
+            }
         }
         Ok(found)
     })
