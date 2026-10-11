@@ -27,13 +27,17 @@ if (process.platform !== 'win32' || required.some(key => config[key] === undefin
       .every(name => /^[a-f0-9]{64}$/.test(config.installedSha256[name] ?? '')) ||
     c?.ownership !== 'EXCLUSIVE_V11_FILE_BOUNDARIES' ||
     (c.onlyMainWrite !== undefined && typeof c.onlyMainWrite !== 'boolean') ||
+    (c.mainAndOutsideOnly !== undefined && typeof c.mainAndOutsideOnly !== 'boolean') ||
+    (c.onlyMainWrite === true && c.mainAndOutsideOnly === true) ||
     !['mainWrite', 'readOnlyWrite'].every(name => c[name] &&
       ['seatId', 'instanceId', 'worktreeId'].every(key => atom(c[name][key])) &&
-      c[name].attemptMode === 'execCommand' && path.isAbsolute(c[name].worktreePath ?? '') &&
+      ['execCommand', 'nativeFileChange'].includes(c[name].attemptMode) && path.isAbsolute(c[name].worktreePath ?? '') &&
       !c[name].worktreePath.startsWith('\\\\?\\')) ||
     c.mainWrite.seatId === c.readOnlyWrite.seatId ||
     c.mainWrite.worktreeId === c.readOnlyWrite.worktreeId ||
     config.v11OutsideTree?.ownership !== 'EXCLUSIVE_V11_OUTSIDE_TREE' ||
+    (config.v11OutsideTree.attemptMode !== undefined &&
+      !['execCommand', 'nativeFileChange'].includes(config.v11OutsideTree.attemptMode)) ||
     !path.isAbsolute(config.v11OutsideTree.outsideRoot ?? '') ||
     (c.onlyMainWrite !== true &&
       (!fs.existsSync(config.v11OutsideTree.outsideRoot) ||
@@ -180,7 +184,7 @@ try {
   const ui = await product.evaluate('({url:location.href,home:!!document.querySelector(".home-product-entry"),tauri:!!window.__TAURI_INTERNALS__})');
   check(ui.url === product.endpoint.url && ui.home && ui.tauri,
     'Actual installed Home/User bridge identity missing');
-  const instanceIds = c.onlyMainWrite === true ? [c.mainWrite.instanceId] :
+  const instanceIds = c.onlyMainWrite === true || c.mainAndOutsideOnly === true ? [c.mainWrite.instanceId] :
     [c.mainWrite.instanceId, c.readOnlyWrite.instanceId];
   const instances = await product.instances();
   check(instanceIds.every(instanceId => instances.instances.some(row =>
@@ -196,6 +200,7 @@ try {
     worktreeId: c.mainWrite.worktreeId, worktreePath: c.mainWrite.worktreePath,
     ownership: config.v11OutsideTree.ownership,
     outsideRoot: config.v11OutsideTree.outsideRoot,
+    attemptMode: config.v11OutsideTree.attemptMode,
   } }, journal);
   }
   await product.custody(); product.verifyBytes();
@@ -207,8 +212,9 @@ try {
     ? 'ORIGINAL_TOOL_ATTEMPTS_READ_BACK_CAUSES_REQUIRE_REVIEW'
     : 'NOT_RUN_NO_EXACT_FAILED_ORIGINAL_TOOL';
   journal.notRun = ['V11_NO_NETWORK_EFFECTIVE_BOUNDARY', 'V11_MIXED_TWO_PROJECTS',
-    'V11_HOST_SEALED_MERGE', ...(c.onlyMainWrite === true ?
-      ['V11_READ_ONLY_NOT_SELECTED', 'V11_OUTSIDE_NOT_SELECTED'] : [])];
+    'V11_HOST_SEALED_MERGE', ...(c.onlyMainWrite === true || c.mainAndOutsideOnly === true ?
+      ['V11_READ_ONLY_NOT_SELECTED'] : []),
+    ...(c.onlyMainWrite === true ? ['V11_OUTSIDE_NOT_SELECTED'] : [])];
   product.save();
 } catch (error) {
   journal.state = 'FAIL_ORIGINAL_REQUESTS_RETAINED';
