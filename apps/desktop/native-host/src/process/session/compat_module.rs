@@ -22,6 +22,7 @@ const NT_ROOT_2: &str = "GOGOKE_LPAC_PATH_NT_ROOT_2";
 const DOS_ROOT_2: &str = "GOGOKE_LPAC_PATH_DOS_ROOT_2";
 const OBSERVATION_MODE: &str = "GOGOKE_LPAC_COMPAT_MODE";
 const CLAUDE_PIPE_MODE: &str = "CLAUDE_PIPE_V1";
+const OPENCODE_PIPE_MODE: &str = "OPENCODE_PIPE_V1";
 const MAX_ROOTS: usize = 3;
 const REPARSE: u32 = 0x400;
 const DIRECTORY: u32 = 0x10;
@@ -347,7 +348,7 @@ pub(crate) struct CompatModule {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CompatMode { CodexPath, ClaudePipe }
+enum CompatMode { CodexPath, ClaudePipe, OpenCodePipe }
 
 impl CompatModule {
     pub(crate) fn prepare(
@@ -386,6 +387,25 @@ impl CompatModule {
         profile_name: &str,
     ) -> io::Result<Arc<Self>> {
         Self::prepare_module(root, Vec::new(), Vec::new(), profile, profile_name, CompatMode::ClaudePipe)
+    }
+
+    /// Fixed OpenCode image uses the same exact libuv private pipe pair.
+    /// Directory custody remains with the caller; this mode maps no path.
+    pub(crate) fn prepare_opencode_pipe(
+        root: &RootLock,
+        profile: &AppContainerProfile,
+        profile_name: &str,
+    ) -> io::Result<Arc<Self>> {
+        Self::prepare_module(root, Vec::new(), Vec::new(), profile, profile_name,
+            CompatMode::OpenCodePipe)
+    }
+
+    fn pipe_mode_name(&self) -> Option<&'static str> {
+        match self.mode {
+            CompatMode::CodexPath => None,
+            CompatMode::ClaudePipe => Some(CLAUDE_PIPE_MODE),
+            CompatMode::OpenCodePipe => Some(OPENCODE_PIPE_MODE),
+        }
     }
 
     fn prepare_module(
@@ -479,8 +499,8 @@ impl CompatModule {
     }
 
     pub(crate) fn extend_environment(&self, environment: &mut Vec<(String, String)>) {
-        if self.mode == CompatMode::ClaudePipe {
-            environment.push((OBSERVATION_MODE.to_owned(), CLAUDE_PIPE_MODE.to_owned()));
+        if let Some(mode) = self.pipe_mode_name() {
+            environment.push((OBSERVATION_MODE.to_owned(), mode.to_owned()));
             return;
         }
         environment.push((NT_ROOT.to_owned(), self.homes[0].nt.clone()));
@@ -505,11 +525,11 @@ impl CompatModule {
             return Err(invalid("compatibility LPAC profile mismatch"));
         }
         let environment = environment.ok_or_else(|| invalid("compatibility environment absent"))?;
-        if self.mode == CompatMode::ClaudePipe {
+        if let Some(mode) = self.pipe_mode_name() {
             if environment.iter().filter(|(key, _)| key.eq_ignore_ascii_case(OBSERVATION_MODE)).count() != 1
-                || !environment.iter().any(|(key, value)| key == OBSERVATION_MODE && value == CLAUDE_PIPE_MODE)
+                || !environment.iter().any(|(key, value)| key == OBSERVATION_MODE && value == mode)
                 || environment.iter().any(|(key, _)| key.to_ascii_uppercase().starts_with("GOGOKE_LPAC_PATH_")) {
-                return Err(invalid("Claude observation mode environment mismatch"));
+                return Err(invalid("pipe compatibility mode environment mismatch"));
             }
             return self.verify();
         }
@@ -564,6 +584,7 @@ impl CompatModule {
         match self.mode {
             CompatMode::CodexPath => gogoke_lpac_path_compat::OBSERVED_CLI_SHA256,
             CompatMode::ClaudePipe => gogoke_lpac_path_compat::OBSERVED_CLAUDE_SHA256,
+            CompatMode::OpenCodePipe => gogoke_lpac_path_compat::OBSERVED_OPENCODE_SHA256,
         }
     }
 }

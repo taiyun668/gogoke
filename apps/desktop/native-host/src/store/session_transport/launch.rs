@@ -668,6 +668,12 @@ impl LaunchEvidence {
             let directories = Arc::new(evidence_at("prepare-compat-directory-roots", DirectoryRoots::prepare(root, &roots))?);
             let module = evidence(CompatModule::prepare_claude_observation(root, &profile, &profile_name))?;
             (Some(module), Some(directories))
+        } else if pin.driver_id == "opencode" && pin.version == "1.18.32"
+            && pin.digest == format!("sha256:{}", gogoke_lpac_path_compat::OBSERVED_OPENCODE_SHA256) {
+            verify_host_guard(db,owner,host_guard)?;
+            let directories = Arc::new(evidence_at("prepare-compat-directory-roots", DirectoryRoots::prepare(root, &roots))?);
+            let module = evidence(CompatModule::prepare_opencode_pipe(root, &profile, &profile_name))?;
+            (Some(module), Some(directories))
         } else {
             verify_host_guard(db,owner,host_guard)?;
             (None, Some(Arc::new(evidence_at("prepare-compat-directory-roots", DirectoryRoots::prepare(root, &roots))?)))

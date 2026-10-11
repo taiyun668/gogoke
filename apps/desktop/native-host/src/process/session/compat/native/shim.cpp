@@ -1,4 +1,4 @@
-// Fixed x64 LPAC main-image IAT compatibility and Claude pipe failure observation.
+// Fixed x64 LPAC main-image IAT path and private uv pipe compatibility.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winnt.h>
@@ -15,6 +15,7 @@ constexpr wchar_t kNtEnv2[] = L"GOGOKE_LPAC_PATH_NT_ROOT_2";
 constexpr wchar_t kDosEnv2[] = L"GOGOKE_LPAC_PATH_DOS_ROOT_2";
 constexpr wchar_t kModeEnv[] = L"GOGOKE_LPAC_COMPAT_MODE";
 constexpr wchar_t kClaudeMode[] = L"CLAUDE_PIPE_V1";
+constexpr wchar_t kOpenCodeMode[] = L"OPENCODE_PIPE_V1";
 constexpr DWORD kMaxRoots = 3;
 using FinalPath = DWORD (WINAPI *)(HANDLE, LPWSTR, DWORD, DWORD);
 FinalPath g_original = nullptr;
@@ -551,7 +552,7 @@ bool patch_exact_main_import() {
     return true;
 }
 
-bool patch_exact_claude_imports() {
+bool patch_exact_uv_pipe_imports() {
     auto* image = static_cast<BYTE*>(static_cast<void*>(GetModuleHandleW(nullptr)));
     ImportSlots slots = {};
     if (!exact_main_import_slots(image, "CreateNamedPipeA", "CreateNamedPipeW", &slots))
@@ -575,7 +576,7 @@ bool patch_exact_claude_imports() {
     return true;
 }
 
-enum class CompatMode { Invalid, CodexPath, ClaudePipe };
+enum class CompatMode { Invalid, CodexPath, ClaudePipe, OpenCodePipe };
 CompatMode select_mode() {
     wchar_t mode[32] = {};
     SetLastError(ERROR_SUCCESS);
@@ -584,6 +585,8 @@ CompatMode select_mode() {
         return CompatMode::CodexPath;
     if (length == sizeof(kClaudeMode) / sizeof(wchar_t) - 1 &&
         lstrcmpW(mode, kClaudeMode) == 0) return CompatMode::ClaudePipe;
+    if (length == sizeof(kOpenCodeMode) / sizeof(wchar_t) - 1 &&
+        lstrcmpW(mode, kOpenCodeMode) == 0) return CompatMode::OpenCodePipe;
     return CompatMode::Invalid;
 }
 } // namespace
@@ -603,7 +606,9 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID) {
     if (!DetourRestoreAfterWith()) return FALSE;
     switch (select_mode()) {
         case CompatMode::CodexPath: return patch_exact_main_import() ? TRUE : FALSE;
-        case CompatMode::ClaudePipe: return patch_exact_claude_imports() ? TRUE : FALSE;
+        case CompatMode::ClaudePipe:
+        case CompatMode::OpenCodePipe:
+            return patch_exact_uv_pipe_imports() ? TRUE : FALSE;
         default: return FALSE;
     }
 }

@@ -46,8 +46,8 @@ fn main() {
     for source in SOURCE_FILES { detours.file(vendor_src.join(source)); }
     detours.compile("gogoke_detours");
 
-    // Build the DLL from the same fixed Detours library. The host embeds these
-    // bytes; no build-time or run-time download, caller DLL path, or shim swap.
+    // Build the fixed path/private-pipe DLL from the same Detours library. The
+    // host embeds these bytes; no download, caller DLL path, or shim swap.
     let module = out.join("gogoke_lpac_path_compat.dll");
     let import_lib = out.join("gogoke_lpac_path_compat.lib");
     let object = out.join("gogoke_lpac_path_compat.obj");

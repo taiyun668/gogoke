@@ -1,4 +1,4 @@
-//! Fixed x64 Codex 0.160 LPAC path-API compatibility module.
+//! Fixed x64 LPAC path and private uv pipe compatibility module.
 //! The host owns launch authorization, verified image identity, Job custody,
 //! exact home mapping, module file custody, and thread resume.
 
@@ -19,6 +19,8 @@ pub const OBSERVED_CLI_SHA256: &str =
     "fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d";
 pub const OBSERVED_CLAUDE_SHA256: &str =
     "180d7b279455e8b89d4353a5146447be2f80b80fb0db14bdc6dd9cb98c0aef09";
+pub const OBSERVED_OPENCODE_SHA256: &str =
+    "cf664aa1da32b788f9b2699b84a9bb9be30b7e025693b90f9b85829d5fe4e252";
 
 const IMAGE_FILE_MACHINE_AMD64: u16 = 0x8664;
 const WC_NO_BEST_FIT_CHARS: u32 = 0x400;
