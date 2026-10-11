@@ -27,7 +27,8 @@ pub(crate) use home::{prepare_persistent_home, HomeError, PreparedInstanceHome};
 pub(crate) use catalog::{discover_program, known_new_version, locate_pinned_program, CatalogError};
 pub(crate) use cap::{read_instance_concurrency_cap, set_instance_concurrency_cap};
 pub(crate) use management::{read_instance_profiles, set_instance_profile, record_qualified_account,
-    read_instance_evidence, tombstone_unused_instance, InstanceProfile, InstanceEvidence,
+    read_instance_evidence, read_verified_model_efforts, tombstone_unused_instance,
+    InstanceProfile, InstanceEvidence, VerifiedModelEffort, VerifiedModelEfforts,
     InstanceManagementError, QualifiedAccount, QualifiedAccountSource};
 pub(crate) use management::record_verified_models_from_original_rpc_source;
 pub(crate) use managed_cli::{managed_cli_root, inspect_staged_official_cli, read_managed_cli,
