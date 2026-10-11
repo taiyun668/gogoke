@@ -230,6 +230,8 @@ pub struct ProductDatabase<'root> {
     // Current due eligibility observation only: no receipt, authority, retry
     // permission or persistent state. Re-observed on the existing host loop.
     secretary_due_blocked: BTreeMap<String, String>,
+    // Observation of the resident bootstrap, not an E/H receipt or authority.
+    secretary_startup_reason: Option<String>,
     pending_native_launches: BTreeMap<(String, String), super::session_transport::launch::LaunchEvidence>,
     pending_credential_preparations: BTreeMap<(String, String),
         Vec<super::session_transport::credential_launch::CredentialPreparationCustody>>,
@@ -273,7 +275,7 @@ impl<'root> ProductDatabase<'root> {
         instance::initialize_grok_home_grant_schema(&mut connection)
             .map_err(|error| OrchestrationError::V37StoreFailure(format!("Grok HOME schema: {error}")))?;
         Ok(Self { root, connection, owner, session_binding_projection, process_custodian, owner_login: None,
-            native_sessions: BTreeMap::new(), secretary_due_blocked: BTreeMap::new(), pending_native_launches: BTreeMap::new(),
+            native_sessions: BTreeMap::new(), secretary_due_blocked: BTreeMap::new(), secretary_startup_reason: None, pending_native_launches: BTreeMap::new(),
             pending_credential_preparations: BTreeMap::new(),
             recovered_credential_holders: BTreeMap::new(),
             disappeared_credential_holders: BTreeMap::new() })
@@ -332,6 +334,14 @@ impl<'root> ProductDatabase<'root> {
                 .and_then(|elapsed|i64::try_from(elapsed.as_millis()).ok()).filter(|at|*at>0);
             let input=VerifiedDirectUserInput {origin,frame,observed_at_ms,visible_translation:None};
             let reply = self.configure_user_v37_with_input(frame,Some(&input))?;
+            let parsed = super::atomic::Parser::parse(std::str::from_utf8(frame).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("secretary configuration UTF8: {error}")))?)?;
+            if matches!(&parsed, Json::Object(fields) if matches!(fields.get(&JsonString::from_str("command")),
+                Some(Json::String(command)) if command.to_well_formed_string().as_deref()==Some("secretary-configure"))) {
+                // E has committed its original USER receipt. Bootstrap is a
+                // separate H operation; its failure must not erase that receipt.
+                self.start_secretary_resident();
+            }
             return self.append_secretary_schedule_readback(frame, reply);
         }
         let request = decode_request(frame).map_err(|error|
@@ -900,7 +910,7 @@ impl<'root> ProductDatabase<'root> {
     }
 
     pub fn close_checked(self) -> std::result::Result<OpenLedger, SameOpenError> {
-        let Self { root: _, connection, owner: _, session_binding_projection, process_custodian, owner_login, native_sessions, secretary_due_blocked: _,
+        let Self { root: _, connection, owner: _, session_binding_projection, process_custodian, owner_login, native_sessions, secretary_due_blocked: _, secretary_startup_reason: _,
             pending_native_launches, pending_credential_preparations, recovered_credential_holders,
             disappeared_credential_holders } = self;
         drop(owner_login);
@@ -1304,7 +1314,67 @@ impl From<OrchestrationError> for ScheduledWriteError {
     fn from(error: OrchestrationError) -> Self { Self::Integrity(error) }
 }
 
+fn secretary_resident_request(operation: &str, request_id: &str, session: &str,
+    revision: &str, payload: BTreeMap<JsonString, Json>) -> Result<V37Request> {
+    let key = |name| JsonString::from_str(name);
+    let text = |value: &str| Json::String(JsonString::from_str(value));
+    let raw = Json::Object(BTreeMap::from([
+        (key("schema"), text("gogoke.37.operations.v1")), (key("family"), text("K-SESSION")),
+        (key("operation"), text(operation)), (key("requestId"), text(request_id)),
+        (key("domainId"), text("global")), (key("targetId"), text(session)),
+        (key("expectedRevision"), text(revision)), (key("payload"), Json::Object(payload)),
+    ])).canonical().into_bytes();
+    scheduled_failure(decode_request(&raw))
+}
+
 impl ProductDatabase<'_> {
+    /// Once on USER connection, and after an actual USER configuration commit.
+    /// A failed bootstrap remains an observation; it cannot undo E's receipt.
+    pub fn start_secretary_resident(&mut self) {
+        self.secretary_startup_reason = match self.ensure_due_secretary_session() {
+            Ok(reason) => reason,
+            Err(error) => Some(format!("Original Secretary bootstrap failed: {error:?}")),
+        };
+    }
+
+    /// Normal desktop shutdown still owns the real Job, stdin and capture.
+    /// Stop through H before dropping those objects, without releasing the
+    /// conversation. A cold resume then requires this original C/H StopFact.
+    pub fn stop_secretary_before_close(&mut self) -> Result<()> {
+        let mut sessions = Vec::new();
+        for (key, run) in &self.native_sessions {
+            if key.0 != "global" { continue; }
+            if scheduled_failure(super::ledger::read_registered_session(&self.connection, &key.1))?
+                .is_some_and(|row| row.purpose == super::ledger::SessionPurpose::Secretary) {
+                let claim = scheduled_failure(super::session_transport::runtime::observe_claim(
+                    &self.connection, &super::seat::NativeOrigin::user(&self.owner),
+                    "global", run.evidence.seat_id(), &key.1))?
+                    .ok_or(OrchestrationError::AccessDenied)?;
+                sessions.push((key.1.clone(), run.evidence.seat_id().to_owned(),
+                    claim.generation, claim.revision));
+            }
+        }
+        for (session, seat, generation, revision) in sessions {
+            let identity = format!("secretary-close\n{}\n{session}\n{generation}\n{revision}",
+                self.root.canonical_root().identity.opaque());
+            let request = secretary_resident_request("stop", &format!("resident-stop-{}",
+                &super::digest::sha256_hex(identity.as_bytes())[..40]), &session, &revision.to_string(),
+                BTreeMap::from([
+                    (JsonString::from_str("seatId"), Json::String(JsonString::from_str(&seat))),
+                    (JsonString::from_str("generation"), Json::String(JsonString::from_str(&generation))),
+                ]))?;
+            let raw = self.dispatch_native_stop(&request)?;
+            let receipt = scheduled_failure(super::session_transport::decode_receipt(&raw))?;
+            if !matches!(receipt.status, V37Status::Applied | V37Status::Replayed)
+                || super::session_transport::runtime::observe_stop_fact(&self.connection,
+                    "global", &session)?.is_none() {
+                return Err(OrchestrationError::V37StoreFailure(format!(
+                    "Original Secretary shutdown stop unconfirmed: {}", String::from_utf8_lossy(&raw))));
+            }
+        }
+        Ok(())
+    }
+
     /// Internal Secretary bootstrap from the original persisted USER
     /// designation. These H envelopes are not USER input: no UserOriginProof,
     /// presence marker, old grant, or model turn is constructed here.
@@ -1315,7 +1385,18 @@ impl ProductDatabase<'_> {
             if key.0 == "global" && scheduled_failure(super::ledger::read_registered_session(
                 &self.connection, &key.1))?.is_some_and(|row|
                     row.purpose == super::ledger::SessionPurpose::Secretary) {
-                return Ok(Some("Original held Secretary session is not idle; no replacement started".into()));
+                let run = self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+                let Some(process) = self.process_custodian.active(&run.custody.ticket) else {
+                    return Ok(Some("Original Secretary process ticket is not held; no replacement started".into()));
+                };
+                if process.identity() != &run.custody.identity {
+                    return Err(OrchestrationError::AccessDenied);
+                }
+                return Ok(match process.exit_code().map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!("secretary bootstrap exit query: {error:?}")))? {
+                    None => None,
+                    Some(code) => Some(format!("Original Secretary process exited: {code}; no replacement started")),
+                });
             }
         }
         let SecretaryConfiguration::Designated { instance_id: Some(instance), .. } =
@@ -1356,17 +1437,22 @@ impl ProductDatabase<'_> {
         let suffix = super::digest::sha256_hex(identity.as_bytes());
         let session_id = format!("resident-secretary-{}", &suffix[..40]);
         let query = Statement::prepare(self.connection.as_ptr(),
-            "SELECT c.session_id,c.state,CAST(b.seat_authorization_generation AS TEXT)
+            "SELECT c.session_id,c.state,CAST(b.seat_authorization_generation AS TEXT),c.generation,CAST(c.revision AS TEXT)
              FROM main.gogoke_v37_h_claim c JOIN main.gogoke_v37_native_selection b
                ON b.domain_id=c.domain_id AND b.session_id=c.session_id
              WHERE c.domain_id='global' AND b.seat_id=?1 AND b.seat_incarnation=?2
                AND c.state<>'RELEASED'")?;
         query.bind_text(1, &seat_id)?; query.bind_text(2, &incarnation)?;
         let mut count = 0;
+        let mut stopped = None;
         while query.step_row()? {
             count += 1;
             let existing = query.column_text(0)?;
             let phase = query.column_text(1)?;
+            if phase == "STOPPED" {
+                stopped = Some((existing, query.column_text(3)?, query.column_text(4)?));
+                continue;
+            }
             if existing != session_id || !matches!(phase.as_str(), "RESERVED" | "COMMITTED")
                 || query.column_text(2)? != generation.to_string() {
                 return Ok(Some(format!("Original Secretary claim still requires reconciliation: session={existing}; state={phase}")));
@@ -1374,6 +1460,43 @@ impl ProductDatabase<'_> {
         }
         drop(query);
         if count > 1 { return Err(OrchestrationError::OperationConflict); }
+        if let Some((existing, old_generation, revision)) = stopped {
+            // Only a genuine stopped claim may enter the existing native
+            // continuation. Neither PID disappearance nor old open ACK is a
+            // StopFact; dispatch_native_resume verifies the original C/H fact.
+            let pending = Statement::prepare(self.connection.as_ptr(),
+                "SELECT raw_hex FROM main.gogoke_v37_h_process_episode WHERE domain_id='global'
+                 AND session_id=?1 AND old_generation IS NOT NULL AND phase IN ('INTENT','PREPARED','UNKNOWN')")?;
+            pending.bind_text(1, &existing)?;
+            let prior = if pending.step_row()? {
+                let hex = pending.column_text(0)?;
+                if pending.step_row()? { return Err(OrchestrationError::OperationConflict); }
+                if hex.len()%2 != 0 { return Err(OrchestrationError::OperationConflict); }
+                let bytes = (0..hex.len()).step_by(2).map(|index|
+                    hex.get(index..index+2).ok_or(OrchestrationError::OperationConflict)
+                        .and_then(|pair| u8::from_str_radix(pair,16).map_err(|error|
+                            OrchestrationError::V37StoreFailure(format!("secretary original resume hex: {error}")))))
+                    .collect::<Result<Vec<_>>>()?;
+                Some(scheduled_failure(decode_request(&bytes))?)
+            } else { None };
+            drop(pending);
+            let request = if let Some(original) = prior { original } else {
+                let identity = format!("secretary-resume\n{}\n{existing}\n{old_generation}\n{revision}",
+                    self.root.canonical_root().identity.opaque());
+                secretary_resident_request("resume", &format!("resident-resume-{}",
+                    &super::digest::sha256_hex(identity.as_bytes())[..40]), &existing, &revision,
+                    BTreeMap::from([(JsonString::from_str("generation"),
+                        Json::String(JsonString::from_str(&old_generation)))]))?
+            };
+            let raw = self.dispatch_user_session(&request)?;
+            let receipt = scheduled_failure(decode_receipt(&raw))?;
+            if !matches!(receipt.status, V37Status::Applied | V37Status::Replayed) {
+                return Ok(Some(format!("Original Secretary resume result: {}", String::from_utf8_lossy(&raw))));
+            }
+            return Ok(if self.secretary_resident_is_live(&existing)? { None } else {
+                Some("Original Secretary resume receipt has no current live holder; no replacement started".into())
+            });
+        }
         if count == 0 && seat.state != State::Idle {
             return Ok(Some("Original busy Secretary seat has no qualified preparation".into()));
         }
@@ -1403,7 +1526,17 @@ impl ProductDatabase<'_> {
                 return Ok(Some(format!("Original Secretary {operation} result: {}", String::from_utf8_lossy(&raw))));
             }
         }
-        Ok(None)
+        Ok(if self.secretary_resident_is_live(&session_id)? { None } else {
+            Some("Original Secretary open receipt has no current live holder; no replacement started".into())
+        })
+    }
+
+    fn secretary_resident_is_live(&self, session: &str) -> Result<bool> {
+        let Some(run) = self.native_sessions.get(&("global".to_owned(), session.to_owned())) else { return Ok(false); };
+        let Some(process) = self.process_custodian.active(&run.custody.ticket) else { return Ok(false); };
+        if process.identity() != &run.custody.identity { return Err(OrchestrationError::AccessDenied); }
+        Ok(process.exit_code().map_err(|error| OrchestrationError::V37StoreFailure(
+            format!("secretary resident exit query: {error:?}")))?.is_none())
     }
 
     // E may reduce due eligibility without a live process. This transaction

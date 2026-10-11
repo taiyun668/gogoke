@@ -75,7 +75,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     io::stdout().flush()?;
     if let Some(user) = user_listener {
         run_desktop(&mut product, listener, user, &endpoint, &service_capability)?;
-        product.close_checked()?;
+        let stopped = product.stop_secretary_before_close();
+        let closed = product.close_checked();
+        if let Err(error) = stopped {
+            return Err(io::Error::other(format!("Secretary normal shutdown: {error:?}; database close: {closed:?}")).into());
+        }
+        closed?;
         drop(lock);
         return Ok(());
     }
@@ -241,7 +246,10 @@ fn run_desktop(
             }
             DesktopEvent::ServiceDisconnected => service = None,
             DesktopEvent::ServiceFailed(error) => return Err(io::Error::other(error).into()),
-            DesktopEvent::UserConnected(proof) => user = Some(proof),
+            DesktopEvent::UserConnected(proof) => {
+                user = Some(proof);
+                product.start_secretary_resident();
+            },
             DesktopEvent::UserFrame { bytes, answer } => {
                 let reply = match user.as_ref() {
                     Some(proof) => product.dispatch_user_frame(proof, &bytes)

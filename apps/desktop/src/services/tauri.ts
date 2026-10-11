@@ -7,6 +7,7 @@ import { readDesign37InstancesSnapshot } from "@/features/seats/design37Instance
 type SecretaryLimits = {
   globalParallelCap?: string | null;
   globalEffectiveLimit?: string | null;
+  startupReason?: string | null;
 };
 type SecretaryConfiguration = SecretaryLimits & (
   | { schema: "gogoke.37.secretary-configuration.v1"; state: "UNSET" | "REVOKED" }
@@ -46,6 +47,9 @@ function parseSecretaryConfiguration(value: unknown): SecretaryConfiguration {
         (!decimal(limit) || BigInt(limit) < 1n || BigInt(limit) > 4294967295n)) {
       throw new Error(`Native Secretary ${field} is invalid: ${JSON.stringify(limit)}`);
     }
+  }
+  if (value.startupReason !== undefined && !optionalText(value.startupReason)) {
+    throw new Error(`Native Secretary startup reason is invalid: ${JSON.stringify(value.startupReason)}`);
   }
   if (value.state === "UNSET" || value.state === "REVOKED") {
     return value as SecretaryConfiguration;
@@ -648,12 +652,12 @@ export function createDesign37SecretarySource(): {
     const entry: SecretaryPage["entry"] = runnable && conversation.turnState === "IDLE"
       ? { kind: "quiet" }
       : runnable && conversation.turnState === "RUNNING" ? { kind: "working" } :
-        { kind: "down", reason: conversation?.state === "CONFLICT" ? "宿主报告秘书长会话冲突" :
+        { kind: "down", reason: confirmed.startupReason ?? (conversation?.state === "CONFLICT" ? "宿主报告秘书长会话冲突" :
           conversation?.state === "UNKNOWN" ? "宿主无法确认秘书长会话" :
           conversation?.state === "NONE" ? "宿主未找到秘书长会话" :
           conversation?.historical === true ? "原会话已结束，可查看历史" :
           conversation?.stoppedFact === true ? "宿主报告秘书长会话已停止" :
-          "宿主未报告可用的秘书长会话轮次状态" };
+          "宿主未报告可用的秘书长会话轮次状态") };
     return { configuration: confirmed, page: { entry, routines, settings } };
   };
   const saveSettings = async (input: { instanceId: string; model?: string; effort?: string;

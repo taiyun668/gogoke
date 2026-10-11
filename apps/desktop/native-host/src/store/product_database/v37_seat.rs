@@ -1357,6 +1357,7 @@ impl<'root> ProductDatabase<'root> {
                 } else {None};
                 result.insert(key("globalParallelCap"),optional(global_cap.map(|value|value.to_string())));
                 result.insert(key("globalEffectiveLimit"),optional(effective.map(|value|value.to_string())));
+                result.insert(key("startupReason"),optional(self.secretary_startup_reason.clone()));
                 match configuration {
                     seat::SecretaryConfiguration::Unset=>{result.insert(key("state"),text("UNSET"));},
                     seat::SecretaryConfiguration::Revoked=>{result.insert(key("state"),text("REVOKED"));},
