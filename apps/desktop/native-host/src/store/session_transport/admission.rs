@@ -233,6 +233,7 @@ pub(super) fn record_opencode_dos_alias_cleanup(
         if !stopped.step_row()? || stopped.column_text(0)?!="1" {
             return Err(AdmissionError::Denied);
         }
+        drop(stopped);
         let update=Statement::prepare(connection.as_ptr(),
             "UPDATE main.gogoke_v37_h_dos_alias SET cleanup_status=?1,cleanup_result=?2,
               revision=revision+1 WHERE domain_id=?3 AND session_id=?4 AND generation=?5
@@ -267,7 +268,8 @@ pub(crate) fn recover_orphan_opencode_dos_alias(
         Err(AdmissionError::Unknown)
     };
     let namespace=match super::dos_alias::current_namespace_id(){
-        Ok(value)=>value,Err(_)=>return fail_closed(connection,&alias,"current namespace unavailable"),
+        Ok(value)=>value,Err(error)=>return fail_closed(connection,&alias,&format!(
+            "current namespace query failed: {error}")),
     };
     if namespace!=alias.namespace_id {
         return fail_closed(connection,&alias,"recorded logon namespace is not current");
@@ -278,8 +280,8 @@ pub(crate) fn recover_orphan_opencode_dos_alias(
     if super::dos_alias::current_host_identity().ok()==Some((host_pid,host_creation)) {
         return Err(AdmissionError::Unknown);
     }
-    if crate::process::NativeProcessHoldersGone::observe(&[(host_pid,host_creation)]).is_err(){
-        return fail_closed(connection,&alias,"original host holder is not proven gone");
+    if let Err(error)=crate::process::NativeProcessHoldersGone::observe(&[(host_pid,host_creation)]){
+        return fail_closed(connection,&alias,&format!("original host holder not proven gone: {error:?}"));
     }
     let mut unbound_custody=None;
     match alias.phase.as_str(){
@@ -296,8 +298,8 @@ pub(crate) fn recover_orphan_opencode_dos_alias(
             }
             let pid=pid.parse::<u32>().map_err(|_|AdmissionError::Denied)?;
             let creation=creation.parse::<u64>().map_err(|_|AdmissionError::Denied)?;
-            if crate::process::NativeProcessHoldersGone::observe(&[(pid,creation)]).is_err(){
-                return fail_closed(connection,&alias,"original C process identity is not proven gone");
+            if let Err(error)=crate::process::NativeProcessHoldersGone::observe(&[(pid,creation)]){
+                return fail_closed(connection,&alias,&format!("original C process not proven gone: {error:?}"));
             }
         },
         "PREPARE_STARTED"=>{
@@ -305,12 +307,12 @@ pub(crate) fn recover_orphan_opencode_dos_alias(
                 Ok(Some(value))=>value,
                 Ok(None)=>return fail_closed(connection,&alias,
                     "prepare began without durable child custody; possible child retained UNKNOWN"),
-                Err(_)=>return fail_closed(connection,&alias,
-                    "original C custody could not be read exactly; possible child retained UNKNOWN"),
+                Err(error)=>return fail_closed(connection,&alias,&format!(
+                    "original C custody could not be read exactly: {error:?}")),
             };
             let(_,_,pid,creation)=custody;
-            if crate::process::NativeProcessHoldersGone::observe(&[(pid,creation)]).is_err(){
-                return fail_closed(connection,&alias,"original C process identity is not proven gone");
+            if let Err(error)=crate::process::NativeProcessHoldersGone::observe(&[(pid,creation)]){
+                return fail_closed(connection,&alias,&format!("original C process not proven gone: {error:?}"));
             }
             unbound_custody=Some(custody);
         },
@@ -318,7 +320,8 @@ pub(crate) fn recover_orphan_opencode_dos_alias(
     }
     let root_identity=identity_from_alias(&alias)?;
     let mappings=match super::dos_alias::query(&alias.alias_name){
-        Ok(value)=>value,Err(_)=>return fail_closed(connection,&alias,"current mapping query failed"),
+        Ok(value)=>value,Err(error)=>return fail_closed(connection,&alias,&format!(
+            "current mapping query failed: {error}")),
     };
     let status=if mappings.is_empty(){
         if let Some((ticket,nonce,pid,creation))=unbound_custody.take(){
@@ -331,9 +334,11 @@ pub(crate) fn recover_orphan_opencode_dos_alias(
         "ABSENT"
     } else if mappings.len()==1
         && alias.observed_target.as_deref().map_or(true,|target|
-            mappings.first().is_some_and(|observed|observed==target))
-        && super::dos_alias::verify_mapping(&alias.alias_name,alias.observed_target.as_deref(),
-            &root_identity).is_ok() {
+            mappings.first().is_some_and(|observed|observed==target)) {
+        if let Err(error)=super::dos_alias::verify_mapping(&alias.alias_name,
+            alias.observed_target.as_deref(),&root_identity) {
+            return fail_closed(connection,&alias,&format!("physical alias verification failed: {error}"));
+        }
         if let Some((ticket,nonce,pid,creation))=unbound_custody.take(){
             alias=match bind_opencode_dos_alias_custody(connection,&alias,
                 &alias.process_operation_id,&ticket,&nonce,pid,creation){
@@ -341,8 +346,8 @@ pub(crate) fn recover_orphan_opencode_dos_alias(
                     Err(_)=>return fail_closed(connection,&alias,"durable C custody binding failed"),
                 };
         }
-        if super::dos_alias::remove_exact(&alias.alias_name,&alias.requested_target).is_err(){
-            return fail_closed(connection,&alias,"exact alias removal or absence readback failed");
+        if let Err(error)=super::dos_alias::remove_exact(&alias.alias_name,&alias.requested_target){
+            return fail_closed(connection,&alias,&format!("exact removal or absence readback failed: {error}"));
         }
         "REMOVED"
     } else {
@@ -617,6 +622,7 @@ pub(super) fn reserve_opencode_dos_alias(
         let origin_kind=if open=="1"&&resume=="0"{"OPEN"}
             else if open=="0"&&resume=="1"{"RESUME"}
             else{return Err(AdmissionError::Conflict);};
+        drop(intent);
         let existing = count(connection,
             "SELECT COUNT(*) FROM main.gogoke_v37_h_dos_alias
               WHERE domain_id=?1 AND session_id=?2 AND generation=?3",
