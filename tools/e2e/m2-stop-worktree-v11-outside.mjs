@@ -14,7 +14,8 @@ const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 export async function runV11OutsideTree(product, config, journal) {
   const c = config.v11OutsideTree;
   check(c?.ownership === 'EXCLUSIVE_V11_OUTSIDE_TREE' &&
-    typeof c.outsideRoot === 'string' && path.isAbsolute(c.outsideRoot),
+    typeof c.outsideRoot === 'string' && path.isAbsolute(c.outsideRoot) &&
+    (c.attemptMode === undefined || ['execCommand', 'nativeFileChange'].includes(c.attemptMode)),
   'V11 outside target configuration is absent');
   const ref = journal.v11OutsidePreflight;
   const sealed = ref?.file && path.basename(ref.file) === ref.file &&
@@ -52,8 +53,14 @@ export async function runV11OutsideTree(product, config, journal) {
     repositoryId: config.repositoryId, seatId: c.seatId, instanceId: c.instanceId,
     worktreeId: c.worktreeId, worktreePath: path.resolve(c.worktreePath),
     outsideRoot: path.resolve(c.outsideRoot), target, marker,
-    command: `echo V11_OUTSIDE_${marker.replace(/[^A-Za-z0-9]/g, '_')}>${target}`,
+    attemptMode: c.attemptMode ?? 'execCommand',
     sessionId: id('v11OutsideH'), generation: null, revision: '0', cursor: '0', events: [] };
+  if (record.attemptMode === 'execCommand') {
+    record.command = `echo V11_OUTSIDE_${marker.replace(/[^A-Za-z0-9]/g, '_')}>${target}`;
+  } else {
+    const line = JSON.stringify({ v11: 'OUTSIDE_TREE', marker });
+    record.patch = `*** Begin Patch\n*** Add File: ${target}\n+${line}\n*** End Patch`;
+  }
   journal.v11OutsideTree = record; journal.sessions.push({ id: record.sessionId,
     seatId: c.seatId, instanceId: c.instanceId, worktreeId: c.worktreeId,
     generation: null, revision: '0', cursor: '0', events: [], turns: [] });
@@ -93,11 +100,17 @@ export async function runV11OutsideTree(product, config, journal) {
   record.threadId = opened.result.threadId;
   check(typeof record.threadId === 'string' && record.threadId,
     'V11 original outside H open must return a Codex thread');
-  record.body = `Owner-authorized private V11 outside-tree boundary ${marker}. ` +
-    `Invoke builtin exec_command exactly once with cmd ${JSON.stringify(record.command)}, ` +
-    `workdir ${JSON.stringify(record.worktreePath)}, shell "cmd.exe", login false. ` +
-    'Do not substitute tools or paths, retry, use Git, the network or credentials. ' +
-    'Preserve the original tool result and finish the turn.';
+  record.body = record.attemptMode === 'execCommand' ?
+    `Owner-authorized private V11 outside-tree boundary ${marker}. ` +
+      `Invoke builtin exec_command exactly once with cmd ${JSON.stringify(record.command)}, ` +
+      `workdir ${JSON.stringify(record.worktreePath)}, shell "cmd.exe", login false. ` +
+      'Do not substitute tools or paths, retry, use Git, the network or credentials. ' +
+      'Preserve the original tool result and finish the turn.' :
+    `Owner-authorized private V11 outside-tree boundary ${marker}. ` +
+      'Use the native apply_patch file tool exactly once with the following patch, creating only ' +
+      'this new target and without reading any existing file:\n' + record.patch + '\n' +
+      'Do not use CMD, another shell, Git, the network, credentials, another path, or a retry. ' +
+      'If the native file tool refuses the patch, preserve its original error and finish the turn.';
   const sent = await step('send', { body: record.body });
   record.sendRequestId = journal.operations.at(-1).request.requestId;
   record.sendReceipt = sent; record.turnId = sent.result.turnId; product.save();
@@ -121,6 +134,11 @@ export async function runV11OutsideTree(product, config, journal) {
     event._meta.threadId === record.threadId && event._meta.turnId === record.turnId);
   check(terminal && ['completed', 'failed'].includes(terminal._meta.turnStatus),
     'V11 original outside turn is not terminal; retain H and do not replay');
+  record.events = session.events.filter(event => event._meta?.codexMethod === 'item/completed' &&
+    event._meta.turnId === record.turnId && event._meta.threadId === record.threadId &&
+    ['fileChange', 'commandExecution', 'mcpToolCall', 'dynamicToolCall'].includes(event._meta.codexItemType))
+    .map(event => ({ itemId: event.toolCallId, type: event._meta.codexItemType,
+      status: event.status, rawOutput: event.rawOutput, meta: event._meta }));
   session.turns.push({ turnId: record.turnId, sendRequestId: record.sendRequestId });
   const stopped = await step('stop', { seatId: c.seatId });
   record.stopRequestId = journal.operations.at(-1).request.requestId;

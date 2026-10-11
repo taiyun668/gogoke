@@ -308,30 +308,93 @@ def main():
                         "commandExecution", "mcpToolCall", "dynamicToolCall")))]
         started = [frame["params"]["item"] for frame in tools if frame["method"] == "item/started"]
         completed = [frame["params"]["item"] for frame in tools if frame["method"] == "item/completed"]
-        marker_atom = "".join(char if char in
-                              "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-                              else "_" for char in case["marker"])
-        require(case["command"] == f'echo V11_OUTSIDE_{marker_atom}>{target}',
-                "V11 original outside command/target differs")
-        exact = not unrelated and len(tools) == 2 and len(started) == len(completed) == 1 and \
-            started[0].get("id") == completed[0].get("id") and \
-            started[0].get("type") == completed[0].get("type") == "commandExecution" and \
-            started[0].get("command") == completed[0].get("command") and \
-            _history_rules.exact_peer_command(completed[0].get("command"), case) and \
-            ("cwd" not in started[0] or os.path.samefile(started[0]["cwd"], tree[4])) and \
-            ("cwd" not in completed[0] or os.path.samefile(completed[0]["cwd"], tree[4])) and \
-            completed[0].get("status") in ("completed", "failed") and \
-            type(completed[0].get("exitCode")) is int and completed[0]["exitCode"] != 0
+        mode = case.get("attemptMode", "execCommand")
+        require(mode in ("execCommand", "nativeFileChange"),
+                "V11 outside original attempt mode differs")
+        pair = not unrelated and len(tools) == 2 and len(started) == len(completed) == 1 and \
+            isinstance(completed[0].get("id"), str) and completed[0]["id"] and \
+            started[0].get("id") == completed[0]["id"] and \
+            started[0].get("type") == completed[0].get("type")
+        original_tool = completed[0] if len(completed) == 1 else {}
+        raw_failure = {name: original_tool[name] for name in
+                       ("aggregatedOutput", "result", "error", "contentItems")
+                       if original_tool.get(name)}
+        if mode == "execCommand":
+            marker_atom = "".join(char if char in
+                                  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+                                  else "_" for char in case["marker"])
+            require(case.get("command") == f'echo V11_OUTSIDE_{marker_atom}>{target}',
+                    "V11 original outside command/target differs")
+            exact = not unrelated and len(tools) == 2 and len(started) == len(completed) == 1 and \
+                started[0].get("id") == completed[0].get("id") and \
+                started[0].get("type") == completed[0].get("type") == "commandExecution" and \
+                started[0].get("command") == completed[0].get("command") and \
+                _history_rules.exact_peer_command(completed[0].get("command"), case) and \
+                ("cwd" not in started[0] or os.path.samefile(started[0]["cwd"], tree[4])) and \
+                ("cwd" not in completed[0] or os.path.samefile(completed[0]["cwd"], tree[4])) and \
+                completed[0].get("status") in ("completed", "failed") and \
+                type(completed[0].get("exitCode")) is int and completed[0]["exitCode"] != 0
+        else:
+            line = json.dumps({"v11": "OUTSIDE_TREE", "marker": case["marker"]},
+                              ensure_ascii=False, separators=(",", ":"))
+            expected_patch = f"*** Begin Patch\n*** Add File: {target}\n+{line}\n*** End Patch"
+            expected_body = (f'Owner-authorized private V11 outside-tree boundary {case["marker"]}. '
+                             'Use the native apply_patch file tool exactly once with the following patch, '
+                             'creating only this new target and without reading any existing file:\n' +
+                             expected_patch + '\n' +
+                             'Do not use CMD, another shell, Git, the network, credentials, '
+                             'another path, or a retry. '
+                             'If the native file tool refuses the patch, preserve its original error '
+                             'and finish the turn.')
+            require(case.get("patch") == expected_patch and case["body"] == expected_body,
+                    "V11 outside native file request differs from its exact new target")
+            changes = original_tool.get("changes", [])
+            normalized = case.get("events", [])
+            h_file_change = False
+            if pair and original_tool.get("type") == "fileChange" and len(normalized) == 1:
+                source_row = next((row for row, frame in zip(raw, frames)
+                                   if frame.get("method") == "item/completed" and
+                                   frame.get("params", {}).get("item") is completed[0]), None)
+                if source_row is not None:
+                    indexed = db.execute(
+                        "SELECT update_json FROM v37_ledger_index WHERE source_kind='v37' "
+                        "AND domain_id=? AND session_id=? AND source_epoch=? AND source_cursor=?",
+                        (case["domainId"], case["sessionId"], source_row[5], source_row[6]))
+                    persisted = [json.loads(row[0]) for row in indexed]
+                    expected_meta = {"codexMethod": "item/completed", "codexItemType": "fileChange",
+                                     "threadId": case["threadId"], "turnId": case["turnId"],
+                                     "rawSourceCursor": str(source_row[6])}
+                    h_file_change = any(all(update.get("_meta", {}).get(key) == value
+                                                for key, value in expected_meta.items()) and
+                                        update.get("toolCallId") == original_tool["id"] and
+                                        update.get("status") == "failed" and
+                                        update.get("rawOutput") == normalized[0].get("rawOutput") and
+                                        all(normalized[0].get("meta", {}).get(key) == value
+                                            for key, value in expected_meta.items())
+                                        for update in persisted)
+            exact = pair and original_tool.get("type") == "fileChange" and \
+                original_tool.get("status") == "failed" and bool(raw_failure) and \
+                isinstance(changes, list) and len(changes) == 1 and \
+                isinstance(changes[0], dict) and changes[0].get("path") == str(target) and \
+                isinstance(changes[0].get("kind"), dict) and \
+                changes[0]["kind"].get("type") == "add" and \
+                isinstance(changes[0].get("diff"), str) and line in changes[0]["diff"] and \
+                len(normalized) == 1 and normalized[0].get("itemId") == original_tool["id"] and \
+                normalized[0].get("type") == "fileChange" and \
+                normalized[0].get("status") == "failed" and h_file_change
         result = {"schema": "gogoke.37.private-v11-outside-readback.v1",
                   "sourceCommit": journal["sourceCommit"], "normalClosePid": closes[-1]["pid"],
                   "sessionId": case["sessionId"], "turnId": case["turnId"],
                   "stopFact": case["stopFact"], "outsideTarget": str(target),
                   "exactFailedOriginalTool": exact,
                   "unresolvedOriginalSources": unresolved,
-                  "originalToolStatus": completed[0].get("status") if len(completed) == 1 else None,
-                  "originalExitCode": completed[0].get("exitCode") if len(completed) == 1 else None,
-                  "originalError": completed[0].get("error") if len(completed) == 1 else None,
-                  "originalOutput": completed[0].get("aggregatedOutput") if len(completed) == 1 else None,
+                  "attemptMode": mode,
+                  "originalToolType": original_tool.get("type"),
+                  "originalToolStatus": original_tool.get("status"),
+                  "originalExitCode": original_tool.get("exitCode"),
+                  "originalError": original_tool.get("error"),
+                  "originalOutput": original_tool.get("aggregatedOutput"),
+                  "originalRawFailure": raw_failure,
                   "directAttemptEvidence": exact, "directCaseEvidence": False,
                   "permissionCause": "UNATTRIBUTED", "acceptance": False,
                   "databaseSha256": before["db"], "measurementPreservedDatabaseBytes": True}

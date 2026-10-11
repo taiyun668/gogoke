@@ -54,6 +54,37 @@ def ordinary(path):
         getattr(path.lstat(), "st_file_attributes", 0) & 0x400)
 
 
+def full_f_root_inventory(db, root):
+    """Read the existing F/source rows and physical roots in the same closed view."""
+    native = root / "v37-worktrees"
+    require(ordinary_directory(native), "V11 native F root is unavailable")
+    trees = []
+    for row in db.execute("SELECT worktree_id,repository_id,domain_id,seat_id,instance_id,"
+                          "worktree_path,state FROM gogoke_v37_worktrees ORDER BY worktree_id"):
+        path = Path(row[5])
+        if row[6] == "REGISTERED":
+            require(ordinary_directory(path) and
+                    any(same_path(parent, native) for parent in path.resolve(strict=True).parents),
+                    "V11 registered F object is missing or outside native root")
+            stat = path.stat()
+            physical = [str(stat.st_dev), str(stat.st_ino)]
+        else:
+            physical = None if not path.exists() else [str(path.stat().st_dev), str(path.stat().st_ino)]
+        trees.append({"row": list(row), "physical": physical})
+    sources = []
+    for row in db.execute("SELECT repository_id,source_path,common_path FROM "
+                          "gogoke_v37_worktree_sources ORDER BY repository_id"):
+        source, common = Path(row[1]), Path(row[2])
+        require(ordinary_directory(source) and ordinary_directory(common),
+                "V11 original F source/common object is missing or reparse")
+        sources.append({"row": list(row),
+                        "sourcePhysical": [str(source.stat().st_dev), str(source.stat().st_ino)],
+                        "commonPhysical": [str(common.stat().st_dev), str(common.stat().st_ino)]})
+    require(trees and sources, "V11 complete F/source inventory is absent")
+    return {"trees": trees, "sources": sources,
+            "scope": "POST_CLOSE_FULL_INVENTORY_ONLY"}
+
+
 def candidate_close(journal, case):
     launches, closes = journal.get("launches", []), journal.get("closes", [])
     pins = case.get("installedSha256", {})
@@ -80,7 +111,14 @@ def file_boundaries(root, output, journal_file):
     case = journal.get("v11FileBoundaries")
     require(not case or "onlyMainWrite" not in case or type(case["onlyMainWrite"]) is bool,
             "V11 case selection must be an explicit boolean")
-    expected_names = ["MAIN_WRITE"] if case and case.get("onlyMainWrite") is True else \
+    require(not case or "mainAndOutsideOnly" not in case or
+            type(case["mainAndOutsideOnly"]) is bool,
+            "V11 main/outside case selection must be an explicit boolean")
+    require(not case or not (case.get("onlyMainWrite") is True and
+                             case.get("mainAndOutsideOnly") is True),
+            "V11 mutually exclusive original case selections differ")
+    expected_names = ["MAIN_WRITE"] if case and (case.get("onlyMainWrite") is True or
+                                                   case.get("mainAndOutsideOnly") is True) else \
         ["MAIN_WRITE", "READ_ONLY_WRITE"]
     require(case and case.get("acceptance") is False and
             case.get("state") == "ORIGINAL_ATTEMPTS_REQUIRE_NORMAL_CLOSE_IMMUTABLE_READER" and
@@ -104,6 +142,8 @@ def file_boundaries(root, output, journal_file):
     db.execute("PRAGMA query_only=ON")
     details = []
     try:
+        inventory = (full_f_root_inventory(db, root) if any(
+            item.get("attemptMode") == "nativeFileChange" for item in case["cases"]) else None)
         operations = {row["request"]["requestId"]: row for row in journal["operations"]
                       if row.get("request", {}).get("requestId")}
         for item in case["cases"]:
@@ -247,6 +287,12 @@ def file_boundaries(root, output, journal_file):
                 isinstance(original_tool.get("id"), str) and original_tool["id"] and \
                 first_tool.get("id") == original_tool["id"] and \
                 first_tool.get("type") == original_tool.get("type")
+            mode = item.get("attemptMode", "fileChange")
+            require(mode in ("execCommand", "fileChange", "nativeFileChange"),
+                    "V11 original attempt mode differs")
+            raw_failure = {name: original_tool[name] for name in
+                           ("aggregatedOutput", "result", "error", "contentItems")
+                           if original_tool.get(name)}
             if item.get("attemptMode") == "execCommand":
                 require(same_path(item["worktreePath"], tree_path),
                         "V11 CMD workdir differs from registered F tree")
@@ -262,6 +308,54 @@ def file_boundaries(root, output, journal_file):
                     ("cwd" not in original_tool or same_path(original_tool["cwd"], tree_path)) and \
                     original_tool.get("status") in ("completed", "failed") and \
                     type(original_tool.get("exitCode")) is int and original_tool["exitCode"] != 0
+            elif mode == "nativeFileChange":
+                line = json.dumps({"v11": item["name"], "marker": case["markerFile"]},
+                                  ensure_ascii=False, separators=(",", ":"))
+                expected_patch = f"*** Begin Patch\n*** Add File: {target}\n+{line}\n*** End Patch"
+                expected_body = (f'Owner-authorized nonsecret V11 boundary case '
+                                 f'{case["markerFile"]}/{item["name"]}. '
+                                 'Use the native apply_patch file tool exactly once with the following patch, '
+                                 'creating only this new target and without reading any existing file:\n' +
+                                 expected_patch + '\n' +
+                                 'Do not use CMD, another shell, Git, the network, credentials, '
+                                 'another path, or a retry. '
+                                 'If the native file tool refuses the patch, preserve its original error '
+                                 'and finish the turn.')
+                require(item.get("patch") == expected_patch and item["body"] == expected_body,
+                        "V11 native file request differs from its exact new target")
+                changes = original_tool.get("changes", [])
+                normalized = item.get("events", [])
+                h_file_change = False
+                if pair and original_tool.get("type") == "fileChange" and len(normalized) == 1:
+                    source_row = next((row for row, frame in zip(sources, frames)
+                                       if frame is completed[0]), None)
+                    if source_row is not None:
+                        indexed = db.execute(
+                            "SELECT update_json FROM v37_ledger_index WHERE source_kind='v37' "
+                            "AND domain_id=? AND session_id=? AND source_epoch=? AND source_cursor=?",
+                            (case["domainId"], item["sessionId"], source_row[5], source_row[6]))
+                        persisted = [json.loads(row[0]) for row in indexed]
+                        expected_meta = {"codexMethod": "item/completed", "codexItemType": "fileChange",
+                                         "threadId": session["threadId"], "turnId": item["turnId"],
+                                         "rawSourceCursor": str(source_row[6])}
+                        h_file_change = any(all(update.get("_meta", {}).get(key) == value
+                                                    for key, value in expected_meta.items()) and
+                                            update.get("toolCallId") == original_tool["id"] and
+                                            update.get("status") == "failed" and
+                                            update.get("rawOutput") == normalized[0].get("rawOutput") and
+                                            all(normalized[0].get("meta", {}).get(key) == value
+                                                for key, value in expected_meta.items())
+                                            for update in persisted)
+                exact = pair and original_tool.get("type") == "fileChange" and \
+                    original_tool.get("status") == "failed" and bool(raw_failure) and \
+                    isinstance(changes, list) and len(changes) == 1 and \
+                    isinstance(changes[0], dict) and changes[0].get("path") == str(target) and \
+                    isinstance(changes[0].get("kind"), dict) and \
+                    changes[0]["kind"].get("type") == "add" and \
+                    isinstance(changes[0].get("diff"), str) and line in changes[0]["diff"] and \
+                    len(normalized) == 1 and normalized[0].get("itemId") == original_tool["id"] and \
+                    normalized[0].get("type") == "fileChange" and \
+                    normalized[0].get("status") == "failed" and h_file_change
             else:
                 exact = pair and original_tool.get("type") == "fileChange" and \
                     original_tool.get("status") == "failed" and any(
@@ -279,6 +373,7 @@ def file_boundaries(root, output, journal_file):
                             "originalExitCode": original_tool.get("exitCode"),
                             "originalError": original_tool.get("error"),
                             "originalOutput": original_tool.get("aggregatedOutput"),
+                            "originalRawFailure": raw_failure,
                             "state": "ORIGINAL_TOOL_FAILED_TARGET_ABSENT_CAUSE_UNATTRIBUTED" if exact else
                                      "NOT_RUN_NO_EXACT_FAILED_ORIGINAL_TOOL"})
     finally:
@@ -287,7 +382,8 @@ def file_boundaries(root, output, journal_file):
     require(before == after, "V11 H/A readback changed DB/WAL/SHM bytes")
     result = {"schema": "gogoke.37.private-v11-file-boundaries-readback.v1",
               "sourceCommit": case["sourceCommit"], "normalClosePid": close["pid"],
-              "databaseSha256": before["db"], "cases": details,
+              "databaseSha256": before["db"], "fullFRootInventory": inventory,
+              "cases": details,
               "directAttemptEvidence": all(row["exactFailedOriginalTool"] for row in details),
               "directCaseEvidence": False,
               "mainTreeFileWriteRefusal": next(row["state"] for row in details if row["name"] == "MAIN_WRITE"),
