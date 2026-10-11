@@ -687,13 +687,45 @@ async function runCase(row, instances) {
     state: 'PREFLIGHT', acceptance: false };
   journal.cases.push(record); product.save();
   const instance = instances.instances.find(value => value.instanceId === row.instanceId && value.driverId === row.driverId);
-  if (!instance || instance.state !== 'LOGGED_IN') {
+  // This one preserved Claude test instance predates managed CLI lifecycle
+  // records. Its raw install_state is UNKNOWN, which the UI maps to ERROR.
+  // Record that UI fact and use the sealed original registry metadata for
+  // this case only. Real H admission still verifies the current instance and
+  // actual program source/version/bytes; no installation state is invented.
+  let originalRegistry;
+  if (row.originalRegistryRead !== undefined) {
+    check(row.driverId === 'claude' && row.instanceId === 'claudeTestM2' &&
+      row.version === '2.1.196' && row.sha256 ===
+      '180d7b279455e8b89d4353a5146447be2f80b80fb0db14bdc6dd9cb98c0aef09',
+    'sealed legacy registry entry is restricted to the original fixed Claude case');
+    const proof = row.originalRegistryRead;
+    check(proof && typeof proof.path === 'string' && path.isAbsolute(proof.path) &&
+      /^[a-f0-9]{64}$/.test(proof.sha256 ?? '') && sha256(proof.path) === proof.sha256,
+    'original closed registry readback seal differs');
+    const raw = readJson(proof.path);
+    check(raw.databaseBytesPreserved === true && raw.mutation === false &&
+      raw.bindings?.length === 1 && raw.bindings[0].driver === row.driverId,
+    'original registry readback is missing or ambiguous');
+    originalRegistry = raw.bindings[0].instance;
+    check(originalRegistry.instance_id === row.instanceId &&
+      originalRegistry.driver_id === row.driverId && originalRegistry.version === row.version &&
+      originalRegistry.program_digest === `sha256:${row.sha256}` &&
+      originalRegistry.install_state === 'UNKNOWN' && originalRegistry.login_state === 'LOGGED_IN',
+    'original legacy instance registry pin or login fact differs');
+    record.originalRegistry = { sourceSha256: proof.sha256, fact: originalRegistry,
+      uiState: instance?.state ?? 'NOT_REPORTED', actualProgramCheck: 'PENDING_REAL_H_ADMISSION' };
+    product.save();
+  }
+  if ((!instance || instance.state !== 'LOGGED_IN') && !originalRegistry) {
     record.result = 'NOT_RUN_NOT_LOGGED_IN'; product.save();
     throw Error(`${row.driverId}: configured instance not logged in; no login or fallback attempted`);
   }
-  record.loggedInInstance = { instanceId: instance.instanceId, driverId: instance.driverId,
-    version: instance.version, state: instance.state };
-  check(instance.version === row.version, `${row.driverId}: actual logged-in instance version pin`);
+  record.loggedInInstance = originalRegistry
+    ? { instanceId: row.instanceId, driverId: row.driverId, version: originalRegistry.version,
+      state: originalRegistry.login_state, basis: 'ORIGINAL_REGISTRY_WITH_REAL_H_ADMISSION_REQUIRED' }
+    : { instanceId: instance.instanceId, driverId: instance.driverId,
+      version: instance.version, state: instance.state };
+  check(record.loggedInInstance.version === row.version, `${row.driverId}: actual logged-in instance version pin`);
   const seat = await seatCard(row.seatId);
   check(seat.result.state === 'IDLE' && seat.result.instanceId === row.instanceId,
     `${row.driverId}: actual seat is Idle on configured instance`);
