@@ -1158,12 +1158,18 @@ impl<'root> ProductDatabase<'root> {
             let cwd=run.evidence.cwd().to_string_lossy().into_owned();
             let model=run.model.clone();
             self.native_credential_config_read(&key,&format!("{operation_id}-config-read"),cwd.clone())?;
-            let response=self.native_rpc(&key,&format!("{operation_id}-thread-resume"),
-                Some(3),&Command::ThreadResume {thread_id:thread_id.clone(),cwd,model})?;
-            let Some(Reply::Thread {thread_id:observed,..})=response else {
+            let resume_id=self.next_native_rpc_id(&key)?;
+            let response=self.native_rpc_observation(&key,&format!("{operation_id}-thread-resume"),
+                Some(resume_id),&Command::ThreadResumeMetadata {
+                    thread_id:thread_id.clone(),cwd,model})?
+                .ok_or(OrchestrationError::Invalid("native resume thread response absent"))?;
+            let Reply::Thread {thread_id:observed,..}=response.reply else {
                 return Err(OrchestrationError::Invalid("native resume thread response"));
             };
             if observed!=thread_id {return Err(OrchestrationError::OperationConflict);}
+            let path=failure(codex_rpc::persistent_paginated_thread_path(response.frame.bytes(),&thread_id))?;
+            failure(self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?
+                .evidence.verify_codex_rollout_path(&path,true))?;
             self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?.thread_id=
                 Some(thread_id.clone());
             Ok(())
@@ -2462,29 +2468,50 @@ impl<'root> ProductDatabase<'root> {
                     let Reply::Thread {thread_id,..}=started.reply else {
                         return Err(OrchestrationError::Invalid("native open thread response"));
                     };
-                    failure(codex_rpc::verify_empty_persistent_paginated_thread(
+                    failure(codex_rpc::verify_new_empty_paginated_thread(
                         started.frame.bytes(),&thread_id))?;
-                    // Official fixed 0.160 thread/read materializes the loaded
-                    // empty Paginated thread before H can publish APPLIED open.
-                    // Keep the original request/ACK in the existing RPC/A source.
+                    let original_path=failure(codex_rpc::persistent_paginated_thread_path(
+                        started.frame.bytes(),&thread_id))?;
+                    failure(self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?
+                        .evidence.verify_codex_rollout_path(&original_path,false))?;
+                    // Fixed official archive materializes without input and
+                    // unloads. Unarchive restores its original path; metadata
+                    // resume restores real context without list_turns hydration.
+                    // Each original request/ACK remains in the existing RPC/A.
                     #[cfg(not(test))]
                     let persist_empty=true;
                     #[cfg(test)]
                     let persist_empty=HISTORICAL_UNMATERIALIZED_CODEX_THREAD.with(|flag| !flag.get());
                     if persist_empty {
-                        let run=self.native_sessions.get_mut(&key)
-                            .ok_or(OrchestrationError::AccessDenied)?;
-                        let persist_id=run.next_rpc_id;
-                        run.next_rpc_id=persist_id.checked_add(1)
-                            .ok_or(OrchestrationError::Invalid("native RPC ordinal overflow"))?;
-                        let Some(Reply::Thread {thread_id:observed,..})=self.native_rpc(
-                            &key,"thread-persist",Some(persist_id),
-                            &Command::ThreadReadEmptyPersistent {thread_id:thread_id.clone()})? else {
-                            return Err(OrchestrationError::Invalid("native empty thread persistence response"));
-                        };
-                        if observed!=thread_id {
-                            return Err(OrchestrationError::Invalid("native empty thread persistence id mismatch"));
+                        let archive_id=self.next_native_rpc_id(&key)?;
+                        if !matches!(self.native_rpc(&key,"thread-persist-archive",Some(archive_id),
+                            &Command::ThreadArchive {thread_id:thread_id.clone()})?,Some(Reply::Ack {..})) {
+                            return Err(OrchestrationError::Invalid("native empty thread archive response"));
                         }
+                        let unarchive_id=self.next_native_rpc_id(&key)?;
+                        let restored=self.native_rpc_observation(&key,"thread-persist-unarchive",Some(unarchive_id),
+                            &Command::ThreadUnarchive {thread_id:thread_id.clone()})?
+                            .ok_or(OrchestrationError::Invalid("native empty thread unarchive response absent"))?;
+                        let path=failure(codex_rpc::persistent_paginated_thread_path(
+                            restored.frame.bytes(),&thread_id))?;
+                        if path!=original_path {
+                            return Err(OrchestrationError::Invalid("native empty thread unarchive path changed"));
+                        }
+                        failure(self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?
+                            .evidence.verify_codex_rollout_path(&path,true))?;
+                        let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
+                        let resumed=Command::ThreadResumeMetadata {thread_id:thread_id.clone(),
+                            cwd:run.evidence.protocol_cwd().to_string_lossy().into_owned(),model:run.model.clone()};
+                        let resume_id=self.next_native_rpc_id(&key)?;
+                        let resumed=self.native_rpc_observation(&key,"thread-persist-resume",Some(resume_id),&resumed)?
+                            .ok_or(OrchestrationError::Invalid("native empty thread resume response absent"))?;
+                        let path=failure(codex_rpc::persistent_paginated_thread_path(
+                            resumed.frame.bytes(),&thread_id))?;
+                        if path!=original_path {
+                            return Err(OrchestrationError::Invalid("native empty thread resume path changed"));
+                        };
+                        failure(self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?
+                            .evidence.verify_codex_rollout_path(&path,true))?;
                     }
                     Some(thread_id)
                 },
@@ -3873,6 +3900,14 @@ impl<'root> ProductDatabase<'root> {
     pub(super) fn native_rpc(&mut self, key: &(String, String), step_id: &str,
         number: Option<u64>, command: &Command) -> Result<Option<Reply>> {
         self.native_rpc_observation(key, step_id, number, command).map(|result| result.map(|result| result.reply))
+    }
+
+    fn next_native_rpc_id(&mut self,key:&(String,String))->Result<u64> {
+        let run=self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
+        let id=run.next_rpc_id;
+        run.next_rpc_id=id.checked_add(1)
+            .ok_or(OrchestrationError::Invalid("native RPC ordinal overflow"))?;
+        Ok(id)
     }
 
     fn native_credential_config_read(&mut self,key:&(String,String),step:&str,cwd:String)->Result<()> {

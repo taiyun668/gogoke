@@ -95,10 +95,19 @@ pub(crate) enum Command {
         cwd: String,
         model: String,
     },
-    /// Fixed 0.160 persists a loaded Paginated thread before returning full turns.
-    /// This is the new empty-thread handshake, never a user/model input.
-    ThreadReadEmptyPersistent {
+    /// These fixed official operations never create a USER/model turn.
+    ThreadArchive {
         thread_id: String,
+    },
+    ThreadUnarchive {
+        thread_id: String,
+    },
+    /// Restore canonical context while omitting only response turn hydration.
+    /// Always select the original ID; paths remain observations bound by F.
+    ThreadResumeMetadata {
+        thread_id: String,
+        cwd: String,
+        model: String,
     },
     TurnStart {
         thread_id: String,
@@ -150,7 +159,9 @@ impl Command {
             Self::ThreadStart { .. } | Self::ThreadStartHostTools { .. } |
                 Self::ThreadStartSideTools { .. } | Self::ThreadStartSecretaryTools { .. } => Some("thread/start"),
             Self::ThreadResume { .. } => Some("thread/resume"),
-            Self::ThreadReadEmptyPersistent { .. } => Some("thread/read"),
+            Self::ThreadArchive { .. } => Some("thread/archive"),
+            Self::ThreadUnarchive { .. } => Some("thread/unarchive"),
+            Self::ThreadResumeMetadata { .. } => Some("thread/resume"),
             Self::TurnStart { .. } => Some("turn/start"),
             Self::TurnSteer { .. } => Some("turn/steer"),
             Self::TurnInterrupt { .. } => Some("turn/interrupt"),
@@ -306,12 +317,16 @@ impl Command {
                     ("config", memory_off()),
                 ]));
             }
-            Self::ThreadReadEmptyPersistent { thread_id } => {
+            Self::ThreadArchive { thread_id } | Self::ThreadUnarchive { thread_id } => {
                 required(thread_id, "thread id")?;
-                return Ok(obj([
-                    ("threadId", s(thread_id)),
-                    ("includeTurns", Json::Bool(true)),
-                ]));
+                return Ok(obj([("threadId", s(thread_id))]));
+            }
+            Self::ThreadResumeMetadata {thread_id,cwd,model} => {
+                let Json::Object(mut fields) = (Self::ThreadResume {
+                    thread_id:thread_id.clone(),cwd:cwd.clone(),model:model.clone(),
+                }).params()? else {return Err(RpcError::Invalid("metadata resume params"));};
+                fields.insert(k("excludeTurns"),Json::Bool(true));
+                return Ok(Json::Object(fields));
             }
             Self::TurnStart {
                 thread_id,
@@ -630,19 +645,22 @@ pub(crate) fn decode(frame: &[u8], pending: Option<(&RpcId, &Command)>) -> Resul
         }
         Command::ThreadStart { .. } | Command::ThreadStartHostTools { .. } |
             Command::ThreadStartSideTools { .. } | Command::ThreadStartSecretaryTools { .. } |
-            Command::ThreadResume { .. } | Command::ThreadReadEmptyPersistent { .. } => {
+            Command::ThreadResume { .. } | Command::ThreadResumeMetadata { .. } |
+            Command::ThreadUnarchive { .. } => {
             let thread = object(field(object(result, "thread result")?, "thread")?, "thread")?;
             let found = string(field(thread, "id")?, "thread id")?;
             let actual_cwd = string(field(thread, "cwd")?, "thread cwd")?;
             // A path string is a provider observation, not physical identity.
             // The native boundary verifies it against F's held directory.
-            if let Command::ThreadResume { thread_id, .. } = command {
+            if let Command::ThreadResume { thread_id, .. } |
+                Command::ThreadResumeMetadata {thread_id,..} |
+                Command::ThreadUnarchive {thread_id}=command {
                 if &found != thread_id {
                     return Err(RpcError::Invalid("thread id mismatch"));
                 }
             }
-            if let Command::ThreadReadEmptyPersistent { thread_id } = command {
-                verify_empty_persistent_paginated_thread(frame, thread_id)?;
+            if matches!(command,Command::ThreadResumeMetadata {..}|Command::ThreadUnarchive {..}) {
+                persistent_paginated_thread_path(frame,&found)?;
             }
             Ok(Reply::Thread {
                 id,
@@ -684,7 +702,8 @@ pub(crate) fn decode(frame: &[u8], pending: Option<(&RpcId, &Command)>) -> Resul
             }
             Ok(Reply::Ack { id })
         }
-        Command::AppendWithoutTurn { .. } | Command::ThreadCompactStart { .. } => {
+        Command::AppendWithoutTurn { .. } | Command::ThreadCompactStart { .. } |
+        Command::ThreadArchive { .. } => {
             if !object(result, "empty command result")?.is_empty() {
                 return Err(RpcError::Invalid("empty command result"));
             }
@@ -730,9 +749,9 @@ pub(crate) fn decode(frame: &[u8], pending: Option<(&RpcId, &Command)>) -> Resul
     }
 }
 
-/// Applies only to a new native open/read, not historical start/resume bytes.
-/// A preallocated path is deliberately not accepted as durability evidence.
-pub(crate) fn verify_empty_persistent_paginated_thread(
+/// Only a new start proves the absence of input; metadata replies omit turns.
+/// A path here is a provider observation, never physical durability evidence.
+pub(crate) fn verify_new_empty_paginated_thread(
     frame: &[u8], expected_thread: &str,
 ) -> Result<(), RpcError> {
     let value = Parser::parse(std::str::from_utf8(frame_body(frame)?)?)?;
@@ -746,6 +765,22 @@ pub(crate) fn verify_empty_persistent_paginated_thread(
         return Err(RpcError::Invalid("new thread is not empty persistent Paginated"));
     }
     Ok(())
+}
+
+pub(crate) fn persistent_paginated_thread_path(
+    frame:&[u8],expected_thread:&str,
+) -> Result<String,RpcError> {
+    let value=Parser::parse(std::str::from_utf8(frame_body(frame)?)?)?;
+    let thread=object(field(object(field(object(&value,"thread frame")?,"result")?,
+        "thread result")?,"thread")?,"thread")?;
+    if string(field(thread,"id")?,"thread id")?!=expected_thread
+        || string(field(thread,"historyMode")?,"thread history mode")?!="paginated"
+        || !matches!(thread.get(&k("ephemeral")),Some(Json::Bool(false))) {
+        return Err(RpcError::Invalid("thread is not persistent Paginated"));
+    }
+    let path=string(field(thread,"path")?,"thread path")?;
+    required(&path,"thread path")?;
+    Ok(path)
 }
 
 /// Re-decode only a canonical command and the original matching response kept
@@ -815,11 +850,12 @@ pub(crate) fn decode_stored_thread_resume(
     }
     let id = parse_id(field(&fields, "id")?)?;
     let params = object(field(&fields, "params")?, "resume params")?;
-    let command = Command::ThreadResume {
-        thread_id: string(field(params, "threadId")?, "thread id")?,
-        cwd: string(field(params, "cwd")?, "thread cwd")?,
-        model: string(field(params, "model")?, "thread model")?,
-    };
+    let thread_id=string(field(params,"threadId")?,"thread id")?;
+    let cwd=string(field(params,"cwd")?,"thread cwd")?;
+    let model=string(field(params,"model")?,"thread model")?;
+    let command=if matches!(params.get(&k("excludeTurns")),Some(Json::Bool(true))) {
+        Command::ThreadResumeMetadata {thread_id,cwd,model}
+    } else {Command::ThreadResume {thread_id,cwd,model}};
     if !stored_thread_command_matches(&command,&id,command_frame)? {
         return Err(RpcError::Invalid("stored resume command mismatch"));
     }
@@ -1279,20 +1315,39 @@ fn optional_bool(
 mod tests {
     use super::*;
     #[test]
-    fn empty_persistent_thread_read_binds_original_ack_and_refuses_other_history() {
+    fn empty_archive_and_metadata_resume_bind_original_ack_without_asserting_empty_history() {
         let id=RpcId::Number(4);
-        let command=Command::ThreadReadEmptyPersistent {thread_id:"original-thread".into()};
+        let archive=Command::ThreadArchive {thread_id:"original-thread".into()};
+        assert_eq!(std::str::from_utf8(&archive.encode(Some(&id)).unwrap()).unwrap(),
+            "{\"id\":4,\"method\":\"thread/archive\",\"params\":{\"threadId\":\"original-thread\"}}\n");
+        assert!(matches!(decode(b"{\"id\":4,\"result\":{}}\n",Some((&id,&archive))).unwrap(),Reply::Ack {..}));
+        assert!(decode(b"{\"id\":4,\"result\":{\"invented\":true}}\n",Some((&id,&archive))).is_err());
+        let command=Command::ThreadUnarchive {thread_id:"original-thread".into()};
         let encoded=command.encode(Some(&id)).unwrap();
         assert_eq!(std::str::from_utf8(&encoded).unwrap(),
-            "{\"id\":4,\"method\":\"thread/read\",\"params\":{\"includeTurns\":true,\"threadId\":\"original-thread\"}}\n");
-        let original="{\"id\":4,\"result\":{\"thread\":{\"id\":\"original-thread\",\"cwd\":\"D:/sealed-tree\",\"historyMode\":\"paginated\",\"ephemeral\":false,\"turns\":[]}}}\n";
+            "{\"id\":4,\"method\":\"thread/unarchive\",\"params\":{\"threadId\":\"original-thread\"}}\n");
+        let original="{\"id\":4,\"result\":{\"thread\":{\"id\":\"original-thread\",\"cwd\":\"D:/sealed-tree\",\"path\":\"D:/private-history/sessions/2026/10/11/original.jsonl\",\"historyMode\":\"paginated\",\"ephemeral\":false,\"turns\":[]}}}\n";
         assert!(matches!(decode(original.as_bytes(),Some((&id,&command))).unwrap(),
             Reply::Thread {thread_id,..} if thread_id=="original-thread"));
         for invalid in [original.replace("original-thread","other-thread"),
             original.replace("paginated","legacy"),original.replace("false","true"),
-            original.replace("[]","[{}]"),original.replace("\"id\":4","\"id\":5")] {
+            original.replace("\"path\":\"D:/private-history/sessions/2026/10/11/original.jsonl\"","\"path\":null"),
+            original.replace("\"id\":4","\"id\":5")] {
             assert!(decode(invalid.as_bytes(),Some((&id,&command))).is_err());
         }
+        let resume=Command::ThreadResumeMetadata {thread_id:"original-thread".into(),
+            cwd:"D:/sealed-tree".into(),model:"m".into()};
+        let request=resume.encode(Some(&id)).unwrap();
+        assert!(std::str::from_utf8(&request).unwrap().contains("\"excludeTurns\":true"));
+        assert!(!std::str::from_utf8(&request).unwrap().contains("\"path\""));
+        assert_eq!(decode_stored_thread_resume(&request,original.as_bytes()).unwrap(),"original-thread");
+        // Decoder acceptance proves metadata binding, never the absence of history.
+        assert!(decode(original.replace("[]","[{}]").as_bytes(),Some((&id,&resume))).is_ok());
+        let polluted=std::str::from_utf8(&request).unwrap().replace("\"excludeTurns\":true","\"excludeTurns\":true,\"history\":[]");
+        assert!(decode_stored_thread_resume(polluted.as_bytes(),original.as_bytes()).is_err());
+        let selected_path=std::str::from_utf8(&request).unwrap().replace("\"excludeTurns\":true",
+            "\"excludeTurns\":true,\"path\":\"D:/private-history/sessions/2026/10/11/original.jsonl\"");
+        assert!(decode_stored_thread_resume(selected_path.as_bytes(),original.as_bytes()).is_err());
         let remote=b"{\"id\":4,\"error\":{\"code\":-32600,\"message\":\"original persist failure\"}}\n";
         assert!(matches!(decode(remote,Some((&id,&command))).unwrap(),
             Reply::RemoteError {raw_frame,..} if raw_frame==remote));
@@ -1300,7 +1355,9 @@ mod tests {
         let start=Command::ThreadStart {cwd:"D:/sealed-tree".into(),model:"m".into()};
         let historical=b"{\"id\":4,\"result\":{\"thread\":{\"id\":\"original-thread\",\"cwd\":\"D:/sealed-tree\"}}}\n";
         assert!(decode(historical,Some((&id,&start))).is_ok());
-        assert!(verify_empty_persistent_paginated_thread(historical,"original-thread").is_err());
+        assert!(verify_new_empty_paginated_thread(historical,"original-thread").is_err());
+        verify_new_empty_paginated_thread(original.as_bytes(),"original-thread").unwrap();
+        assert!(verify_new_empty_paginated_thread(original.replace("[]","[{}]").as_bytes(),"original-thread").is_err());
     }
 
     #[test]

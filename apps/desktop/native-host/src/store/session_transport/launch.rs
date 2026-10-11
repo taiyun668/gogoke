@@ -43,6 +43,26 @@ fn evidence_at<T, E: std::fmt::Debug>(stage: &str, value: Result<T, E>) -> Resul
     value.map_err(|error| format!("native session launch [{stage}]: {error:?}"))
 }
 
+fn codex_rollout_relative_path(home:&Path,path:&str)->Result<PathBuf,String> {
+    // Normalize only the Windows verbatim spelling; never resolve a supplied
+    // outside path into this history or accept ParentDir/alternate data streams.
+    let raw=path.replace('/',"\\");
+    let base=home.to_string_lossy().replace('/',"\\");
+    let selected=Path::new(raw.strip_prefix(r"\\?\").unwrap_or(&raw));
+    let root=Path::new(base.strip_prefix(r"\\?\").unwrap_or(&base));
+    if !selected.is_absolute() {return Err("native Codex rollout path is not absolute".into());}
+    let relative=selected.strip_prefix(root).map_err(|error|
+        format!("native Codex rollout outside private history: {error:?}"))?;
+    let components:Vec<_>=relative.components().collect();
+    if components.len()!=5 || components[0].as_os_str()!="sessions"
+        || components.iter().any(|part| !matches!(part,std::path::Component::Normal(_))
+            || part.as_os_str().to_string_lossy().contains(':'))
+        || relative.extension()!=Some(std::ffi::OsStr::new("jsonl")) {
+        return Err("native Codex rollout is not an original sessions path".into());
+    }
+    Ok(relative.to_path_buf())
+}
+
 /// Only this module can construct the witness. Retain it through stop; the
 /// compatibility roots and F's .git file guard must outlive the actual child.
 pub(crate) struct LaunchEvidence {
@@ -125,6 +145,21 @@ fn physical_grok_write_target(root:&RootLock,profile:&AppContainerProfile,
 mod grok_permission_tests {
     use super::*;
     use std::time::{SystemTime,UNIX_EPOCH};
+
+    #[test]
+    fn codex_original_rollout_path_stays_in_its_bound_history_sessions() {
+        let home=Path::new(r"\\?\D:\private-history");
+        let original=r"D:\private-history\sessions\2026\10\11\rollout-original.jsonl";
+        assert_eq!(codex_rollout_relative_path(home,original).unwrap(),
+            Path::new(r"sessions\2026\10\11\rollout-original.jsonl"));
+        assert!(codex_rollout_relative_path(home,&format!(r"\\?\{original}")).is_ok());
+        for denied in [r"D:\private-history-other\sessions\2026\10\11\rollout-original.jsonl",
+            r"D:\private-history\sessions\2026\10\..\rollout-original.jsonl",
+            r"D:\private-history\sessions\2026\10\11\rollout-original.jsonl:stream",
+            r"D:\private-history\auth.json",r"sessions\2026\10\11\rollout-original.jsonl"] {
+            assert!(codex_rollout_relative_path(home,denied).is_err());
+        }
+    }
 
     #[test]
     fn grok_permission_write_target_stays_in_the_bound_physical_f_tree() {
@@ -1167,6 +1202,38 @@ impl LaunchEvidence {
         self.private_history.as_ref().map(|history|&history.directory).unwrap_or(&self.homes.instance)
     }
 
+    /// The provider's original RPC path may be preallocated. Bind its namespace
+    /// to this held F history; require the real regular file after persistence.
+    pub(crate) fn verify_codex_rollout_path(&self,path:&str,materialized:bool)->Result<(),String> {
+        if self.pin.driver_id!="codex" || self.private_history.is_none() {
+            return Err("native Codex rollout has no private history".into());
+        }
+        let home=self.model_home();
+        if evidence(crate::root::inspect_root(&home.path))?.identity!=home.identity {
+            return Err("native Codex private history identity changed".into());
+        }
+        let relative=codex_rollout_relative_path(&home.path,path)?;
+        if materialized {
+            let components:Vec<_>=relative.components().collect();
+            let mut actual=home.path.clone();
+            for (index,component) in components.iter().enumerate() {
+                actual.push(component.as_os_str());
+                let metadata=evidence(std::fs::symlink_metadata(&actual))?;
+                if metadata.file_attributes() & 0x400 != 0
+                    || (index+1<components.len() && !metadata.is_dir())
+                    || (index+1==components.len() && (!metadata.is_file() || metadata.len()==0)) {
+                    return Err("native Codex rollout is reparse or not a materialized regular file".into());
+                }
+            }
+            let canonical=evidence(std::fs::canonicalize(&actual))?;
+            let root=evidence(std::fs::canonicalize(&home.path))?;
+            if !canonical.starts_with(root) {
+                return Err("native Codex rollout escaped private history".into());
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn file_credentials_bound(&self)->bool {self.credential.is_some()}
 
     /// Root calls this only outside an H transaction, after its original
@@ -1383,7 +1450,7 @@ impl LaunchEvidence {
             "-c".into(), format!("developer_instructions={}", crate::store::atomic::Json::String(
                 crate::store::atomic::JsonString::from_str(CODEX_WINDOWS_SHELL_ENVIRONMENT)).canonical()),
             "-c".into(), format!("sqlite_home={}", crate::store::atomic::Json::String(
-                crate::store::atomic::JsonString::from_str(&runtime)).canonical()),
+                crate::store::atomic::JsonString::from_str(&self.model_home().path.to_string_lossy())).canonical()),
             "-c".into(), format!("log_dir={}", crate::store::atomic::Json::String(
                 crate::store::atomic::JsonString::from_str(&runtime)).canonical()),
             "app-server".into()] } else { match self.pin.driver_id.as_str() {

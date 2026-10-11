@@ -465,7 +465,8 @@ fn candidate_binding(db: &VerifiedDatabaseConnection<'_>, step: &Step<'_>,
     if driver!="codex" {return Err(RpcJournalError::Denied);}
     if !matches!(step.command,Command::Initialize { .. }
         |Command::InitializeHostTools { .. }|Command::Initialized
-        |Command::ConfigRead { .. }|Command::ThreadResume { .. }) {
+        |Command::ConfigRead { .. }|Command::ThreadResume { .. }
+        |Command::ThreadResumeMetadata { .. }) {
         return Err(RpcJournalError::Denied);
     }
     if let Some(change)=super::generation_change::active_for_session(db,
@@ -497,7 +498,8 @@ fn candidate_binding(db: &VerifiedDatabaseConnection<'_>, step: &Step<'_>,
     } else if !plain_protocol_resume_episode(db,step.domain_id,step.session_id,
         step.open_request_id,&operation,&step.custody.binding.generation,
         step.open_request_bytes)? {return Err(RpcJournalError::Denied);}
-    if let Command::ThreadResume {thread_id,..}=step.command {
+    if let Command::ThreadResume {thread_id,..} |
+        Command::ThreadResumeMetadata {thread_id,..}=step.command {
         if observed_old_acp_session_id(db,step.domain_id,step.session_id,&operation,
             &step.custody.binding.generation,step.open_request_id)?.as_str()!=thread_id.as_str() {
             return Err(RpcJournalError::Denied);
@@ -1303,7 +1305,8 @@ fn prepare_with_model_caller(
                 && step.open_request_id==change.request_id && operation!=change.old_operation
                 && matches!(step.command,Command::Initialize {..}
                     |Command::InitializeHostTools {..}|Command::Initialized
-                    |Command::ConfigRead {..}|Command::ThreadResume {..});
+                    |Command::ConfigRead {..}|Command::ThreadResume {..}
+                    |Command::ThreadResumeMetadata {..});
             if !original_compact && !candidate_handshake {return Err(RpcJournalError::Denied);}
         }
         if let Some(phase) = same_row(db, &step.fields(), &operation, &encoded)? {
