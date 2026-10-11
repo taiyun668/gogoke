@@ -258,6 +258,16 @@ async function observeReceipt(session, row, turn = row) {
   }
   throw Error(`${row.driverId}: original H receipt observation expired; preserve product and request`);
 }
+function claudeTerminalResult(result, beforeSendRawHighwater) {
+  return result?.createdTurn === true &&
+    result.deliveryBasis === 'CLAUDE_USER_REPLAY_AND_RESULT' &&
+    result.resultSubtype === 'success' && /^[a-f0-9]{64}$/.test(result.rawResultSha256 ?? '') &&
+    typeof result.vendorSessionId === 'string' && result.vendorSessionId.length > 0 &&
+    typeof result.userUuid === 'string' && result.userUuid.length > 0 &&
+    typeof result.sourceEpoch === 'string' && result.sourceEpoch.length > 0 &&
+    /^\d+$/.test(result.sourceCursor ?? '') &&
+    BigInt(result.sourceCursor) > BigInt(beforeSendRawHighwater);
+}
 
 async function runSequenceTurns(row, record, session) {
   const contextAfterResume = row.contextAfterResume === true;
@@ -451,7 +461,8 @@ async function runSequenceTurns(row, record, session) {
 }
 
 async function runClaudeSequenceTurns(row, record, session) {
-  const claudeContext = row.driverId === 'claude' && row.caseMode === 'claudeSequence' &&
+  const claudeSequence = row.driverId === 'claude';
+  const claudeContext = claudeSequence && row.caseMode === 'claudeSequence' &&
     row.contextAfterResume === true;
   const sequence = { state: 'RUNNING', turns: [],
     steer: claudeContext
@@ -496,18 +507,19 @@ async function runClaudeSequenceTurns(row, record, session) {
       throw Error(`${row.driverId}: original sequence send UNKNOWN reason=${sent.result.reason}; no resend`);
     }
     const receipt = await observeReceipt(session, row, turn);
-    check(receipt.receipt?.result?.createdTurn === true &&
-      receipt.receipt.result.stopReason === 'end_turn' &&
-      typeof receipt.receipt.result.sourceEpoch === 'string' &&
-      /^\d+$/.test(receipt.receipt.result.sourceCursor ?? '') &&
-      BigInt(receipt.receipt.result.sourceCursor) > BigInt(turn.beforeSendRawHighwater),
+    check(receipt.receipt?.status === 'APPLIED' &&
+      claudeTerminalResult(receipt.receipt.result, turn.beforeSendRawHighwater) &&
+      (!sequence.vendorSessionId || sequence.vendorSessionId === receipt.receipt.result.vendorSessionId),
     `${row.driverId}: original sequence H terminal receipt is incomplete`);
+    sequence.vendorSessionId = receipt.receipt.result.vendorSessionId;
+    turn.userUuid = receipt.receipt.result.userUuid;
+    turn.rawResultSha256 = receipt.receipt.result.rawResultSha256;
     const deadline = Date.now() + 600000;
     let observed = false;
     while (Date.now() < deadline) {
       const page = await output(session);
       const text = session.events.filter(event => event.sessionUpdate === 'agent_message_chunk' &&
-        event._meta?.threadId === session.threadId &&
+        event._meta?.threadId === sequence.vendorSessionId &&
         /^\d+$/.test(event._meta?.rawSourceCursor ?? '') &&
         BigInt(event._meta.rawSourceCursor) > BigInt(turn.beforeSendRawHighwater) &&
         BigInt(event._meta.rawSourceCursor) <= BigInt(receipt.receipt.result.sourceCursor))
@@ -547,7 +559,8 @@ async function runClaudeSequenceTurns(row, record, session) {
     resumed.result.oldGeneration === oldGeneration &&
     /^\d+$/.test(resumed.result.newGeneration ?? '') &&
     BigInt(resumed.result.newGeneration) > BigInt(oldGeneration) &&
-    (!resumed.result.threadId || resumed.result.threadId === session.threadId),
+    (claudeSequence ? Object.hasOwn(resumed.result, 'threadId') && resumed.result.threadId === null :
+      (!resumed.result.threadId || resumed.result.threadId === session.threadId)),
   `${row.driverId}: original stopped session did not resume its own H/thread`);
   session.generation = resumed.result.newGeneration;
   session.revision = resumed.revision; sequence.coldResume = {
@@ -558,6 +571,8 @@ async function runClaudeSequenceTurns(row, record, session) {
   check(resumedCapability.result.driverId === row.driverId &&
     resumedCapability.result.version === row.version &&
     resumedCapability.result.binaryDigest === `sha256:${row.sha256}` &&
+    (!claudeSequence || (Object.hasOwn(resumedCapability.result, 'threadId') &&
+      resumedCapability.result.threadId === null)) &&
     (claudeContext
       ? typeof resumedCapability.result.capabilities?.resume === 'string' &&
         resumedCapability.result.capabilities?.interruptAndResume === undefined
@@ -606,12 +621,12 @@ async function runClaudeSequenceTurns(row, record, session) {
       throw Error('claude: original post-resume send UNKNOWN; do not resend');
     }
     const receipt = await observeReceipt(session, row, contextTurn);
-    check(receipt.receipt?.result?.createdTurn === true &&
-      receipt.receipt.result.stopReason === 'end_turn' &&
-      typeof receipt.receipt.result.sourceEpoch === 'string' &&
-      /^\d+$/.test(receipt.receipt.result.sourceCursor ?? '') &&
-      BigInt(receipt.receipt.result.sourceCursor) > BigInt(contextTurn.beforeSendRawHighwater),
+    check(receipt.receipt?.status === 'APPLIED' &&
+      claudeTerminalResult(receipt.receipt.result, contextTurn.beforeSendRawHighwater) &&
+      receipt.receipt.result.vendorSessionId === sequence.vendorSessionId,
     'Claude post-resume original H terminal receipt is incomplete');
+    contextTurn.userUuid = receipt.receipt.result.userUuid;
+    contextTurn.rawResultSha256 = receipt.receipt.result.rawResultSha256;
     const deadline = Date.now() + 600000;
     let complete = false;
     while (Date.now() < deadline) {
@@ -697,6 +712,11 @@ async function runCase(row, instances) {
   for (const action of ['admission-reserve', 'admission-commit']) await sessionStep(session, action, { seatId: row.seatId });
   const opened = await sessionStep(session, 'open', { seatId: row.seatId,
     repositoryId: config.repositoryId, worktreeId: row.worktreeId });
+  if (row.driverId === 'claude' && row.caseMode === 'claudeSequence') {
+    check(Object.hasOwn(opened.result, 'threadId') && opened.result.threadId === null &&
+      opened.result.readinessBasis === 'ORIGINAL_CLAUDE_INITIALIZE_ACK',
+    'Claude original open must preserve the actual lazy vendor-session identity ACK');
+  }
   session.threadId = opened.result.threadId; product.save();
   const capability = await sessionStep(session, 'capability-probe');
   check(capability.result.driverId === row.driverId && capability.result.version === row.version &&

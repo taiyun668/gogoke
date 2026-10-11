@@ -777,7 +777,10 @@ def read_claude_sequence(case):
     if session.get("seatId") != case.get("seatId") or \
             session.get("instanceId") != case.get("instanceId") or \
             session.get("worktreeId") != case.get("worktreeId") or \
-            session.get("threadId") != resume.get("threadId") or \
+            "threadId" not in session or session.get("threadId") is not None or \
+            "threadId" not in resume or resume.get("threadId") is not None or \
+            "threadId" not in resume.get("receipt", {}).get("result", {}) or \
+            resume["receipt"]["result"].get("threadId") is not None or \
             not str(resume.get("oldGeneration", "")).isdecimal() or \
             not str(resume.get("newGeneration", "")).isdecimal() or \
             int(resume["newGeneration"]) <= int(resume["oldGeneration"]) or \
@@ -810,6 +813,11 @@ def read_claude_sequence(case):
                 fail(f"Claude original H {name} request bytes changed")
         return found
     opened = original_action("open", 1)[0]
+    opened_result = opened.get("receipt", {}).get("result", {})
+    if "threadId" not in opened_result or \
+            opened_result.get("readinessBasis") != "ORIGINAL_CLAUDE_INITIALIZE_ACK" or \
+            opened_result.get("threadId") is not None:
+        fail("Claude initial open did not preserve its original lazy vendor-session identity")
     resumes = [item for item in operations if item["request"].get("operation") == "resume"]
     if not resumes or any(item["request"] != resumes[0]["request"] or
             item["rawFrame"] != resumes[0]["rawFrame"] or
@@ -916,6 +924,7 @@ def read_claude_sequence(case):
             probe_result = json.loads(receipt_bytes)
             expected_claim = capability if episode_index == 0 else resumed_capability
             if bytes(req_bytes) != probe["rawFrame"].encode() or probe_result.get("status") != "APPLIED" or \
+                    "threadId" not in probe_result.get("result", {}) or \
                     probe_result.get("result", {}).get("threadId") != session["threadId"] or \
                     probe_result["result"].get("processOperationId") != episodes[episode_index][1] or \
                     probe_result["result"].get("evidenceBasis") != "ORIGINAL_CLAUDE_INITIALIZE_ACK" or \
@@ -940,6 +949,8 @@ def read_claude_sequence(case):
             "custodian_nonce,no_event_reason,resolved_event_id FROM v37_ledger_raw_source "
             "WHERE domain_id=? AND session_id=? ORDER BY rowid", (domain, sid)).fetchall()
         raw_lookup = {}
+        raw_bytes_lookup = {}
+        raw_no_event_reasons = {}
         for generation, operation, epoch, cursor, raw, state, ticket, nonce, reason, event_id in raw_source:
             original_frame = bytes(raw).decode("utf-8")
             frame = json.loads(original_frame)
@@ -947,6 +958,8 @@ def read_claude_sequence(case):
             if key in raw_lookup:
                 fail("Claude raw source physical cursor repeated")
             raw_lookup[key] = (frame, state, event_id)
+            raw_bytes_lookup[key] = bytes(raw)
+            raw_no_event_reasons[key] = reason
             result["frames"].append({"direction": "in", "sessionId": sid,
                 "generation": generation, "operationId": operation, "sourceEpoch": epoch,
                 "sourceCursor": cursor, "processTicket": ticket, "custodianNonce": nonce,
@@ -956,6 +969,25 @@ def read_claude_sequence(case):
                 result["unknownFrames"].append({"sessionId": sid, "sourceEpoch": epoch,
                     "sourceCursor": cursor, "method": frame.get("method", frame.get("type")),
                     "state": state, "classification": "PRESERVED_UNRESOLVED_RAW_SOURCE_NO_SUCCESS_CREDIT"})
+        init_by_episode = []
+        for episode_index, episode in enumerate(episodes):
+            generation_send = send_rows[0 if episode_index == 0 else 2]
+            inits = [(key, frame, state) for key, (frame, state, _) in raw_lookup.items()
+                     if key[0] == episode[0] and key[1] == episode[1] and
+                     key[4] == generation_send[5] and key[5] == generation_send[7] and
+                     frame.get("type") == "system" and frame.get("subtype") == "init" and
+                     isinstance(frame.get("session_id"), str)]
+            if len(inits) != 1:
+                fail("Claude original generation does not have one physical raw system/init frame")
+            init_by_episode.append(inits[0])
+        original_vendor_id = init_by_episode[0][1]["session_id"]
+        resumed_vendor_id = init_by_episode[1][1]["session_id"]
+        first_receipt_result = turns[0].get("hReceipt", {}).get("receipt", {}).get("result", {})
+        if not original_vendor_id or resumed_vendor_id != original_vendor_id or \
+                sequence.get("vendorSessionId") != original_vendor_id or \
+                first_receipt_result.get("vendorSessionId") != original_vendor_id or \
+                init_by_episode[0][0][2] != first_receipt_result.get("sourceEpoch"):
+            fail("Claude raw init and first successful H receipt do not identify the same vendor session")
         commands = db.execute(
             "SELECT generation,process_operation_id,step_id,command_hex,phase,source_epoch,source_cursor,ticket,custodian_nonce "
             "FROM gogoke_v37_rpc_steps WHERE domain_id=? AND session_id=? ORDER BY rowid", (domain, sid)).fetchall()
@@ -981,26 +1013,13 @@ def read_claude_sequence(case):
             original_update = raw_frame.get("params", {}).get("update", {})
             if update.get("sessionUpdate") != original_update.get("sessionUpdate") or \
                     update.get("_meta", {}).get("rawSourceCursor") != raw_cursor or \
-                    update.get("_meta", {}).get("threadId") != session["threadId"]:
+                    update.get("_meta", {}).get("threadId") != original_vendor_id:
                 fail("Claude raw-to-normalized event link differs")
             updates.append({"cursor": str(cursor), "sourceEpoch": epoch, "ledgerSourceCursor": source,
                 "operationId": operation, "generation": generation, "processTicket": ticket,
                 "custodianNonce": nonce, "update": update})
         if not updates:
             fail("Claude original normalized output is absent")
-
-        init_by_episode = []
-        for episode in episodes:
-            inits = [frame for key, (frame, state, _) in raw_lookup.items()
-                     if key[1] == episode[1] and frame.get("type") == "system" and
-                     frame.get("subtype") == "init" and isinstance(frame.get("session_id"), str)]
-            if len(inits) != 1:
-                fail("Claude original generation does not have exactly one raw system/init frame")
-            init_by_episode.append(inits[0])
-        original_vendor_id = init_by_episode[0]["session_id"]
-        resumed_vendor_id = init_by_episode[1]["session_id"]
-        if not original_vendor_id or resumed_vendor_id != original_vendor_id:
-            fail("Claude native resume did not retain its original vendor session id")
 
         turn_records = [*turns, context]
         expected_generations = [resume["oldGeneration"], resume["oldGeneration"], resume["newGeneration"]]
@@ -1027,7 +1046,12 @@ def read_claude_sequence(case):
                     stored[6] != episodes[0 if index < 2 else 1][1] or stored[9] != request_id or \
                     json.loads(bytes.fromhex(stored[8]).decode("utf-8")) != receipt or \
                     receipt.get("status") != "APPLIED" or receipt.get("result", {}).get("createdTurn") is not True or \
-                    receipt["result"].get("stopReason") != "end_turn":
+                    receipt["result"].get("deliveryBasis") != "CLAUDE_USER_REPLAY_AND_RESULT" or \
+                    receipt["result"].get("resultSubtype") != "success" or \
+                    not isinstance(receipt["result"].get("rawResultSha256"), str) or \
+                    receipt["result"].get("vendorSessionId") != original_vendor_id or \
+                    receipt["result"].get("userUuid") != turn.get("userUuid") or \
+                    receipt["result"].get("rawResultSha256") != turn.get("rawResultSha256"):
                 fail("Claude H typed-send journal or original terminal receipt differs")
             terminal_epoch = receipt["result"].get("sourceEpoch")
             terminal_cursor = receipt["result"].get("sourceCursor")
@@ -1035,24 +1059,53 @@ def read_claude_sequence(case):
                     not str(terminal_cursor).isdecimal() or int(terminal_cursor) <= int(turn["beforeSendRawHighwater"]):
                 fail("Claude H receipt does not define the recorded terminal raw source boundary")
             process_operation = episodes[0 if index < 2 else 1][1]
-            source_frames = [(key, frame) for key, (frame, state, _) in raw_lookup.items()
+            if init_by_episode[0 if index < 2 else 1][0][2] != terminal_epoch:
+                fail("Claude turn result and its generation init belong to different raw source epochs")
+            writes = []
+            for command in result["commands"]:
+                if command["sessionId"] != sid or not command["confirmedWrite"] or \
+                        command["generation"] != expected_generation or command["operationId"] != process_operation or \
+                        command["processTicket"] != stored[5] or command["custodianNonce"] != stored[7]:
+                    continue
+                try:
+                    frame = json.loads(command["originalFrame"])
+                except json.JSONDecodeError:
+                    continue
+                if frame.get("type") == "user" and \
+                        frame.get("message") == {"role": "user", "content": [{"type": "text", "text": turn["prompt"]}]} and \
+                        frame.get("uuid") == receipt["result"].get("userUuid"):
+                    writes.append(frame)
+            if len(writes) != 1:
+                fail("Claude H stdin write does not map to its exact original raw User UUID")
+            source_frames = [(key, frame, state) for key, (frame, state, _) in raw_lookup.items()
                              if key[0] == expected_generation and key[1] == process_operation and
+                             key[4] == stored[5] and key[5] == stored[7] and
                              key[2] == terminal_epoch and int(turn["beforeSendRawHighwater"]) < int(key[3]) <= int(terminal_cursor)]
-            terminal = [frame for key, frame in source_frames if str(key[3]) == str(terminal_cursor)]
-            users = [frame for frame in source_frames if frame.get("type") == "user" and
+            terminal = [frame for key, frame, _ in source_frames if str(key[3]) == str(terminal_cursor)]
+            terminal_keys = [key for key, frame, _ in source_frames if str(key[3]) == str(terminal_cursor)]
+            users = [frame for key, frame, state in source_frames if state == "NO_EVENT" and
+                     raw_no_event_reasons[key] == "CLAUDE_STDIN_ACK" and
+                     frame.get("type") == "user" and frame.get("session_id") == original_vendor_id and
                      frame.get("message") == {"role": "user", "content": [{"type": "text", "text": turn["prompt"]}]} and
-                     isinstance(frame.get("uuid"), str)]
-            results = [frame for frame in source_frames if frame.get("type") == "result" and
+                     isinstance(frame.get("uuid"), str) and frame.get("uuid") == receipt["result"].get("userUuid")]
+            results = [frame for key, frame, state in source_frames if state == "NO_EVENT" and
+                       raw_no_event_reasons[key] == "CLAUDE_RESULT_RESPONSE" and
+                       frame.get("type") == "result" and
                        frame.get("subtype") == "success" and frame.get("is_error") is False and
                        frame.get("session_id") == original_vendor_id]
-            if len(users) != 1 or len(terminal) != 1 or len(results) != 1 or terminal[0] != results[0]:
+            if len(users) != 1 or len(terminal) != 1 or len(terminal_keys) != 1 or \
+                    raw_lookup[terminal_keys[0]][1] != "NO_EVENT" or \
+                    raw_no_event_reasons[terminal_keys[0]] != "CLAUDE_RESULT_RESPONSE" or \
+                    len(results) != 1 or terminal[0] != results[0] or \
+                    sha(raw_bytes_lookup[terminal_keys[0]]) != receipt["result"].get("rawResultSha256"):
                 fail("Claude raw USER/typed result frames are not unique within the original H receipt")
-            text = "".join(claude_text(frame) for _, frame in source_frames)
+            text = "".join(claude_text(frame) for _, frame, _ in source_frames)
             if (index == 2 and text.strip() != turn["marker"]) or \
                     (index < 2 and turn["marker"] not in text):
                 fail("Claude answer is not present in the new turn's original A frames")
             normalized_text = "".join(item["update"].get("content", {}).get("text", "") for item in updates
                 if item["operationId"] == process_operation and item["generation"] == expected_generation and
+                item["processTicket"] == stored[5] and item["custodianNonce"] == stored[7] and
                 item["sourceEpoch"] == terminal_epoch and item["update"].get("sessionUpdate") == "agent_message_chunk" and
                 str(item["update"].get("_meta", {}).get("rawSourceCursor", "")).isdecimal() and
                 int(turn["beforeSendRawHighwater"]) < int(item["update"]["_meta"]["rawSourceCursor"]) <= int(terminal_cursor))
