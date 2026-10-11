@@ -1341,6 +1341,22 @@ impl<'root> ProductDatabase<'root> {
                 let mut result=BTreeMap::from([
                     (key("schema"),text("gogoke.37.secretary-configuration.v1")),
                 ]);
+                // Configuration reads expose the original User cap, never a
+                // default or the machine-limited value in its place.
+                let global_cap=match seat::read_project_parallel_cap(&self.connection,"global") {
+                    Ok(value)=>Some(value),
+                    Err(seat::SeatError::Denied)=>None,
+                    Err(error)=>return Err(error.into()),
+                };
+                let effective=if let Some(value)=global_cap {
+                    match seat::read_host_parallel_fact(&self.connection) {
+                        Ok(fact)=>Some(value.min(fact.machine_limit)),
+                        Err(seat::SeatError::Denied)=>None,
+                        Err(error)=>return Err(error.into()),
+                    }
+                } else {None};
+                result.insert(key("globalParallelCap"),optional(global_cap.map(|value|value.to_string())));
+                result.insert(key("globalEffectiveLimit"),optional(effective.map(|value|value.to_string())));
                 match configuration {
                     seat::SecretaryConfiguration::Unset=>{result.insert(key("state"),text("UNSET"));},
                     seat::SecretaryConfiguration::Revoked=>{result.insert(key("state"),text("REVOKED"));},
