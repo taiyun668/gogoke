@@ -10,7 +10,7 @@ The native producer exposes the original options and their source/time. Its init
 
 ## Current limitations and next
 
-This change has not been installed. Secretary initial save/start and cold recovery remain incomplete. Claude owns G's explicit global-cap field; the existing four-field save contract cannot silently supply a default. Other providers' missing effort evidence remains missing. The complete M3 and stable update gates are not passed.
+This change has not been installed. The source now wires USER cap/template/create/designate/configure operations and verifies the actual returned configuration. Stable native creation request identities retain partial initialization across page reload; unknown replies are not replaced with a different seat. A busy/revoked seat refuses configuration, and generation/revision CAS remains native. Initial H start and cold recovery remain incomplete. Claude owns G's explicit global-cap field; the existing four-field save contract cannot silently supply a first cap. Other providers' missing effort evidence remains missing. The complete M3 and stable update gates are not passed.
 
 V11's original MAIN and outside attempts retained failed file-tool results with both targets absent, two real stops/releases, normal exit and thirteen equal protection fields. The CLI's own history says `Failed to write file`; it does not establish an OS permission cause. A separate reader correction now associates original and normalized cursors through raw-source metadata. Original results are retained; corrected readback is a new measurement, not a repeated model call.
 

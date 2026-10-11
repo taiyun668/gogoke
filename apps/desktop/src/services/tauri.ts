@@ -656,6 +656,81 @@ export function createDesign37SecretarySource(): {
           "宿主未报告可用的秘书长会话轮次状态" };
     return { configuration: confirmed, page: { entry, routines, settings } };
   };
+  const saveSettings = async (input: { instanceId: string; model?: string; effort?: string;
+    permission?: string; globalParallelCap?: number }) => {
+    let configuration = await readSecretaryConfiguration();
+    if (configuration.state === "REVOKED" ||
+        (configuration.state === "DESIGNATED" && configuration.seatState !== "IDLE")) {
+      throw new Error("秘书长不是可配置的空闲席位；请先取得真实停止结果。");
+    }
+    const choices = await readSecretarySettingChoices();
+    const instance = choices.instances.find((item) => item.id === input.instanceId);
+    if (!input.model || !instance?.models?.includes(input.model) || !input.effort ||
+        !choices.efforts.includes(input.effort) || !input.permission ||
+        !choices.permissions.includes(input.permission)) {
+      throw new Error("选择不在宿主当前已验证的实例、模型、强度或配置档位中；原配置未改。");
+    }
+    const cap = input.globalParallelCap ?? (configuration.globalParallelCap
+      ? Number(configuration.globalParallelCap) : undefined);
+    if (cap === undefined || !Number.isSafeInteger(cap) || cap < 1 || cap > 4294967295) {
+      throw new Error("全局并发上限还没设置；请在同一次保存中明确选择，不使用测试默认值。");
+    }
+    if (configuration.globalParallelCap !== String(cap)) {
+      await design37UserConfiguration("project-parallel-cap", { domainId: "global", value: cap });
+      configuration = await readSecretaryConfiguration();
+      if (configuration.globalParallelCap !== String(cap)) {
+        throw new Error("宿主尚未确认这次全局上限；保留原结果，不继续初始化。");
+      }
+    }
+    if (configuration.state === "UNSET") {
+      // Stable native request identities survive page reload after a partial
+      // configuration. A different operation never replaces an UNKNOWN one.
+      await initializeDesign37ProjectPolicyMetadata("global");
+      await design37UserConfiguration("seat-template", { domainId: "global",
+        requestId: "secretary-ui-template", templateId: "secretary-ui", settings: {} });
+      const create = await design37UserFrame({ schema: "gogoke.37.operations.v1",
+        family: "K-SEAT", operation: "create-from-template", requestId: "secretary-ui-create",
+        targetId: "secretary-user", domainId: "global", expectedRevision: "0",
+        payload: { layer: "USER", templateId: "secretary-ui" } });
+      if (!record(create) || create.schema !== "gogoke.37.operations.v1" ||
+          create.family !== "K-SEAT" || create.operation !== "create-from-template" ||
+          create.requestId !== "secretary-ui-create" || create.targetId !== "secretary-user" ||
+          !["APPLIED", "REPLAYED"].includes(String(create.status))) {
+        throw new Error(`Native Secretary original creation is unresolved: ${JSON.stringify(create)}`);
+      }
+      const page: unknown = await design37UserConfiguration("seats-page-read", { domainId: "global" });
+      if (!record(page) || !Array.isArray(page.seats)) {
+        throw new Error("宿主未返回原全局席位，保留创建结果而不再新建。");
+      }
+      const seats = page.seats.filter((item: unknown) => record(item) && item.id === "secretary-user");
+      const seat: unknown = seats[0];
+      if (seats.length !== 1 || !record(seat) || !nonempty(seat._incarnation)) {
+        throw new Error("原秘书长席位身份未确认，保留创建结果而不再新建。");
+      }
+      await design37UserConfiguration("secretary-designate", { requestId: "secretary-ui-designate",
+        seatId: "secretary-user", incarnation: seat._incarnation });
+      configuration = await readSecretaryConfiguration();
+    }
+    if (configuration.state !== "DESIGNATED" || configuration.seatState !== "IDLE" ||
+        configuration.globalParallelCap !== String(cap)) {
+      throw new Error("宿主配置状态已改变，保留部分原回执而不覆盖或启动。");
+    }
+    await design37UserConfiguration("secretary-configure", {
+      requestId: `secretary-configure-${crypto.randomUUID()}`,
+      expectedGeneration: configuration.generation, expectedRevision: configuration.revision,
+      instanceId: input.instanceId, model: input.model, effort: input.effort,
+      permissionTier: input.permission,
+    });
+    const confirmed = await readSecretaryConfiguration();
+    if (confirmed.state !== "DESIGNATED" || confirmed.seatId !== configuration.seatId ||
+        confirmed.incarnation !== configuration.incarnation ||
+        confirmed.instanceId !== input.instanceId || confirmed.model !== input.model ||
+        confirmed.effort !== input.effort || confirmed.permissionTier !== input.permission ||
+        confirmed.globalParallelCap !== String(cap)) {
+      throw new Error("宿主尚未确认本次配置的完整原值；结果保留，不启动会话。");
+    }
+    invalidateTranscript();
+  };
   const changeRoutine = async (id: string, command: "secretary-routine-pause" | "secretary-routine-delete") => {
     const configuration = await readSecretaryConfiguration();
     if (configuration.state !== "DESIGNATED") throw new Error("Secretary designation changed.");
@@ -1002,7 +1077,7 @@ export function createDesign37SecretarySource(): {
   return { readSnapshot, readConversation, invalidateTranscript, writeFacts,
     send, retrySend, stop, retryStop,
     source: { read: async () => (await readSnapshot()).page,
-    actions: { pauseRoutine: (id) => changeRoutine(id, "secretary-routine-pause"),
+    actions: { saveSettings, pauseRoutine: (id) => changeRoutine(id, "secretary-routine-pause"),
       deleteRoutine: (id) => changeRoutine(id, "secretary-routine-delete") } } };
 }
 
