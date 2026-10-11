@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       focused_library:
-        description: Affected checks only (seat-scope, policy-unset-stage, ledger-scope, native-takeover, pipe-evidence, grok-permission, claude-holder, claude-initialize, m2-provider-current, secretary-configuration, opencode-alias or model-options); all full and formal gates are NOT_RUN
+        description: Affected checks only (seat-scope, policy-unset-stage, ledger-scope, native-takeover, pipe-evidence, grok-permission, claude-holder, claude-initialize, claude-second-init, m2-provider-current, secretary-configuration, opencode-alias or model-options); all full and formal gates are NOT_RUN
         type: string
         default: ""
       secretary_routine_fixture_only:
@@ -156,6 +156,7 @@ jobs:
             'grok-permission' { @('grok_permission') }
             'claude-holder' { @('claude_holder') }
             'claude-initialize' { @('real_claude_initialize_with_fixed_lpac_compat_persistent_stdio') }
+            'claude-second-init' { @('claude_second_result_accepts_same_session_init_and_rejects_changed_identity') }
             'm2-provider-current' { @('grok_permission', 'claude_holder',
               'real_claude_initialize_with_fixed_lpac_compat_persistent_stdio',
               'stop_requires_clean_original_eof_not_a_generic_source_error',
