@@ -1594,6 +1594,15 @@ def verify_host_only(db, journal, case, result):
           before["capacityQualification"]["state"] == result["capacityQualification"]["state"] ==
           "CAPACITY_4_WITHIN_REFERENCE_OWNER_AND_HOST",
           "Host-only baseline is not the same closed A authority/cap subject")
+    check(before.get("hostTemplateSettings") == result.get("hostTemplateSettings") and
+          len(result.get("hostTemplateSettings", [])) == 1,
+          "Host-only actual template metadata differs from its original closed baseline")
+    template = result["hostTemplateSettings"][0]
+    original_template_settings = template["settings"]
+    check(template["templateId"] and isinstance(original_template_settings, dict) and
+          "orchestrationScope" not in original_template_settings and
+          original_template_settings.get("permissionTier") == "NETWORKED_WRITE",
+          "Host recipient template must be the original USER template without copied lead orchestration scope")
     ref = case.get("priorCore13")
     check(ref == journal.get("priorCore13") and isinstance(ref, dict) and
           set(ref) == {"journal", "journalSha256", "finalReadback", "finalSha256"},
@@ -1677,6 +1686,12 @@ def verify_host_only(db, journal, case, result):
             check(bytes(stored["request_bytes"]).decode() == entry["rawFrame"] and
                   json.loads(bytes(stored["receipt_bytes"])) == entry["receipt"],
                   "Source E/F read receipt differs from native ledger")
+        source_settings = card["receipt"]["result"].get("settings", {})
+        check(card["receipt"]["result"].get("templateId") == template["templateId"] and
+              source_settings.get("model") == original_template_settings.get("model") and
+              source_settings.get("effort") == original_template_settings.get("effort") and
+              source_settings.get("permissionTier") == original_template_settings.get("permissionTier"),
+              "Original A source model/effort/tier do not match the immutable USER template")
     host = case["hostCases"][0]
     recipients = case["hostRecipients"]
     check(len(recipients) == 2 and
@@ -1700,10 +1715,8 @@ def verify_host_only(db, journal, case, result):
               create["receipt"]["result"]["layer"] == "USER" and
               create["receipt"]["result"]["kind"] == "LONG" and
               create["receipt"]["result"]["instanceId"] is None and
-              create["receipt"]["result"]["templateId"] ==
-              operations[source_reads[0]["cardRequestId"]]["receipt"]["result"]["templateId"] and
-              create["receipt"]["result"]["settings"] ==
-              operations[source_reads[0]["cardRequestId"]]["receipt"]["result"]["settings"] and
+              create["receipt"]["result"]["templateId"] == template["templateId"] == item["templateId"] and
+              create["receipt"]["result"]["settings"] == original_template_settings and
               bind["request"]["family"] == "K-SEAT" and bind["request"]["operation"] == "bind-instance" and
               bind["request"]["targetId"] == selection["seatId"] and
               bind["request"]["expectedRevision"] == create["receipt"]["revision"] and
@@ -2242,6 +2255,35 @@ try:
         result["policy"] = policy(db, journal["domainId"])
         result["foreignProject"] = foreign_snapshot(db, journal["domainId"], journal.get("foreignProject"))
         result["inbox"] = inbox_rows(db, journal["domainId"])
+        if journal.get("rulesSelection") == "HOST_BUSY_TO_IDLE_ONLY":
+            operations = {row.get("request", {}).get("requestId"): row
+                          for row in journal.get("operations", [])
+                          if row.get("request", {}).get("requestId")}
+            source_reads = journal.get("hostSourceReadbacks", [])
+            preparations = journal.get("hostUserPreparations", [])
+            source_template_ids = []
+            for evidence in source_reads:
+                card = operations.get(evidence.get("cardRequestId"))
+                if card is None or card.get("receipt", {}).get("status") != "APPLIED":
+                    fail("Host template source requires its original USER state-card receipt")
+                source_template_ids.append(card["receipt"]["result"].get("templateId"))
+            target_template_ids = [row.get("templateId") for row in preparations]
+            template_ids = set(source_template_ids + target_template_ids)
+            if len(source_reads) != 2 or len(preparations) != 2 or \
+                    len(template_ids) != 1 or None in template_ids:
+                fail("Host-only source and recipient must identify one original USER template")
+            host_template_settings = []
+            for template_id in sorted(template_ids):
+                rows = select(db, "SELECT settings_json,revision FROM gogoke_v37_seat_templates "
+                              "WHERE domain_id=? AND template_id=?", (journal["domainId"], template_id))
+                if len(rows) != 1:
+                    fail("Original immutable Host USER template row is missing or ambiguous")
+                settings = json.loads(rows[0]["settings_json"])
+                if not isinstance(settings, dict) or "orchestrationScope" in settings:
+                    fail("Host source template is not the original non-orchestrator template")
+                host_template_settings.append({"templateId": template_id,
+                    "revision": rows[0]["revision"], "settings": settings})
+            result["hostTemplateSettings"] = host_template_settings
         if journal.get("rulesSelection") == "CROSS_PROJECT_ONLY":
             check(journal.get("rulesUserPermissionTier") == "NETWORKED_WRITE" and
                   journal.get("rulesUserMaxConcurrent") == 4 and journal.get("rulesProjectParallelCap") == 4,
