@@ -139,6 +139,10 @@ export async function runV11OutsideTree(product, config, journal) {
     ['fileChange', 'commandExecution', 'mcpToolCall', 'dynamicToolCall'].includes(event._meta.codexItemType))
     .map(event => ({ itemId: event.toolCallId, type: event._meta.codexItemType,
       status: event.status, rawOutput: event.rawOutput, meta: event._meta }));
+  record.outputDeltas = session.events.filter(event =>
+    event._meta?.codexMethod === 'item/fileChange/outputDelta' &&
+    event._meta.turnId === record.turnId && event._meta.threadId === record.threadId)
+    .map(event => ({ itemId: event.toolCallId, rawOutput: event.rawOutput, meta: event._meta }));
   session.turns.push({ turnId: record.turnId, sendRequestId: record.sendRequestId });
   const stopped = await step('stop', { seatId: c.seatId });
   record.stopRequestId = journal.operations.at(-1).request.requestId;

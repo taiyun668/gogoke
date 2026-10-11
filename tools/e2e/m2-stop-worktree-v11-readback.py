@@ -316,9 +316,10 @@ def main():
             started[0].get("id") == completed[0]["id"] and \
             started[0].get("type") == completed[0].get("type")
         original_tool = completed[0] if len(completed) == 1 else {}
-        raw_failure = {name: original_tool[name] for name in
-                       ("aggregatedOutput", "result", "error", "contentItems")
-                       if original_tool.get(name)}
+        completion_failure = {name: original_tool[name] for name in
+                              ("aggregatedOutput", "result", "error", "contentItems")
+                              if original_tool.get(name)}
+        raw_failure = completion_failure
         if mode == "execCommand":
             marker_atom = "".join(char if char in
                                   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
@@ -350,6 +351,42 @@ def main():
                     "V11 outside native file request differs from its exact new target")
             changes = original_tool.get("changes", [])
             normalized = case.get("events", [])
+            delta_sources = [(row, frame) for row, frame in zip(raw, frames)
+                             if frame.get("method") == "item/fileChange/outputDelta" and
+                             frame.get("params", {}).get("threadId") == case["threadId"] and
+                             frame.get("params", {}).get("turnId") == case["turnId"]]
+            original_deltas = [{"itemId": frame["params"].get("itemId"),
+                                "delta": frame["params"].get("delta"),
+                                "sourceEpoch": row[5], "sourceCursor": row[6]}
+                               for row, frame in delta_sources]
+            raw_failure = {"completionFields": completion_failure,
+                           "outputDeltas": original_deltas}
+            journal_deltas = case.get("outputDeltas", [])
+            delta_match = isinstance(journal_deltas, list) and \
+                len(journal_deltas) == len(delta_sources)
+            for (source_row, frame), observed in zip(delta_sources, journal_deltas):
+                params = frame["params"]
+                expected_meta = {"codexMethod": "item/fileChange/outputDelta",
+                                 "threadId": case["threadId"], "turnId": case["turnId"],
+                                 "rawSourceCursor": str(source_row[6])}
+                indexed = db.execute(
+                    "SELECT update_json FROM v37_ledger_index WHERE source_kind='v37' "
+                    "AND domain_id=? AND session_id=? AND source_epoch=? AND source_cursor=?",
+                    (case["domainId"], case["sessionId"], source_row[5], source_row[6]))
+                persisted = [json.loads(row[0]) for row in indexed]
+                delta_match = delta_match and isinstance(params.get("delta"), str) and \
+                    params.get("itemId") == original_tool.get("id") and \
+                    isinstance(observed, dict) and \
+                    observed.get("itemId") == original_tool.get("id") and \
+                    observed.get("rawOutput") == params["delta"] and \
+                    all(observed.get("meta", {}).get(key) == value
+                        for key, value in expected_meta.items()) and \
+                    any(all(update.get("_meta", {}).get(key) == value
+                            for key, value in expected_meta.items()) and
+                        update.get("toolCallId") == original_tool.get("id") and
+                        update.get("rawOutput") == params["delta"] for update in persisted)
+            delta_text = "".join(part["delta"] for part in original_deltas
+                                 if isinstance(part["delta"], str))
             h_file_change = False
             if pair and original_tool.get("type") == "fileChange" and len(normalized) == 1:
                 source_row = next((row for row, frame in zip(raw, frames)
@@ -373,7 +410,8 @@ def main():
                                             for key, value in expected_meta.items())
                                         for update in persisted)
             exact = pair and original_tool.get("type") == "fileChange" and \
-                original_tool.get("status") == "failed" and bool(raw_failure) and \
+                original_tool.get("status") == "failed" and \
+                bool(completion_failure or delta_text) and delta_match and \
                 isinstance(changes, list) and len(changes) == 1 and \
                 isinstance(changes[0], dict) and changes[0].get("path") == str(target) and \
                 isinstance(changes[0].get("kind"), dict) and \
