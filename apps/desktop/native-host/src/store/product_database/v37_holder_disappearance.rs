@@ -8,6 +8,7 @@ use crate::store::instance::holder_disappearance::{self as gone,
     HolderDisappearanceInput, HolderDisappearanceRecord, HolderDisappearancePhase as Phase};
 use crate::store::atomic::Parser;
 use crate::store::digest::sha256_hex;
+use crate::store::session_transport::rpc_journal as rpc;
 use crate::root::RootIdentity;
 
 type Fields = BTreeMap<String, String>;
@@ -146,6 +147,7 @@ impl<'root> ProductDatabase<'root> {
         if history.instance_id!=profile.instance_id || history.history_id!=profile.history_id {
             return Err(refused("holder original profile/history changed"));
         }
+        if let Some(failed)=self.failed_resume_original(profile,&history,source)? {return Ok(failed);}
         // This reads the original resource association, including an already
         // released member during the same group's final readback. Current E
         // execution authority is checked separately before the release CAS;
@@ -196,6 +198,127 @@ impl<'root> ProductDatabase<'root> {
             put(&mut f,key,value);
         }
         Ok(f)
+    }
+
+    // The current claim still names the genuinely stopped predecessor. The
+    // failed child episode owns F resources but has no claim or StopFact.
+    fn failed_resume_original(&self,profile:&instance::CredentialProfileRecord,
+        history:&instance::PrivateHistoryGeneration,source:&instance::PrivateHistorySource)
+        -> Result<Option<Fields>> {
+        let Some(predecessor)=history.predecessor_binding_id.as_deref() else{return Ok(None);};
+        let found=rows(&self.connection,
+            "SELECT c.pid,c.creation_time_100ns,c.image_path,c.binary_digest_sha256,c.state,
+                    COALESCE(c.stop_proof_hash,''),a.state,CAST(a.revision AS TEXT),a.binding_id,a.home_id,
+                    e.phase,e.raw_hex,CAST(e.result_revision AS TEXT),o.generation,o.process_operation_id,
+                    o.stop_fact_id,oc.state,oc.stop_proof_hash,a.stop_fact_id,oc.ticket,oc.custodian_nonce,
+                    o.request_id
+               FROM main.gogoke_v37_h_process_episode e
+               JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id
+                 AND c.profile_id=e.instance_id AND c.domain_id=e.domain_id AND c.generation=e.generation
+               JOIN main.gogoke_v37_h_process_episode o ON o.domain_id=e.domain_id
+                 AND o.session_id=e.session_id AND o.generation=e.old_generation
+                 AND o.binding_id=?1
+               JOIN main.gogoke_coordination_process_custody oc ON oc.operation_id=o.process_operation_id
+                 AND oc.profile_id=o.instance_id AND oc.domain_id=o.domain_id AND oc.generation=o.generation
+               JOIN main.gogoke_v37_h_claim a ON a.domain_id=e.domain_id AND a.session_id=e.session_id
+                 AND a.process_operation_id=o.process_operation_id AND a.generation=o.generation
+              WHERE e.domain_id=?2 AND e.session_id=?3 AND e.instance_id=?4
+                AND e.binding_id=?5 AND e.generation=?6 AND e.request_id=?7
+                AND e.process_operation_id=?8 AND c.ticket=?9 AND c.custodian_nonce=?10",
+            &[predecessor,&history.domain_id,&history.session_id,&profile.instance_id,
+                &profile.binding_id,&profile.generation,&history.request_id,
+                &source.process_operation_id,&source.ticket,&source.custodian_nonce],22)?;
+        if found.is_empty() {return Ok(None);}
+        if found.len()!=1 {return Err(refused("failed resume original is ambiguous"));}
+        let r=&found[0];
+        if r[10]!="UNKNOWN" {return Ok(None);}
+        if !matches!(r[4].as_str(),"ACTIVE"|"UNKNOWN") || !r[5].is_empty()
+            || r[6]!="STOPPED" || r[14].is_empty() || r[15].is_empty()
+            || r[15]!=r[17] || r[15]!=r[18] || r[16]!="STOPPED" {
+            return Err(refused("failed resume old StopFact or child custody changed"));
+        }
+        let old_thread=fail(rpc::observed_thread_id(&self.connection,&history.domain_id,
+            &history.session_id,&r[14],&r[13],&r[21],&r[19],&r[20]))?;
+        if fail(rpc::observed_failed_codex_resume(&self.connection,&history.domain_id,
+            &history.session_id,&profile.generation,&history.request_id,
+            &source.process_operation_id,&source.ticket,&source.custodian_nonce,&old_thread))?
+            .as_ref()!=Some(source) {return Err(refused("failed resume typed response changed"));}
+        let relationship=rows(&self.connection,
+            "SELECT seat_id,seat_incarnation,selected_instance_id FROM main.gogoke_v37_effective_seat
+              WHERE domain_id=?1 AND session_id=?2",&[&history.domain_id,&history.session_id],3)?;
+        if relationship!=vec![vec![history.seat_id.clone(),history.seat_incarnation.clone(),profile.instance_id.clone()]] {
+            return Err(refused("failed resume seat relationship changed"));
+        }
+        let suffix=sha256_hex(format!("{}\n{}\n{}\n{}\n{}",self.root.canonical_root().identity.opaque(),
+            history.domain_id,history.session_id,history.seat_incarnation,profile.generation).as_bytes());
+        let sid=fail(AppContainerProfile::derive_for_revocation(&format!("Gogoke37.Session.{}",&suffix[..40])))?;
+        if fail(sid.sid_identity())?!=profile.profile_sid {return Err(refused("failed resume SID changed"));}
+        let mut f=Fields::new();
+        for (key,value) in [("kind","FAILED_RESUME_PROFILE_ONLY_V1"),("binding",profile.binding_id.as_str()),
+            ("instance",profile.instance_id.as_str()),("history",profile.history_id.as_str()),
+            ("domain",history.domain_id.as_str()),("session",history.session_id.as_str()),
+            ("seat",history.seat_id.as_str()),("incarnation",history.seat_incarnation.as_str()),
+            ("generation",profile.generation.as_str()),("operation",source.process_operation_id.as_str()),
+            ("ticket",source.ticket.as_str()),("nonce",source.custodian_nonce.as_str()),
+            ("sid",profile.profile_sid.as_str())] {put(&mut f,key,value);}
+        for (key,value) in ["pid","creation","image","binary","custodyState","stopHash",
+            "claimState","claimRevision","claimBinding","claimHome","episodePhase","episodeHex",
+            "episodeRevision","oldGeneration","oldOperation","oldStopFact","oldCustodyState",
+            "oldCustodyStopHash","currentStopFact","oldTicket","oldNonce","oldRequest"].iter().zip(r) {
+            put(&mut f,key,value);
+        }
+        Ok(Some(f))
+    }
+
+    fn bind_failed_resume_resource_source(&mut self,profile:&instance::CredentialProfileRecord)
+        -> Result<()> {
+        if profile.state!="ACTIVE" {return Ok(());}
+        let history=fail(instance::read_private_history_generation(&self.connection,
+            &profile.binding_id,&profile.generation))?.ok_or_else(||refused("failed resume F generation absent"))?;
+        if history.source.is_some() || history.predecessor_binding_id.is_none() {return Ok(());}
+        let found=rows(&self.connection,
+            "SELECT e.process_operation_id,c.ticket,c.custodian_nonce,o.process_operation_id,
+                    o.generation,o.request_id,oc.ticket,oc.custodian_nonce
+               FROM main.gogoke_v37_h_process_episode e
+               JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id
+                 AND c.domain_id=e.domain_id AND c.generation=e.generation AND c.profile_id=e.instance_id
+               JOIN main.gogoke_v37_h_process_episode o ON o.domain_id=e.domain_id
+                 AND o.session_id=e.session_id AND o.generation=e.old_generation
+                 AND o.binding_id=?1 AND o.phase='STOPPED' AND o.stop_fact_id IS NOT NULL
+               JOIN main.gogoke_coordination_process_custody oc ON oc.operation_id=o.process_operation_id
+                 AND oc.domain_id=o.domain_id AND oc.generation=o.generation
+                 AND oc.state='STOPPED' AND oc.stop_proof_hash=o.stop_fact_id
+               JOIN main.gogoke_v37_h_claim a ON a.domain_id=e.domain_id AND a.session_id=e.session_id
+                 AND a.process_operation_id=o.process_operation_id AND a.generation=o.generation
+                 AND a.state='STOPPED' AND a.stop_fact_id=o.stop_fact_id
+              WHERE e.domain_id=?2 AND e.session_id=?3 AND e.instance_id=?4
+                AND e.binding_id=?5 AND e.generation=?6 AND e.request_id=?7
+                AND e.phase='UNKNOWN' AND e.stop_fact_id IS NULL
+                AND c.state IN ('ACTIVE','UNKNOWN') AND c.stop_proof_hash IS NULL",
+            &[history.predecessor_binding_id.as_deref().ok_or_else(||refused("failed resume predecessor absent"))?,
+                &history.domain_id,&history.session_id,&profile.instance_id,&profile.binding_id,
+                &profile.generation,&history.request_id],8)?;
+        if found.len()!=1 {return Err(refused("failed resume original H chain absent or ambiguous"));}
+        let r=&found[0];
+        let old_thread=fail(rpc::observed_thread_id(&self.connection,&history.domain_id,
+            &history.session_id,&r[3],&r[4],&r[5],&r[6],&r[7]))?;
+        let source=fail(rpc::observed_failed_codex_resume(&self.connection,&history.domain_id,
+            &history.session_id,&profile.generation,&history.request_id,
+            &r[0],&r[1],&r[2],&old_thread))?
+            .ok_or_else(||refused("failed resume typed OBSERVED response absent"))?;
+        fail(self.connection.execute("BEGIN IMMEDIATE"))?;
+        let bound=(||->Result<()> {
+            authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
+            // The verifier is read again under the write lock before the only
+            // possible F mutation. A remote-error string is never authority.
+            if fail(rpc::observed_failed_codex_resume(&self.connection,&history.domain_id,
+                &history.session_id,&profile.generation,&history.request_id,
+                &r[0],&r[1],&r[2],&old_thread))?.as_ref()!=Some(&source) {
+                return Err(refused("failed resume original source changed"));
+            }
+            fail(history.bind_failed_resume_source_in_transaction(&self.connection,&source))
+        })();
+        self.finish_native_transaction(bound)
     }
 
     // An existing verified same-physical-root exclusive holder and this empty
@@ -324,6 +447,7 @@ impl<'root> ProductDatabase<'root> {
         if self.native_sessions.values().any(|r|r.custody.binding.profile_id==instance_id) {return Ok(());}
         let profiles=fail(instance::read_credential_profiles(&self.connection,instance_id))?;
         if profiles.is_empty() {return Ok(());}
+        for profile in &profiles {self.bind_failed_resume_resource_source(profile)?;}
         let Some(object)=fail(instance::read_credential_object(&self.connection,instance_id))? else {
             return Err(refused("holder recovery registered source absent"));
         };
@@ -394,7 +518,9 @@ impl<'root> ProductDatabase<'root> {
         // fact. Observe the OS only for resources which still need an effect;
         // completed captures and receipts remain verified below.
         let all_pairs=originals.iter().filter(|(id,_)|!records.get(*id)
-            .is_some_and(|r|r.phase==Phase::Applied)).map(|(_,f)|Ok((get(f,"pid")?.parse::<u32>().map_err(|e|
+            .is_some_and(|r|r.phase==Phase::Applied ||
+                (r.phase==Phase::Revoked && decode(r).ok().and_then(|f|f.get("kind").cloned())
+                    .as_deref()==Some("FAILED_RESUME_PROFILE_ONLY_V1")))).map(|(_,f)|Ok((get(f,"pid")?.parse::<u32>().map_err(|e|
             OrchestrationError::V37StoreFailure(format!("holder pid: {e}")))?,get(f,"creation")?.parse::<u64>().map_err(|e|
             OrchestrationError::V37StoreFailure(format!("holder creation: {e}")))?))).collect::<Result<Vec<_>>>()?;
         let all_gone=if all_pairs.is_empty() {None}
@@ -410,6 +536,8 @@ impl<'root> ProductDatabase<'root> {
             let pair=(get(original,"pid")?.parse::<u32>().map_err(|e|OrchestrationError::V37StoreFailure(format!("holder pid: {e}")))?,
                 get(original,"creation")?.parse::<u64>().map_err(|e|OrchestrationError::V37StoreFailure(format!("holder creation: {e}")))?);
             let proof=if records.get(member).is_some_and(|r|r.phase==Phase::Applied) {None}
+                else if records.get(member).is_some_and(|r|r.phase==Phase::Revoked
+                    && get(original,"kind").ok().as_deref()==Some("FAILED_RESUME_PROFILE_ONLY_V1")) {None}
                 else {Some(fail(NativeProcessHoldersGone::observe(&[pair]))?)};
             let (mut record,capture,step)=if let Some(record)=records.get(member) {
                 let capture=decode(record)?;
@@ -418,7 +546,9 @@ impl<'root> ProductDatabase<'root> {
                     &get(&capture,"aclBefore")?,&profile.profile_sid,&known))?;
                 (record.clone(),capture,step)
             } else {
-                if profile.state!="ACTIVE" || !matches!(get(original,"claimState")?.as_str(),"COMMITTED"|"UNKNOWN") {
+                let resource_only=get(original,"kind").ok().as_deref()==Some("FAILED_RESUME_PROFILE_ONLY_V1");
+                if profile.state!="ACTIVE" || !(matches!(get(original,"claimState")?.as_str(),"COMMITTED"|"UNKNOWN")
+                    || (resource_only && get(original,"claimState")?=="STOPPED")) {
                     return Err(refused("holder initial capture requires exact original active resources"));
                 }
                 let step=fail(NativeCredentialAclRecoveryStep::capture(&binding,&profile.profile_sid,&known))?;
@@ -440,6 +570,12 @@ impl<'root> ProductDatabase<'root> {
             };
             #[cfg(test)]
             holder_gone_cut_for_test("AFTER_CAPTURE")?;
+            if record.phase==Phase::Revoked && get(&capture,"kind").ok().as_deref()==Some("FAILED_RESUME_PROFILE_ONLY_V1") {
+                self.gone_validate_capture(original,&capture,&object,&home.identity,&alias_physical,&record)?;
+                final_digest=Some(get(&capture,"aclTarget")?);
+                records.insert(member.clone(),record);
+                continue;
+            }
             if record.phase==Phase::Preparing {
                 let proof=proof.as_ref().ok_or_else(||refused("holder revoke lacks disappearance proof"))?;
                 self.gone_scope(instance_id,&allowed,incoming,retained)?;
@@ -476,6 +612,13 @@ impl<'root> ProductDatabase<'root> {
                 holder_gone_cut_for_test("AFTER_REVOKED")?;
             }
             if record.phase==Phase::Revoked {
+                if get(&capture,"kind").ok().as_deref()==Some("FAILED_RESUME_PROFILE_ONLY_V1") {
+                    self.gone_validate_capture(&self.gone_original(&fail(instance::read_credential_profiles(&self.connection,instance_id))?
+                        .into_iter().find(|p|&p.binding_id==member).ok_or_else(||refused("holder final profile absent"))?)?,
+                        &capture,&object,&home.identity,&alias_physical,&record)?;
+                    final_digest=Some(step.target_digest());records.insert(member.clone(),record);
+                    continue;
+                }
                 let proof=proof.as_ref().ok_or_else(||refused("holder release lacks disappearance proof"))?;
                 self.gone_scope(instance_id,&allowed,incoming,retained)?;
                 if let Some(all_gone)=&all_gone {fail(all_gone.validate(&all_pairs))?;}
@@ -498,11 +641,16 @@ impl<'root> ProductDatabase<'root> {
         // On later cold starts its immutable last step still supplies the same
         // expected baseline; subsequent legitimate stopped histories add no ACE.
         for record in records.values() {
-                if record.phase!=Phase::Applied {return Err(refused("holder original resource recovery incomplete"));}
+                if record.phase!=Phase::Applied && !(record.phase==Phase::Revoked
+                    && get(&decode(record)?,"kind").ok().as_deref()==Some("FAILED_RESUME_PROFILE_ONLY_V1")) {
+                    return Err(refused("holder original resource recovery incomplete"));
+                }
                 let capture=decode(record)?;let group=get(&capture,"members")?;
                 if final_digest.is_none() && group.split(',').last()==Some(record.input.binding_id.as_str()) {
                     let ids:Vec<_>=group.split(',').collect();
-                    if ids.iter().all(|id|records.get(*id).is_some_and(|r|r.phase==Phase::Applied)) {
+                    if ids.iter().all(|id|records.get(*id).is_some_and(|r|r.phase==Phase::Applied
+                        || (r.phase==Phase::Revoked && decode(r).ok().and_then(|f|f.get("kind").cloned())
+                            .as_deref()==Some("FAILED_RESUME_PROFILE_ONLY_V1")))) {
                         final_digest=Some(get(&capture,"aclTarget")?);
                     }
                 }
@@ -525,6 +673,25 @@ impl<'root> ProductDatabase<'root> {
 
     fn gone_validate_capture(&self, current:&Fields,capture:&Fields,object:&instance::CredentialObjectRecord,
         home:&RootIdentity,aliases:&Fields,record:&HolderDisappearanceRecord)->Result<()> {
+        let kind=capture.get("kind").map(String::as_str);
+        if !matches!(kind,None|Some("FAILED_RESUME_PROFILE_ONLY_V1"))
+            || current.get("kind").map(String::as_str)!=kind {
+            return Err(refused("holder capture kind changed"));
+        }
+        if kind==Some("FAILED_RESUME_PROFILE_ONLY_V1") {
+            if record.phase==Phase::Applied || get(capture,"members")?!=record.input.binding_id
+                || get(capture,"claimState")?!="STOPPED"
+                || get(capture,"episodePhase")?!="UNKNOWN"
+                || get(capture,"oldStopFact")?.is_empty()
+                || get(capture,"oldStopFact")?!=get(capture,"oldCustodyStopHash")?
+                || get(capture,"oldStopFact")?!=get(capture,"currentStopFact")? {
+                return Err(refused("failed resume capture boundary changed"));
+            }
+            for key in ["oldGeneration","oldOperation","oldStopFact","oldCustodyState",
+                "oldCustodyStopHash","currentStopFact","oldTicket","oldNonce","oldRequest"] {
+                if get(current,key)?!=get(capture,key)? {return Err(refused("failed resume old fact changed"));}
+            }
+        }
         for key in ["binding","instance","history","domain","session","seat","incarnation","generation",
             "operation","ticket","nonce","sid","pid","creation","image","binary","custodyState",
             "stopHash","claimBinding","claimHome","episodePhase","episodeHex","episodeRevision"] {

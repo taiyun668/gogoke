@@ -766,3 +766,103 @@ fn actual_partial_holder_recovery_cold_reuses_original_capture_at_each_durable_b
         });
     }
 }
+
+#[test]
+fn actual_partial_holder_recovery_cold_reuses_original_capture_at_each_durable_boundary_failed_resume_profile_only() {
+    use super::v37_holder_disappearance::set_holder_gone_cut_for_test;
+    for cut in ["AFTER_CAPTURE","AFTER_ACL","AFTER_F_REVOKE","AFTER_REVOKED"] {
+        let _guard=route_b_test_guard();
+        let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let base=std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        let path=base.join(format!("gogoke-failed-resume-holder-{}-{stamp}",std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let database=path.join("state.sqlite");
+        let mut product=ProductDatabase::open(&root,&database).unwrap();
+        managed_cli_test_setup::ready(&mut product,&root,"codex");
+        applied(&mut product,&operation("global","K-INSTANCE","register","failed-register",INSTANCE,0,
+            r#"{"driverId":"codex"}"#));
+        qualify_file_backend(&mut product,&root);
+        instance::set_instance_concurrency_cap(&mut product.connection,&product.owner,INSTANCE,1).unwrap();
+        seat::set_project_parallel_cap(&mut product.connection,&product.owner,"projectA",1).unwrap();
+        seat::store_template(&mut product.connection,NativeOrigin::user(&product.owner),StoreTemplate {
+            domain_id:"projectA",template_id:"templateA",
+            settings_json:br#"{"effort":"high","model":"gpt-6-sol","permissionTier":"NETWORKED_WRITE"}"#,
+        }).unwrap();
+        seat::create(&mut product.connection,NativeOrigin::user(&product.owner),CreateSeat {
+            domain_id:"projectA",seat_id:"seatA",template_id:"templateA",instance_id:Some(INSTANCE),
+            kind:Kind::Long,request_id:"failed-create-seat",request_bytes:b"failed resume seat",
+        }).unwrap();
+        let source=crate::store::worktree::tests::make_source_fixture(&mut product.connection,&root,
+            &product.owner,&mut product.process_custodian);
+        let git=std::env::var_os("GOGOKE_CONTROLLED_GIT_PATH").expect("controlled Git backend");
+        let configuration=Json::Object(BTreeMap::from([
+            (JsonString::from_str("schema"),Json::String(JsonString::from_str("gogoke.37.owner-configuration.v1"))),
+            (JsonString::from_str("command"),Json::String(JsonString::from_str("worktree-source"))),
+            (JsonString::from_str("repositoryId"),Json::String(JsonString::from_str("fixtureRepo"))),
+            (JsonString::from_str("sourcePath"),Json::String(JsonString::from_str(source.to_str().unwrap()))),
+            (JsonString::from_str("gitPath"),Json::String(JsonString::from_str(git.to_str().unwrap()))),
+        ])).canonical();
+        product.configure_user_v37(configuration.as_bytes()).unwrap();
+        applied(&mut product,&operation("projectA","K-WORKTREE","create","failed-tree","treeA",0,
+            r#"{"repositoryId":"fixtureRepo","seatId":"seatA"}"#));
+        let generation=seat::get(&product.connection,"projectA","seatA").unwrap().unwrap().generation+1;
+        for (verb,revision) in [("admission-reserve",0),("admission-commit",1)] {
+            applied(&mut product,&operation("projectA","K-SESSION",verb,&format!("failed-{verb}"),
+                "sessionA",revision,&format!(r#"{{"seatId":"seatA","generation":"{generation}"}}"#)));
+        }
+        applied(&mut product,&operation("projectA","K-SESSION","open","failed-open","sessionA",2,
+            &format!(r#"{{"seatId":"seatA","generation":"{generation}","repositoryId":"fixtureRepo","worktreeId":"treeA"}}"#)));
+        let old_thread=product.native_sessions.get(&("projectA".into(),"sessionA".into())).unwrap()
+            .thread_id.clone().unwrap();
+        applied(&mut product,&operation("projectA","K-SESSION","stop","failed-stop","sessionA",3,
+            &format!(r#"{{"seatId":"seatA","generation":"{generation}"}}"#)));
+        let resume=operation("projectA","K-SESSION","resume","failed-resume","sessionA",4,
+            &format!(r#"{{"generation":"{generation}"}}"#));
+        let result=h::decode_receipt(&product.dispatch_user_request(&resume).unwrap()).unwrap();
+        assert_eq!(result.status,V37Status::Unknown,"original provider rejection: {}",String::from_utf8_lossy(&result.raw_bytes));
+        let claims=claim_rows(&product);
+        assert_eq!(claims.len(),1);assert_eq!(claims[0][6],"STOPPED");assert!(!claims[0][9].is_empty());
+        let active=instance::read_credential_profiles(&product.connection,INSTANCE).unwrap()
+            .into_iter().find(|p|p.state=="ACTIVE").expect("only failed child profile is active");
+        let history=instance::read_private_history_generation(&product.connection,&active.binding_id,&active.generation)
+            .unwrap().unwrap();
+        let process=rows(&product,"SELECT e.process_operation_id,c.ticket,c.custodian_nonce,c.pid,c.creation_time_100ns
+            FROM gogoke_v37_h_process_episode e JOIN gogoke_coordination_process_custody c
+              ON c.operation_id=e.process_operation_id WHERE e.binding_id=?1 AND e.generation=?2",
+            &[&active.binding_id,&active.generation],5);
+        assert_eq!(process.len(),1);let process=&process[0];
+        assert_eq!(history.source.as_ref().unwrap().process_operation_id,process[0]);
+        assert!(h::rpc_journal::observed_failed_codex_resume(&product.connection,"projectA","sessionA",
+            &active.generation,&history.request_id,&process[0],&process[1],&process[2],&old_thread).unwrap().is_some());
+        // Recreate only the legacy v60 F gap on this test-created database.
+        let clear=Statement::prepare(product.connection.as_ptr(),"UPDATE gogoke_v37_instance_history_generations
+            SET process_operation_id=NULL,ticket=NULL,custodian_nonce=NULL WHERE binding_id=?1").unwrap();
+        clear.bind_text(1,&active.binding_id).unwrap();clear.step_done().unwrap();drop(clear);
+        let pair=(process[3].parse::<u32>().unwrap(),process[4].parse::<u64>().unwrap());
+        let parent=pin_parent_metadata(pair.0,pair.1);
+        product.close_checked().unwrap();wait_actual_parent_exit(&parent,pair);
+        let mut product=ProductDatabase::open(&root,&database).unwrap();
+        let before=claim_rows(&product);assert_eq!(before,claims,"failed child cannot replace old STOPPED claim");
+        let writes=holder_gone_acl_write_count_for_test();
+        set_holder_gone_cut_for_test(Some(cut));
+        let error=product.recover_disappeared_credential_resources(INSTANCE,None).unwrap_err();
+        assert!(matches!(error,OrchestrationError::Invalid("controlled holder-gone cut")),"{cut}: {error:?}");
+        assert_eq!(claim_rows(&product),claims,"{cut}: no H release or invented StopFact");
+        product.close_checked().unwrap();
+        let mut product=ProductDatabase::open(&root,&database).unwrap();
+        product.recover_disappeared_credential_resources(INSTANCE,None).expect("exact cold F-only recovery");
+        let record=gone::read_holder_disappearance(&product.connection,&active.binding_id).unwrap().unwrap();
+        assert_eq!(record.phase,HolderDisappearancePhase::Revoked);
+        assert!(record.input.snapshot_hex.contains(&"FAILED_RESUME_PROFILE_ONLY_V1".bytes()
+            .map(|b|format!("{b:02x}")).collect::<String>()));
+        assert_eq!(claim_rows(&product),claims,"{cut}: g3 StopFact and current claim immutable");
+        assert_eq!(holder_gone_acl_write_count_for_test()-writes,1,"{cut}: one actual child SID removal");
+        let profiles=instance::read_credential_profiles(&product.connection,INSTANCE).unwrap();
+        assert!(profiles.iter().all(|p|p.state=="REVOKED"));
+        product.recover_disappeared_credential_resources(INSTANCE,None).unwrap();
+        assert_eq!(holder_gone_acl_write_count_for_test()-writes,1,"{cut}: replay does not write ACL");
+        product.close_checked().unwrap();drop(parent);drop(root);std::fs::remove_dir_all(path).unwrap();
+    }
+}
