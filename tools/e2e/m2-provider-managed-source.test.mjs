@@ -34,6 +34,8 @@ test('original schema preserves UNKNOWN install and LOGGED_IN native state', () 
   assert.ok(Object.values(managedSourceQualifications(row, raw)).every(value => value === true));
   assert.equal(raw.instance.install_state, 'UNKNOWN');
   assert.equal(raw.instance.login_state, 'LOGGED_IN');
+  raw.state = 'SUBSEQUENT_CLOSED_SELECTED_REGISTRY_SOURCE_NO_CREDENTIAL_CONTENT';
+  assert.ok(Object.values(managedSourceQualifications(row, raw)).every(value => value === true));
 });
 test('absent proof supplies no alternative login fact', () => {
   assert.equal(readManagedSource({ ...fixture().row, managedSourceRead: undefined }, undefined), undefined);

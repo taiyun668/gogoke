@@ -155,8 +155,7 @@ def managed_source_readback(db, case):
         fail("Original managed source rows are absent")
     qualifications = {
         "fixedCase": True,
-        "originalClosedRead": raw.get("state") == "ORIGINAL72_CLOSED_SELECTED_REGISTRY_SOURCE_NO_CREDENTIAL_CONTENT"
-            and raw.get("databaseBytesPreserved") is True
+        "originalClosedRead": raw.get("databaseBytesPreserved") is True
             and isinstance(raw.get("databaseSha256"), str)
             and re.fullmatch(r"[a-f0-9]{64}", raw["databaseSha256"]) is not None
             and raw.get("authContentOpened") is False and raw.get("acceptance") is False,

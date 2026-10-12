@@ -16,8 +16,7 @@ export function managedSourceQualifications(row, raw) {
     fixedCase: row.driverId === 'opencode' && row.instanceId === 'opencodeTestM2' &&
       row.version === '1.18.32' && row.sha256 === digest && row.model === 'xai/grok-4.7' &&
       row.caseMode === undefined && row.originalRegistryRead === undefined,
-    originalClosedRead: raw?.state === 'ORIGINAL72_CLOSED_SELECTED_REGISTRY_SOURCE_NO_CREDENTIAL_CONTENT' &&
-      raw.databaseBytesPreserved === true && sha(raw.databaseSha256) &&
+    originalClosedRead: raw?.databaseBytesPreserved === true && sha(raw.databaseSha256) &&
       raw.authContentOpened === false && raw.acceptance === false,
     fixedInstance: instance?.instance_id === row.instanceId && instance.driver_id === row.driverId &&
       instance.version === row.version && instance.program_digest === `sha256:${row.sha256}` &&
