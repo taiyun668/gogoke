@@ -3,6 +3,7 @@
 // H model action evidence is verified by the closed immutable reader.
 import fs from 'node:fs';
 import path from 'node:path';
+import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ActualProduct, id, readJson, sha256 } from './product-cdp.mjs';
@@ -13,8 +14,6 @@ import { readManagedCodexSource, observeManagedCodexInstance,
 const here=path.dirname(fileURLToPath(import.meta.url));
 const check=(ok,why)=>{if(!ok)throw Error(why)};
 const atom=s=>typeof s==='string'&&/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(s);
-const same=(a,b)=>JSON.stringify(a,Object.keys(a??{}).sort())===
-  JSON.stringify(b,Object.keys(b??{}).sort());
 const configFile=process.argv[2];
 check(process.platform==='win32'&&process.argv.length===3&&
   path.isAbsolute(configFile),'Absolute private V06 remaining config required');
@@ -26,6 +25,8 @@ check(c.testerArmy!==false&&c.repositoryId==='gogokeSeatTestbed'&&
     'model','effort','permissionTier'].every(k=>atom(f[k]))&&
   new Set([f.parentSeatId,f.childSeatId,f.parentTreeId,f.childTreeId]).size===4&&
   f.maxConcurrent===1&&
+  (f.promoteChildBeforeReclaim===undefined||
+    typeof f.promoteChildBeforeReclaim==='boolean')&&
   f.takeover?.questionId==='m2PrivateScope'&&
   f.takeover?.prompt==='Which scope is authorized for this M2 product test?'&&
   f.takeover?.option==='Private testbed only'&&
@@ -55,9 +56,10 @@ for(const o of c.observers){
     Array.isArray(o.args)&&o.args.includes(pinned.script)&&
     o.args.filter(a=>a==='{output}').length===1&&
     Array.isArray(o.equalFields)&&o.equalFields.length>0&&
-    JSON.stringify(o.equalFields)===JSON.stringify(pinned.equalFields)&&
     sha256(pinned.script)===pinned.sha256,
   `Original ${o.name} observer source differs`);
+  assert.deepStrictEqual(o.equalFields,pinned.equalFields,
+    `Original ${o.name} observer fields differ`);
   for(const [name,expected] of Object.entries(pinned.companions??{}))
     check(sha256(path.join(path.dirname(pinned.script),name))===expected,
       `Original ${o.name} observer companion differs: ${name}`);
@@ -124,10 +126,12 @@ const compare=()=>{
     const ap=path.join(c.evidenceDirectory,a.file),bp=path.join(c.evidenceDirectory,b.file);
     check(sha256(ap)===a.sha256&&sha256(bp)===b.sha256,'Observer bytes changed');
     const av=readJson(ap),bv=readJson(bp);
-    for(const field of o.equalFields)
-      check(Object.hasOwn(av,field)&&Object.hasOwn(bv,field)&&
-        JSON.stringify(av[field])===JSON.stringify(bv[field]),
-      `Original ${o.name}.${field} changed`);
+    for(const field of o.equalFields){
+      check(Object.hasOwn(av,field)&&Object.hasOwn(bv,field),
+        `Original ${o.name}.${field} missing`);
+      assert.deepStrictEqual(av[field],bv[field],
+        `Original ${o.name}.${field} changed`);
+    }
     if(o.name==='memory')for(const m of [av,bv])
       check(m.memoryDataUnchangedByRead===true&&m.stage1OutputCount===0&&
         m.memoryJobCount===0,'Original memory observer incomplete');
@@ -197,9 +201,10 @@ async function main(){
       parent.revision==='1','Original USER parent create differs');
     journal.parentCreateRequestId=journal.operations.at(-1).request.requestId;product.save();
     const scope=parent.result.settings?.orchestrationScope??{};
+    assert.deepStrictEqual(scope.instanceIds,[c.instanceId]);
+    assert.deepStrictEqual(scope.models,[f.model]);
+    assert.deepStrictEqual(scope.reasoningEfforts,[f.effort]);
     check((scope.maxConcurrent==null)&&
-      same(scope.instanceIds,[c.instanceId])&&same(scope.models,[f.model])&&
-      same(scope.reasoningEfforts,[f.effort])&&
       scope.maxPermissionTier===f.permissionTier,
     'Original parent copied template scope differs');
     const bound=(await root.op(c.domainId,'K-SEAT','bind-instance',
@@ -226,6 +231,7 @@ async function main(){
     created.expectedStatus='APPLIED';product.save();
     const child=await root.card(c.domainId,f.childSeatId);
     check(child.result?.layer==='LEAD'&&child.result?.state==='IDLE'&&
+      child.result?.kind==='SHORT'&&
       child.result?.templateId===f.templateId&&child.result?.instanceId===c.instanceId,
     'Actual native child has no matching fresh E card');
     journal.childCard=child;product.save();
@@ -267,13 +273,37 @@ async function main(){
     check(idle.result?.state==='IDLE'&&idle.result?.layer==='LEAD',
       'LEAD not IDLE after same-session H stop/release');
     journal.idleCard=idle;product.save();
+    let reclaimRevision=idle.revision;
+    if(f.promoteChildBeforeReclaim===true){
+      check(idle.result?.kind==='SHORT'&&
+        idle.result?.instanceId===c.instanceId,
+      'Original stopped child is not the same SHORT seat');
+      const promoted=(await root.op(c.domainId,'K-SEAT','short-to-long',
+        f.childSeatId,{},idle.revision)).reply;
+      check(promoted.status==='APPLIED'&&promoted.result?.kind==='LONG'&&
+        promoted.result?.state==='IDLE'&&promoted.result?.layer==='LEAD'&&
+        promoted.result?.instanceId===idle.result.instanceId&&
+        BigInt(promoted.revision)===BigInt(idle.revision)+1n&&
+        BigInt(promoted.result?.generation)===BigInt(idle.result.generation)+1n,
+      'Original SHORT-to-LONG receipt differs');
+      journal.promoteRequestId=journal.operations.at(-1).request.requestId;
+      journal.promotedCard=await root.card(c.domainId,f.childSeatId);
+      check(journal.promotedCard.result?.kind==='LONG'&&
+        journal.promotedCard.result?.state==='IDLE'&&
+        journal.promotedCard.result?.instanceId===idle.result.instanceId&&
+        journal.promotedCard.revision===promoted.revision,
+      'Original promoted child readback differs');
+      reclaimRevision=promoted.revision;product.save();
+    }
     const reclaim=(await root.op(c.domainId,'K-SEAT','reclaim',
-      f.childSeatId,{},idle.revision)).reply;
-    check(reclaim.result?.state==='RECLAIMED'&&reclaim.result?.layer==='LEAD',
+      f.childSeatId,{},reclaimRevision)).reply;
+    check(reclaim.result?.state==='RECLAIMED'&&reclaim.result?.layer==='LEAD'&&
+      reclaim.result?.kind===(f.promoteChildBeforeReclaim===true?'LONG':'SHORT')&&
+      reclaim.result?.instanceId===c.instanceId,
       'Original USER reclaim after H stop/release differs');
     journal.reclaimRequestId=journal.operations.at(-1).request.requestId;product.save();
     journal.notRun.push(
-      {axis:'SHORT_TO_LONG',reason:'Original USER template create is fixed Kind::Long; no independent SHORT source configured.'},
+      ...(f.promoteChildBeforeReclaim===true?[]:[{axis:'SHORT_TO_LONG',reason:'Optional promoteChildBeforeReclaim was not enabled.'}]),
       {axis:'MODEL_ADMISSION_CAPACITY',reason:'No independent active H-claim fixture; E child grant cap is a distinct axis.'},
       {axis:'HOST_CHOICES',reason:'No separate original host-choice producer configured.'});
     journal.historicalV06ChildCap=f.priorV06?.path&&f.priorV06?.sha256?
@@ -285,10 +315,11 @@ async function main(){
     const final=readback('final');
     check(final.directChildCreateEvidence===true&&
       final.directBusyStopReleaseEvidence===true&&
-      final.modelLeadBoundsDenial?.state==='NOT_RUN_NO_REGISTERED_TOOL'&&
-      JSON.stringify(final.rootIdentity)===JSON.stringify(baseline.rootIdentity)&&
-      JSON.stringify(final.candidateIdentity)===JSON.stringify(baseline.candidateIdentity),
+      final.directShortToLongEvidence===(f.promoteChildBeforeReclaim===true)&&
+      final.modelLeadBoundsDenial?.state==='NOT_RUN_NO_REGISTERED_TOOL',
     'Original closed H/E/F proof or physical identity differs');
+    assert.deepStrictEqual(final.rootIdentity,baseline.rootIdentity);
+    assert.deepStrictEqual(final.candidateIdentity,baseline.candidateIdentity);
     snapshot('after');compare();
     journal.state='PARTIAL_V06_REMAINING_SLICE_REVIEW_REQUIRED';
     journal.acceptance=false;product.save();
