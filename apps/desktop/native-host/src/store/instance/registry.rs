@@ -1126,7 +1126,7 @@ pub(crate) fn record_observation(connection: &mut VerifiedDatabaseConnection<'_>
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use sha2::Digest;
     use crate::store::instance::initialize_schema;
@@ -1287,7 +1287,7 @@ mod tests {
     }
 
     #[test]
-    fn manual_repin_does_not_legitimize_changed_creation_pin_or_damaged_witness() {
+    pub(super) fn manual_repin_does_not_legitimize_changed_creation_pin_or_damaged_witness() {
         // Synthetic tuples exercise the production replay transition only.
         // They are not catalog pins, executable bytes, or a product upgrade.
         let step=|before,after,prior_digest:&str,prior_version:&str,prior_stage:&str,

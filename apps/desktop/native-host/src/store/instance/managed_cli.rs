@@ -813,6 +813,9 @@ mod first_copy_tests {
 
     #[test]
     fn blocked_same_pin_progress_retains_first_copy_scope_but_partial_or_prior_pin_does_not() {
+        // This affected cloud filter also exercises the registry writer and
+        // original-registration replay through two synthetic durable hops.
+        super::super::registry::tests::manual_repin_does_not_legitimize_changed_creation_pin_or_damaged_witness();
         for driver in ["codex","claude","opencode","grok"] {
             let fixed=read_fixed_official_cli(driver).unwrap();
             assert_eq!(read_official_cli_version(driver,fixed.version)
