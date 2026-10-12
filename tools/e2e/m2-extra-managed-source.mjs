@@ -1,0 +1,108 @@
+// Fixed Codex evidence input for the existing V08 two-seat core case only.
+// Follows the separately reviewed fixed OpenCode source reader; no provider-wide fallback.
+import fs from 'node:fs';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+
+const instanceId = 'codexTestM2Ready';
+const version = '0.160.0';
+const digest = 'fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d';
+const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+const sha = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+const atom = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
+const home = value => typeof value === 'string' && /^volume:[a-f0-9]{16}\/file:[a-f0-9]{32}$/.test(value);
+
+export function managedCodexQualifications(config, raw) {
+  const instance = raw?.instance, source = raw?.programSource, copy = raw?.managedCopy;
+  const rules = config.rules;
+  const qualifications = {
+    fixedCase: config.instanceId === instanceId && config.repositoryId === 'gogokeSeatTestbed' &&
+      rules?.selection === undefined && rules?.host === undefined &&
+      rules?.lifecycleOwnership === 'EXCLUSIVE_V08_SUBMITTER_AND_REVIEWER' &&
+      rules.policyOwnership === 'EXCLUSIVE_V08_POLICY_DOMAIN' &&
+      rules.userPermissionTier === 'NETWORKED_WRITE' && rules.userMaxConcurrent === 4 &&
+      rules.projectParallelCap === 4 && rules.submitter?.instanceId === instanceId &&
+      rules.reviewer?.instanceId === instanceId,
+    originalClosedRead: raw?.databaseBytesPreserved === true && sha(raw.databaseSha256) &&
+      raw.authContentOpened === false && raw.acceptance === false,
+    fixedInstance: instance?.instance_id === instanceId && instance.driver_id === 'codex' &&
+      instance.version === version && instance.program_digest === `sha256:${digest}` &&
+      instance.install_state === 'UNKNOWN' && Number.isSafeInteger(instance.revision) && instance.revision > 0,
+    originalLogin: instance?.login_state === 'LOGGED_IN',
+    fixedHome: home(config.managedSourceRead?.homeIdentity) &&
+      instance?.home_identity === config.managedSourceRead.homeIdentity &&
+      source?.home_identity === config.managedSourceRead.homeIdentity,
+    managedSource: raw?.programSourceKind === 'MANAGED' && source?.source === 'MANAGED' &&
+      source.instance_id === instanceId && source.version === version &&
+      source.program_digest === `sha256:${digest}` && atom(source.registration_request_id) &&
+      Number.isSafeInteger(source.revision) && source.revision > 0,
+    readyCopy: copy?.driver_id === 'codex' && copy.state === 'READY' &&
+      copy.version === version && copy.image_sha256 === digest,
+    sameStage: atom(source?.stage_name) && source.stage_name === copy?.stage_name,
+  };
+  const failed = Object.entries(qualifications).filter(([, value]) => value !== true).map(([key]) => key);
+  if (failed.length) throw Error(`Original managed Codex qualification differs: ${failed.join(', ')}`);
+  return qualifications;
+}
+
+export function readManagedCodexSource(config) {
+  if (config.managedSourceRead === undefined) return undefined;
+  const proof = config.managedSourceRead;
+  if (!proof || typeof proof.path !== 'string' || !path.isAbsolute(proof.path) || !sha(proof.sha256)) {
+    throw Error('Original managed Codex source requires an absolute path and SHA-256 seal');
+  }
+  const bytes = fs.readFileSync(proof.path);
+  if (hash(bytes) !== proof.sha256) throw Error('Original managed Codex source seal differs');
+  const raw = JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/, ''));
+  const qualifications = managedCodexQualifications(config, raw);
+  const database = path.join(config.stateRoot, 'state.sqlite');
+  const closedHash = () => {
+    for (const suffix of ['-wal', '-shm', '-journal']) {
+      const sidecar = database + suffix;
+      if (fs.existsSync(sidecar) && fs.statSync(sidecar).size !== 0) {
+        throw Error('Original managed Codex source requires a closed checkpointed database');
+      }
+    }
+    return hash(fs.readFileSync(database));
+  };
+  if (closedHash() !== raw.databaseSha256 || closedHash() !== raw.databaseSha256) {
+    throw Error('Original managed Codex source does not bind the current closed database bytes');
+  }
+  return { path: proof.path, sha256: proof.sha256, homeIdentity: proof.homeIdentity,
+    databaseSha256: raw.databaseSha256, databaseBytesPreserved: true, qualifications,
+    fact: raw.instance, programSource: raw.programSource, managedCopy: raw.managedCopy };
+}
+
+export function observeManagedCodexInstance(proof, page, selectedInstanceId) {
+  const matches = page.instances.filter(row => row.instanceId === selectedInstanceId && row.driverId === 'codex');
+  if (selectedInstanceId !== instanceId || proof.fact.instance_id !== selectedInstanceId ||
+      matches.length !== 1 || matches[0].version !== version ||
+      typeof matches[0].state !== 'string' || !matches[0].state) {
+    throw Error('Managed Codex requires its exact original instance in the actual UI read');
+  }
+  return { instanceId: selectedInstanceId, driverId: 'codex', version: matches[0].version,
+    uiState: matches[0].state, nativeLoginState: proof.fact.login_state,
+    basis: 'ORIGINAL_MANAGED_SOURCE_WITH_REAL_H_ADMISSION_REQUIRED' };
+}
+
+export function checkManagedCodexSeat(card) {
+  // This proves the current E request settings only. Existing F/H determines model availability.
+  if (card.status !== 'APPLIED' || card.result?.state !== 'IDLE' || card.result.layer !== 'USER' ||
+      card.result.instanceId !== instanceId || card.result.settings?.model !== 'gpt-6.1-sol' ||
+      card.result.settings.effort !== 'high' || card.result.settings.permissionTier !== 'NETWORKED_WRITE') {
+    throw Error('Managed Codex E request settings differ from the fixed model, effort or permission tier');
+  }
+  return { state: 'E_REQUEST_SETTING_MATCH', model: card.result.settings.model,
+    effort: card.result.settings.effort, permissionTier: card.result.settings.permissionTier,
+    modelAvailability: 'NOT_REPORTED' };
+}
+
+export function checkManagedCodexCapability(session, receipt) {
+  // Observe the original probe receipt. Never send a substitute or second probe.
+  if (session?.instanceId !== instanceId || receipt.status !== 'APPLIED' ||
+      receipt.result?.driverId !== 'codex' || receipt.result.version !== version ||
+      receipt.result.binaryDigest !== `sha256:${digest}` ||
+      typeof session.threadId !== 'string' || !session.threadId || receipt.result.threadId !== session.threadId) {
+    throw Error('Original V08 H capability differs from the fixed managed Codex pin or thread');
+  }
+}

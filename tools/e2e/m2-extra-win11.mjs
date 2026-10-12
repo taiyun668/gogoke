@@ -5,6 +5,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ActualProduct, readJson, sha256, id } from './product-cdp.mjs';
+import { readManagedCodexSource, observeManagedCodexInstance, checkManagedCodexSeat,
+  checkManagedCodexCapability } from './m2-extra-managed-source.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const configPath = process.argv[2];
@@ -253,9 +255,20 @@ if (config.sideChat) {
 }
 
 const product = new ActualProduct(config, journal);
+let managedSource;
+const originalOperation = product.operation.bind(product);
+product.operation = async (...args) => {
+  const receipt = await originalOperation(...args);
+  if (managedSource && args[0] === 'K-SESSION' && args[1] === 'capability-probe') {
+    const session = journal.sessions.find(row => row.id === args[2]);
+    checkManagedCodexCapability(session, receipt);
+  }
+  return receipt;
+};
 delete journal.driverBytes['m1-win11.mjs'];
 delete journal.driverBytes['m1-readback.py'];
 journal.driverBytes['m2-extra-win11.mjs'] = sha256(fileURLToPath(import.meta.url));
+journal.driverBytes['m2-extra-managed-source.mjs'] = sha256(path.join(here, 'm2-extra-managed-source.mjs'));
 journal.driverBytes['m2-rules.mjs'] = sha256(path.join(here, 'm2-rules.mjs'));
 journal.driverBytes['m2-rules-readback.py'] = sha256(path.join(here, 'm2-rules-readback.py'));
 product.save();
@@ -267,6 +280,15 @@ const check = (condition, message) => {
     product.save();
   }
 };
+
+function admittedCodexInstance(page, instanceId, phase) {
+  if (!managedSource) return page.instances.some(row => row.instanceId === instanceId &&
+    row.driverId === 'codex' && row.state === 'LOGGED_IN');
+  const observation = observeManagedCodexInstance(managedSource, page, instanceId);
+  journal.managedSourceRead.uiObservations.push({ phase, ...observation });
+  product.save();
+  return true;
+}
 
 async function snapshot(phase, names = null) {
   for (const observer of config.observers.filter(row => names === null || names.includes(row.name))) {
@@ -353,6 +375,11 @@ async function sessionOp(session, operation, payload = {}, allowed = ['APPLIED']
 
 async function openUserSession(seatId, instanceId, worktreeId, label) {
   const card = await seatCard(seatId);
+  if (managedSource) {
+    journal.managedSourceRead.requestSettings.push({ seatId, requestId: card.requestId,
+      ...checkManagedCodexSeat(card) });
+    product.save();
+  }
   check(card.result.state === 'IDLE' && card.result.instanceId === instanceId,
     `${label}: actual original User E seat is IDLE and bound`);
   const session = { id: id('m2ExtraSession'), seatId, instanceId, worktreeId,
@@ -517,8 +544,7 @@ function verifyHostTemplateReadback(baseline) {
 async function runRules() {
   const instancePage = await product.instances();
   for (const selection of selections) {
-    check(instancePage.instances.some(row => row.instanceId === selection.instanceId &&
-      row.driverId === 'codex' && row.state === 'LOGGED_IN'),
+    check(admittedCodexInstance(instancePage, selection.instanceId, 'rules-source'),
     'V08 uses an already admitted logged-in Codex instance');
   }
   journal.v08 = 'RUNNING';
@@ -611,10 +637,15 @@ async function runRules() {
 
 try {
   await snapshot('before');
+  // Check the current closed DB before the first launch can change its bytes.
+  managedSource = readManagedCodexSource(config);
+  if (managedSource) {
+    journal.managedSourceRead = { ...managedSource, uiObservations: [], requestSettings: [] };
+    product.save();
+  }
   await product.launch();
   const instances = await product.instances();
-  check(instances.instances.some(row => row.instanceId === config.instanceId &&
-    row.driverId === 'codex' && row.state === 'LOGGED_IN'),
+  check(admittedCodexInstance(instances, config.instanceId, 'initial'),
   'Original admitted Codex instance is logged in');
   check(journal.v12 === 'NOT_RUN_ORIGINAL_M2_SIDE_WORKTREE_READBACK_REQUIRED',
     'V12 remains NOT_RUN until its original M2 F readback exists');
