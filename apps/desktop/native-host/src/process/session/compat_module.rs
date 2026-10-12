@@ -601,8 +601,14 @@ mod tests {
         use std::time::{Duration, Instant};
 
         const DIGEST: &str = "sha256:180d7b279455e8b89d4353a5146447be2f80b80fb0db14bdc6dd9cb98c0aef09";
-        let program = crate::store::instance::locate_pinned_program("claude", DIGEST, "2.1.196")
-            .expect("required real cloud catalog CLI and exact fixed pin");
+        // CI passes the fixed official hardlink fixture explicitly. The
+        // production global catalog is forbidden for this test as well.
+        let program = PathBuf::from(std::env::var_os("GOGOKE_CLAUDE_CLI_PATH")
+            .expect("CI must name the fixed private Claude CLI fixture"));
+        assert!(program.is_absolute(), "CI Claude fixture path must be absolute");
+        let observed = crate::store::instance::ProgramObservation::observe(&program, "2.1.196")
+            .expect("observe exact CI fixture bytes");
+        assert!(observed.matches_pin(DIGEST, "2.1.196"), "CI Claude image differs from fixed digest");
         let original = program.parent().unwrap().parent().unwrap()
             .join("node_modules/@anthropic-ai/claude-code-win32-x64/claude.exe");
         let program_identity = AppContainerProfile::capture_catalog_program_identity(&program).unwrap();

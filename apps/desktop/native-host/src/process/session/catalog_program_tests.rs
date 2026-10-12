@@ -1,5 +1,6 @@
 //! Catalog executable exceptions must not relax any single-link data boundary.
 use super::*;
+use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn fixture(name: &str) -> PathBuf {
@@ -69,16 +70,22 @@ fn catalog_program_hardlinks_bind_one_file_with_exact_rx_and_keep_data_strict() 
 fn actual_catalog_hardlink_program_prepares_suspended_lpac_activates_and_stops() {
     use crate::process::{NativeBinding, PrepareRequest, ProcessCustodian, ProcessLaunch, StopBudgets};
     const DIGEST: &str = "sha256:180d7b279455e8b89d4353a5146447be2f80b80fb0db14bdc6dd9cb98c0aef09";
-    let program = crate::store::instance::locate_pinned_program("claude", DIGEST, "2.1.196")
-        .expect("required real cloud catalog CLI, not a copied test executable");
+    // CI supplies this exact official hardlink fixture explicitly. Never
+    // search the user's global CLI when the fixture is unavailable.
+    let program = PathBuf::from(std::env::var_os("GOGOKE_CLAUDE_CLI_PATH")
+        .expect("CI must name the fixed private Claude CLI fixture"));
+    assert!(program.is_absolute(), "CI Claude fixture path must be absolute");
+    let observed = crate::store::instance::ProgramObservation::observe(&program, "2.1.196")
+        .expect("observe exact CI fixture bytes");
+    assert!(observed.matches_pin(DIGEST, "2.1.196"), "CI Claude image differs from fixed digest");
     let original = program.parent().unwrap().parent().unwrap()
         .join("node_modules/@anthropic-ai/claude-code-win32-x64/claude.exe");
     let identity = AppContainerProfile::capture_catalog_program_identity(&program).unwrap();
     assert_eq!(AppContainerProfile::capture_catalog_program_identity(&original).unwrap(), identity);
     let object = open_catalog_program(&program, READ_CONTROL).unwrap();
     assert_eq!(file_information(object.0).unwrap().links, 2, "catalog fixture must preserve links=2");
-    assert!(crate::store::instance::locate_pinned_program("claude", &format!("sha256:{}", "0".repeat(64)),
-        "2.1.196").is_err(), "wrong pin fails before program grant");
+    assert!(!observed.matches_pin(&format!("sha256:{}", "0".repeat(64)), "2.1.196"),
+        "wrong pin cannot authorize a program grant");
     let home = fixture("process");
     let name = format!("Gogoke37.CatalogProcess{}{}", std::process::id(),
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos());

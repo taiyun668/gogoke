@@ -455,9 +455,8 @@ pub(crate) fn current_instance_pin(
         || !pin.digest[7..].bytes().all(|b| b.is_ascii_hexdigit()) || pin.version.is_empty()
         || row.step_row()? { return Err(AdmissionError::Denied); }
     drop(row);
-    // F's install-state read uses this same catalog observation. Recheck the
-    // registered CLI bytes and version at every H admission; a persisted
-    // install_state is not maintained by that read.
+    // Recheck the registered MANAGED source and READY copy at every H
+    // admission; a persisted install_state is not launch authority.
     instance::locate_bound_instance_program(db,instance_id,&pin.driver_id,&pin.digest,&pin.version)
         .map_err(AdmissionError::ProgramSource)?;
     Ok(pin)
@@ -858,10 +857,12 @@ mod tests {
         let path = folder.join("state.sqlite");
         let mut db = create_new(&root, &path).unwrap();
         instance::initialize_schema(&mut db).unwrap();
-        let catalog = instance::discover_program("codex").expect("actual fixed CLI catalog");
+        let fixture_program = folder.join("owned-observation.bin");
+        std::fs::write(&fixture_program, b"owned native registration observation").unwrap();
+        let observed = instance::ProgramObservation::observe(&fixture_program, "0.160.0").unwrap();
         instance::register_instance(&mut db, &root, &instance::Registration {
             request_id: "registerA", request_bytes: b"current H pin fixture",
-            instance_id: "instanceA", driver_id: "codex", program: &catalog,
+            instance_id: "instanceA", driver_id: "codex", program: &observed,
         }).unwrap();
         let row = Statement::prepare(db.as_ptr(),
             "SELECT program_digest,version,install_state FROM gogoke_v37_instances WHERE instance_id='instanceA'").unwrap();
@@ -872,14 +873,11 @@ mod tests {
         drop(row);
         assert!(matches!(current_instance_pin(&db, "instanceA"), Err(AdmissionError::Denied)));
         db.execute("UPDATE gogoke_v37_instances SET login_state='LOGGED_IN' WHERE instance_id='instanceA'").unwrap();
-        let current = current_instance_pin(&db, "instanceA").unwrap();
-        assert_eq!((current.digest, current.version), (digest, version));
-        db.execute(&format!("UPDATE gogoke_v37_instances SET program_digest='sha256:{}' WHERE instance_id='instanceA'", "0".repeat(64))).unwrap();
+        // Login alone cannot turn an old registration into a MANAGED source.
+        // Positive MANAGED registration/migration is exercised in its own tests.
         assert!(matches!(current_instance_pin(&db, "instanceA"),
-            Err(AdmissionError::ProgramSource(instance::ProgramSourceError::Legacy(instance::CatalogError::IdentityChanged)))));
-        db.execute("UPDATE gogoke_v37_instances SET driver_id='missing-provider' WHERE instance_id='instanceA'").unwrap();
-        assert!(matches!(current_instance_pin(&db, "instanceA"),
-            Err(AdmissionError::ProgramSource(instance::ProgramSourceError::Legacy(instance::CatalogError::UnknownDriver)))));
+            Err(AdmissionError::ProgramSource(instance::ProgramSourceError::Conflict))));
+        assert!(digest.starts_with("sha256:") && digest.len()==71 && version=="0.160.0");
         db.close_checked().unwrap();
         drop(root);
         std::fs::remove_dir_all(folder).unwrap();
