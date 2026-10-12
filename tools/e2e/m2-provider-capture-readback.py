@@ -135,6 +135,81 @@ def exact_one(db, sql, args=()):
         fail(f"Expected exactly one original database row; found {len(values)}")
     return values[0]
 
+def managed_source_readback(db, case):
+    proof = case.get("managedSourceRead")
+    if proof is None:
+        return None
+    digest = "cf664aa1da32b788f9b2699b84a9bb9be30b7e025693b90f9b85829d5fe4e252"
+    if not isinstance(proof, dict) or case.get("driverId") != "opencode" or \
+            case.get("instanceId") != "opencodeTestM2" or case.get("fixedVersion") != "1.18.32" or \
+            case.get("fixedSha256") != digest or case.get("expectedModel") != "xai/grok-4.7" or \
+            case.get("caseMode") != "singleAnswer" or "originalRegistry" in case:
+        fail("Managed source readback is restricted to the one fixed OpenCode case")
+    source_path = Path(proof.get("path", ""))
+    source_bytes = source_path.read_bytes() if source_path.is_absolute() else b""
+    if not source_bytes or sha(source_bytes) != proof.get("sha256"):
+        fail("Original managed source readback seal differs")
+    raw = json.loads(source_bytes.decode("utf-8-sig"))
+    instance, source, copy = (raw.get(name) for name in ("instance", "programSource", "managedCopy"))
+    if not all(isinstance(value, dict) for value in (instance, source, copy)):
+        fail("Original managed source rows are absent")
+    qualifications = {
+        "fixedCase": True,
+        "originalClosedRead": raw.get("state") == "ORIGINAL72_CLOSED_SELECTED_REGISTRY_SOURCE_NO_CREDENTIAL_CONTENT"
+            and raw.get("databaseBytesPreserved") is True
+            and isinstance(raw.get("databaseSha256"), str)
+            and re.fullmatch(r"[a-f0-9]{64}", raw["databaseSha256"]) is not None
+            and raw.get("authContentOpened") is False and raw.get("acceptance") is False,
+        "fixedInstance": instance.get("instance_id") == case["instanceId"]
+            and instance.get("driver_id") == "opencode" and instance.get("version") == "1.18.32"
+            and instance.get("program_digest") == "sha256:" + digest
+            and instance.get("install_state") == "UNKNOWN"
+            and type(instance.get("revision")) is int and instance["revision"] > 0,
+        "originalLogin": instance.get("login_state") == "LOGGED_IN",
+        "fixedHome": isinstance(proof.get("homeIdentity"), str)
+            and re.fullmatch(r"volume:[a-f0-9]{16}/file:[a-f0-9]{32}", proof["homeIdentity"]) is not None
+            and instance.get("home_identity") == proof["homeIdentity"]
+            and source.get("home_identity") == proof["homeIdentity"],
+        "managedSource": raw.get("programSourceKind") == "MANAGED" and source.get("source") == "MANAGED"
+            and source.get("instance_id") == case["instanceId"] and source.get("version") == "1.18.32"
+            and source.get("program_digest") == "sha256:" + digest
+            and isinstance(source.get("registration_request_id"), str)
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", source["registration_request_id"]) is not None
+            and type(source.get("revision")) is int and source["revision"] > 0,
+        "readyCopy": copy.get("driver_id") == "opencode" and copy.get("state") == "READY"
+            and copy.get("version") == "1.18.32" and copy.get("image_sha256") == digest,
+        "sameStage": isinstance(source.get("stage_name"), str)
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", source["stage_name"]) is not None
+            and source["stage_name"] == copy.get("stage_name"),
+    }
+    if any(value is not True for value in qualifications.values()) or \
+            not isinstance(proof.get("qualifications"), dict) or \
+            set(proof["qualifications"]) != set(qualifications) or \
+            any(value is not True for value in proof["qualifications"].values()) or \
+            proof.get("databaseSha256") != raw["databaseSha256"] or \
+            proof.get("databaseBytesPreserved") is not True or \
+            proof.get("fact") != instance or proof.get("programSource") != source or proof.get("managedCopy") != copy or \
+            not isinstance(proof.get("uiState"), str) or not proof["uiState"] or \
+            proof.get("actualProgramCheck") != "PENDING_REAL_H_ADMISSION":
+        fail("Original managed source qualifications or recorded native/UI facts differ")
+    # The final closed DB must retain these original selected rows. The H checks
+    # in the caller independently require actual admission, pin, process and stop.
+    for table, fields, key, value, expected in (
+            ("gogoke_v37_instances", "instance_id,driver_id,program_digest,version,install_state,login_state,home_identity,revision",
+             "instance_id", case["instanceId"], instance),
+            ("gogoke_v37_instance_program_sources", "instance_id,source,stage_name,program_digest,version,home_identity,registration_request_id,revision",
+             "instance_id", case["instanceId"], source),
+            ("gogoke_v37_instance_cli_copies", "driver_id,state,stage_name,version,image_sha256",
+             "driver_id", "opencode", copy)):
+        actual = dict(zip(fields.split(","), exact_one(db,
+            f"SELECT {fields} FROM {table} WHERE {key}=?", (value,))))
+        if actual != expected:
+            fail(f"Current original managed source row differs: {table}")
+    return {"sourceSha256": proof["sha256"], "closedSourceDatabaseSha256": raw["databaseSha256"],
+            "nativeLoginState": instance["login_state"], "uiState": proof["uiState"],
+            "programSourceKind": source["source"], "copyState": copy["state"],
+            "qualifications": qualifications, "currentRowsMatchOriginal": True}
+
 root = Path(local_spelling(sys.argv[1])).resolve(strict=True)
 output = Path(sys.argv[2])
 journal_path = Path(sys.argv[3]).resolve(strict=True)
@@ -1546,10 +1621,14 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             "SELECT driver_id,version,program_digest,install_state,login_state "
             "FROM gogoke_v37_instances WHERE instance_id=?", (case["instanceId"],))
         observed_instance = case.get("loggedInInstance", {})
+        managed_source = managed_source_readback(db, case)
+        expected_instance = {"instanceId": case["instanceId"], "driverId": driver,
+            "version": case["fixedVersion"], "state": "LOGGED_IN"}
+        if managed_source is not None:
+            expected_instance["basis"] = "ORIGINAL_MANAGED_SOURCE_WITH_REAL_H_ADMISSION_REQUIRED"
         if instance[:2] != (driver, case["fixedVersion"]) or \
                 instance[2] != "sha256:" + case["fixedSha256"] or instance[4] != "LOGGED_IN" or \
-                observed_instance != {"instanceId": case["instanceId"], "driverId": driver,
-                    "version": case["fixedVersion"], "state": "LOGGED_IN"}:
+                observed_instance != expected_instance:
             fail(f"{driver}: original configured instance was not the logged-in fixed executable")
         if driver == "claude" and (cap_result.get("requestedModel") != expected_settings.get("model") or
                 cap_result.get("requestedEffort") != expected_settings.get("effort")):
@@ -1912,6 +1991,7 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             "driverId": pins[0][0], "caseMode": case.get("caseMode", "singleAnswer"),
             "version": pins[0][1], "binarySha256": pins[0][2],
             "persistedInstallState": instance[3], "installObservationCredit": False,
+            **({"managedSourceRead": managed_source} if managed_source is not None else {}),
             "episodes": episodes, "normalized": updates, "missingNormalized": False,
             "rawFrameCount": len(incoming), "unknownFrameCount": sum(row[5] == "PENDING" for row in incoming),
             "allEpisodesStopped": True, "claimState": claim[0], "providerPromptObserved": prompt_echo,

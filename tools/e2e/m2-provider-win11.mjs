@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ActualProduct, readJson, sha256, id, delay } from './product-cdp.mjs';
+import { readManagedSource } from './m2-provider-managed-source.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const drivers = ['claude', 'opencode', 'grok'];
@@ -88,6 +89,7 @@ const check = (condition, reason) => {
   if (!journal.assertions.includes(reason)) { journal.assertions.push(reason); product.save(); }
 };
 const operation = (...args) => product.operation(...args);
+const managedSources = new Map();
 
 function observerValue(name, phase) {
   const reference = journal.snapshots[`${name}-${phase}`];
@@ -719,11 +721,24 @@ async function runCase(row, instances) {
       uiState: instance?.state ?? 'NOT_REPORTED', actualProgramCheck: 'PENDING_REAL_H_ADMISSION' };
     product.save();
   }
-  if ((!instance || instance.state !== 'LOGGED_IN') && !originalRegistry) {
+  // The native managed source is independent of the aggregate UI state.
+  // Preserve both facts; the original real H admission and pin below still run.
+  const managedSource = managedSources.get(row.instanceId);
+  if (managedSource) {
+    check(instance?.version === row.version && typeof instance.state === 'string',
+      'managed OpenCode must still have its original instance in the actual UI read');
+    record.managedSourceRead = { ...managedSource, uiState: instance.state,
+      actualProgramCheck: 'PENDING_REAL_H_ADMISSION' };
+    product.save();
+  }
+  if ((!instance || instance.state !== 'LOGGED_IN') && !originalRegistry && !managedSource) {
     record.result = 'NOT_RUN_NOT_LOGGED_IN'; product.save();
     throw Error(`${row.driverId}: configured instance not logged in; no login or fallback attempted`);
   }
-  record.loggedInInstance = originalRegistry
+  record.loggedInInstance = managedSource
+    ? { instanceId: row.instanceId, driverId: row.driverId, version: managedSource.fact.version,
+      state: managedSource.fact.login_state, basis: 'ORIGINAL_MANAGED_SOURCE_WITH_REAL_H_ADMISSION_REQUIRED' }
+    : originalRegistry
     ? { instanceId: row.instanceId, driverId: row.driverId, version: originalRegistry.version,
       state: originalRegistry.login_state, basis: 'ORIGINAL_REGISTRY_WITH_REAL_H_ADMISSION_REQUIRED' }
     : { instanceId: instance.instanceId, driverId: instance.driverId,
@@ -1030,8 +1045,14 @@ function compareProtection() {
 try {
   journal.driverBytes = { ...journal.driverBytes,
     ...Object.fromEntries(['cli-protocol-golden.mjs', 'm2-provider-win11.mjs',
-      'm2-provider-capture-readback.py'].map(name => [name, sha256(path.join(here, name))])) };
+      'm2-provider-managed-source.mjs', 'm2-provider-capture-readback.py']
+      .map(name => [name, sha256(path.join(here, name))])) };
   await snapshot('before');
+  // Verify the sealed closure before startup can change the original database.
+  for (const row of config.cases) {
+    const proof = readManagedSource(row, config.stateRoot);
+    if (proof) managedSources.set(row.instanceId, proof);
+  }
   await product.launch();
   check(Boolean(product.tester) && journal.connectionBackend?.name === 'tester-army/e2e' &&
     journal.connectionBackend.telemetryDisabled === true && journal.connectionBackend.agentActs === 0,
