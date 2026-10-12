@@ -10,9 +10,11 @@
 
 ## 当前状态与下一步
 
-Codex 首次自管安装已用原 USER 入口派发一次，仍在执行；尚未取得 READY 或模型结果。闭库资格只证明原固定 pin 与安装前事实，不冒称资源准入或迁移已通过。
+Codex 首次自管安装已用原 USER 入口派发一次，返回 READY、迁移两条。三条原注册的版本、修订号、登录与启停状态不变；停用实例保持无 SOURCE，原安装读回 UNKNOWN/false，其余两条为 APPLIED/true。正常 shell/native 退出均 0，十三项保护相等。后续普通闭库读回确认 MANAGED/READY 的精确选择、官方映像和归档、实际探针路径及其真实 STOPPED；旧凭据元数据与旧 custody 原行全部保留。
 
-先核本次启动的来源拒绝原文、一次安装回复、MANAGED/READY 和原登录连续，再恢复真实秘书长；随后跑新候选 OpenCode E/F、生产 H 初始化和真实模型，接 V08 双席审批。Sol 同时对接其现有执行包，未运行材料不算能力。
+缺 SOURCE 的本次真实启动直接记录 ProgramSource(Conflict)，未执行全局 Codex。其拒绝发生在事务之前，没有写入 H admission journal；下次正常 USER 连接重新执行现成准备流程，未清理或重写未知记录。
+
+Root 已继续新候选 OpenCode E/F 原 USER 执行，由当前正常启动同时核真实秘书长；当前 OpenCode MANAGED/READY、原登录、模板与新 ID 不存在的普通闭库核对通过。接下来核新 E/F、当前 H 的真实 stop/release 和正常关闭，再跑 OpenCode 生产 H 初始化、模型及 V08 双席审批。Sol 的现有执行包已并行完成对接，未运行材料不算能力。
 
 本次是 SAC=0 下的实验换装；稳定点前请 Owner 重新开启并实际读回为 1。稳定完整链、完整 M2/M3、SAC 强制实测和 Owner 验收均未完成。没有新增授权范围、登录触点或公开发布。
 
@@ -20,4 +22,4 @@ Codex 首次自管安装已用原 USER 入口派发一次，仍在执行；尚�
 
 复用已实测的候选 70→71 正常换装、OpenCode 首次自管安装、原保护观察与原 H stop/release 流程。F 的迁移生产者明确跳过停用实例，所以仪器分别保留全注册观察和实际迁移集合；同时按真实安装 outcome 的候选序号 72 绑定，产品版本仍为 0.1.63。独立聚焦复核未发现这两处仪器修订的阻塞。
 
-心跳正文已按 Owner 原文整体替换，小时频率及本对话保持。进度已通过 gh 真正发布并回读，记录在 [PR #54](https://github.com/taiyun668/gogoke/pull/54#issuecomment-6124504403)；完成记录后继续第一真机目标。
+心跳正文已按 Owner 原文整体替换，小时频率及本对话保持。新增实际能力已通过 gh 真正发布并回读，记录在 [PR #54](https://github.com/taiyun668/gogoke/pull/54#issuecomment-6125307528)；完成记录后继续第一真机目标。
