@@ -51,6 +51,12 @@ def normalized_terminal_link(db,j,s,operation_id,source,frame,turn_id):
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
+def user_promote_fingerprint(frame,domain,seat,generation,revision):
+    parts=("promote",domain,seat,str(generation),str(revision),"LONG","","","")
+    data=b"".join(len(part.encode()).to_bytes(8,"big")+part.encode() for part in parts)
+    raw=frame.encode()
+    return "sha256:"+digest(data+len(raw).to_bytes(8,"big")+raw)
+
 ORIGINAL_READER_SHA="1047fa57c14333719529669dbd912ca8fc3c5973b2d2164ae938c79dfed03560"
 ORIGINAL_DRIVER_SHA="225827e0b796bb886920e3e65ae87cd0babc356c68180806e687fafc53dd8781"
 ORIGINAL_HOST_SHA="5096fc2cc19b925b2f6ae8fddafac33c861ee8e0500c222e5ae92f9be3c9241c"
@@ -63,7 +69,7 @@ def journal_entry(j,request_id,family,operation,target):
     e=found[0]
     q,r=e["request"],e.get("receipt")
     check(q["family"]==family and q["operation"]==operation and q["targetId"]==target and
-          e["rawFrame"]==json.dumps(q,ensure_ascii=False,separators=(",",":")) and
+          json.loads(e["rawFrame"])==q and
           r is not None and e.get("rawReceipt") and json.loads(e["rawReceipt"])==r and
           r["schema"]==q["schema"] and r["family"]==family and
           r["operation"]==operation and r["requestId"]==request_id and
@@ -76,8 +82,9 @@ def user_write(db,j,request_id,operation,target,expected="APPLIED"):
     q,r=e["request"],e["receipt"]
     check(r["status"]==expected and q["domainId"]==j["fixture"]["domainId"],
           "Original User operation status/domain differs")
-    durable=rows(db,"SELECT o.seat_id,o.layer,o.parent_seat_id,o.state,o.revision,"
-                   "o.instance_id,s.settings_json FROM gogoke_v37_seat_operations o "
+    durable=rows(db,"SELECT o.seat_id,o.incarnation,o.layer,o.parent_seat_id,o.kind,"
+                   "o.state,o.revision,o.generation,o.instance_id,s.settings_json "
+                   "FROM gogoke_v37_seat_operations o "
                    "LEFT JOIN gogoke_v37_seat_operation_snapshots s "
                    "USING(domain_id,request_id) WHERE o.domain_id=? AND o.request_id=?",
                  (q["domainId"],request_id))
@@ -86,8 +93,10 @@ def user_write(db,j,request_id,operation,target,expected="APPLIED"):
     if expected=="APPLIED":
         d=durable[0]
         check(d["seat_id"]==target and d["layer"]==r["result"]["layer"] and
+              d["kind"]==r["result"]["kind"] and
               d["state"]==r["result"]["state"] and
               d["revision"]==int(r["revision"]) and
+              d["generation"]==int(r["result"]["generation"]) and
               (d["instance_id"] or None)==r["result"]["instanceId"] and
               json.loads(d["settings_json"])==r["result"]["settings"],
               "Original User durable snapshot differs from native receipt")
@@ -250,18 +259,29 @@ def model_tool(db,j,attempt,expected):
           native["status"]==expected and
           command["result"]["success"] is (expected=="APPLIED"),
           "Original H-written native K-SEAT status differs")
-    durable=rows(db,"SELECT seat_id,layer,parent_seat_id FROM gogoke_v37_seat_operations "
+    durable=rows(db,"SELECT seat_id,layer,parent_seat_id,kind,revision,generation,"
+                    "incarnation,instance_id FROM gogoke_v37_seat_operations "
                     "WHERE domain_id=? AND request_id=?",
                  (f["domainId"],row["step_id"]))
     check((len(durable)==1)==(expected=="APPLIED"),
           "Original native E write count differs")
     if expected=="APPLIED":
-        check(durable[0]["seat_id"]==attempt["targetId"] and
+        check(native["result"]["kind"]=="SHORT" and
+              native["result"]["state"]=="IDLE" and
+              native["revision"]=="1" and
+              durable[0]["seat_id"]==attempt["targetId"] and
               durable[0]["layer"]=="LEAD" and
-              durable[0]["parent_seat_id"]==f["parentSeatId"],
+              durable[0]["parent_seat_id"]==f["parentSeatId"] and
+              durable[0]["kind"]=="SHORT" and
+              durable[0]["revision"]==int(native["revision"]) and
+              durable[0]["generation"]==int(native["result"]["generation"]) and
+              durable[0]["instance_id"]==f["instanceId"],
               "Original native child belongs to another parent")
     return {"phase":attempt["phase"],"sendRequestId":attempt["sendRequestId"],
             "rpcStepId":row["step_id"],"status":native["status"],
+            "createdKind":native["result"]["kind"],
+            "createdRevision":native["revision"],
+            "createdGeneration":native["result"]["generation"],
             "completionSourceLink":completion_link}
 
 def h_stop_release(db,j,s):
@@ -397,10 +417,12 @@ def main():
                   j["closes"][0]["exitCode"]==0 and
                   j["closes"][0]["forceKill"] is False,
                   "Original installed candidate lacks normal-close receipt")
+            promote_requested=f.get("promoteChildBeforeReclaim") is True
             check(len(parent)==len(child)==1 and
                   parent[0]["layer"]=="USER" and parent[0]["state"]=="IDLE" and
                   child[0]["layer"]=="LEAD" and
                   child[0]["parent_seat_id"]==f["parentSeatId"] and
+                  child[0]["kind"]==("LONG" if promote_requested else "SHORT") and
                   child[0]["state"]=="RECLAIMED" and all(len(t)==1 for t in trees) and
                   all(t[0]["state"]=="REGISTERED" for t in trees),
                   "Original disjoint E/F final identities differ")
@@ -454,6 +476,10 @@ def main():
             check(phases==(["child-create","lead-bounds-denial"] if supplementary else
                            ["child-create"]),"Original H model attempt count differs")
             native=[model_tool(db,j,attempts[0],"APPLIED")]
+            check(j["childCard"]["result"]["kind"]=="SHORT" and
+                  j["childCard"]["revision"]==native[0]["createdRevision"] and
+                  j["childCard"]["result"]["generation"]==native[0]["createdGeneration"],
+                  "Original model-created SHORT child card differs")
             check(len(j["sessions"])==2 and
                   [s["seatId"] for s in j["sessions"]]==
                     [f["parentSeatId"],f["childSeatId"]],
@@ -498,6 +524,50 @@ def main():
             child_stop=journal_entry(j,child_session["stopRequestId"],"K-SESSION","stop",child_session["id"])
             child_release=journal_entry(j,child_session["releaseRequestId"],"K-SESSION","admission-release",child_session["id"])
             reclaim=journal_entry(j,j["reclaimRequestId"],"K-SEAT","reclaim",f["childSeatId"])
+            created_op=one(db,"SELECT incarnation,parent_seat_id,instance_id,kind "
+                           "FROM gogoke_v37_seat_operations WHERE domain_id=? AND request_id=?",
+                           (f["domainId"],native[0]["rpcStepId"]))
+            promote=None
+            if promote_requested:
+                check(j.get("promoteRequestId") and j.get("promotedCard"),
+                      "Original optional promote receipt/card missing")
+                promote=user_write(db,j,j["promoteRequestId"],"short-to-long",f["childSeatId"])
+                pq,pr=promote["request"],promote["receipt"]
+                promoted_card=j["promotedCard"]
+                state_card(db,j,promoted_card,f["childSeatId"])
+                promoted_op=one(db,"SELECT incarnation,parent_seat_id,instance_id,kind,"
+                                "generation,revision,state,fingerprint FROM gogoke_v37_seat_operations "
+                                "WHERE domain_id=? AND request_id=?",
+                                (f["domainId"],j["promoteRequestId"]))
+                check(pq["payload"]=={} and
+                      pq["expectedRevision"]==j["idleCard"]["revision"] and
+                      pr["previousRevision"]==j["idleCard"]["revision"] and
+                      int(pr["revision"])==int(j["idleCard"]["revision"])+1 and
+                      pr["result"]["kind"]=="LONG" and
+                      pr["result"]["state"]=="IDLE" and
+                      pr["result"]["layer"]=="LEAD" and
+                      int(pr["result"]["generation"])==
+                        int(j["idleCard"]["result"]["generation"])+1 and
+                      promoted_card["revision"]==pr["revision"] and
+                      all(promoted_card["result"].get(k)==pr["result"].get(k) for k in
+                          ("kind","state","layer","generation","instanceId","templateId")) and
+                      promoted_op["kind"]=="LONG" and
+                      promoted_op["state"]=="IDLE" and
+                      promoted_op["revision"]==int(pr["revision"]) and
+                      promoted_op["generation"]==int(pr["result"]["generation"]) and
+                      all(promoted_op[k]==created_op[k] for k in
+                          ("incarnation","parent_seat_id","instance_id")) and
+                      created_op["kind"]=="SHORT" and
+                      promoted_op["parent_seat_id"]==f["parentSeatId"] and
+                      promoted_op["instance_id"]==f["instanceId"] and
+                      promoted_op["fingerprint"]==user_promote_fingerprint(
+                        promote["rawFrame"],f["domainId"],f["childSeatId"],
+                        j["idleCard"]["result"]["generation"],j["idleCard"]["revision"]),
+                      "Original SHORT-to-LONG CAS or child identity differs")
+            else:
+                check(not j.get("promoteRequestId") and not j.get("promotedCard") and
+                      not any(e["request"].get("operation")=="short-to-long" for e in j["operations"]),
+                      "Default V06 unexpectedly promoted a child")
             busy_refusals=[journal_entry(j,j[key],"K-SEAT",operation,f["childSeatId"])
                            for key,operation in (("busyChangeRequestId","change-instance"),
                                                  ("busyReclaimRequestId","reclaim")) if j.get(key)]
@@ -506,10 +576,17 @@ def main():
             check(all(j["operations"].index(busy_card_entry)<j["operations"].index(e)<
                       j["operations"].index(child_stop) for e in busy_refusals) and
                   j["operations"].index(child_stop)<j["operations"].index(child_release)<
-                  j["operations"].index(idle_card_entry)<j["operations"].index(reclaim) and
+                  j["operations"].index(idle_card_entry)<
+                    (j["operations"].index(promote) if promote else j["operations"].index(reclaim)) and
+                  (not promote or j["operations"].index(promote)<
+                    j["operations"].index(journal_entry(j,j["promotedCard"]["requestId"],
+                      "K-SEAT","state-card",f["childSeatId"]))<j["operations"].index(reclaim)) and
                   int(j["idleCard"]["revision"])==int(j["busyCard"]["revision"])+1 and
-                  reclaim["request"]["expectedRevision"]==j["idleCard"]["revision"] and
-                  int(reclaim["receipt"]["revision"])==int(j["idleCard"]["revision"])+1,
+                  reclaim["request"]["expectedRevision"]==
+                    (promote["receipt"]["revision"] if promote else j["idleCard"]["revision"]) and
+                  int(reclaim["receipt"]["revision"])==
+                    int(reclaim["request"]["expectedRevision"])+1 and
+                  reclaim["receipt"]["result"]["kind"]==("LONG" if promote else "SHORT"),
                   "Original BUSY refusals, H stop, IDLE card, reclaim order/revisions differ")
             sends=[x for x in j["operations"] if x.get("request",{}).get("family")=="K-SESSION" and
                    x["request"]["operation"]=="send"]
@@ -579,6 +656,7 @@ def main():
                       "newCandidateCoverage":False},
                    "directModelToolEvidence":False,
                    "directChildCreateEvidence":True,
+                   "directShortToLongEvidence":bool(promote),
                    "modelLeadBoundsDenial":denial,
                    "directBusyStopReleaseEvidence":True,
                    "nativeModelReceipts":native,"hStopRelease":h,
