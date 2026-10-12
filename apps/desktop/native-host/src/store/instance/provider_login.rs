@@ -192,6 +192,14 @@ const OPENCODE: ProviderLoginRecipe = ProviderLoginRecipe {
     status_contract: StatusContract::OpenCodeCredentialList,
 };
 
+// A version switch never inherits a prior login result. The same read-only
+// credential inventory is accepted only when this exact CLI's original output
+// satisfies the existing strict classifier; any changed format stays UNKNOWN.
+const OPENCODE_11831: ProviderLoginRecipe = ProviderLoginRecipe {
+    pinned_version: "1.18.31",
+    ..OPENCODE
+};
+
 const GROK: ProviderLoginRecipe = ProviderLoginRecipe {
     provider: LoginProvider::Grok,
     pinned_version: "1.0.41",
@@ -241,6 +249,15 @@ pub(crate) fn recipe(provider: LoginProvider) -> &'static ProviderLoginRecipe {
         LoginProvider::Grok => &GROK,
         LoginProvider::Antigravity => &ANTI_GRAVITY,
         LoginProvider::Codex => &CODEX,
+    }
+}
+
+pub(crate) fn recipe_for_version(provider: LoginProvider, version: &str)
+    -> &'static ProviderLoginRecipe {
+    if provider == LoginProvider::OpenCode && version == OPENCODE_11831.pinned_version {
+        &OPENCODE_11831
+    } else {
+        recipe(provider)
     }
 }
 

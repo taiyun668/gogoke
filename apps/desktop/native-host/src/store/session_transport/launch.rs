@@ -262,7 +262,18 @@ enum VerificationPhase { PreActivation, Active }
 fn supported_driver_version(pin: &InstancePin) -> bool {
     matches!((pin.driver_id.as_str(), pin.version.as_str()),
         ("codex", "0.160.0") | ("claude", "2.1.196") |
-        ("opencode", "1.18.32") | ("grok", "1.0.41"))
+        ("opencode", "1.18.32") | ("opencode", "1.18.31") |
+        ("grok", "1.0.41"))
+}
+
+fn fixed_opencode_pipe_pin(pin: &InstancePin) -> bool {
+    if pin.driver_id != "opencode" { return false; }
+    let expected = match pin.version.as_str() {
+        "1.18.32" => gogoke_lpac_path_compat::OBSERVED_OPENCODE_SHA256,
+        "1.18.31" => gogoke_lpac_path_compat::OBSERVED_OPENCODE_11831_SHA256,
+        _ => return false,
+    };
+    pin.digest == format!("sha256:{expected}")
 }
 
 fn launch_homes(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
@@ -668,11 +679,17 @@ impl LaunchEvidence {
             let directories = Arc::new(evidence_at("prepare-compat-directory-roots", DirectoryRoots::prepare(root, &roots))?);
             let module = evidence(CompatModule::prepare_claude_observation(root, &profile, &profile_name))?;
             (Some(module), Some(directories))
-        } else if pin.driver_id == "opencode" && pin.version == "1.18.32"
-            && pin.digest == format!("sha256:{}", gogoke_lpac_path_compat::OBSERVED_OPENCODE_SHA256) {
+        } else if pin.driver_id == "opencode" {
+            if !fixed_opencode_pipe_pin(&pin) {
+                return Err("native OpenCode image is not the fixed pipe target".into());
+            }
             verify_host_guard(db,owner,host_guard)?;
             let directories = Arc::new(evidence_at("prepare-compat-directory-roots", DirectoryRoots::prepare(root, &roots))?);
-            let module = evidence(CompatModule::prepare_opencode_pipe(root, &profile, &profile_name))?;
+            let module = if pin.version == "1.18.31" {
+                evidence(CompatModule::prepare_opencode_pipe_11831(root, &profile, &profile_name))?
+            } else {
+                evidence(CompatModule::prepare_opencode_pipe(root, &profile, &profile_name))?
+            };
             (Some(module), Some(directories))
         } else {
             verify_host_guard(db,owner,host_guard)?;
@@ -1010,8 +1027,8 @@ impl LaunchEvidence {
             if self.opencode_alias.is_some(){return Err("native alias: non-OpenCode binding".into());}
             return Ok(());
         }
-        if self.pin.version!="1.18.32" {
-            return Err("native DOS alias is limited to fixed OpenCode 1.18.32".into());
+        if !fixed_opencode_pipe_pin(&self.pin) {
+            return Err("native DOS alias requires a fixed OpenCode image".into());
         }
         if matches!(&self.directory,LaunchDirectory::SecretarySessionHome(_)) {
             return Ok(());
@@ -1182,7 +1199,7 @@ impl LaunchEvidence {
 
     fn verify_opencode_alias(&self,db:&VerifiedDatabaseConnection<'_>,
         alias:&super::admission::DosAliasIntent)->Result<(),String>{
-        if self.pin.driver_id!="opencode" || self.pin.version!="1.18.32"
+        if !fixed_opencode_pipe_pin(&self.pin)
             || alias.phase=="INTENT"
             || alias.phase=="UNKNOWN" || alias.cleanup_status!="NOT_REQUESTED" {
             return Err("native OpenCode alias is not in a launchable phase".into());

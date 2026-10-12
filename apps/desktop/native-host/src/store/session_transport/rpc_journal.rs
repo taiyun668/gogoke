@@ -451,7 +451,8 @@ fn candidate_binding_fields(db: &VerifiedDatabaseConnection<'_>,
     if q.step_row()? || !required_state.contains(&state.as_str())
         || !(matches!(phase.as_str(),"PREPARED"|"ACTIVE") || observation_of_unknown)
         || !matches!((driver.as_str(),version.as_str()),
-            ("codex","0.160.0") | ("opencode","1.18.32") | ("grok","1.0.41")
+            ("codex","0.160.0") | ("opencode","1.18.32") |
+            ("opencode","1.18.31") | ("grok","1.0.41")
             | ("claude","2.1.196")) {
         return Err(RpcJournalError::Denied);
     }
@@ -597,7 +598,8 @@ fn plain_protocol_resume_episode(db: &VerifiedDatabaseConnection<'_>, domain: &s
         else {after.parse::<u64>().ok()==Some(claim)};
     Ok(adjacent && before==request.expected_revision && claim_matches
         && matches!((driver.as_str(),version.as_str()),
-            ("codex","0.160.0")|("opencode","1.18.32")|("grok","1.0.41")
+            ("codex","0.160.0")|("opencode","1.18.32")|
+            ("opencode","1.18.31")|("grok","1.0.41")
             |("claude","2.1.196")))
 }
 
@@ -891,7 +893,8 @@ fn generation_episode_old(db: &VerifiedDatabaseConnection<'_>, domain: &str,
     let candidate=q.column_text(5)?=="1";
     let old_generation=q.column_text(6)?;
     if q.step_row()? || !matches!((driver.as_str(),version.as_str()),
-        ("codex","0.160.0")|("opencode","1.18.32")|("grok","1.0.41")) {
+        ("codex","0.160.0")|("opencode","1.18.32")|
+        ("opencode","1.18.31")|("grok","1.0.41")) {
         return Err(RpcJournalError::Conflict);
     }
     if candidate && old && matches!(phase.as_str(),"PREPARED"|"UNKNOWN") {
@@ -1187,7 +1190,8 @@ fn assert_current_binding(
         || login_state != "LOGGED_IN"
         || program_digest != c.binding.binary_digest_sha256
         || !matches!((driver.as_str(), version.as_str()),
-            ("codex", "0.160.0") | ("opencode", "1.18.32") | ("grok", "1.0.41")
+            ("codex", "0.160.0") | ("opencode", "1.18.32") |
+            ("opencode", "1.18.31") | ("grok", "1.0.41")
             | ("claude", "2.1.196"))
         || q.step_row()?
     {
