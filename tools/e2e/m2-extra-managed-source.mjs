@@ -82,6 +82,19 @@ export function managedCodexV06Qualifications(config, raw) {
   return sourceQualifications(config, raw, fixedCase, 'Original V06 managed Codex');
 }
 
+export function managedCodexM2Qualifications(config, raw) {
+  const selected = [config?.instanceId, config?.childInstanceId,
+    config?.sideChat?.sourceInstanceId, config?.sideChat?.sideInstanceId,
+    config?.rules?.submitter?.instanceId, config?.rules?.reviewer?.instanceId,
+    config?.rules?.host?.destination?.instanceId,
+    config?.rules?.host?.alternateDestination?.instanceId].filter(value => value !== undefined);
+  return sourceQualifications(config, raw,
+    config?.repositoryId === 'gogokeSeatTestbed' &&
+      config?.v06Remaining === undefined &&
+      config?.retainedPrelaunchFailure === undefined && selected.length >= 2 &&
+      selected.every(value => value === instanceId), 'Original M2 managed Codex');
+}
+
 export function readManagedCodexSource(config) {
   if (config.managedSourceRead === undefined) return undefined;
   const proof = config.managedSourceRead;
@@ -91,9 +104,11 @@ export function readManagedCodexSource(config) {
   const bytes = fs.readFileSync(proof.path);
   if (hash(bytes) !== proof.sha256) throw Error('Original managed Codex source seal differs');
   const raw = JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/, ''));
-  const qualifications = config.v06Remaining === undefined
-    ? managedCodexQualifications(config, raw)
-    : managedCodexV06Qualifications(config, raw);
+  const qualifications = config.v06Remaining !== undefined
+    ? managedCodexV06Qualifications(config, raw)
+    : config.childInstanceId !== undefined
+    ? managedCodexM2Qualifications(config, raw)
+    : managedCodexQualifications(config, raw);
   const database = path.join(config.stateRoot, 'state.sqlite');
   const closedHash = () => {
     for (const suffix of ['-wal', '-shm', '-journal']) {
