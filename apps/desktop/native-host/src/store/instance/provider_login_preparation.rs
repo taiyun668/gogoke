@@ -2,7 +2,7 @@
 //! The caller proves User origin; this module verifies Owner and F identity,
 //! then returns process data. It never starts a child or reads credentials.
 
-use super::{recipe, BrowserBehavior, EnvironmentValue, LoginProvider, RecipeAvailability, StatusContract};
+use super::{recipe, recipe_for_version, BrowserBehavior, EnvironmentValue, LoginProvider, RecipeAvailability, StatusContract};
 use crate::process::{NativeBinding, PrepareRequest, ProcessLaunch};
 use crate::root::RootLock;
 use crate::store::atomic::{Json, JsonString, Statement};
@@ -249,7 +249,7 @@ pub(crate) fn prepare_registered_provider_login(db: &mut VerifiedDatabaseConnect
         "codex" => LoginProvider::Codex,
         _ => return Err(ProviderLoginPreparationError::denied("unrecognized registered driver")),
     };
-    let recipe = recipe(provider);
+    let recipe = recipe_for_version(provider, &pin.version);
     verify_registration(db, root, instance_id, &pin.driver_id)?;
     let (home_path, home_identity) = resolve_registered_provider_home(db, root, instance_id, &pin.driver_id)
         .map_err(|error| ProviderLoginPreparationError::source("registered home", error))?;

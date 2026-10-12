@@ -348,7 +348,7 @@ pub(crate) struct CompatModule {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CompatMode { CodexPath, ClaudePipe, OpenCodePipe }
+enum CompatMode { CodexPath, ClaudePipe, OpenCodePipe, OpenCodePipe11831 }
 
 impl CompatModule {
     pub(crate) fn prepare(
@@ -400,11 +400,22 @@ impl CompatModule {
             CompatMode::OpenCodePipe)
     }
 
+    /// The separately pinned 1.18.31 image has the same observed Bun 1.3.14
+    /// private pipe imports. It keeps a distinct image digest at activation.
+    pub(crate) fn prepare_opencode_pipe_11831(
+        root: &RootLock,
+        profile: &AppContainerProfile,
+        profile_name: &str,
+    ) -> io::Result<Arc<Self>> {
+        Self::prepare_module(root, Vec::new(), Vec::new(), profile, profile_name,
+            CompatMode::OpenCodePipe11831)
+    }
+
     fn pipe_mode_name(&self) -> Option<&'static str> {
         match self.mode {
             CompatMode::CodexPath => None,
             CompatMode::ClaudePipe => Some(CLAUDE_PIPE_MODE),
-            CompatMode::OpenCodePipe => Some(OPENCODE_PIPE_MODE),
+            CompatMode::OpenCodePipe | CompatMode::OpenCodePipe11831 => Some(OPENCODE_PIPE_MODE),
         }
     }
 
@@ -585,6 +596,8 @@ impl CompatModule {
             CompatMode::CodexPath => gogoke_lpac_path_compat::OBSERVED_CLI_SHA256,
             CompatMode::ClaudePipe => gogoke_lpac_path_compat::OBSERVED_CLAUDE_SHA256,
             CompatMode::OpenCodePipe => gogoke_lpac_path_compat::OBSERVED_OPENCODE_SHA256,
+            CompatMode::OpenCodePipe11831 =>
+                gogoke_lpac_path_compat::OBSERVED_OPENCODE_11831_SHA256,
         }
     }
 }

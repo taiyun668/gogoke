@@ -241,7 +241,7 @@ pub(crate) fn promote_resume(connection: &VerifiedDatabaseConnection<'_>,
            JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
              AND ((i.driver_id='codex' AND i.version='0.160.0')
               OR (i.driver_id='claude' AND i.version='2.1.196')
-               OR (i.driver_id='opencode' AND i.version='1.18.32')
+               OR (i.driver_id='opencode' AND i.version IN ('1.18.32','1.18.31'))
                OR (i.driver_id='grok' AND i.version='1.0.41'))
              AND i.login_state='LOGGED_IN'
              AND i.program_digest=c.binary_digest_sha256
