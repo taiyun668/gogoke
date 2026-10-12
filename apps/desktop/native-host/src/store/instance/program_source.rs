@@ -241,6 +241,119 @@ pub(crate) fn bind_managed_instance_program(db:&mut VerifiedDatabaseConnection<'
     }
 }
 
+/// Explicit USER version change after the exact target stage was H-probed.
+/// The old immutable stage remains in place for a later separately authorized
+/// rollback. No registration, HOME, credential, or historical H row is reset.
+pub(crate) fn activate_quiescent_managed_version(
+    db:&mut VerifiedDatabaseConnection<'_>, root:&RootLock, owner:&OwnerIssuer,
+    driver:&str, target_version:&str, target_stage:&str, expected_copy_revision:i64,
+) -> Result<usize,ProgramSourceError> {
+    if expected_copy_revision<1 || target_stage.is_empty() {
+        return Err(ProgramSourceError::Invalid);
+    }
+    let target=managed_cli::read_official_cli_version(driver,target_version)
+        .ok_or(ProgramSourceError::Invalid)?;
+    // The only presently compiled catalog entry per driver cannot perform a
+    // version change. A second entry must be independently pinned first.
+    managed_cli::inspect_staged_official_cli_version(root,driver,target_version,target_stage)?;
+    db.execute("BEGIN IMMEDIATE")?;
+    let result=(||{
+        check_owner_in_current_transaction(db,owner)?;
+        managed_cli::no_unsettled_managed_version_change(db,driver)?;
+        let copy=Statement::prepare(db.as_ptr(),
+            "SELECT state,version,archive_sha256,image_sha256,stage_name,previous_version,previous_image_sha256,previous_stage_name,revision FROM main.gogoke_v37_instance_cli_copies WHERE driver_id=?1")?;
+        copy.bind_text(1,driver)?;
+        if !copy.step_row()? {return Err(ProgramSourceError::Conflict)}
+        let state=copy.column_text(0)?;
+        let version=copy.column_text(1)?;
+        let archive=copy.column_text(2)?;
+        let image=copy.column_text(3)?;
+        let stage=copy.column_text(4)?;
+        let old_version=copy.column_text(5)?;
+        let old_image=copy.column_text(6)?;
+        let old_stage=copy.column_text(7)?;
+        let revision=copy.column_text(8)?.parse::<i64>()
+            .map_err(|_|ProgramSourceError::Conflict)?;
+        if copy.step_row()? || state!="PROBED" || version!=target.version ||
+            archive!=target.archive_sha256 || image!=target.image_sha256 ||
+            stage!=target_stage || revision!=expected_copy_revision ||
+            old_version.is_empty() || old_version==target.version {
+            return Err(ProgramSourceError::Conflict);
+        }
+        drop(copy);
+        let old=managed_cli::read_official_cli_version(driver,&old_version)
+            .ok_or(ProgramSourceError::Conflict)?;
+        if old_image!=old.image_sha256 || old_stage.is_empty() {
+            return Err(ProgramSourceError::Conflict);
+        }
+        managed_cli::inspect_staged_official_cli_version(root,driver,target_version,target_stage)?;
+        managed_cli::inspect_staged_official_cli_version(root,driver,&old_version,&old_stage)?;
+        let old_digest=format!("sha256:{}",old.image_sha256);
+        let new_digest=format!("sha256:{}",target.image_sha256);
+        let rows=Statement::prepare(db.as_ptr(),
+            "SELECT i.instance_id,i.home_identity,i.version,i.program_digest,COALESCE(s.source,''),COALESCE(s.stage_name,''),COALESCE(s.version,''),COALESCE(s.program_digest,''),COALESCE(s.home_identity,''),COALESCE(s.registration_request_id,'') FROM main.gogoke_v37_instances i LEFT JOIN main.gogoke_v37_instance_profiles p ON p.instance_id=i.instance_id LEFT JOIN main.gogoke_v37_instance_program_sources s ON s.instance_id=i.instance_id WHERE i.driver_id=?1 AND (p.tombstoned IS NULL OR p.tombstoned=0) ORDER BY i.instance_id")?;
+        rows.bind_text(1,driver)?;
+        let mut instances=Vec::new();
+        while rows.step_row()? {
+            let id=rows.column_text(0)?;
+            let home=rows.column_text(1)?;
+            if rows.column_text(2)?!=old_version || rows.column_text(3)?!=old_digest ||
+                rows.column_text(4)?!="MANAGED" || rows.column_text(5)?!=old_stage ||
+                rows.column_text(6)?!=old_version || rows.column_text(7)?!=old_digest ||
+                rows.column_text(8)?!=home ||
+                registry::observed_home(root,&id)?.is_none_or(|identity|identity.opaque()!=home) ||
+                rows.column_text(9)?!=registry::verified_creation_request(db,root,&id)? {
+                return Err(ProgramSourceError::Conflict);
+            }
+            instances.push((id,home));
+        }
+        drop(rows);
+        // No external process can race the held same-open transaction. Each
+        // mutation still compares the exact prior source and instance tuple.
+        for (id,home) in &instances {
+            let instance=Statement::prepare(db.as_ptr(),
+                "UPDATE main.gogoke_v37_instances SET version=?1,program_digest=?2,revision=revision+1 WHERE instance_id=?3 AND driver_id=?4 AND version=?5 AND program_digest=?6 AND home_identity=?7")?;
+            for (index,value) in [target.version,new_digest.as_str(),id.as_str(),driver,
+                old_version.as_str(),old_digest.as_str(),home.as_str()].iter().enumerate() {
+                instance.bind_text((index+1) as i32,value)?;
+            }
+            instance.step_done()?;
+            let changed=Statement::prepare(db.as_ptr(),"SELECT changes()")?;
+            if !changed.step_row()? || changed.column_text(0)?!="1" || changed.step_row()? {
+                return Err(ProgramSourceError::Conflict);
+            }
+            let source=Statement::prepare(db.as_ptr(),
+                "UPDATE main.gogoke_v37_instance_program_sources SET stage_name=?1,version=?2,program_digest=?3,revision=revision+1 WHERE instance_id=?4 AND source='MANAGED' AND stage_name=?5 AND version=?6 AND program_digest=?7 AND home_identity=?8")?;
+            for (index,value) in [target_stage,target.version,new_digest.as_str(),id.as_str(),
+                old_stage.as_str(),old_version.as_str(),old_digest.as_str(),home.as_str()].iter().enumerate() {
+                source.bind_text((index+1) as i32,value)?;
+            }
+            source.step_done()?;
+            let changed=Statement::prepare(db.as_ptr(),"SELECT changes()")?;
+            if !changed.step_row()? || changed.column_text(0)?!="1" || changed.step_row()? {
+                return Err(ProgramSourceError::Conflict);
+            }
+        }
+        let ready=Statement::prepare(db.as_ptr(),
+            "UPDATE main.gogoke_v37_instance_cli_copies SET state='READY',revision=revision+1 WHERE driver_id=?1 AND state='PROBED' AND version=?2 AND archive_sha256=?3 AND image_sha256=?4 AND stage_name=?5 AND previous_version=?6 AND previous_image_sha256=?7 AND previous_stage_name=?8 AND revision=?9")?;
+        for (index,value) in [driver,target.version,target.archive_sha256,target.image_sha256,
+            target_stage,old_version.as_str(),old.image_sha256,old_stage.as_str()].iter().enumerate() {
+            ready.bind_text((index+1) as i32,value)?;
+        }
+        ready.bind_i64(9,expected_copy_revision)?;
+        ready.step_done()?;
+        let changed=Statement::prepare(db.as_ptr(),"SELECT changes()")?;
+        if !changed.step_row()? || changed.column_text(0)?!="1" || changed.step_row()? {
+            return Err(ProgramSourceError::Conflict);
+        }
+        Ok(instances.len())
+    })();
+    match result {
+        Ok(count)=>{db.execute("COMMIT").map_err(OrchestrationError::CommitUnknownWithCause)?; Ok(count)},
+        Err(error)=>{db.execute("ROLLBACK").map_err(OrchestrationError::CommitUnknownWithCause)?; Err(error)},
+    }
+}
+
 /// H uses the stored source, never a caller path. An unbound instance cannot
 /// silently adopt a managed copy merely because its old digest matches.
 pub(crate) fn locate_bound_instance_program(db:&VerifiedDatabaseConnection<'_>,
