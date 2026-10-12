@@ -194,7 +194,8 @@ result = {"schema": "gogoke.37.private-m2-readback.v1", "phase": "provider-final
           "domainId": journal["domainId"], "databaseWrites": False, "credentialReads": False,
           "acceptance": False, "rootIdentity": [str(root.stat().st_dev), str(root.stat().st_ino)],
           "filesBefore": before, "frames": [], "commands": [], "unknownFrames": [],
-          "sessions": [], "providerWorktrees": [], "directProviderEvidence": False}
+          "sessions": [], "providerWorktrees": [], "claudeInitEvidence": [],
+          "directProviderEvidence": False}
 if supplement:
     result.update({"state": "SUPPLEMENTARY_DIRECT_PROVIDER_READBACK_ORIGINAL_FAILURE_RETAINED",
                    "originalFailureRetained": True, "originalJournalSha256": sys.argv[5],
@@ -1012,8 +1013,20 @@ def read_claude_sequence(case):
                      key[4] == generation_send[5] and key[5] == generation_send[7] and
                      frame.get("type") == "system" and frame.get("subtype") == "init" and
                      isinstance(frame.get("session_id"), str)]
-            if len(inits) != 1:
-                fail("Claude original generation does not have one physical raw system/init frame")
+            if not inits or any(not str(key[3]).isdecimal() for key, _, _ in inits):
+                fail("Claude original generation has no physical raw system/init with a numeric cursor")
+            inits.sort(key=lambda item: int(item[0][3]))
+            first_key, first_frame, _ = inits[0]
+            if not first_frame["session_id"] or any(
+                    key[2] != first_key[2] or frame["session_id"] != first_frame["session_id"]
+                    for key, frame, _ in inits):
+                fail("Claude physical system/init frames disagree on source epoch or vendor session")
+            for key, frame, state in inits:
+                result["claudeInitEvidence"].append({"generation": key[0], "operationId": key[1],
+                    "sourceEpoch": key[2], "sourceCursor": key[3], "processTicket": key[4],
+                    "custodianNonce": key[5], "vendorSessionId": frame["session_id"],
+                    "uuid": frame.get("uuid"), "rawSha256": sha(raw_bytes_lookup[key]),
+                    "state": state, "eventSuccessCredit": False})
             init_by_episode.append(inits[0])
         original_vendor_id = init_by_episode[0][1]["session_id"]
         resumed_vendor_id = init_by_episode[1][1]["session_id"]
