@@ -7,6 +7,8 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ActualProduct, id, readJson, sha256 } from './product-cdp.mjs';
 import { RemainingHostRoot } from './m2-v06-remaining-host.mjs';
+import { readManagedCodexSource, observeManagedCodexInstance,
+  checkManagedCodexCapability } from './m2-extra-managed-source.mjs';
 
 const here=path.dirname(fileURLToPath(import.meta.url));
 const check=(ok,why)=>{if(!ok)throw Error(why)};
@@ -81,9 +83,23 @@ const journal={schema:'gogoke.37.m2-v06-remaining-installed.v1',
 const product=new ActualProduct(c,journal);
 journal.driverBytes['m2-v06-remaining-win11.mjs']=sha256(path.join(here,'m2-v06-remaining-win11.mjs'));
 journal.driverBytes['m2-v06-remaining-host.mjs']=sha256(path.join(here,'m2-v06-remaining-host.mjs'));
+journal.driverBytes['m2-extra-managed-source.mjs']=sha256(path.join(here,'m2-extra-managed-source.mjs'));
 journal.driverBytes['m2-v06-remaining-readback.py']=sha256(reader);
 journal.configSha256=sha256(configFile);
 const root=new RemainingHostRoot(product,c,journal);
+let managedSource;
+const originalHostH=root.h.bind(root);
+root.h=async(...args)=>{
+  const result=await originalHostH(...args);
+  if(managedSource&&args[1]==='capability-probe'){
+    const session={...args[0],instanceId:c.instanceId};
+    checkManagedCodexCapability(session,result.reply);
+    managedSource.capabilityProbes.push({instanceId:c.instanceId,sessionId:session.id,threadId:session.threadId,
+      requestId:result.entry.request.requestId,receipt:result.reply});
+    product.save();
+  }
+  return result;
+};
 let closeAttempted=false;
 const childAlive=()=>product.child&&product.child.exitCode===null&&product.child.signalCode===null;
 const live=()=>childAlive()&&product.socket?.readyState===WebSocket.OPEN;
@@ -162,11 +178,18 @@ async function main(){
     check(baseline.parentAbsent===true&&baseline.childAbsent===true&&
       baseline.sourceTemplateMatches===true&&baseline.projectCap>0,
     'Original disjoint USER/LEAD/template baseline differs');
+    const sealed=readManagedCodexSource(c);
+    check(sealed,'Original V06 managed Codex source proof is required');
+    managedSource={...sealed,capabilityProbes:[],uiObservations:[],originalRows:[]};
+    journal.managedSourceRead=managedSource;
+    product.save();
     await product.launch();
     const instances=await product.instances();
-    check(instances.instances.some(r=>r.instanceId===c.instanceId&&
-      r.driverId==='codex'&&r.version===c.cliVersion&&r.state==='LOGGED_IN'),
-    'Exact fixed Codex instance is not already LOGGED_IN');
+    const originalRows=instances.instances.map(row=>({...row}));
+    const observation=observeManagedCodexInstance(managedSource,instances,c.instanceId);
+    managedSource.originalRows=originalRows;
+    managedSource.uiObservations.push({phase:'initial',...observation});
+    product.save();
     const parent=(await root.op(c.domainId,'K-SEAT','create-from-template',f.parentSeatId,
       {layer:'USER',templateId:f.templateId})).reply;
     check(parent.result?.layer==='USER'&&parent.result?.state==='IDLE'&&
