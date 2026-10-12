@@ -750,7 +750,8 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             raise RuntimeError("Original native takeover answer is not C-cited")
         tree = one(db,
             "SELECT w.worktree_path,w.state,w.repository_id,w.domain_id,w.seat_id,w.seat_incarnation,w.instance_id,"
-            "l.state,l.revision,l.merge_target_commit,l.merge_reason,s.source_path,p.git_path,s.git_digest "
+            "l.state,l.revision,l.merge_target_commit,l.merge_reason,s.source_path,p.git_path,s.git_digest,"
+            "w.baseline_commit,s.baseline_commit "
             "FROM gogoke_v37_worktrees w JOIN gogoke_v37_worktree_lifecycle l USING(worktree_id) "
             "JOIN gogoke_v37_worktree_sources s USING(repository_id) "
             "JOIN gogoke_v37_worktree_programs p USING(repository_id) WHERE w.worktree_id=?",
@@ -781,14 +782,16 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
         tree_head = git(git_program, tree_path, "rev-parse", "--verify", "HEAD^{commit}")
         if len(tree_head) != 40:
             raise RuntimeError("Original child Git HEAD is invalid")
+        if not re.fullmatch(r"[0-9a-f]{40}", tree[14]) or tree[14] != tree[15]:
+            raise RuntimeError("Original F child and registered source baselines differ")
         source = Path(local_spelling(tree[11])).resolve(strict=True)
         if phase == "capture":
             source_head = git(git_program, source, "rev-parse", "--verify", "HEAD^{commit}")
             child_status = git(git_program, tree_path, "status", "--porcelain=v1", "--untracked-files=all")
             source_status = git(git_program, source, "status", "--porcelain=v1", "--untracked-files=all")
-            if tree_head != source_head or child_status != f"?? {marker_file}" or source_status or \
+            if tree_head != tree[14] or child_status != f"?? {marker_file}" or source_status or \
                     (source / marker_file).exists():
-                raise RuntimeError("Stopped child must leave only the uncommitted marker on a clean original source HEAD")
+                raise RuntimeError("Stopped child must retain its registered baseline and only the uncommitted marker; source must be clean")
             for claim_domain, claim_session, claim_seat, claim_incarnation in rows(db,
                     "SELECT a.domain_id,a.session_id,COALESCE(s.seat_id,''),COALESCE(s.seat_incarnation,'') "
                     "FROM gogoke_v37_h_claim a LEFT JOIN gogoke_v37_effective_seat s "
@@ -809,7 +812,8 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             "requestId": worktree_op[0], "requestHash": worktree_op[1],
             "path": str(tree_path), "physicalIdentity": [tree_path.stat().st_dev, tree_path.stat().st_ino],
             "revision": tree[8], "state": tree[7],
-            "markerFile": marker_file, "markerSha256": marker_hash, "childHeadBeforeSeal": tree_head,
+            "markerFile": marker_file, "markerSha256": marker_hash,
+            "registeredBaselineCommit": tree[14], "childHeadBeforeSeal": tree_head,
             "mergeTargetCommit": tree[9]}
         result["providerSessions"] = []
         for case in journal["providerCases"]:
@@ -857,12 +861,15 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             if captured.get("phase") != "capture" or captured.get("caseId") != journal["caseId"] or \
                     premerge.get("id") != worktree_id or premerge.get("path") != str(tree_path) or \
                     premerge.get("physicalIdentity") != result["worktree"]["physicalIdentity"] or \
-                    premerge.get("markerSha256") != marker_hash:
+                    premerge.get("markerSha256") != marker_hash or \
+                    premerge.get("registeredBaselineCommit") != tree[14]:
                 raise RuntimeError("Original premerge physical tree or marker capture differs")
             before = premerge.get("childHeadBeforeSeal")
-            source_before = captured.get("controllerMergeDecision", {}).get("sourceHead")
-            if not isinstance(before, str) or before != source_before or len(before) != 40:
-                raise RuntimeError("Original source and child preseal HEAD were not bound")
+            decision = captured.get("controllerMergeDecision", {})
+            source_before = decision.get("sourceHead")
+            if before != tree[14] or decision.get("childHead") != before or \
+                    not isinstance(source_before, str) or not re.fullmatch(r"[0-9a-f]{40}", source_before):
+                raise RuntimeError("Original registered child baseline or separate source premerge HEAD was not bound")
             merges = rows(db,
                 "SELECT request_id,request_hash,phase,result_commit,cause FROM gogoke_v37_worktree_lifecycle_ops "
                 "WHERE worktree_id=? AND operation='MERGE'", (worktree_id,))
@@ -901,7 +908,7 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             common = Path(local_spelling(binding[4])).resolve(strict=True)
             if not ordinary(pointer) or fingerprint(pointer.read_bytes()) != binding[1].removeprefix("sha256:") or \
                     pointer.stat().st_size != binding[6] or not same_local_path(source / ".git", common) or \
-                    binding[2] != binding[5]:
+                    binding[2] != binding[5] or binding[3] != before:
                 raise RuntimeError("Original F pointer, common directory or source binding differs")
             stop_facts = json.loads(intent.get("stopFacts", "null"))
             instance_ids = json.loads(intent.get("instanceIds", "null"))
