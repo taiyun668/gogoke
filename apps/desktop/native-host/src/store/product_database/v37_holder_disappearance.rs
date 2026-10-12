@@ -155,14 +155,12 @@ impl<'root> ProductDatabase<'root> {
             if capture.get("kind").map(String::as_str)!=Some("FAILED_RESUME_PROFILE_ONLY_V1") {
                 continue;
             }
-            // The child episode owns the F-only capture. Its released claim
-            // still names the stopped predecessor, never the failed child.
-            if record.input.process_operation_id!=operation &&
-                get(&capture,"oldOperation")?!=operation {continue}
+            // Only the failed child episode owns this F-only capture.
+            if record.input.process_operation_id!=operation {continue}
             if record.phase!=Phase::Revoked || profile.state!="REVOKED" ||
                 record.input.instance_id!=instance_id {return Ok(false)}
             if get(&capture,"domain")?!=domain || get(&capture,"session")?!=session ||
-                get(&capture,"operation")?!=record.input.process_operation_id ||
+                get(&capture,"operation")?!=operation ||
                 get(&capture,"binding")?!=profile.binding_id ||
                 !self.completed_empty_secretary_release(&capture)? {return Ok(false)}
             let current=self.gone_original(&profile)?;
