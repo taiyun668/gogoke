@@ -823,6 +823,14 @@ mod first_copy_tests {
             assert!(safe_stage_name(&format!("{driver}-{}-private",fixed.version),fixed));
             assert!(!safe_stage_name(&format!("{driver}-999.999.999-private"),fixed));
         }
+        let raw=b"{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"rollback\",\"requestId\":\"switchA\",\"driverId\":\"opencode\",\"targetVersion\":\"1.18.31\",\"expectedRevision\":\"7\"}";
+        let request=super::super::registry::ManagedSwitchRequest{
+            request_bytes:raw,request_id:"switchA",driver:"opencode",
+            target_version:"1.18.31",expected_copy_revision:7};
+        assert_eq!(super::super::registry::managed_request_command(&request).unwrap(),"rollback");
+        assert!(super::super::registry::managed_request_command(
+            &super::super::registry::ManagedSwitchRequest{target_version:"1.18.32",..request})
+            .is_err());
         let _guard=route_b_test_guard();
         let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let path=std::env::temp_dir().join(format!("gogoke-first-copy-pin-{}-{nonce}",std::process::id()));
