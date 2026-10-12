@@ -34,6 +34,48 @@ function fixture() {
   };
 }
 
+function hostFixture() {
+  const values = fixture();
+  values.config.rules.selection = 'HOST_BUSY_TO_IDLE_ONLY';
+  values.config.rules.host = { lifecycleOwnership: 'EXCLUSIVE_V08_HOST_RECIPIENTS', busyToIdleOnly: true,
+    destination: { instanceId: 'codexTestM2Ready', seatId: 'host', worktreeId: 'hostF' },
+    alternateDestination: { instanceId: 'codexTestM2Ready', seatId: 'alternate', worktreeId: 'alternateF' } };
+  values.config.rules.priorCore13 = { journal: path.resolve('sealed-core-journal.json'), journalSha256: 'a'.repeat(64),
+    finalReadback: path.resolve('sealed-core-readback.json'), finalSha256: 'b'.repeat(64) };
+  return values;
+}
+
+test('existing Host busy-to-idle selection receives the same fixed source qualification', () => {
+  const { config, raw } = hostFixture();
+  const original = structuredClone({ config, raw });
+  assert.ok(Object.values(managedCodexQualifications(config, raw)).every(value => value === true));
+  assert.deepEqual({ config, raw }, original);
+});
+for (const [name, change] of [
+  ['other selection', ({ config }) => { config.rules.selection = 'CROSS_PROJECT_ONLY'; }],
+  ['unsliced Host', ({ config }) => { delete config.rules.selection; }],
+  ['all Host cases', ({ config }) => { config.rules.host.busyToIdleOnly = false; }],
+  ['Host ownership missing', ({ config }) => { delete config.rules.host.lifecycleOwnership; }],
+  ['foreign project mixed in', ({ config }) => { config.rules.foreignProject = {}; }],
+  ['other recipient instance', ({ config }) => { config.rules.host.destination.instanceId = 'codexOther'; }],
+  ['duplicate recipient seat', ({ config }) => { config.rules.host.destination.seatId = 'submitter'; }],
+  ['duplicate recipient worktree', ({ config }) => { config.rules.host.alternateDestination.worktreeId = 'hostF'; }],
+  ['missing original core refs', ({ config }) => { delete config.rules.priorCore13; }],
+  ['unsealed original core refs', ({ config }) => { config.rules.priorCore13.finalSha256 = null; }],
+  ['relative original core ref', ({ config }) => { config.rules.priorCore13.journal = 'relative.json'; }],
+  ['Host login absent', ({ raw }) => { raw.instance.login_state = 'LOGGED_OUT'; }],
+  ['Host source not managed', ({ raw }) => { raw.programSource.source = 'EXTERNAL'; }],
+  ['Host copy not ready', ({ raw }) => { raw.managedCopy.state = 'UNKNOWN'; }],
+  ['Host current DB unpreserved', ({ raw }) => { raw.databaseBytesPreserved = false; }],
+  ['Host digest differs', ({ raw }) => { raw.instance.program_digest = `sha256:${'0'.repeat(64)}`; }],
+  ['Host home differs', ({ raw }) => { raw.programSource.home_identity = home.replace(/1$/, '2'); }],
+]) {
+  test(`reject ${name}`, () => {
+    const values = hostFixture(); change(values);
+    assert.throws(() => managedCodexQualifications(values.config, values.raw), /qualification differs/);
+  });
+}
+
 test('fixed source qualifies without changing UNKNOWN install or native login', () => {
   const { config, raw } = fixture();
   assert.ok(Object.values(managedCodexQualifications(config, raw)).every(value => value === true));
@@ -134,15 +176,21 @@ test('sealed loader rejects stale DB, changed seal and uncheckpointed sidecars',
   config.stateRoot = directory;
   Object.assign(config.managedSourceRead, { path: source, sha256: hash(bytes) });
   assert.equal(readManagedCodexSource(config).fact.login_state, 'LOGGED_IN');
+  const hostConfig = { ...hostFixture().config, stateRoot: directory,
+    managedSourceRead: { ...config.managedSourceRead } };
+  assert.equal(readManagedCodexSource(hostConfig).fact.login_state, 'LOGGED_IN');
   fs.appendFileSync(source, '\n');
   assert.throws(() => readManagedCodexSource(config), /seal differs/);
+  assert.throws(() => readManagedCodexSource(hostConfig), /seal differs/);
   fs.writeFileSync(source, bytes);
   fs.appendFileSync(database, 'changed');
   assert.throws(() => readManagedCodexSource(config), /current closed database bytes/);
+  assert.throws(() => readManagedCodexSource(hostConfig), /current closed database bytes/);
   fs.writeFileSync(database, databaseBytes);
   for (const suffix of ['-wal', '-shm', '-journal']) {
     fs.writeFileSync(database + suffix, 'uncheckpointed');
     assert.throws(() => readManagedCodexSource(config), /closed checkpointed database/);
+    assert.throws(() => readManagedCodexSource(hostConfig), /closed checkpointed database/);
     fs.unlinkSync(database + suffix);
   }
   config.managedSourceRead.path = 'relative.json';
