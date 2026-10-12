@@ -960,6 +960,9 @@ fn completed_empty_release_revoked_capture_does_not_select_next_failed_resume_gr
                 change.bind_text(1,if column=="raw_hex" {"00"} else {"999"}).unwrap();
                 change.bind_text(2,&release).unwrap();change.step_done().unwrap();drop(change);
                 let altered=resource_snapshot(&product);
+                assert!(!matches!(product.completed_codex_failed_resume_resource_release(
+                    INSTANCE,"global",&snapshot["session"],&snapshot["operation"]),Ok(true)),
+                    "F-only qualification must reject altered original {column} release proof");
                 assert!(product.recover_disappeared_credential_resources(INSTANCE,None).is_err(),"wrong original {column} release proof cannot exclude old capture");
                 assert_eq!(resource_snapshot(&product),altered);assert_eq!(holder_gone_acl_write_count_for_test(),writes);
                 let restore=Statement::prepare(product.connection.as_ptr(),&format!("UPDATE main.gogoke_v37_h_operation
@@ -978,7 +981,22 @@ fn completed_empty_release_revoked_capture_does_not_select_next_failed_resume_gr
         assert_eq!(claim_rows(&product),claims,"no fabricated StopFact or release of failed child's predecessor");
         let current=rows(&product,"SELECT generation,CAST(revision AS TEXT) FROM main.gogoke_v37_h_claim
             WHERE domain_id='global' AND session_id=?1",&[session],2);
+        assert!(!product.completed_codex_failed_resume_resource_release(
+            INSTANCE,"global",session,&child[0][1]).unwrap(),
+            "revocation alone is not an original admission release");
         assert!(product.settle_original_empty_secretary_thread(session,&current[0][0],&current[0][1]).unwrap());
+        let qualified_snapshot=resource_snapshot(&product);
+        assert!(product.completed_codex_failed_resume_resource_release(
+            INSTANCE,"global",session,&child[0][1]).unwrap(),
+            "completed original failed-child resources qualify without manufacturing STOPPED");
+        assert!(!product.completed_codex_failed_resume_resource_release(
+            INSTANCE,"other",session,&child[0][1]).unwrap());
+        assert!(!product.completed_codex_failed_resume_resource_release(
+            INSTANCE,"global",session,"wrong-original-operation").unwrap());
+        assert_eq!(resource_snapshot(&product),qualified_snapshot,
+            "qualification does not rewrite captures, claims, episodes or custody");
+        assert_eq!(holder_gone_acl_write_count_for_test()-writes,1,
+            "qualification performs no additional ACL write");
         if let Some(old)=&completed {
             assert_eq!(gone::read_holder_disappearance(&product.connection,&old.input.binding_id).unwrap().unwrap(),*old,
                 "old REVOKED phase/members/snapshot/receipt bytes remain unchanged");

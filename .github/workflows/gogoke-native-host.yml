@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       focused_library:
-        description: Affected checks only (seat-scope, policy-unset-stage, ledger-scope, native-takeover, pipe-evidence, grok-permission, claude-holder, claude-initialize, claude-second-init, m2-provider-current, codex-empty-persist, holder-completed-group, secretary-configuration, opencode-alias, opencode-pipe or model-options); all full and formal gates are NOT_RUN
+        description: Affected checks only (seat-scope, policy-unset-stage, ledger-scope, native-takeover, pipe-evidence, grok-permission, claude-holder, claude-initialize, claude-second-init, m2-provider-current, codex-empty-persist, holder-completed-group, managed-first-copy, service-transport, secretary-configuration, opencode-alias, opencode-pipe or model-options); all full and formal gates are NOT_RUN
         type: string
         default: ""
       secretary_routine_fixture_only:
@@ -122,7 +122,7 @@ jobs:
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CLAUDE_CLI_PATH=$binary"
           Write-Output "Fixed Claude CLI SHA256=$digest"
       - name: Check the production configuration for affected recovery
-        if: ${{ inputs.focused_library == 'codex-empty-persist' || inputs.focused_library == 'holder-completed-group' || inputs.focused_library == 'opencode-pipe' || inputs.focused_library == 'service-transport' }}
+        if: ${{ inputs.focused_library == 'codex-empty-persist' || inputs.focused_library == 'holder-completed-group' || inputs.focused_library == 'opencode-pipe' || inputs.focused_library == 'service-transport' || inputs.focused_library == 'managed-first-copy' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -135,7 +135,7 @@ jobs:
           $env:GOGOKE_CONTROLLED_GIT_PATH = $backend
           cargo check --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib
           if ($LASTEXITCODE -ne 0) { throw 'Production configuration check failed; test-only historical fixture is not production evidence.' }
-          if ($env:FOCUSED_LIBRARY -ceq 'service-transport') {
+          if ($env:FOCUSED_LIBRARY -cin @('service-transport','managed-first-copy')) {
             cargo check --locked --manifest-path apps/desktop/native-host/Cargo.toml --bin gogoke-native-host
             if ($LASTEXITCODE -ne 0) { throw 'Actual desktop authority/transport binary did not compile.' }
           }
@@ -145,6 +145,10 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $filters = switch ($env:FOCUSED_LIBRARY) {
             'service-transport' { @('ipc::') }
+            'managed-first-copy' { @(
+              'blocked_same_pin_progress_retains_first_copy_scope_but_partial_or_prior_pin_does_not',
+              'managed_begin_without_copy_row_retains_version_change_barrier',
+              'completed_empty_release_revoked_capture_does_not_select_next_failed_resume_group') }
             'seat-scope' { @('store::seat::orchestration::tests',
               'store::seat::tests::owner_policy_head_read_requires_current_owner_and_preserves_absent_or_existing_fact',
               'store::seat::tests::native_child_scope_cap_refuses_a_second_seat_without_minting_a_grant',
