@@ -4,7 +4,7 @@
 
 use super::home::{prepare_persistent_home, HomeError};
 use crate::root::{inspect_root, RootIdentity, RootLock};
-use crate::store::atomic::{Json, JsonString, Statement};
+use crate::store::atomic::{Json, JsonString, Parser, Statement};
 use crate::store::authority::{check_owner_in_current_transaction, OwnerIssuer};
 use crate::store::digest::content_hash;
 use crate::store::same_open::VerifiedDatabaseConnection;
@@ -115,6 +115,64 @@ pub(crate) struct ProgramRepinReceipt {
 }
 
 const REPIN_MARKER: &[u8] = b"manual-program-repin";
+const MANAGED_SWITCH_MARKER: &[u8] = b"managed-cli-version-switch-v1";
+
+/// A product USER frame is carried unchanged into every affected instance's
+/// durable switch witness. The Owner route supplies this, not F's catalog.
+pub(super) struct ManagedSwitchRequest<'a> {
+    pub(super) request_bytes: &'a [u8],
+    pub(super) request_id: &'a str,
+    pub(super) driver: &'a str,
+    pub(super) target_version: &'a str,
+    pub(super) expected_copy_revision: i64,
+}
+
+pub(super) struct ManagedSwitchInstance<'a> {
+    pub(super) instance_id: &'a str,
+    pub(super) home: &'a str,
+    pub(super) old_digest: &'a str,
+    pub(super) old_version: &'a str,
+    pub(super) old_stage: &'a str,
+    pub(super) new_digest: &'a str,
+    pub(super) new_stage: &'a str,
+    pub(super) before_revision: i64,
+    pub(super) after_revision: i64,
+}
+
+fn managed_request_field(fields:&std::collections::BTreeMap<JsonString,Json>,
+    name:&str)->Result<String,RegistryError> {
+    match fields.get(&JsonString::from_str(name)) {
+        Some(Json::String(value))=>value.to_well_formed_string()
+            .ok_or(RegistryError::Unknown),
+        _=>Err(RegistryError::Unknown),
+    }
+}
+
+pub(super) fn managed_request_command(input:&ManagedSwitchRequest<'_>)
+    ->Result<String,RegistryError> {
+    if !valid_atom(input.request_id) || input.request_id.len()>64 ||
+        input.request_bytes.is_empty() || input.request_bytes.len()>65_536 ||
+        input.expected_copy_revision<1 || input.target_version.is_empty() {
+        return Err(RegistryError::Invalid("managed switch request"));
+    }
+    let raw=std::str::from_utf8(input.request_bytes)
+        .map_err(|error|RegistryError::RepinFormat(format!("managed switch UTF-8: {error}")))?;
+    let Json::Object(fields)=Parser::parse(raw)? else {return Err(RegistryError::Unknown)};
+    if fields.len()!=6 ||
+        managed_request_field(&fields,"schema")?!="gogoke.37.managed-cli.v1" ||
+        managed_request_field(&fields,"requestId")?!=input.request_id ||
+        managed_request_field(&fields,"driverId")?!=input.driver ||
+        managed_request_field(&fields,"targetVersion")?!=input.target_version ||
+        managed_request_field(&fields,"expectedRevision")?
+            !=input.expected_copy_revision.to_string() {
+        return Err(RegistryError::Unknown);
+    }
+    let command=managed_request_field(&fields,"command")?;
+    if !matches!(command.as_str(),"upgrade"|"rollback") {
+        return Err(RegistryError::Unknown);
+    }
+    Ok(command)
+}
 
 fn framed(fields: &[&[u8]]) -> String {
     let mut bytes = Vec::new();
@@ -152,10 +210,11 @@ fn valid_repin(input: &ProgramRepin<'_>) -> Result<(), RegistryError> {
 
 /// The old registration remains an immutable creation fact. A later native
 /// repin must explain a changed current program without rewriting that fact.
-fn has_program_repin_witness(connection: &VerifiedDatabaseConnection<'_>, id: &str,
-    home: &str, old_digest: &str, old_version: &str, digest: &str, version: &str)
+fn has_manual_program_repin_witness(connection: &VerifiedDatabaseConnection<'_>, id: &str,
+    home: &str, old_digest: &str, old_version: &str, digest: &str, version: &str,
+    max_revision:i64)
     -> Result<bool, RegistryError> {
-    let revision = repin_revision(connection, id)?;
+    let revision = repin_revision(connection, id)?.min(max_revision);
     let rows = Statement::prepare(connection.as_ptr(),
         "SELECT request_hex,receipt_json,request_id FROM main.gogoke_v37_instance_operations WHERE target_id=?1 AND phase='APPLIED' AND receipt_json IS NOT NULL")?;
     rows.bind_text(1, id)?;
@@ -180,6 +239,130 @@ fn has_program_repin_witness(connection: &VerifiedDatabaseConnection<'_>, id: &s
     Ok(false)
 }
 
+struct ManagedSwitchStep {
+    before:i64,after:i64,
+    prior_digest:String,prior_version:String,prior_stage:String,
+    next_digest:String,next_version:String,next_stage:String,
+}
+
+struct ManagedSwitchCursor {
+    digest:String,version:String,stage:Option<String>,last_revision:i64,
+}
+
+/// The same transition function is used for durable replay and for the
+/// bounded synthetic chain test. Consecutive hops share a revision boundary;
+/// overlapping or backward hops do not.
+fn advance_managed_switch_chain(cursor:&mut ManagedSwitchCursor,
+    step:&ManagedSwitchStep)->bool {
+    if step.before<cursor.last_revision || step.after<=step.before ||
+        step.prior_digest!=cursor.digest || step.prior_version!=cursor.version ||
+        cursor.stage.as_deref().is_some_and(|stage|stage!=step.prior_stage) {
+        return false;
+    }
+    cursor.digest=step.next_digest.clone();
+    cursor.version=step.next_version.clone();
+    cursor.stage=Some(step.next_stage.clone());
+    cursor.last_revision=step.after;
+    true
+}
+
+/// Reconstruct every durable managed switch from the immutable creation pin.
+/// A matching last hop alone is insufficient: rollback and a later upgrade
+/// must connect through the intervening revision, pin and stage witnesses.
+fn managed_switch_chain(connection:&VerifiedDatabaseConnection<'_>,id:&str,driver:&str,
+    home:&str,original_digest:&str,original_version:&str,current_digest:&str,
+    current_version:&str)->Result<Option<bool>,RegistryError>{
+    let current_revision=repin_revision(connection,id)?;
+    let rows=Statement::prepare(connection.as_ptr(),
+        "SELECT request_hex,receipt_json,request_id FROM main.gogoke_v37_instance_operations WHERE target_id=?1 AND phase='APPLIED' AND receipt_json IS NOT NULL")?;
+    rows.bind_text(1,id)?;
+    let mut steps=Vec::new();
+    while rows.step_row()? {
+        let fingerprint=rows.column_text(0)?;
+        let fields=decode_framed_hex(&fingerprint)?;
+        if fields.first().map(Vec::as_slice)!=Some(MANAGED_SWITCH_MARKER){continue}
+        if fields.len()!=16 || fields[3]!=id.as_bytes() ||
+            fields[4]!=driver.as_bytes() || fields[5]!=home.as_bytes() ||
+            fields[6]!=original_digest.as_bytes() ||
+            fields[7]!=original_version.as_bytes() {return Ok(Some(false))}
+        let text=|index:usize|->Result<&str,RegistryError>{
+            std::str::from_utf8(&fields[index])
+                .map_err(|error|RegistryError::RepinFormat(format!("managed witness UTF-8: {error}")))
+        };
+        let request_id=text(2)?;
+        let prior_digest=text(8)?;
+        let prior_version=text(9)?;
+        let next_digest=text(10)?;
+        let next_version=text(11)?;
+        let Some((prior_stage,next_stage))=text(12)?.split_once('\0') else{
+            return Ok(Some(false));
+        };
+        if prior_stage.is_empty() || next_stage.is_empty() || next_stage.contains('\0') ||
+            !prior_stage.starts_with(&format!("{driver}-{prior_version}-")) ||
+            !next_stage.starts_with(&format!("{driver}-{next_version}-")) {
+            return Ok(Some(false));
+        }
+        let before=text(13)?.parse::<i64>().map_err(RegistryError::RevisionParse)?;
+        let after=text(14)?.parse::<i64>().map_err(RegistryError::RevisionParse)?;
+        let copy_revision=text(15)?.parse::<i64>().map_err(RegistryError::RevisionParse)?;
+        if before<1 || before.checked_add(1)!=Some(after) ||
+            after>current_revision || copy_revision<1 {return Ok(Some(false))}
+        let Some(prior_pin)=witnessed_catalog_digest(driver,prior_version)
+            else{return Ok(Some(false))};
+        let Some(next_pin)=witnessed_catalog_digest(driver,next_version)
+            else{return Ok(Some(false))};
+        if prior_digest!=format!("sha256:{prior_pin}") ||
+            next_digest!=format!("sha256:{next_pin}") {
+            return Ok(Some(false));
+        }
+        let request=ManagedSwitchRequest{request_bytes:&fields[1],request_id,driver,
+            target_version:next_version,expected_copy_revision:copy_revision};
+        let command=managed_request_command(&request)?;
+        let (Some(prior_number),Some(next_number))=(numeric_version(prior_version),
+            numeric_version(next_version)) else{return Ok(Some(false))};
+        if (command=="upgrade" && next_number<=prior_number) ||
+            (command=="rollback" && next_number>=prior_number) {return Ok(Some(false))}
+        use sha2::{Digest,Sha256};
+        let key=format!("managed-switch-{:x}",Sha256::digest(
+            format!("{request_id}\0{id}").as_bytes()));
+        if rows.column_text(2)?!=key || rows.column_text(1)?!=
+            managed_switch_receipt_json(request_id,id,driver,home,next_digest,
+                next_version,after,copy_revision,&fingerprint) {return Ok(Some(false))}
+        steps.push(ManagedSwitchStep{before,after,
+            prior_digest:prior_digest.to_owned(),prior_version:prior_version.to_owned(),
+            prior_stage:prior_stage.to_owned(),next_digest:next_digest.to_owned(),
+            next_version:next_version.to_owned(),next_stage:next_stage.to_owned()});
+    }
+    drop(rows);
+    if steps.is_empty(){return Ok(None)}
+    steps.sort_by_key(|step|step.before);
+    let mut cursor=ManagedSwitchCursor{digest:original_digest.to_owned(),
+        version:original_version.to_owned(),stage:None,last_revision:0};
+    for (index,step) in steps.iter().enumerate(){
+        if index==0 && (step.prior_digest!=cursor.digest ||
+            step.prior_version!=cursor.version) {
+            // A pre-existing, explicitly journaled Codex manual repin may be
+            // the source of the first managed copy. It must predate this hop.
+            if !has_manual_program_repin_witness(connection,id,home,
+                original_digest,original_version,&step.prior_digest,
+                &step.prior_version,step.before)? {return Ok(Some(false))}
+            cursor.digest=step.prior_digest.clone();
+            cursor.version=step.prior_version.clone();
+        }
+        if !advance_managed_switch_chain(&mut cursor,step){
+            return Ok(Some(false));
+        }
+    }
+    if cursor.digest!=current_digest || cursor.version!=current_version{
+        return Ok(Some(false));
+    }
+    let source=Statement::prepare(connection.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_instance_program_sources WHERE instance_id=?1 AND source='MANAGED' AND stage_name=?2 AND program_digest=?3 AND version=?4 AND home_identity=?5")?;
+    for (index,value) in [id,cursor.stage.as_deref().unwrap(),current_digest,current_version,home]
+        .iter().enumerate(){source.bind_text((index+1) as i32,value)?;}
+    Ok(Some(source.step_row()? && !source.step_row()?))
+}
+
 fn repin_receipt_json(revision: i64, home: &str, digest: &str, version: &str, fingerprint: &str) -> String {
     Json::Object([
         ("schema", "gogoke.37.instance-repin.v1".to_owned()),
@@ -188,6 +371,124 @@ fn repin_receipt_json(revision: i64, home: &str, digest: &str, version: &str, fi
         ("requestFingerprint", fingerprint.to_owned()),
     ].into_iter().map(|(key, value)| (JsonString::from_str(key),
         Json::String(JsonString::from_str(&value)))).collect()).canonical()
+}
+
+fn managed_switch_receipt_json(request_id:&str, instance_id:&str, driver:&str,
+    home:&str, digest:&str, version:&str, revision:i64, copy_revision:i64,
+    fingerprint:&str)->String {
+    Json::Object([
+        ("schema", "gogoke.37.managed-switch-witness.v1".to_owned()),
+        ("status", "APPLIED".to_owned()),
+        ("requestId", request_id.to_owned()),
+        ("instanceId", instance_id.to_owned()),
+        ("driverId", driver.to_owned()),
+        ("homeIdentity", home.to_owned()),
+        ("programDigest", digest.to_owned()),
+        ("version", version.to_owned()),
+        ("revision", revision.to_string()),
+        ("copyPreviousRevision", copy_revision.to_string()),
+        ("requestFingerprint", fingerprint.to_owned()),
+    ].into_iter().map(|(key,value)| (JsonString::from_str(key),
+        Json::String(JsonString::from_str(&value)))).collect()).canonical()
+}
+
+fn numeric_version(version:&str)->Option<[u64;3]> {
+    let parts=version.split('.').collect::<Vec<_>>();
+    if parts.len()!=3 || parts.iter().any(|part|part.is_empty() ||
+        !part.bytes().all(|byte|byte.is_ascii_digit())) {return None}
+    Some([parts[0].parse().ok()?,parts[1].parse().ok()?,parts[2].parse().ok()?])
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static PRIVATE_WITNESS_TEST_PINS:
+        std::cell::RefCell<Option<Vec<(String,String,String)>>> = const {
+            std::cell::RefCell::new(None)
+        };
+}
+
+fn witnessed_catalog_digest(driver:&str,version:&str)->Option<String> {
+    #[cfg(test)]
+    if let Some(value)=PRIVATE_WITNESS_TEST_PINS.with(|cell|cell.borrow().as_ref().map(|pins|
+        pins.iter().find(|(d,v,_)|d==driver && v==version).map(|(_,_,sha)|sha.clone()))) {
+        return value;
+    }
+    super::managed_cli::read_official_cli_version(driver,version)
+        .map(|pin|pin.image_sha256.to_owned())
+}
+
+/// Called inside the Owner's existing immediate transaction after the exact
+/// instance and SOURCE CAS. The stored raw USER frame is the one the product
+/// must return a receipt for; a caller boolean never qualifies an upgrade.
+pub(super) fn record_managed_switch_witness(db:&VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,request:&ManagedSwitchRequest<'_>,instance:&ManagedSwitchInstance<'_>)
+    ->Result<String,RegistryError> {
+    check_owner_in_current_transaction(db,owner)
+        .map_err(|error|RegistryError::Authority(format!("{error:?}")))?;
+    let command=managed_request_command(request)?;
+    if !valid_id(instance.instance_id) || instance.before_revision<1 ||
+        instance.before_revision.checked_add(1)!=Some(instance.after_revision) ||
+        instance.old_stage.is_empty() || instance.new_stage.is_empty() ||
+        instance.home.is_empty() {return Err(RegistryError::Invalid("managed switch tuple"))}
+    let old=witnessed_catalog_digest(request.driver,instance.old_version)
+        .ok_or(RegistryError::Unknown)?;
+    let new=witnessed_catalog_digest(request.driver,request.target_version)
+        .ok_or(RegistryError::Unknown)?;
+    if instance.old_digest!=format!("sha256:{old}") ||
+        instance.new_digest!=format!("sha256:{new}") ||
+        instance.old_version==request.target_version {return Err(RegistryError::Unknown)}
+    let old_number=numeric_version(instance.old_version).ok_or(RegistryError::Unknown)?;
+    let new_number=numeric_version(request.target_version).ok_or(RegistryError::Unknown)?;
+    if (command=="upgrade" && new_number<=old_number) ||
+        (command=="rollback" && new_number>=old_number) {
+        return Err(RegistryError::Unknown);
+    }
+    let original=Statement::prepare(db.as_ptr(),
+        "SELECT request_hex FROM main.gogoke_v37_instance_operations WHERE target_id=?1 AND phase='APPLIED' AND native_receipt_id IS NOT NULL")?;
+    original.bind_text(1,instance.instance_id)?;
+    if !original.step_row()? {return Err(RegistryError::Unknown)}
+    let creation=decode_framed_hex(&original.column_text(0)?)?;
+    if creation.len()!=5 || original.step_row()? {
+        return Err(RegistryError::Unknown);
+    }
+    drop(original);
+    let original_digest=std::str::from_utf8(&creation[3])
+        .map_err(|error|RegistryError::RepinFormat(format!("creation digest UTF-8: {error}")))?;
+    let original_version=std::str::from_utf8(&creation[4])
+        .map_err(|error|RegistryError::RepinFormat(format!("creation version UTF-8: {error}")))?;
+    let current=Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_instances i JOIN main.gogoke_v37_instance_program_sources s ON s.instance_id=i.instance_id WHERE i.instance_id=?1 AND i.driver_id=?2 AND i.home_identity=?3 AND i.program_digest=?4 AND i.version=?5 AND i.revision=?6 AND s.source='MANAGED' AND s.home_identity=?3 AND s.program_digest=?4 AND s.version=?5 AND s.stage_name=?7")?;
+    for (index,value) in [instance.instance_id,request.driver,instance.home,
+        instance.new_digest,request.target_version].iter().enumerate() {
+        current.bind_text((index+1) as i32,value)?;
+    }
+    current.bind_i64(6,instance.after_revision)?;
+    current.bind_text(7,instance.new_stage)?;
+    if !current.step_row()? || current.step_row()? {return Err(RegistryError::Unknown)}
+    drop(current);
+    let stage_pair=format!("{}\0{}",instance.old_stage,instance.new_stage);
+    let before=instance.before_revision.to_string();
+    let after=instance.after_revision.to_string();
+    let copy_revision=request.expected_copy_revision.to_string();
+    let fingerprint=framed(&[MANAGED_SWITCH_MARKER,request.request_bytes,
+        request.request_id.as_bytes(),instance.instance_id.as_bytes(),request.driver.as_bytes(),
+        instance.home.as_bytes(),original_digest.as_bytes(),
+        original_version.as_bytes(),instance.old_digest.as_bytes(),
+        instance.old_version.as_bytes(),instance.new_digest.as_bytes(),
+        request.target_version.as_bytes(),stage_pair.as_bytes(),before.as_bytes(),
+        after.as_bytes(),copy_revision.as_bytes()]);
+    use sha2::{Digest,Sha256};
+    let key=format!("managed-switch-{:x}",Sha256::digest(
+        format!("{}\0{}",request.request_id,instance.instance_id).as_bytes()));
+    let receipt=managed_switch_receipt_json(request.request_id,instance.instance_id,
+        request.driver,instance.home,instance.new_digest,request.target_version,
+        instance.after_revision,request.expected_copy_revision,&fingerprint);
+    let write=Statement::prepare(db.as_ptr(),
+        "INSERT INTO main.gogoke_v37_instance_operations(request_id,request_hex,target_id,phase,receipt_json) VALUES(?1,?2,?3,'APPLIED',?4)")?;
+    write.bind_text(1,&key)?;write.bind_text(2,&fingerprint)?;
+    write.bind_text(3,instance.instance_id)?;write.bind_text(4,&receipt)?;
+    write.step_done()?;
+    Ok(receipt)
 }
 
 fn reconcile_creation(connection: &VerifiedDatabaseConnection<'_>, root: &RootLock,
@@ -536,9 +837,12 @@ pub(crate) fn reconcile_register_replay(connection: &VerifiedDatabaseConnection<
     if prior.0 != fingerprint(&original)? || operation(connection, request_id)? != Some(prior) {
         return Err(RegistryError::Unknown);
     }
-    if !observed_at_commit.matches_pin(&digest, &version)
-        && !has_program_repin_witness(connection, instance_id, &identity,
-            &observed_at_commit.digest, &observed_at_commit.version, &digest, &version)? {
+    let managed_chain=managed_switch_chain(connection,instance_id,&driver,&identity,
+        &observed_at_commit.digest,&observed_at_commit.version,&digest,&version)?;
+    if managed_chain==Some(false) ||
+        (!observed_at_commit.matches_pin(&digest,&version) && managed_chain!=Some(true) &&
+         !has_manual_program_repin_witness(connection,instance_id,&identity,
+            &observed_at_commit.digest,&observed_at_commit.version,&digest,&version,i64::MAX)?) {
         return Err(RegistryError::Unknown);
     }
     if observed_home(root, instance_id)? != Some(home) {
@@ -822,8 +1126,9 @@ pub(crate) fn record_observation(connection: &mut VerifiedDatabaseConnection<'_>
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
+    use sha2::Digest;
     use crate::store::instance::initialize_schema;
     use crate::store::same_open::{create_new, route_b_test_guard};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -884,6 +1189,36 @@ mod tests {
         row.bind_text(1, id).unwrap();
         assert!(row.step_row().unwrap());
         (0..12).map(|index| row.column_text(index).unwrap()).collect()
+    }
+
+    fn synthetic_managed_witness_step(connection:&mut VerifiedDatabaseConnection<'_>,
+        root:&RootLock,owner:&OwnerIssuer,request_id:&str,command:&str,
+        old:&ProgramObservation,new:&ProgramObservation,old_stage:&str,new_stage:&str,
+        copy_revision:i64,before_revision:i64,home:&str)->String {
+        let raw=format!("{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"{command}\",\"requestId\":\"{request_id}\",\"driverId\":\"codex\",\"targetVersion\":\"{}\",\"expectedRevision\":\"{copy_revision}\"}}",new.version);
+        connection.execute("BEGIN IMMEDIATE").unwrap();
+        let update=Statement::prepare(connection.as_ptr(),
+            "UPDATE main.gogoke_v37_instances SET program_digest=?1,version=?2,revision=revision+1 WHERE instance_id='instanceA' AND program_digest=?3 AND version=?4 AND revision=?5").unwrap();
+        update.bind_text(1,&new.digest).unwrap();update.bind_text(2,&new.version).unwrap();
+        update.bind_text(3,&old.digest).unwrap();update.bind_text(4,&old.version).unwrap();
+        update.bind_i64(5,before_revision).unwrap();update.step_done().unwrap();drop(update);
+        let update=Statement::prepare(connection.as_ptr(),
+            "UPDATE main.gogoke_v37_instance_program_sources SET program_digest=?1,version=?2,stage_name=?3,revision=revision+1 WHERE instance_id='instanceA' AND program_digest=?4 AND version=?5 AND stage_name=?6").unwrap();
+        for (index,value) in [new.digest.as_str(),new.version.as_str(),new_stage,
+            old.digest.as_str(),old.version.as_str(),old_stage].iter().enumerate(){
+            update.bind_text((index+1) as i32,value).unwrap();
+        }
+        update.step_done().unwrap();drop(update);
+        let request=ManagedSwitchRequest{request_bytes:raw.as_bytes(),request_id,
+            driver:"codex",target_version:&new.version,expected_copy_revision:copy_revision};
+        let receipt=record_managed_switch_witness(connection,owner,&request,
+            &ManagedSwitchInstance{instance_id:"instanceA",home,
+                old_digest:&old.digest,old_version:&old.version,old_stage,
+                new_digest:&new.digest,new_stage,before_revision,
+                after_revision:before_revision+1}).unwrap();
+        assert_eq!(verified_creation_request(connection,root,"instanceA").unwrap(),"creation");
+        connection.execute("COMMIT").unwrap();
+        receipt
     }
 
     #[test]
@@ -952,7 +1287,39 @@ mod tests {
     }
 
     #[test]
-    fn manual_repin_does_not_legitimize_changed_creation_pin_or_damaged_witness() {
+    pub(crate) fn manual_repin_does_not_legitimize_changed_creation_pin_or_damaged_witness() {
+        // Synthetic tuples exercise the production replay transition only.
+        // They are not catalog pins, executable bytes, or a product upgrade.
+        let step=|before,after,prior_digest:&str,prior_version:&str,prior_stage:&str,
+            next_digest:&str,next_version:&str,next_stage:&str|ManagedSwitchStep{
+            before,after,prior_digest:prior_digest.into(),prior_version:prior_version.into(),
+            prior_stage:prior_stage.into(),next_digest:next_digest.into(),
+            next_version:next_version.into(),next_stage:next_stage.into()};
+        let first=step(3,4,"digestA","1.0.0","stageA","digestB","1.0.1","stageB");
+        let second=step(4,5,"digestB","1.0.1","stageB","digestA","1.0.0","stageA");
+        let cursor=||ManagedSwitchCursor{digest:"digestA".into(),version:"1.0.0".into(),
+            stage:None,last_revision:0};
+        let mut continuous=cursor();
+        assert!(advance_managed_switch_chain(&mut continuous,&first));
+        assert!(advance_managed_switch_chain(&mut continuous,&second));
+        assert_eq!((continuous.digest.as_str(),continuous.version.as_str(),
+            continuous.stage.as_deref(),continuous.last_revision),
+            ("digestA","1.0.0",Some("stageA"),5));
+        let mut with_gap=cursor();
+        assert!(advance_managed_switch_chain(&mut with_gap,&first));
+        assert!(advance_managed_switch_chain(&mut with_gap,
+            &step(6,7,"digestB","1.0.1","stageB","digestA","1.0.0","stageA")));
+        for bad in [
+            step(3,4,"digestB","1.0.1","stageB","digestA","1.0.0","stageA"),
+            step(4,5,"wrong","1.0.1","stageB","digestA","1.0.0","stageA"),
+            step(4,5,"digestB","1.0.1","wrong-stage","digestA","1.0.0","stageA"),
+        ] {
+            let mut current=cursor();
+            assert!(advance_managed_switch_chain(&mut current,&first));
+            assert!(!advance_managed_switch_chain(&mut current,&bad));
+        }
+        let mut reverse=cursor();
+        assert!(!advance_managed_switch_chain(&mut reverse,&second));
         fixture(|connection, root| {
             let (owner, old, new) = repin_setup(connection, root);
             let raw = upgrade_bytes("upgradeA", 1);
@@ -976,6 +1343,43 @@ mod tests {
             connection.execute("UPDATE main.gogoke_v37_instance_operations SET receipt_json='{}' WHERE request_id='upgradeA'").unwrap();
             assert!(matches!(reconcile_program_repin(connection, root, &input), Err(RegistryError::Unknown)));
             assert!(matches!(reconcile_register_replay(connection, root, "creation", "instanceA", b"original registration"), Err(RegistryError::Unknown)));
+        });
+        fixture(|connection,root| {
+            // Private metadata-only fixture. The lookup seam is thread-local
+            // and cfg(test); OFFICIAL and the production stage/H path are not
+            // changed or exercised. It proves writer/replay custody only.
+            struct ResetPins;
+            impl Drop for ResetPins {
+                fn drop(&mut self){PRIVATE_WITNESS_TEST_PINS.with(|cell|*cell.borrow_mut()=None);}
+            }
+            let (owner,old,new)=repin_setup(connection,root);
+            PRIVATE_WITNESS_TEST_PINS.with(|cell|*cell.borrow_mut()=Some(vec![
+                ("codex".into(),old.version.clone(),old.digest[7..].into()),
+                ("codex".into(),new.version.clone(),new.digest[7..].into()),
+            ]));
+            let _reset=ResetPins;
+            let home=observed_home(root,"instanceA").unwrap().unwrap().opaque();
+            let source=Statement::prepare(connection.as_ptr(),
+                "INSERT INTO main.gogoke_v37_instance_program_sources(instance_id,source,stage_name,program_digest,version,home_identity,registration_request_id,revision) VALUES('instanceA','MANAGED','codex-0.1.0-original',?1,?2,?3,'creation',1)").unwrap();
+            source.bind_text(1,&old.digest).unwrap();source.bind_text(2,&old.version).unwrap();
+            source.bind_text(3,&home).unwrap();source.step_done().unwrap();drop(source);
+            let first=synthetic_managed_witness_step(connection,root,&owner,"managedUpA",
+                "upgrade",&old,&new,"codex-0.1.0-original","codex-0.160.0-next",7,1,&home);
+            assert!(first.contains("managedUpA"));
+            assert_eq!(reconcile_register_replay(connection,root,"creation","instanceA",
+                b"original registration").unwrap(),RegistrationReplay::Replayed);
+            let second=synthetic_managed_witness_step(connection,root,&owner,"managedBackB",
+                "rollback",&new,&old,"codex-0.160.0-next","codex-0.1.0-original",8,2,&home);
+            assert!(second.contains("managedBackB"));
+            assert_eq!(reconcile_register_replay(connection,root,"creation","instanceA",
+                b"original registration").unwrap(),RegistrationReplay::Replayed);
+            let first_key=format!("managed-switch-{:x}",sha2::Sha256::digest(
+                b"managedUpA\0instanceA"));
+            let corrupt=Statement::prepare(connection.as_ptr(),
+                "UPDATE main.gogoke_v37_instance_operations SET receipt_json='{}' WHERE request_id=?1").unwrap();
+            corrupt.bind_text(1,&first_key).unwrap();corrupt.step_done().unwrap();
+            assert!(matches!(reconcile_register_replay(connection,root,"creation","instanceA",
+                b"original registration"),Err(RegistryError::Unknown)));
         });
     }
 

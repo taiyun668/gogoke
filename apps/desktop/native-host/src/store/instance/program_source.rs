@@ -247,10 +247,14 @@ pub(crate) fn bind_managed_instance_program(db:&mut VerifiedDatabaseConnection<'
 pub(crate) fn activate_quiescent_managed_version(
     db:&mut VerifiedDatabaseConnection<'_>, root:&RootLock, owner:&OwnerIssuer,
     driver:&str, target_version:&str, target_stage:&str, expected_copy_revision:i64,
+    request_id:&str, request_bytes:&[u8],
 ) -> Result<usize,ProgramSourceError> {
     if expected_copy_revision<1 || target_stage.is_empty() {
         return Err(ProgramSourceError::Invalid);
     }
+    let request=registry::ManagedSwitchRequest{request_bytes,request_id,driver,
+        target_version,expected_copy_revision};
+    registry::managed_request_command(&request)?;
     let target=managed_cli::read_official_cli_version(driver,target_version)
         .ok_or(ProgramSourceError::Invalid)?;
     // The only presently compiled catalog entry per driver cannot perform a
@@ -259,6 +263,7 @@ pub(crate) fn activate_quiescent_managed_version(
     db.execute("BEGIN IMMEDIATE")?;
     let result=(||{
         check_owner_in_current_transaction(db,owner)?;
+        registry::managed_request_command(&request)?;
         managed_cli::no_unsettled_managed_version_change(db,driver)?;
         let copy=Statement::prepare(db.as_ptr(),
             "SELECT state,version,archive_sha256,image_sha256,stage_name,previous_version,previous_image_sha256,previous_stage_name,revision FROM main.gogoke_v37_instance_cli_copies WHERE driver_id=?1")?;
@@ -273,7 +278,7 @@ pub(crate) fn activate_quiescent_managed_version(
         let old_image=copy.column_text(6)?;
         let old_stage=copy.column_text(7)?;
         let revision=copy.column_text(8)?.parse::<i64>()
-            .map_err(|_|ProgramSourceError::Conflict)?;
+            .map_err(registry::RegistryError::RevisionParse)?;
         if copy.step_row()? || state!="PROBED" || version!=target.version ||
             archive!=target.archive_sha256 || image!=target.image_sha256 ||
             stage!=target_stage || revision!=expected_copy_revision ||
@@ -308,11 +313,26 @@ pub(crate) fn activate_quiescent_managed_version(
             instances.push((id,home));
         }
         drop(rows);
+        // One USER switch has one durable per-instance witness. A zero-instance
+        // switch needs a separate driver-level journal and cannot claim APPLIED
+        // through this instance-bound interface.
+        if instances.is_empty() {return Err(ProgramSourceError::Conflict)}
         // No external process can race the held same-open transaction. Each
         // mutation still compares the exact prior source and instance tuple.
         for (id,home) in &instances {
+            let before=Statement::prepare(db.as_ptr(),
+                "SELECT revision FROM main.gogoke_v37_instances WHERE instance_id=?1 AND driver_id=?2 AND version=?3 AND program_digest=?4 AND home_identity=?5")?;
+            for (index,value) in [id.as_str(),driver,old_version.as_str(),old_digest.as_str(),home.as_str()]
+                .iter().enumerate(){before.bind_text((index+1) as i32,value)?;}
+            if !before.step_row()? {return Err(ProgramSourceError::Conflict)}
+            let before_revision=before.column_text(0)?.parse::<i64>()
+                .map_err(registry::RegistryError::RevisionParse)?;
+            if before.step_row()? || before_revision<1 || before_revision==i64::MAX {
+                return Err(ProgramSourceError::Conflict);
+            }
+            drop(before);
             let instance=Statement::prepare(db.as_ptr(),
-                "UPDATE main.gogoke_v37_instances SET version=?1,program_digest=?2,revision=revision+1 WHERE instance_id=?3 AND driver_id=?4 AND version=?5 AND program_digest=?6 AND home_identity=?7")?;
+                "UPDATE main.gogoke_v37_instances SET version=?1,program_digest=?2,install_state='UNKNOWN',login_state='UNKNOWN',revision=revision+1 WHERE instance_id=?3 AND driver_id=?4 AND version=?5 AND program_digest=?6 AND home_identity=?7")?;
             for (index,value) in [target.version,new_digest.as_str(),id.as_str(),driver,
                 old_version.as_str(),old_digest.as_str(),home.as_str()].iter().enumerate() {
                 instance.bind_text((index+1) as i32,value)?;
@@ -333,6 +353,13 @@ pub(crate) fn activate_quiescent_managed_version(
             if !changed.step_row()? || changed.column_text(0)?!="1" || changed.step_row()? {
                 return Err(ProgramSourceError::Conflict);
             }
+            registry::record_managed_switch_witness(db,owner,&request,
+                &registry::ManagedSwitchInstance{
+                    instance_id:id,home,old_digest:&old_digest,old_version:&old_version,
+                    old_stage:&old_stage,new_digest:&new_digest,new_stage:target_stage,
+                    before_revision,after_revision:before_revision+1,
+                })?;
+            registry::verified_creation_request(db,root,id)?;
         }
         let ready=Statement::prepare(db.as_ptr(),
             "UPDATE main.gogoke_v37_instance_cli_copies SET state='READY',revision=revision+1 WHERE driver_id=?1 AND state='PROBED' AND version=?2 AND archive_sha256=?3 AND image_sha256=?4 AND stage_name=?5 AND previous_version=?6 AND previous_image_sha256=?7 AND previous_stage_name=?8 AND revision=?9")?;

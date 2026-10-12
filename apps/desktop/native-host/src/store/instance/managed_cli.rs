@@ -813,6 +813,9 @@ mod first_copy_tests {
 
     #[test]
     fn blocked_same_pin_progress_retains_first_copy_scope_but_partial_or_prior_pin_does_not() {
+        // This affected cloud filter also exercises the registry writer and
+        // original-registration replay through two synthetic durable hops.
+        super::super::registry::tests::manual_repin_does_not_legitimize_changed_creation_pin_or_damaged_witness();
         for driver in ["codex","claude","opencode","grok"] {
             let fixed=read_fixed_official_cli(driver).unwrap();
             assert_eq!(read_official_cli_version(driver,fixed.version)
@@ -823,6 +826,14 @@ mod first_copy_tests {
             assert!(safe_stage_name(&format!("{driver}-{}-private",fixed.version),fixed));
             assert!(!safe_stage_name(&format!("{driver}-999.999.999-private"),fixed));
         }
+        let raw=b"{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"rollback\",\"requestId\":\"switchA\",\"driverId\":\"opencode\",\"targetVersion\":\"1.18.31\",\"expectedRevision\":\"7\"}";
+        let request=super::super::registry::ManagedSwitchRequest{
+            request_bytes:raw,request_id:"switchA",driver:"opencode",
+            target_version:"1.18.31",expected_copy_revision:7};
+        assert_eq!(super::super::registry::managed_request_command(&request).unwrap(),"rollback");
+        assert!(super::super::registry::managed_request_command(
+            &super::super::registry::ManagedSwitchRequest{target_version:"1.18.32",..request})
+            .is_err());
         let _guard=route_b_test_guard();
         let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let path=std::env::temp_dir().join(format!("gogoke-first-copy-pin-{}-{nonce}",std::process::id()));
