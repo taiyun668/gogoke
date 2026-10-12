@@ -14,12 +14,16 @@ Codex 首次自管安装已用原 USER 入口派发一次，返回 READY、迁�
 
 缺 SOURCE 的本次真实启动直接记录 ProgramSource(Conflict)，未执行全局 Codex。其拒绝发生在事务之前，没有写入 H admission journal；下次正常 USER 连接重新执行现成准备流程，未清理或重写未知记录。
 
-Root 已继续新候选 OpenCode E/F 原 USER 执行，由当前正常启动同时核真实秘书长；当前 OpenCode MANAGED/READY、原登录、模板与新 ID 不存在的普通闭库核对通过。接下来核新 E/F、当前 H 的真实 stop/release 和正常关闭，再跑 OpenCode 生产 H 初始化、模型及 V08 双席审批。Sol 的现有执行包已并行完成对接，未运行材料不算能力。
+新候选已由自管 Codex 自动恢复真实秘书长 H。两次原读取确认同一当前 H/thread，原 capability 和 stop 回执取得真实 StopFact，正常关闭前读回 STOPPED；闭库 custody 为 STOPPED、凭据别名 DORMANT、profile REVOKED，未虚构 RELEASED。原凭据元数据和旧 custody 行保留。
+
+OpenCode 新席位及工作树的原 USER 建立和登记已完成；正常 shell/native 退出均 0，十三项保护相等。普通闭库读回确认席位 IDLE/USER、模板与设置一致，工作树 REGISTERED、物理身份一致，原 Grok 来源和登录保持，尚无该项目 H claim。下一步执行生产 H 初始化、模型及 V08 双席审批；准备包不算能力。
 
 本次是 SAC=0 下的实验换装；稳定点前请 Owner 重新开启并实际读回为 1。稳定完整链、完整 M2/M3、SAC 强制实测和 Owner 验收均未完成。没有新增授权范围、登录触点或公开发布。
 
 ## 参照
 
 复用已实测的候选 70→71 正常换装、OpenCode 首次自管安装、原保护观察与原 H stop/release 流程。F 的迁移生产者明确跳过停用实例，所以仪器分别保留全注册观察和实际迁移集合；同时按真实安装 outcome 的候选序号 72 绑定，产品版本仍为 0.1.63。独立聚焦复核未发现这两处仪器修订的阻塞。
+
+初始化仪器沿用刚完成的真实秘书长读取、精确 H capability/stop 和停止后读取。已确认 caption 关闭不包含 H stop，故在 OpenCode 初始化之前先停止本次自动启动的秘书长；未取得真实停止结论时保留进程和原文。此收尾细节经独立聚焦复核，无新增权限或产品源码改动。
 
 心跳正文已按 Owner 原文整体替换，小时频率及本对话保持。新增实际能力已通过 gh 真正发布并回读，记录在 [PR #54](https://github.com/taiyun668/gogoke/pull/54#issuecomment-6125307528)；完成记录后继续第一真机目标。
