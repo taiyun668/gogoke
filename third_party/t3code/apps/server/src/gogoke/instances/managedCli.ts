@@ -30,8 +30,9 @@ export class ManagedCliError extends Error {
   constructor(code: string, message: string) { super(message); this.code = code; }
 }
 
-export function fixedOfficialCli(driver: string) {
-  return FIXED_OFFICIAL_CATALOG.find((entry) => entry.driver === driver) ?? null;
+export function fixedOfficialCli(driver: string, version?: string) {
+  return FIXED_OFFICIAL_CATALOG.find((entry) => entry.driver === driver &&
+    (version === undefined || entry.version === version)) ?? null;
 }
 
 /** Official registry metadata is a notice only; this return value can never
@@ -195,6 +196,15 @@ async function extractAllowlistedTar(tarPath: string, destination: string,
 export async function stageFixedOfficialCli(root: string, driver: FixedDriver,
   progress?: StageProgress): Promise<StagedCli> {
   const item = fixedOfficialCli(driver);
+  if (!item) throw new ManagedCliError("DRIVER", "unsupported driver");
+  return stageVerifiedOfficialCli(root, driver, item.version, progress);
+}
+
+/** Caller supplies a version key only. URL, archive and image always come
+ * from the compiled catalog; an unverified release notice cannot be staged. */
+export async function stageVerifiedOfficialCli(root: string, driver: FixedDriver,
+  version: string, progress?: StageProgress): Promise<StagedCli> {
+  const item = fixedOfficialCli(driver, version);
   if (!item) throw new ManagedCliError("DRIVER", "unsupported driver");
   await plainDirectory(root);
   const stagePath = await mkdtemp(join(root, `${item.driver}-${item.version}-`));
