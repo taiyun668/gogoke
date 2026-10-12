@@ -75,8 +75,10 @@ export async function runProviderBoundaryCases(product, config, journal) {
     return reply;
   }
   const instances = await product.instances();
-  checked(instances.instances.some(value => value.instanceId === config.instanceId &&
-    value.driverId === 'codex' && value.state === 'LOGGED_IN'),
+  checked(typeof config.managedCodexAdmission === 'function'
+    ? config.managedCodexAdmission(instances, config.instanceId, 'provider-boundary-lead')
+    : instances.instances.some(value => value.instanceId === config.instanceId &&
+      value.driverId === 'codex' && value.state === 'LOGGED_IN'),
   'Configured M2 lead must be the actual logged-in Codex instance');
   for (const driverId of drivers.filter(value => selectedDrivers.has(value))) {
     const row = plan.cases.find(value => value.driverId === driverId);
@@ -118,8 +120,10 @@ export async function runProviderBoundaryCases(product, config, journal) {
       checked([source.seatId, source.instanceId, source.worktreeId].every(atom) &&
         source.seatId !== row.seatId && source.worktreeId !== row.worktreeId,
       'V10 K-SIDE composition needs a distinct original source seat/worktree');
-      checked(instances.instances.some(instance => instance.instanceId === source.instanceId &&
-        instance.state === 'LOGGED_IN'), 'V10 source instance is not already logged in');
+      checked(typeof config.managedCodexAdmission === 'function' && source.instanceId === config.instanceId
+        ? config.managedCodexAdmission(instances, source.instanceId, 'V10-review-source')
+        : instances.instances.some(instance => instance.instanceId === source.instanceId &&
+          instance.state === 'LOGGED_IN'), 'V10 source instance is not already logged in');
       const sourceSeat = await card(source.seatId);
       checked(sourceSeat.result.state === 'IDLE' && sourceSeat.result.instanceId === source.instanceId,
         'V10 original source seat is not ready for K-SIDE composition');

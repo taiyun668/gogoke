@@ -6,6 +6,8 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { ActualProduct, readJson, sha256, id, delay } from './product-cdp.mjs';
+import { readManagedCodexSource, observeManagedCodexInstance,
+  checkManagedCodexCapability } from './m2-extra-managed-source.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const config = readJson(process.argv[2]);
@@ -69,11 +71,37 @@ delete journal.driverBytes['m1-win11.mjs'];
 delete journal.driverBytes['m1-readback.py'];
 journal.driverBytes['m2-win11.mjs'] = sha256(path.join(here, 'm2-win11.mjs'));
 journal.driverBytes['m2-readback.py'] = sha256(path.join(here, 'm2-readback.py'));
+let managedSource;
+if (config.managedSourceRead !== undefined) {
+  journal.driverBytes['m2-extra-managed-source.mjs'] = sha256(path.join(here, 'm2-extra-managed-source.mjs'));
+}
 const check = (condition, name) => {
   if (!condition) throw Error(name);
   if (!journal.assertions.includes(name)) { journal.assertions.push(name); product.save(); }
 };
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+const originalOperation = product.operation.bind(product);
+product.operation = async (...args) => {
+  const receipt = await originalOperation(...args);
+  if (managedSource && args[0] === 'K-SESSION' && args[1] === 'capability-probe') {
+    const session = journal.sessions.find(row => row.id === args[2]);
+    if (session?.instanceId === managedSource.fact.instance_id || receipt.result?.driverId === 'codex') {
+      checkManagedCodexCapability(session, receipt);
+      managedSource.capabilityProbes.push({ instanceId: session.instanceId,
+        sessionId: session.id, threadId: session.threadId,
+        requestId: journal.operations.at(-1).request.requestId, receipt });
+      product.save();
+    }
+  }
+  return receipt;
+};
+function admittedCodexInstance(page, selectedInstanceId, phase) {
+  if (!managedSource) return page.instances.some(row => row.instanceId === selectedInstanceId &&
+    row.driverId === 'codex' && row.state === 'LOGGED_IN');
+  const observation = observeManagedCodexInstance(managedSource, page, selectedInstanceId);
+  managedSource.uiObservations.push({ phase, ...observation }); product.save();
+  return true;
+}
 
 async function snapshot(phase) {
   for (const observer of config.observers) {
@@ -288,6 +316,7 @@ async function openUserSession(seatId, instanceId, worktreeId, tag) {
   await sessionOp(session, 'admission-commit', { seatId });
   const open = await sessionOp(session, 'open', { seatId, repositoryId: config.repositoryId, worktreeId });
   session.threadId = open.result.threadId; product.save();
+  if (managedSource) await sessionOp(session, 'capability-probe');
   return session;
 }
 async function openRetainedLead() {
@@ -442,6 +471,10 @@ async function childCompletion(locator) {
   const terminal = child.events.find(event => event._meta?.codexMethod === 'turn/completed');
   check(terminal?._meta?.turnStatus === 'completed', 'Child original CLI turn completed');
   child.turns.push({ turnId: terminal._meta.turnId, threadId: terminal._meta.threadId }); product.save();
+  if (managedSource) {
+    child.threadId = terminal._meta.threadId; product.save();
+    await sessionOp(child, 'capability-probe');
+  }
   return child;
 }
 async function awaitChildIdle() {
@@ -514,8 +547,7 @@ async function runSideChat() {
   'V12 explicit independent test seats and fresh logical worktrees');
   const instances = await product.instances();
   for (const prefix of ['source', 'side']) {
-    check(instances.instances.some(row => row.instanceId === side[`${prefix}InstanceId`] &&
-      row.driverId === 'codex' && row.state === 'LOGGED_IN'),
+    check(admittedCodexInstance(instances, side[`${prefix}InstanceId`], `V12-${prefix}`),
     `V12 ${prefix}: actual admitted Codex login state`);
   }
   journal.sideChatPlan = Object.fromEntries(names.map(name => [name, side[name]])); product.save();
@@ -543,7 +575,8 @@ async function runSideChat() {
   const { runSideChatCase } = await import('./m2-sidechat.mjs');
   journal.driverBytes['m2-sidechat.mjs'] = sha256(path.join(here, 'm2-sidechat.mjs'));
   product.save();
-  const sideCase = await runSideChatCase(product, { ...config, sideChat: prepared }, journal);
+  const sideCase = await runSideChatCase(product, { ...config, sideChat: prepared,
+    managedCodexAdmission: managedSource ? admittedCodexInstance : undefined }, journal);
   if (sideCase.state === 'NOT_RUN') {
     journal.v12 = 'NOT_RUN_MISSING_ORIGINAL_F_ARTIFACT'; product.save();
     throw Error('V12 original module did not run; preserve its reason and do not claim M2 flow complete');
@@ -593,8 +626,7 @@ async function runRules() {
   const instances = await product.instances();
   for (const row of selections) {
     check(!forbiddenSeats.includes(row.seatId) && !forbiddenTrees.includes(row.worktreeId) &&
-      instances.instances.some(instance => instance.instanceId === row.instanceId &&
-        instance.driverId === 'codex' && instance.state === 'LOGGED_IN'),
+      admittedCodexInstance(instances, row.instanceId, `V08-${row.seatId}`),
     'Rules use qualified exclusive Codex test identities');
   }
   for (const row of selections) {
@@ -642,16 +674,19 @@ try {
   check(fs.existsSync(config.testbedSource) && fs.statSync(config.testbedSource).isDirectory(), 'Private testbed source exists');
   check(!fs.existsSync(path.join(config.testbedSource, journal.markerFile)), 'Unique marker absent from main tree');
   await snapshot('before');
+  managedSource = readManagedCodexSource(config);
+  if (managedSource) {
+    journal.managedSourceRead = { ...managedSource, uiObservations: [], capabilityProbes: [] };
+    managedSource = journal.managedSourceRead; product.save();
+  }
   await product.launch();
   check(Boolean(product.tester) && journal.connectionBackend?.agentActs === 0 &&
     journal.connectionBackend?.telemetryDisabled === true,
   'Original e2e hard locator with telemetry off and no agent.act');
   const instances = await product.instances(); journal.instances = instances; product.save();
-  check(instances.instances.some(row => row.instanceId === config.instanceId &&
-    row.driverId === 'codex' && row.state === 'LOGGED_IN'),
+  check(admittedCodexInstance(instances, config.instanceId, 'lead-initial'),
     'Actual Codex lead login status already qualified');
-  check(instances.instances.some(row => row.instanceId === config.childInstanceId &&
-    row.driverId === 'codex' && row.state === 'LOGGED_IN'),
+  check(admittedCodexInstance(instances, config.childInstanceId, 'child-initial'),
   'Actual child Codex instance pre-admitted without any login action');
   if (config.policyInitialization) {
     check(config.policyInitialization.stage === 'OPEN' && config.policyInitialization.expectedRevision === '0',
@@ -737,7 +772,8 @@ try {
   if (boundaryRows.length >= 1 && boundaryRows.length <= 3) {
     await product.launch();
     const { runProviderBoundaryCases } = await import('./m2-provider-cases.mjs');
-    await runProviderBoundaryCases(product, { ...config, providerBoundary: { cases: boundaryRows } }, journal);
+    await runProviderBoundaryCases(product, { ...config, providerBoundary: { cases: boundaryRows },
+      managedCodexAdmission: managedSource ? admittedCodexInstance : undefined }, journal);
     await product.closeNormally();
     await providerBoundaryReadback();
   } else {

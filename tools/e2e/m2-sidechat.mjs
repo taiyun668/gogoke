@@ -213,7 +213,10 @@ export async function runSideChatCase(product, config, journal) {
     const instances = await product.instances();
     for (const instanceId of new Set([c.sourceInstanceId, c.sideInstanceId])) {
       const instance = instances.instances.find(row => row.instanceId === instanceId);
-      check(instance?.driverId === 'codex' && instance.state === 'LOGGED_IN' && instance.version === '0.160.0',
+      check(instance?.driverId === 'codex' && instance.version === '0.160.0' &&
+        (typeof config.managedCodexAdmission === 'function'
+          ? config.managedCodexAdmission(instances, instanceId, 'V12-direct')
+          : instance.state === 'LOGGED_IN'),
         'V12 consumes only the already admitted fixed Codex instance');
     }
     const sourceSeat = await readAtRevision('K-SEAT', 'state-card', c.sourceSeatId, {});
