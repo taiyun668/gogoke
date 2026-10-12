@@ -148,7 +148,9 @@ jobs:
             'managed-first-copy' { @(
               'blocked_same_pin_progress_retains_first_copy_scope_but_partial_or_prior_pin_does_not',
               'managed_begin_without_copy_row_retains_version_change_barrier',
-              'completed_empty_release_revoked_capture_does_not_select_next_failed_resume_group') }
+              'completed_empty_release_revoked_capture_does_not_select_next_failed_resume_group',
+              'claude_holder_unknown_open_keeps_originals_and_rejects_captured_status_drift',
+              'claude_stopped_peer_parent_chain_uses_original_request_not_reconciled_revision') }
             'seat-scope' { @('store::seat::orchestration::tests',
               'store::seat::tests::owner_policy_head_read_requires_current_owner_and_preserves_absent_or_existing_fact',
               'store::seat::tests::native_child_scope_cap_refuses_a_second_seat_without_minting_a_grant',
@@ -218,7 +220,7 @@ jobs:
           }
           $node = Get-Command node.exe -CommandType Application | Select-Object -First 1 -ExpandProperty Source
           $env:GOGOKE_CONTROLLED_NODE_PATH = $node
-          if ($env:FOCUSED_LIBRARY -in @('m2-provider-current', 'codex-empty-persist', 'holder-completed-group')) {
+          if ($env:FOCUSED_LIBRARY -in @('m2-provider-current', 'codex-empty-persist', 'holder-completed-group', 'managed-first-copy')) {
             # The composed F/H fixture uses the real backend image, like the
             # existing full-library job; the git.exe launcher is not its pin.
             $execPath = & git --exec-path

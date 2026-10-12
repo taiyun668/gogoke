@@ -71,6 +71,29 @@ fn claude_holder_unknown_open_keeps_originals_and_rejects_captured_status_drift(
         assert!(opens_before.iter().all(|row| row[5] == "UNKNOWN"));
         assert!(custody_before.iter().all(|row| row[10] == "UNKNOWN" && row[12] == "1"));
         assert!(episodes_before.iter().all(|row| row[15] == "PREPARED" && row[16] == "NULL"));
+        // Synthetic persisted, never emitted stdin; its identity comes from
+        // the original production launch. Unknown delivery remains unknown.
+        let source=rows(&product,
+            "SELECT e.process_operation_id,c.ticket,c.custodian_nonce,e.generation
+             FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_coordination_process_custody c
+               ON c.operation_id=e.process_operation_id
+             WHERE e.domain_id='projectA' AND e.session_id='sessionA'",&[],4);
+        assert_eq!(source.len(),1);
+        let r=&source[0];
+        let send=operation("projectA","K-SESSION","send","managed-pending-send","sessionA",2,
+            &format!(r#"{{"generation":"{}","text":"synthetic unconfirmed; never emitted"}}"#,r[3]));
+        let send_hex:String=send.raw_bytes.iter().map(|byte|format!("{byte:02x}")).collect();
+        let insert=Statement::prepare(product.connection.as_ptr(),
+            "INSERT INTO main.gogoke_v37_h_stdin_journal(domain_id,request_id,operation,ticket,
+             process_operation_id,custodian_nonce,session_id,generation,request_hex,phase,expected_revision)
+             VALUES('projectA','managed-pending-send','send',?1,?2,?3,'sessionA',?4,?5,'PREPARED','2')").unwrap();
+        for (n,value) in [&r[1],&r[0],&r[2],&r[3],&send_hex].iter().enumerate(){insert.bind_text(n as i32+1,value).unwrap();}
+        insert.step_done().unwrap();drop(insert);
+        let pending_before=rows(&product,
+            "SELECT ticket,process_operation_id,custodian_nonce,generation,request_hex,phase,quote(receipt_hex)
+             FROM main.gogoke_v37_h_stdin_journal WHERE request_id='managed-pending-send'",&[],7);
+        assert!(product.qualified_managed_source_resources(INSTANCE,"claude").is_err(),
+            "UNKNOWN without completed resource release is not quiescent");
         NativeProcessHoldersGone::observe(&cold.pairs).unwrap().validate(&cold.pairs).unwrap();
         assert_eq!(occupancy(&mut product), None);
         product.connection.execute(
@@ -111,6 +134,67 @@ fn claude_holder_unknown_open_keeps_originals_and_rejects_captured_status_drift(
             assert_eq!(seat::get(&product.connection, domain, seat_id).unwrap().unwrap().state, seat::State::Idle);
         }
         assert_eq!(occupancy(&mut product), Some(0));
+        assert!(product.qualified_managed_source_resources(INSTANCE,"claude").is_err(),
+            "an existing managed source cannot borrow the first-copy exception");
+        // Project only the observed first-copy metadata shape in this private
+        // fixture; original CLI launch, ACL retirement and H records stay real.
+        // This is not an installed legacy-to-managed migration success claim.
+        product.connection.execute(
+            "DELETE FROM main.gogoke_v37_instance_program_sources WHERE instance_id='instanceA';
+             UPDATE main.gogoke_v37_instance_cli_copies SET state='PROBED' WHERE driver_id='claude'",
+        ).unwrap();
+        assert!(product.qualified_managed_source_resources(INSTANCE,"claude").is_ok(),
+            "first same-pin source consumes independent original releases without promoting UNKNOWN");
+        assert_eq!(rows(&product,
+            "SELECT ticket,process_operation_id,custodian_nonce,generation,request_hex,phase,quote(receipt_hex)
+             FROM main.gogoke_v37_h_stdin_journal WHERE request_id='managed-pending-send'",&[],7),pending_before);
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_h_stdin_journal SET custodian_nonce=custodian_nonce||'0'
+             WHERE request_id='managed-pending-send'",
+        ).unwrap();
+        assert!(product.qualified_managed_source_resources(INSTANCE,"claude").is_err(),
+            "another custody nonce cannot borrow the original completed release");
+        let restore=Statement::prepare(product.connection.as_ptr(),
+            "UPDATE main.gogoke_v37_h_stdin_journal SET custodian_nonce=?1 WHERE request_id='managed-pending-send'").unwrap();
+        restore.bind_text(1,&r[2]).unwrap();restore.step_done().unwrap();drop(restore);
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_h_stdin_journal SET expected_revision='3'
+             WHERE request_id='managed-pending-send'",
+        ).unwrap();
+        assert!(product.qualified_managed_source_resources(INSTANCE,"claude").is_err(),
+            "retained raw cannot borrow a changed persistent expected revision");
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_h_stdin_journal SET expected_revision='2'
+             WHERE request_id='managed-pending-send'",
+        ).unwrap();
+        // Synthetic UNKNOWN stop intent, never a StopFact or a sent stop.
+        // Its stored request must name this exact original episode's stop.
+        let pending_stop=operation("projectA","K-SESSION","stop","managed-pending-stop","sessionA",3,
+            &format!(r#"{{"seatId":"seatA","generation":"{}"}}"#,r[3]));
+        let stop_hex:String=pending_stop.raw_bytes.iter().map(|byte|format!("{byte:02x}")).collect();
+        let insert=Statement::prepare(product.connection.as_ptr(),
+            "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,
+             session_id,status,previous_revision,revision)
+             VALUES('projectA','managed-pending-stop',?1,'stop','sessionA','UNKNOWN',3,3)").unwrap();
+        insert.bind_text(1,&stop_hex).unwrap();insert.step_done().unwrap();drop(insert);
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_h_process_episode SET stop_request_id='managed-pending-stop'
+             WHERE domain_id='projectA' AND session_id='sessionA'",
+        ).unwrap();
+        assert!(product.qualified_managed_source_resources(INSTANCE,"claude").is_ok(),
+            "the exact UNKNOWN stop may consume only the independent original release");
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_h_process_episode SET stop_request_id='another-stop'
+             WHERE domain_id='projectA' AND session_id='sessionA'",
+        ).unwrap();
+        assert!(product.qualified_managed_source_resources(INSTANCE,"claude").is_err(),
+            "matching seat/generation cannot substitute for the original stop request ID");
+        product.connection.execute(
+            "DELETE FROM main.gogoke_v37_h_operation WHERE domain_id='projectA'
+               AND request_id='managed-pending-stop';
+             UPDATE main.gogoke_v37_h_process_episode SET stop_request_id=NULL
+               WHERE domain_id='projectA' AND session_id='sessionA'",
+        ).unwrap();
         // The completed receipt still compares the captured original status.
         // Drift during a pending intent instead fences it UNKNOWN permanently;
         // do not invent a reset-and-resume path for that different case.
@@ -119,6 +203,8 @@ fn claude_holder_unknown_open_keeps_originals_and_rejects_captured_status_drift(
              WHERE domain_id='projectB' AND operation='open' AND session_id='sessionB'",
         ).unwrap();
         let drift = product.recover_disappeared_claude_resources(INSTANCE, None).unwrap_err();
+        assert!(product.qualified_managed_source_resources(INSTANCE,"claude").is_err(),
+            "changed captured open status also fences source migration");
         assert!(format!("{drift:?}").contains("Claude prior disappeared holder release unverified"), "{drift:?}");
         assert_eq!(claims(&product), expected);
         assert_eq!(journal(&product), completed);
@@ -379,6 +465,47 @@ struct StoppedHistory {
     sid: String,
     operation_id: String,
     stop_fact: String,
+}
+
+#[test]
+fn claude_stopped_peer_parent_chain_uses_original_request_not_reconciled_revision() {
+    cold_two_claude_with_stopped(true, |mut product, _root, cold| {
+        let parent=cold.stopped.as_ref().expect("actual normally stopped parent");
+        let source=rows(&product,
+            "SELECT e.domain_id,e.session_id,e.generation,e.seat_incarnation,e.seat_id,
+                    s.revision,c.binary_digest_sha256 FROM main.gogoke_v37_h_process_episode e
+             JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id
+             JOIN main.gogoke_v37_h_operation s ON s.domain_id=e.domain_id
+               AND s.session_id=e.session_id AND s.request_id=e.stop_request_id AND s.operation='stop'
+             WHERE e.process_operation_id=?1",&[&parent.operation_id],7);
+        assert_eq!(source.len(),1);
+        let r=&source[0];
+        let old=r[2].parse::<u64>().unwrap();
+        let revision=r[5].parse::<u64>().unwrap();
+        let resume=operation(&r[0],"K-SESSION","resume","synthetic-metadata-edge-only",
+            &r[1],revision,&format!(r#"{{"generation":"{old}"}}"#));
+        // This tests a metadata parent edge, not a launched child, vendor
+        // session, successful resume or ACL retirement. The parent is real.
+        let mut child=vec![String::new();23];
+        child[0]=r[0].clone();child[1]=r[1].clone();child[2]=(old+1).to_string();
+        child[3]=r[3].clone();child[4]=r[4].clone();child[7]=r[2].clone();
+        child[6]=resume.raw_bytes.iter().map(|byte|format!("{byte:02x}")).collect();
+        let before=(custody(&product),episodes(&product),rpc(&product),claims(&product),journal(&product));
+        let chain=product.claude_stopped_peer_parent_chain(INSTANCE,&r[6],&child).unwrap();
+        assert_eq!(chain.len(),1);assert_eq!(chain[0][8],parent.operation_id);
+        assert_eq!(chain[0][10],parent.stop_fact);
+        let wrong=operation(&r[0],"K-SESSION","resume","synthetic-metadata-edge-only",
+            &r[1],revision+1,&format!(r#"{{"generation":"{old}"}}"#));
+        child[6]=wrong.raw_bytes.iter().map(|byte|format!("{byte:02x}")).collect();
+        assert!(product.claude_stopped_peer_parent_chain(INSTANCE,&r[6],&child).is_err(),
+            "same generation and seat cannot borrow another original parent revision");
+        child[6]=resume.raw_bytes.iter().map(|byte|format!("{byte:02x}")).collect();
+        child[3].push('0');
+        assert!(product.claude_stopped_peer_parent_chain(INSTANCE,&r[6],&child).is_err(),
+            "another seat incarnation has no original parent");
+        assert_eq!((custody(&product),episodes(&product),rpc(&product),claims(&product),journal(&product)),before);
+        product.close_checked().unwrap();
+    });
 }
 fn cold_two_claude(run: impl for<'a> FnOnce(ProductDatabase<'a>, &'a RootLock, &Cold)) {
     cold_two_claude_with_stopped(false, run)

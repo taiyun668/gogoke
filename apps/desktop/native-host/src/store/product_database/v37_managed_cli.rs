@@ -101,15 +101,40 @@ impl<'a> ProductDatabase<'a> {
     }
 
     pub(super) fn qualified_managed_source_resources(&self,id:&str,driver:&str)->Result<()> {
+        let first_claude_copy=driver=="claude" &&
+            instance::is_first_same_pin_copy(&self.connection,driver)
+                .map_err(|error|failure("first source copy scope",error))?;
         let pending=|sql:&str|->Result<bool>{
             let row=Statement::prepare(self.connection.as_ptr(),sql)?;
             row.bind_text(1,id)?;
             Ok(row.step_row()?)
         };
+        if pending("SELECT 1 FROM main.gogoke_v37_h_generation_change g JOIN main.gogoke_v37_h_process_episode e ON e.process_operation_id=g.old_process_operation_id WHERE e.instance_id=?1 AND g.stage NOT IN ('APPLIED','CANCELLED','UNSUPPORTED') LIMIT 1")? {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let ops=Statement::prepare(self.connection.as_ptr(),
+            "SELECT o.domain_id,o.session_id,o.request_id FROM main.gogoke_v37_h_operation o JOIN main.gogoke_v37_h_claim c ON c.domain_id=o.domain_id AND c.session_id=o.session_id WHERE c.instance_id=?1 AND o.status!='APPLIED'")?;
+        ops.bind_text(1,id)?;
+        let mut retained=Vec::new();
+        while ops.step_row()? {retained.push((ops.column_text(0)?,ops.column_text(1)?,ops.column_text(2)?));}
+        drop(ops);
+        for (domain,session,request) in retained {
+            if !first_claude_copy || !self.completed_claude_managed_pending_operation(id,&domain,&session,&request)? {
+                return Err(OrchestrationError::AccessDenied);
+            }
+        }
+        let stdin=Statement::prepare(self.connection.as_ptr(),
+            "SELECT j.domain_id,j.request_id FROM main.gogoke_v37_h_stdin_journal j JOIN main.gogoke_v37_h_claim c ON c.domain_id=j.domain_id AND c.session_id=j.session_id WHERE c.instance_id=?1 AND j.phase IN ('PREPARED','UNKNOWN')")?;
+        stdin.bind_text(1,id)?;
+        let mut retained=Vec::new();
+        while stdin.step_row()? {retained.push((stdin.column_text(0)?,stdin.column_text(1)?));}
+        drop(stdin);
+        for (domain,request) in retained {
+            if !first_claude_copy || !self.completed_claude_managed_pending_stdin(id,&domain,&request)? {
+                return Err(OrchestrationError::AccessDenied);
+            }
+        }
         for sql in [
-            "SELECT 1 FROM main.gogoke_v37_h_generation_change g JOIN main.gogoke_v37_h_process_episode e ON e.process_operation_id=g.old_process_operation_id WHERE e.instance_id=?1 AND g.stage NOT IN ('APPLIED','CANCELLED','UNSUPPORTED') LIMIT 1",
-            "SELECT 1 FROM main.gogoke_v37_h_operation o JOIN main.gogoke_v37_h_claim c ON c.domain_id=o.domain_id AND c.session_id=o.session_id WHERE c.instance_id=?1 AND o.status!='APPLIED' LIMIT 1",
-            "SELECT 1 FROM main.gogoke_v37_h_stdin_journal j JOIN main.gogoke_v37_h_claim c ON c.domain_id=j.domain_id AND c.session_id=j.session_id WHERE c.instance_id=?1 AND j.phase IN ('PREPARED','UNKNOWN') LIMIT 1",
             "SELECT 1 FROM main.gogoke_v37_instance_homes WHERE instance_id=?1 AND state NOT IN ('ACTIVE','CLEANED','CLOSED') LIMIT 1",
             "SELECT 1 FROM main.gogoke_v37_instance_operations WHERE target_id=?1 AND phase!='APPLIED' LIMIT 1",
             "SELECT 1 FROM main.gogoke_v37_credential_objects WHERE instance_id=?1 AND phase!='ACTIVE' LIMIT 1",
@@ -134,6 +159,8 @@ impl<'a> ProductDatabase<'a> {
             }
             if matches!(state.as_str(),"RELEASED"|"STOPPED") && !operation.is_empty() &&
                 !stop.is_empty() && custody=="STOPPED" && proof==stop {continue}
+            if first_claude_copy && state=="RELEASED" && stop.is_empty() && !operation.is_empty()
+                && self.completed_claude_holder_release(id,domain,session,operation)? {continue}
             if state=="RELEASED" && stop.is_empty() && !operation.is_empty() &&
                 driver=="codex" && (self.completed_codex_holder_release(id,domain,session,operation)? ||
                     self.completed_codex_failed_resume_resource_release(id,domain,session,operation)?) {
@@ -154,6 +181,9 @@ impl<'a> ProductDatabase<'a> {
             if operation.is_empty() && phase=="FAILED" {continue}
             if matches!(phase.as_str(),"STOPPED"|"FAILED") && !stop.is_empty() &&
                 custody=="STOPPED" && proof==stop {continue}
+            if first_claude_copy && !operation.is_empty()
+                && (self.completed_claude_holder_release(id,domain,session,operation)?
+                    || self.completed_claude_failed_resume_resource_release(id,domain,session,operation)?) {continue}
             if !operation.is_empty() && driver=="codex" &&
                 (self.completed_codex_holder_release(id,domain,session,operation)? ||
                  self.completed_codex_failed_resume_resource_release(id,domain,session,operation)?) {continue}
@@ -163,6 +193,29 @@ impl<'a> ProductDatabase<'a> {
     }
 
     pub(super) fn migrate_managed_cli(&mut self,driver:&str,stage:&str)->Result<usize> {
+        // Explicit migration recovery, never part of staging or version probe.
+        // Each old ACL effect uses the independent original durable intent.
+        if driver=="claude" && instance::is_first_same_pin_copy(&self.connection,driver)
+            .map_err(|error|failure("first source copy recovery scope",error))? {
+            self.no_live_global_cli_owner(driver)?;
+            let copy=instance::read_managed_cli(&self.connection,self.root,driver)
+                .map_err(|error|failure("migration recovery copy",error))?
+                .ok_or(OrchestrationError::AccessDenied)?;
+            if copy.state!="PROBED" || copy.stage_name.as_deref()!=Some(stage) {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            instance::inspect_staged_official_cli(self.root,driver,stage)
+                .map_err(|error|failure("migration recovery exact stage",error))?;
+            let instances=Statement::prepare(self.connection.as_ptr(),
+                "SELECT i.instance_id FROM main.gogoke_v37_instances i
+                 LEFT JOIN main.gogoke_v37_instance_profiles p ON p.instance_id=i.instance_id
+                 WHERE i.driver_id='claude' AND (p.tombstoned IS NULL OR p.tombstoned=0)
+                   AND (p.enabled IS NULL OR p.enabled=1) ORDER BY i.instance_id")?;
+            let mut ids=Vec::new();
+            while instances.step_row()? {ids.push(instances.column_text(0)?);}
+            drop(instances);
+            for id in ids {self.recover_claude_failed_resume_for_first_copy(&id)?;}
+        }
         self.connection.execute("BEGIN IMMEDIATE")
             .map_err(|error|failure("migration begin",error))?;
         let result=(||{

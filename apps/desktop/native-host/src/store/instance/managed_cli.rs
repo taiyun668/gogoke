@@ -291,6 +291,12 @@ pub(crate) fn no_unsettled_instance_use(db: &VerifiedDatabaseConnection<'_>, dri
 /// Only the first copy with an unchanged fixed image may defer historical
 /// global UNKNOWN retirement. A progressed copy must already identify these
 /// exact bytes; a prior source or previous copy makes this a replacement.
+pub(crate) fn is_first_same_pin_copy(db:&VerifiedDatabaseConnection<'_>,driver:&str)
+    ->Result<bool,ManagedCliError> {
+    let pin=read_fixed_official_cli(driver).ok_or(ManagedCliError::Unsupported)?;
+    first_same_pin_copy(db,driver,pin)
+}
+
 fn first_same_pin_copy(db:&VerifiedDatabaseConnection<'_>,driver:&str,
     pin:VerifiedOfficialCli)->Result<bool,ManagedCliError> {
     let source=Statement::prepare(db.as_ptr(),
