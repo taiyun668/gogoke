@@ -1,6 +1,6 @@
 //! Exact per-instance program source. New managed registrations bind their
-//! private copy; old registrations remain legacy until explicit quiescent
-//! migration, even when the old and new executable digests happen to match.
+//! private copy. Older registrations require explicit quiescent migration;
+//! matching executable digests alone never supply a source.
 
 use super::{catalog, managed_cli, registry};
 use crate::root::RootLock;
@@ -279,11 +279,35 @@ pub(crate) fn locate_bound_instance_program(db:&VerifiedDatabaseConnection<'_>,
         return managed_cli::locate_ready_managed_program_from_db(db,driver,digest,version)?
             .ok_or(ProgramSourceError::Conflict);
     }
-    // Once a managed lifecycle row exists, every new/unmigrated instance is
-    // ineligible. Old global bytes remain available only before that point.
-    let managed=Statement::prepare(db.as_ptr(),
-        "SELECT 1 FROM main.gogoke_v37_instance_cli_copies WHERE driver_id=?1 AND state='READY'")?;
-    managed.bind_text(1,driver)?;
-    if managed.step_row()?{return Err(ProgramSourceError::Conflict)}
-    catalog::locate_pinned_program(driver,digest,version).map_err(ProgramSourceError::Legacy)
+    // No source row means no launch, including before the first managed copy.
+    // Registration must use the independent official managed CLI path.
+    Err(ProgramSourceError::Conflict)
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use crate::root::RootLock;
+    use crate::store::same_open::{create_new, route_b_test_guard};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn registered_instance_without_source_conflicts_before_global_observation() {
+        let _guard=route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let folder=std::env::temp_dir().join(format!(
+            "gogoke-managed-source-only-{}-{nonce}",std::process::id()));
+        std::fs::create_dir(&folder).unwrap();
+        let root=RootLock::acquire(&folder).unwrap();
+        let database=folder.join("state.sqlite");
+        let mut db=create_new(&root,&database).unwrap();
+        super::super::initialize_schema(&mut db).unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('instanceA','codex','homeA','identityA','sha256:fixed','0.160.0','INSTALLED','LOGGED_IN',1)").unwrap();
+        assert!(matches!(locate_bound_instance_program(&db,"instanceA","codex",
+            "sha256:fixed","0.160.0"),Err(ProgramSourceError::Conflict)));
+        db.close_checked().unwrap();
+        drop(root);
+        std::fs::remove_file(database).unwrap();
+        std::fs::remove_dir(folder).unwrap();
+    }
 }
