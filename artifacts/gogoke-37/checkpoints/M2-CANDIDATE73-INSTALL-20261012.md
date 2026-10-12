@@ -54,3 +54,13 @@ Reference: the existing ActualProduct operation writes the journal before invoki
 A new case uses new E/F and request identities with the original six USER payloads. All six applied, both E revision chains and bounds 4 were read back from the original native records, both new F remained absent, and current managed Codex bytes/home and physical database identity matched. Secretary stop/read, both normal exit codes and all thirteen protection fields passed. The complete original core is now running from those fresh closed facts. Its final approval, rejection, policy and closure assertions remain pending. Host busy-to-idle preparation proceeds separately and must bind this new successful core, never the earlier FAIL.
 
 F's newly integrated version-switch API is still unused. Direct registration code review found that changing the pin also requires a durable witness connecting the immutable registration request to every subsequent real version switch. The manual Codex witness cannot supply that proof for managed four-provider changes. The F worker is correcting this inside the existing instance write scope; the unimplemented product bridge remains gated on Owner's scope merge. A second official OpenCode archive has been downloaded and its integrity, members and executable digest checked without execution or installation. Neither preparation nor this unused API counts as a runnable upgrade/rollback capability.
+
+## 当前 V08 核心实测完成
+
+新一轮原 core 已正常退出 0。封存后的原读取确认 13 次真实模型策略调用、对应原生工具回包和政策账本，包括提交、带原因拒绝、重新提交、批准、过期和上限约束、合法阶段流转。两席分别有 9/4 个真实终轮，原 H episode 与 C 的停止哈希一致，原 stop/release 请求链满足 CAS；两次标题栏正常关闭的 shell/native 均为 0/0。十三项保护的原快照逐字段相等，闭库测量未写库、未读凭据，原文件字节保持。任务按原 custody 核对后清理并确认不存在。旧 FAIL 不改，这一轮没有重放旧请求。
+
+原最终读取仍明确为 V08_INCOMPLETE：跨项目、对 Owner 投递、Host 送达及真实 stalled 链未由这份 core 覆盖。只认当前切片，不自行验收。参照现成 Host 忙转闲入口，新输入绑定本轮成功 journal/final、原两 H 真停止释放及当前 MANAGED/READY 来源，接收者均为新 E/F；该普通视图任务已经启动，最终送达及保护读取待完成。
+
+已用 `gh pr comment` 真正发出这段进展，并回读确认：[PR #54 进度](https://github.com/taiyun668/gogoke/pull/54#issuecomment-6131253444)。普通评论不消费待计入下一实际心跳的新能力，也不重置连续无新增计数。
+
+并行 V06 来源仪器保留原 UI ERROR，复用同一 sealed 来源和同一次 H capability-probe，补齐实际 helper 的运行哈希记录。全新聚焦复核、受影响来源安全云检通过；秘书长真实停止接线及新输入仍待完成，尚未跑真机 V06。Root 首次本机检查漏传明确 scratch 参数，被原 guard 拒绝；原失败保留，补传 D 目录后安全断言通过，没有修改 guard 或测试预期。F 的持久链修订完成集中静态复核，新的原生云检仍在跑，不使用旧提交通过或未覆盖 activation 的元数据夹具证明 CLI 升级。
