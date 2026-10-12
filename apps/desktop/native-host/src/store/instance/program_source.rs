@@ -247,14 +247,14 @@ pub(crate) fn bind_managed_instance_program(db:&mut VerifiedDatabaseConnection<'
 pub(crate) fn activate_quiescent_managed_version(
     db:&mut VerifiedDatabaseConnection<'_>, root:&RootLock, owner:&OwnerIssuer,
     driver:&str, target_version:&str, target_stage:&str, expected_copy_revision:i64,
-    request:&registry::ManagedSwitchRequest<'_>,
+    request_id:&str, request_bytes:&[u8],
 ) -> Result<usize,ProgramSourceError> {
-    if expected_copy_revision<1 || target_stage.is_empty() ||
-        request.driver!=driver || request.target_version!=target_version ||
-        request.expected_copy_revision!=expected_copy_revision {
+    if expected_copy_revision<1 || target_stage.is_empty() {
         return Err(ProgramSourceError::Invalid);
     }
-    registry::managed_request_command(request)?;
+    let request=registry::ManagedSwitchRequest{request_bytes,request_id,driver,
+        target_version,expected_copy_revision};
+    registry::managed_request_command(&request)?;
     let target=managed_cli::read_official_cli_version(driver,target_version)
         .ok_or(ProgramSourceError::Invalid)?;
     // The only presently compiled catalog entry per driver cannot perform a
@@ -263,7 +263,7 @@ pub(crate) fn activate_quiescent_managed_version(
     db.execute("BEGIN IMMEDIATE")?;
     let result=(||{
         check_owner_in_current_transaction(db,owner)?;
-        registry::managed_request_command(request)?;
+        registry::managed_request_command(&request)?;
         managed_cli::no_unsettled_managed_version_change(db,driver)?;
         let copy=Statement::prepare(db.as_ptr(),
             "SELECT state,version,archive_sha256,image_sha256,stage_name,previous_version,previous_image_sha256,previous_stage_name,revision FROM main.gogoke_v37_instance_cli_copies WHERE driver_id=?1")?;
@@ -278,7 +278,7 @@ pub(crate) fn activate_quiescent_managed_version(
         let old_image=copy.column_text(6)?;
         let old_stage=copy.column_text(7)?;
         let revision=copy.column_text(8)?.parse::<i64>()
-            .map_err(|_|ProgramSourceError::Conflict)?;
+            .map_err(registry::RegistryError::RevisionParse)?;
         if copy.step_row()? || state!="PROBED" || version!=target.version ||
             archive!=target.archive_sha256 || image!=target.image_sha256 ||
             stage!=target_stage || revision!=expected_copy_revision ||
@@ -326,7 +326,7 @@ pub(crate) fn activate_quiescent_managed_version(
                 .iter().enumerate(){before.bind_text((index+1) as i32,value)?;}
             if !before.step_row()? {return Err(ProgramSourceError::Conflict)}
             let before_revision=before.column_text(0)?.parse::<i64>()
-                .map_err(|_|ProgramSourceError::Conflict)?;
+                .map_err(registry::RegistryError::RevisionParse)?;
             if before.step_row()? || before_revision<1 || before_revision==i64::MAX {
                 return Err(ProgramSourceError::Conflict);
             }
@@ -353,7 +353,7 @@ pub(crate) fn activate_quiescent_managed_version(
             if !changed.step_row()? || changed.column_text(0)?!="1" || changed.step_row()? {
                 return Err(ProgramSourceError::Conflict);
             }
-            registry::record_managed_switch_witness(db,owner,request,
+            registry::record_managed_switch_witness(db,owner,&request,
                 &registry::ManagedSwitchInstance{
                     instance_id:id,home,old_digest:&old_digest,old_version:&old_version,
                     old_stage:&old_stage,new_digest:&new_digest,new_stage:target_stage,
