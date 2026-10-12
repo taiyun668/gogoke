@@ -32,6 +32,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24.13.1"
+      - name: Validate sealed CLI source evidence controls
+        env:
+          GOGOKE_E2E_TEST_TEMP_ROOT: ${{ runner.temp }}
+        run: node --test tools/e2e/*managed-source.test.mjs
       - name: Parse development E2E scripts without running product flows
         shell: bash
         run: |
