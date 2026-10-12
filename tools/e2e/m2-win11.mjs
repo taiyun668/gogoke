@@ -575,7 +575,8 @@ async function runSideChat() {
   const { runSideChatCase } = await import('./m2-sidechat.mjs');
   journal.driverBytes['m2-sidechat.mjs'] = sha256(path.join(here, 'm2-sidechat.mjs'));
   product.save();
-  const sideCase = await runSideChatCase(product, { ...config, sideChat: prepared }, journal);
+  const sideCase = await runSideChatCase(product, { ...config, sideChat: prepared,
+    managedCodexAdmission: managedSource ? admittedCodexInstance : undefined }, journal);
   if (sideCase.state === 'NOT_RUN') {
     journal.v12 = 'NOT_RUN_MISSING_ORIGINAL_F_ARTIFACT'; product.save();
     throw Error('V12 original module did not run; preserve its reason and do not claim M2 flow complete');
@@ -771,7 +772,8 @@ try {
   if (boundaryRows.length >= 1 && boundaryRows.length <= 3) {
     await product.launch();
     const { runProviderBoundaryCases } = await import('./m2-provider-cases.mjs');
-    await runProviderBoundaryCases(product, { ...config, providerBoundary: { cases: boundaryRows } }, journal);
+    await runProviderBoundaryCases(product, { ...config, providerBoundary: { cases: boundaryRows },
+      managedCodexAdmission: managedSource ? admittedCodexInstance : undefined }, journal);
     await product.closeNormally();
     await providerBoundaryReadback();
   } else {
