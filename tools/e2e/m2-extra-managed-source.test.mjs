@@ -5,8 +5,9 @@ import { test } from 'node:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { managedCodexQualifications, readManagedCodexSource, observeManagedCodexInstance,
-  checkManagedCodexSeat, checkManagedCodexCapability } from './m2-extra-managed-source.mjs';
+import { managedCodexQualifications, managedCodexV06Qualifications,
+  readManagedCodexSource, observeManagedCodexInstance, checkManagedCodexSeat,
+  checkManagedCodexCapability } from './m2-extra-managed-source.mjs';
 
 const digest = 'fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d';
 const home = 'volume:0000000000000001/file:00000000000000000000000000000001';
@@ -32,6 +33,57 @@ function fixture() {
         version: '0.160.0', image_sha256: digest }, databaseBytesPreserved: true,
       databaseSha256: hash(databaseBytes), authContentOpened: false, acceptance: false },
   };
+}
+
+function v06Fixture() {
+  const values = fixture();
+  const domainId = 'm2V06Domain';
+  delete values.config.rules;
+  values.config.domainId = domainId;
+  values.config.cliVersion = '0.160.0';
+  values.config.cliSha256 = digest;
+  values.config.v06Remaining = {
+    lifecycleOwnership: 'EXCLUSIVE_M2_V06_REMAINING', domainId,
+    instanceId: 'codexTestM2Ready', templateId: 'm2V06Template',
+    parentSeatId: 'm2V06Parent', childSeatId: 'm2V06Child',
+    parentTreeId: 'm2V06ParentF', childTreeId: 'm2V06ChildF',
+    model: 'gpt-6.1-sol', effort: 'high', permissionTier: 'NETWORKED_WRITE',
+    maxConcurrent: 1,
+    takeover: { questionId: 'm2PrivateScope',
+      prompt: 'Which scope is authorized for this M2 product test?', option: 'Private testbed only' },
+  };
+  return values;
+}
+
+test('V06 managed predicate requires its exact fixture without V08 rules or cap', () => {
+  const { config, raw } = v06Fixture();
+  const original = structuredClone({ config, raw });
+  assert.ok(Object.values(managedCodexV06Qualifications(config, raw)).every(value => value === true));
+  assert.deepEqual({ config, raw }, original);
+});
+for (const [name, change] of [
+  ['V08 rules present', ({ config }) => { config.rules = { userMaxConcurrent: 4, projectParallelCap: 4 }; }],
+  ['wrong V06 ownership', ({ config }) => { config.v06Remaining.lifecycleOwnership = 'EXCLUSIVE_V08_SUBMITTER_AND_REVIEWER'; }],
+  ['domain mismatch', ({ config }) => { config.v06Remaining.domainId = 'otherDomain'; }],
+  ['instance mismatch', ({ config }) => { config.v06Remaining.instanceId = 'codexOther'; }],
+  ['CLI version mismatch', ({ config }) => { config.cliVersion = '0.161.0'; }],
+  ['CLI digest mismatch', ({ config }) => { config.cliSha256 = '0'.repeat(64); }],
+  ['template model mismatch', ({ config }) => { config.v06Remaining.model = 'other-model'; }],
+  ['capacity four', ({ config }) => { config.v06Remaining.maxConcurrent = 4; }],
+  ['duplicate fresh identity', ({ config }) => { config.v06Remaining.childTreeId = config.v06Remaining.parentTreeId; }],
+  ['takeover question mismatch', ({ config }) => { config.v06Remaining.takeover.questionId = 'otherQuestion'; }],
+  ['not logged in', ({ raw }) => { raw.instance.login_state = 'LOGGED_OUT'; }],
+  ['invented install state', ({ raw }) => { raw.instance.install_state = 'INSTALLED'; }],
+  ['source not managed', ({ raw }) => { raw.programSource.source = 'EXTERNAL'; }],
+  ['copy not ready', ({ raw }) => { raw.managedCopy.state = 'UNKNOWN'; }],
+  ['source digest mismatch', ({ raw }) => { raw.programSource.program_digest = `sha256:${'0'.repeat(64)}`; }],
+  ['home mismatch', ({ raw }) => { raw.programSource.home_identity = home.replace(/1$/, '2'); }],
+  ['unpreserved DB', ({ raw }) => { raw.databaseBytesPreserved = false; }],
+]) {
+  test(`V06 rejects ${name}`, () => {
+    const values = v06Fixture(); change(values);
+    assert.throws(() => managedCodexV06Qualifications(values.config, values.raw), /qualification differs/);
+  });
 }
 
 function hostFixture() {
@@ -176,6 +228,10 @@ test('sealed loader rejects stale DB, changed seal and uncheckpointed sidecars',
   config.stateRoot = directory;
   Object.assign(config.managedSourceRead, { path: source, sha256: hash(bytes) });
   assert.equal(readManagedCodexSource(config).fact.login_state, 'LOGGED_IN');
+  const v06 = v06Fixture();
+  v06.config.stateRoot = directory;
+  v06.config.managedSourceRead = { ...config.managedSourceRead };
+  assert.equal(readManagedCodexSource(v06.config).qualifications.fixedCase, true);
   const hostConfig = { ...hostFixture().config, stateRoot: directory,
     managedSourceRead: { ...config.managedSourceRead } };
   assert.equal(readManagedCodexSource(hostConfig).fact.login_state, 'LOGGED_IN');

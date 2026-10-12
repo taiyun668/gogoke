@@ -12,31 +12,10 @@ const sha = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const atom = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
 const home = value => typeof value === 'string' && /^volume:[a-f0-9]{16}\/file:[a-f0-9]{32}$/.test(value);
 
-export function managedCodexQualifications(config, raw) {
+function sourceQualifications(config, raw, fixedCase, label = 'Original managed Codex') {
   const instance = raw?.instance, source = raw?.programSource, copy = raw?.managedCopy;
-  const rules = config.rules;
-  const core = rules?.selection === undefined && rules?.host === undefined;
-  // The original driver validates both sealed core13 files, the same source seats,
-  // their real releases and its final direct readback before this source reader.
-  const recipients = [rules?.submitter, rules?.reviewer,
-    rules?.host?.destination, rules?.host?.alternateDestination];
-  const prior = rules?.priorCore13;
-  const host = rules?.selection === 'HOST_BUSY_TO_IDLE_ONLY' &&
-    rules.host?.busyToIdleOnly === true && rules.foreignProject === undefined &&
-    rules.host.lifecycleOwnership === 'EXCLUSIVE_V08_HOST_RECIPIENTS' &&
-    recipients.every(row => row?.instanceId === instanceId && atom(row.seatId) && atom(row.worktreeId)) &&
-    new Set(recipients.map(row => row.seatId)).size === 4 &&
-    new Set(recipients.map(row => row.worktreeId)).size === 4 &&
-    typeof prior?.journal === 'string' && path.isAbsolute(prior.journal) && sha(prior.journalSha256) &&
-    typeof prior?.finalReadback === 'string' && path.isAbsolute(prior.finalReadback) && sha(prior.finalSha256);
   const qualifications = {
-    fixedCase: config.instanceId === instanceId && config.repositoryId === 'gogokeSeatTestbed' &&
-      (core || host) &&
-      rules?.lifecycleOwnership === 'EXCLUSIVE_V08_SUBMITTER_AND_REVIEWER' &&
-      rules.policyOwnership === 'EXCLUSIVE_V08_POLICY_DOMAIN' &&
-      rules.userPermissionTier === 'NETWORKED_WRITE' && rules.userMaxConcurrent === 4 &&
-      rules.projectParallelCap === 4 && rules.submitter?.instanceId === instanceId &&
-      rules.reviewer?.instanceId === instanceId,
+    fixedCase,
     originalClosedRead: raw?.databaseBytesPreserved === true && sha(raw.databaseSha256) &&
       raw.authContentOpened === false && raw.acceptance === false,
     fixedInstance: instance?.instance_id === instanceId && instance.driver_id === 'codex' &&
@@ -55,8 +34,52 @@ export function managedCodexQualifications(config, raw) {
     sameStage: atom(source?.stage_name) && source.stage_name === copy?.stage_name,
   };
   const failed = Object.entries(qualifications).filter(([, value]) => value !== true).map(([key]) => key);
-  if (failed.length) throw Error(`Original managed Codex qualification differs: ${failed.join(', ')}`);
+  if (failed.length) throw Error(`${label} qualification differs: ${failed.join(', ')}`);
   return qualifications;
+}
+
+export function managedCodexQualifications(config, raw) {
+  const rules = config.rules;
+  const core = rules?.selection === undefined && rules?.host === undefined;
+  // The original driver validates both sealed core13 files, the same source seats,
+  // their real releases and its final direct readback before this source reader.
+  const recipients = [rules?.submitter, rules?.reviewer,
+    rules?.host?.destination, rules?.host?.alternateDestination];
+  const prior = rules?.priorCore13;
+  const host = rules?.selection === 'HOST_BUSY_TO_IDLE_ONLY' &&
+    rules.host?.busyToIdleOnly === true && rules.foreignProject === undefined &&
+    rules.host.lifecycleOwnership === 'EXCLUSIVE_V08_HOST_RECIPIENTS' &&
+    recipients.every(row => row?.instanceId === instanceId && atom(row.seatId) && atom(row.worktreeId)) &&
+    new Set(recipients.map(row => row.seatId)).size === 4 &&
+    new Set(recipients.map(row => row.worktreeId)).size === 4 &&
+    typeof prior?.journal === 'string' && path.isAbsolute(prior.journal) && sha(prior.journalSha256) &&
+    typeof prior?.finalReadback === 'string' && path.isAbsolute(prior.finalReadback) && sha(prior.finalSha256);
+  return sourceQualifications(config, raw,
+    config.instanceId === instanceId && config.repositoryId === 'gogokeSeatTestbed' &&
+      (core || host) &&
+      rules?.lifecycleOwnership === 'EXCLUSIVE_V08_SUBMITTER_AND_REVIEWER' &&
+      rules.policyOwnership === 'EXCLUSIVE_V08_POLICY_DOMAIN' &&
+      rules.userPermissionTier === 'NETWORKED_WRITE' && rules.userMaxConcurrent === 4 &&
+      rules.projectParallelCap === 4 && rules.submitter?.instanceId === instanceId &&
+      rules.reviewer?.instanceId === instanceId);
+}
+
+export function managedCodexV06Qualifications(config, raw) {
+  const f = config?.v06Remaining;
+  const identities = [f?.parentSeatId, f?.childSeatId, f?.parentTreeId, f?.childTreeId];
+  const fixedCase = config?.rules === undefined &&
+    config?.repositoryId === 'gogokeSeatTestbed' &&
+    config?.instanceId === instanceId && atom(config?.domainId) && config?.domainId === f?.domainId &&
+    f?.lifecycleOwnership === 'EXCLUSIVE_M2_V06_REMAINING' &&
+    f?.instanceId === instanceId &&
+    [f?.templateId, ...identities].every(atom) && new Set(identities).size === 4 &&
+    f?.model === 'gpt-6.1-sol' && f?.effort === 'high' &&
+    f?.permissionTier === 'NETWORKED_WRITE' && f?.maxConcurrent === 1 &&
+    f?.takeover?.questionId === 'm2PrivateScope' &&
+    f?.takeover?.prompt === 'Which scope is authorized for this M2 product test?' &&
+    f?.takeover?.option === 'Private testbed only' &&
+    config?.cliVersion === version && config?.cliSha256 === digest;
+  return sourceQualifications(config, raw, fixedCase, 'Original V06 managed Codex');
 }
 
 export function readManagedCodexSource(config) {
@@ -68,7 +91,9 @@ export function readManagedCodexSource(config) {
   const bytes = fs.readFileSync(proof.path);
   if (hash(bytes) !== proof.sha256) throw Error('Original managed Codex source seal differs');
   const raw = JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/, ''));
-  const qualifications = managedCodexQualifications(config, raw);
+  const qualifications = config.v06Remaining === undefined
+    ? managedCodexQualifications(config, raw)
+    : managedCodexV06Qualifications(config, raw);
   const database = path.join(config.stateRoot, 'state.sqlite');
   const closedHash = () => {
     for (const suffix of ['-wal', '-shm', '-journal']) {
@@ -117,6 +142,6 @@ export function checkManagedCodexCapability(session, receipt) {
       receipt.result?.driverId !== 'codex' || receipt.result.version !== version ||
       receipt.result.binaryDigest !== `sha256:${digest}` ||
       typeof session.threadId !== 'string' || !session.threadId || receipt.result.threadId !== session.threadId) {
-    throw Error('Original V08 H capability differs from the fixed managed Codex pin or thread');
+    throw Error('Original managed Codex H capability differs from the fixed pin or thread');
   }
 }
