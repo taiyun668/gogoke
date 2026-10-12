@@ -21,3 +21,10 @@
 ## 参照
 
 沿用此前真实 USER E/F 的 ActualProduct 入口、当前原数据库只读物理身份绑定、秘书长真实 H stop/read、原冻结字节正常换装和十三项正式保护比对。测量前提由闭库直接字段证伪后修正；未新增恢复标记、凭据读取或权限许可。
+
+## Original OpenCode question readback correction
+
+- One actual Grok-source OpenCode question received H APPLIED/end_turn, real stop/release, normal shell/native exit zero and unchanged thirteen protection fields. The first immutable reader failed because it queried candidate-generation step names in the original H path. The original FAIL journal and once claim remain unchanged; no model request is replayed.
+- Reference: production original H in `store/product_database/v37_runtime.rs` writes `setting-model` and `setting-effort`; `store/session_transport/rpc_journal.rs` adds an operation prefix only in the candidate-generation path. An ordinary immutable scoped read found one original ACK for each setting and zero prefixed rows. Both exact option values and response identities match, with database bytes preserved.
+- Fix: query the original step names, retaining full custody tuple, unique ACK, exact option and order assertions. The existing supplementary reader can bind this single OpenCode readback failure using the unchanged original journal and executed reader digests. Independent focused review found no blocker. Full answer/golden supplementary readback remains pending; M2 remains incomplete.
+- Parallel measurement: replacing per-file Get-FileHash with .NET streaming preserved all five formal projections but measured 91.6 seconds versus 56.6 seconds for the original. The proposed optimization is rejected; original observer remains active. No product bytes changed.

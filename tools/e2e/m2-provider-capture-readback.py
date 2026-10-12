@@ -218,16 +218,20 @@ journal_bytes = journal_path.read_bytes()
 journal = json.loads(journal_bytes.decode("utf-8-sig"))
 supplement = len(sys.argv) == 7 and sys.argv[4] == "--original-failure-supplement"
 failure_settlement = len(sys.argv) == 5 and sys.argv[4] == "--failure-settlement"
+retained_readback_failure = supplement and journal.get("state") == "FAIL" and \
+    str(journal.get("error", "")).startswith("Error: Original provider immutable readback exit=1:") and \
+    len(journal.get("cases", [])) == 1 and journal["cases"][0].get("driverId") == "opencode" and \
+    journal["cases"][0].get("result") == "DIRECT_H_RECEIPT_A_READBACK_REQUIRED"
 if len(sys.argv) not in (4, 5, 7) or (len(sys.argv) == 7 and not supplement) or \
         (len(sys.argv) == 5 and not failure_settlement):
     fail("Unexpected provider readback arguments")
 if supplement and (sha(journal_bytes) != sys.argv[5] or
         journal.get("driverBytes", {}).get("m2-provider-capture-readback.py") != sys.argv[6] or
-        journal.get("state") != "FAIL_ORIGINAL_REQUEST_RETAINED" or
+        (journal.get("state") != "FAIL_ORIGINAL_REQUEST_RETAINED" and not retained_readback_failure) or
         journal.get("protection") != "PASS_FORMAL_MEMORY_LEDGER_FIELDS_UNCHANGED"):
     fail("Supplement must bind the unchanged original failure and executed reader")
 expected_phase = ("FAIL" if failure_settlement else
-                  "FAIL_ORIGINAL_REQUEST_RETAINED" if supplement else
+                  journal.get("state") if supplement else
                   "DIRECT_PROVIDER_H_RECEIPTS_A_READBACK_REQUIRED")
 sequence_mode = len(journal.get("cases", [])) == 1 and \
     journal["cases"][0].get("caseMode") in ("sequence", "claudeSequence")
@@ -1908,7 +1912,9 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                 vendor_session = vendor_sessions[0]
                 acknowledged = []
                 for config_id in ("model", "effort"):
-                    step_id = f"{process_operation}-setting-{config_id}"
+                    # Original H open uses these names; candidate generation
+                    # changes use an operation prefix and are a different path.
+                    step_id = f"setting-{config_id}"
                     ack = exact_one(db,
                         "SELECT s.command_hex,r.raw_bytes,s.source_epoch,s.source_cursor "
                         "FROM gogoke_v37_rpc_steps s JOIN v37_ledger_raw_source r "
