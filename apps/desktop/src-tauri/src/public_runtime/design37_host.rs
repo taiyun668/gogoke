@@ -176,6 +176,32 @@ impl Design37Host {
         Err(with_stderr_tail(original, &self.stderr_tail))
     }
 
+    /// Synchronize with the exact retained host's replacement service listener.
+    /// No client connection or operation is retried.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn confirm_service_ready(&self, timeout: std::time::Duration) -> Result<(), String> {
+        let started = std::time::Instant::now();
+        let reply = self.request_user(br#"{"operation":"ServiceTransportReady"}"#)?;
+        if reply != br#"{"serviceTransportReady":true}"# {
+            return Err(format!("GOGOKE_DESIGN37_SERVICE_READY_FAILED:{}",
+                String::from_utf8_lossy(&reply)));
+        }
+        // The worker's publication is not a reservation: kernel accept may
+        // already be reading an unverified preface. Wait once for an actual
+        // pending ConnectNamedPipe, using the existing request budget.
+        let remaining = timeout.checked_sub(started.elapsed())
+            .and_then(|value| u32::try_from(value.as_millis()).ok())
+            .filter(|value| *value > 0)
+            .ok_or_else(|| "GOGOKE_DESIGN37_SERVICE_READY_BUDGET_EXHAUSTED".to_string())?;
+        let pipe: Vec<u16> = self.service_pipe.encode_utf16().chain(Some(0)).collect();
+        if unsafe { windows_sys::Win32::System::Pipes::WaitNamedPipeW(pipe.as_ptr(), remaining) } == 0 {
+            return Err(format!("GOGOKE_DESIGN37_SERVICE_READY_WAIT_FAILED:WIN32_{}",
+                std::io::Error::last_os_error().raw_os_error().unwrap_or(0)));
+        }
+        self.is_running()?;
+        Ok(())
+    }
+
     /// Send one User frame over the retained, object-verified connection.
     /// The peer process object is checked immediately before every request.
     #[cfg(target_os = "windows")]

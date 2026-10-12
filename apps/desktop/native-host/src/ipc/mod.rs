@@ -907,7 +907,17 @@ mod platform {
 
         pub fn read_frame(&self) -> Result<Vec<u8>, PrivateIpcError> {
             let mut header = [0u8; 4];
-            self.read_exact(&mut header)?;
+            // Only EOF before the first header byte is a normal connection
+            // boundary. A partial header/body retains its original read error.
+            if let Err(error) = self.read_exact(&mut header[..1]) {
+                return Err(match error {
+                    PrivateIpcError::Os { source, .. }
+                        if matches!(source.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::UnexpectedEof) =>
+                        PrivateIpcError::Os { operation: "ReadFile(private IPC header EOF)", source },
+                    other => other,
+                });
+            }
+            self.read_exact(&mut header[1..])?;
             let length = u32::from_le_bytes(header) as usize;
             super::validate_frame_length(length)?;
             let mut frame = vec![0u8; length];
@@ -1082,6 +1092,54 @@ mod platform {
             client.write_all(b"ack").expect("write ack frame");
             server.join().expect("server thread");
             drop(client);
+        }
+
+        fn error_after_original_client_close(bytes: &[u8]) -> PrivateIpcError {
+            let listener = PrivatePipeListener::bind(&unique_endpoint("frame-eof")).unwrap();
+            let path = listener.path().to_owned();
+            let server = std::thread::spawn(move || {
+                let connection = listener.accept_current_user().unwrap();
+                assert_eq!(connection.read_frame().unwrap(), b"ready");
+                connection.write_frame(b"ready").unwrap();
+                connection.read_frame().expect_err("no full frame")
+            });
+            let mut client = OpenOptions::new().read(true).write(true).open(path).unwrap();
+            client.write_all(&[0x47]).unwrap();
+            client.write_all(&5u32.to_le_bytes()).unwrap();
+            client.write_all(b"ready").unwrap();
+            let mut ack = [0u8; 9];
+            client.read_exact(&mut ack).unwrap();
+            assert_eq!(&ack[4..], b"ready");
+            client.write_all(bytes).unwrap();
+            drop(client);
+            server.join().unwrap()
+        }
+
+        #[test]
+        fn frame_boundary_eof_preserves_original_disconnect_error() {
+            match error_after_original_client_close(&[]) {
+                PrivateIpcError::Os { operation, source } => {
+                    assert_eq!(operation, "ReadFile(private IPC header EOF)");
+                    assert!(matches!(source.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::UnexpectedEof));
+                }
+                other => panic!("original EOF differs: {other}"),
+            }
+        }
+
+        #[test]
+        fn truncated_or_oversized_frames_cannot_be_clean_connection_eof() {
+            let body = [8u32.to_le_bytes().as_slice(), b"x"].concat();
+            for partial in [&[8u8][..], body.as_slice()] {
+                match error_after_original_client_close(partial) {
+                    PrivateIpcError::Os { operation, source } => {
+                        assert_eq!(operation, "ReadFile(private IPC frame)");
+                        assert!(source.raw_os_error().is_some() || source.kind() == io::ErrorKind::UnexpectedEof);
+                    }
+                    other => panic!("original truncated read differs: {other}"),
+                }
+            }
+            assert!(matches!(error_after_original_client_close(&((crate::ipc::MAX_FRAME_BYTES + 1) as u32).to_le_bytes()),
+                PrivateIpcError::FrameTooLarge { .. }));
         }
 
         #[test]

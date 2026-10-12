@@ -430,8 +430,19 @@ async fn run_product_service_with_guard(
     let (reply, receiver) = tokio::sync::oneshot::channel();
     tokio::task::spawn_blocking(move || {
         if let Some((host, attachment)) = existing {
+            // The previous Node's exit releases its handle, but the native
+            // pipe worker must also recreate the sole listening instance.
+            let ready_started = std::time::Instant::now();
+            if let Err(error) = host.confirm_service_ready(timeout) {
+                drop(reply.send(Err(error)));
+                return;
+            }
+            let Some(remaining) = timeout.checked_sub(ready_started.elapsed()).filter(|value| !value.is_zero()) else {
+                drop(reply.send(Err("GOGOKE_DESIGN37_SERVICE_READY_BUDGET_EXHAUSTED".to_string())));
+                return;
+            };
             let _retained_host = host;
-            managed_service::run_existing(paths, request, timeout, identity,
+            managed_service::run_existing(paths, request, remaining, identity,
                 product_guard, service_guard, attachment, reply);
         } else {
             managed_service::run(paths, request, timeout, identity,
@@ -1744,6 +1755,7 @@ mod tests {
         let readiness = || {
             let (reply, receiver) = tokio::sync::oneshot::channel();
             let service_guard = PRODUCT_SERVICE_GATE.blocking_lock();
+            host.confirm_service_ready(SERVICE_TIMEOUT).expect("same host's service listener ready");
             managed_service::run_existing(paths.clone(), b"{\"operation\":\"readiness\"}".to_vec(),
                 SERVICE_TIMEOUT, None, None, service_guard, attachment.clone(), reply);
             let bytes = receiver.blocking_recv().expect("managed Node owner returns")
@@ -1751,6 +1763,7 @@ mod tests {
             validate_product_readiness(&bytes).expect("native controller admission");
         };
         readiness();
+        readiness(); // No intervening User operation may mask pipe rearming.
         assert!(host.is_running().expect("retained host status"));
         assert_eq!(host.host_pid(), host_pid, "Node disconnect cannot replace host");
         let missing_instance_receipt = host.request_user(br#"{"schema":"gogoke.37.operations.v1","family":"K-INSTANCE","operation":"install-state","requestId":"probeA","targetId":"instanceA","domainId":"global","expectedRevision":"0","payload":{}}"#)
@@ -1759,7 +1772,6 @@ mod tests {
             .expect("native User receipt");
         assert_eq!(receipt["status"], "CONFLICT");
         assert_eq!(receipt["requestId"], "probeA");
-        readiness();
         assert_eq!(host.host_pid(), host_pid, "second Node connects to same host");
         drop(host); // User EOF terminates the exact retained native host.
         std::fs::remove_dir_all(&product_root).expect("owned root released on host drop");

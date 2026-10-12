@@ -122,7 +122,7 @@ jobs:
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CLAUDE_CLI_PATH=$binary"
           Write-Output "Fixed Claude CLI SHA256=$digest"
       - name: Check the production configuration for affected recovery
-        if: ${{ inputs.focused_library == 'codex-empty-persist' || inputs.focused_library == 'holder-completed-group' || inputs.focused_library == 'opencode-pipe' }}
+        if: ${{ inputs.focused_library == 'codex-empty-persist' || inputs.focused_library == 'holder-completed-group' || inputs.focused_library == 'opencode-pipe' || inputs.focused_library == 'service-transport' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -135,11 +135,16 @@ jobs:
           $env:GOGOKE_CONTROLLED_GIT_PATH = $backend
           cargo check --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib
           if ($LASTEXITCODE -ne 0) { throw 'Production configuration check failed; test-only historical fixture is not production evidence.' }
+          if ($env:FOCUSED_LIBRARY -ceq 'service-transport') {
+            cargo check --locked --manifest-path apps/desktop/native-host/Cargo.toml --bin gogoke-native-host
+            if ($LASTEXITCODE -ne 0) { throw 'Actual desktop authority/transport binary did not compile.' }
+          }
       - name: Run the explicitly selected affected tests
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $filters = switch ($env:FOCUSED_LIBRARY) {
+            'service-transport' { @('ipc::') }
             'seat-scope' { @('store::seat::orchestration::tests',
               'store::seat::tests::owner_policy_head_read_requires_current_owner_and_preserves_absent_or_existing_fact',
               'store::seat::tests::native_child_scope_cap_refuses_a_second_seat_without_minting_a_grant',

@@ -21,6 +21,7 @@ struct ServiceFrame {
 }
 
 enum DesktopEvent {
+    ServiceListening,
     ServiceConnected,
     ServiceFrame(ServiceFrame),
     ServiceDisconnected,
@@ -147,6 +148,9 @@ fn run_desktop(
                     }
                 },
             };
+            // Publish the actual replacement listener before accepting a new
+            // client. Client EOF alone does not mean the sole instance exists.
+            if service_events.send(DesktopEvent::ServiceListening).is_err() { break; }
             let pipe = match listener.accept_current_user() {
                 Ok(pipe) => pipe,
                 Err(error) => {
@@ -158,7 +162,13 @@ fn run_desktop(
             loop {
                 let bytes = match pipe.read_frame() {
                     Ok(bytes) => bytes,
-                    Err(_) => break,
+                    Err(gogoke_native_host::ipc::PrivateIpcError::Os {
+                        operation: "ReadFile(private IPC header EOF)", ..
+                    }) => break,
+                    Err(error) => {
+                        drop(service_events.send(DesktopEvent::ServiceFailed(error.to_string())));
+                        return;
+                    }
                 };
                 let (answer, reply) = mpsc::sync_channel(0);
                 if service_events.send(DesktopEvent::ServiceFrame(ServiceFrame { bytes, answer })).is_err() {
@@ -168,7 +178,10 @@ fn run_desktop(
                     Ok(value) => value,
                     Err(_) => return,
                 };
-                if pipe.write_frame(&frame).is_err() { break; }
+                if let Err(error) = pipe.write_frame(&frame) {
+                    drop(service_events.send(DesktopEvent::ServiceFailed(error.to_string())));
+                    return;
+                }
                 if disconnect {
                     if let Err(error) = pipe.flush_for_disconnect() {
                         let _ = service_events.send(DesktopEvent::ServiceFailed(error.to_string()));
@@ -214,7 +227,9 @@ fn run_desktop(
     });
     drop(sender);
     let mut service = None;
-    let mut user = None;
+    let mut user: Option<UserOriginProof> = None;
+    let mut service_listening = false;
+    let mut service_ready_reply: Option<SyncSender<Vec<u8>>> = None;
     loop {
         // The native protocol reader is synchronous and nonblocking. Keep
         // its capture/dispatch on this one DB authority thread, independently
@@ -227,7 +242,18 @@ fn run_desktop(
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
         match event {
+            DesktopEvent::ServiceListening => {
+                service_listening = true;
+                if let Some(answer) = service_ready_reply.take() {
+                    // A delayed response cannot borrow an origin that died
+                    // while its pipe reader was waiting for this answer.
+                    user.as_ref().ok_or_else(|| io::Error::other("USER_NOT_CONNECTED"))?
+                        .verify_live_origin()?;
+                    drop(answer.send(br#"{"serviceTransportReady":true}"#.to_vec()));
+                }
+            }
             DesktopEvent::ServiceConnected => {
+                service_listening = false;
                 service = Some(product.begin_shared_service_frames(capability)?);
             }
             DesktopEvent::ServiceFrame(frame) => {
@@ -251,6 +277,19 @@ fn run_desktop(
                 product.start_secretary_resident();
             },
             DesktopEvent::UserFrame { bytes, answer } => {
+                // Internal shell transport synchronization on the already
+                // object-verified User connection, not a ledger operation.
+                if user.is_some() && bytes == br#"{"operation":"ServiceTransportReady"}"# {
+                    user.as_ref().expect("connected User checked").verify_live_origin()?;
+                    if service_listening {
+                        drop(answer.send(br#"{"serviceTransportReady":true}"#.to_vec()));
+                    } else if service_ready_reply.is_none() {
+                        service_ready_reply = Some(answer);
+                    } else {
+                        drop(answer.send(b"ERR\tSERVICE_READY_ALREADY_PENDING".to_vec()));
+                    }
+                    continue;
+                }
                 let reply = match user.as_ref() {
                     Some(proof) => product.dispatch_user_frame(proof, &bytes)
                         .unwrap_or_else(|error| format!("ERR\t{error:?}").into_bytes()),
