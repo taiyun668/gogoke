@@ -135,7 +135,8 @@ impl<'a> ProductDatabase<'a> {
             if matches!(state.as_str(),"RELEASED"|"STOPPED") && !operation.is_empty() &&
                 !stop.is_empty() && custody=="STOPPED" && proof==stop {continue}
             if state=="RELEASED" && stop.is_empty() && !operation.is_empty() &&
-                driver=="codex" && self.completed_codex_holder_release(id,domain,session,operation)? {
+                driver=="codex" && (self.completed_codex_holder_release(id,domain,session,operation)? ||
+                    self.completed_codex_failed_resume_resource_release(id,domain,session,operation)?) {
                 continue;
             }
             return Err(OrchestrationError::AccessDenied);
@@ -154,7 +155,8 @@ impl<'a> ProductDatabase<'a> {
             if matches!(phase.as_str(),"STOPPED"|"FAILED") && !stop.is_empty() &&
                 custody=="STOPPED" && proof==stop {continue}
             if !operation.is_empty() && driver=="codex" &&
-                self.completed_codex_holder_release(id,domain,session,operation)? {continue}
+                (self.completed_codex_holder_release(id,domain,session,operation)? ||
+                 self.completed_codex_failed_resume_resource_release(id,domain,session,operation)?) {continue}
             return Err(OrchestrationError::AccessDenied);
         }
         Ok(())

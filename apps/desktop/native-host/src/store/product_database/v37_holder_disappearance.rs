@@ -140,6 +140,59 @@ impl<'root> ProductDatabase<'root> {
         Ok(false)
     }
 
+    /// Qualify a completed F-only failed resume without promoting its UNKNOWN
+    /// child episode or custody to STOPPED. The old H's actual empty Secretary
+    /// admission-release is the only accepted successor of this revoked
+    /// resource capture. This reads the same registered physical source and
+    /// aliases as cold recovery, but performs no recovery write or ACL change.
+    pub(super) fn completed_codex_failed_resume_resource_release(&self,
+        instance_id:&str,domain:&str,session:&str,operation:&str)->Result<bool> {
+        if domain!="global" {return Ok(false)}
+        for profile in fail(instance::read_credential_profiles(&self.connection,instance_id))? {
+            let Some(record)=fail(gone::read_holder_disappearance(&self.connection,
+                &profile.binding_id))? else {continue};
+            let capture=decode(&record)?;
+            if capture.get("kind").map(String::as_str)!=Some("FAILED_RESUME_PROFILE_ONLY_V1") {
+                continue;
+            }
+            // The child episode owns the F-only capture. Its released claim
+            // still names the stopped predecessor, never the failed child.
+            if record.input.process_operation_id!=operation &&
+                get(&capture,"oldOperation")?!=operation {continue}
+            if record.phase!=Phase::Revoked || profile.state!="REVOKED" ||
+                record.input.instance_id!=instance_id {return Ok(false)}
+            if get(&capture,"domain")?!=domain || get(&capture,"session")?!=session ||
+                get(&capture,"operation")?!=record.input.process_operation_id ||
+                get(&capture,"binding")?!=profile.binding_id ||
+                !self.completed_empty_secretary_release(&capture)? {return Ok(false)}
+            let current=self.gone_original(&profile)?;
+            let Some(object)=fail(instance::read_credential_object(&self.connection,instance_id))?
+                else{return Ok(false)};
+            let home=fail(instance::resolve_codex_instance_home(&self.connection,self.root,
+                instance_id))?;
+            if object.root_identity!=*self.connection.root_identity() ||
+                object.home_identity!=home.identity ||
+                object.source_parent_identity!=home.identity {return Ok(false)}
+            let aliases=fail(instance::read_credential_aliases(&self.connection,instance_id))?;
+            let mut scopes=Vec::new();let mut physical=Fields::new();
+            for alias in aliases.iter().filter(|alias|alias.state!="REMOVED") {
+                if !matches!(alias.state.as_str(),"ACTIVE"|"DORMANT") ||
+                    alias.source_file_identity!=object.file_identity {return Ok(false)}
+                let directory=fail(instance::resolve_private_history_directory(&self.connection,
+                    self.root,&alias.history_id))?;
+                if directory.identity!=alias.directory_identity {return Ok(false)}
+                put(&mut physical,&alias.history_id,&directory.identity.opaque());
+                scopes.push(CredentialAliasScope{root:directory.path,root_identity:directory.identity});
+            }
+            let binding=fail(CredentialBinding::open_registered(self.root,
+                &home.path.join("auth.json"),&home.identity,&object.file_identity,&scopes))?;
+            fail(binding.verify_registered_aliases(&scopes))?;
+            self.gone_validate_capture(&current,&capture,&object,&home.identity,&physical,&record)?;
+            return Ok(true)
+        }
+        Ok(false)
+    }
+
     fn gone_original(&self, profile: &instance::CredentialProfileRecord) -> Result<Fields> {
         let history=fail(instance::read_private_history_generation(&self.connection,
             &profile.binding_id,&profile.generation))?.ok_or_else(||refused("holder original F generation absent"))?;

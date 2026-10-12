@@ -243,11 +243,27 @@ pub(crate) fn no_unsettled_instance_use(db: &VerifiedDatabaseConnection<'_>, dri
         "SELECT 1 FROM main.gogoke_coordination_process_custody WHERE profile_id=?1 AND (state!='STOPPED' OR stop_proof_hash IS NULL OR stop_proof_hash='') LIMIT 1")?;
     own_probe.bind_text(1, &format!("managed-cli-{driver}"))?;
     if own_probe.step_row()? { return Err(ManagedCliError::Busy); }
-    no_unsettled_global_cli_custody(db,driver)?;
+    let pin=read_fixed_official_cli(driver).ok_or(ManagedCliError::Unsupported)?;
+    // A first copy of the identical fixed image adds a MANAGED source; it
+    // does not replace any registered program. Historical global UNKNOWN
+    // remains UNKNOWN and is not treated as a StopFact. This narrow scope is
+    // decided from current registrations and copy progress on every call.
+    if first_same_pin_copy(db,driver,pin)? {
+        let unsettled=Statement::prepare(db.as_ptr(),
+            "SELECT 1 FROM main.gogoke_coordination_process_custody c
+              JOIN main.gogoke_v37_instances i ON i.instance_id=c.profile_id
+             WHERE i.driver_id=?1 AND c.domain_id='global' AND
+               (c.state NOT IN ('UNKNOWN','STOPPED') OR
+                (c.state='STOPPED' AND (c.stop_proof_hash IS NULL OR c.stop_proof_hash='')))
+             LIMIT 1")?;
+        unsettled.bind_text(1,driver)?;
+        if unsettled.step_row()? { return Err(ManagedCliError::Busy); }
+    } else {
+        no_unsettled_global_cli_custody(db,driver)?;
+    }
     // Preparing a first managed copy cannot change an old instance's selected
     // program. A missing copy row alone does not prove that old registrations
     // have this pin; a genuine version change retains the strict barrier.
-    let pin=read_fixed_official_cli(driver).ok_or(ManagedCliError::Unsupported)?;
     let old=Statement::prepare(db.as_ptr(),
         "SELECT 1 FROM main.gogoke_v37_instances i LEFT JOIN main.gogoke_v37_instance_profiles p ON p.instance_id=i.instance_id WHERE i.driver_id=?1 AND (p.tombstoned IS NULL OR p.tombstoned=0) AND (i.program_digest!=?2 OR i.version!=?3) LIMIT 1")?;
     old.bind_text(1,driver)?;
@@ -270,6 +286,54 @@ pub(crate) fn no_unsettled_instance_use(db: &VerifiedDatabaseConnection<'_>, dri
     drop(copy);
     if version_change {no_unsettled_version_change(db,driver)?;}
     Ok(())
+}
+
+/// Only the first copy with an unchanged fixed image may defer historical
+/// global UNKNOWN retirement. A progressed copy must already identify these
+/// exact bytes; a prior source or previous copy makes this a replacement.
+fn first_same_pin_copy(db:&VerifiedDatabaseConnection<'_>,driver:&str,
+    pin:VerifiedOfficialCli)->Result<bool,ManagedCliError> {
+    let source=Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_instance_program_sources s
+          JOIN main.gogoke_v37_instances i ON i.instance_id=s.instance_id
+         WHERE i.driver_id=?1 LIMIT 1")?;
+    source.bind_text(1,driver)?;
+    if source.step_row()? {return Ok(false)}
+    let instances=Statement::prepare(db.as_ptr(),
+        "SELECT version,program_digest FROM main.gogoke_v37_instances WHERE driver_id=?1")?;
+    instances.bind_text(1,driver)?;
+    let mut count=0usize;
+    while instances.step_row()? {
+        count+=1;
+        if instances.column_text(0)?!=pin.version ||
+            instances.column_text(1)?!=format!("sha256:{}",pin.image_sha256) {
+            return Ok(false)
+        }
+    }
+    if count==0 {return Ok(false)}
+    let copy=Statement::prepare(db.as_ptr(),
+        "SELECT state,COALESCE(version,''),COALESCE(archive_sha256,''),
+                COALESCE(image_sha256,''),COALESCE(previous_version,''),
+                COALESCE(previous_image_sha256,''),COALESCE(previous_stage_name,'')
+           FROM main.gogoke_v37_instance_cli_copies WHERE driver_id=?1")?;
+    copy.bind_text(1,driver)?;
+    if !copy.step_row()? {return Ok(true)}
+    let state=copy.column_text(0)?;
+    let version=copy.column_text(1)?;
+    let archive=copy.column_text(2)?;
+    let image=copy.column_text(3)?;
+    let previous=(copy.column_text(4)?,copy.column_text(5)?,copy.column_text(6)?);
+    if copy.step_row()? || previous.0.len()+previous.1.len()+previous.2.len()!=0 {
+        return Ok(false)
+    }
+    let initial=matches!(state.as_str(),"NOT_INSTALLED"|"DOWNLOADING"|"INSTALLING");
+    let progressed=matches!(state.as_str(),"STAGED"|"PROBED"|"BLOCKED");
+    let empty=version.is_empty() && archive.is_empty() && image.is_empty();
+    let same_pin=version==pin.version && archive==pin.archive_sha256 &&
+        image==pin.image_sha256;
+    // Progress from an exact-pin BLOCKED row preserves its three pin columns.
+    // Any partially retained or different pin is still a replacement.
+    Ok((initial && (empty || same_pin)) || (progressed && same_pin))
 }
 
 fn no_unsettled_version_change(db: &VerifiedDatabaseConnection<'_>, driver: &str)
@@ -573,6 +637,7 @@ pub(crate) fn uninstall_managed_cli(db: &mut VerifiedDatabaseConnection<'_>, roo
     let stage_name = transaction(db, |db| {
         check_owner_in_current_transaction(db, owner)?;
         no_unsettled_instance_use(db, driver)?;
+        no_unsettled_global_cli_custody(db, driver)?;
         no_unsettled_version_change(db, driver)?;
         let instance = Statement::prepare(db.as_ptr(),
             "SELECT 1 FROM main.gogoke_v37_instances i LEFT JOIN main.gogoke_v37_instance_profiles p ON p.instance_id=i.instance_id WHERE i.driver_id=?1 AND (p.tombstoned IS NULL OR p.tombstoned=0) LIMIT 1")?;
@@ -619,6 +684,7 @@ pub(crate) fn uninstall_managed_cli(db: &mut VerifiedDatabaseConnection<'_>, roo
     transaction(db, |db| {
         check_owner_in_current_transaction(db, owner)?;
         no_unsettled_instance_use(db, driver)?;
+        no_unsettled_global_cli_custody(db, driver)?;
         no_unsettled_version_change(db, driver)?;
         let instance = Statement::prepare(db.as_ptr(),
             "SELECT 1 FROM main.gogoke_v37_instances i LEFT JOIN main.gogoke_v37_instance_profiles p ON p.instance_id=i.instance_id WHERE i.driver_id=?1 AND (p.tombstoned IS NULL OR p.tombstoned=0) LIMIT 1")?;
@@ -634,4 +700,51 @@ pub(crate) fn uninstall_managed_cli(db: &mut VerifiedDatabaseConnection<'_>, roo
         write.bind_text(1, driver)?; write.step_done()?;
         Ok(())
     })
+}
+
+#[cfg(all(test, windows))]
+mod first_copy_tests {
+    use super::*;
+    use crate::store::same_open::{create_new, route_b_test_guard};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn blocked_same_pin_progress_retains_first_copy_scope_but_partial_or_prior_pin_does_not() {
+        let _guard=route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("gogoke-first-copy-pin-{}-{nonce}",std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let database=path.join("state.sqlite");
+        let mut db=create_new(&root,&database).unwrap();
+        db.execute("PRAGMA foreign_keys=ON").unwrap();
+        super::super::initialize_schema(&mut db).unwrap();
+        let pin=read_fixed_official_cli("codex").unwrap();
+        let insert=Statement::prepare(db.as_ptr(),
+            "INSERT INTO main.gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('first','codex','home-first','identity-first',?1,?2,'UNKNOWN','UNKNOWN',1)").unwrap();
+        insert.bind_text(1,&format!("sha256:{}",pin.image_sha256)).unwrap();
+        insert.bind_text(2,pin.version).unwrap();insert.step_done().unwrap();drop(insert);
+        let insert=Statement::prepare(db.as_ptr(),
+            "INSERT INTO main.gogoke_v37_instance_cli_copies(driver_id,state,version,archive_sha256,image_sha256,revision) VALUES('codex','BLOCKED',?1,?2,?3,1)").unwrap();
+        insert.bind_text(1,pin.version).unwrap();insert.bind_text(2,pin.archive_sha256).unwrap();
+        insert.bind_text(3,pin.image_sha256).unwrap();insert.step_done().unwrap();drop(insert);
+        assert!(first_same_pin_copy(&db,"codex",pin).unwrap());
+        // record_managed_cli_progress updates only these columns, preserving
+        // the exact pin left by BLOCKED across a durable progress transition.
+        db.execute("UPDATE main.gogoke_v37_instance_cli_copies SET state='DOWNLOADING',progress_bytes=12,raw_error=NULL,revision=revision+1 WHERE driver_id='codex'").unwrap();
+        assert!(first_same_pin_copy(&db,"codex",pin).unwrap());
+        db.execute("UPDATE main.gogoke_v37_instance_cli_copies SET archive_sha256='other' WHERE driver_id='codex'").unwrap();
+        assert!(!first_same_pin_copy(&db,"codex",pin).unwrap());
+        db.execute("UPDATE main.gogoke_v37_instance_cli_copies SET archive_sha256=NULL WHERE driver_id='codex'").unwrap();
+        assert!(!first_same_pin_copy(&db,"codex",pin).unwrap());
+        db.execute("UPDATE main.gogoke_v37_instance_cli_copies SET version=NULL,image_sha256=NULL WHERE driver_id='codex'").unwrap();
+        assert!(first_same_pin_copy(&db,"codex",pin).unwrap());
+        db.execute("UPDATE main.gogoke_v37_instance_cli_copies SET previous_version='0.149.0' WHERE driver_id='codex'").unwrap();
+        assert!(!first_same_pin_copy(&db,"codex",pin).unwrap());
+        db.execute("UPDATE main.gogoke_v37_instance_cli_copies SET previous_version=NULL WHERE driver_id='codex'").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_instance_program_sources(instance_id,source,stage_name,program_digest,version,home_identity,registration_request_id,revision) VALUES('first','MANAGED','old-stage','sha256:old','0.149.0','identity-first','old-request',1)").unwrap();
+        assert!(!first_same_pin_copy(&db,"codex",pin).unwrap());
+        db.close_checked().unwrap();drop(root);
+        fs::remove_dir_all(&path).unwrap();
+    }
 }
