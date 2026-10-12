@@ -1087,9 +1087,15 @@ impl LaunchEvidence {
             }
             return Ok(());
         };
-        if custody.identity.image_path!=self.program {
-            return Err("native OpenCode alias custody image differs from registered F program".into());
-        }
+        // F's verified database path and QueryFullProcessImageNameW do not
+        // promise identical Windows spellings. Bind both to the original
+        // catalog Volume/FileID and exact profile RX witness instead; a
+        // different file with identical bytes remains unauthorized.
+        self.profile.verify_bound_catalog_program_grant(&self.program,&self.program_identity)
+            .map_err(|error|format!("native OpenCode registered program binding {:?}: {error:?}",self.program))?;
+        self.profile.verify_bound_catalog_program_grant(&custody.identity.image_path,&self.program_identity)
+            .map_err(|error|format!("native OpenCode custody program binding {:?} against {:?}: {error:?}",
+                custody.identity.image_path,self.program))?;
         let updated=super::admission::bind_opencode_dos_alias_custody(db,alias,
             operation_id,&self.pin.digest,custody)
             .map_err(|error|format!("native OpenCode alias custody binding: {error:?}"))?;

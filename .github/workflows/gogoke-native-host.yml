@@ -179,7 +179,8 @@ jobs:
               'store::product_database::v37_seat::tests::secretary_configuration_ingress_preserves_unset_and_exact_owner_bytes',
               'store::instance::management::original_model_efforts_follow_the_cached_source_and_current_pin',
               'store::instance::management::qualified_account_observation_invalidates_prior_models_even_when_mask_collides') }
-            'opencode-alias' { @('store::session_transport::dos_alias::tests',
+            'opencode-alias' { @('catalog_program_hardlinks_bind_one_file_with_exact_rx_and_keep_data_strict',
+              'store::session_transport::dos_alias::tests',
               'store::session_transport::admission::tests::opencode_alias_',
               'store::session_transport::admission::tests::exact_nine_table_migration_adds_only_the_h_alias_record',
               'store::session_transport::admission::tests::eighth_table_upgrade_adds_generation_change_and_alias_without_rewriting_old_rows') }

@@ -19,7 +19,7 @@ fn catalog_program_hardlinks_bind_one_file_with_exact_rx_and_keep_data_strict() 
     let reparse = base.join("reparse.exe");
     std::fs::write(&program, b"fixed catalog program bytes").unwrap();
     std::fs::hard_link(&program, &alias).unwrap();
-    std::fs::write(&neighbor, b"different physical object").unwrap();
+    std::fs::write(&neighbor, b"fixed catalog program bytes").unwrap();
     std::os::windows::fs::symlink_file(&program, &reparse).unwrap();
     let profile = AppContainerProfile::derived_for_test("Gogoke37.CatalogProgramAcl").unwrap();
     let identity = AppContainerProfile::capture_catalog_program_identity(&program).unwrap();
@@ -27,6 +27,7 @@ fn catalog_program_hardlinks_bind_one_file_with_exact_rx_and_keep_data_strict() 
     let object = open_catalog_program(&program, READ_CONTROL).unwrap();
     assert_eq!(file_information(object.0).unwrap().links, 2, "fixture must be a real hardlink");
     let other_identity = AppContainerProfile::capture_program_identity(&neighbor).unwrap();
+    assert_ne!(other_identity, identity, "same bytes in another file are not the registered object");
     assert!(matches!(profile.grant_bound_catalog_program(&program, &other_identity),
         Err(IsolationError::AclWitnessMismatch)));
     assert!(package_aces(object.0, profile.sid).unwrap().is_empty(), "wrong FileID must not grant");
@@ -49,6 +50,10 @@ fn catalog_program_hardlinks_bind_one_file_with_exact_rx_and_keep_data_strict() 
     assert_eq!(witness.rights, FILE_GENERIC_READ | FILE_GENERIC_EXECUTE);
     assert_eq!(witness.inheritance, NO_INHERITANCE);
     assert_eq!(profile.verify_bound_catalog_program_grant(&alias, &identity).unwrap(), witness);
+    let verbatim = std::fs::canonicalize(&program).unwrap();
+    assert_ne!(verbatim, program, "fixture exposes ordinary versus verbatim Windows spelling");
+    assert_eq!(profile.verify_bound_catalog_program_grant(&verbatim, &identity).unwrap(), witness,
+        "both Windows spellings must retain the same physical object and exact RX witness");
     // Inspect the actual ACE, independently of executable image-section locks.
     let aces = package_aces(object.0, profile.sid).unwrap();
     assert_eq!(aces, vec![(GRANT_ACCESS, FILE_GENERIC_READ | FILE_GENERIC_EXECUTE, NO_INHERITANCE)]);
