@@ -87,6 +87,19 @@ export const FIXED_OFFICIAL_CATALOG = [
     }
   },
   {
+    "driver": "opencode",
+    "version": "1.18.31",
+    "url": "https://registry.npmjs.org/opencode-windows-x64/-/opencode-windows-x64-1.18.31.tgz",
+    "archiveSha256": "8a300ee2b3210ccc6894ff27d21bdb0a60ee44107389c49b743b4caed10aa5cf",
+    "format": "tgz",
+    "executable": "package/bin/opencode.exe",
+    "executableSha256": "0242a0dc705af67c90882b456a36b619883c1c786aad8fe071a1bc64e5d1d440",
+    "files": {
+      "package/package.json": 140,
+      "package/bin/opencode.exe": 179998248
+    }
+  },
+  {
     "driver": "grok",
     "version": "1.0.41",
     "url": "https://x.ai/cli/grok-1.0.41-windows-x86_64.exe",
