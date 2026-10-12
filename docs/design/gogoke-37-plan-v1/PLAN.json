@@ -1114,6 +1114,13 @@
     "serves": [
      "H"
     ]
+   },
+   {
+    "path": "apps/desktop/native-host/src/store/product_database/v37_managed_cli.rs",
+    "extension": "F.2 only: connect the already-planned explicit authenticated USER managed-CLI lifecycle through the existing verified ProductDatabase dispatcher: check-updates (unverified notice only), upgrade, rollback, qualified read-only doctor and zero-instance uninstall. Compose F's trusted compiled version/archive/image catalog, original managed copy and instance program-source CAS in the existing single authority transaction; recheck quiescence, exact H/C custody and unresolved intents before write and finish, rejecting active or UNKNOWN use. Keep existing home and credential bytes and original errors; doctor is not login detect and cannot spend model quota. No raw database or issuer accessor, new process or scheduler, permission change, global npm/PATH discovery, automatic upgrade, unverified activation, fabricated StopFact or cleared UNKNOWN. Other ProductDatabase helpers and product_database.rs retain their existing scope.",
+    "serves": [
+     "F"
+    ]
    }
   ],
   "conditional_rule": "A conditional file is recorded in T00 or L0 as either MODIFIED, with the change, or VERIFIED_UNCHANGED, with the reason; no line widens its own scope to reach it."

@@ -36,7 +36,7 @@
 
 ## 3. 第 0 步（L0）：共享接线和跨线约定
 
-- **共享文件 60 个**，唯一的写入者是汇合席位（只有 L0 这一条线拥有它们，校验脚本检查）。
+- **共享文件 61 个**，唯一的写入者是汇合席位（只有 L0 这一条线拥有它们，校验脚本检查）。
   - 本轮补上了设置页的四个接入文件，因为实例管理页放在设置里。
   - Owner 新指定的右侧席位入口再精确加入 7 个接线文件：`PanelTabs.tsx`、`layoutNodes/buildGitNodes.tsx`、`layoutNodes/types.ts`、`useGitPanelController.ts`、`useMainAppComposerWorkspaceState.ts`、`useWorkspaceFileListing.ts`、`useMainAppLayoutSurfaces.ts`。它们只扩展四选一 tab、布局 source 传递和文件模式类型；`MainApp.tsx` 与 i18n 已在清单中。`PanelShell` 以及 Git/文件/提示词面板从 `PanelTabId` 继承，不另开写域。
   - 另外 5 个带条件的文件：问题卡组件、`Cargo.lock`、卫生检查脚本和它的测试、服务打包脚本。这几个由 T00 或 L0 登记为"要改"或"核对过不用改"；哪条线都不能为了够着它们而扩大自己的写入范围。
@@ -478,3 +478,13 @@ Owner 已认可最小方案，替换上一节“只沿原具名初始化、不�
 只新增 `apps/desktop/src-tauri/src/public_runtime/design37_host.rs` 为 INTEGRATOR 共享路径，且仅供 H 在现有 `HOST_EXITED` 错误中保留该有界 stderr 尾和原 `Child` 退出结果。沿用既有启动、进程句柄、错误路径和已授权的 `product_entry.rs`；不增加进程、权限、持久 writer、重放或 StopFact，不改变 Stop/Job/释放语义，也不扩展其他文件写域。
 
 本次只增加这一条 shared path；需求、阶段、H 写域、契约持久写方、不变量和 Owner 触点不变。参照 main `3609d91f` 上 PR #85 的单共享路径范围修订：同 PR 更新 v2 回执、MANIFEST 和三处固定回执 blob。Owner 合并后，Controller 精确读回 main 回执、MANIFEST 与范围摘要再施工；本提案不宣称候选、安装或产品验收通过。 T00 轻核对：可信 `origin/main` `3609d91fe1fa33639c186079ec71de669b3c1dd6` 不含该路径；施工提交 `fcc19b542248d9cf1b04db931f19d30d2f135e07` 的静态源 blob 为 `cddc6faf4e68e2bf24f2d1c82ecccfec9ddf5bbc`，仅作来源核对，不表示该文件已在 main 生效。
+
+## 2026-10-12：F.2 自管 CLI 生命周期的唯一共享桥接路径（范围提案，待 Owner 合并）
+
+F.2 已要求显式升级、退回、自检、查更新和零实例卸载；原 USER dispatcher 目前只接安装流程。只新增 `apps/desktop/native-host/src/store/product_database/v37_managed_cli.rs` 为 INTEGRATOR 共享路径，将这些既定 USER 动作接到 F 的可信版本目录、原 copy/instance/SOURCE 和已有 ProductDatabase 权威事务。其私有 H/custody/intent 核对不能从 F 兄弟模块或已列桌面转发文件取得；现有桌面与 Node 共享路径继续由汇合席位使用，不新增其他写路径。
+
+升级或退回必须选择编译内已验证的官方 archive/image/version，写前和完成时核对静止状态、精确 H/C、未结 intent 和 revision CAS；活跃或 UNKNOWN 一律拒绝。原 HOME 与凭据字节保留，失败原文和 UNKNOWN 不改写。查更新只记未验证通知，不能激活；doctor 必须有已证明不登录、不改账户、不花模型额度的官方只读行为，不能顶替登录检测。零实例卸载由原 F 门槛拒绝任何现存实例。没有同家双版本可信字节时，真实升级/退回成功仍为 NOT_RUN，不把候选换装或 latest 通知算通过。
+
+不新增数据库/issuer accessor、模型进程、调度器、权限、全局 npm/PATH 发现、自动升级、凭据读取或 Owner 登录步骤。`product_database.rs` 的 E.3 组合授权及其他 helper 不扩大；F 写域、需求、阶段、契约写方、不变量和 Owner 触点保持。本次仅增加一个 shared path，同 PR 更新范围摘要、v2 回执、MANIFEST 和三处固定回执 blob；Owner 合并且 Controller 精确读回前，不施工该路径。
+
+参照已合并的 PR #88 单路径修订和当前 F.2；T00 轻核对以 main `a8ce38c2` 为准，main 尚无该路径，施工树现有 dispatcher blob `f4998aced71a52b9652f7e043c5f55b945824529` 只作静态定位来源。该提案没有产品改动，不宣称生命周期、真机或里程碑通过。
