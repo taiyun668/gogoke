@@ -1,4 +1,4 @@
-// Fixed Codex evidence input for the existing V08 two-seat core case only.
+// Fixed Codex evidence input for the existing V08 core and Host busy-to-idle case.
 // Follows the separately reviewed fixed OpenCode source reader; no provider-wide fallback.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -15,9 +15,23 @@ const home = value => typeof value === 'string' && /^volume:[a-f0-9]{16}\/file:[
 export function managedCodexQualifications(config, raw) {
   const instance = raw?.instance, source = raw?.programSource, copy = raw?.managedCopy;
   const rules = config.rules;
+  const core = rules?.selection === undefined && rules?.host === undefined;
+  // The original driver validates both sealed core13 files, the same source seats,
+  // their real releases and its final direct readback before this source reader.
+  const recipients = [rules?.submitter, rules?.reviewer,
+    rules?.host?.destination, rules?.host?.alternateDestination];
+  const prior = rules?.priorCore13;
+  const host = rules?.selection === 'HOST_BUSY_TO_IDLE_ONLY' &&
+    rules.host?.busyToIdleOnly === true && rules.foreignProject === undefined &&
+    rules.host.lifecycleOwnership === 'EXCLUSIVE_V08_HOST_RECIPIENTS' &&
+    recipients.every(row => row?.instanceId === instanceId && atom(row.seatId) && atom(row.worktreeId)) &&
+    new Set(recipients.map(row => row.seatId)).size === 4 &&
+    new Set(recipients.map(row => row.worktreeId)).size === 4 &&
+    typeof prior?.journal === 'string' && path.isAbsolute(prior.journal) && sha(prior.journalSha256) &&
+    typeof prior?.finalReadback === 'string' && path.isAbsolute(prior.finalReadback) && sha(prior.finalSha256);
   const qualifications = {
     fixedCase: config.instanceId === instanceId && config.repositoryId === 'gogokeSeatTestbed' &&
-      rules?.selection === undefined && rules?.host === undefined &&
+      (core || host) &&
       rules?.lifecycleOwnership === 'EXCLUSIVE_V08_SUBMITTER_AND_REVIEWER' &&
       rules.policyOwnership === 'EXCLUSIVE_V08_POLICY_DOMAIN' &&
       rules.userPermissionTier === 'NETWORKED_WRITE' && rules.userMaxConcurrent === 4 &&
