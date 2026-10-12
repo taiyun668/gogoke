@@ -858,7 +858,7 @@ async function runCase(row, instances) {
         'Grok Write pre-send H page made no ledger progress');
     }
     record.beforeSendRawHighwater = before.rawHighwater;
-  } else if (row.driverId === 'claude') {
+  } else if (row.driverId === 'claude' || row.driverId === 'opencode') {
     record.prompt = 'What is 241 + 537?';
     record.expectedAnswer = '778';
   } else {
@@ -947,7 +947,7 @@ async function readbackAndGolden() {
     const observed = facts.sessions.find(value => value.sessionId === record.sessionId);
     check(observed?.driverId === record.driverId && observed?.version === record.fixedVersion &&
       observed?.binarySha256 === `sha256:${record.fixedSha256}` && observed?.allEpisodesStopped &&
-      observed?.providerEndTurn === true && (record.driverId === 'claude'
+      observed?.providerEndTurn === true && (record.expectedAnswer === '778'
         ? observed?.answerObserved === true && Boolean(observed?.vendorSessionId)
         : record.caseMode === 'grokWrite' ? observed?.writeObserved === true
           : observed?.markerObserved === true),

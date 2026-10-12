@@ -1507,9 +1507,10 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                 (grok_write and (driver != "grok" or len(journal["cases"]) != 1)):
             fail("Provider case mode differs from its one selected fixed CLI")
         natural_claude = driver == "claude" and not supplement
-        if natural_claude:
+        natural_opencode = driver == "opencode" and expected_answer is not None
+        if natural_claude or natural_opencode:
             if prompt != "What is 241 + 537?" or expected_answer != "778" or marker is not None:
-                fail("Claude arithmetic question or private answer differs")
+                fail("Provider arithmetic question or private answer differs")
         elif not isinstance(marker, str) or not marker:
             fail(f"{driver}: private marker absent")
         write = case.get("write") if grok_write else None
@@ -1807,7 +1808,7 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                 } and isinstance(command_frame.get("uuid"), str)
             else:
                 raw_command = json.dumps(command_frame, ensure_ascii=False)
-                selected = marker in raw_command or prompt in raw_command
+                selected = (isinstance(marker, str) and marker in raw_command) or prompt in raw_command
             if selected:
                 prompt_commands.append(command_frame)
         if not prompt_commands:
@@ -1832,9 +1833,11 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                     fail("Claude produced a tool-use frame despite the no-tool prompt")
             elif driver in ("opencode", "grok"):
                 provider_output += acp_text(frame)
-                marker_output = marker in provider_output
+                marker_output = isinstance(marker, str) and marker in provider_output
+                if natural_opencode:
+                    answer_output = re.search(r"(?<!\d)778(?!\d)", provider_output) is not None
                 if frame.get("result", {}).get("stopReason") == "end_turn":
-                    acp_end_candidates.append((frame, marker_output))
+                    acp_end_candidates.append((frame, answer_output if natural_opencode else marker_output))
                 if not grok_write and frame.get("method") == "session/request_permission":
                     fail(f"{driver} produced a permission request despite the no-tool prompt")
                 if not grok_write and frame.get("method") == "session/update" and nested_text(frame,
@@ -1883,10 +1886,11 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                     outbound_prompts.append(command_frame)
             terminal_ids = {json.dumps(frame.get("id"), separators=(",", ":")) for frame in outbound_prompts}
             prompt_echo = len(outbound_prompts) == 1
-            matching_ends = [frame for frame, saw_marker in acp_end_candidates if (grok_write or saw_marker) and isinstance(frame, dict) and
+            matching_ends = [frame for frame, saw_answer in acp_end_candidates if (grok_write or saw_answer) and isinstance(frame, dict) and
                 frame.get("result", {}).get("stopReason") == "end_turn" and
                 json.dumps(frame.get("id"), separators=(",", ":")) in terminal_ids]
-            vendor_end = len(matching_ends) == 1 and (grok_write or marker_output)
+            vendor_end = len(matching_ends) == 1 and (grok_write or
+                (answer_output if natural_opencode else marker_output))
             if driver == "opencode":
                 evidence = case.get("modelEffortEvidence", {})
                 if evidence.get("basis") != "REQUIRES_ORIGINAL_ACP_MODEL_EFFORT_ACK_READBACK":
@@ -1910,6 +1914,7 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                 if len(set(vendor_sessions)) != 1:
                     fail("OpenCode has no unique original ACP vendor session id")
                 vendor_session = vendor_sessions[0]
+                terminal_session = vendor_session
                 acknowledged = []
                 for config_id in ("model", "effort"):
                     # Original H open uses these names; candidate generation
@@ -1977,7 +1982,7 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
                 outbound_prompts[0], original_wire, by_action["open"]["receipt"], seat,
                 binding[3], actual_identity, expected_bytes)
         if not prompt_echo or not (write_evidence if grok_write else
-                answer_output if natural_claude else marker_output) or not vendor_end:
+                answer_output if natural_claude or natural_opencode else marker_output) or not vendor_end:
             fail(f"{driver}: original H prompt, provider answer or marker, and vendor end-turn are not all present")
         normalized = db.execute(
             "SELECT i.cursor,i.source_epoch,i.source_cursor,i.update_json,r.operation_id,r.generation,"
@@ -2003,6 +2008,7 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             "providerEndTurn": vendor_end, "markerObserved": marker_output,
             "writeObserved": bool(write_evidence), "writeEvidence": write_evidence,
             "answerObserved": answer_output,
+            "expectedAnswer": expected_answer,
             "vendorSessionId": terminal_session,
             "modelEffortEvidence": record_model_evidence if driver in ("opencode", "grok") else
                 {"basis": "ACTUAL_PINNED_CLAUDE_PROCESS_ARGV", "processId": argv.get("processId"),
@@ -2026,7 +2032,8 @@ result["measurementPreservedDatabaseBytes"] = before == result["filesAfter"]
 result["directProviderEvidence"] = result["measurementPreservedDatabaseBytes"] and \
     all(row["allEpisodesStopped"] and row["providerEndTurn"] and
         (row["writeObserved"] if row.get("caseMode") == "grokWrite" else
-         row["answerObserved"] if row["driverId"] == "claude" and not supplement
+         row["answerObserved"] if (row["driverId"] == "claude" and not supplement) or
+             (row["driverId"] == "opencode" and row["expectedAnswer"] == "778")
          else row["markerObserved"])
         for row in result["sessions"])
 output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
