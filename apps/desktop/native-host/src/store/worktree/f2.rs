@@ -2395,7 +2395,7 @@ mod tests {
         with_real_child("cleanup-remove-argv", |db, root, pin, custodian, _binding, source, _owner| {
             let target = source.parent().unwrap().join("cleanup-argv-worktree");
             git(db, root, custodian, pin, "fixture_add_cleanup_argv", Some(source), &[
-                "worktree".into(), "add".into(), "--detach".into(),
+                "worktree".into(), "add".into(), "--quiet".into(), "--detach".into(),
                 target.to_string_lossy().into_owned(), "HEAD".into(),
             ], false).unwrap();
             let args = cleanup_remove_args(&target).unwrap();
