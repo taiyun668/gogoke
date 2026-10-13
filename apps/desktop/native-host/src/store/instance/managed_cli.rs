@@ -3,7 +3,7 @@
 //! recording it; H must launch that exact image and report the result before
 //! the PROBED copy can be bound to every quiescent legacy instance and marked READY.
 
-use super::{legacy_fence,registry::ProgramObservation};
+use super::{legacy_fence,registry::{self,ProgramObservation}};
 use crate::process::NativeLegacyHoldersGone;
 use crate::root::RootLock;
 use crate::store::atomic::Statement;
