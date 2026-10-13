@@ -458,7 +458,7 @@ fn product_admission_enforces_persisted_caps_and_rolls_back_busy_on_denial() {
         expected_revision: 1, observation: instance::InstanceObservation::LoggedIn,
     }).unwrap();
     seat::store_template(&mut product.connection, NativeOrigin::user(&product.owner), StoreTemplate {
-        domain_id: "projectA", template_id: "templateA", settings_json: b"{}",
+        domain_id: "projectA", template_id: "templateA", settings_json: br#"{"permissionTier":"NETWORKED_WRITE"}"#,
     }).unwrap();
     for name in ["seatA", "seatB", "seatC"] {
         seat::create(&mut product.connection, NativeOrigin::user(&product.owner), CreateSeat {
@@ -489,7 +489,9 @@ fn product_admission_enforces_persisted_caps_and_rolls_back_busy_on_denial() {
     assert!(String::from_utf8_lossy(&changed).contains("ProgramSource(Conflict)"));
     product.connection.execute(&format!("UPDATE gogoke_v37_instances SET program_digest='{actual_digest}' WHERE instance_id='instanceA'")).unwrap();
     assert_eq!(seat::get(&product.connection, "projectA", "seatA").unwrap().unwrap().state, State::Idle);
-    assert_eq!(status(&mut product, &reserve_a), V37Status::Applied);
+    let reserve_a_receipt = product.dispatch_user_request(&reserve_a).unwrap();
+    assert_eq!(h::decode_receipt(&reserve_a_receipt).unwrap().status, V37Status::Applied,
+        "reserveA original receipt/reason: {}", String::from_utf8_lossy(&reserve_a_receipt));
     assert_eq!(status(&mut product, &reserve_a), V37Status::Replayed);
     let reserve_b = request("admission-reserve", "reserveB", "sessionB", "seatB", 0);
     assert_eq!(status(&mut product, &reserve_b), V37Status::Denied);
