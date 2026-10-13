@@ -3,6 +3,64 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SeatsPanel, type SeatsSource } from "./SeatsPanel";
 import type { SeatsPage } from "./seatsPageModel";
+import { invoke } from "@tauri-apps/api/core";
+import { createDesign37SeatsSource } from "../../services/tauri";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+
+describe("native unbound seat source", () => {
+  function nativeSource(instance: { id: string } | null = null) {
+    const writes: Array<{ operation: string; expectedRevision: string; payload: Record<string, unknown> }> = [];
+    const row = { id: "unbound", instance, _revision: "1", _incarnation: "original",
+      _settings: { permissionTier: "READ_ONLY", reasoningEffort: "low" } as Record<string, unknown>,
+      allowed: { tune: true, changeInstance: instance !== null, remove: true } };
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      expect(command).toBe("gogoke_design37_user_operation");
+      const frame = JSON.parse((args as { frame: string }).frame);
+      if (frame.command === "seats-page-read") return JSON.stringify({ seats: [row] });
+      writes.push(frame);
+      expect(frame.expectedRevision).toBe(row._revision);
+      if (frame.operation === "tune") row._settings[frame.payload.setting] = frame.payload.value;
+      row._revision = String(Number(row._revision) + 1);
+      return JSON.stringify({ status: "APPLIED", revision: row._revision });
+    });
+    return { source: createDesign37SeatsSource<SeatsPage>("project"), writes, row };
+  }
+
+  it("retains permission and effort tuning with native revisions and no implicit binding", async () => {
+    const { source, writes, row } = nativeSource();
+    await source.actions.tune("unbound", { instanceId: "", permission: "NO_NETWORK", effort: "high" });
+    expect(writes.map(({ operation, expectedRevision, payload }) => ({ operation, expectedRevision, payload })))
+      .toEqual([
+        { operation: "tune", expectedRevision: "1", payload: { setting: "reasoningEffort", value: "high" } },
+        { operation: "tune", expectedRevision: "2", payload: { setting: "permissionTier", value: "NO_NETWORK" } },
+      ]);
+    expect(row.instance).toBeNull();
+  });
+
+  it("refuses instance or model writes for an unbound seat before sending a mutation", async () => {
+    for (const input of [
+      { instanceId: "new", model: "verified" },
+      { instanceId: "", model: "verified" },
+      { instanceId: "", model: "" },
+    ]) {
+      const { source, writes } = nativeSource();
+      await expect(source.actions.tune("unbound", { ...input, permission: "READ_ONLY", effort: "high" }))
+        .rejects.toThrow("no bound instance");
+      expect(writes).toEqual([]);
+    }
+  });
+
+  it("preserves the atomic model change for an already bound seat", async () => {
+    const { source, writes } = nativeSource({ id: "existing" });
+    await source.actions.tune("unbound", {
+      instanceId: "existing", model: "verified", permission: "READ_ONLY", effort: "high",
+    });
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ operation: "change-instance", expectedRevision: "1",
+      payload: { instanceId: "existing", model: "verified", effort: "high", permissionTier: "READ_ONLY" } });
+  });
+});
 
 const pro = { id: "codexTestM2", name: "Pro 主号", vendor: "codex" as const, models: ["GPT-6.1 Sol", "GPT-6.1 mini"] };
 const claude = { id: "claudeTestM2", name: "Claude Pro", vendor: "claude" as const, models: ["Opus 5.5"] };
