@@ -150,7 +150,7 @@ fn managed_request_field(fields:&std::collections::BTreeMap<JsonString,Json>,
 
 pub(super) fn managed_request_command(input:&ManagedSwitchRequest<'_>)
     ->Result<String,RegistryError> {
-    if !valid_atom(input.request_id) || input.request_id.len()>64 ||
+    if !valid_managed_switch_request_id(input.request_id) ||
         input.request_bytes.is_empty() || input.request_bytes.len()>65_536 ||
         input.expected_copy_revision<1 || input.target_version.is_empty() {
         return Err(RegistryError::Invalid("managed switch request"));
@@ -172,6 +172,92 @@ pub(super) fn managed_request_command(input:&ManagedSwitchRequest<'_>)
         return Err(RegistryError::Unknown);
     }
     Ok(command)
+}
+
+pub(crate) fn valid_managed_switch_request_id(value:&str)->bool {
+    valid_atom(value) && value.len()<=64
+}
+
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub(crate) struct ManagedSwitchReceipt {
+    pub(crate) instance_id:String,
+    pub(crate) receipt_json:String,
+}
+
+/// Read the original instance receipts before considering any present copy or
+/// stage. A later authorized rollback or new registration cannot turn an old
+/// committed USER frame into another activation.
+pub(crate) fn reconcile_managed_switch(connection:&VerifiedDatabaseConnection<'_>,
+    root:&RootLock,request_id:&str,driver:&str,target_version:&str,
+    expected_copy_revision:i64,request_bytes:&[u8])
+    ->Result<Option<Vec<ManagedSwitchReceipt>>,RegistryError> {
+    let request=ManagedSwitchRequest{request_bytes,request_id,driver,target_version,
+        expected_copy_revision};
+    managed_request_command(&request)?;
+    let rows=Statement::prepare(connection.as_ptr(),
+        "SELECT request_id,request_hex,target_id,phase,COALESCE(receipt_json,''),COALESCE(native_receipt_id,'') FROM main.gogoke_v37_instance_operations ORDER BY target_id,request_id")?;
+    let mut found=Vec::new();
+    let mut common:Option<Vec<Vec<u8>>>=None;
+    while rows.step_row()? {
+        let key=rows.column_text(0)?;
+        let encoded=rows.column_text(1)?;
+        let id=rows.column_text(2)?;
+        // A damaged switch fingerprint still has its switch-key shape. Never
+        // interpret an unreadable candidate as absence of a prior result.
+        if !key.starts_with("managed-switch-") {
+            let fields=match decode_framed_hex(&encoded) {Ok(fields)=>fields,Err(_)=>continue};
+            if fields.first().map(Vec::as_slice)!=Some(MANAGED_SWITCH_MARKER) {continue}
+            if fields.get(2).map(Vec::as_slice)!=Some(request_id.as_bytes()) {continue}
+        }
+        let fields=decode_framed_hex(&encoded)?;
+        if fields.first().map(Vec::as_slice)!=Some(MANAGED_SWITCH_MARKER) ||
+            fields.len()!=16 {return Err(RegistryError::Unknown)}
+        if fields[2]!=request_id.as_bytes() {
+            use sha2::{Digest,Sha256};
+            let requested_key=format!("managed-switch-{:x}",Sha256::digest(
+                format!("{request_id}\0{id}").as_bytes()));
+            if key==requested_key {return Err(RegistryError::Unknown)}
+            continue;
+        }
+        if !valid_id(&id) || fields[3]!=id.as_bytes() ||
+            fields[1]!=request_bytes || fields[4]!=driver.as_bytes() ||
+            fields[11]!=target_version.as_bytes() ||
+            fields[15]!=expected_copy_revision.to_string().as_bytes() {
+            return Err(RegistryError::RequestConflict);
+        }
+        use sha2::{Digest,Sha256};
+        let expected_key=format!("managed-switch-{:x}",Sha256::digest(
+            format!("{request_id}\0{id}").as_bytes()));
+        if key!=expected_key || rows.column_text(3)?!="APPLIED" ||
+            !rows.column_text(5)?.is_empty() {return Err(RegistryError::Unknown)}
+        let receipt=rows.column_text(4)?;
+        let home=std::str::from_utf8(&fields[5])
+            .map_err(|error|RegistryError::RepinFormat(format!("managed witness home UTF-8: {error}")))?;
+        let digest=std::str::from_utf8(&fields[10])
+            .map_err(|error|RegistryError::RepinFormat(format!("managed witness digest UTF-8: {error}")))?;
+        let after=std::str::from_utf8(&fields[14])
+            .map_err(|error|RegistryError::RepinFormat(format!("managed witness revision UTF-8: {error}")))?
+            .parse::<i64>().map_err(RegistryError::RevisionParse)?;
+        if receipt!=managed_switch_receipt_json(request_id,&id,driver,home,digest,
+            target_version,after,expected_copy_revision,&encoded) {
+            return Err(RegistryError::Unknown);
+        }
+        let shared=[1,2,4,8,9,10,11,12,15].iter()
+            .map(|index|fields[*index].clone()).collect::<Vec<_>>();
+        if common.as_ref().is_some_and(|prior|prior!=&shared) {
+            return Err(RegistryError::Unknown);
+        }
+        common=Some(shared);
+        found.push(ManagedSwitchReceipt{instance_id:id,receipt_json:receipt});
+    }
+    drop(rows);
+    if found.is_empty(){return Ok(None)}
+    for item in &found {
+        // Reuse the registry's creation-to-current witness chain, including
+        // trusted pins, version direction, exact key and receipt checks.
+        verified_creation_request(connection,root,&item.instance_id)?;
+    }
+    Ok(Some(found))
 }
 
 fn framed(fields: &[&[u8]]) -> String {
@@ -1366,11 +1452,38 @@ pub(super) mod tests {
             let first=synthetic_managed_witness_step(connection,root,&owner,"managedUpA",
                 "upgrade",&old,&new,"codex-0.1.0-original","codex-0.160.0-next",7,1,&home);
             assert!(first.contains("managedUpA"));
+            let first_raw=format!("{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"upgrade\",\"requestId\":\"managedUpA\",\"driverId\":\"codex\",\"targetVersion\":\"{}\",\"expectedRevision\":\"7\"}}",new.version);
+            assert_eq!(reconcile_managed_switch(connection,root,"managedUpA","codex",
+                &new.version,7,first_raw.as_bytes()).unwrap().unwrap(),vec![ManagedSwitchReceipt{
+                instance_id:"instanceA".into(),receipt_json:first.clone()}]);
+            let changed=format!(" {first_raw}");
+            assert!(matches!(reconcile_managed_switch(connection,root,"managedUpA","codex",
+                &new.version,7,changed.as_bytes()),Err(RegistryError::RequestConflict)));
             assert_eq!(reconcile_register_replay(connection,root,"creation","instanceA",
                 b"original registration").unwrap(),RegistrationReplay::Replayed);
             let second=synthetic_managed_witness_step(connection,root,&owner,"managedBackB",
                 "rollback",&new,&old,"codex-0.160.0-next","codex-0.1.0-original",8,2,&home);
             assert!(second.contains("managedBackB"));
+            let before=instance(connection,"instanceA").unwrap();
+            let before_source=Statement::prepare(connection.as_ptr(),
+                "SELECT stage_name,revision FROM main.gogoke_v37_instance_program_sources WHERE instance_id='instanceA'").unwrap();
+            assert!(before_source.step_row().unwrap());
+            let before_source=(before_source.column_text(0).unwrap(),before_source.column_text(1).unwrap());
+            let before_count=Statement::prepare(connection.as_ptr(),
+                "SELECT count(*) FROM main.gogoke_v37_instance_operations").unwrap();
+            assert!(before_count.step_row().unwrap());
+            let before_count=before_count.column_text(0).unwrap();
+            assert_eq!(reconcile_managed_switch(connection,root,"managedUpA","codex",
+                &new.version,7,first_raw.as_bytes()).unwrap().unwrap()[0].receipt_json,first);
+            assert_eq!(instance(connection,"instanceA").unwrap(),before);
+            let source=Statement::prepare(connection.as_ptr(),
+                "SELECT stage_name,revision FROM main.gogoke_v37_instance_program_sources WHERE instance_id='instanceA'").unwrap();
+            assert!(source.step_row().unwrap());
+            assert_eq!((source.column_text(0).unwrap(),source.column_text(1).unwrap()),before_source);
+            let count=Statement::prepare(connection.as_ptr(),
+                "SELECT count(*) FROM main.gogoke_v37_instance_operations").unwrap();
+            assert!(count.step_row().unwrap());
+            assert_eq!(count.column_text(0).unwrap(),before_count);
             assert_eq!(reconcile_register_replay(connection,root,"creation","instanceA",
                 b"original registration").unwrap(),RegistrationReplay::Replayed);
             let first_key=format!("managed-switch-{:x}",sha2::Sha256::digest(
@@ -1378,9 +1491,64 @@ pub(super) mod tests {
             let corrupt=Statement::prepare(connection.as_ptr(),
                 "UPDATE main.gogoke_v37_instance_operations SET receipt_json='{}' WHERE request_id=?1").unwrap();
             corrupt.bind_text(1,&first_key).unwrap();corrupt.step_done().unwrap();
+            assert!(reconcile_managed_switch(connection,root,"managedUpA","codex",
+                &new.version,7,first_raw.as_bytes()).is_err());
             assert!(matches!(reconcile_register_replay(connection,root,"creation","instanceA",
                 b"original registration"),Err(RegistryError::Unknown)));
         });
+    }
+
+    #[test]
+    fn committed_switch_receipt_reopens_without_reapplying_old_version() {
+        struct ResetPins;
+        impl Drop for ResetPins {
+            fn drop(&mut self){PRIVATE_WITNESS_TEST_PINS.with(|cell|*cell.borrow_mut()=None);}
+        }
+        let _guard=route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("gogoke-switch-reopen-{}-{nonce}",std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let database=path.join("state.sqlite");
+        let mut connection=create_new(&root,&database).unwrap();
+        connection.execute("PRAGMA foreign_keys=ON").unwrap();
+        initialize_schema(&mut connection).unwrap();
+        let (owner,old,new)=repin_setup(&mut connection,&root);
+        PRIVATE_WITNESS_TEST_PINS.with(|cell|*cell.borrow_mut()=Some(vec![
+            ("codex".into(),old.version.clone(),old.digest[7..].into()),
+            ("codex".into(),new.version.clone(),new.digest[7..].into()),
+        ]));
+        let _reset=ResetPins;
+        let home=observed_home(&root,"instanceA").unwrap().unwrap().opaque();
+        let source=Statement::prepare(connection.as_ptr(),
+            "INSERT INTO main.gogoke_v37_instance_program_sources(instance_id,source,stage_name,program_digest,version,home_identity,registration_request_id,revision) VALUES('instanceA','MANAGED','codex-0.1.0-original',?1,?2,?3,'creation',1)").unwrap();
+        source.bind_text(1,&old.digest).unwrap();source.bind_text(2,&old.version).unwrap();
+        source.bind_text(3,&home).unwrap();source.step_done().unwrap();drop(source);
+        let receipt=synthetic_managed_witness_step(&mut connection,&root,&owner,"oldUpgrade",
+            "upgrade",&old,&new,"codex-0.1.0-original","codex-0.160.0-next",7,1,&home);
+        synthetic_managed_witness_step(&mut connection,&root,&owner,"laterRollback",
+            "rollback",&new,&old,"codex-0.160.0-next","codex-0.1.0-original",8,2,&home);
+        let raw=format!("{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"upgrade\",\"requestId\":\"oldUpgrade\",\"driverId\":\"codex\",\"targetVersion\":\"{}\",\"expectedRevision\":\"7\"}}",new.version);
+        let before=instance(&connection,"instanceA").unwrap();
+        let operations=Statement::prepare(connection.as_ptr(),
+            "SELECT count(*) FROM main.gogoke_v37_instance_operations").unwrap();
+        assert!(operations.step_row().unwrap());
+        let count=operations.column_text(0).unwrap();
+        drop(operations);
+        connection.close_checked().unwrap();
+        let reopened=crate::store::same_open::open_existing(&root,&database).unwrap();
+        assert_eq!(reconcile_managed_switch(&reopened,&root,"oldUpgrade","codex",
+            &new.version,7,raw.as_bytes()).unwrap().unwrap(),vec![ManagedSwitchReceipt{
+                instance_id:"instanceA".into(),receipt_json:receipt}]);
+        assert_eq!(instance(&reopened,"instanceA").unwrap(),before);
+        let operations=Statement::prepare(reopened.as_ptr(),
+            "SELECT count(*) FROM main.gogoke_v37_instance_operations").unwrap();
+        assert!(operations.step_row().unwrap());
+        assert_eq!(operations.column_text(0).unwrap(),count);
+        drop(operations);
+        reopened.close_checked().unwrap();
+        drop(root);
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

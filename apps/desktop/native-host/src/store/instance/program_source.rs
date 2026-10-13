@@ -255,13 +255,37 @@ pub(crate) fn activate_quiescent_managed_version(
     let request=registry::ManagedSwitchRequest{request_bytes,request_id,driver,
         target_version,expected_copy_revision};
     registry::managed_request_command(&request)?;
-    let target=managed_cli::read_official_cli_version(driver,target_version)
+    managed_cli::read_official_cli_version(driver,target_version)
         .ok_or(ProgramSourceError::Invalid)?;
-    // The only presently compiled catalog entry per driver cannot perform a
-    // version change. A second entry must be independently pinned first.
     managed_cli::inspect_staged_official_cli_version(root,driver,target_version,target_stage)?;
     db.execute("BEGIN IMMEDIATE")?;
-    let result=(||{
+    let result=activate_quiescent_managed_version_in_current_transaction(db,root,owner,
+        driver,target_version,target_stage,expected_copy_revision,request_id,request_bytes);
+    match result {
+        Ok(count)=>{db.execute("COMMIT").map_err(OrchestrationError::CommitUnknownWithCause)?; Ok(count)},
+        Err(error)=>{db.execute("ROLLBACK").map_err(OrchestrationError::CommitUnknownWithCause)?; Err(error)},
+    }
+}
+
+/// The F writer for an existing Owner-held immediate transaction. The caller
+/// owns COMMIT/ROLLBACK and must keep its private live-memory gates in that
+/// same synchronous ProductDatabase operation.
+pub(crate) fn activate_quiescent_managed_version_in_current_transaction(
+    db:&VerifiedDatabaseConnection<'_>, root:&RootLock, owner:&OwnerIssuer,
+    driver:&str, target_version:&str, target_stage:&str, expected_copy_revision:i64,
+    request_id:&str, request_bytes:&[u8],
+) -> Result<usize,ProgramSourceError> {
+    if expected_copy_revision<1 || target_stage.is_empty() {
+        return Err(ProgramSourceError::Invalid);
+    }
+    let request=registry::ManagedSwitchRequest{request_bytes,request_id,driver,
+        target_version,expected_copy_revision};
+    registry::managed_request_command(&request)?;
+    let target=managed_cli::read_official_cli_version(driver,target_version)
+        .ok_or(ProgramSourceError::Invalid)?;
+    // The target must be one of the exact compiled versions and its stage
+    // must still contain the pinned official bytes.
+    managed_cli::inspect_staged_official_cli_version(root,driver,target_version,target_stage)?;
         check_owner_in_current_transaction(db,owner)?;
         registry::managed_request_command(&request)?;
         managed_cli::no_unsettled_managed_version_change(db,driver)?;
@@ -374,11 +398,6 @@ pub(crate) fn activate_quiescent_managed_version(
             return Err(ProgramSourceError::Conflict);
         }
         Ok(instances.len())
-    })();
-    match result {
-        Ok(count)=>{db.execute("COMMIT").map_err(OrchestrationError::CommitUnknownWithCause)?; Ok(count)},
-        Err(error)=>{db.execute("ROLLBACK").map_err(OrchestrationError::CommitUnknownWithCause)?; Err(error)},
-    }
 }
 
 /// H uses the stored source, never a caller path. An unbound instance cannot

@@ -121,4 +121,20 @@ describe("InstancesPage", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(create).not.toHaveBeenCalled();
   }, 8000);
+
+  it("shows only explicit readback for a pending CLI switch and refuses repeated clicks while busy", async () => {
+    const pending = page();
+    pending.sections[0].cli = { state: "READY", version: "1.0.0", verifiedVersion: "2.0.0", pendingAction: "upgrade" };
+    const reconcile = vi.fn(() => new Promise<void>(() => {}));
+    const upgrade = vi.fn(async () => {});
+    const source: InstancePageSource = { read: async () => pending, actions: { reconcileCli: reconcile, upgradeCli: upgrade } };
+    render(<InstancesPage source={source} />);
+    const readback = await screen.findByRole("button", { name: "读回结果" });
+    expect(screen.getByText(/上次升级的结果待确认/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "升级" })).toBeNull();
+    fireEvent.click(readback);
+    fireEvent.click(readback);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(upgrade).not.toHaveBeenCalled();
+  });
 });

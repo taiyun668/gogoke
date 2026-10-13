@@ -2,7 +2,12 @@
 import * as NodeFS from "node:fs";
 import { createHash } from "node:crypto";
 import { basename, join } from "node:path";
-import { fixedOfficialCli, stageFixedOfficialCli } from "../instances/managedCli.ts";
+import {
+  checkUnverifiedOfficialVersion,
+  fixedOfficialCli,
+  stageFixedOfficialCli,
+  stageVerifiedOfficialCli,
+} from "../instances/managedCli.ts";
 
 import { constructGogokeService, constructGogokeServiceOnExistingHost } from "./index.ts";
 import { parseStrictJsonBytes } from "../contracts/strictJson.ts";
@@ -512,22 +517,74 @@ export async function runGogokeProductProcess(argv: readonly string[]): Promise<
   const parsed: unknown = parseStrictJsonBytes(requestBytes);
   if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) &&
       (parsed as Record<string, unknown>).operation === "managed-cli-stage") {
-    const action = exactRecord(parsed, "managedCliStage", ["operation", "driverId"]);
-    const driverId = text(action.driverId, "managedCliStage.driverId");
-    if (!fixedOfficialCli(driverId)) throw new Error("MANAGED_CLI_DRIVER_UNSUPPORTED");
-    const root = join(paths.root, "v37-managed-cli", "staging");
-    const staged = await stageFixedOfficialCli(root, driverId as "codex" | "claude" | "opencode" | "grok");
-    NodeFS.writeFileSync(1, `${JSON.stringify({
-      schema: "gogoke.37.managed-cli-stage.v1",
-      driverId: staged.driver, version: staged.version,
-      stageName: basename(staged.stagePath),
-    })}\n`);
+    const response = await handleManagedCliOperation(parsed, paths.root);
+    NodeFS.writeFileSync(1, `${JSON.stringify(response)}\n`);
+    return;
+  }
+  if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) &&
+      (parsed as Record<string, unknown>).operation === "managed-cli-check-updates") {
+    const response = await handleManagedCliOperation(parsed, paths.root);
+    NodeFS.writeFileSync(1, `${JSON.stringify(response)}\n`);
     return;
   }
   const request = decodeProductGoalRequest(requestBytes);
   const response = await handleProductGoalRequest(request, paths);
   // @effect-diagnostics-next-line preferSchemaOverJson:off - local process response DTO.
   NodeFS.writeFileSync(1, `${JSON.stringify(response)}\n`);
+}
+
+type ManagedCliOperationDependencies = {
+  readonly stageDefault?: typeof stageFixedOfficialCli;
+  readonly stagePinned?: typeof stageVerifiedOfficialCli;
+  readonly check?: typeof checkUnverifiedOfficialVersion;
+  readonly now?: () => number;
+};
+
+export async function handleManagedCliOperation(
+  parsed: unknown,
+  productRoot: string,
+  dependencies: ManagedCliOperationDependencies = {},
+) {
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return invalid("managedCli", "must be an object");
+  }
+  const operation = (parsed as Record<string, unknown>).operation;
+  if (operation === "managed-cli-stage") {
+    const hasTargetVersion = Object.hasOwn(parsed, "targetVersion");
+    const action = exactRecord(parsed, "managedCliStage", [
+      "operation", "driverId", ...(hasTargetVersion ? ["targetVersion"] : []),
+    ]);
+    const driverId = text(action.driverId, "managedCliStage.driverId");
+    const targetVersion = hasTargetVersion
+      ? text(action.targetVersion, "managedCliStage.targetVersion")
+      : undefined;
+    const item = fixedOfficialCli(driverId, targetVersion);
+    if (!item) throw new Error("MANAGED_CLI_DRIVER_OR_VERSION_UNSUPPORTED");
+    const root = join(productRoot, "v37-managed-cli", "staging");
+    const staged = targetVersion === undefined
+      ? await (dependencies.stageDefault ?? stageFixedOfficialCli)(root, item.driver)
+      : await (dependencies.stagePinned ?? stageVerifiedOfficialCli)(root, item.driver, item.version);
+    return Object.freeze({
+      schema: "gogoke.37.managed-cli-stage.v1",
+      driverId: staged.driver,
+      version: staged.version,
+      stageName: basename(staged.stagePath),
+    });
+  }
+  if (operation === "managed-cli-check-updates") {
+    const action = exactRecord(parsed, "managedCliCheckUpdates", ["operation", "driverId"]);
+    const driverId = text(action.driverId, "managedCliCheckUpdates.driverId");
+    const item = fixedOfficialCli(driverId);
+    if (!item) throw new Error("MANAGED_CLI_DRIVER_UNSUPPORTED");
+    const officialVersion = await (dependencies.check ?? checkUnverifiedOfficialVersion)(item.driver);
+    return Object.freeze({
+      schema: "gogoke.37.managed-cli-notice.v1",
+      driverId: item.driver,
+      officialVersion,
+      checkedAt: String((dependencies.now ?? Date.now)()),
+    });
+  }
+  return invalid("managedCli.operation", "is unsupported");
 }
 
 

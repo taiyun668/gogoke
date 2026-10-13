@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       focused_library:
-        description: Affected checks only (seat-scope, policy-unset-stage, ledger-scope, native-takeover, pipe-evidence, grok-permission, claude-holder, claude-initialize, claude-second-init, m2-provider-current, codex-empty-persist, holder-completed-group, managed-first-copy, managed-source-only, service-transport, secretary-configuration, opencode-alias, opencode-pipe, model-options, f2-worktree or f2-seat-page); all full and formal gates are NOT_RUN
+        description: Affected checks only (seat-scope, policy-unset-stage, ledger-scope, native-takeover, pipe-evidence, grok-permission, claude-holder, claude-initialize, claude-second-init, m2-provider-current, codex-empty-persist, holder-completed-group, managed-first-copy, managed-source-only, managed-lifecycle, service-transport, secretary-configuration, opencode-alias, opencode-pipe, model-options, f2-worktree or f2-seat-page); managed-lifecycle also runs server tests; full native and mutation gates are NOT_RUN
         type: string
         default: ""
       secretary_routine_fixture_only:
@@ -122,7 +122,7 @@ jobs:
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CLAUDE_CLI_PATH=$binary"
           Write-Output "Fixed Claude CLI SHA256=$digest"
       - name: Check the production configuration for affected recovery
-        if: ${{ inputs.focused_library == 'codex-empty-persist' || inputs.focused_library == 'holder-completed-group' || inputs.focused_library == 'opencode-pipe' || inputs.focused_library == 'service-transport' || inputs.focused_library == 'managed-first-copy' || inputs.focused_library == 'managed-source-only' }}
+        if: ${{ inputs.focused_library == 'codex-empty-persist' || inputs.focused_library == 'holder-completed-group' || inputs.focused_library == 'opencode-pipe' || inputs.focused_library == 'service-transport' || inputs.focused_library == 'managed-first-copy' || inputs.focused_library == 'managed-source-only' || inputs.focused_library == 'managed-lifecycle' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -135,7 +135,7 @@ jobs:
           $env:GOGOKE_CONTROLLED_GIT_PATH = $backend
           cargo check --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib
           if ($LASTEXITCODE -ne 0) { throw 'Production configuration check failed; test-only historical fixture is not production evidence.' }
-          if ($env:FOCUSED_LIBRARY -cin @('service-transport','managed-first-copy','managed-source-only')) {
+          if ($env:FOCUSED_LIBRARY -cin @('service-transport','managed-first-copy','managed-source-only','managed-lifecycle')) {
             cargo check --locked --manifest-path apps/desktop/native-host/Cargo.toml --bin gogoke-native-host
             if ($LASTEXITCODE -ne 0) { throw 'Actual desktop authority/transport binary did not compile.' }
           }
@@ -144,6 +144,10 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $filters = switch ($env:FOCUSED_LIBRARY) {
+            'managed-lifecycle' { @(
+              'store::instance::managed_cli::',
+              'store::instance::registry::tests',
+              'store::product_database::v37_managed_cli::tests') }
             'service-transport' { @('ipc::') }
             'managed-source-only' { @(
               'global_cli_discovery_and_location_are_forbidden_for_every_driver',
@@ -231,7 +235,7 @@ jobs:
           }
           $node = Get-Command node.exe -CommandType Application | Select-Object -First 1 -ExpandProperty Source
           $env:GOGOKE_CONTROLLED_NODE_PATH = $node
-          if ($env:FOCUSED_LIBRARY -in @('m2-provider-current', 'codex-empty-persist', 'holder-completed-group', 'managed-first-copy', 'managed-source-only', 'f2-worktree', 'f2-seat-page')) {
+          if ($env:FOCUSED_LIBRARY -in @('m2-provider-current', 'codex-empty-persist', 'holder-completed-group', 'managed-first-copy', 'managed-source-only', 'managed-lifecycle', 'f2-worktree', 'f2-seat-page')) {
             # The composed F/H fixture uses the real backend image, like the
             # existing full-library job; the git.exe launcher is not its pin.
             $execPath = & git --exec-path
@@ -1758,7 +1762,7 @@ jobs:
           retention-days: 30
 
   gogoke-server-tests:
-    if: ${{ !inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only && !inputs.security_remainder_source && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.full_library_only && !inputs.catalog_program_fixture_only && !inputs.focused_library }}
+    if: ${{ !inputs.secretary_routine_fixture_only && !inputs.dependency_lock_only && !inputs.security_remainder_source && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.full_library_only && !inputs.catalog_program_fixture_only && (!inputs.focused_library || inputs.focused_library == 'managed-lifecycle') }}
     name: Gogoke server cloud tests
     timeout-minutes: 45
     runs-on: windows-latest

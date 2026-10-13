@@ -33,6 +33,10 @@ export type CliState =
 
 export type CliCopy = {
   state: CliState;
+  /** An original final frame has been sent, but its receipt was not confirmed. */
+  pendingAction?: "upgrade" | "rollback";
+  /** Native reports a prepared replacement whose final activation has not settled. */
+  preparedAction?: "upgrade" | "rollback";
   version?: string;
   /** A newer version gogoke has verified; the only source of an upgrade offer. */
   verifiedVersion?: string;
@@ -167,7 +171,7 @@ export type Tone = "ok" | "warn" | "err" | "busy" | "idle";
 export type Capabilities = { canCheck: boolean };
 
 export function cliUsable(cli: CliCopy | undefined): boolean {
-  return cli !== undefined && ["READY", "UPGRADING", "UPGRADE_FAILED"].includes(cli.state);
+  return cli !== undefined && (Boolean(cli.preparedAction) || ["READY", "UPGRADING", "UPGRADE_FAILED"].includes(cli.state));
 }
 
 const seatShortName = (seat: string) => seat.split(" / ")[1] ?? seat;
@@ -257,16 +261,20 @@ export function cliSummary(cli: CliCopy, runningInVendor: number): { tone: Tone;
     case "INSTALL_FAILED":
       return { tone: "err", text: "没装成" };
     case "STAGED":
+      if (cli.preparedAction) return { tone: "warn", text: "目标版本已下载，原版本仍在用；可以继续准备" };
       return { tone: "warn", text: "下载好了，还没装完" };
     case "PROBED":
+      if (cli.preparedAction) return { tone: "warn", text: "目标版本已自检，原版本仍在用；可以继续启用" };
       return { tone: "warn", text: "装好也自检过了，还没启用" };
     case "PROBE_UNKNOWN":
       return { tone: "warn", text: "自检停下了，没能确认通没通过，先不当成装好了" };
     case "BLOCKED":
+      if (cli.preparedAction) return { tone: "warn", text: "目标版本被 Windows 阻止，原版本仍在用" };
       return { tone: "err", text: "装好了，但 Windows 不让它启动，这家的实例暂时都用不了" };
     case "UPGRADING":
       return { tone: "busy", text: "正在升级。升好之前旧版本照常保留，这家暂不开新会话" };
     case "UPGRADE_FAILED":
+      if (cli.preparedAction) return { tone: "warn", text: "目标版本未启用，原版本仍在用；可以重试" };
       return { tone: "warn", text: "升级没成功，还在用原来的版本，一切照常" };
     case "UNINSTALLING":
       return { tone: "busy", text: "正在卸载" };

@@ -1,15 +1,13 @@
 import { useMemo } from "react";
 import { InstancesPage, type InstancePageSource } from "@/features/instances/InstancesPage";
-import { pageFromManaged } from "@/features/instances/instancePageModel";
-import { createDesign37ManagedInstanceSource } from "@/services/design37ManagedInstances";
+import { createManagedCliLifecycleSource } from "@/features/instances/managedCliLifecycleSource";
 
 /**
- * Settings > 实例 on the host's managed instance bridge. Every field and action
- * comes from the bridge; operations it does not implement (check, upgrade,
- * rollback, remove) are absent, so the page does not offer them.
+ * Settings > 实例 uses the managed instance bridge and the native CLI lifecycle
+ * status. The page only offers operations backed by the host.
  */
 export function createDesign37InstanceSource(): InstancePageSource {
-  return createDesign37ManagedInstanceSource(pageFromManaged);
+  return createManagedCliLifecycleSource();
 }
 
 export function Design37InstanceSection() {

@@ -69,6 +69,14 @@ function serve(state: Host) {
       if (frame.command === "instance-management-read") {
         return JSON.stringify({ schema: "gogoke.37.instance-management.v1", profiles: state.profiles, cli: state.cli }) as never;
       }
+      if (frame.command === "status" && typeof frame.driverId === "string") {
+        const copy = state.cli.find((item) => item.driverId === frame.driverId);
+        return JSON.stringify({ schema: "gogoke.37.managed-cli.v1", command: "status", driverId: frame.driverId,
+          state: copy?.state ?? "NOT_INSTALLED", revision: copy ? "1" : null,
+          version: copy?.version ?? null, preparedReplacement: copy ? null : null,
+          previousVersion: null, verifiedOtherVersions: [], officialVersion: null,
+          checkedAt: null, progressBytes: copy ? 0 : null, raw: copy?.raw ?? null }) as never;
+      }
       return JSON.stringify({ status: "APPLIED" }) as never;
     }
     if (command === "gogoke_design37_install_cli") {

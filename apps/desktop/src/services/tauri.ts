@@ -1230,6 +1230,23 @@ export async function design37UserFrame(frame: object): Promise<unknown> {
   return JSON.parse(raw) as unknown;
 }
 
+/** Preserve the original final lifecycle frame for read-only receipt recovery. */
+export async function design37ExactManagedCliFrame(frame: string): Promise<unknown> {
+  const raw = await invoke<string>("gogoke_design37_user_operation", { frame });
+  if (typeof raw !== "string") throw new Error("Native managed CLI reply is not a frame.");
+  if (raw.startsWith("ERR\t")) throw new Error(raw);
+  return JSON.parse(raw) as unknown;
+}
+
+/** Preparation downloads and probes a trusted version; final activation stays a USER frame. */
+export async function design37ManagedCliAction(request: {
+  driverId: string; requestId: string;
+  operation: "upgrade" | "rollback" | "check-updates" | "uninstall";
+  targetVersion?: string;
+}): Promise<unknown> {
+  return invoke<unknown>("gogoke_design37_install_cli", { request });
+}
+
 /** Existing native USER ingress. A model call never goes through this bridge. */
 export async function design37UserConfiguration<T>(
   command: string,

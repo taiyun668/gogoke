@@ -1444,7 +1444,15 @@ pub(crate) async fn gogoke_design37_user_operation(
 pub(crate) struct Design37InstallCliRequest {
     driver_id: String,
     request_id: String,
+    #[serde(default)]
+    operation: Option<Design37CliOperation>,
+    #[serde(default)]
+    target_version: Option<String>,
 }
+
+#[derive(Deserialize,Clone,Copy,PartialEq,Eq)]
+#[serde(rename_all="kebab-case")]
+enum Design37CliOperation { Upgrade, Rollback, CheckUpdates, Uninstall }
 
 #[derive(Deserialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -1468,6 +1476,209 @@ fn managed_cli_user_reply(bytes: Vec<u8>, step: &str) -> Result<Vec<u8>, String>
     Ok(bytes)
 }
 
+#[cfg(target_os="windows")]
+fn managed_cli_native_json(host:&super::design37_host::Design37Host,
+    frame:serde_json::Value,step:&str)->Result<serde_json::Value,String> {
+    let bytes=serde_json::to_vec(&frame).map_err(|e|format!("GOGOKE_MANAGED_CLI_{step}_ENCODE:{e}"))?;
+    let bytes=managed_cli_user_reply(host.request_user(&bytes)?,step)?;
+    serde_json::from_slice(&bytes).map_err(|e|format!("GOGOKE_MANAGED_CLI_{step}_DECODE:{e}"))
+}
+
+fn managed_cli_version_parts(version:&str)->Option<[u64;3]> {
+    let values=version.split('.').collect::<Vec<_>>();
+    if values.len()!=3{return None}
+    let mut result=[0;3];
+    for (index,value) in values.iter().enumerate(){
+        if value.is_empty()||!value.bytes().all(|b|b.is_ascii_digit()){return None}
+        result[index]=value.parse().ok()?;
+        if result[index].to_string()!=*value{return None}
+    }
+    Some(result)
+}
+
+#[derive(Clone,Copy,PartialEq,Eq,Debug)]
+enum ManagedCliPrepareStep { Download,Restage,Probe,FinalFrame }
+
+fn managed_cli_prepare_step(state:&str,prepared:bool)->Result<ManagedCliPrepareStep,String> {
+    if prepared {
+        match state {
+            "PROBED"=>Ok(ManagedCliPrepareStep::FinalFrame),
+            "STAGED"=>Ok(ManagedCliPrepareStep::Probe),
+            "BLOCKED"|"UPGRADE_FAILED"|"UPGRADING"=>Ok(ManagedCliPrepareStep::Restage),
+            _=>Err("GOGOKE_MANAGED_CLI_UNSETTLED_PREPARATION".into()),
+        }
+    } else {
+        match state {
+            "READY"|"BLOCKED"|"UPGRADE_FAILED"|"UPGRADING"=>Ok(ManagedCliPrepareStep::Download),
+            _=>Err("GOGOKE_MANAGED_CLI_UNSETTLED_PREPARATION".into()),
+        }
+    }
+}
+
+fn managed_cli_action_id(value:&str)->bool {
+    !value.is_empty()&&value.len()<=64&&value.bytes().all(|byte|
+        byte.is_ascii_alphanumeric()||matches!(byte,b'_'|b'-'|b'.'|b':'|b'/'))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+struct ManagedCliNoticeReply {schema:String,driver_id:String,official_version:Option<String>,checked_at:String}
+
+async fn managed_cli_lifecycle_action(app:tauri::AppHandle,request:Design37InstallCliRequest)
+    ->Result<serde_json::Value,String> {
+    #[cfg(target_os="windows")]
+    {
+        let operation=request.operation.ok_or_else(||"GOGOKE_MANAGED_CLI_OPERATION_REQUIRED".to_string())?;
+        if !matches!(operation,Design37CliOperation::Upgrade|Design37CliOperation::Rollback)&&request.target_version.is_some(){
+            return Err("GOGOKE_MANAGED_CLI_UNEXPECTED_TARGET".into());
+        }
+        ensure_design37_user_host(&app).await?;
+        let product_guard=PRODUCT_RUNTIME_GATE.lock().await;
+        let service_guard=PRODUCT_SERVICE_GATE.lock().await;
+        let paths=resolve_runtime_paths(&app)?;
+        let (host,attachment)=retained_design37_host(&paths)?
+            .ok_or_else(||"GOGOKE_DESIGN37_USER_HOST_NOT_STARTED".to_string())?;
+        let status=managed_cli_native_json(&host,serde_json::json!({
+            "schema":"gogoke.37.managed-cli.v1","command":"status","driverId":request.driver_id}),"STATUS")?;
+        if status.get("schema").and_then(serde_json::Value::as_str)!=Some("gogoke.37.managed-cli.v1")||
+            status.get("driverId").and_then(serde_json::Value::as_str)!=Some(request.driver_id.as_str()){
+            return Err("GOGOKE_MANAGED_CLI_STATUS_MISMATCH".into());
+        }
+        if operation==Design37CliOperation::Uninstall {
+            let revision=status.get("revision").and_then(serde_json::Value::as_str)
+                .ok_or_else(||"GOGOKE_MANAGED_CLI_UNINSTALL_REVISION_REQUIRED".to_string())?;
+            return managed_cli_native_json(&host,serde_json::json!({
+                "schema":"gogoke.37.managed-cli.v1","command":"uninstall",
+                "driverId":request.driver_id,"expectedRevision":revision}),"UNINSTALL");
+        }
+        if operation==Design37CliOperation::CheckUpdates {
+            let frame=serde_json::to_vec(&serde_json::json!({
+                "operation":"managed-cli-check-updates","driverId":request.driver_id}))
+                .map_err(|e|format!("GOGOKE_MANAGED_CLI_NOTICE_ENCODE:{e}"))?;
+            let bytes=run_product_service_with_guard(paths,&frame,SERVICE_TIMEOUT,None,
+                Some(product_guard),service_guard,Some((Arc::clone(&host),attachment))).await?;
+            let notice:ManagedCliNoticeReply=serde_json::from_slice(&bytes)
+                .map_err(|e|format!("GOGOKE_MANAGED_CLI_NOTICE_DECODE:{e}"))?;
+            if notice.schema!="gogoke.37.managed-cli-notice.v1"||notice.driver_id!=request.driver_id||
+                notice.checked_at.parse::<u64>().ok().filter(|v|*v>0).is_none()||
+                notice.official_version.as_ref().is_some_and(|v|v.is_empty()||v.len()>128||v.contains('\0')){
+                return Err("GOGOKE_MANAGED_CLI_NOTICE_MISMATCH".into());
+            }
+            let _product_guard=PRODUCT_RUNTIME_GATE.lock().await;
+            return managed_cli_native_json(&host,serde_json::json!({
+                "schema":"gogoke.37.managed-cli.v1","command":"check-updates",
+                "driverId":request.driver_id,"officialVersion":notice.official_version}),"NOTICE");
+        }
+        let target=request.target_version.as_deref()
+            .ok_or_else(||"GOGOKE_MANAGED_CLI_TARGET_REQUIRED".to_string())?;
+        let current=status.get("version").and_then(serde_json::Value::as_str)
+            .ok_or_else(||"GOGOKE_MANAGED_CLI_CURRENT_VERSION_REQUIRED".to_string())?;
+        let state=status.get("state").and_then(serde_json::Value::as_str)
+            .ok_or_else(||"GOGOKE_MANAGED_CLI_STATE_REQUIRED".to_string())?;
+        if !matches!(state,"READY"|"STAGED"|"PROBED"|"BLOCKED"|"UPGRADE_FAILED"|"UPGRADING"){
+            return Err("GOGOKE_MANAGED_CLI_UNSETTLED_PREPARATION".into());
+        }
+        let prepared=status.get("preparedReplacement").and_then(serde_json::Value::as_bool)
+            .ok_or_else(||"GOGOKE_MANAGED_CLI_EFFECTIVE_SOURCE_REQUIRED".to_string())?;
+        let effective=if prepared {status.get("previousVersion").and_then(serde_json::Value::as_str)
+            .ok_or_else(||"GOGOKE_MANAGED_CLI_PREVIOUS_VERSION_REQUIRED".to_string())?}else{current};
+        let from=managed_cli_version_parts(effective)
+            .ok_or_else(||"GOGOKE_MANAGED_CLI_EFFECTIVE_VERSION_INVALID".to_string())?;
+        let to=managed_cli_version_parts(target)
+            .ok_or_else(||"GOGOKE_MANAGED_CLI_TARGET_VERSION_INVALID".to_string())?;
+        let trusted=if prepared {target==current}else{status.get("verifiedOtherVersions")
+            .and_then(serde_json::Value::as_array).is_some_and(|versions|
+                versions.iter().any(|v|v.as_str()==Some(target)))};
+        if !trusted||match operation {
+            Design37CliOperation::Upgrade=>to<=from,
+            Design37CliOperation::Rollback=>to>=from||(!prepared&&
+                status.get("previousVersion").and_then(serde_json::Value::as_str)!=Some(target)),
+            _=>true,
+        }{return Err("GOGOKE_MANAGED_CLI_TARGET_DIRECTION_REFUSED".into())}
+        let command=if operation==Design37CliOperation::Upgrade{"upgrade"}else{"rollback"};
+        let step=managed_cli_prepare_step(state,prepared)?;
+        let needs_stage=matches!(step,ManagedCliPrepareStep::Download|ManagedCliPrepareStep::Restage);
+        let needs_probe=step!=ManagedCliPrepareStep::FinalFrame;
+        let target=target.to_string();
+        let mut stage=if prepared {Some(status.get("stageName").and_then(serde_json::Value::as_str)
+            .ok_or_else(||"GOGOKE_MANAGED_CLI_PREPARED_STAGE_REQUIRED".to_string())?.to_string())}else{None};
+        if needs_stage {
+            managed_cli_native_json(&host,serde_json::json!({
+                "schema":"gogoke.37.managed-cli.v1","command":"begin",
+                "driverId":request.driver_id,"targetVersion":target}),"BEGIN_VERSION")?;
+            if stage.is_none() {
+                let root=managed_cli_native_json(&host,serde_json::json!({
+                    "schema":"gogoke.37.managed-cli.v1","command":"root"}),"ROOT")?;
+                let root=root.get("root").and_then(serde_json::Value::as_str)
+                    .ok_or_else(||"GOGOKE_MANAGED_CLI_ROOT_REQUIRED".to_string())?;
+                let expected=paths.product_root.join("v37-managed-cli").join("staging");
+                if std::fs::canonicalize(root).map_err(|e|format!("GOGOKE_MANAGED_CLI_ROOT:{e}"))?!=
+                    std::fs::canonicalize(expected).map_err(|e|format!("GOGOKE_MANAGED_CLI_ROOT_EXPECTED:{e}"))?{
+                    return Err("GOGOKE_MANAGED_CLI_ROOT_MISMATCH".into());
+                }
+                let frame=serde_json::to_vec(&serde_json::json!({
+                    "operation":"managed-cli-stage","driverId":request.driver_id,"targetVersion":target}))
+                    .map_err(|e|format!("GOGOKE_MANAGED_CLI_VERSION_STAGE_ENCODE:{e}"))?;
+                let result=run_product_service_with_guard(paths,&frame,MANAGED_CLI_STAGE_TIMEOUT,None,
+                    Some(product_guard),service_guard,Some((Arc::clone(&host),attachment))).await;
+                let bytes=match result {
+                    Ok(value)=>value,
+                    Err(original)=>{
+                        let record=managed_cli_native_json(&host,serde_json::json!({
+                            "schema":"gogoke.37.managed-cli.v1","command":"failure",
+                            "driverId":request.driver_id,"state":"UPGRADE_FAILED",
+                            "raw":original.chars().take(16_000).collect::<String>()}),"UPGRADE_FAILURE");
+                        return Err(format!("{original}; original failure record:{record:?}"));
+                    },
+                };
+                let reply:ManagedCliStageReply=serde_json::from_slice(&bytes)
+                    .map_err(|e|format!("GOGOKE_MANAGED_CLI_VERSION_STAGE_DECODE:{e}"))?;
+                if reply.schema!="gogoke.37.managed-cli-stage.v1"||reply.driver_id!=request.driver_id||
+                    reply.version!=target||reply.stage_name.is_empty(){
+                    return Err("GOGOKE_MANAGED_CLI_VERSION_STAGE_MISMATCH".into());
+                }
+                stage=Some(reply.stage_name);
+            } else {drop(product_guard);drop(service_guard);}
+        } else {drop(product_guard);drop(service_guard);}
+        let stage=stage.ok_or_else(||"GOGOKE_MANAGED_CLI_STAGE_REQUIRED".to_string())?;
+        let guard=PRODUCT_RUNTIME_GATE.lock().await;
+        tokio::task::spawn_blocking(move||{
+            let _guard=guard;
+            if needs_stage {
+                managed_cli_native_json(&host,serde_json::json!({
+                    "schema":"gogoke.37.managed-cli.v1","command":"stage",
+                    "driverId":request.driver_id,"targetVersion":target,"stageName":stage}),"STAGE_VERSION")?;
+            }
+            if needs_probe {
+                managed_cli_native_json(&host,serde_json::json!({
+                    "schema":"gogoke.37.managed-cli.v1","command":"probe",
+                    "driverId":request.driver_id,"targetVersion":target,"stageName":stage,
+                    "requestId":request.request_id}),"PROBE_VERSION")?;
+            }
+            let probed=managed_cli_native_json(&host,serde_json::json!({
+                "schema":"gogoke.37.managed-cli.v1","command":"status","driverId":request.driver_id}),"PROBED_STATUS")?;
+            if probed.get("state").and_then(serde_json::Value::as_str)!=Some("PROBED")||
+                probed.get("version").and_then(serde_json::Value::as_str)!=Some(target.as_str())||
+                probed.get("stageName").and_then(serde_json::Value::as_str)!=Some(stage.as_str())||
+                probed.get("preparedReplacement").and_then(serde_json::Value::as_bool)!=Some(true){
+                return Err("GOGOKE_MANAGED_CLI_PROBED_SOURCE_MISMATCH".into());
+            }
+            let revision=probed.get("revision").and_then(serde_json::Value::as_str)
+                .ok_or_else(||"GOGOKE_MANAGED_CLI_PROBED_REVISION_REQUIRED".to_string())?;
+            let final_frame=serde_json::to_string(&serde_json::json!({
+                "schema":"gogoke.37.managed-cli.v1","command":command,
+                "requestId":request.request_id,"driverId":request.driver_id,
+                "targetVersion":target,"expectedRevision":revision}))
+                .map_err(|e|format!("GOGOKE_MANAGED_CLI_FINAL_FRAME_ENCODE:{e}"))?;
+            Ok(serde_json::json!({"schema":"gogoke.37.managed-cli-prepared.v1",
+                "command":command,"driverId":request.driver_id,"targetVersion":target,
+                "expectedRevision":revision,"finalFrame":final_frame}))
+        }).await.map_err(|e|format!("GOGOKE_MANAGED_CLI_PREPARATION_OWNER:{e}"))?
+    }
+    #[cfg(not(target_os="windows"))]
+    {let _=(app,request);Err("GOGOKE_PRODUCT_WINDOWS_OWNER_PATH_ONLY".into())}
+}
+
 /// One Owner click uses the already retained User host and signed Node service.
 /// Only the driver and operation ID come from UI; URL, bytes, root and program
 /// digest are fixed by the installed product and rechecked by native F/H.
@@ -1476,10 +1687,15 @@ pub(crate) async fn gogoke_design37_install_cli(
     app: tauri::AppHandle,
     request: Design37InstallCliRequest,
 ) -> Result<serde_json::Value,String> {
-    if !["codex","claude","opencode","grok"].contains(&request.driver_id.as_str()) ||
-        !canonical_v37_id(&request.request_id) || request.request_id.len()>64 {
+    let valid_id=if request.operation.is_some(){managed_cli_action_id(&request.request_id)}
+        else{canonical_v37_id(&request.request_id)&&request.request_id.len()<=64};
+    if !["codex","claude","opencode","grok"].contains(&request.driver_id.as_str()) || !valid_id {
         return Err("GOGOKE_MANAGED_CLI_REQUEST_INVALID".into());
     }
+    if request.operation.is_some() {
+        return managed_cli_lifecycle_action(app,request).await;
+    }
+    if request.target_version.is_some() {return Err("GOGOKE_MANAGED_CLI_INSTALL_TARGET_INVALID".into())}
     #[cfg(target_os="windows")]
     {
         ensure_design37_user_host(&app).await?;

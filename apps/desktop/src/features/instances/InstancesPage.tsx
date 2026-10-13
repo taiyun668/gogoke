@@ -43,6 +43,7 @@ export type InstanceActions = {
   installCli?: (vendor: VendorId) => Promise<void>;
   upgradeCli?: (vendor: VendorId) => Promise<void>;
   rollbackCli?: (vendor: VendorId) => Promise<void>;
+  reconcileCli?: (vendor: VendorId) => Promise<void>;
   checkCliUpdates?: (vendor: VendorId) => Promise<void>;
   retryCliSelfTest?: (vendor: VendorId) => Promise<void>;
   uninstallCli?: (vendor: VendorId) => Promise<void>;
@@ -371,6 +372,16 @@ function CliRow({
   let primary: ReactNode = null;
   if (!section.cli) {
     primary = null;
+  } else if (cli.pendingAction && actions.reconcileCli) {
+    primary = (
+      <button type="button" className="ghost" disabled={busy !== null} onClick={call("reconcile", actions.reconcileCli)}>
+        {busy === key("reconcile") ? "正在读回…" : "读回结果"}
+      </button>
+    );
+  } else if (cli.preparedAction === "upgrade" && actions.upgradeCli) {
+    primary = <button type="button" className="ghost" disabled={busy !== null || running > 0} onClick={call("upgrade", actions.upgradeCli)}>继续升级</button>;
+  } else if (cli.preparedAction === "rollback" && actions.rollbackCli) {
+    primary = <button type="button" className="ghost" disabled={busy !== null || running > 0} onClick={call("rollback", actions.rollbackCli)}>继续退回</button>;
   } else if (cli.state === "NOT_INSTALLED") {
     primary = install("安装");
   } else if (cli.state === "INSTALL_FAILED") {
@@ -403,6 +414,7 @@ function CliRow({
         <>
           <Dot tone={summary.tone} />
           {summary.text}
+          {cli.pendingAction ? ` · 上次${cli.pendingAction === "upgrade" ? "升级" : "退回"}的结果待确认` : ""}
           {CLI_RAW_STATES.includes(cli.state) ? (
             <RawText raw={cli.raw} open={rawOpen} onToggle={() => setRawOpen((v) => !v)} />
           ) : null}
@@ -439,7 +451,7 @@ function CliRow({
               <dt>检查更新</dt>
               <dd>
                 {cli.checkedAt ?? "还没检查过"}
-                {actions.checkCliUpdates ? (
+                {actions.checkCliUpdates && !cli.pendingAction ? (
                   <>
                     {" "}
                     <button type="button" className="instances-link" disabled={busy !== null} onClick={call("check", actions.checkCliUpdates)}>
@@ -447,7 +459,7 @@ function CliRow({
                     </button>
                   </>
                 ) : null}
-                {cli.previousVersion && actions.rollbackCli ? (
+                {cli.previousVersion && actions.rollbackCli && !cli.pendingAction ? (
                   <>
                     {" · "}
                     <button type="button" className="instances-link" disabled={busy !== null || running > 0} onClick={call("rollback", actions.rollbackCli)}>
@@ -455,7 +467,7 @@ function CliRow({
                     </button>
                   </>
                 ) : null}
-                {section.instances.length === 0 && cli.state === "READY" && actions.uninstallCli ? (
+                {section.instances.length === 0 && cli.state === "READY" && actions.uninstallCli && !cli.pendingAction ? (
                   <>
                     {" · "}
                     <button type="button" className="instances-link" disabled={busy !== null} onClick={call("uninstall", actions.uninstallCli)}>

@@ -39,12 +39,14 @@ pub(crate) use managed_cli::{managed_cli_root, inspect_staged_official_cli, read
 pub(crate) use managed_cli::{read_official_cli_version,inspect_staged_official_cli_version,
     record_managed_cli_stage_for_version,confirm_managed_cli_launch_for_version,
     record_managed_cli_progress_for_version,no_unsettled_managed_version_change};
+pub(crate) use managed_cli::{require_default_first_copy,read_prepared_managed_replacement};
 pub(crate) use managed_cli::{no_unsettled_instance_use,is_first_same_pin_copy};
 pub(crate) use program_source::{bind_managed_instance_program, migrate_quiescent_legacy_instances,
     locate_bound_instance_program,activate_quiescent_managed_version,
-    ProgramSourceError};
+    activate_quiescent_managed_version_in_current_transaction,ProgramSourceError};
 pub(crate) use registry::{preflight_register_request, reconcile_register_replay,
     register_instance, record_observation, repin_program, reconcile_program_repin,
+    reconcile_managed_switch,valid_managed_switch_request_id,ManagedSwitchReceipt,
     InstanceObservation, ObservationRequest, ProgramObservation, Registration,
     RegistrationDisposition, RegistrationJournalPhase, RegistrationPreflight,
     RegistrationReplay, RegistryError, ProgramRepin, ProgramRepinReceipt};
