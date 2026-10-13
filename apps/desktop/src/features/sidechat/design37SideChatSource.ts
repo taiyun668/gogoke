@@ -91,16 +91,21 @@ export function projectSideChats(side: Design37SideChatPage, seats: SeatsPage | 
   }));
   const known = new Map<string, SideChatPage["instances"][number]>();
   for (const row of seats?.seats ?? []) {
-    if (!candidates.some((item) => item.id === row.instance.id)) {
-      known.set(row.instance.id, { id: row.instance.id, name: row.instance.name, vendor: row.instance.vendor, models: [] });
+    const instance = row.instance;
+    if (!instance) continue;
+    if (!candidates.some((item) => item.id === instance.id)) {
+      known.set(instance.id, { id: instance.id, name: instance.name, vendor: instance.vendor, models: [] });
     }
   }
+  const eligibleSeats = (seats?.seats ?? []).flatMap((row) => {
+    const instance = row.instance;
+    if (row.layer !== "direct" || row.isLead || row.state === "REMOVED" || !instance) return [];
+    return [{ id: row.id, name: row.name, defaultInstanceId: instance.id, permission: row.permission }];
+  });
   return {
     seatsKnown: seats !== null,
     knownInstances: [...known.values()],
-    seats: (seats?.seats ?? [])
-      .filter((row) => row.layer === "direct" && !row.isLead && row.state !== "REMOVED")
-      .map((row) => ({ id: row.id, name: row.name, defaultInstanceId: row.instance.id, permission: row.permission })),
+    seats: eligibleSeats,
     instances: candidates,
     efforts: seats?.efforts ?? [],
     chats: side.chats.map((view) => chatFrom(view, seats)),

@@ -246,17 +246,23 @@ function SeatCard({
           </span>
         </span>
         <span className="seats-card-instance">
-          <span
-            className="seats-vendor-icon"
-            style={{
-              WebkitMaskImage: `url(${VENDOR_ICONS[row.instance.vendor]})`,
-              maskImage: `url(${VENDOR_ICONS[row.instance.vendor]})`,
-            }}
-            aria-hidden
-          />
-          <span>
-            {row.instance.name} · {row.model} {row.effort}
-          </span>
+          {row.instance ? (
+            <>
+              <span
+                className="seats-vendor-icon"
+                style={{
+                  WebkitMaskImage: `url(${VENDOR_ICONS[row.instance.vendor]})`,
+                  maskImage: `url(${VENDOR_ICONS[row.instance.vendor]})`,
+                }}
+                aria-hidden
+              />
+              <span>
+                {row.instance.name} · {row.model} {row.effort}
+              </span>
+            </>
+          ) : (
+            <span>未绑定实例</span>
+          )}
         </span>
         {line ? <span className="seats-card-line">{line}</span> : null}
       </button>
@@ -375,36 +381,45 @@ function TuneForm({
   onSave: (tune: SeatTune) => void;
   onCancel: () => void;
 }) {
-  const [instanceId, setInstanceId] = useState(row.instance.id);
+  const [instanceId, setInstanceId] = useState(row.instance?.id ?? "");
   const [model, setModel] = useState(row.model);
-  const models = modelsOf(page, instanceId, row.instance);
+  const models = modelsOf(page, instanceId, row.instance ?? undefined);
   const [effort, setEffort] = useState(row.effort);
   const [permission, setPermission] = useState(row.permission);
   const instanceLocked = !canChangeInstance(row);
-  const choices = page.instances.some((item) => item.id === row.instance.id)
-    ? page.instances
-    : [row.instance, ...page.instances];
+  const choices = row.instance && !page.instances.some((item) => item.id === row.instance?.id)
+    ? [row.instance, ...page.instances]
+    : page.instances;
 
   return (
     <>
       <div className="seats-form">
-        <label htmlFor={`${row.id}-instance`}>实例</label>
-        <select
-          id={`${row.id}-instance`}
-          value={instanceId}
-          disabled={instanceLocked}
-          onChange={(event) => {
-            const next = modelsOf(page, event.target.value, row.instance);
-            setInstanceId(event.target.value);
-            if (!next.includes(model)) setModel(next[0] ?? row.model);
-          }}
-        >
-          {choices.map((item) => (
-            <option key={item.id} value={item.id}>
-              {item.name}
-            </option>
-          ))}
-        </select>
+        {row.instance ? (
+          <>
+            <label htmlFor={`${row.id}-instance`}>实例</label>
+            <select
+              id={`${row.id}-instance`}
+              value={instanceId}
+              disabled={instanceLocked}
+              onChange={(event) => {
+                const next = modelsOf(page, event.target.value, row.instance ?? undefined);
+                setInstanceId(event.target.value);
+                if (!next.includes(model)) setModel(next[0] ?? row.model);
+              }}
+            >
+              {choices.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name}
+                </option>
+              ))}
+            </select>
+          </>
+        ) : (
+          <>
+            <span className="seats-help">实例</span>
+            <span>未绑定实例</span>
+          </>
+        )}
         {models.length ? (
           <>
             <label htmlFor={`${row.id}-model`}>模型</label>

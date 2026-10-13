@@ -48,7 +48,7 @@ export type SeatRow = {
   allowed: SeatAllowed;
   /** The host's reason the instance cannot be changed now. */
   instanceLockedReason?: string;
-  instance: SeatInstanceRef;
+  instance: SeatInstanceRef | null;
   previousInstance?: SeatInstanceRef;
   model: string;
   effort: string;
@@ -111,8 +111,14 @@ export function seatLine(row: SeatRow): string {
     case "WORKING":
       return row.doing ?? "工作中";
     case "IDLE":
+      if (!row.instance) return "尚未绑定实例，不能派活";
       return row.lastActivity ? `空闲 · 上次：${row.lastActivity}` : "空闲，等主控派活";
     case "SWITCHING":
+      if (!row.instance) {
+        return row.previousInstance
+          ? `正在从 ${row.previousInstance.name} 换实例（目标未知）`
+          : "正在换实例（目标未知）";
+      }
       return row.previousInstance
         ? `正在从 ${row.previousInstance.name} 换到 ${row.instance.name}`
         : `正在换到 ${row.instance.name}`;

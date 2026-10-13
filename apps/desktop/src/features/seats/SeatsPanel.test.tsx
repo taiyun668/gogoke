@@ -48,6 +48,34 @@ describe("SeatsPanel", () => {
     expect(await screen.findByText(/席位数据还没接上/)).toBeTruthy();
   });
 
+  it("shows a NULL-bound idle seat without inventing an instance or default choice", async () => {
+    const tune = vi.fn(async () => {});
+    const data = page();
+    data.seats.push({
+      id: "unbound", name: "未绑定施工", layer: "sub", term: "short", state: "IDLE", instance: null,
+      allowed: { tune: true, changeInstance: false, remove: false },
+      model: "Opus 5.5", effort: "中", permission: "只读",
+    });
+    render(<SeatsPanel source={source({ tune }, async () => data)} />);
+
+    const head = await screen.findByRole("button", { name: /^未绑定施工/ });
+    expect(head.textContent).toContain("未绑定实例");
+    expect(head.textContent).toContain("空闲");
+    expect(head.textContent).toContain("尚未绑定实例，不能派活");
+    expect(head.querySelector(".seats-vendor-icon")).toBeNull();
+
+    fireEvent.click(head);
+    fireEvent.click(screen.getByRole("button", { name: "调整" }));
+    expect(screen.queryByLabelText("实例")).toBeNull();
+    expect(screen.queryByLabelText("模型")).toBeNull();
+    expect(screen.getByLabelText("推理强度")).toBeTruthy();
+    expect(screen.getByLabelText("权限")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(tune).toHaveBeenCalledWith("unbound", {
+      instanceId: "", effort: "中", permission: "只读",
+    }));
+  });
+
   it("shows both groups with one plain line each and hides removed seats behind a link", async () => {
     render(<SeatsPanel source={source()} />);
     expect(await screen.findByText("直属席位")).toBeTruthy();
