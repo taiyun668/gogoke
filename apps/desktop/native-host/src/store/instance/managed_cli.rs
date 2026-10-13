@@ -1173,6 +1173,10 @@ mod lifecycle_repair_tests {
         super::super::initialize_schema(&mut db).unwrap();
         let owner=crate::store::authority::initialize_profile(&mut db,&root).unwrap();
         crate::store::authority::initialize_process_custody_schema(&mut db).unwrap();
+        crate::store::instance::initialize_credential_schema(&mut db).unwrap();
+        crate::store::seat::initialize_schema(&mut db).unwrap();
+        crate::store::session_transport::initialize_admission_schema(&mut db).unwrap();
+        crate::store::session_transport::session_binding::initialize_schema(&mut db).unwrap();
         run(&root,&mut db,&owner);
         db.close_checked().unwrap();
         drop(root);

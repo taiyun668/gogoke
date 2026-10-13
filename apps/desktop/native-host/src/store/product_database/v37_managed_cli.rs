@@ -426,7 +426,8 @@ impl<'a> ProductDatabase<'a> {
             },
             "begin" if fields.len()==3=>{
                 let driver=field(&fields,"driverId")?;
-                self.require_first_managed_copy(&driver)?;
+                instance::require_default_first_copy(&self.connection,&driver)
+                    .map_err(|error|failure("default first copy",error))?;
                 self.no_live_global_cli_owner(&driver)?;
                 instance::record_managed_cli_progress(&mut self.connection,&self.owner,
                     &driver,"DOWNLOADING",0).map_err(|error|failure("begin download",error))?;
@@ -444,7 +445,8 @@ impl<'a> ProductDatabase<'a> {
             "stage" if fields.len()==4=>{
                 let driver=field(&fields,"driverId")?;
                 let stage=field(&fields,"stageName")?;
-                self.require_first_managed_copy(&driver)?;
+                instance::require_default_first_copy(&self.connection,&driver)
+                    .map_err(|error|failure("default first copy",error))?;
                 self.no_live_global_cli_owner(&driver)?;
                 instance::record_managed_cli_stage(&mut self.connection,self.root,
                     &self.owner,&driver,&stage).map_err(|error|failure("record stage",error))?;
@@ -559,6 +561,8 @@ mod tests {
     fn ready_two_opencode_sources(product:&mut ProductDatabase<'_>,root:&RootLock)
         ->(String,PathBuf) {
         let (stage,image)=super::super::managed_cli_test_setup::prepared_image(root,"opencode");
+        default_begin(product,root);
+        super::super::managed_cli_test_setup::staged_probe(product,"opencode",&stage);
         let pin=instance::read_fixed_official_cli("opencode").unwrap();
         let observed=instance::ProgramObservation::observe(&image,pin.version).unwrap();
         for id in ["instanceA","instanceB"] {
@@ -575,7 +579,6 @@ mod tests {
         let sentinel=root.canonical_root().canonical_path.join("v37-instances")
             .join("instanceA").join("f2-home-sentinel");
         fs::write(&sentinel,b"original registered HOME sentinel").unwrap();
-        super::super::managed_cli_test_setup::staged_probe(product,"opencode",&stage);
         let migrate=format!("{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"migrate\",\"driverId\":\"opencode\",\"stageName\":\"{stage}\"}}");
         product.dispatch_user_managed_cli(migrate.as_bytes()).unwrap();
         product.connection.execute("UPDATE main.gogoke_v37_instance_profiles SET enabled=0 WHERE instance_id='instanceB'").unwrap();
@@ -588,6 +591,17 @@ mod tests {
     fn managed_user(product:&mut ProductDatabase<'_>,raw:&str)->Vec<u8> {
         product.dispatch_user_managed_cli(raw.as_bytes())
             .unwrap_or_else(|error|panic!("original managed USER frame {raw}: {error:?}"))
+    }
+
+    fn default_begin(product:&mut ProductDatabase<'_>,root:&RootLock) {
+        assert!(instance::read_managed_cli(&product.connection,root,"opencode").unwrap().is_none(),
+            "the first default begin must start without a copy row");
+        managed_user(product,
+            r#"{"schema":"gogoke.37.managed-cli.v1","command":"begin","driverId":"opencode"}"#);
+        let copy=instance::read_managed_cli(&product.connection,root,"opencode").unwrap().unwrap();
+        assert_eq!(copy.state,"DOWNLOADING");
+        assert!(copy.version.is_none());
+        assert!(copy.previous_version.is_none());
     }
 
     fn version_frame(command:&str,version:&str,stage:Option<&str>,request:Option<&str>)->String {
@@ -633,6 +647,58 @@ mod tests {
             operations:table_rows(product,"SELECT request_id,request_hex,target_id,phase,COALESCE(receipt_json,''),COALESCE(native_receipt_id,'') FROM main.gogoke_v37_instance_operations ORDER BY request_id",6),
             custody:table_rows(product,"SELECT operation_id,state,COALESCE(stop_proof_hash,'') FROM main.gogoke_coordination_process_custody ORDER BY operation_id",3),
         }
+    }
+
+    #[test]
+    fn default_begin_rejects_previous_nondefault_and_existing_source_without_effects() {
+        let _guard=route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("gogoke-default-begin-boundary-{}-{nonce}",std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let database=path.join("state.sqlite");
+        let mut product=ProductDatabase::open(&root,&database).unwrap();
+        let begin=br#"{"schema":"gogoke.37.managed-cli.v1","command":"begin","driverId":"opencode"}"#;
+        let default=instance::read_fixed_official_cli("opencode").unwrap();
+        let old=instance::read_official_cli_version("opencode","1.18.31").unwrap();
+
+        let previous=Statement::prepare(product.connection.as_ptr(),
+            "INSERT INTO main.gogoke_v37_instance_cli_copies(driver_id,state,previous_version,previous_image_sha256,previous_stage_name,revision) VALUES('opencode','NOT_INSTALLED',?1,?2,'opencode-1.18.31-historical',1)").unwrap();
+        previous.bind_text(1,old.version).unwrap();
+        previous.bind_text(2,old.image_sha256).unwrap();
+        previous.step_done().unwrap();drop(previous);
+        let before=managed_snapshot(&product);
+        assert!(product.dispatch_user_managed_cli(begin).is_err());
+        assert_eq!(managed_snapshot(&product),before);
+        product.connection.execute("DELETE FROM main.gogoke_v37_instance_cli_copies WHERE driver_id='opencode'").unwrap();
+
+        let insert=Statement::prepare(product.connection.as_ptr(),
+            "INSERT INTO main.gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('instanceA','opencode','homeA','identityA',?1,?2,'UNKNOWN','UNKNOWN',1)").unwrap();
+        insert.bind_text(1,&format!("sha256:{}",old.image_sha256)).unwrap();
+        insert.bind_text(2,old.version).unwrap();
+        insert.step_done().unwrap();drop(insert);
+        let before=managed_snapshot(&product);
+        assert!(product.dispatch_user_managed_cli(begin).is_err());
+        assert_eq!(managed_snapshot(&product),before);
+
+        let update=Statement::prepare(product.connection.as_ptr(),
+            "UPDATE main.gogoke_v37_instances SET version=?1,program_digest=?2 WHERE instance_id='instanceA'").unwrap();
+        update.bind_text(1,default.version).unwrap();
+        update.bind_text(2,&format!("sha256:{}",default.image_sha256)).unwrap();
+        update.step_done().unwrap();drop(update);
+        let source=Statement::prepare(product.connection.as_ptr(),
+            "INSERT INTO main.gogoke_v37_instance_program_sources(instance_id,source,stage_name,program_digest,version,home_identity,registration_request_id,revision) VALUES('instanceA','MANAGED','opencode-1.18.32-existing',?1,?2,'identityA','original-creation',1)").unwrap();
+        source.bind_text(1,&format!("sha256:{}",default.image_sha256)).unwrap();
+        source.bind_text(2,default.version).unwrap();
+        source.step_done().unwrap();drop(source);
+        let before=managed_snapshot(&product);
+        assert!(product.dispatch_user_managed_cli(begin).is_err());
+        assert_eq!(managed_snapshot(&product),before);
+        product.close_checked().unwrap();
+        drop(root);
+        fs::remove_file(database).unwrap();
+        fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).unwrap();
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
@@ -876,6 +942,7 @@ mod tests {
             profile.bind_text(1,id).unwrap();profile.bind_text(2,id).unwrap();
             profile.bind_i64(3,enabled).unwrap();profile.step_done().unwrap();
         }
+        assert!(instance::read_managed_cli(&product.connection,&root,"opencode").unwrap().is_none());
         super::super::managed_cli_test_setup::staged_probe(&mut product,"opencode",&stage);
         let migrate=format!("{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"migrate\",\"driverId\":\"opencode\",\"stageName\":\"{stage}\"}}");
         product.dispatch_user_managed_cli(migrate.as_bytes()).unwrap();
