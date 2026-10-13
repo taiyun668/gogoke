@@ -580,6 +580,47 @@ pub(super) fn resolve_active_session_home(
     Ok((path, identity))
 }
 
+/// Read the original SESSION root of an already recorded H episode. This is
+/// physical provenance, not a current admission check: a historical home may
+/// have been closed, and its binding may belong to an older H generation.
+/// Missing or partly cleaned roots cannot prove disjointness.
+pub(super) fn resolve_historical_session_home(
+    connection: &VerifiedDatabaseConnection<'_>, root: &RootLock,
+    profile: &AppContainerProfile, instance_id: &str, home_id: &str,
+    domain_id: &str, owner_id: &str, generation: &str, binding_id: &str,
+) -> Result<(std::path::PathBuf, RootIdentity), TemporaryHomeError> {
+    for (name, value) in [("instance_id", instance_id), ("home_id", home_id),
+        ("domain_id", domain_id), ("owner_id", owner_id), ("binding_id", binding_id)] {
+        if !valid_id(value) { return Err(TemporaryHomeError::Invalid(name)); }
+    }
+    if !valid_generation(generation) { return Err(TemporaryHomeError::Invalid("generation")); }
+    let row = home_row(connection, home_id)?.ok_or(TemporaryHomeError::Unknown)?;
+    if row.0 != instance_id || row.1 != domain_id || row.2 != "SESSION"
+        || row.3 != owner_id || row.4 != generation
+        || !matches!(row.7.as_str(), "ACTIVE" | "CLOSED") {
+        return Err(TemporaryHomeError::Unknown);
+    }
+    row_identity(&row, home_id)?;
+    let persistent = observed_home(root, instance_id)?.ok_or(TemporaryHomeError::InstanceChanged)?;
+    if instance_identity(connection, instance_id)?.as_deref() != Some(persistent.opaque().as_str()) {
+        return Err(TemporaryHomeError::InstanceChanged);
+    }
+    let binding = Statement::prepare(connection.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_h_owner_binding WHERE binding_id=?1 AND instance_id=?2 AND domain_id=?3 AND kind='SESSION' AND owner_id=?4 AND generation=?5 AND state='ACTIVE'")?;
+    for (index, value) in [binding_id,instance_id,domain_id,owner_id,generation].iter().enumerate() {
+        binding.bind_text((index+1) as i32,value)?;
+    }
+    if !binding.step_row()? || binding.step_row()? { return Err(TemporaryHomeError::Unknown); }
+    let sid = profile.sid_identity()?;
+    let path = transition_path(root, instance_id, home_id);
+    let identity = match transition_stage(connection, root, home_id, &row, &sid)? {
+        Some(DirectoryStage::Marked(identity, _)) => identity,
+        Some(DirectoryStage::Empty(_)) | None => return Err(TemporaryHomeError::Unknown),
+    };
+    if identity.opaque() != row.6 { return Err(TemporaryHomeError::IdentityChanged); }
+    Ok((path, identity))
+}
+
 fn exact_stopped_home(connection: &mut VerifiedDatabaseConnection<'_>, home_id: &str,
     row: &HomeRow) -> Result<String, TemporaryHomeError> {
     let stop = verify_home_stop_in_transaction(connection, &row.0, &row.1, &row.2, &row.3, &row.4)?;

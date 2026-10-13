@@ -405,6 +405,113 @@ struct SecretaryH<'a> {
     domain: &'a str, session: &'a str, instance: &'a str,
     seat: &'a str, incarnation: &'a str, generation: &'a str,
     home: &'a str, binding: &'a str, process: &'a str,
+    episode_request: Option<&'a str>,
+}
+
+/// The original episode, not the current H claim, owns its physical process.
+/// A stopped process needs no historical live home/ACE. A pending or UNKNOWN
+/// resume still needs a physical disjointness proof; it has no H generation
+/// row until promote_resume commits.
+fn secretary_episode_settled(db: &VerifiedDatabaseConnection<'_>, h: &SecretaryH<'_>,
+    request_id: &str) -> Result<bool> {
+    use crate::store::atomic::{Json,JsonString};
+    let row=Statement::prepare(db.as_ptr(),
+        "SELECT e.raw_hex,COALESCE(e.old_generation,''),e.phase,COALESCE(e.stop_fact_id,''),\
+                COALESCE(c.state,''),COALESCE(c.stop_proof_hash,''),b.state,\
+                COALESCE(g.request_id,''),COALESCE(g.process_operation_id,'')\
+           FROM main.gogoke_v37_h_process_episode e\
+           JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=e.binding_id\
+             AND b.instance_id=e.instance_id AND b.domain_id=e.domain_id\
+             AND b.owner_id=e.session_id AND b.generation=e.generation AND b.kind='SESSION'\
+           LEFT JOIN main.gogoke_coordination_process_custody c\
+             ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id\
+             AND c.generation=e.generation\
+           LEFT JOIN main.gogoke_v37_h_generation g\
+             ON g.domain_id=e.domain_id AND g.session_id=e.session_id AND g.generation=e.generation\
+          WHERE e.domain_id='global' AND e.session_id=?1 AND e.request_id=?2\
+            AND e.instance_id=?3 AND e.generation=?4 AND e.home_id=?5\
+            AND e.binding_id=?6 AND e.process_operation_id=?7\
+            AND e.seat_id=?8 AND e.seat_incarnation=?9")?;
+    for (index,value) in [h.session,request_id,h.instance,h.generation,h.home,h.binding,
+        h.process,h.seat,h.incarnation].iter().enumerate() {
+        row.bind_text((index+1) as i32,value)?;
+    }
+    if !row.step_row()? { return Err(WorktreeError::Denied.at("cleanup.secretary_episode_identity")); }
+    let raw=row.column_text(0)?;
+    let old=row.column_text(1)?;
+    let phase=row.column_text(2)?;
+    let fact=row.column_text(3)?;
+    let custody=row.column_text(4)?;
+    let proof=row.column_text(5)?;
+    let binding_state=row.column_text(6)?;
+    let promoted_request=row.column_text(7)?;
+    let promoted_process=row.column_text(8)?;
+    if row.step_row()? || !matches!(binding_state.as_str(),"ACTIVE"|"REVOKED")
+        || raw.len()%2!=0 || raw.len()>131_072 || !atom(h.process) {
+        return Err(WorktreeError::Denied.at("cleanup.secretary_episode_identity"));
+    }
+    let mut bytes=Vec::with_capacity(raw.len()/2);
+    for chunk in raw.as_bytes().chunks_exact(2) {
+        let hex=std::str::from_utf8(chunk).map_err(|error|WorktreeError::Denied
+            .at_with_detail("cleanup.secretary_episode_hex",format!("{error:?}")))?;
+        bytes.push(u8::from_str_radix(hex,16).map_err(|error|WorktreeError::Denied
+            .at_with_detail("cleanup.secretary_episode_hex",format!("{error:?}")))?);
+    }
+    let request=crate::store::session_transport::decode_request(&bytes)
+        .map_err(|error|WorktreeError::Denied.at_with_detail(
+            "cleanup.secretary_episode_request",format!("{error:?}")))?;
+    if request.family!="K-SESSION" || request.domain_id!=h.domain
+        || request.target_id!=h.session || request.request_id!=request_id
+        || !matches!(request.operation.as_str(),"open"|"resume") {
+        return Err(WorktreeError::Denied.at("cleanup.secretary_episode_request"));
+    }
+    if promoted_request.is_empty() {
+        let prior=old.parse::<u64>().map_err(|error|WorktreeError::Denied
+            .at_with_detail("cleanup.secretary_unpromoted",format!("{error:?}")))?;
+        let next=h.generation.parse::<u64>().map_err(|error|WorktreeError::Denied
+            .at_with_detail("cleanup.secretary_unpromoted",format!("{error:?}")))?;
+        let requested=match request.payload.get(&JsonString::from_str("generation")) {
+            Some(Json::String(value))=>value.to_well_formed_string(), _=>None,
+        };
+        if request.operation!="resume" || old!=prior.to_string()
+            || h.generation!=next.to_string()
+            || prior.checked_add(1)!=Some(next) || requested.as_deref()!=Some(old.as_str())
+            || !matches!(phase.as_str(),"PREPARED"|"UNKNOWN"|"STOPPED") {
+            return Err(WorktreeError::Denied.at("cleanup.secretary_unpromoted"));
+        }
+        let predecessor=Statement::prepare(db.as_ptr(),
+            "SELECT COUNT(*) FROM main.gogoke_v37_h_claim a\
+               JOIN main.gogoke_v37_h_generation g ON g.domain_id=a.domain_id\
+                 AND g.session_id=a.session_id AND g.generation=a.generation\
+                 AND g.process_operation_id=a.process_operation_id\
+               JOIN main.gogoke_coordination_process_custody c\
+                 ON c.operation_id=a.process_operation_id AND c.domain_id=a.domain_id\
+                 AND c.generation=a.generation\
+              WHERE a.domain_id='global' AND a.session_id=?1 AND a.instance_id=?2\
+                AND a.generation=?3 AND a.stop_fact_id IS NOT NULL\
+                AND a.stop_fact_id<>'' AND a.state IN ('STOPPED','RELEASED')\
+                AND c.state='STOPPED' AND c.stop_proof_hash=a.stop_fact_id")?;
+        for (index,value) in [h.session,h.instance,old.as_str()].iter().enumerate() {
+            predecessor.bind_text((index+1) as i32,value)?;
+        }
+        if !predecessor.step_row()? || predecessor.column_text(0)?!="1" {
+            return Err(WorktreeError::Denied.at("cleanup.secretary_unpromoted"));
+        }
+    } else if promoted_request!=request_id || promoted_process!=h.process {
+        return Err(WorktreeError::Denied.at("cleanup.secretary_episode_identity"));
+    }
+    if phase=="STOPPED" {
+        if fact.is_empty() || custody!="STOPPED" || proof!=fact {
+            return Err(WorktreeError::Denied.at("cleanup.secretary_stop_proof"));
+        }
+        return Ok(true);
+    }
+    if !matches!(phase.as_str(),"ACTIVE"|"PREPARED"|"UNKNOWN")
+        || !matches!(custody.as_str(),"ACTIVE"|"PREPARED"|"UNKNOWN")
+        || binding_state!="ACTIVE" {
+        return Err(WorktreeError::Denied.at("cleanup.secretary_episode_unsettled"));
+    }
+    Ok(false)
 }
 
 /// An original Secretary H has no project worktree grant. Prove each actual
@@ -414,7 +521,7 @@ struct SecretaryH<'a> {
 fn secretary_roots_disjoint(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
     target: &ResolvedBinding, h: SecretaryH<'_>) -> Result<()> {
     use crate::process::AppContainerProfile;
-    use crate::store::{instance, ledger, seat};
+    use crate::store::{instance, ledger};
     if h.domain!="global" || ![h.session,h.instance,h.seat,h.incarnation,h.generation,
         h.home,h.binding,h.process].iter().all(|value|atom(value)) {
         return Err(WorktreeError::Denied.at("cleanup.secretary_identity"));
@@ -425,29 +532,51 @@ fn secretary_roots_disjoint(db: &VerifiedDatabaseConnection<'_>, root: &RootLock
         || registration.purpose!=ledger::SessionPurpose::Secretary || registration.side_id.is_some() {
         return Err(WorktreeError::Denied.at("cleanup.secretary_registration"));
     }
-    let designation=Statement::prepare(db.as_ptr(),
-        "SELECT d.seat_id,d.incarnation,s.instance_id,s.state,s.generation FROM main.gogoke_v37_seat_secretary d JOIN main.gogoke_v37_seats s ON s.domain_id=d.domain_id AND s.seat_id=d.seat_id WHERE d.singleton=1 AND d.domain_id='global'")?;
-    if !designation.step_row()? || designation.column_text(0)?!=h.seat
-        || designation.column_text(1)?!=h.incarnation || designation.column_text(2)?!=h.instance
-        || designation.column_text(3)?!="BUSY" {
-        return Err(WorktreeError::Denied.at("cleanup.secretary_designation"));
-    }
-    let seat_generation=designation.column_text(4)?;
-    if designation.step_row()? { return Err(WorktreeError::Denied.at("cleanup.secretary_designation")); }
+    let seat_generation=if h.episode_request.is_none() {
+        let designation=Statement::prepare(db.as_ptr(),
+            "SELECT d.seat_id,d.incarnation,s.instance_id,s.state,s.generation FROM main.gogoke_v37_seat_secretary d JOIN main.gogoke_v37_seats s ON s.domain_id=d.domain_id AND s.seat_id=d.seat_id WHERE d.singleton=1 AND d.domain_id='global'")?;
+        if !designation.step_row()? || designation.column_text(0)?!=h.seat
+            || designation.column_text(1)?!=h.incarnation || designation.column_text(2)?!=h.instance
+            || designation.column_text(3)?!="BUSY" {
+            return Err(WorktreeError::Denied.at("cleanup.secretary_designation"));
+        }
+        let generation=designation.column_text(4)?;
+        if designation.step_row()? { return Err(WorktreeError::Denied.at("cleanup.secretary_designation")); }
+        Some(generation)
+    } else {None};
     let selected=Statement::prepare(db.as_ptr(),
-        "SELECT seat_id,seat_incarnation,selected_instance_id,seat_authorization_generation FROM main.gogoke_v37_native_selection WHERE domain_id='global' AND session_id=?1")?;
+        "SELECT p.seat_id,p.seat_incarnation,p.selected_instance_id,\
+                p.seat_authorization_generation\
+           FROM main.gogoke_v37_native_selection p\
+           JOIN main.gogoke_v37_session_binding_v2 b\
+             ON b.domain_id=p.domain_id AND b.session_id=p.session_id\
+             AND b.seat_id=p.seat_id AND b.seat_incarnation=p.seat_incarnation\
+             AND b.selected_instance_id=p.selected_instance_id\
+             AND b.seat_authorization_generation=p.seat_authorization_generation\
+             AND b.provenance='NATIVE_V2'\
+          WHERE p.domain_id='global' AND p.session_id=?1")?;
     selected.bind_text(1,h.session)?;
-    if !selected.step_row()? || selected.column_text(0)?!=h.seat
-        || selected.column_text(1)?!=h.incarnation || selected.column_text(2)?!=h.instance
-        || selected.column_text(3)?!=seat_generation || selected.step_row()? {
+    if !selected.step_row()? { return Err(WorktreeError::Denied.at("cleanup.secretary_native_selection")); }
+    let selected_seat=selected.column_text(0)?;
+    let selected_incarnation=selected.column_text(1)?;
+    let selected_instance=selected.column_text(2)?;
+    let selected_generation=selected.column_text(3)?;
+    if selected_seat!=h.seat || selected_incarnation!=h.incarnation
+        || selected_instance!=h.instance
+        || seat_generation.as_deref().is_some_and(|generation|selected_generation!=generation)
+        || selected.step_row()? {
         return Err(WorktreeError::Denied.at("cleanup.secretary_native_selection"));
     }
-    let episode=Statement::prepare(db.as_ptr(),
-        "SELECT COUNT(*) FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_v37_h_generation g ON g.domain_id=e.domain_id AND g.session_id=e.session_id AND g.generation=e.generation AND g.request_id=e.request_id AND g.process_operation_id=e.process_operation_id JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=e.binding_id AND b.instance_id=e.instance_id AND b.domain_id=e.domain_id AND b.owner_id=e.session_id AND b.generation=e.generation AND b.kind='SESSION' AND b.state='ACTIVE' WHERE e.domain_id='global' AND e.session_id=?1 AND e.instance_id=?2 AND e.generation=?3 AND e.home_id=?4 AND e.binding_id=?5 AND e.process_operation_id=?6 AND e.seat_id=?7 AND e.seat_incarnation=?8")?;
-    for (index,value) in [h.session,h.instance,h.generation,h.home,h.binding,h.process,
-        h.seat,h.incarnation].iter().enumerate() { episode.bind_text((index+1) as i32,value)?; }
-    if !episode.step_row()? || episode.column_text(0)?!="1" {
-        return Err(WorktreeError::Denied.at("cleanup.secretary_episode_identity"));
+    if let Some(request_id)=h.episode_request {
+        if secretary_episode_settled(db,&h,request_id)? { return Ok(()); }
+    } else {
+        let episode=Statement::prepare(db.as_ptr(),
+            "SELECT COUNT(*) FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_v37_h_generation g ON g.domain_id=e.domain_id AND g.session_id=e.session_id AND g.generation=e.generation AND g.request_id=e.request_id AND g.process_operation_id=e.process_operation_id JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=e.binding_id AND b.instance_id=e.instance_id AND b.domain_id=e.domain_id AND b.owner_id=e.session_id AND b.generation=e.generation AND b.kind='SESSION' AND b.state='ACTIVE' WHERE e.domain_id='global' AND e.session_id=?1 AND e.instance_id=?2 AND e.generation=?3 AND e.home_id=?4 AND e.binding_id=?5 AND e.process_operation_id=?6 AND e.seat_id=?7 AND e.seat_incarnation=?8")?;
+        for (index,value) in [h.session,h.instance,h.generation,h.home,h.binding,h.process,
+            h.seat,h.incarnation].iter().enumerate() { episode.bind_text((index+1) as i32,value)?; }
+        if !episode.step_row()? || episode.column_text(0)?!="1" {
+            return Err(WorktreeError::Denied.at("cleanup.secretary_episode_identity"));
+        }
     }
     let profile_name=crate::store::session_transport::launch::original_session_profile_name(
         &root.canonical_root().identity.opaque(),h.domain,h.session,h.incarnation,h.generation);
@@ -462,7 +591,10 @@ fn secretary_roots_disjoint(db: &VerifiedDatabaseConnection<'_>, root: &RootLock
     if !registered.step_row()? { return Err(WorktreeError::Denied.at("cleanup.secretary_driver")); }
     let driver=registered.column_text(0)?;
     if registered.step_row()? { return Err(WorktreeError::Denied.at("cleanup.secretary_driver")); }
-    let homes=if driver=="codex" {
+    let homes=if h.episode_request.is_some() {
+        instance::resolve_historical_session_homes(db,root,&profile,h.instance,
+            h.home,h.domain,h.session,h.generation,h.binding,&driver)
+    } else if driver=="codex" {
         instance::resolve_codex_session_launch_homes(db,root,&profile,h.instance,
             h.home,h.domain,h.session,h.generation)
     } else {
@@ -480,6 +612,7 @@ fn secretary_roots_disjoint(db: &VerifiedDatabaseConnection<'_>, root: &RootLock
             || history.session_id!=h.session || history.seat_id!=h.seat
             || history.seat_incarnation!=h.incarnation || history.binding_id!=h.binding
             || history.generation!=h.generation
+            || h.episode_request.is_some_and(|request|history.request_id!=request)
             || history.source.as_ref().is_some_and(|source|source.process_operation_id!=h.process) {
             return Err(WorktreeError::Denied.at("cleanup.secretary_history_identity"));
         }
@@ -569,7 +702,7 @@ where F: FnMut(&str) -> Result<bool> {
                 secretary_roots_disjoint(db,root,target,SecretaryH {domain:&claim_domain,
                     session:&session,instance:&claim_instance,seat:&claim_seat,
                     incarnation:&claim_incarnation,generation:&generation,home:&home,
-                    binding:&owner_binding,process:&process})?;
+                    binding:&owner_binding,process:&process,episode_request:None})?;
                 continue;
             },
             OriginalOpen::Project(other) if !original_group_overlaps(db,&other,&mut overlaps)?=>continue,
@@ -581,7 +714,7 @@ where F: FnMut(&str) -> Result<bool> {
         }
     }
     let episodes = Statement::prepare(db.as_ptr(),
-        "SELECT e.domain_id,e.session_id,COALESCE(e.process_operation_id,''),e.phase,COALESCE(e.stop_fact_id,''),COALESCE(c.state,''),COALESCE(c.stop_proof_hash,''),e.instance_id,e.generation,e.home_id,e.binding_id,COALESCE(e.seat_id,''),COALESCE(e.seat_incarnation,'') FROM main.gogoke_v37_h_process_episode e LEFT JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id AND c.generation=e.generation ORDER BY e.process_operation_id")?;
+        "SELECT e.domain_id,e.session_id,COALESCE(e.process_operation_id,''),e.phase,COALESCE(e.stop_fact_id,''),COALESCE(c.state,''),COALESCE(c.stop_proof_hash,''),e.instance_id,e.generation,e.home_id,e.binding_id,COALESCE(e.seat_id,''),COALESCE(e.seat_incarnation,''),e.request_id FROM main.gogoke_v37_h_process_episode e LEFT JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id AND c.generation=e.generation ORDER BY e.process_operation_id")?;
     let mut proofs = Vec::new();
     while episodes.step_row()? {
         let episode_domain=episodes.column_text(0)?;
@@ -600,9 +733,11 @@ where F: FnMut(&str) -> Result<bool> {
                 let owner_binding=episodes.column_text(10)?;
                 let seat=episodes.column_text(11)?;
                 let incarnation=episodes.column_text(12)?;
+                let request=episodes.column_text(13)?;
                 secretary_roots_disjoint(db,root,target,SecretaryH {domain:&episode_domain,
                     session:&session,instance:&instance,seat:&seat,incarnation:&incarnation,
-                    generation:&generation,home:&home,binding:&owner_binding,process:&process})?;
+                    generation:&generation,home:&home,binding:&owner_binding,process:&process,
+                    episode_request:Some(&request)})?;
                 continue;
             },
             OriginalOpen::Project(target) if !original_group_overlaps(db,&target,&mut overlaps)?=>continue,
@@ -1329,15 +1464,60 @@ mod tests {
             seat_id:"secretarySeat".into(),session_id:"secretarySession".into(),
             purpose:SessionPurpose::Secretary,side_id:None}).unwrap();
         db.execute("INSERT INTO main.gogoke_v37_native_selection VALUES('global','secretarySession','secretarySeat','secretaryIncarnation',1,'secretaryInstance')").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_session_binding_v2 VALUES('global','secretarySession','secretarySeat','secretaryIncarnation',1,'secretaryInstance','NATIVE_V2')").unwrap();
         db.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id,stop_fact_id) VALUES('global','secretarySession','secretaryInstance','secretaryHome','secretaryBinding','1','STOPPED',4,'secretaryProcess','secretaryStopFact')").unwrap();
         let raw=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"open","requestId":"secretaryOpen","targetId":"secretarySession","domainId":"global","expectedRevision":"2","payload":{}}"#;
+        let raw_hex=raw.iter().map(|byte|format!("{byte:02x}")).collect::<String>();
         let operation=Statement::prepare(db.as_ptr(),
             "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('global','secretaryOpen',?1,'open','secretarySession','APPLIED',2,3)").unwrap();
-        operation.bind_text(1,&raw.iter().map(|byte|format!("{byte:02x}")).collect::<String>()).unwrap();
+        operation.bind_text(1,&raw_hex).unwrap();
         operation.step_done().unwrap();drop(operation);
-        db.execute("INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,result_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase,stop_fact_id) VALUES('global','secretaryOpen','secretarySession','1','00',2,3,'secretaryProcess','secretaryInstance','secretaryHome','secretaryBinding','secretarySeat','secretaryIncarnation','STOPPED','secretaryStopFact')").unwrap();
+        let episode=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,result_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase,stop_fact_id) VALUES('global','secretaryOpen','secretarySession','1',?1,2,3,'secretaryProcess','secretaryInstance','secretaryHome','secretaryBinding','secretarySeat','secretaryIncarnation','STOPPED','secretaryStopFact')").unwrap();
+        episode.bind_text(1,&raw_hex).unwrap();episode.step_done().unwrap();drop(episode);
         db.execute("INSERT INTO main.gogoke_v37_h_generation VALUES('global','secretarySession','1','secretaryOpen','secretaryProcess')").unwrap();
         db.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) VALUES('secretaryProcess','secretaryTicket','secretaryNonce','1','1','fixture','sha256:fixture','secretaryInstance','global','1','STOPPED','secretaryStopFact')").unwrap();
+        homes.session
+    }
+
+    fn add_unpromoted_secretary_resume(db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock)
+        -> crate::store::instance::ResolvedDirectory {
+        use crate::process::AppContainerProfile;
+        let name=session_transport::launch::original_session_profile_name(
+            &root.canonical_root().identity.opaque(),"global","secretarySession",
+            "secretaryIncarnation","2");
+        let profile=AppContainerProfile::derive_for_revocation(&name).unwrap();
+        db.execute("UPDATE main.gogoke_v37_instance_history_generations SET process_operation_id='secretaryProcess',ticket='secretaryTicket',custodian_nonce='secretaryNonce' WHERE binding_id='secretaryBinding' AND generation='1'").unwrap();
+        let old=instance::read_private_history_generation(db,"secretaryBinding","1")
+            .unwrap().unwrap();
+        let source=old.source.clone().unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        session_transport::bind_owner_in_transaction(db,&session_transport::OwnerBinding {
+            binding_id:"secretaryResumeBinding",instance_id:"secretaryInstance",
+            domain_id:"global",kind:"SESSION",owner_id:"secretarySession",generation:"2",
+        }).unwrap();
+        db.execute("COMMIT").unwrap();
+        instance::create_temporary_home(db,root,&profile,&instance::CreateTemporaryHome {
+            request_id:"secretaryResumeHomeCreate",request_bytes:b"original resume home",
+            home_id:"secretaryResumeHome",instance_id:"secretaryInstance",
+            domain_id:"global",kind:instance::TemporaryKind::Session,
+            owner_id:"secretarySession",generation:"2",
+        }).unwrap();
+        let history=instance::resume_private_history(db,root,&instance::PrivateHistoryLaunch {
+            instance_id:"secretaryInstance",domain_id:"global",session_id:"secretarySession",
+            seat_id:"secretarySeat",seat_incarnation:"secretaryIncarnation",
+            binding_id:"secretaryResumeBinding",generation:"2",request_id:"secretaryResume",
+        },&instance::StoppedPrivateHistory {history_id:&old.history_id,
+            binding_id:&old.binding_id,generation:&old.generation,request_id:&old.request_id,
+            source:&source}).unwrap();
+        profile.grant_bound_tree(&history.directory.path,&history.directory.identity,true).unwrap();
+        let homes=instance::resolve_codex_session_launch_homes(db,root,&profile,
+            "secretaryInstance","secretaryResumeHome","global","secretarySession","2").unwrap();
+        profile.grant_bound_tree(&homes.session.path,&homes.session.identity,true).unwrap();
+        db.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state) VALUES('secretaryResumeProcess','resumeTicket','resumeNonce','2','2','fixture','sha256:fixture','secretaryInstance','global','2','UNKNOWN')").unwrap();
+        let raw=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"resume","requestId":"secretaryResume","targetId":"secretarySession","domainId":"global","expectedRevision":"4","payload":{"generation":"1"}}"#;
+        let raw_hex=raw.iter().map(|byte|format!("{byte:02x}")).collect::<String>();
+        let episode=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,old_generation,raw_hex,previous_revision,result_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase) VALUES('global','secretaryResume','secretarySession','2','1',?1,4,5,'secretaryResumeProcess','secretaryInstance','secretaryResumeHome','secretaryResumeBinding','secretarySeat','secretaryIncarnation','UNKNOWN')").unwrap();
+        episode.bind_text(1,&raw_hex).unwrap();episode.step_done().unwrap();drop(episode);
         homes.session
     }
 
@@ -1898,7 +2078,8 @@ mod tests {
             alias.pointer_identity=secretary_home.identity;
             let h=SecretaryH {domain:"global",session:"secretarySession",instance:"secretaryInstance",
                 seat:"secretarySeat",incarnation:"secretaryIncarnation",generation:"1",
-                home:"secretaryHome",binding:"secretaryBinding",process:"secretaryProcess"};
+            home:"secretaryHome",binding:"secretaryBinding",process:"secretaryProcess",
+            episode_request:None};
             assert!(matches!(secretary_roots_disjoint(db,root,&alias,h),Err(error)
                 if format!("{error:?}").contains("cleanup.secretary_root_overlap")));
             db.execute("UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash='changed' WHERE operation_id='processA'").unwrap();
@@ -1916,6 +2097,84 @@ mod tests {
     }
 
     #[test]
+    fn released_stopped_secretary_episode_uses_its_original_selection_not_current_e() {
+        with_real_child("secretary-old-e",|db,root,_pin,_custodian,_binding,_source,_owner| {
+            let old_home=add_real_isolated_secretary(db,root,"codex");
+            // This old H has its exact native StopFact and no reservation.
+            // Its E authorization epoch was 1; a later Secretary used E 19.
+            db.execute("UPDATE main.gogoke_v37_h_claim SET state='RELEASED' WHERE session_id='secretarySession'").unwrap();
+            db.execute("UPDATE main.gogoke_v37_seats SET generation=19,revision=19 WHERE domain_id='global' AND seat_id='secretarySeat'").unwrap();
+            // A second completed original H has a different immutable E epoch
+            // and no retained home. The direct source rows remain complete.
+            use crate::store::ledger::{self,SessionPurpose,SessionRegistration};
+            ledger::register_session(db,&SessionRegistration {domain_id:"global".into(),
+                seat_id:"secretarySeat".into(),session_id:"secretaryOldB".into(),
+                purpose:SessionPurpose::Secretary,side_id:None}).unwrap();
+            db.execute("INSERT INTO main.gogoke_v37_h_owner_binding VALUES('secretaryOldBinding','secretaryInstance','global','SESSION','secretaryOldB','3','REVOKED')").unwrap();
+            db.execute("INSERT INTO main.gogoke_v37_native_selection VALUES('global','secretaryOldB','secretarySeat','secretaryIncarnation',3,'secretaryInstance')").unwrap();
+            db.execute("INSERT INTO main.gogoke_v37_session_binding_v2 VALUES('global','secretaryOldB','secretarySeat','secretaryIncarnation',3,'secretaryInstance','NATIVE_V2')").unwrap();
+            db.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id,stop_fact_id) VALUES('global','secretaryOldB','secretaryInstance','oldHomeB','secretaryOldBinding','3','RELEASED',5,'oldProcessB','oldStopB')").unwrap();
+            let raw=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"open","requestId":"oldOpenB","targetId":"secretaryOldB","domainId":"global","expectedRevision":"2","payload":{}}"#;
+            let raw_hex=raw.iter().map(|byte|format!("{byte:02x}")).collect::<String>();
+            let open=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('global','oldOpenB',?1,'open','secretaryOldB','APPLIED',2,3)").unwrap();
+            open.bind_text(1,&raw_hex).unwrap();open.step_done().unwrap();drop(open);
+            let episode=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,result_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase,stop_fact_id) VALUES('global','oldOpenB','secretaryOldB','3',?1,2,3,'oldProcessB','secretaryInstance','oldHomeB','secretaryOldBinding','secretarySeat','secretaryIncarnation','STOPPED','oldStopB')").unwrap();
+            episode.bind_text(1,&raw_hex).unwrap();episode.step_done().unwrap();drop(episode);
+            db.execute("INSERT INTO main.gogoke_v37_h_generation VALUES('global','secretaryOldB','3','oldOpenB','oldProcessB')").unwrap();
+            db.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) VALUES('oldProcessB','oldTicketB','oldNonceB','3','3','fixture','sha256:fixture','secretaryInstance','global','3','STOPPED','oldStopB')").unwrap();
+            fs::remove_dir_all(&old_home.path).unwrap();
+            let stopped=cleanup_stop_gate(db,root,"treeA").unwrap();
+            assert_eq!(stopped.len(),1,"old Secretary StopFact is not a target F proof");
+            assert_eq!(stopped[0].process_operation_id,"processA");
+            db.execute("UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash='wrong' WHERE operation_id='secretaryProcess'").unwrap();
+            assert!(matches!(cleanup_stop_gate(db,root,"treeA"),Err(error)
+                if matches!(error.without_context(),WorktreeError::Denied)));
+            // A changed V2 provenance cannot borrow a correct native selection.
+            db.execute("UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash='secretaryStopFact' WHERE operation_id='secretaryProcess'").unwrap();
+            db.execute("UPDATE main.gogoke_v37_session_binding_v2 SET seat_authorization_generation=2 WHERE session_id='secretarySession'").unwrap();
+            assert!(matches!(cleanup_stop_gate(db,root,"treeA"),Err(error)
+                if matches!(error.without_context(),WorktreeError::Denied)));
+        });
+    }
+
+    #[test]
+    fn unreleased_secretary_reservation_still_needs_current_e_epoch() {
+        with_real_child("secretary-current-e",|db,root,_pin,_custodian,_binding,_source,_owner| {
+            add_real_isolated_secretary(db,root,"codex");
+            db.execute("UPDATE main.gogoke_v37_seats SET generation=2,revision=2 WHERE domain_id='global' AND seat_id='secretarySeat'").unwrap();
+            assert!(matches!(cleanup_stop_gate(db,root,"treeA"),Err(error)
+                if format!("{error:?}").contains("cleanup.secretary_native_selection")));
+        });
+    }
+
+    #[test]
+    fn unpromoted_unknown_secretary_resume_needs_its_exact_disjoint_roots() {
+        with_real_child("secretary-unknown-root",|db,root,_pin,_custodian,_binding,_source,_owner| {
+            add_real_isolated_secretary(db,root,"codex");
+            let resume_home=add_unpromoted_secretary_resume(db,root);
+            let unpromoted=Statement::prepare(db.as_ptr(),"SELECT 1 FROM main.gogoke_v37_h_generation WHERE session_id='secretarySession' AND generation='2'").unwrap();
+            assert!(!unpromoted.step_row().unwrap(),"UNKNOWN candidate has no h_generation row");
+            let stopped=cleanup_stop_gate(db,root,"treeA").unwrap();
+            assert_eq!(stopped.len(),1,"UNKNOWN disjoint Secretary is not a target F stop proof");
+            assert_eq!(stopped[0].process_operation_id,"processA");
+            db.execute("UPDATE main.gogoke_v37_h_claim SET state='RELEASED' WHERE session_id='secretarySession'").unwrap();
+            let mut alias=resolve_id(db,root,"treeA").unwrap();
+            alias.path=resume_home.path.clone();
+            alias.identity=resume_home.identity.clone();
+            alias.pointer_identity=resume_home.identity.clone();
+            let h=SecretaryH {domain:"global",session:"secretarySession",instance:"secretaryInstance",
+                seat:"secretarySeat",incarnation:"secretaryIncarnation",generation:"2",
+                home:"secretaryResumeHome",binding:"secretaryResumeBinding",
+                process:"secretaryResumeProcess",episode_request:Some("secretaryResume")};
+            assert!(matches!(secretary_roots_disjoint(db,root,&alias,h),Err(error)
+                if format!("{error:?}").contains("cleanup.secretary_root_overlap")));
+            fs::remove_dir_all(&resume_home.path).unwrap();
+            assert!(matches!(cleanup_stop_gate(db,root,"treeA"),Err(error)
+                if matches!(error.without_context(),WorktreeError::Denied)));
+        });
+    }
+
+    #[test]
     fn original_claude_secretary_uses_registered_provider_roots() {
         with_real_child("secretary-claude",|db,root,_pin,_custodian,_binding,_source,_owner| {
             let secretary_home=add_real_isolated_secretary(db,root,"claude");
@@ -1927,7 +2186,8 @@ mod tests {
             alias.pointer_identity=secretary_home.identity;
             let h=SecretaryH {domain:"global",session:"secretarySession",instance:"secretaryInstance",
                 seat:"secretarySeat",incarnation:"secretaryIncarnation",generation:"1",
-                home:"secretaryHome",binding:"secretaryBinding",process:"secretaryProcess"};
+            home:"secretaryHome",binding:"secretaryBinding",process:"secretaryProcess",
+            episode_request:None};
             assert!(matches!(secretary_roots_disjoint(db,root,&alias,h),Err(error)
                 if format!("{error:?}").contains("cleanup.secretary_root_overlap")));
         });

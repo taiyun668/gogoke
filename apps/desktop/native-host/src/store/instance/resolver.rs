@@ -5,7 +5,7 @@
 //! owner binding to agree before a caller can use either path.
 
 use super::registry::{resolve_registered_codex_home, resolve_registered_provider_home, RegistryError};
-use super::temporary::{resolve_active_session_home, TemporaryHomeError};
+use super::temporary::{resolve_active_session_home, resolve_historical_session_home, TemporaryHomeError};
 use crate::process::AppContainerProfile;
 use crate::root::{RootIdentity, RootLock};
 use crate::store::same_open::VerifiedDatabaseConnection;
@@ -93,6 +93,26 @@ pub(crate) fn resolve_provider_session_launch_homes(
     let instance = ResolvedDirectory { path, identity };
     let (path, identity) = resolve_active_session_home(
         connection, root, profile, instance_id, home_id, domain_id, owner_id, generation)?;
+    Ok(InstanceLaunchHomes { instance, session: ResolvedDirectory { path, identity } })
+}
+
+/// Reobserve an episode's original roots without asking whether its E seat or
+/// temporary home is still eligible for a fresh launch. No path is created and
+/// no ACL is granted here.
+pub(crate) fn resolve_historical_session_homes(
+    connection: &VerifiedDatabaseConnection<'_>, root: &RootLock,
+    profile: &AppContainerProfile, instance_id: &str, home_id: &str,
+    domain_id: &str, owner_id: &str, generation: &str, binding_id: &str,
+    driver: &str,
+) -> Result<InstanceLaunchHomes, LaunchHomeError> {
+    let instance = if driver == "codex" {
+        resolve_codex_instance_home(connection, root, instance_id)?
+    } else {
+        let (path, identity) = resolve_registered_provider_home(connection, root, instance_id, driver)?;
+        ResolvedDirectory { path, identity }
+    };
+    let (path, identity) = resolve_historical_session_home(connection, root, profile,
+        instance_id, home_id, domain_id, owner_id, generation, binding_id)?;
     Ok(InstanceLaunchHomes { instance, session: ResolvedDirectory { path, identity } })
 }
 
