@@ -75,13 +75,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     io::stdout().flush()?;
     if let Some(user) = user_listener {
-        run_desktop(&mut product, listener, user, &endpoint, &service_capability)?;
-        let stopped = product.stop_secretary_before_close();
-        let closed = product.close_checked();
-        if let Err(error) = stopped {
-            return Err(io::Error::other(format!("Secretary normal shutdown: {error:?}; database close: {closed:?}")).into());
-        }
-        closed?;
+        let desktop = run_desktop(&mut product, listener, user, &endpoint, &service_capability);
+        finish_desktop_run(product, desktop,
+            |product| product.stop_secretary_before_close().map_err(Into::into),
+            |product| product.close_checked().map(|_| ()).map_err(Into::into))?;
         drop(lock);
         return Ok(());
     }
@@ -125,6 +122,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Both pipe workers carry transport facts only. The one verified database,
 /// issuer, and process custodian remain on this main authority thread.
+type DesktopRunResult = Result<(), Box<dyn std::error::Error>>;
+
+// The authority and its real process custody remain owned until both existing
+// cleanup operations have been attempted, including on a transport/origin error.
+fn finish_desktop_run<A>(mut authority: A, desktop: DesktopRunResult,
+    stop: impl FnOnce(&mut A) -> DesktopRunResult,
+    close: impl FnOnce(A) -> DesktopRunResult,
+) -> DesktopRunResult {
+    let stopped = stop(&mut authority);
+    let closed = close(authority);
+    match (desktop, stopped, closed) {
+        (Ok(()), Ok(()), Ok(())) => Ok(()),
+        (Err(primary), Ok(()), Ok(())) => Err(primary),
+        (Err(primary), stopped, closed) => Err(io::Error::other(format!(
+            "{primary}; Secretary normal shutdown: {stopped:?}; database close: {closed:?}")).into()),
+        (Ok(()), Err(error), closed) => Err(io::Error::other(format!(
+            "Secretary normal shutdown: {error:?}; database close: {closed:?}")).into()),
+        (Ok(()), Ok(()), Err(error)) => Err(error),
+    }
+}
+
 fn run_desktop(
     product: &mut ProductDatabase<'_>,
     service_listener: PrivatePipeListener,
@@ -370,4 +388,59 @@ fn explicit_arguments() -> Result<(PathBuf, PathBuf, HostMode), RootLockError> {
 #[allow(dead_code)]
 fn database_is_direct_child(root: &Path, database: &Path) -> bool {
     database.parent() == Some(root)
+}
+
+#[cfg(test)]
+mod desktop_shutdown_tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    fn outcome(error: Option<&str>) -> DesktopRunResult {
+        error.map_or(Ok(()), |message| Err(io::Error::other(message).into()))
+    }
+
+    fn exercise(desktop: Option<&str>, stopped: Option<&str>, closed: Option<&str>)
+        -> (Vec<&'static str>, DesktopRunResult) {
+        let trace = Rc::new(RefCell::new(Vec::new()));
+        let result = finish_desktop_run(trace.clone(), outcome(desktop),
+            |trace| { trace.borrow_mut().push("stop"); outcome(stopped) },
+            |trace| { trace.borrow_mut().push("close"); outcome(closed) });
+        let calls = trace.borrow().clone();
+        (calls, result)
+    }
+
+    #[test]
+    fn desktop_loop_failure_still_stops_and_closes() {
+        let (calls, result) = exercise(Some("UserProcessNotLive"), None, None);
+        assert_eq!(calls, ["stop", "close"]);
+        assert_eq!(result.unwrap_err().to_string(), "UserProcessNotLive");
+    }
+
+    #[test]
+    fn desktop_loop_success_stops_then_closes() {
+        let (calls, result) = exercise(None, None, None);
+        assert_eq!(calls, ["stop", "close"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn desktop_loop_primary_and_cleanup_failures_are_retained() {
+        let (calls, result) = exercise(Some("original transport error"),
+            Some("original stop refusal"), Some("original database close error"));
+        assert_eq!(calls, ["stop", "close"]);
+        let error = result.unwrap_err().to_string();
+        for original in ["original transport error", "original stop refusal", "original database close error"] {
+            assert!(error.contains(original), "original error lost: {error}");
+        }
+    }
+
+    #[test]
+    fn desktop_loop_stop_failure_still_attempts_checked_close() {
+        let (calls, result) = exercise(None, Some("original stop refusal"),
+            Some("original database close error"));
+        assert_eq!(calls, ["stop", "close"]);
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("original stop refusal") && error.contains("original database close error"));
+    }
 }
