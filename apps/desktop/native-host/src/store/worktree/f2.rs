@@ -416,21 +416,21 @@ fn secretary_episode_settled(db: &VerifiedDatabaseConnection<'_>, h: &SecretaryH
     request_id: &str) -> Result<bool> {
     use crate::store::atomic::{Json,JsonString};
     let row=Statement::prepare(db.as_ptr(),
-        "SELECT e.raw_hex,COALESCE(e.old_generation,''),e.phase,COALESCE(e.stop_fact_id,''),\
-                COALESCE(c.state,''),COALESCE(c.stop_proof_hash,''),b.state,\
-                COALESCE(g.request_id,''),COALESCE(g.process_operation_id,'')\
-           FROM main.gogoke_v37_h_process_episode e\
-           JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=e.binding_id\
-             AND b.instance_id=e.instance_id AND b.domain_id=e.domain_id\
-             AND b.owner_id=e.session_id AND b.generation=e.generation AND b.kind='SESSION'\
-           LEFT JOIN main.gogoke_coordination_process_custody c\
-             ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id\
-             AND c.generation=e.generation\
-           LEFT JOIN main.gogoke_v37_h_generation g\
-             ON g.domain_id=e.domain_id AND g.session_id=e.session_id AND g.generation=e.generation\
-          WHERE e.domain_id='global' AND e.session_id=?1 AND e.request_id=?2\
-            AND e.instance_id=?3 AND e.generation=?4 AND e.home_id=?5\
-            AND e.binding_id=?6 AND e.process_operation_id=?7\
+        "SELECT e.raw_hex,COALESCE(e.old_generation,''),e.phase,COALESCE(e.stop_fact_id,''), \
+                COALESCE(c.state,''),COALESCE(c.stop_proof_hash,''),b.state, \
+                COALESCE(g.request_id,''),COALESCE(g.process_operation_id,'') \
+           FROM main.gogoke_v37_h_process_episode e \
+           JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=e.binding_id \
+             AND b.instance_id=e.instance_id AND b.domain_id=e.domain_id \
+             AND b.owner_id=e.session_id AND b.generation=e.generation AND b.kind='SESSION' \
+           LEFT JOIN main.gogoke_coordination_process_custody c \
+             ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id \
+             AND c.generation=e.generation \
+           LEFT JOIN main.gogoke_v37_h_generation g \
+             ON g.domain_id=e.domain_id AND g.session_id=e.session_id AND g.generation=e.generation \
+          WHERE e.domain_id='global' AND e.session_id=?1 AND e.request_id=?2 \
+            AND e.instance_id=?3 AND e.generation=?4 AND e.home_id=?5 \
+            AND e.binding_id=?6 AND e.process_operation_id=?7 \
             AND e.seat_id=?8 AND e.seat_incarnation=?9")?;
     for (index,value) in [h.session,request_id,h.instance,h.generation,h.home,h.binding,
         h.process,h.seat,h.incarnation].iter().enumerate() {
@@ -462,34 +462,84 @@ fn secretary_episode_settled(db: &VerifiedDatabaseConnection<'_>, h: &SecretaryH
             "cleanup.secretary_episode_request",format!("{error:?}")))?;
     if request.family!="K-SESSION" || request.domain_id!=h.domain
         || request.target_id!=h.session || request.request_id!=request_id
-        || !matches!(request.operation.as_str(),"open"|"resume") {
+        || !matches!(request.operation.as_str(),"open"|"resume"|"compact"|"renew-session") {
         return Err(WorktreeError::Denied.at("cleanup.secretary_episode_request"));
     }
-    if promoted_request.is_empty() {
+    if request.operation=="open" {
+        if !old.is_empty() || !request.payload.is_empty() || promoted_request!=request_id {
+            return Err(WorktreeError::Denied.at("cleanup.secretary_episode_request"));
+        }
+    } else {
         let prior=old.parse::<u64>().map_err(|error|WorktreeError::Denied
-            .at_with_detail("cleanup.secretary_unpromoted",format!("{error:?}")))?;
+            .at_with_detail("cleanup.secretary_generation",format!("{error:?}")))?;
         let next=h.generation.parse::<u64>().map_err(|error|WorktreeError::Denied
-            .at_with_detail("cleanup.secretary_unpromoted",format!("{error:?}")))?;
+            .at_with_detail("cleanup.secretary_generation",format!("{error:?}")))?;
         let requested=match request.payload.get(&JsonString::from_str("generation")) {
             Some(Json::String(value))=>value.to_well_formed_string(), _=>None,
         };
-        if request.operation!="resume" || old!=prior.to_string()
-            || h.generation!=next.to_string()
-            || prior.checked_add(1)!=Some(next) || requested.as_deref()!=Some(old.as_str())
-            || !matches!(phase.as_str(),"PREPARED"|"UNKNOWN"|"STOPPED") {
+        if old!=prior.to_string() || h.generation!=next.to_string()
+            || prior.checked_add(1)!=Some(next) || request.payload.len()!=1
+            || requested.as_deref()!=Some(old.as_str()) {
+            return Err(WorktreeError::Denied.at("cleanup.secretary_generation"));
+        }
+        if matches!(request.operation.as_str(),"compact"|"renew-session") {
+            let change=crate::store::session_transport::generation_change::read(
+                db,h.domain,request_id)
+                .map_err(|error|WorktreeError::Denied.at_with_detail(
+                    "cleanup.secretary_compound",format!("{error:?}")))?
+                .ok_or(WorktreeError::Denied.at("cleanup.secretary_compound"))?;
+            if change.raw_hex!=raw || change.operation!=request.operation
+                || change.session_id!=h.session || change.old_generation!=old
+                || change.seat_id!=h.seat {
+                return Err(WorktreeError::Denied.at("cleanup.secretary_compound"));
+            }
+            let predecessor=Statement::prepare(db.as_ptr(),
+                "SELECT e.process_operation_id,c.ticket,c.custodian_nonce \
+                   FROM main.gogoke_v37_h_process_episode e \
+                   JOIN main.gogoke_v37_h_generation g ON g.domain_id=e.domain_id \
+                     AND g.session_id=e.session_id AND g.generation=e.generation \
+                     AND g.request_id=e.request_id AND g.process_operation_id=e.process_operation_id \
+                   JOIN main.gogoke_coordination_process_custody c \
+                     ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id \
+                     AND c.generation=e.generation \
+                  WHERE e.domain_id='global' AND e.session_id=?1 AND e.generation=?2 \
+                    AND e.instance_id=?3 AND e.seat_id=?4 AND e.seat_incarnation=?5 \
+                    AND e.phase='STOPPED' AND e.stop_fact_id IS NOT NULL \
+                    AND e.stop_fact_id<>'' AND c.state='STOPPED' \
+                    AND c.stop_proof_hash=e.stop_fact_id")?;
+            for (index,value) in [h.session,old.as_str(),h.instance,h.seat,h.incarnation]
+                .iter().enumerate() { predecessor.bind_text((index+1) as i32,value)?; }
+            if !predecessor.step_row()? || predecessor.column_text(0)?!=change.old_operation
+                || predecessor.column_text(1)?!=change.old_ticket
+                || predecessor.column_text(2)?!=change.old_nonce || predecessor.step_row()? {
+                return Err(WorktreeError::Denied.at("cleanup.secretary_compound_source"));
+            }
+            let stage=change.stage.as_str();
+            if promoted_request.is_empty() {
+                if !matches!(stage,"OLD_STOPPED"|"CANCELLED")
+                    || (stage=="CANCELLED" && change.owner_stop_request_id.is_none()) {
+                    return Err(WorktreeError::Denied.at("cleanup.secretary_compound_stage"));
+                }
+            } else if !matches!(stage,"OLD_STOPPED"|"APPLIED") {
+                return Err(WorktreeError::Denied.at("cleanup.secretary_compound_stage"));
+            }
+        }
+    }
+    if promoted_request.is_empty() {
+        if request.operation=="open" || !matches!(phase.as_str(),"PREPARED"|"UNKNOWN"|"STOPPED") {
             return Err(WorktreeError::Denied.at("cleanup.secretary_unpromoted"));
         }
         let predecessor=Statement::prepare(db.as_ptr(),
-            "SELECT COUNT(*) FROM main.gogoke_v37_h_claim a\
-               JOIN main.gogoke_v37_h_generation g ON g.domain_id=a.domain_id\
-                 AND g.session_id=a.session_id AND g.generation=a.generation\
-                 AND g.process_operation_id=a.process_operation_id\
-               JOIN main.gogoke_coordination_process_custody c\
-                 ON c.operation_id=a.process_operation_id AND c.domain_id=a.domain_id\
-                 AND c.generation=a.generation\
-              WHERE a.domain_id='global' AND a.session_id=?1 AND a.instance_id=?2\
-                AND a.generation=?3 AND a.stop_fact_id IS NOT NULL\
-                AND a.stop_fact_id<>'' AND a.state IN ('STOPPED','RELEASED')\
+            "SELECT COUNT(*) FROM main.gogoke_v37_h_claim a \
+               JOIN main.gogoke_v37_h_generation g ON g.domain_id=a.domain_id \
+                 AND g.session_id=a.session_id AND g.generation=a.generation \
+                 AND g.process_operation_id=a.process_operation_id \
+               JOIN main.gogoke_coordination_process_custody c \
+                 ON c.operation_id=a.process_operation_id AND c.domain_id=a.domain_id \
+                 AND c.generation=a.generation \
+              WHERE a.domain_id='global' AND a.session_id=?1 AND a.instance_id=?2 \
+                AND a.generation=?3 AND a.stop_fact_id IS NOT NULL \
+                AND a.stop_fact_id<>'' AND a.state IN ('STOPPED','RELEASED') \
                 AND c.state='STOPPED' AND c.stop_proof_hash=a.stop_fact_id")?;
         for (index,value) in [h.session,h.instance,old.as_str()].iter().enumerate() {
             predecessor.bind_text((index+1) as i32,value)?;
@@ -545,15 +595,15 @@ fn secretary_roots_disjoint(db: &VerifiedDatabaseConnection<'_>, root: &RootLock
         Some(generation)
     } else {None};
     let selected=Statement::prepare(db.as_ptr(),
-        "SELECT p.seat_id,p.seat_incarnation,p.selected_instance_id,\
-                p.seat_authorization_generation\
-           FROM main.gogoke_v37_native_selection p\
-           JOIN main.gogoke_v37_session_binding_v2 b\
-             ON b.domain_id=p.domain_id AND b.session_id=p.session_id\
-             AND b.seat_id=p.seat_id AND b.seat_incarnation=p.seat_incarnation\
-             AND b.selected_instance_id=p.selected_instance_id\
-             AND b.seat_authorization_generation=p.seat_authorization_generation\
-             AND b.provenance='NATIVE_V2'\
+        "SELECT p.seat_id,p.seat_incarnation,p.selected_instance_id, \
+                p.seat_authorization_generation \
+           FROM main.gogoke_v37_native_selection p \
+           JOIN main.gogoke_v37_session_binding_v2 b \
+             ON b.domain_id=p.domain_id AND b.session_id=p.session_id \
+             AND b.seat_id=p.seat_id AND b.seat_incarnation=p.seat_incarnation \
+             AND b.selected_instance_id=p.selected_instance_id \
+             AND b.seat_authorization_generation=p.seat_authorization_generation \
+             AND b.provenance='NATIVE_V2' \
           WHERE p.domain_id='global' AND p.session_id=?1")?;
     selected.bind_text(1,h.session)?;
     if !selected.step_row()? { return Err(WorktreeError::Denied.at("cleanup.secretary_native_selection")); }
@@ -621,9 +671,15 @@ fn secretary_roots_disjoint(db: &VerifiedDatabaseConnection<'_>, root: &RootLock
                 "cleanup.secretary_model_home",format!("{error:?}")))?
     } else { homes.instance.clone() };
     for home in [&homes.session,&model] {
-        profile.verify_bound_directory_grant(&home.path,&home.identity,true)
-            .map_err(|error|WorktreeError::Denied.at_with_detail(
-                "cleanup.secretary_root_grant",format!("{error:?}")))?;
+        // Current reservations must still carry their live native grant.
+        // Historical episodes are located by their original marker, binding,
+        // RootLock and FileID; a later exact native revoke removes the ACE
+        // without changing the original physical root of an UNKNOWN process.
+        if h.episode_request.is_none() {
+            profile.verify_bound_directory_grant(&home.path,&home.identity,true)
+                .map_err(|error|WorktreeError::Denied.at_with_detail(
+                    "cleanup.secretary_root_grant",format!("{error:?}")))?;
+        }
         if physical_roots_overlap(&target.path,&target.identity,&target.pointer_identity,
             &home.path,&home.identity,&home.identity) {
             return Err(WorktreeError::Denied.at("cleanup.secretary_root_overlap"));
@@ -1521,6 +1577,49 @@ mod tests {
         homes.session
     }
 
+    fn add_unpromoted_provider_secretary_resume(db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock)
+        -> crate::store::instance::InstanceLaunchHomes {
+        use crate::process::AppContainerProfile;
+        let name=session_transport::launch::original_session_profile_name(
+            &root.canonical_root().identity.opaque(),"global","secretarySession",
+            "secretaryIncarnation","2");
+        let profile=AppContainerProfile::derive_for_revocation(&name).unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        session_transport::bind_owner_in_transaction(db,&session_transport::OwnerBinding {
+            binding_id:"providerResumeBinding",instance_id:"secretaryInstance",domain_id:"global",
+            kind:"SESSION",owner_id:"secretarySession",generation:"2",
+        }).unwrap();
+        db.execute("COMMIT").unwrap();
+        instance::create_temporary_home(db,root,&profile,&instance::CreateTemporaryHome {
+            request_id:"providerResumeHomeCreate",request_bytes:b"original provider resume home",
+            home_id:"providerResumeHome",instance_id:"secretaryInstance",domain_id:"global",
+            kind:instance::TemporaryKind::Session,owner_id:"secretarySession",generation:"2",
+        }).unwrap();
+        let homes=instance::resolve_provider_session_launch_homes(db,root,&profile,
+            "secretaryInstance","providerResumeHome","global","secretarySession","2","claude")
+            .unwrap();
+        profile.grant_bound_tree(&homes.instance.path,&homes.instance.identity,true).unwrap();
+        profile.grant_bound_tree(&homes.session.path,&homes.session.identity,true).unwrap();
+        db.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state) VALUES('providerResumeProcess','providerTicket','providerNonce','2','2','fixture','sha256:fixture','secretaryInstance','global','2','UNKNOWN')").unwrap();
+        let raw=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"resume","requestId":"providerResume","targetId":"secretarySession","domainId":"global","expectedRevision":"4","payload":{"generation":"1"}}"#;
+        let raw_hex=raw.iter().map(|byte|format!("{byte:02x}")).collect::<String>();
+        let episode=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,old_generation,raw_hex,previous_revision,result_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase) VALUES('global','providerResume','secretarySession','2','1',?1,4,5,'providerResumeProcess','secretaryInstance','providerResumeHome','providerResumeBinding','secretarySeat','secretaryIncarnation','UNKNOWN')").unwrap();
+        episode.bind_text(1,&raw_hex).unwrap();episode.step_done().unwrap();drop(episode);
+        homes
+    }
+
+    fn bind_original_compound_resume(db:&VerifiedDatabaseConnection<'_>,operation:&str) {
+        assert!(matches!(operation,"compact"|"renew-session"));
+        let raw=format!(r#"{{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"{operation}","requestId":"secretaryResume","targetId":"secretarySession","domainId":"global","expectedRevision":"4","payload":{{"generation":"1"}}}}"#);
+        let raw_hex=raw.as_bytes().iter().map(|byte|format!("{byte:02x}"))
+            .collect::<String>();
+        let episode=Statement::prepare(db.as_ptr(),"UPDATE main.gogoke_v37_h_process_episode SET raw_hex=?1 WHERE domain_id='global' AND request_id='secretaryResume'").unwrap();
+        episode.bind_text(1,&raw_hex).unwrap();episode.step_done().unwrap();drop(episode);
+        let change=Statement::prepare(db.as_ptr(),"INSERT INTO main.gogoke_v37_h_generation_change(domain_id,request_id,raw_hex,operation,session_id,old_generation,old_process_operation_id,old_ticket,old_nonce,thread_id,seat_id,previous_revision,source_watermark,stage) VALUES('global','secretaryResume',?1,?2,'secretarySession','1','secretaryProcess','secretaryTicket','secretaryNonce','secretaryThread','secretarySeat',4,1,'OLD_STOPPED')").unwrap();
+        change.bind_text(1,&raw_hex).unwrap();change.bind_text(2,operation).unwrap();
+        change.step_done().unwrap();
+    }
+
     fn with_real_child(label: &str, body: impl FnOnce(&mut VerifiedDatabaseConnection<'_>,
         &RootLock, &GitProgramPin, &mut ProcessCustodian, &ResolvedBinding, &Path, &OwnerIssuer)) {
         let _guard = route_b_test_guard();
@@ -2172,6 +2271,76 @@ mod tests {
             assert!(matches!(cleanup_stop_gate(db,root,"treeA"),Err(error)
                 if matches!(error.without_context(),WorktreeError::Denied)));
         });
+    }
+
+    #[test]
+    fn old_provider_unknown_uses_physical_roots_after_exact_acl_revoke() {
+        with_real_child("secretary-provider-revoke",|db,root,_pin,_custodian,_binding,_source,_owner| {
+            use crate::process::{revoke_grok_home_root,AppContainerProfile};
+            add_real_isolated_secretary(db,root,"claude");
+            let homes=add_unpromoted_provider_secretary_resume(db,root);
+            let name=session_transport::launch::original_session_profile_name(
+                &root.canonical_root().identity.opaque(),"global","secretarySession",
+                "secretaryIncarnation","2");
+            let profile=AppContainerProfile::derive_for_revocation(&name).unwrap();
+            for home in [&homes.session,&homes.instance] {
+                revoke_grok_home_root(&profile,&home.path,&home.identity).unwrap();
+                assert!(profile.verify_bound_directory_grant(&home.path,&home.identity,true).is_err(),
+                    "historical explicit write ACE was actually removed");
+            }
+            assert_eq!(cleanup_stop_gate(db,root,"treeA").unwrap().len(),1);
+            db.execute("UPDATE main.gogoke_v37_instance_homes SET directory_identity='wrong' WHERE home_id='providerResumeHome'").unwrap();
+            assert!(matches!(cleanup_stop_gate(db,root,"treeA"),Err(error)
+                if matches!(error.without_context(),WorktreeError::Denied)));
+            let receipt=homes.session.identity.opaque();
+            let restore=Statement::prepare(db.as_ptr(),"UPDATE main.gogoke_v37_instance_homes SET directory_identity=?1 WHERE home_id='providerResumeHome'").unwrap();
+            restore.bind_text(1,&receipt).unwrap();restore.step_done().unwrap();drop(restore);
+            let moved=homes.session.path.with_extension("physical");
+            fs::rename(&homes.session.path,&moved).unwrap();
+            std::os::windows::fs::symlink_dir(&moved,&homes.session.path)
+                .expect("cloud reparse fixture must run, never silently skip");
+            let reparse=cleanup_stop_gate(db,root,"treeA");
+            fs::remove_dir(&homes.session.path).unwrap();
+            fs::rename(&moved,&homes.session.path).unwrap();
+            assert!(matches!(reparse,Err(error)
+                if matches!(error.without_context(),WorktreeError::Denied)));
+            assert_eq!(cleanup_stop_gate(db,root,"treeA").unwrap().len(),1);
+        });
+    }
+
+    #[test]
+    fn original_compact_and_renew_episode_bytes_follow_generation_change() {
+        for operation in ["compact","renew-session"] {
+            with_real_child(&format!("secretary-{operation}-episode"),|db,root,_pin,_custodian,_binding,_source,_owner| {
+                add_real_isolated_secretary(db,root,"codex");
+                let home=add_unpromoted_secretary_resume(db,root);
+                bind_original_compound_resume(db,operation);
+                assert_eq!(cleanup_stop_gate(db,root,"treeA").unwrap().len(),1,
+                    "unpromoted compound UNKNOWN still proves unrelated original roots");
+                db.execute("UPDATE main.gogoke_v37_h_generation_change SET old_ticket='wrong' WHERE request_id='secretaryResume'").unwrap();
+                assert!(matches!(cleanup_stop_gate(db,root,"treeA"),Err(error)
+                    if matches!(error.without_context(),WorktreeError::Denied)));
+                db.execute("UPDATE main.gogoke_v37_h_generation_change SET old_ticket='secretaryTicket' WHERE request_id='secretaryResume'").unwrap();
+                db.execute("UPDATE main.gogoke_v37_h_generation_change SET raw_hex='00' WHERE request_id='secretaryResume'").unwrap();
+                assert!(matches!(cleanup_stop_gate(db,root,"treeA"),Err(error)
+                    if matches!(error.without_context(),WorktreeError::Denied)));
+                let original=Statement::prepare(db.as_ptr(),"SELECT raw_hex FROM main.gogoke_v37_h_process_episode WHERE request_id='secretaryResume'").unwrap();
+                assert!(original.step_row().unwrap());let bytes=original.column_text(0).unwrap();drop(original);
+                let restore=Statement::prepare(db.as_ptr(),"UPDATE main.gogoke_v37_h_generation_change SET raw_hex=?1 WHERE request_id='secretaryResume'").unwrap();
+                restore.bind_text(1,&bytes).unwrap();restore.step_done().unwrap();drop(restore);
+                db.execute("UPDATE main.gogoke_v37_h_process_episode SET phase='STOPPED',stop_fact_id='secretaryResumeStop',result_revision=6 WHERE request_id='secretaryResume'").unwrap();
+                db.execute("UPDATE main.gogoke_coordination_process_custody SET state='STOPPED',stop_proof_hash='secretaryResumeStop' WHERE operation_id='secretaryResumeProcess'").unwrap();
+                db.execute("INSERT INTO main.gogoke_v37_h_generation VALUES('global','secretarySession','2','secretaryResume','secretaryResumeProcess')").unwrap();
+                db.execute("UPDATE main.gogoke_v37_h_claim SET generation='2',home_id='secretaryResumeHome',binding_id='secretaryResumeBinding',process_operation_id='secretaryResumeProcess',stop_fact_id='secretaryResumeStop',state='STOPPED',revision=6 WHERE session_id='secretarySession'").unwrap();
+                db.execute("UPDATE main.gogoke_v37_h_generation_change SET stage='APPLIED',result_revision=6 WHERE request_id='secretaryResume'").unwrap();
+                assert_eq!(cleanup_stop_gate(db,root,"treeA").unwrap().len(),1,
+                    "promoted and exactly stopped compound episode is unrelated");
+                db.execute("UPDATE main.gogoke_v37_h_claim SET state='RELEASED' WHERE session_id='secretarySession'").unwrap();
+                fs::remove_dir_all(&home.path).unwrap();
+                assert_eq!(cleanup_stop_gate(db,root,"treeA").unwrap().len(),1,
+                    "settled compound needs no historical home or current ACE");
+            });
+        }
     }
 
     #[test]
