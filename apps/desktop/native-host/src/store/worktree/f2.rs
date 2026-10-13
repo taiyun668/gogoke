@@ -454,24 +454,39 @@ fn secretary_roots_disjoint(db: &VerifiedDatabaseConnection<'_>, root: &RootLock
     let profile=AppContainerProfile::derive_for_revocation(&profile_name)
         .map_err(|error|WorktreeError::Denied.at_with_detail(
             "cleanup.secretary_profile",format!("{error:?}")))?;
-    let homes=instance::resolve_codex_session_launch_homes(db,root,&profile,h.instance,
-        h.home,h.domain,h.session,h.generation)
+    // H chooses the home resolver from F's registered driver, never from the
+    // open frame. Its registered instance identity is checked by that resolver.
+    let registered=Statement::prepare(db.as_ptr(),
+        "SELECT driver_id FROM main.gogoke_v37_instances WHERE instance_id=?1")?;
+    registered.bind_text(1,h.instance)?;
+    if !registered.step_row()? { return Err(WorktreeError::Denied.at("cleanup.secretary_driver")); }
+    let driver=registered.column_text(0)?;
+    if registered.step_row()? { return Err(WorktreeError::Denied.at("cleanup.secretary_driver")); }
+    let homes=if driver=="codex" {
+        instance::resolve_codex_session_launch_homes(db,root,&profile,h.instance,
+            h.home,h.domain,h.session,h.generation)
+    } else {
+        instance::resolve_provider_session_launch_homes(db,root,&profile,h.instance,
+            h.home,h.domain,h.session,h.generation,&driver)
+    }
         .map_err(|error|WorktreeError::Denied.at_with_detail(
             "cleanup.secretary_session_home",format!("{error:?}")))?;
-    let history=instance::read_private_history_generation(db,h.binding,h.generation)
-        .map_err(|error|WorktreeError::Denied.at_with_detail(
-            "cleanup.secretary_history",format!("{error:?}")))?
-        .ok_or(WorktreeError::Denied.at("cleanup.secretary_history"))?;
-    if history.instance_id!=h.instance || history.domain_id!=h.domain
-        || history.session_id!=h.session || history.seat_id!=h.seat
-        || history.seat_incarnation!=h.incarnation || history.binding_id!=h.binding
-        || history.generation!=h.generation
-        || history.source.as_ref().is_some_and(|source|source.process_operation_id!=h.process) {
-        return Err(WorktreeError::Denied.at("cleanup.secretary_history_identity"));
-    }
-    let model=instance::resolve_private_history_directory(db,root,&history.history_id)
-        .map_err(|error|WorktreeError::Denied.at_with_detail(
-            "cleanup.secretary_model_home",format!("{error:?}")))?;
+    let model=if driver=="codex" {
+        let history=instance::read_private_history_generation(db,h.binding,h.generation)
+            .map_err(|error|WorktreeError::Denied.at_with_detail(
+                "cleanup.secretary_history",format!("{error:?}")))?
+            .ok_or(WorktreeError::Denied.at("cleanup.secretary_history"))?;
+        if history.instance_id!=h.instance || history.domain_id!=h.domain
+            || history.session_id!=h.session || history.seat_id!=h.seat
+            || history.seat_incarnation!=h.incarnation || history.binding_id!=h.binding
+            || history.generation!=h.generation
+            || history.source.as_ref().is_some_and(|source|source.process_operation_id!=h.process) {
+            return Err(WorktreeError::Denied.at("cleanup.secretary_history_identity"));
+        }
+        instance::resolve_private_history_directory(db,root,&history.history_id)
+            .map_err(|error|WorktreeError::Denied.at_with_detail(
+                "cleanup.secretary_model_home",format!("{error:?}")))?
+    } else { homes.instance.clone() };
     for home in [&homes.session,&model] {
         profile.verify_bound_directory_grant(&home.path,&home.identity,true)
             .map_err(|error|WorktreeError::Denied.at_with_detail(
@@ -1263,16 +1278,18 @@ mod tests {
         register_created_worktree(db,root,owner,raw.as_bytes()).unwrap();
     }
 
-    fn add_real_isolated_secretary(db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock)
+    fn add_real_isolated_secretary(db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock,
+        driver:&str)
         -> crate::store::instance::ResolvedDirectory {
         use crate::process::AppContainerProfile;
         use crate::store::ledger::{self,SessionPurpose,SessionRegistration};
         let binary=root.canonical_root().canonical_path.join("secretary-fixture-program.bin");
         fs::write(&binary,b"fixed fixture program").unwrap();
-        let program=instance::ProgramObservation::observe(&binary,"0.160.0").unwrap();
+        let version=if driver=="codex" {"0.160.0"} else {"2.1.196"};
+        let program=instance::ProgramObservation::observe(&binary,version).unwrap();
         instance::register_instance(db,root,&instance::Registration {request_id:"secretaryRegister",
             request_bytes:b"secretary fixture registration",instance_id:"secretaryInstance",
-            driver_id:"codex",program:&program}).unwrap();
+            driver_id:driver,program:&program}).unwrap();
         crate::store::orchestration::apply_orchestration_slice_schema(db).unwrap();
         ledger::initialize_schema(db).unwrap();
         db.execute("INSERT INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('global','secretarySeat','secretaryIncarnation','USER','LONG','secretaryInstance','BUSY',1,1)").unwrap();
@@ -1292,14 +1309,21 @@ mod tests {
             home_id:"secretaryHome",instance_id:"secretaryInstance",domain_id:"global",
             kind:instance::TemporaryKind::Session,owner_id:"secretarySession",generation:"1",
         }).unwrap();
-        let history=instance::create_initial_private_history(db,root,&instance::PrivateHistoryLaunch {
-            instance_id:"secretaryInstance",domain_id:"global",session_id:"secretarySession",
-            seat_id:"secretarySeat",seat_incarnation:"secretaryIncarnation",
-            binding_id:"secretaryBinding",generation:"1",request_id:"secretaryOpen",
-        }).unwrap();
-        profile.grant_bound_tree(&history.directory.path,&history.directory.identity,true).unwrap();
-        let homes=instance::resolve_codex_session_launch_homes(db,root,&profile,
-            "secretaryInstance","secretaryHome","global","secretarySession","1").unwrap();
+        let homes=if driver=="codex" {
+            let history=instance::create_initial_private_history(db,root,&instance::PrivateHistoryLaunch {
+                instance_id:"secretaryInstance",domain_id:"global",session_id:"secretarySession",
+                seat_id:"secretarySeat",seat_incarnation:"secretaryIncarnation",
+                binding_id:"secretaryBinding",generation:"1",request_id:"secretaryOpen",
+            }).unwrap();
+            profile.grant_bound_tree(&history.directory.path,&history.directory.identity,true).unwrap();
+            instance::resolve_codex_session_launch_homes(db,root,&profile,
+                "secretaryInstance","secretaryHome","global","secretarySession","1").unwrap()
+        } else {
+            let homes=instance::resolve_provider_session_launch_homes(db,root,&profile,
+                "secretaryInstance","secretaryHome","global","secretarySession","1",driver).unwrap();
+            profile.grant_bound_tree(&homes.instance.path,&homes.instance.identity,true).unwrap();
+            homes
+        };
         profile.grant_bound_tree(&homes.session.path,&homes.session.identity,true).unwrap();
         ledger::register_session(db,&SessionRegistration {domain_id:"global".into(),
             seat_id:"secretarySeat".into(),session_id:"secretarySession".into(),
@@ -1362,7 +1386,8 @@ mod tests {
         }).unwrap();
         let input=CreateWorktree {request_id:"createA",request_bytes:b"create child",repository_id:"repoA",target_id:"treeA",
             domain_id:"projectA",seat_id:"seatA"};
-        let binding=if label=="seal-mixed-group" || label=="secretary-disjoint" {
+        let binding=if label=="seal-mixed-group" || label=="secretary-disjoint"
+            || label=="secretary-claude" {
             let binding=create_mixed_worktree(&mut db,&root,&owner,&pin,&mut custodian,input).unwrap();
             register_test_tree(&mut db,&root,&owner,"treeA","registerA"); binding
         } else {create_worktree(&mut db,&root,&owner,&pin,&mut custodian,input).unwrap()};
@@ -1863,7 +1888,7 @@ mod tests {
     #[test]
     fn original_secretary_home_is_disjoint_only_with_exact_native_roots() {
         with_real_child("secretary-disjoint",|db,root,_pin,_custodian,_binding,_source,owner| {
-            let secretary_home=add_real_isolated_secretary(db,root);
+            let secretary_home=add_real_isolated_secretary(db,root,"codex");
             let stopped=cleanup_stop_gate(db,root,"treeA").unwrap();
             assert_eq!(stopped.len(),1,"original overlapping project H still needs its StopFact");
             assert_eq!(stopped[0].process_operation_id,"processA");
@@ -1887,6 +1912,24 @@ mod tests {
             assert!(matches!(cleanup_stop_gate(db,root,"treeA"),Err(error)
                 if matches!(error.without_context(),WorktreeError::Denied)),
                 "no original cleanup receipt and absence cannot qualify a historical home");
+        });
+    }
+
+    #[test]
+    fn original_claude_secretary_uses_registered_provider_roots() {
+        with_real_child("secretary-claude",|db,root,_pin,_custodian,_binding,_source,_owner| {
+            let secretary_home=add_real_isolated_secretary(db,root,"claude");
+            let stopped=cleanup_stop_gate(db,root,"treeA").unwrap();
+            assert_eq!(stopped.len(),1,"project H still requires its original StopFact");
+            let mut alias=resolve_id(db,root,"treeA").unwrap();
+            alias.path=secretary_home.path;
+            alias.identity=secretary_home.identity.clone();
+            alias.pointer_identity=secretary_home.identity;
+            let h=SecretaryH {domain:"global",session:"secretarySession",instance:"secretaryInstance",
+                seat:"secretarySeat",incarnation:"secretaryIncarnation",generation:"1",
+                home:"secretaryHome",binding:"secretaryBinding",process:"secretaryProcess"};
+            assert!(matches!(secretary_roots_disjoint(db,root,&alias,h),Err(error)
+                if format!("{error:?}").contains("cleanup.secretary_root_overlap")));
         });
     }
 
