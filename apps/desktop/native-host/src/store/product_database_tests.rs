@@ -166,6 +166,67 @@ fn user_manual_global_repin_refuses_observation_and_preserves_original_instance(
         std::fs::remove_file(old_path).unwrap(); remove_instance_home(root);
     });
 }
+
+#[test]
+fn historical_applied_manual_repin_replays_before_global_discovery_and_rejects_changed_bytes() {
+    fixture(|root, product| {
+        // Build a historical APPLIED row through the existing registry writer.
+        // These two owned files are synthetic program pins, not a new global
+        // discovery path or a managed-upgrade success claim.
+        let old_path = root.canonical_root().canonical_path.join("old-cli.fixture");
+        let new_path = root.canonical_root().canonical_path.join("new-cli.fixture");
+        std::fs::write(&old_path, b"synthetic old registered program").unwrap();
+        std::fs::write(&new_path, b"synthetic historical repinned program").unwrap();
+        let old = instance::ProgramObservation::observe(&old_path, "0.149.0").unwrap();
+        let new = instance::ProgramObservation::observe(&new_path, "0.160.0").unwrap();
+        let registration = register_request();
+        instance::register_instance(&mut product.connection, root, &instance::Registration {
+            request_id: &registration.request_id, request_bytes: &registration.raw_bytes,
+            instance_id: "instanceA", driver_id: "codex", program: &old,
+        }).unwrap();
+        let request = instance_request("repin-after-manual-upgrade", "historicalRepin", "instanceA", "1");
+        let applied = instance::repin_program(&mut product.connection, root, &product.owner,
+            &instance::ProgramRepin { request_id: &request.request_id,
+                request_bytes: &request.raw_bytes, instance_id: "instanceA", expected_revision: 1 },
+            &new).unwrap();
+        assert!(matches!(applied.disposition, instance::RegistrationDisposition::Applied));
+        assert_eq!(applied.revision, 2);
+        let home = root.canonical_root().canonical_path.join("v37-instances").join("instanceA");
+        let sentinel = home.join("historical-replay-preserved.fixture");
+        std::fs::write(&sentinel, b"synthetic original home bytes").unwrap();
+        let revision = scalar(product, "SELECT revision FROM main.gogoke_v37_instances WHERE instance_id='instanceA'");
+        let digest = scalar(product, "SELECT program_digest FROM main.gogoke_v37_instances WHERE instance_id='instanceA'");
+        let version = scalar(product, "SELECT version FROM main.gogoke_v37_instances WHERE instance_id='instanceA'");
+        let home_identity = scalar(product, "SELECT home_identity FROM main.gogoke_v37_instances WHERE instance_id='instanceA'");
+        let historical_request = scalar(product, "SELECT request_hex FROM main.gogoke_v37_instance_operations WHERE request_id='historicalRepin'");
+        let historical_receipt = scalar(product, "SELECT receipt_json FROM main.gogoke_v37_instance_operations WHERE request_id='historicalRepin'");
+        assert_eq!(scalar(product, "SELECT phase FROM main.gogoke_v37_instance_operations WHERE request_id='historicalRepin'"), "APPLIED");
+        let replay_raw = product.dispatch_user_request(&request).unwrap();
+        let replay = decode_receipt(&replay_raw).unwrap();
+        assert_eq!((replay.status, replay.previous_revision, replay.revision),
+            (V37Status::Replayed, 1, 2), "original historical replay: {}", String::from_utf8_lossy(&replay_raw));
+        let replay_text = String::from_utf8(replay_raw).unwrap();
+        assert!(replay_text.contains(&digest) && replay_text.contains(&version), "{replay_text}");
+        let mut changed_raw = request.raw_bytes.clone();
+        changed_raw.push(b'\n');
+        let changed = decode_request(&changed_raw).unwrap();
+        let conflict_raw = product.dispatch_user_request(&changed).unwrap();
+        let conflict = decode_receipt(&conflict_raw).unwrap();
+        assert_eq!((conflict.status, conflict.previous_revision, conflict.revision),
+            (V37Status::Conflict, 2, 2), "changed original request: {}", String::from_utf8_lossy(&conflict_raw));
+        assert_eq!(scalar(product, "SELECT revision FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), revision);
+        assert_eq!(scalar(product, "SELECT program_digest FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), digest);
+        assert_eq!(scalar(product, "SELECT version FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), version);
+        assert_eq!(scalar(product, "SELECT home_identity FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), home_identity);
+        assert_eq!(scalar(product, "SELECT request_hex FROM main.gogoke_v37_instance_operations WHERE request_id='historicalRepin'"), historical_request);
+        assert_eq!(scalar(product, "SELECT receipt_json FROM main.gogoke_v37_instance_operations WHERE request_id='historicalRepin'"), historical_receipt);
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"synthetic original home bytes");
+        std::fs::remove_file(old_path).unwrap();
+        std::fs::remove_file(new_path).unwrap();
+        remove_instance_home(root);
+    });
+}
+
 fn spec(product: &ProductDatabase<'_>, permission: &str, depth: u8) -> GrantSpec {
     GrantSpec { principal_id: product.owner.principal_id().into(), seat_id: product.owner.seat_id().into(),
         permission: permission.into(), promotion_kind: "GLOBAL_LESSON".into(),
