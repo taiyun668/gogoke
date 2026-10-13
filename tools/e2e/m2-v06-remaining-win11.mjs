@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ActualProduct, id, readJson, sha256 } from './product-cdp.mjs';
+import { captureProtection, compareProtection, protectionSources, readProtectionSnapshot } from './installed-protection-observation.mjs';
 import { RemainingHostRoot } from './m2-v06-remaining-host.mjs';
 import { readManagedCodexSource, observeManagedCodexInstance,
   checkManagedCodexCapability } from './m2-extra-managed-source.mjs';
@@ -83,6 +84,9 @@ const journal={schema:'gogoke.37.m2-v06-remaining-installed.v1',
   operations:[],sessions:[],launches:[],closes:[],snapshots:{},
   modelAttempts:[],takeoverCards:[],notRun:[],readbacks:[]};
 const product=new ActualProduct(c,journal);
+journal.protectionInstrument=protectionSources();
+journal.driverBytes['installed-protection-observation.mjs']=journal.protectionInstrument.module.sha256;
+journal.driverBytes['installed-protection-fields.json']=journal.protectionInstrument.fieldMap.sha256;
 journal.driverBytes['m2-v06-remaining-win11.mjs']=sha256(path.join(here,'m2-v06-remaining-win11.mjs'));
 journal.driverBytes['m2-v06-remaining-host.mjs']=sha256(path.join(here,'m2-v06-remaining-host.mjs'));
 journal.driverBytes['m2-extra-managed-source.mjs']=sha256(path.join(here,'m2-extra-managed-source.mjs'));
@@ -110,31 +114,19 @@ const runChild=(runtime,args,label)=>{
   check(p.status===0,`${label} exit=${p.status} signal=${p.signal} `+
     `spawnError=${p.error?.stack??p.error??'none'} stderr=${p.stderr??'none'}`);
 };
-const snapshot=phase=>{
-  for(const o of c.observers){
-    const file=path.join(c.evidenceDirectory,`${o.name}-m2-v06-remaining-${phase}.json`);
-    check(!fs.existsSync(file),`Original ${o.name} ${phase} snapshot exists`);
-    runChild(o.runtime,o.args.map(arg=>arg==='{output}'?file:arg),
-      `Original ${o.name} ${phase} observer`);
-    journal.snapshots[`${o.name}-${phase}`]={file:path.basename(file),sha256:sha256(file)};
-    product.save();
-  }
+const snapshot=async phase=>{
+  await captureProtection(c.observers,null,
+    name=>path.join(c.evidenceDirectory,`${name}-m2-v06-remaining-${phase}.json`),
+    (name,ref)=>{journal.snapshots[`${name}-${phase}`]=ref;product.save();});
 };
+const snapshotValue=(name,phase)=>readProtectionSnapshot(c.evidenceDirectory,journal.snapshots[`${name}-${phase}`]);
 const compare=()=>{
-  for(const o of c.observers){
-    const a=journal.snapshots[`${o.name}-before`],b=journal.snapshots[`${o.name}-after`];
-    const ap=path.join(c.evidenceDirectory,a.file),bp=path.join(c.evidenceDirectory,b.file);
-    check(sha256(ap)===a.sha256&&sha256(bp)===b.sha256,'Observer bytes changed');
-    const av=readJson(ap),bv=readJson(bp);
-    for(const field of o.equalFields){
-      check(Object.hasOwn(av,field)&&Object.hasOwn(bv,field),
-        `Original ${o.name}.${field} missing`);
-      assert.deepStrictEqual(av[field],bv[field],
-        `Original ${o.name}.${field} changed`);
-    }
-    if(o.name==='memory')for(const m of [av,bv])
-      check(m.memoryDataUnchangedByRead===true&&m.stage1OutputCount===0&&
-        m.memoryJobCount===0,'Original memory observer incomplete');
+  journal.protectionComparison=compareProtection(c.observers,snapshotValue);
+  check(journal.protectionComparison.allEqual,'Original thirteen protection fields changed');
+  for(const phase of ['before','after']){
+    const m=snapshotValue('memory',phase);
+    check(m.memoryDataUnchangedByRead===true&&m.stage1OutputCount===0&&m.memoryJobCount===0,
+      'Original memory observer incomplete');
   }
 };
 const readback=phase=>{
@@ -177,7 +169,7 @@ async function main(){
   fs.mkdirSync(c.evidenceDirectory);
   product.save();
   try{
-    snapshot('before');
+    await snapshot('before');
     const baseline=readback('baseline'); // product closed; no live SQLite
     check(baseline.parentAbsent===true&&baseline.childAbsent===true&&
       baseline.sourceTemplateMatches===true&&baseline.projectCap>0,
@@ -320,7 +312,7 @@ async function main(){
     'Original closed H/E/F proof or physical identity differs');
     assert.deepStrictEqual(final.rootIdentity,baseline.rootIdentity);
     assert.deepStrictEqual(final.candidateIdentity,baseline.candidateIdentity);
-    snapshot('after');compare();
+    await snapshot('after');compare();
     journal.state='PARTIAL_V06_REMAINING_SLICE_REVIEW_REQUIRED';
     journal.acceptance=false;product.save();
   }catch(error){

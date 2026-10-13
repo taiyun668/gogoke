@@ -5,6 +5,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ActualProduct, readJson, sha256, id } from './product-cdp.mjs';
+import { captureProtection, compareProtection as compareSharedProtection, protectionSources } from './installed-protection-observation.mjs';
 import { readManagedCodexSource, observeManagedCodexInstance, checkManagedCodexSeat,
   checkManagedCodexCapability } from './m2-extra-managed-source.mjs';
 
@@ -255,6 +256,9 @@ if (config.sideChat) {
 }
 
 const product = new ActualProduct(config, journal);
+journal.protectionInstrument = protectionSources();
+journal.driverBytes['installed-protection-observation.mjs'] = journal.protectionInstrument.module.sha256;
+journal.driverBytes['installed-protection-fields.json'] = journal.protectionInstrument.fieldMap.sha256;
 let managedSource;
 const originalOperation = product.operation.bind(product);
 product.operation = async (...args) => {
@@ -291,24 +295,10 @@ function admittedCodexInstance(page, instanceId, phase) {
 }
 
 async function snapshot(phase, names = null) {
-  for (const observer of config.observers.filter(row => names === null || names.includes(row.name))) {
-    const file = `m2-extra-${observer.name}-${phase}-${id('snapshot')}.json`;
-    const output = path.join(evidencePath, file);
-    if (fs.existsSync(output)) throw Error(`Original ${observer.name} ${phase} snapshot exists`);
-    const args = observer.args.map(value => value === '{output}' ? output : value);
-    await new Promise((resolve, reject) => {
-      const child = spawn(observer.runtime, args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
-      let stderr = '';
-      child.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-8192); });
-      child.once('error', reject);
-      child.once('exit', code => code === 0 ? resolve() : reject(Error(`Readonly ${observer.name} ${phase} exit=${code}: ${stderr}`)));
-    });
-    const reference = { file, sha256: sha256(output) };
-    journal.extraSnapshots[`${observer.name}-${phase}`] = reference;
-    product.save();
-  }
+  await captureProtection(config.observers, names,
+    name => path.join(evidencePath, `m2-extra-${name}-${phase}-${id('snapshot')}.json`),
+    (name, reference) => { journal.extraSnapshots[`${name}-${phase}`] = reference; product.save(); });
 }
-
 function snapshotValue(name, phase) {
   const reference = journal.extraSnapshots[`${name}-${phase}`];
   check(reference && path.basename(reference.file) === reference.file, `${name}-${phase}: private snapshot reference`);
@@ -318,15 +308,8 @@ function snapshotValue(name, phase) {
 }
 
 async function compareSnapshots() {
-  for (const observer of config.observers) {
-    const before = snapshotValue(observer.name, 'before');
-    const after = snapshotValue(observer.name, 'after');
-    for (const field of observer.equalFields ?? []) {
-      check(Object.hasOwn(before, field) && Object.hasOwn(after, field) &&
-        JSON.stringify(before[field]) === JSON.stringify(after[field]),
-      `${observer.name}: unchanged ${field}`);
-    }
-  }
+  journal.protectionComparison = compareSharedProtection(config.observers, snapshotValue);
+  check(journal.protectionComparison.allEqual, 'Original thirteen protection fields changed');
   const memory = snapshotValue('memory', 'after');
   check(memory.memoryDataUnchangedByRead && memory.stage1OutputCount === 0 && memory.memoryJobCount === 0,
     'Actual memory store unchanged by measurement and without memory jobs');

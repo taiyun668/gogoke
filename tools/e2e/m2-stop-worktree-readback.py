@@ -9,6 +9,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import installed_native_readback as native
+
 
 def check(value, message):
     if not value:
@@ -45,64 +47,28 @@ def operation(journal, request_id):
 def session_facts(db, journal, case):
     session = case["session"]
     domain, sid = case["domainId"], session["id"]
-    requests = [session[key] for key in ("reserveRequestId", "commitRequestId", "openRequestId",
-                                          "stopRequestId", "releaseRequestId")]
-    records = [operation(journal, request_id) for request_id in requests]
-    for entry in records:
-        req = entry["request"]
-        check(req["family"] == "K-SESSION" and req["domainId"] == domain and req["targetId"] == sid and
-              req["payload"]["generation"] == session["generation"],
-              "H request changed its original domain/session/generation")
-        native = one(db, "SELECT raw_hex,operation,session_id,status,previous_revision,revision "
-                     "FROM gogoke_v37_h_operation WHERE domain_id=? AND request_id=?", (domain, req["requestId"]))
-        check(native["raw_hex"].lower() == entry["rawFrame"].encode().hex() and
-              native["operation"] == req["operation"] and native["session_id"] == sid and
-              native["status"] == "APPLIED" and
-              str(native["revision"]) == entry["receipt"]["revision"],
-              "Original H operation bytes/status/revision differ from the request journal")
-    open_entry = next(item for item in records if item["request"]["requestId"] == session["openRequestId"])
-    stop_entry = next(item for item in records if item["request"]["requestId"] == session["stopRequestId"])
-    release_entry = next(item for item in records if item["request"]["requestId"] == session["releaseRequestId"])
-    check(open_entry["request"]["operation"] == "open" and
-          open_entry["request"]["payload"]["seatId"] == case["seatId"] and
-          open_entry["request"]["payload"]["repositoryId"] == case["repositoryId"] and
-          open_entry["request"]["payload"]["worktreeId"] == case["worktreeId"] and
-          stop_entry["receipt"]["result"]["stopFact"] == session["stopFactId"] and session["stopFactId"],
-          "Original open or stop receipt does not bind the exact test F tree/StopFact")
     registration = one(db, "SELECT domain_id,seat_id,purpose,COALESCE(side_id,'') AS side_id "
                        "FROM v37_ledger_session WHERE domain_id=? AND session_id=?", (domain, sid))
     check(registration["seat_id"] == case["seatId"] and registration["purpose"] == "WORK" and
           registration["side_id"] == "", "Original A session registration differs")
-    claim = one(db, "SELECT generation,state,revision,process_operation_id,stop_fact_id "
-                  "FROM gogoke_v37_h_claim WHERE domain_id=? AND session_id=?", (domain, sid))
-    binding = one(db, "SELECT seat_id,seat_incarnation,generation FROM gogoke_v37_h_seat_binding "
-                    "WHERE domain_id=? AND session_id=?", (domain, sid))
-    episode = one(db, "SELECT request_id,generation,process_operation_id,phase,stop_fact_id,stop_request_id,"
-                     "raw_hex,seat_id,seat_incarnation,instance_id FROM gogoke_v37_h_process_episode "
-                     "WHERE domain_id=? AND session_id=?", (domain, sid))
-    custody = one(db, "SELECT domain_id,generation,state,stop_proof_hash FROM gogoke_coordination_process_custody "
-                    "WHERE operation_id=?", (episode["process_operation_id"],))
-    check(claim["generation"] == binding["generation"] == episode["generation"] == session["generation"] and
-          claim["state"] == "RELEASED" and claim["process_operation_id"] == episode["process_operation_id"] and
-          claim["stop_fact_id"] == episode["stop_fact_id"] == custody["stop_proof_hash"] == session["stopFactId"] and
-          binding["seat_id"] == episode["seat_id"] == case["seatId"] and
-          binding["seat_incarnation"] == episode["seat_incarnation"] and
-          episode["instance_id"] == case["instanceId"] and episode["phase"] == custody["state"] == "STOPPED" and
-          episode["stop_request_id"] == session["stopRequestId"] and
-          bytes.fromhex(episode["raw_hex"]).decode() == open_entry["rawFrame"] and
-          custody["domain_id"] == domain and custody["generation"] == session["generation"],
-          "Original H stop/claim/episode/seat binding/ProcessCustody StopFact chain differs")
-    opens = []
-    for row in rows(db, "SELECT domain_id,session_id,raw_hex FROM gogoke_v37_h_operation WHERE operation='open'"):
-        request = json.loads(bytes.fromhex(row["raw_hex"]))
-        if request.get("payload", {}).get("worktreeId") == case["worktreeId"]:
-            opens.append((row["domain_id"], row["session_id"]))
-    check(opens == [(domain, sid)], "The configured exclusive F tree has another original H open episode")
-    return {"sessionId": sid, "generation": session["generation"], "seatId": case["seatId"],
-            "instanceId": case["instanceId"], "processOperationId": episode["process_operation_id"],
-            "stopFactId": episode["stop_fact_id"], "claimState": claim["state"],
-            "episodePhase": episode["phase"], "custodyState": custody["state"],
-            "hRequestIds": requests, "hOpenCountForTree": len(opens)}
+    seat = one(db, "SELECT incarnation FROM gogoke_v37_seats WHERE domain_id=? AND seat_id=?",
+               (domain, case["seatId"]))
+    claim = one(db, "SELECT process_operation_id FROM gogoke_v37_h_claim "
+                "WHERE domain_id=? AND session_id=?", (domain, sid))
+    request_ids = {"admission-reserve": session["reserveRequestId"],
+                   "admission-commit": session["commitRequestId"],
+                   "open": session["openRequestId"], "stop": session["stopRequestId"],
+                   "admission-release": session["releaseRequestId"]}
+    facts = native.verify_original_h_stop(
+        db, journal=journal, domain=domain, session_id=sid,
+        generation=session["generation"], request_ids=request_ids,
+        tree_id=case["worktreeId"], repository_id=case["repositoryId"],
+        seat_id=case["seatId"], seat_incarnation=seat["incarnation"],
+        instance_id=case["instanceId"], process_operation_id=claim["process_operation_id"],
+        stop_fact_id=session["stopFactId"], binding_mode="native_v2")
+    return {**facts, "seatId": case["seatId"], "instanceId": case["instanceId"],
+            "nativeBinding": facts["bindingEvidence"]["binding"],
+            "nativeSelection": facts["bindingEvidence"]["selection"]}
 
 
 def worktree_facts(db, journal, case, phase):
@@ -114,10 +80,8 @@ def worktree_facts(db, journal, case, phase):
           (case["repositoryId"], case["domainId"], case["seatId"], case["instanceId"], "REGISTERED"),
           "Original F registered tree identity differs")
     root = Path(case["stateRoot"]).resolve(strict=True)
-    worktree_path = Path(row["worktree_path"]).resolve(strict=False)
-    worktree_parent = (root / "v37-worktrees").resolve(strict=True)
-    check(worktree_path != worktree_parent and worktree_parent in worktree_path.parents,
-          "Original F physical path is outside the product-owned worktree root")
+    worktree_path = native.contained_physical(root / "v37-worktrees", row["worktree_path"],
+                                              child_must_exist=phase == "stopped")
     exists = worktree_path.is_dir() and not worktree_path.is_symlink()
     stop = session_facts(db, journal, case)
     lifecycle = rows(db, "SELECT state,revision,COALESCE(stop_fact_id,'') AS stop_fact_id "
@@ -225,9 +189,7 @@ def main():
         return {item.name: {"length": item.stat().st_size, "sha256": digest(item.read_bytes())}
                 for item in (database, wal, shm) if item.exists()}
     before = files()
-    with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db:
-        db.row_factory = sqlite3.Row
-        db.execute("PRAGMA query_only=ON")
+    with native.closed_database(root) as (db, native_report):
         worktree = worktree_facts(db, journal, case, sys.argv[4])
     after = files()
     check(before == after and (not wal.exists() or wal.stat().st_size == 0),
@@ -247,6 +209,7 @@ def main():
              "launch": {"pid": launch["pid"], "sourceCommit": launch["sourceCommit"]},
              "normalClose": {"pid": close["pid"], "exitCode": close["exitCode"], "forceKill": close["forceKill"]},
              "databaseSha256": digest(database.read_bytes()), "filesBefore": before, "filesAfter": after,
+              "nativeReadback": native_report,
              "measurementPreservedDatabaseBytes": before == after, "acceptance": False,
              "stopFactId": worktree["stopFactId"], "stopOnlyEvidence": sys.argv[4] == "stopped",
              "cleanupApplied": sys.argv[4] == "final", "directCaseEvidence": sys.argv[4] == "final",

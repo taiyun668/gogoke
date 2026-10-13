@@ -23,6 +23,28 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: Verify plan manifest against committed bytes with trusted main verifier
+        run: |
+          git fetch --no-tags --depth=1 origin main:refs/remotes/origin/main
+          python - <<'PY'
+          import os
+          import pathlib
+          import subprocess
+          import sys
+          import tempfile
+
+          prefix = 'docs/design/gogoke-37-plan-v1/'
+          with tempfile.TemporaryDirectory(prefix='gogoke-plan-', dir=os.environ['RUNNER_TEMP']) as temporary:
+              root = pathlib.Path(temporary)
+              canonical = root / 'plan'
+              canonical.mkdir()
+              for name in ('PLAN.json', 'PLAN.md', 'MANIFEST.json', 'verify_plan.py'):
+                  raw = subprocess.check_output(['git', 'show', 'HEAD:' + prefix + name])
+                  (canonical / name).write_bytes(raw)
+              trusted = root / 'trusted-main-verify-plan.py'
+              trusted.write_bytes(subprocess.check_output(['git', 'show', 'origin/main:' + prefix + 'verify_plan.py']))
+              subprocess.run([sys.executable, str(trusted), '--root', str(canonical), '--manifest', '--self-test'], check=True)
+          PY
       - name: Positive control and scanner tests
         run: |
           python tools/check-public-source.py --self-test --control-only

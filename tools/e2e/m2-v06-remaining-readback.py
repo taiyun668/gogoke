@@ -5,6 +5,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import installed_native_readback as native
+
 def check(ok, why):
     if not ok:
         raise RuntimeError(why)
@@ -295,29 +297,27 @@ def h_stop_release(db,j,s):
           stop["receipt"]["result"]["stopFact"]==s["stopFact"] and
           release["request"]["expectedRevision"]==stop["receipt"]["revision"],
           "Original same-session H StopFact/release receipts differ")
-    operations=[one(db,"SELECT operation,status,revision FROM gogoke_v37_h_operation "
-                       "WHERE domain_id=? AND request_id=?",
-                    (f["domainId"],request_id))
-                for request_id in (s["stopRequestId"],s["releaseRequestId"])]
-    check([r["operation"] for r in operations]==["stop","admission-release"] and
-          all(r["status"]=="APPLIED" for r in operations),
-          "Original H durable stop/release operations differ")
-    claim=one(db,"SELECT state,process_operation_id,stop_fact_id FROM gogoke_v37_h_claim "
-                 "WHERE domain_id=? AND session_id=?",(f["domainId"],s["id"]))
-    episode=one(db,"SELECT phase,stop_fact_id FROM gogoke_v37_h_process_episode "
-                   "WHERE domain_id=? AND session_id=? AND process_operation_id=?",
-                (f["domainId"],s["id"],claim["process_operation_id"]))
-    custody=one(db,"SELECT state,stop_proof_hash FROM gogoke_coordination_process_custody "
-                   "WHERE operation_id=?",(claim["process_operation_id"],))
-    check(claim["state"]=="RELEASED" and
-          episode["phase"]==custody["state"]=="STOPPED" and
-          s["stopFact"]==stop["receipt"]["result"]["stopFact"]==
-            claim["stop_fact_id"]==episode["stop_fact_id"]==
-            custody["stop_proof_hash"] and
-          s["processOperationId"]==claim["process_operation_id"],
-          "Original physical H episode is not stopped and released")
+    names=("admission-reserve","admission-commit","open","stop","admission-release")
+    ids={}
+    for name in names:
+        matches=[entry for entry in j["operations"] if entry.get("request",{}).get("family")=="K-SESSION"
+                 and entry["request"].get("targetId")==s["id"] and entry["request"].get("operation")==name]
+        check(len(matches)==1,"One original H operation per admission/open/stop/release required")
+        ids[name]=matches[0]["request"]["requestId"]
+    check(ids["open"]==s["openRequestId"] and ids["stop"]==s["stopRequestId"] and
+          ids["admission-release"]==s["releaseRequestId"],
+          "Original H request IDs differ")
+    seat=one(db,"SELECT incarnation FROM gogoke_v37_seats WHERE domain_id=? AND seat_id=?",
+             (f["domainId"],s["seatId"]))
+    facts=native.verify_original_h_stop(
+        db,journal=j,domain=f["domainId"],session_id=s["id"],generation=s["generation"],
+        request_ids=ids,tree_id=s["worktreeId"],repository_id=j["repositoryId"],
+        seat_id=s["seatId"],seat_incarnation=seat["incarnation"],
+        instance_id=f["instanceId"],process_operation_id=s["processOperationId"],
+        stop_fact_id=s["stopFact"],binding_mode="native_v2")
     return {"sessionId":s["id"],"stopRequestId":s["stopRequestId"],
-            "releaseRequestId":s["releaseRequestId"],"stopFact":s["stopFact"]}
+            "releaseRequestId":s["releaseRequestId"],"stopFact":s["stopFact"],
+            "nativeStop":facts}
 
 def main():
     supplementary=(len(sys.argv)==7 and sys.argv[4]=="final" and
@@ -359,9 +359,7 @@ def main():
     check(database.is_file() and (not wal.exists() or wal.stat().st_size==0),
           "Normal closed state.sqlite and absent/zero WAL required")
     before=digest(database.read_bytes())
-    with sqlite3.connect(database.as_uri()+"?mode=ro&immutable=1",uri=True) as db:
-        db.row_factory=sqlite3.Row
-        db.execute("PRAGMA query_only=ON")
+    with native.closed_database(root) as (db,native_report):
         source=one(db,"SELECT repository_id,remote_kind,baseline_commit FROM gogoke_v37_worktree_sources "
                       "WHERE repository_id=?",(j["repositoryId"],))
         template=one(db,"SELECT settings_json,revision FROM gogoke_v37_seat_templates "
@@ -685,7 +683,8 @@ def main():
            "state":("SUPPLEMENTARY_PARTIAL_V06_ORIGINAL_FAIL_RETAINED" if supplementary
                     else "PARTIAL_DIRECT_V06_REVIEW_REQUIRED" if phase=="final" else "BASELINE"),
            "acceptance":False,"databaseWrites":False,"credentialReads":False,
-           "measurementPreservedDatabaseBytes":True,"databaseSha256":before,
+            "measurementPreservedDatabaseBytes":True,"databaseSha256":before,
+            "nativeReadback":native_report,
            "rootIdentity":root_id,"candidateIdentity":candidate,**facts}
     output.write_text(json.dumps(proof,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
     print(json.dumps({"phase":phase,"acceptance":False,

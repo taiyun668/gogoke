@@ -1,0 +1,5 @@
+{
+  "formal": ["formal", "registeredFormal", "formalData", "formalRegistry", "shortcuts"],
+  "memory": ["dataAfter", "stage1OutputCount", "memoryJobCount", "memoryDirectoryPresent", "databasePresent"],
+  "ledger": ["epoch", "rootIdentity", "measurementPreservedDatabaseBytes"]
+}
