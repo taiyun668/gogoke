@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       focused_library:
-        description: Affected checks only (seat-scope, policy-unset-stage, ledger-scope, native-takeover, pipe-evidence, grok-permission, claude-holder, claude-initialize, claude-second-init, m2-provider-current, codex-empty-persist, holder-completed-group, managed-first-copy, managed-source-only, service-transport, secretary-configuration, opencode-alias, opencode-pipe, model-options or f2-worktree); all full and formal gates are NOT_RUN
+        description: Affected checks only (seat-scope, policy-unset-stage, ledger-scope, native-takeover, pipe-evidence, grok-permission, claude-holder, claude-initialize, claude-second-init, m2-provider-current, codex-empty-persist, holder-completed-group, managed-first-copy, managed-source-only, service-transport, secretary-configuration, opencode-alias, opencode-pipe, model-options, f2-worktree or f2-seat-page); all full and formal gates are NOT_RUN
         type: string
         default: ""
       secretary_routine_fixture_only:
@@ -173,6 +173,8 @@ jobs:
               'store::seat::tests::e2_gate_rejection_stops_stage_and_reserves_one_escalation',
               'store::product_database::v37_seat::tests::owner_policy_metadata_ingress_preserves_unset_and_original_stage_conflicts') }
             'f2-worktree' { @('store::worktree::f2::tests') }
+            'f2-seat-page' { @('store::worktree::f2::tests',
+              'store::product_database::v37_seat::tests::owner_configuration_and_user_seat_share_the_verified_product_store') }
             'ledger-scope' { @('work_source_cannot_mint_a_secretary_global_reader',
               'native_user_ledger_scopes_replay_and_subscription_survive_reopen') }
             'model-options' { @('store::instance::management::original_model_efforts_follow_the_cached_source_and_current_pin',
