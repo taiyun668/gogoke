@@ -69,6 +69,25 @@ describe("projectSideChats", () => {
     expect(projectSideChats(facts({ host: undefined }), seats()).chats[0].problem).toEqual({ kind: "unavailable" });
   });
 
+  it("does not offer an unbound seat as a side-chat target or call its existing chat removed", () => {
+    const page = seats();
+    page.seats.push({
+      id: "unbound", name: "未绑定施工", layer: "direct", term: "long", state: "IDLE", instance: null,
+      allowed: { tune: true, changeInstance: false, remove: false },
+      model: "Opus 5.5", effort: "高", permission: "只读",
+    });
+
+    const projected = projectSideChats(facts({ seatId: "unbound" }), page);
+
+    expect(projected.seats).toEqual([
+      { id: "audit", name: "审计", defaultInstanceId: "inst-c", permission: "只读" },
+    ]);
+    expect(projected.instances).toEqual([{ ...claude, models: ["Opus 5.5"] }]);
+    expect(projected.knownInstances).toEqual([]);
+    expect(projected.chats[0].problem).toBeUndefined();
+    expect(projected.chats[0].instanceId).toBe("inst-c");
+  });
+
   it("never takes the seat's current instance as the chat's own binding", () => {
     expect(projectSideChats(facts({ host: undefined }), seats()).chats[0].instanceId).toBe("");
     expect(projectSideChats(facts(), null).seatsKnown).toBe(false);
