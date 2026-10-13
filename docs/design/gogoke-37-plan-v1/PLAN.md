@@ -488,3 +488,13 @@ F.2 已要求显式升级、退回、自检、查更新和零实例卸载；原 
 不新增数据库/issuer accessor、模型进程、调度器、权限、全局 npm/PATH 发现、自动升级、凭据读取或 Owner 登录步骤。`product_database.rs` 的 E.3 组合授权及其他 helper 不扩大；F 写域、需求、阶段、契约写方、不变量和 Owner 触点保持。本次仅增加一个 shared path，同 PR 更新范围摘要、v2 回执、MANIFEST 和三处固定回执 blob；Owner 合并且 Controller 精确读回前，不施工该路径。
 
 参照已合并的 PR #88 单路径修订和当前 F.2；T00 轻核对以 main `a8ce38c2` 为准，main 尚无该路径，施工树现有 dispatcher blob `f4998aced71a52b9652f7e043c5f55b945824529` 只作静态定位来源。该提案没有产品改动，不宣称生命周期、真机或里程碑通过。
+
+## 2026-10-13：原宿主错误返回仍执行既有 H 停止（Integrator 同范围 detail）
+
+原生 desktop event loop 目前用 run_desktop(...)? 提前返回；一次原 USER 身份拒绝或原 transport 错误会跳过已经接入的 Secretary H stop 和 checked close。内部 ready 请求排队时原 shell 先退出，是该缺陷的一条可达路径；这条静态路径不能冒充已取得原现场 native stderr 或第三次正常退出。
+
+H 发起，Integrator 只在既有 apps/desktop/native-host/src/main.rs 接线：先保留原 event-loop 结果，无论成功或错误都在原 ProductDatabase 权威线程执行已有 stop_secretary_before_close 和 close_checked，再返回原结果。原 event-loop 错误为主，停止与闭库的原错误一并保留；不把拒绝改为成功。继续使用原 H 的物理 StopFact、代际、预算和 Secretary 不 release 语义，不新增进程、线程、writer、权限、调度器、resume cancellation、重放或关窗延迟。F.2、G、E.3 依赖线已通知。
+
+不新增共享路径或条件、不改变持久写方、requirements、invariants、Owner 决定和触点。可信校验器重算摘要须与现有 v2 回执相同；按 authorization 的 detail amendment 规则，独立审计通过后由 Controller 合并并精确读回，不新增回执或 Owner merge。原失败仍 UNKNOWN，不凭进程缺席补 STOPPED；原生错误路径、原 H 停止与有效 production mutation 走云检，新装候选使用共用 READY/EXIT/StopFact/十三项仪器重新跑真实快速关窗，未执行不得记通过。
+
+参照：现有 main 的正常结束接线、H stop_secretary_before_close、K-SESSION 原 StopFact/no-release、User 私管道同步回执与既有 origin 拒绝；采用原机制，仅修错误提前返回的实现遗漏。
