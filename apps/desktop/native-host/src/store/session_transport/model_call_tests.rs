@@ -311,7 +311,7 @@ fn sealed_call_rechecks_current_h_claim_source_and_actual_native_stop() {
     });
 }
 
-const PARENT_SCOPE: &str = r#"{"model":"m","effort":"high","permissionTier":"READ_ONLY","orchestrationScope":{"instanceIds":["instanceA"],"models":["m"],"reasoningEfforts":["high"],"maxPermissionTier":"READ_ONLY"},"takeoverQuestions":[{"id":"q","prompt":"What is the authorized scope?"}]}"#;
+const PARENT_SCOPE: &str = r#"{"model":"m","effort":"high","permissionTier":"READ_ONLY","orchestrationScope":{"instanceIds":["instanceA"],"maxConcurrent":1,"models":["m"],"reasoningEfforts":["high"],"maxPermissionTier":"READ_ONLY"},"takeoverQuestions":[{"id":"q","prompt":"What is the authorized scope?"}]}"#;
 const CHILD_SETTINGS: &str = r#"{"model":"m","effort":"high","permissionTier":"READ_ONLY"}"#;
 
 fn install_settings(db: &mut VerifiedDatabaseConnection<'_>, seat_id: &str, settings: &str) {
