@@ -22,7 +22,7 @@ fn fixture(run: impl FnOnce(&mut VerifiedDatabaseConnection<'_>, &OwnerIssuer)) 
     db.execute("INSERT INTO gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('instanceA','codex','syntheticHome','syntheticIdentity','sha256:synthetic','1','INSTALLED','LOGGED_IN',1)").unwrap();
     store_template(&mut db, NativeOrigin::user(&owner), StoreTemplate {
         domain_id: "projectA", template_id: "templateA",
-        settings_json: br#"{"instruction":"default","model":"modelA","orchestrationScope":{"instanceIds":["instanceA"],"maxPermissionTier":"NETWORKED_WRITE","models":["modelA"],"reasoningEfforts":["high"]},"permissionTier":"NETWORKED_WRITE","reasoningEffort":"high"}"#,
+        settings_json: br#"{"instruction":"default","model":"modelA","orchestrationScope":{"instanceIds":["instanceA"],"maxConcurrent":1,"maxPermissionTier":"NETWORKED_WRITE","models":["modelA"],"reasoningEfforts":["high"]},"permissionTier":"NETWORKED_WRITE","reasoningEffort":"high"}"#,
     }).unwrap();
     for id in ["source", "reviewer", "destination"] {
         let raw = format!("{{\"operation\":\"create-from-template\",\"seatId\":\"{id}\"}}");
