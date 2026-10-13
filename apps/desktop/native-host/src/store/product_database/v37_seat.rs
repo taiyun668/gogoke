@@ -888,6 +888,12 @@ impl<'root> ProductDatabase<'root> {
             let historical_reference;
             let reference = match refs.get(&seat.instance_id) {
                 Some(reference) => reference,
+                None if seat.instance_id.is_empty() => {
+                    // Creation and binding are separate native operations.
+                    // Preserve the real unbound seat without inventing a choice.
+                    historical_reference = Json::Null.canonical();
+                    &historical_reference
+                },
                 None if seat.state == State::Reclaimed && !seat.instance_id.is_empty() => {
                     // Instance tombstones retain registry/profile history.
                     // A removed seat must remain readable after its unused
@@ -2548,6 +2554,26 @@ mod tests {
                 r#"{"layer":"USER","templateId":"templateA"}"#);
             assert_eq!(status(product, &create), V37Status::Applied);
             assert_eq!(status(product, &create), V37Status::Replayed);
+            seat::refresh_host_parallel_fact_in_transaction(&product.connection).unwrap();
+            let page = br#"{"schema":"gogoke.37.owner-configuration.v1","command":"seats-page-read","domainId":"projectA"}"#;
+            let unbound = String::from_utf8(config(product, std::str::from_utf8(page).unwrap())).unwrap();
+            let Json::Object(unbound) = Parser::parse(&unbound).unwrap() else { panic!("seat page object"); };
+            let Some(Json::Array(rows)) = unbound.get(&key("seats")) else { panic!("seat rows"); };
+            assert_eq!(rows.len(), 1);
+            let Json::Object(row) = &rows[0] else { panic!("seat row"); };
+            assert!(matches!(row.get(&key("instance")), Some(Json::Null)));
+            assert_eq!(row.get(&key("id")).unwrap().canonical(), "\"seatA\"");
+            assert_eq!(row.get(&key("state")).unwrap().canonical(), "\"IDLE\"");
+            assert_eq!(row.get(&key("_revision")).unwrap().canonical(), "\"1\"");
+            let Some(Json::Object(allowed)) = row.get(&key("allowed")) else { panic!("seat actions"); };
+            assert!(matches!(allowed.get(&key("tune")), Some(Json::Bool(true))));
+            assert!(matches!(allowed.get(&key("changeInstance")), Some(Json::Bool(false))));
+            // A registry login flag without the original current observation
+            // must not become a selectable instance, even for an unbound seat.
+            assert!(matches!(unbound.get(&key("instances")), Some(Json::Array(values)) if values.is_empty()));
+            let unchanged = seat::get(&product.connection, "projectA", "seatA").unwrap().unwrap();
+            assert!(unchanged.instance_id.is_empty());
+            assert_eq!(unchanged.revision, 1);
             let grant=r#"{"schema":"gogoke.37.owner-configuration.v1","command":"policy-call-grant","domainId":"projectA","requestId":"grantA","callerSeatId":"seatA","targetId":"OWNER","action":"MESSAGE","expiresAtMs":null,"expectedRevision":"1"}"#;
             assert!(String::from_utf8(config(product,grant)).unwrap().contains("\"revision\":\"2\""));
             assert!(String::from_utf8(config(product,grant)).unwrap().contains("\"REPLAYED\""));
@@ -2567,6 +2593,13 @@ mod tests {
             assert_eq!(status(product, &card), V37Status::Stale);
             assert_eq!(status(product, &request("bind-instance", "bindA", "seatA", 2,
                 r#"{"instanceId":"instanceA"}"#)), V37Status::Applied);
+            let bound = String::from_utf8(config(product, std::str::from_utf8(page).unwrap())).unwrap();
+            let Json::Object(bound) = Parser::parse(&bound).unwrap() else { panic!("bound page object"); };
+            let Some(Json::Array(rows)) = bound.get(&key("seats")) else { panic!("bound rows"); };
+            let Json::Object(row) = &rows[0] else { panic!("bound row"); };
+            let Some(Json::Object(reference)) = row.get(&key("instance")) else { panic!("bound instance"); };
+            assert_eq!(reference.get(&key("id")).unwrap().canonical(), "\"instanceA\"");
+            assert!(matches!(bound.get(&key("instances")), Some(Json::Array(values)) if values.is_empty()));
             assert_eq!(status(product, &request("change-instance", "changeBusy", "seatA", 1,
                 r#"{"instanceId":"instanceA","model":"modelA","effort":"high","permissionTier":"READ_ONLY"}"#)), V37Status::Stale);
             assert_eq!(status(product, &request("change-instance", "incompleteChange", "seatA", 3,

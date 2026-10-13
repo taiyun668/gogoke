@@ -1318,7 +1318,7 @@ export async function setDesign37ProjectInitialStage(domainId: string, stage: st
 type NativeSeatPageRow = {
   id: string;
   isLead?: boolean;
-  instance: { id: string };
+  instance: { id: string } | null;
   allowed: { tune: boolean; changeInstance: boolean; remove: boolean };
   _revision: string;
   _incarnation: string;
@@ -1355,7 +1355,10 @@ export function createDesign37SeatsSource<Page>(domainId: string | null) {
   const tune = async (id: string, input: NativeSeatTune): Promise<void> => {
     let row = await current(id);
     if (!row.allowed.tune) throw new Error("Native host currently refuses tuning this seat.");
-    const changingInstance = input.instanceId !== row.instance.id;
+    if (!row.instance && (input.instanceId !== "" || input.model !== undefined)) {
+      throw new Error("This seat has no bound instance; instance and model changes are unavailable.");
+    }
+    const changingInstance = input.instanceId !== (row.instance?.id ?? "");
     if (changingInstance && !row.allowed.changeInstance) {
       throw new Error("Native host currently refuses changing this instance.");
     }
