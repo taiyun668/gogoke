@@ -359,7 +359,7 @@
    },
    {
     "path": "apps/desktop/native-host/src/main.rs",
-    "extension": "startup wiring of new host services",
+    "extension": "startup wiring of new host services; H integration detail: on an error from the existing desktop event loop, still run the already-wired Secretary H stop and checked database close on the same authority thread before returning the original error. Preserve origin denial, original H StopFact and no-release semantics, current budgets, and original shutdown/close errors; no new process, writer, scheduler, permission, replay, or resume cancellation.",
     "serves": [
      "H",
      "A",
