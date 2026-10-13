@@ -298,12 +298,15 @@ pub(crate) struct ExactStopFact {
     pub(crate) generation: String,
 }
 
-fn original_session_worktree(db: &VerifiedDatabaseConnection<'_>, domain: &str,
-    session: &str) -> Result<Option<String>> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum OriginalOpen { Missing, Project(String), SecretaryWithoutProject }
+
+fn original_session_open(db: &VerifiedDatabaseConnection<'_>, domain: &str,
+    session: &str) -> Result<OriginalOpen> {
     let rows=Statement::prepare(db.as_ptr(),
-        "SELECT raw_hex FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND session_id=?2 AND operation='open'")?;
+        "SELECT raw_hex,status FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND session_id=?2 AND operation='open'")?;
     rows.bind_text(1,domain)?; rows.bind_text(2,session)?;
-    let mut found: Option<String>=None;
+    let mut found=OriginalOpen::Missing;
     while rows.step_row()? {
         let raw=rows.column_text(0)?;
         if raw.len()%2!=0 || raw.len()>131_072 { return Err(WorktreeError::Denied); }
@@ -318,17 +321,36 @@ fn original_session_worktree(db: &VerifiedDatabaseConnection<'_>, domain: &str,
             request.domain_id!=domain || request.target_id!=session {
             return Err(WorktreeError::Denied);
         }
+        if domain=="global" && request.payload.is_empty() {
+            if rows.column_text(1)? != "APPLIED" || found!=OriginalOpen::Missing {
+                return Err(WorktreeError::Denied);
+            }
+            found=OriginalOpen::SecretaryWithoutProject;
+            continue;
+        }
         let target=match request.payload.get(&JsonString::from_str("worktreeId")) {
             Some(Json::String(value))=>value.to_well_formed_string()
                 .ok_or(WorktreeError::Denied)?,
             _=>return Err(WorktreeError::Denied),
         };
-        if !atom(&target) || found.as_ref().is_some_and(|old| old!=&target) {
+        let consistent=match &found {
+            OriginalOpen::Missing=>true, OriginalOpen::Project(old)=>old==&target,
+            OriginalOpen::SecretaryWithoutProject=>false,
+        };
+        if !atom(&target) || !consistent {
             return Err(WorktreeError::Denied);
         }
-        found=Some(target);
+        found=OriginalOpen::Project(target);
     }
     Ok(found)
+}
+
+fn original_session_worktree(db: &VerifiedDatabaseConnection<'_>, domain: &str,
+    session: &str) -> Result<Option<String>> {
+    match original_session_open(db,domain,session)? {
+        OriginalOpen::Missing=>Ok(None), OriginalOpen::Project(target)=>Ok(Some(target)),
+        OriginalOpen::SecretaryWithoutProject=>Err(WorktreeError::Denied),
+    }
 }
 
 /// H grants every member of its original primary's native MIXED space. Those
@@ -379,6 +401,89 @@ fn sealed_roots_overlap(target: &ResolvedBinding, other: &ResolvedBinding) -> bo
         &other.path, &other.identity, &other.pointer_identity)
 }
 
+struct SecretaryH<'a> {
+    domain: &'a str, session: &'a str, instance: &'a str,
+    seat: &'a str, incarnation: &'a str, generation: &'a str,
+    home: &'a str, binding: &'a str, process: &'a str,
+}
+
+/// An original Secretary H has no project worktree grant. Prove each actual
+/// generation's own native SESSION and Codex model roots before deciding that
+/// its reservation or process could not hold this F directory. Missing or
+/// cleaned-but-unverified homes never become an unrelated root by default.
+fn secretary_roots_disjoint(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
+    target: &ResolvedBinding, h: SecretaryH<'_>) -> Result<()> {
+    use crate::process::AppContainerProfile;
+    use crate::store::{instance, ledger, seat};
+    if h.domain!="global" || ![h.session,h.instance,h.seat,h.incarnation,h.generation,
+        h.home,h.binding,h.process].iter().all(|value|atom(value)) {
+        return Err(WorktreeError::Denied.at("cleanup.secretary_identity"));
+    }
+    let registration=ledger::read_registered_session(db,h.session)?
+        .ok_or(WorktreeError::Denied.at("cleanup.secretary_registration"))?;
+    if registration.domain_id!=h.domain || registration.seat_id!=h.seat
+        || registration.purpose!=ledger::SessionPurpose::Secretary || registration.side_id.is_some() {
+        return Err(WorktreeError::Denied.at("cleanup.secretary_registration"));
+    }
+    let designation=Statement::prepare(db.as_ptr(),
+        "SELECT d.seat_id,d.incarnation,s.instance_id,s.state,s.generation FROM main.gogoke_v37_seat_secretary d JOIN main.gogoke_v37_seats s ON s.domain_id=d.domain_id AND s.seat_id=d.seat_id WHERE d.singleton=1 AND d.domain_id='global'")?;
+    if !designation.step_row()? || designation.column_text(0)?!=h.seat
+        || designation.column_text(1)?!=h.incarnation || designation.column_text(2)?!=h.instance
+        || designation.column_text(3)?!="BUSY" {
+        return Err(WorktreeError::Denied.at("cleanup.secretary_designation"));
+    }
+    let seat_generation=designation.column_text(4)?;
+    if designation.step_row()? { return Err(WorktreeError::Denied.at("cleanup.secretary_designation")); }
+    let selected=Statement::prepare(db.as_ptr(),
+        "SELECT seat_id,seat_incarnation,selected_instance_id,seat_authorization_generation FROM main.gogoke_v37_native_selection WHERE domain_id='global' AND session_id=?1")?;
+    selected.bind_text(1,h.session)?;
+    if !selected.step_row()? || selected.column_text(0)?!=h.seat
+        || selected.column_text(1)?!=h.incarnation || selected.column_text(2)?!=h.instance
+        || selected.column_text(3)?!=seat_generation || selected.step_row()? {
+        return Err(WorktreeError::Denied.at("cleanup.secretary_native_selection"));
+    }
+    let episode=Statement::prepare(db.as_ptr(),
+        "SELECT COUNT(*) FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_v37_h_generation g ON g.domain_id=e.domain_id AND g.session_id=e.session_id AND g.generation=e.generation AND g.request_id=e.request_id AND g.process_operation_id=e.process_operation_id JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=e.binding_id AND b.instance_id=e.instance_id AND b.domain_id=e.domain_id AND b.owner_id=e.session_id AND b.generation=e.generation AND b.kind='SESSION' AND b.state='ACTIVE' WHERE e.domain_id='global' AND e.session_id=?1 AND e.instance_id=?2 AND e.generation=?3 AND e.home_id=?4 AND e.binding_id=?5 AND e.process_operation_id=?6 AND e.seat_id=?7 AND e.seat_incarnation=?8")?;
+    for (index,value) in [h.session,h.instance,h.generation,h.home,h.binding,h.process,
+        h.seat,h.incarnation].iter().enumerate() { episode.bind_text((index+1) as i32,value)?; }
+    if !episode.step_row()? || episode.column_text(0)?!="1" {
+        return Err(WorktreeError::Denied.at("cleanup.secretary_episode_identity"));
+    }
+    let profile_name=crate::store::session_transport::launch::original_session_profile_name(
+        &root.canonical_root().identity.opaque(),h.domain,h.session,h.incarnation,h.generation);
+    let profile=AppContainerProfile::derive_for_revocation(&profile_name)
+        .map_err(|error|WorktreeError::Denied.at_with_detail(
+            "cleanup.secretary_profile",format!("{error:?}")))?;
+    let homes=instance::resolve_codex_session_launch_homes(db,root,&profile,h.instance,
+        h.home,h.domain,h.session,h.generation)
+        .map_err(|error|WorktreeError::Denied.at_with_detail(
+            "cleanup.secretary_session_home",format!("{error:?}")))?;
+    let history=instance::read_private_history_generation(db,h.binding,h.generation)
+        .map_err(|error|WorktreeError::Denied.at_with_detail(
+            "cleanup.secretary_history",format!("{error:?}")))?
+        .ok_or(WorktreeError::Denied.at("cleanup.secretary_history"))?;
+    if history.instance_id!=h.instance || history.domain_id!=h.domain
+        || history.session_id!=h.session || history.seat_id!=h.seat
+        || history.seat_incarnation!=h.incarnation || history.binding_id!=h.binding
+        || history.generation!=h.generation
+        || history.source.as_ref().is_some_and(|source|source.process_operation_id!=h.process) {
+        return Err(WorktreeError::Denied.at("cleanup.secretary_history_identity"));
+    }
+    let model=instance::resolve_private_history_directory(db,root,&history.history_id)
+        .map_err(|error|WorktreeError::Denied.at_with_detail(
+            "cleanup.secretary_model_home",format!("{error:?}")))?;
+    for home in [&homes.session,&model] {
+        profile.verify_bound_directory_grant(&home.path,&home.identity,true)
+            .map_err(|error|WorktreeError::Denied.at_with_detail(
+                "cleanup.secretary_root_grant",format!("{error:?}")))?;
+        if physical_roots_overlap(&target.path,&target.identity,&target.pointer_identity,
+            &home.path,&home.identity,&home.identity) {
+            return Err(WorktreeError::Denied.at("cleanup.secretary_root_overlap"));
+        }
+    }
+    Ok(())
+}
+
 fn proven_cleaned_root(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
     worktree_id: &str) -> Result<bool> {
     let row = Statement::prepare(db.as_ptr(),
@@ -399,7 +504,7 @@ pub(crate) fn cleanup_stop_gate(db: &VerifiedDatabaseConnection<'_>, root: &Root
     // directory identity, Git pointer and common directory before comparing
     // H's original sealed write root with the directory to be removed.
     let target = resolve_id(db, root, worktree_id).map_err(|_| WorktreeError::Denied)?;
-    cleanup_stop_gate_with(db, worktree_id, |other_id| {
+    cleanup_stop_gate_with(db, worktree_id, Some((root,&target)), |other_id| {
         if other_id == worktree_id { return Ok(true); }
         // A previously completed native cleanup cannot still provide a
         // workspace write root. Its historical H rows need not pin every
@@ -411,7 +516,7 @@ pub(crate) fn cleanup_stop_gate(db: &VerifiedDatabaseConnection<'_>, root: &Root
 }
 
 fn cleanup_stop_gate_with<F>(db: &VerifiedDatabaseConnection<'_>, worktree_id: &str,
-    mut overlaps: F) -> Result<Vec<ExactStopFact>>
+    secretary: Option<(&RootLock,&ResolvedBinding)>, mut overlaps: F) -> Result<Vec<ExactStopFact>>
 where F: FnMut(&str) -> Result<bool> {
     if !atom(worktree_id) { return Err(WorktreeError::Invalid("worktree id")); }
     let binding = Statement::prepare(db.as_ptr(),
@@ -424,7 +529,7 @@ where F: FnMut(&str) -> Result<bool> {
     // H's effective relationship includes both the original native selection
     // (which exists before open) and the unchanged legacy seat binding.
     let reservations = Statement::prepare(db.as_ptr(),
-        "SELECT a.domain_id,a.session_id,a.instance_id,COALESCE(b.seat_id,''),COALESCE(b.seat_incarnation,''),COALESCE(b.selected_instance_id,'') FROM main.gogoke_v37_h_claim a LEFT JOIN main.gogoke_v37_effective_seat b ON b.domain_id=a.domain_id AND b.session_id=a.session_id WHERE a.state!='RELEASED'")?;
+        "SELECT a.domain_id,a.session_id,a.instance_id,COALESCE(b.seat_id,''),COALESCE(b.seat_incarnation,''),COALESCE(b.selected_instance_id,''),a.generation,a.home_id,a.binding_id,COALESCE(a.process_operation_id,'') FROM main.gogoke_v37_h_claim a LEFT JOIN main.gogoke_v37_effective_seat b ON b.domain_id=a.domain_id AND b.session_id=a.session_id WHERE a.state!='RELEASED'")?;
     while reservations.step_row()? {
         let claim_domain=reservations.column_text(0)?;
         let session=reservations.column_text(1)?;
@@ -432,6 +537,10 @@ where F: FnMut(&str) -> Result<bool> {
         let claim_seat=reservations.column_text(3)?;
         let claim_incarnation=reservations.column_text(4)?;
         let selected_instance=reservations.column_text(5)?;
+        let generation=reservations.column_text(6)?;
+        let home=reservations.column_text(7)?;
+        let owner_binding=reservations.column_text(8)?;
+        let process=reservations.column_text(9)?;
         // A missing or inconsistent original relationship cannot prove that
         // an unstarted reservation is unrelated to this physical worktree.
         if !atom(&claim_seat) || !atom(&claim_incarnation)
@@ -439,17 +548,25 @@ where F: FnMut(&str) -> Result<bool> {
         // No open request means an unresolved reservation could still target
         // this tree only when bound to its seat. A model session on another
         // seat still needs a physical comparison once it has an open target.
-        match original_session_worktree(db,&claim_domain,&session)? {
-            Some(other) if !original_group_overlaps(db,&other,&mut overlaps)?=>continue,
-            Some(_)=>return Err(WorktreeError::Denied),
+        match original_session_open(db,&claim_domain,&session)? {
+            OriginalOpen::SecretaryWithoutProject=>{
+                let (root,target)=secretary.ok_or(WorktreeError::Denied)?;
+                secretary_roots_disjoint(db,root,target,SecretaryH {domain:&claim_domain,
+                    session:&session,instance:&claim_instance,seat:&claim_seat,
+                    incarnation:&claim_incarnation,generation:&generation,home:&home,
+                    binding:&owner_binding,process:&process})?;
+                continue;
+            },
+            OriginalOpen::Project(other) if !original_group_overlaps(db,&other,&mut overlaps)?=>continue,
+            OriginalOpen::Project(_)=>return Err(WorktreeError::Denied),
             // The same seat cannot prove non-occupation without an original
             // open root, even if its incarnation has since changed.
-            None if claim_domain==domain && claim_seat==seat=>return Err(WorktreeError::Denied),
-            None=>continue,
+            OriginalOpen::Missing if claim_domain==domain && claim_seat==seat=>return Err(WorktreeError::Denied),
+            OriginalOpen::Missing=>continue,
         }
     }
     let episodes = Statement::prepare(db.as_ptr(),
-        "SELECT e.domain_id,e.session_id,COALESCE(e.process_operation_id,''),e.phase,COALESCE(e.stop_fact_id,''),COALESCE(c.state,''),COALESCE(c.stop_proof_hash,''),e.instance_id,e.generation FROM main.gogoke_v37_h_process_episode e LEFT JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id AND c.generation=e.generation ORDER BY e.process_operation_id")?;
+        "SELECT e.domain_id,e.session_id,COALESCE(e.process_operation_id,''),e.phase,COALESCE(e.stop_fact_id,''),COALESCE(c.state,''),COALESCE(c.stop_proof_hash,''),e.instance_id,e.generation,e.home_id,e.binding_id,COALESCE(e.seat_id,''),COALESCE(e.seat_incarnation,'') FROM main.gogoke_v37_h_process_episode e LEFT JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id AND c.generation=e.generation ORDER BY e.process_operation_id")?;
     let mut proofs = Vec::new();
     while episodes.step_row()? {
         let episode_domain=episodes.column_text(0)?;
@@ -459,13 +576,26 @@ where F: FnMut(&str) -> Result<bool> {
         // H marks FAILED only for a cancelled resume INTENT that never
         // acquired a process operation. It cannot hold a workspace handle.
         if phase=="FAILED" && process.is_empty() { continue; }
-        match original_session_worktree(db,&episode_domain,&session)? {
-            Some(target) if !original_group_overlaps(db,&target,&mut overlaps)?=>continue,
-            Some(_)=>{},
+        match original_session_open(db,&episode_domain,&session)? {
+            OriginalOpen::SecretaryWithoutProject=>{
+                let (root,target)=secretary.ok_or(WorktreeError::Denied)?;
+                let instance=episodes.column_text(7)?;
+                let generation=episodes.column_text(8)?;
+                let home=episodes.column_text(9)?;
+                let owner_binding=episodes.column_text(10)?;
+                let seat=episodes.column_text(11)?;
+                let incarnation=episodes.column_text(12)?;
+                secretary_roots_disjoint(db,root,target,SecretaryH {domain:&episode_domain,
+                    session:&session,instance:&instance,seat:&seat,incarnation:&incarnation,
+                    generation:&generation,home:&home,binding:&owner_binding,process:&process})?;
+                continue;
+            },
+            OriginalOpen::Project(target) if !original_group_overlaps(db,&target,&mut overlaps)?=>continue,
+            OriginalOpen::Project(_)=>{},
             // A historical H model process without its sealed root cannot
             // prove non-overlap. Fixed account/read/login records are outside
             // this H process-episode table.
-            None=>return Err(WorktreeError::Denied),
+            OriginalOpen::Missing=>return Err(WorktreeError::Denied),
         }
         let fact = episodes.column_text(4)?;
         let custody = episodes.column_text(5)?;
@@ -1133,6 +1263,60 @@ mod tests {
         register_created_worktree(db,root,owner,raw.as_bytes()).unwrap();
     }
 
+    fn add_real_isolated_secretary(db:&mut VerifiedDatabaseConnection<'_>,root:&RootLock)
+        -> crate::store::instance::ResolvedDirectory {
+        use crate::process::AppContainerProfile;
+        use crate::store::ledger::{self,SessionPurpose,SessionRegistration};
+        let binary=root.canonical_root().canonical_path.join("secretary-fixture-program.bin");
+        fs::write(&binary,b"fixed fixture program").unwrap();
+        let program=instance::ProgramObservation::observe(&binary,"0.160.0").unwrap();
+        instance::register_instance(db,root,&instance::Registration {request_id:"secretaryRegister",
+            request_bytes:b"secretary fixture registration",instance_id:"secretaryInstance",
+            driver_id:"codex",program:&program}).unwrap();
+        crate::store::orchestration::apply_orchestration_slice_schema(db).unwrap();
+        ledger::initialize_schema(db).unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('global','secretarySeat','secretaryIncarnation','USER','LONG','secretaryInstance','BUSY',1,1)").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_seat_secretary VALUES(1,'global','secretarySeat','secretaryIncarnation','secretaryDesignation','fixture')").unwrap();
+        db.execute("BEGIN IMMEDIATE").unwrap();
+        session_transport::bind_owner_in_transaction(db,&session_transport::OwnerBinding {
+            binding_id:"secretaryBinding",instance_id:"secretaryInstance",domain_id:"global",
+            kind:"SESSION",owner_id:"secretarySession",generation:"1",
+        }).unwrap();
+        db.execute("COMMIT").unwrap();
+        let name=session_transport::launch::original_session_profile_name(
+            &root.canonical_root().identity.opaque(),"global","secretarySession",
+            "secretaryIncarnation","1");
+        let profile=AppContainerProfile::derive_for_revocation(&name).unwrap();
+        instance::create_temporary_home(db,root,&profile,&instance::CreateTemporaryHome {
+            request_id:"secretaryHomeCreate",request_bytes:b"original secretary home",
+            home_id:"secretaryHome",instance_id:"secretaryInstance",domain_id:"global",
+            kind:instance::TemporaryKind::Session,owner_id:"secretarySession",generation:"1",
+        }).unwrap();
+        let history=instance::create_initial_private_history(db,root,&instance::PrivateHistoryLaunch {
+            instance_id:"secretaryInstance",domain_id:"global",session_id:"secretarySession",
+            seat_id:"secretarySeat",seat_incarnation:"secretaryIncarnation",
+            binding_id:"secretaryBinding",generation:"1",request_id:"secretaryOpen",
+        }).unwrap();
+        profile.grant_bound_tree(&history.directory.path,&history.directory.identity,true).unwrap();
+        let homes=instance::resolve_codex_session_launch_homes(db,root,&profile,
+            "secretaryInstance","secretaryHome","global","secretarySession","1").unwrap();
+        profile.grant_bound_tree(&homes.session.path,&homes.session.identity,true).unwrap();
+        ledger::register_session(db,&SessionRegistration {domain_id:"global".into(),
+            seat_id:"secretarySeat".into(),session_id:"secretarySession".into(),
+            purpose:SessionPurpose::Secretary,side_id:None}).unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_native_selection VALUES('global','secretarySession','secretarySeat','secretaryIncarnation',1,'secretaryInstance')").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id,stop_fact_id) VALUES('global','secretarySession','secretaryInstance','secretaryHome','secretaryBinding','1','STOPPED',4,'secretaryProcess','secretaryStopFact')").unwrap();
+        let raw=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"open","requestId":"secretaryOpen","targetId":"secretarySession","domainId":"global","expectedRevision":"2","payload":{}}"#;
+        let operation=Statement::prepare(db.as_ptr(),
+            "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('global','secretaryOpen',?1,'open','secretarySession','APPLIED',2,3)").unwrap();
+        operation.bind_text(1,&raw.iter().map(|byte|format!("{byte:02x}")).collect::<String>()).unwrap();
+        operation.step_done().unwrap();drop(operation);
+        db.execute("INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,result_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase,stop_fact_id) VALUES('global','secretaryOpen','secretarySession','1','00',2,3,'secretaryProcess','secretaryInstance','secretaryHome','secretaryBinding','secretarySeat','secretaryIncarnation','STOPPED','secretaryStopFact')").unwrap();
+        db.execute("INSERT INTO main.gogoke_v37_h_generation VALUES('global','secretarySession','1','secretaryOpen','secretaryProcess')").unwrap();
+        db.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) VALUES('secretaryProcess','secretaryTicket','secretaryNonce','1','1','fixture','sha256:fixture','secretaryInstance','global','1','STOPPED','secretaryStopFact')").unwrap();
+        homes.session
+    }
+
     fn with_real_child(label: &str, body: impl FnOnce(&mut VerifiedDatabaseConnection<'_>,
         &RootLock, &GitProgramPin, &mut ProcessCustodian, &ResolvedBinding, &Path, &OwnerIssuer)) {
         let _guard = route_b_test_guard();
@@ -1178,7 +1362,7 @@ mod tests {
         }).unwrap();
         let input=CreateWorktree {request_id:"createA",request_bytes:b"create child",repository_id:"repoA",target_id:"treeA",
             domain_id:"projectA",seat_id:"seatA"};
-        let binding=if label=="seal-mixed-group" {
+        let binding=if label=="seal-mixed-group" || label=="secretary-disjoint" {
             let binding=create_mixed_worktree(&mut db,&root,&owner,&pin,&mut custodian,input).unwrap();
             register_test_tree(&mut db,&root,&owner,"treeA","registerA"); binding
         } else {create_worktree(&mut db,&root,&owner,&pin,&mut custodian,input).unwrap()};
@@ -1676,9 +1860,52 @@ mod tests {
             &sibling, &identity(1), &identity(6)), "path aliases share physical identity");
     }
 
+    #[test]
+    fn original_secretary_home_is_disjoint_only_with_exact_native_roots() {
+        with_real_child("secretary-disjoint",|db,root,_pin,_custodian,_binding,_source,owner| {
+            let secretary_home=add_real_isolated_secretary(db,root);
+            let stopped=cleanup_stop_gate(db,root,"treeA").unwrap();
+            assert_eq!(stopped.len(),1,"original overlapping project H still needs its StopFact");
+            assert_eq!(stopped[0].process_operation_id,"processA");
+            let mut alias=resolve_id(db,root,"treeA").unwrap();
+            alias.path=secretary_home.path;
+            alias.identity=secretary_home.identity.clone();
+            alias.pointer_identity=secretary_home.identity;
+            let h=SecretaryH {domain:"global",session:"secretarySession",instance:"secretaryInstance",
+                seat:"secretarySeat",incarnation:"secretaryIncarnation",generation:"1",
+                home:"secretaryHome",binding:"secretaryBinding",process:"secretaryProcess"};
+            assert!(matches!(secretary_roots_disjoint(db,root,&alias,h),Err(error)
+                if format!("{error:?}").contains("cleanup.secretary_root_overlap")));
+            db.execute("UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash='changed' WHERE operation_id='processA'").unwrap();
+            assert!(matches!(cleanup_stop_gate(db,root,"treeA"),Err(WorktreeError::Denied)));
+            db.execute("UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash=(SELECT stop_fact_id FROM main.gogoke_v37_h_process_episode WHERE process_operation_id='processA') WHERE operation_id='processA'").unwrap();
+            db.execute("UPDATE main.v37_ledger_session SET purpose='WORK' WHERE session_id='secretarySession'").unwrap();
+            assert!(matches!(cleanup_stop_gate(db,root,"treeA"),Err(error)
+                if matches!(error.without_context(),WorktreeError::Denied)));
+            db.execute("UPDATE main.v37_ledger_session SET purpose='SECRETARY' WHERE session_id='secretarySession'").unwrap();
+            db.execute("UPDATE main.gogoke_v37_instance_homes SET state='CLEANED' WHERE home_id='secretaryHome'").unwrap();
+            assert!(matches!(cleanup_stop_gate(db,root,"treeA"),Err(error)
+                if matches!(error.without_context(),WorktreeError::Denied)),
+                "no original cleanup receipt and absence cannot qualify a historical home");
+        });
+    }
+
+    #[test]
+    fn ordinary_open_without_worktree_remains_denied() {
+        with_real_child("missing-original-f",|db,_root,_pin,_custodian,_binding,_source,_owner| {
+            let raw=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"open","requestId":"emptyProjectOpen","targetId":"emptyProjectSession","domainId":"projectA","expectedRevision":"1","payload":{}}"#;
+            let row=Statement::prepare(db.as_ptr(),
+                "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA','emptyProjectOpen',?1,'open','emptyProjectSession','APPLIED',1,2)").unwrap();
+            row.bind_text(1,&raw.iter().map(|byte|format!("{byte:02x}")).collect::<String>()).unwrap();
+            row.step_done().unwrap();
+            assert!(matches!(original_session_worktree(db,"projectA","emptyProjectSession"),
+                Err(WorktreeError::Denied)));
+        });
+    }
+
     fn fixture_gate(db: &VerifiedDatabaseConnection<'_>, other_overlaps: bool)
         -> Result<Vec<ExactStopFact>> {
-        cleanup_stop_gate_with(db,"treeA",|id| match id {
+        cleanup_stop_gate_with(db,"treeA",None,|id| match id {
             "treeA" => Ok(true),
             "treeB" => Ok(other_overlaps),
             _ => Err(WorktreeError::Denied),
