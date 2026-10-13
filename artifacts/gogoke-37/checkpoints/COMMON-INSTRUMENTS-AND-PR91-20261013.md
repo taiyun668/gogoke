@@ -29,11 +29,20 @@ it before claim and again immediately before cleanup; its revised binding still 
 review before execution.
 
 The V07 original failure is retained. Its active cleanup was DENIED; its H stopped
-and released, and its first shell/native caption close was 0/0. Its cleanup remains
-unissued at this checkpoint. The continuation must call the shared instruments and
-complete the remaining two closes. Residual-child and host-restart cases remain
-NOT_RUN. V06's serverOverloaded failure is external; Owner directs a new case after
-service recovery, without more preservation work.
+and released, and its first shell/native caption close was 0/0. The continuation
+measured the original physical root before claim and again before the one cleanup.
+Both measurements matched. Cleanup then returned UNKNOWN: the original fixed Git
+rejected the unsupported `worktree remove --quiet` argument with exit 129. The request
+was not resent. A shared retained-close adapter normally closed that same failed
+launch; its original Node child-exit receipt and shared shell/native handle observer
+all reported 0/0. The subsequent shared protection capture measured all thirteen
+fields equal, and the observer preserved database bytes during measurement.
+Independent review confirmed these actual D outputs. The third launch/close and
+successful cleanup did not occur; this is not a V07 pass. The production repair removes
+only the unsupported Git option, with a real pinned-Git worktree regression added for
+cloud execution. Residual-child and host-restart cases remain NOT_RUN. V06's
+serverOverloaded failure is external; Owner directs a new case after service recovery,
+without more preservation work.
 
 F.2 lifecycle implementation continues under the newly effective scope. Instrument
 qualification is not a new business-case pass. Full M2/M3, formal acceptance,

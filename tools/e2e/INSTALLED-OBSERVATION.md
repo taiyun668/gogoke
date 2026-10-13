@@ -6,6 +6,7 @@ SQLite reader, protection comparison, readiness loop or close observer.
 | Observation | Shared entry | Case responsibility |
 |---|---|---|
 | Readiness and normal close | `ActualProduct` delegates to `installed-lifecycle-observation.mjs` | Supply the actual installed candidate and preserve its original journal. |
+| Normal close of the retained failed continuation | `retained-installed-close.mjs` via `run-retained-installed-close.ps1` | Pin the original held launch and keep its parent driver alive. The adapter reads that parent's actual child-exit receipt; the same shared close observer still checks original OS handles and both exit codes. |
 | StopFact and seat relationship | `installed_native_readback.py` | Supply pinned original requests, the observed binding mode and the original stopped source. |
 | Root identity before an operation | `installed_native_readback.py`, `kind: root_identity` | Supply the original stopped proof; call before claim and immediately before the operation. This metadata-only mode does not open SQLite and can observe a live root. |
 | Three observers / thirteen fields | `installed-protection-observation.mjs` for actors; `capture-protection.ps1` for pinned standalone capture or retained-snapshot verification | Supply the original observer definitions and actual before/after references. Both use `installed-protection-fields.json`. |

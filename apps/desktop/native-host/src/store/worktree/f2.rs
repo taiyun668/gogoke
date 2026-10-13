@@ -900,10 +900,8 @@ pub(crate) fn cleanup_worktree(db: &mut VerifiedDatabaseConnection<'_>, root: &R
         let binding = resolve_id(db, root, &request.target_id)?;
         if binding.path != path { return Err(WorktreeError::Denied); }
         drop(binding);
-        git(db, root, custodian, pin, "worktree_remove", Some(&source), &[
-            "worktree".into(), "remove".into(), "--quiet".into(),
-            git_launch_path(&path)?.to_string_lossy().into_owned(),
-        ], false)?;
+        git(db, root, custodian, pin, "worktree_remove", Some(&source),
+            &cleanup_remove_args(&path)?, false)?;
         require_absent(&path)?;
         Ok(())
     })();
@@ -947,6 +945,14 @@ pub(crate) fn cleanup_worktree(db: &mut VerifiedDatabaseConnection<'_>, root: &R
             }
         }
     }
+}
+
+fn cleanup_remove_args(path: &Path) -> Result<Vec<String>> {
+    Ok(vec![
+        "worktree".into(),
+        "remove".into(),
+        git_launch_path(path)?.to_string_lossy().into_owned(),
+    ])
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2382,6 +2388,21 @@ mod tests {
             "treeB" => Ok(other_overlaps),
             _ => Err(WorktreeError::Denied),
         })
+    }
+
+    #[test]
+    fn cleanup_remove_arguments_work_with_the_pinned_git_backend() {
+        with_real_child("cleanup-remove-argv", |db, root, pin, custodian, _binding, source, _owner| {
+            let target = source.parent().unwrap().join("cleanup-argv-worktree");
+            git(db, root, custodian, pin, "fixture_add_cleanup_argv", Some(source), &[
+                "worktree".into(), "add".into(), "--detach".into(),
+                target.to_string_lossy().into_owned(), "HEAD".into(),
+            ], false).unwrap();
+            let args = cleanup_remove_args(&target).unwrap();
+            git(db, root, custodian, pin, "fixture_remove_cleanup_argv", Some(source),
+                &args, false).unwrap();
+            assert!(!target.exists(), "pinned Git removed the argv fixture worktree");
+        });
     }
 
     #[test]
