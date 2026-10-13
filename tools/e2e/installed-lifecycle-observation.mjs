@@ -18,8 +18,40 @@ const readJson = file => JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFE
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const id = prefix => `${prefix}_${randomUUID().replaceAll('-', '')}`;
 
-function observeInstalledClose(config, shellPid) {
-  const helper = spawn(config.pwsh, ['-NoProfile', '-NonInteractive', '-File',
+export function beginInstalledCloseAttempt(journal, save, observerSource = lifecycleSource()) {
+  const attempt = { state: 'OBSERVING', startedAtUtc: new Date().toISOString(),
+    observerSource: structuredClone(observerSource), ready: null, events: [],
+    captionClick: null, failure: null, observerCompleted: false };
+  journal.nativeCloseObservationAttempts ??= [];
+  journal.nativeCloseObservationAttempts.push(attempt);
+  save();
+  const hooks = {
+    onReady(ready) { attempt.ready = ready; save(); },
+    onEvent(event) {
+      attempt.events.push({ event: structuredClone(event), observerSource: structuredClone(observerSource) });
+      save();
+    },
+    onComplete() { attempt.state = 'OBSERVER_COMPLETE_REVIEW_REQUIRED';
+      attempt.observerCompleted = true; save(); },
+    onFailure(error, partial) {
+      attempt.state = 'UNKNOWN_OR_INCOMPLETE';
+      attempt.partial = { ready: partial.ready, completed: partial.completed,
+        verifiedEventCount: partial.events.length };
+      attempt.failure = { name: error?.name ?? 'Error', message: error?.message ?? String(error),
+        stack: error?.stack ?? null, code: error?.code ?? null,
+        cause: error?.cause?.message ?? null, recordedAtUtc: new Date().toISOString() };
+      save();
+    },
+  };
+  return {
+    attempt, hooks,
+    recordCaptionClick(click) { attempt.captionClick = structuredClone(click); save(); },
+  };
+}
+
+export function observeInstalledClose(config, shellPid, hooks = {}) {
+  const spawnHelper = hooks.spawnImpl ?? spawn;
+  const helper = spawnHelper(config.pwsh, ['-NoProfile', '-NonInteractive', '-File',
     path.join(here, 'candidate-close-events.ps1'), '-Installed', config.installed,
     '-ShellPid', String(shellPid), '-ShellSha256', config.installedSha256['gogoke.exe'],
     '-NativeSha256', config.installedSha256['gogoke-native-host.exe']],
@@ -29,8 +61,19 @@ function observeInstalledClose(config, shellPid) {
   const done = new Promise((resolve, reject) => { resolveDone = resolve; rejectDone = reject; });
   done.catch(() => {}); // A READY failure can precede the caller's completion wait.
   const events = []; let original = null, completed = false, error = null, stderr = '';
+  let failureNotified = false;
+  const snapshot = () => ({ ready: original, events: [...events], completed });
+  const fail = cause => {
+    if (!error) error = cause;
+    clearTimeout(timer);
+    if (!failureNotified) {
+      failureNotified = true;
+      try { hooks.onFailure?.(error, snapshot()); } catch { /* Preserve the original observer failure. */ }
+    }
+    return error;
+  };
   const timer = setTimeout(() => {
-    error = Error('Original shell/native handle readiness deadline; no caption dispatched');
+    fail(Error('Original shell/native handle readiness deadline; no caption dispatched'));
     rejectReady(error);
   }, 15000);
   helper.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-8192); });
@@ -47,29 +90,35 @@ function observeInstalledClose(config, shellPid) {
           item.shell?.creationUtc && item.native?.creationUtc &&
           Array.isArray(item.nativeAncestorChain) &&
           item.nativeAncestorChain.at(-1)?.pid === shellPid) {
-        original = item; clearTimeout(timer); resolveReady(item);
+          original = item; clearTimeout(timer); hooks.onReady?.(item); resolveReady(item);
       } else if (item.kind === 'EXIT' && original && !completed &&
           ['shell', 'native'].includes(item.role) && events.every(event => event.role !== item.role) &&
           item.pid === original[item.role].pid && item.creationUtc === original[item.role].creationUtc &&
           typeof item.observedUtc === 'string' && Number.isSafeInteger(item.code) && item.code >= 0 &&
           item.codeBasis === 'GET_EXIT_CODE_PROCESS') {
-        events.push(item);
+        hooks.onEvent?.(item); events.push(item);
       } else if (item.kind === 'COMPLETE' && original && events.length === 2 &&
                  item.installedCandidateProcesses === 0) {
-        completed = true;
+        completed = true; hooks.onComplete?.();
       } else {
-        throw Error('Original candidate close observer frame differs');
+        const malformed = Error('Original candidate close observer frame differs');
+        malformed.frame = line;
+        throw malformed;
       }
     } catch (cause) {
-      error = cause; clearTimeout(timer); rejectReady(cause);
+      fail(cause); rejectReady(cause);
     }
   });
-  helper.once('error', cause => { error = cause; clearTimeout(timer); rejectReady(cause); rejectDone(cause); });
+  helper.once('error', cause => { fail(cause); rejectReady(cause); rejectDone(cause); });
   helper.once('close', code => {
     clearTimeout(timer);
-    if (!original) rejectReady(error ?? Error(`Original candidate close observer exited before handles: ${code}; ${stderr}`));
+    if (!original) {
+      const cause = error ?? Error(`Original candidate close observer exited before handles: ${code}; ${stderr}`);
+      fail(cause); rejectReady(cause);
+    }
     if (code !== 0 || error || !completed || events.length !== 2) {
-      rejectDone(error ?? Error(`Original shell/native close event incomplete: helper=${code}; ${stderr}`));
+      const cause = error ?? Error(`Original shell/native close event incomplete: helper=${code}; ${stderr}`);
+      fail(cause); rejectDone(cause);
     } else resolveDone({ ready: original, events, completed: true });
   });
   return { ready, done, events };
@@ -183,7 +232,8 @@ export async function observeInstalledReadiness(product, ready, port, setId, ind
 async function closeNormallyImpl() {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) throw Error('Original caption requires the proven live product socket; no close dispatched');
     await this.custody();
-    const observer = observeInstalledClose(this.config, this.endpoint.pid);
+    const attempt = beginInstalledCloseAttempt(this.journal, () => this.save(), lifecycleSource());
+    const observer = observeInstalledClose(this.config, this.endpoint.pid, attempt.hooks);
     const original = await observer.ready;
     if (this.child.exitCode !== null || this.child.signalCode !== null || observer.events.length) {
       throw Error('Original shell/native exited before the caption close');
@@ -226,6 +276,7 @@ async function closeNormallyImpl() {
       this.socket.removeEventListener('message', onClickMessage);
     }
     this.journal.captionClickEvidence ??= [];
+    attempt.recordCaptionClick(clicked);
     this.journal.captionClickEvidence.push(clicked); this.save();
     const [code, observed] = await Promise.all([exited, observer.done]);
     if (observed.events.some(event => Date.parse(event.observedUtc) < Date.parse(clicked.clickedUtc)) ||

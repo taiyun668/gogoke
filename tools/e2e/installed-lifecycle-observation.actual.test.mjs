@@ -11,6 +11,8 @@ import { ActualProduct } from './product-cdp.mjs';
 
 const archive = process.env.GOGOKE_LIFECYCLE_ACTUAL_D;
 if (!archive) throw Error('Required actual success/failure archive absent; validation cannot skip');
+const currentResult = process.env.GOGOKE_LIFECYCLE_CURRENT_RESULT;
+if (!currentResult) throw Error('Required current actual close result absent; validation cannot skip');
 const digest = p => createHash('sha256').update(fs.readFileSync(p)).digest('hex');
 const pinned = (relative, expected) => {
   const p = path.join(archive, relative);
@@ -85,3 +87,11 @@ test('actual V07 failed readiness keeps the late valid receipt as a failed origi
     assert.equal(journal.operations.length, 0);
     assert.equal(classifyRecordedClose(journal).state, 'UNKNOWN_OR_INCOMPLETE');
   });
+
+test('actual current V07 case remains two observed normal closes and one unknown close', () => {
+  assert.equal(digest(currentResult), '2b1811a42f9a3e3ce02042fbf86e866d4a2fb2e2beb58cc791eea891c64be86d');
+  const journal = read(currentResult);
+  assert.equal(classifyRecordedClose(journal, 0).state, 'OBSERVED_NORMAL_0_0');
+  assert.equal(classifyRecordedClose(journal, 1).state, 'OBSERVED_NORMAL_0_0');
+  assert.equal(classifyRecordedClose(journal, 2).state, 'UNKNOWN_OR_INCOMPLETE');
+});
