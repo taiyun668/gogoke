@@ -616,7 +616,7 @@ mod tests {
         sources:Vec<Vec<String>>,
         operations:Vec<Vec<String>>,custody:Vec<Vec<String>>,
     }
-    fn table_rows(product:&ProductDatabase<'_>,sql:&str,columns:usize)->Vec<Vec<String>> {
+    fn table_rows(product:&ProductDatabase<'_>,sql:&str,columns:i32)->Vec<Vec<String>> {
         let rows=Statement::prepare(product.connection.as_ptr(),sql).unwrap();
         let mut result=Vec::new();
         while rows.step_row().unwrap() {
