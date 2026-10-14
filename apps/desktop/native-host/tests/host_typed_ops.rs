@@ -218,18 +218,22 @@ fn desktop_host_survives_service_disconnect_but_stops_after_user_disconnect() {
     let user_request = r#"{"schema":"gogoke.37.operations.v1","family":"K-SEAT","operation":"create-from-template","requestId":"createA","targetId":"seatA","domainId":"projectA","expectedRevision":"0","payload":{"layer":"USER","templateId":"templateA"}}"#;
     let instance_request = r#"{"schema":"gogoke.37.operations.v1","family":"K-INSTANCE","operation":"register","requestId":"registerA","targetId":"instanceA","domainId":"global","expectedRevision":"0","payload":{"driverId":"codex"}}"#;
     let authenticate = format!("{{\"capability\":\"{capability}\",\"operation\":\"AuthenticateService\"}}");
-    let connect_service = || {
+    let connect_service_raw = || {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             if let Ok(mut service) = OpenOptions::new().read(true).write(true).open(service_path) {
                 service.write_all(&[0x47]).expect("service preface");
-                write_frame(&mut service, authenticate.as_bytes());
-                assert!(read_frame(&mut service).contains("\"authenticated\":true"));
                 return service;
             }
             assert!(Instant::now() < deadline, "service did not rebind");
             thread::sleep(Duration::from_millis(20));
         }
+    };
+    let connect_service = || {
+        let mut service = connect_service_raw();
+        write_frame(&mut service, authenticate.as_bytes());
+        assert!(read_frame(&mut service).contains("\"authenticated\":true"));
+        service
     };
     let mut first = connect_service();
     write_frame(&mut first, user_request.as_bytes());
@@ -269,6 +273,49 @@ fn desktop_host_survives_service_disconnect_but_stops_after_user_disconnect() {
     write_frame(&mut second, br#"{"operation":"Shutdown"}"#);
     assert!(read_frame(&mut second).starts_with("ERR"), "shared service stopped host");
     drop(second);
+
+    // The real committed reply exceeds the actual pipe quota. Reading only
+    // its header then closing the sole client forces the reply-write path,
+    // rather than merely exercising the next request's ordinary header EOF.
+    let mut third = connect_service();
+    use std::os::windows::io::AsRawHandle;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetNamedPipeInfo(pipe: *mut std::ffi::c_void, flags: *mut u32,
+            output_size: *mut u32, input_size: *mut u32, max_instances: *mut u32) -> i32;
+    }
+    let mut output_quota = 0u32;
+    let mut input_quota = 0u32;
+    assert_ne!(unsafe { GetNamedPipeInfo(third.as_raw_handle(), std::ptr::null_mut(),
+        &mut output_quota, &mut input_quota, std::ptr::null_mut()) }, 0,
+        "actual service pipe quota: {}", std::io::Error::last_os_error());
+    let pipe_quota = output_quota.max(input_quota);
+    assert!(output_quota > 0 && input_quota > 0, "actual pipe quotas are missing");
+    let command_id = format!("peer-close-{}", "c".repeat(256 * 1024));
+    let commit = format!(r#"{{"commandId":"{command_id}","commandType":"project.create","events":[{{"eventId":"peer-close-event","occurredAt":"2026-09-20T00:00:00Z","projectId":"peer-close-project","title":"original","type":"project.created","workspaceRoot":"C:/fixture"}}],"operation":"CommitOrchestration"}}"#);
+    write_frame(&mut third, commit.as_bytes());
+    let mut reply_header = [0u8; 4];
+    third.read_exact(&mut reply_header).expect("real committed reply header");
+    let response_bytes = u32::from_le_bytes(reply_header);
+    assert!(response_bytes > pipe_quota, "fixture reply did not exceed actual pipe quotas");
+    drop(third);
+
+    write_frame(&mut user, user_request.as_bytes());
+    assert!(read_frame(&mut user).contains("\"status\":\"REPLAYED\""),
+        "reply peer close lost the independent User connection or original receipt");
+    let mut fourth = connect_service_raw();
+    write_frame(&mut fourth, br#"{"operation":"ReadProductIdentity"}"#);
+    assert!(read_frame(&mut fourth).starts_with("ERR"), "reconnected service inherited authentication");
+    write_frame(&mut fourth, authenticate.as_bytes());
+    assert!(read_frame(&mut fourth).contains("\"authenticated\":true"));
+    write_frame(&mut fourth, commit.as_bytes());
+    assert!(read_frame(&mut fourth).contains("RECONCILED"), "original commit was not read back");
+    let changed_commit = commit.replace("\"title\":\"original\"", "\"title\":\"changed\"");
+    write_frame(&mut fourth, changed_commit.as_bytes());
+    assert!(read_frame(&mut fourth).contains("OperationConflict"), "changed bytes reused committed ID");
+    write_frame(&mut fourth, br#"{"limit":"10","operation":"ReadSnapshot"}"#);
+    assert!(read_frame(&mut fourth).contains("\"count\":1"), "disconnected reply duplicated the commit");
+    drop(fourth);
     assert!(child.try_wait().unwrap().is_none(), "service disconnect stopped host");
     drop(user);
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -277,10 +324,12 @@ fn desktop_host_survives_service_disconnect_but_stops_after_user_disconnect() {
         assert!(Instant::now() < deadline, "User disconnect did not stop host");
         thread::sleep(Duration::from_millis(20));
     };
-    if !status.success() {
-        let mut stderr = String::new();
-        child.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
-        panic!("desktop host exit: {status}; stderr={stderr}");
-    }
+    let mut stderr = String::new();
+    child.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
+    assert!(status.success(), "desktop host exit: {status}; stderr={stderr}");
+    assert!(stderr.lines().any(|line| line.starts_with("GOGOKE_NATIVE_SERVICE_WRITE_DIAGNOSTIC ") &&
+        ["win32=109", "win32=232", "win32=233"].iter().any(|code| line.ends_with(code))),
+        "fixture never observed a real reply peer-close write error: {stderr}");
+    println!("SERVICE_REPLY_PEER_CLOSE_VERIFIED outputQuota={output_quota} inputQuota={input_quota} responseBytes={response_bytes}");
     std::fs::remove_dir_all(&root).expect("owned root cleanup");
 }

@@ -191,6 +191,71 @@ jobs:
             originalHash=$originalHash; mutationHash=$mutationHash; restoredHash=$restoredHash; results=$results;
             physicalSecretaryStop='NOT_RUN_BY_CONTROL_FLOW_FIXTURE'; installedNormalClose='NOT_RUN'; fullNative='NOT_RUN' } |
             ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $evidence 'result.json') -Encoding utf8NoBOM
+      - name: Verify real service reply disconnect and compiled mutation
+        if: ${{ inputs.focused_library == 'service-transport' || inputs.focused_library == 'managed-lifecycle' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $evidence = Join-Path $env:RUNNER_TEMP 'gogoke-desktop-error-close-evidence'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $source = 'apps/desktop/native-host/src/main.rs'
+          $test = 'apps/desktop/native-host/tests/host_typed_ops.rs'
+          $original = [IO.File]::ReadAllBytes($source)
+          $originalHash = (Get-FileHash -LiteralPath $source).Hash.ToLowerInvariant()
+          $testHash = (Get-FileHash -LiteralPath $test).Hash.ToLowerInvariant()
+          $results = @()
+          function Invoke-ReplyPeerClose([string]$label, [int]$passed, [int]$failed) {
+            $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --test host_typed_ops desktop_host_survives_service_disconnect_but_stops_after_user_disconnect -- --exact --nocapture 2>&1
+            $code = $LASTEXITCODE
+            $output | Set-Content -LiteralPath (Join-Path $evidence "peer-close-$label.log") -Encoding utf8NoBOM
+            $output | Write-Host
+            $text = $output -join [Environment]::NewLine
+            $resultMatches = [regex]::Matches($text, 'test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;')
+            $expectedExit = if ($failed -eq 0) { $code -eq 0 } else { $code -eq 101 }
+            if (-not $expectedExit -or $resultMatches.Count -ne 1 -or
+                [int]$resultMatches[0].Groups[1].Value -ne $passed -or
+                [int]$resultMatches[0].Groups[2].Value -ne $failed -or
+                [int]$resultMatches[0].Groups[3].Value -ne 0 -or $text.Contains('could not compile') -or
+                ($failed -eq 0 -and -not $text.Contains('SERVICE_REPLY_PEER_CLOSE_VERIFIED'))) {
+              throw "Actual reply-peer-close behavior invalid: $label exit=$code"
+            }
+            if ((Get-FileHash -LiteralPath $test).Hash.ToLowerInvariant() -cne $testHash) {
+              throw 'Original real-pipe assertions changed'
+            }
+            [ordered]@{ label=$label; exitCode=$code; passed=$passed; failed=$failed; ignored=0 }
+          }
+          $results += Invoke-ReplyPeerClose 'original' 1 0
+          $mutation = [ordered]@{ state='NOT_COMPLETE'; originalHash=$originalHash; testHash=$testHash }
+          try {
+            $text = [Text.UTF8Encoding]::new($false).GetString($original)
+            $needle = '                    if service_reply_peer_closed(&error) { break; }'
+            if ([regex]::Matches($text, [regex]::Escape($needle)).Count -ne 1) {
+              throw 'Exact production reply-disconnect seam absent'
+            }
+            [IO.File]::WriteAllText($source, $text.Replace($needle,
+              '                    if false && service_reply_peer_closed(&error) { break; }'), [Text.UTF8Encoding]::new($false))
+            $mutation.mutatedHash = (Get-FileHash -LiteralPath $source).Hash.ToLowerInvariant()
+            $check = & cargo check --locked --manifest-path apps/desktop/native-host/Cargo.toml --bin gogoke-native-host 2>&1
+            $mutation.checkExit = $LASTEXITCODE
+            $check | Set-Content -LiteralPath (Join-Path $evidence 'peer-close-mutation-check.log') -Encoding utf8NoBOM
+            $check | Write-Host
+            if ($mutation.checkExit -ne 0 -or $mutation.mutatedHash -ceq $originalHash) {
+              throw 'Real production mutation must compile and change source'
+            }
+            $results += Invoke-ReplyPeerClose 'fatal-write-mutation' 0 1
+            $mutation.state = 'COMPILED_BEHAVIOR_MUTATION_KILLED'
+          } finally {
+            [IO.File]::WriteAllBytes($source, $original)
+            $mutation.restoredHash = (Get-FileHash -LiteralPath $source).Hash.ToLowerInvariant()
+            $mutation | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence 'peer-close-mutation.json') -Encoding utf8NoBOM
+            if ($mutation.restoredHash -cne $originalHash) { throw 'Production bytes not restored exactly' }
+          }
+          $results += Invoke-ReplyPeerClose 'restored' 1 0
+          [ordered]@{ results=$results; originalHash=$originalHash; restoredHash=$mutation.restoredHash;
+            testHash=$testHash; fixture='ACTUAL_WINDOWS_PIPE_COMMIT_REPLY_USER_RECONNECT';
+            installedCase='NOT_RUN'; acceptance=$false } |
+            ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $evidence 'peer-close-result.json') -Encoding utf8NoBOM
       - uses: actions/upload-artifact@v4
         if: ${{ always() && (inputs.focused_library == 'service-transport' || inputs.focused_library == 'managed-lifecycle') }}
         with:

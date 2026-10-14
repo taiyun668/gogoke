@@ -164,6 +164,15 @@ struct ProductRuntimePaths {
 struct ExistingHostAttachment {
     service_pipe: String,
     service_capability: String,
+    expected_host_pid: u32,
+}
+
+fn service_operation_class(request: &[u8]) -> &'static str {
+    if request == br#"{"operation":"readiness"}"# {
+        "READINESS"
+    } else {
+        "OTHER"
+    }
 }
 
 struct Design37ProductOwner {
@@ -201,6 +210,7 @@ fn retained_design37_host(
     Ok(Some((Arc::clone(&owner.host), ExistingHostAttachment {
         service_pipe: owner.host.service_pipe().to_string(),
         service_capability: owner.host.capability().to_string(),
+        expected_host_pid: owner.host.host_pid(),
     })))
 }
 
@@ -632,9 +642,11 @@ mod managed_service {
     fn send_reply(
         reply: &mut Option<oneshot::Sender<Result<Vec<u8>, String>>>,
         value: Result<Vec<u8>, String>,
-    ) {
+    ) -> bool {
         if let Some(channel) = reply.take() {
-            let _ = channel.send(value);
+            channel.send(value).is_ok()
+        } else {
+            false
         }
     }
 
@@ -1040,7 +1052,8 @@ mod managed_service {
             {
                 // Caller will receive an error while this owner retains the
                 // suspended process and lease until termination is confirmed.
-                send_reply(reply, Err("GOGOKE_PRODUCT_SERVICE_JOB_ASSIGN_EXIT_UNCONFIRMED".to_string()));
+                let _ = send_reply(reply,
+                    Err("GOGOKE_PRODUCT_SERVICE_JOB_ASSIGN_EXIT_UNCONFIRMED".to_string()));
                 retain_until_exit(&managed);
             }
             return Err("GOGOKE_PRODUCT_SERVICE_JOB_ASSIGN_FAILED".to_string());
@@ -1049,7 +1062,8 @@ mod managed_service {
         if unsafe { ResumeThread(raw(&thread)) } == u32::MAX {
             terminate(&managed);
             if !wait_settled(&managed, CLEANUP_WAIT).unwrap_or(false) {
-                send_reply(reply, Err("GOGOKE_PRODUCT_SERVICE_RESUME_EXIT_UNCONFIRMED".to_string()));
+                let _ = send_reply(reply,
+                    Err("GOGOKE_PRODUCT_SERVICE_RESUME_EXIT_UNCONFIRMED".to_string()));
                 retain_until_exit(&managed);
             }
             return Err("GOGOKE_PRODUCT_SERVICE_RESUME_FAILED".to_string());
@@ -1116,30 +1130,43 @@ mod managed_service {
         reply: oneshot::Sender<Result<Vec<u8>, String>>,
     ) {
         let mut reply = Some(reply);
+        let operation_class = super::service_operation_class(&request);
+        let started = Instant::now();
+        let utc_ms = || std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+            .unwrap_or(0);
+        let start_utc_ms = utc_ms();
+        let (mode_name, expected_host_pid) = match &mode {
+            LaunchMode::Legacy => ("LEGACY", None),
+            LaunchMode::Existing(attachment) => ("EXISTING", Some(attachment.expected_host_pid)),
+        };
         // The paths own an Arc<RuntimeLease>; keep them in this detached
         // owner, including during unbounded post-error exit confirmation.
         if std::fs::create_dir_all(&paths.product_root).is_err() {
-            send_reply(&mut reply, Err("GOGOKE_PRODUCT_ROOT_UNAVAILABLE".to_string()));
+            let _ = send_reply(&mut reply, Err("GOGOKE_PRODUCT_ROOT_UNAVAILABLE".to_string()));
             return;
         }
         let policy = match ModulePolicy::new(&paths) {
             Ok(policy) => policy,
             Err(error) => {
-                send_reply(&mut reply, Err(error));
+                let _ = send_reply(&mut reply, Err(error));
                 return;
             }
         };
         let request = match service_input(&mode, request) {
             Ok(bytes) => bytes,
             Err(error) => {
-                send_reply(&mut reply, Err(error));
+                let _ = send_reply(&mut reply, Err(error));
                 return;
             }
         };
-        let (managed, stdin, stdout, stderr) = match launch(&paths, policy.as_ref(), &mode, identity.as_ref(), &mut reply) {
+        let (managed, stdin, stdout, stderr) = match launch(
+            &paths, policy.as_ref(), &mode, identity.as_ref(), &mut reply,
+        ) {
             Ok(value) => value,
             Err(error) => {
-                send_reply(&mut reply, Err(error));
+                let _ = send_reply(&mut reply, Err(error));
                 return;
             }
         };
@@ -1156,13 +1183,16 @@ mod managed_service {
         };
         // Read the original failure before terminate can replace last-error.
         let wait_error = (wait_result == u32::MAX).then(|| unsafe { GetLastError() });
+        let mut terminate_branch = false;
         let failure = match wait_result {
             WAIT_OBJECT_0 => None,
             WAIT_TIMEOUT => {
+                terminate_branch = true;
                 terminate(&managed);
                 Some("GOGOKE_PRODUCT_SERVICE_TIMEOUT".to_string())
             }
             _ => {
+                terminate_branch = true;
                 terminate(&managed);
                 let mut error = format!("GOGOKE_PRODUCT_SERVICE_WAIT_FAILED:RESULT_{wait_result}");
                 if let Some(code) = wait_error { error.push_str(&format!(":WIN32_{code}")); }
@@ -1170,9 +1200,10 @@ mod managed_service {
             }
         };
         if !wait_settled(&managed, CLEANUP_WAIT).unwrap_or(false) {
+            terminate_branch = true;
             terminate(&managed);
             if !wait_settled(&managed, CLEANUP_WAIT).unwrap_or(false) {
-                send_reply(&mut reply, Err("GOGOKE_PRODUCT_SERVICE_EXIT_UNCONFIRMED".to_string()));
+                let _ = send_reply(&mut reply, Err("GOGOKE_PRODUCT_SERVICE_EXIT_UNCONFIRMED".to_string()));
                 retain_until_exit(&managed);
                 return;
             }
@@ -1200,6 +1231,25 @@ mod managed_service {
         };
         // All failures preserve the already captured original streams, including
         // timeout. Settlement and lease ownership above remain unchanged.
+        let stdout_length = output.as_ref().ok().map(Vec::len);
+        let stderr_tail_length = stderr_tail.as_ref().ok().map(Vec::len);
+        let failed_result_tag = if wait_result == WAIT_TIMEOUT {
+            "WAIT_TIMEOUT"
+        } else if wait_result == u32::MAX {
+            "WAIT_FAILED"
+        } else if !exit_code_available {
+            "EXIT_CODE_UNAVAILABLE"
+        } else if exit_code != 0 {
+            "SERVICE_EXIT_NONZERO"
+        } else if write_result.is_err() {
+            "REQUEST_WRITE_FAILED"
+        } else if output.is_err() {
+            "STDOUT_READ_FAILED"
+        } else if stderr_tail.is_err() {
+            "STDERR_READ_FAILED"
+        } else {
+            "OTHER_FAILURE"
+        };
         let result = if let Some(mut error) = failure {
             match &output {
                 Ok(bytes) => error = with_failure_output(error, "STDOUT", bytes),
@@ -1218,9 +1268,43 @@ mod managed_service {
         } else {
             output
         };
-        let _ = managed.process_id;
+        let result_tag = if result.is_ok() {
+            "EXIT0"
+        } else {
+            failed_result_tag
+        };
         let _ = &paths.runtime_lease;
-        send_reply(&mut reply, result);
+        let should_report = operation_class == "READINESS" || result.is_err();
+        let reply_channel = if send_reply(&mut reply, result) {
+            "ACCEPTED"
+        } else {
+            "RECEIVER_CLOSED"
+        };
+        if should_report {
+            let settled_utc_ms = utc_ms();
+            let elapsed_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+            eprintln!(
+                "GOGOKE_PRODUCT_SERVICE_DIAGNOSTIC shellPid={} expectedNativeHostPid={} actualServicePid={} mode={} operationClass={} startUtcMs={} settledUtcMs={} elapsedMs={} waitResult={} waitError={} exitCode={} exitError={} terminateBranch={} stdoutLength={} stderrTailLength={} resultTag={} replyChannel={}",
+                std::process::id(),
+                expected_host_pid.map_or_else(|| "none".to_owned(), |pid| pid.to_string()),
+                managed.process_id,
+                mode_name,
+                operation_class,
+                start_utc_ms,
+                settled_utc_ms,
+                elapsed_ms,
+                wait_result,
+                wait_error.map_or_else(|| "none".to_owned(), |code| code.to_string()),
+                exit_code_available.then_some(exit_code)
+                    .map_or_else(|| "none".to_owned(), |code| code.to_string()),
+                exit_error.map_or_else(|| "none".to_owned(), |code| code.to_string()),
+                terminate_branch,
+                stdout_length.map_or_else(|| "none".to_owned(), |length| length.to_string()),
+                stderr_tail_length.map_or_else(|| "none".to_owned(), |length| length.to_string()),
+                result_tag,
+                reply_channel,
+            );
+        }
     }
 }
 
@@ -1364,6 +1448,7 @@ pub(crate) async fn ensure_design37_user_host(app: &tauri::AppHandle) -> Result<
     let host = Arc::new(spawned);
     let attachment = ExistingHostAttachment {
         service_pipe: host.service_pipe().to_owned(), service_capability: host.capability().to_owned(),
+        expected_host_pid: host.host_pid(),
     };
     {
         let mut owner = DESIGN37_PRODUCT_OWNER.lock()
@@ -1954,6 +2039,7 @@ pub(crate) async fn gogoke_design37_register_codex_instance(
                 let attachment = ExistingHostAttachment {
                     service_pipe: host.service_pipe().to_string(),
                     service_capability: host.capability().to_string(),
+                    expected_host_pid: host.host_pid(),
                 };
                 let mut owner = DESIGN37_PRODUCT_OWNER.lock()
                     .map_err(|_| "GOGOKE_DESIGN37_OWNER_LOCK_POISONED".to_string())?;
@@ -2117,6 +2203,7 @@ mod tests {
         let attachment = ExistingHostAttachment {
             service_pipe: host.service_pipe().to_string(),
             service_capability: host.capability().to_string(),
+            expected_host_pid: host.host_pid(),
         };
         let paths = ProductRuntimePaths {
             node_runtime: node,
@@ -2292,6 +2379,10 @@ mod tests {
         assert!(error.starts_with("GOGOKE_PRODUCT_SERVICE_FAILED:17"), "{error}");
         assert!(error.contains(":STDOUT_TAIL:service detail"), "{error}");
         assert!(error.contains(":STDERR_TAIL:host detail"), "{error}");
+        assert_eq!(service_operation_class(br#"{"operation":"readiness"}"#), "READINESS");
+        let private_operation = service_operation_class(br#"{"operation":"private-marker"}"#);
+        assert_eq!(private_operation, "OTHER");
+        assert!(!private_operation.contains("private-marker"));
         fs::remove_dir_all(&root).expect("remove settled owned fixture");
     }
 

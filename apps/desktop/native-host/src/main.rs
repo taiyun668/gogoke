@@ -8,6 +8,8 @@ use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, SyncSender};
+use std::sync::OnceLock;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Copy)]
 enum HostMode {
@@ -18,6 +20,34 @@ enum HostMode {
 struct ServiceFrame {
     bytes: Vec<u8>,
     answer: SyncSender<(Vec<u8>, bool)>,
+}
+
+static FIRST_SERVICE_WRITE_FAILURE: OnceLock<String> = OnceLock::new();
+
+fn service_operation_class(bytes: &[u8]) -> &'static str {
+    use gogoke_native_host::store::protocol::decode_operation_frame;
+
+    match decode_operation_frame(bytes).map(|decoded| decoded.name) {
+        Ok("AuthenticateService") => "AuthenticateService",
+        Ok("ReadProductIdentity") => "ReadProductIdentity",
+        Ok("AdmitControllerCaller") => "AdmitControllerCaller",
+        Ok("Shutdown") => "Shutdown",
+        Ok(_) => "OTHER_ADMITTED",
+        Err(_) => "UNCLASSIFIED",
+    }
+}
+
+fn utc_now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+        .unwrap_or(0)
+}
+
+fn service_reply_peer_closed(error: &gogoke_native_host::ipc::PrivateIpcError) -> bool {
+    matches!(error, gogoke_native_host::ipc::PrivateIpcError::Os {
+        operation: "WriteFile(private IPC frame)", source,
+    } if matches!(source.raw_os_error(), Some(109 | 232 | 233)))
 }
 
 enum DesktopEvent {
@@ -37,6 +67,9 @@ fn main() {
         Ok(()) => {}
         Err(error) => {
             eprintln!("{error}");
+            if let Some(diagnostic) = FIRST_SERVICE_WRITE_FAILURE.get() {
+                eprintln!("{diagnostic}");
+            }
             std::process::exit(1);
         }
     }
@@ -155,6 +188,7 @@ fn run_desktop(
     let endpoint = endpoint.to_owned();
     std::thread::spawn(move || {
         let mut next = Some(service_listener);
+        let mut connection_seq = 0u64;
         loop {
             let listener = match next.take() {
                 Some(listener) => listener,
@@ -176,7 +210,10 @@ fn run_desktop(
                     break;
                 }
             };
+            connection_seq = connection_seq.saturating_add(1);
+            let current_connection_seq = connection_seq;
             if service_events.send(DesktopEvent::ServiceConnected).is_err() { break; }
+            let mut request_seq = 0u64;
             loop {
                 let bytes = match pipe.read_frame() {
                     Ok(bytes) => bytes,
@@ -188,6 +225,10 @@ fn run_desktop(
                         return;
                     }
                 };
+                request_seq = request_seq.saturating_add(1);
+                let operation = service_operation_class(&bytes);
+                let received_utc_ms = utc_now_ms();
+                let received_at = Instant::now();
                 let (answer, reply) = mpsc::sync_channel(0);
                 if service_events.send(DesktopEvent::ServiceFrame(ServiceFrame { bytes, answer })).is_err() {
                     return;
@@ -196,7 +237,27 @@ fn run_desktop(
                     Ok(value) => value,
                     Err(_) => return,
                 };
+                let answer_wait_ms = received_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
                 if let Err(error) = pipe.write_frame(&frame) {
+                    let (native_error, win32_error) = match &error {
+                        gogoke_native_host::ipc::PrivateIpcError::Os { source, .. } => {
+                            ("OS", source.raw_os_error())
+                        }
+                        _ => ("OTHER", None),
+                    };
+                    let summary = format!(
+                        "GOGOKE_NATIVE_SERVICE_WRITE_DIAGNOSTIC schema=v1 hostPid={} connectionSeq={} requestSeq={} operation={} phase=REPLY_WRITE receivedUtcMs={} failureUtcMs={} answerWaitMs={} nativeError={} win32={}",
+                        std::process::id(), current_connection_seq, request_seq, operation,
+                        received_utc_ms, utc_now_ms(), answer_wait_ms, native_error,
+                        win32_error.map_or_else(|| "none".to_owned(), |code| code.to_string()),
+                    );
+                    if FIRST_SERVICE_WRITE_FAILURE.set(summary).is_ok() {
+                        eprintln!("{}", FIRST_SERVICE_WRITE_FAILURE.get().expect("first write failure stored"));
+                    }
+                    // The completed dispatch is not retried. A closed Node
+                    // connection does not revoke the independent USER owner;
+                    // take the same disconnect/re-authentication path as EOF.
+                    if service_reply_peer_closed(&error) { break; }
                     drop(service_events.send(DesktopEvent::ServiceFailed(error.to_string())));
                     return;
                 }
@@ -415,6 +476,40 @@ mod desktop_shutdown_tests {
         let (calls, result) = exercise(Some("UserProcessNotLive"), None, None);
         assert_eq!(calls, ["stop", "close"]);
         assert_eq!(result.unwrap_err().to_string(), "UserProcessNotLive");
+
+        for code in [109, 232, 233] {
+            let error = gogoke_native_host::ipc::PrivateIpcError::Os {
+                operation: "WriteFile(private IPC frame)", source: io::Error::from_raw_os_error(code),
+            };
+            assert!(service_reply_peer_closed(&error));
+        }
+        for (operation, code) in [("WriteFile(private IPC frame)", 5),
+            ("WriteFile(private IPC frame)", 995), ("ReadFile(private IPC header)", 232)] {
+            let error = gogoke_native_host::ipc::PrivateIpcError::Os {
+                operation, source: io::Error::from_raw_os_error(code),
+            };
+            assert!(!service_reply_peer_closed(&error));
+        }
+
+        let first: OnceLock<String> = OnceLock::new();
+        let original = format!("operation={} phase=REPLY_WRITE win32=232",
+            service_operation_class(br#"{"operation":"ReadEvents"}"#));
+        let later = format!("operation={} win32=5",
+            service_operation_class(br#"{"operation":"secret-private-value"}"#));
+        assert!(first.set(original).is_ok());
+        assert!(first.set(later).is_err());
+        let line = first.get().expect("first diagnostic retained");
+        assert!(line.contains("operation=OTHER_ADMITTED"));
+        assert!(line.contains("phase=REPLY_WRITE"));
+        assert!(line.contains("win32=232"));
+        assert_eq!(
+            service_operation_class(br#"{"operation":"secret-private-value"}"#),
+            "UNCLASSIFIED",
+        );
+        assert_eq!(
+            service_operation_class(br#"{"operation":"AdmitControllerCaller"}"#),
+            "AdmitControllerCaller",
+        );
     }
 
     #[test]

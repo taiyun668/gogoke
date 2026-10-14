@@ -595,6 +595,14 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or -not (@($custody | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed' }).Count -eq 1)) {
             throw "Product process custody test failed or did not execute exactly one test: $LASTEXITCODE"
           }
+          $serviceFailure = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml managed_product_failure_reports_bounded_service_output --lib 2>&1
+          $serviceFailureCode = $LASTEXITCODE
+          $serviceFailure | Out-Host
+          $serviceFailure | Set-Content -LiteralPath (Join-Path $evidence 'managed-service-original-failure.log') -Encoding utf8
+          if ($serviceFailureCode -ne 0 -or
+              @($serviceFailure | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+            throw 'Original service error and static operation-class assertions did not pass exactly once'
+          }
           $outerJob = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml outer_job_owner_hard_exit_kills_suspended_node --lib 2>&1
           $outerJob | Out-Host
           if ($LASTEXITCODE -ne 0 -or
