@@ -1121,6 +1121,20 @@
     "serves": [
      "F"
     ]
+   },
+   {
+    "path": "apps/desktop/native-host/src/store/product_database/v37_runtime.rs",
+    "extension": "H only: in the existing same-original-host open and resume paths, only while that host still owns the original PreparedCustody and Job, call the original abort_prepared after successful C PREPARED recording when alias bind fails and before H binding or activation. Preserve the bind error as first cause and retain any abort cleanup error; keep NativeSession, all UNKNOWN/claim/alias state and existing custody. No new StopProof or StopFact, persistent state or authority, historical UNKNOWN cleanup, admission release, coldproof or activation change. Tests cover only the real suspended-child failure injection and effective mutation; use the existing cloud runtime shard discovery without workflow command changes.",
+    "serves": [
+     "H"
+    ]
+   },
+   {
+    "path": "apps/desktop/native-host/src/store/product_database/v37_runtime_tests.rs",
+    "extension": "H only: tests for the two existing open and resume alias-bind failures after successful C PREPARED recording, using a real suspended child and effective mutation; preserve the original first cause, cleanup error and all UNKNOWN/claim/alias state. No synthetic StopFact or persistent-state change.",
+    "serves": [
+     "H"
+    ]
    }
   ],
   "conditional_rule": "A conditional file is recorded in T00 or L0 as either MODIFIED, with the change, or VERIFIED_UNCHANGED, with the reason; no line widens its own scope to reach it."

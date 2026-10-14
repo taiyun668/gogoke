@@ -498,3 +498,7 @@ H 发起，Integrator 只在既有 apps/desktop/native-host/src/main.rs 接线�
 不新增共享路径或条件、不改变持久写方、requirements、invariants、Owner 决定和触点。可信校验器重算摘要须与现有 v2 回执相同；按 authorization 的 detail amendment 规则，独立审计通过后由 Controller 合并并精确读回，不新增回执或 Owner merge。原失败仍 UNKNOWN，不凭进程缺席补 STOPPED；原生错误路径、原 H 停止与有效 production mutation 走云检，新装候选使用共用 READY/EXIT/StopFact/十三项仪器重新跑真实快速关窗，未执行不得记通过。
 
 参照：现有 main 的正常结束接线、H stop_secretary_before_close、K-SESSION 原 StopFact/no-release、User 私管道同步回执与既有 origin 拒绝；采用原机制，仅修错误提前返回的实现遗漏。
+
+## 2026-10-14：prepared child 的两条失败清理路径（范围提案，待 Owner 合并）
+
+`apps/desktop/native-host/src/store/product_database/v37_runtime.rs` 的 open 与 resume 在 C PREPARED 成功记录后、H 绑定或 activation 前，alias bind 失败会直接返回，遗漏调用仍由原 host 持有的 `abort_prepared`。提案只为这两处加入原 custodian 清理，并覆盖 `apps/desktop/native-host/src/store/product_database/v37_runtime_tests.rs` 的真实 suspended child 故障注入与有效 mutation。保留首因、清理错误及全部 UNKNOWN、claim 和 alias 状态；abort 不构成 StopFact，也不提供冷恢复，不改历史数据。Owner 在同一 PR 合并并读回前不施工。

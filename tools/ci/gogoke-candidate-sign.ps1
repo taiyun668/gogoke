@@ -20,7 +20,7 @@ $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 if ((git -C $repoRoot rev-parse HEAD).Trim() -cne $env:GITHUB_SHA) {
     throw 'Candidate signer is not the exact trusted main checkout.'
 }
-$receiptBlob = '1e3f650f7a96e72780dbc84fc7471e6a8626a823'
+$receiptBlob = 'b82f5dc20720e1c4b8e10579c410a503a17a6d93'
 $receiptPath = 'artifacts/gogoke-37/intake/PUBLIC_AUTHORIZATION_RECEIPT.json'
 $planPath = 'docs/design/gogoke-37-plan-v1/PLAN.json'
 $verifierPath = Join-Path $repoRoot 'docs\design\gogoke-37-plan-v1\verify_plan.py'
