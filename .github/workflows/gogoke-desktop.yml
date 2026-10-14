@@ -506,8 +506,8 @@ jobs:
           $boundSteps = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml managed_cli_bound_step --lib 2>&1
           $boundSteps | Out-Host
           if ($LASTEXITCODE -ne 0 -or
-              @($boundSteps | Where-Object { $_ -match 'test result: ok\. 2 passed; 0 failed; 0 ignored' }).Count -ne 1) {
-            throw "Managed CLI original action step identity tests failed or did not execute exactly two tests: $LASTEXITCODE"
+              @($boundSteps | Where-Object { $_ -match 'test result: ok\. 4 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+            throw "Managed CLI original action and legacy probe tests failed or did not execute exactly four tests: $LASTEXITCODE"
           }
           $boundSource = 'src-tauri/src/public_runtime/product_entry.rs'
           $boundOriginal = [IO.File]::ReadAllBytes($boundSource)
@@ -542,8 +542,47 @@ jobs:
           $boundRestored = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml managed_cli_bound_step --lib 2>&1
           $boundRestored | Out-Host
           if ($LASTEXITCODE -ne 0 -or
-              @($boundRestored | Where-Object { $_ -match 'test result: ok\. 2 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+              @($boundRestored | Where-Object { $_ -match 'test result: ok\. 4 passed; 0 failed; 0 ignored' }).Count -ne 1) {
             throw 'Restored managed CLI reply identity controls did not pass'
+          }
+          $legacyNeedle = '(?s)(if step==ManagedCliPrepareStep::Probe \{\s*)ManagedCliProbeMode::Legacy'
+          $boundTestsStart = $boundText.IndexOf('mod tests {')
+          if ([regex]::Matches($boundText,$legacyNeedle).Count -ne 1 -or $boundTestsStart -lt 0 -or
+              [regex]::Match($boundText,$legacyNeedle).Index -ge $boundTestsStart) {
+            throw 'Managed CLI production legacy mode mutation target is not unique'
+          }
+          $legacyMutation = [ordered]@{ source=$env:GITHUB_SHA; originalHash=$boundHash; state='NOT_RUN' }
+          try {
+            $legacyChanged = [regex]::Replace($boundText,$legacyNeedle,'${1}ManagedCliProbeMode::Bound')
+            if ($boundText.Substring($boundTestsStart) -cne $legacyChanged.Substring($legacyChanged.IndexOf('mod tests {'))) {
+              throw 'Legacy mode mutation changed test source'
+            }
+            [IO.File]::WriteAllText($boundSource,$legacyChanged,[Text.UTF8Encoding]::new($false))
+            $legacyMutation.changedHash = (Get-FileHash -LiteralPath $boundSource).Hash.ToLowerInvariant()
+            & cargo +1.89.0 check --locked --manifest-path src-tauri/Cargo.toml --lib
+            $legacyMutation.checkExit = $LASTEXITCODE
+            if ($LASTEXITCODE -ne 0) { throw 'Legacy mode mutation did not compile; not a behavioral failure' }
+            $wrongMode = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml managed_cli_bound_step_probe_mode_uses_original_pending_action --lib 2>&1
+            $legacyMutation.testExit = $LASTEXITCODE
+            $wrongMode | Out-Host
+            $wrongMode | Set-Content -LiteralPath (Join-Path $evidence 'managed-cli-legacy-mode-mutation.log') -Encoding utf8
+            if ($LASTEXITCODE -eq 0 -or
+                @($wrongMode | Where-Object { $_ -match 'test result: FAILED\. 0 passed; 1 failed; 0 ignored' }).Count -ne 1) {
+              throw 'Legacy STAGED mode mutation was not rejected by the original behavior assertion'
+            }
+            $legacyMutation.state = 'COMPILED_BEHAVIOR_MUTATION_KILLED'
+          } finally {
+            [IO.File]::WriteAllBytes($boundSource,$boundOriginal)
+            $legacyMutation.restoredHash = (Get-FileHash -LiteralPath $boundSource).Hash.ToLowerInvariant()
+            $legacyMutation | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence 'managed-cli-legacy-mode-mutation.json') -Encoding utf8
+            if ($legacyMutation.restoredHash -cne $boundHash) { throw 'Legacy mode source not restored exactly' }
+          }
+          $legacyRestored = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml managed_cli_bound_step --lib 2>&1
+          $legacyRestored | Out-Host
+          $legacyRestored | Set-Content -LiteralPath (Join-Path $evidence 'managed-cli-legacy-mode-restored.log') -Encoding utf8
+          if ($LASTEXITCODE -ne 0 -or
+              @($legacyRestored | Where-Object { $_ -match 'test result: ok\. 4 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+            throw 'Restored original and legacy managed CLI reply controls did not pass'
           }
           $custody = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml cancelled_reply_retains_job_and_lease_until_accounted_settlement --lib 2>&1
           $custody | Out-Host

@@ -1506,6 +1506,18 @@ fn validate_managed_cli_bound_step(reply:&serde_json::Value,frame:&serde_json::V
     Ok(())
 }
 
+fn validate_managed_cli_legacy_probe(reply:&serde_json::Value,frame:&serde_json::Value)->Result<(),String> {
+    if !reply.as_object().is_some_and(|fields|fields.len()==4) ||
+        !frame.get("driverId").and_then(serde_json::Value::as_str).is_some_and(|value|!value.is_empty()) ||
+        reply.get("schema").and_then(serde_json::Value::as_str)!=Some("gogoke.37.managed-cli.v1") ||
+        reply.get("command").and_then(serde_json::Value::as_str)!=Some("probe") ||
+        reply.get("driverId")!=frame.get("driverId") ||
+        reply.get("state").and_then(serde_json::Value::as_str)!=Some("PROBED") {
+        return Err(format!("GOGOKE_MANAGED_CLI_LEGACY_PROBE_MISMATCH:{reply}"));
+    }
+    Ok(())
+}
+
 #[cfg(target_os="windows")]
 fn managed_cli_bound_step_json(host:&super::design37_host::Design37Host,
     frame:serde_json::Value,step:&str,operation:&str)->Result<serde_json::Value,String> {
@@ -1528,6 +1540,34 @@ fn managed_cli_version_parts(version:&str)->Option<[u64;3]> {
 
 #[derive(Clone,Copy,PartialEq,Eq,Debug)]
 enum ManagedCliPrepareStep { Download,Restage,Probe,FinalFrame }
+
+#[derive(Clone,Copy,PartialEq,Eq,Debug)]
+enum ManagedCliProbeMode { Bound,Legacy }
+
+fn managed_cli_probe_mode(status:&serde_json::Value,step:ManagedCliPrepareStep,
+    request_id:&str,operation:&str,target:&str)->Result<ManagedCliProbeMode,String> {
+    let pending=status.get("pendingAction")
+        .ok_or_else(||"GOGOKE_MANAGED_CLI_PENDING_ACTION_MISMATCH".to_string())?;
+    if pending.is_null() {
+        return Ok(if step==ManagedCliPrepareStep::Probe {
+            ManagedCliProbeMode::Legacy
+        }else{ManagedCliProbeMode::Bound});
+    }
+    let expected_phase=match step {
+        ManagedCliPrepareStep::Download=>"BEGUN",
+        ManagedCliPrepareStep::Restage=>"BEGUN",
+        ManagedCliPrepareStep::Probe=>"STAGED",
+        ManagedCliPrepareStep::FinalFrame=>"PROBED",
+    };
+    if !pending.as_object().is_some_and(|fields|fields.len()==4) ||
+        pending.get("requestId").and_then(serde_json::Value::as_str)!=Some(request_id) ||
+        pending.get("operation").and_then(serde_json::Value::as_str)!=Some(operation) ||
+        pending.get("targetVersion").and_then(serde_json::Value::as_str)!=Some(target) ||
+        pending.get("phase").and_then(serde_json::Value::as_str)!=Some(expected_phase) {
+        return Err("GOGOKE_MANAGED_CLI_PENDING_ACTION_MISMATCH".into());
+    }
+    Ok(ManagedCliProbeMode::Bound)
+}
 
 fn managed_cli_prepare_step(state:&str,prepared:bool)->Result<ManagedCliPrepareStep,String> {
     if prepared {
@@ -1629,6 +1669,7 @@ async fn managed_cli_lifecycle_action(app:tauri::AppHandle,request:Design37Insta
         let step=managed_cli_prepare_step(state,prepared)?;
         let needs_stage=matches!(step,ManagedCliPrepareStep::Download|ManagedCliPrepareStep::Restage);
         let needs_probe=step!=ManagedCliPrepareStep::FinalFrame;
+        let probe_mode=managed_cli_probe_mode(&status,step,&request.request_id,command,target)?;
         let target=target.to_string();
         let mut stage=if prepared {Some(status.get("stageName").and_then(serde_json::Value::as_str)
             .ok_or_else(||"GOGOKE_MANAGED_CLI_PREPARED_STAGE_REQUIRED".to_string())?.to_string())}else{None};
@@ -1683,10 +1724,19 @@ async fn managed_cli_lifecycle_action(app:tauri::AppHandle,request:Design37Insta
                     "requestId":request.request_id}),"STAGE_VERSION",command)?;
             }
             if needs_probe {
-                managed_cli_bound_step_json(&host,serde_json::json!({
+                let frame=serde_json::json!({
                     "schema":"gogoke.37.managed-cli.v1","command":"probe",
                     "driverId":request.driver_id,"targetVersion":target,"stageName":stage,
-                    "requestId":request.request_id}),"PROBE_VERSION",command)?;
+                    "requestId":request.request_id});
+                match probe_mode {
+                    ManagedCliProbeMode::Bound=>{
+                        managed_cli_bound_step_json(&host,frame,"PROBE_VERSION",command)?;
+                    },
+                    ManagedCliProbeMode::Legacy=>{
+                        let reply=managed_cli_native_json(&host,frame.clone(),"PROBE_VERSION")?;
+                        validate_managed_cli_legacy_probe(&reply,&frame)?;
+                    },
+                }
             }
             let probed=managed_cli_native_json(&host,serde_json::json!({
                 "schema":"gogoke.37.managed-cli.v1","command":"status","driverId":request.driver_id}),"PROBED_STATUS")?;
@@ -1996,7 +2046,50 @@ mod tests {
             assert!(validate_managed_cli_bound_step(&foreign,&frame,"upgrade").is_err());
             let mut missing=reply.clone();missing.as_object_mut().unwrap().remove("stageName");
             assert!(validate_managed_cli_bound_step(&missing,&frame,"upgrade").is_err());
+            let mut missing_id=reply.clone();missing_id.as_object_mut().unwrap().remove("requestId");
+            assert!(validate_managed_cli_bound_step(&missing_id,&frame,"upgrade").is_err());
         }
+    }
+
+    #[test]
+    fn managed_cli_bound_step_legacy_probe_requires_exact_original_reply() {
+        let frame=serde_json::json!({"schema":"gogoke.37.managed-cli.v1","command":"probe",
+            "driverId":"codex","targetVersion":"0.162.1","stageName":"original-stage",
+            "requestId":"original-id"});
+        let reply=serde_json::json!({"schema":"gogoke.37.managed-cli.v1","command":"probe",
+            "driverId":"codex","state":"PROBED"});
+        assert!(validate_managed_cli_legacy_probe(&reply,&frame).is_ok());
+        for field in ["schema","command","driverId","state"] {
+            let mut changed=reply.clone();changed[field]=serde_json::json!("foreign");
+            assert!(validate_managed_cli_legacy_probe(&changed,&frame).is_err(),"{field}");
+        }
+        let mut extra=reply.clone();extra["requestId"]=serde_json::json!("original-id");
+        assert!(validate_managed_cli_legacy_probe(&extra,&frame).is_err());
+        let mut missing=reply.clone();missing.as_object_mut().unwrap().remove("driverId");
+        assert!(validate_managed_cli_legacy_probe(&missing,&frame).is_err());
+    }
+
+    #[test]
+    fn managed_cli_bound_step_probe_mode_uses_original_pending_action() {
+        let legacy=serde_json::json!({"pendingAction":null});
+        assert_eq!(managed_cli_probe_mode(&legacy,ManagedCliPrepareStep::Probe,
+            "original-id","upgrade","0.162.1"),Ok(ManagedCliProbeMode::Legacy));
+        assert_eq!(managed_cli_probe_mode(&legacy,ManagedCliPrepareStep::Download,
+            "original-id","upgrade","0.162.1"),Ok(ManagedCliProbeMode::Bound));
+        let bound=serde_json::json!({"pendingAction":{"requestId":"original-id",
+            "operation":"upgrade","targetVersion":"0.162.1","phase":"STAGED"}});
+        assert_eq!(managed_cli_probe_mode(&bound,ManagedCliPrepareStep::Probe,
+            "original-id","upgrade","0.162.1"),Ok(ManagedCliProbeMode::Bound));
+        for field in ["requestId","operation","targetVersion","phase"] {
+            let mut changed=bound.clone();changed["pendingAction"][field]=serde_json::json!("foreign");
+            assert!(managed_cli_probe_mode(&changed,ManagedCliPrepareStep::Probe,
+                "original-id","upgrade","0.162.1").is_err(),"{field}");
+        }
+        let mut extra=bound.clone();extra["pendingAction"]["unbound"]=serde_json::json!(true);
+        assert!(managed_cli_probe_mode(&extra,ManagedCliPrepareStep::Probe,
+            "original-id","upgrade","0.162.1").is_err());
+        assert!(managed_cli_probe_mode(&serde_json::json!({}),ManagedCliPrepareStep::Probe,
+            "original-id","upgrade","0.162.1").is_err());
     }
 
     #[cfg(target_os = "windows")]

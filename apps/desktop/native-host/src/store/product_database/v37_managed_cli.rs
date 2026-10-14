@@ -839,7 +839,11 @@ impl<'a> ProductDatabase<'a> {
                 let request=request_id(&fields)?;
                 let row=instance::read_version_action(&self.connection,self.root,&request)
                     .map_err(|error|failure("bound failure action",error))?.ok_or(OrchestrationError::AccessDenied)?;
-                if row.driver!=driver || row.phase==instance::ActionPhase::Consumed {
+                // This ingress reports downloader failure before stage/probe.
+                // A caller's error is never evidence that a committed probe
+                // intent did not launch. Only native probe observations may
+                // settle later phases; exact recorded FAILED replay remains.
+                if row.driver!=driver || !matches!(row.phase,instance::ActionPhase::Begun|instance::ActionPhase::Failed) {
                     return Err(OrchestrationError::AccessDenied);
                 }
                 if row.phase==instance::ActionPhase::Failed {
@@ -1179,6 +1183,20 @@ mod tests {
         let (stage33,image33)=real_opencode_version_stage(&root,"1.18.33");
         let begin=|id:&str,version:&str,operation:&str|format!(
             "{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"begin\",\"driverId\":\"opencode\",\"targetVersion\":\"{version}\",\"requestId\":\"{id}\",\"operation\":\"{operation}\"}}");
+        let external_failure=|id:&str,state:&str,raw:&str|format!(
+            "{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"failure\",\"driverId\":\"opencode\",\"requestId\":\"{id}\",\"state\":\"{state}\",\"raw\":\"{raw}\"}}");
+        managed_user(&mut product,&begin("download-failure","1.18.33","upgrade"));
+        let download_failure=external_failure("download-failure","UPGRADE_FAILED","original downloader error before stage");
+        let original_failure_reply=managed_user(&mut product,&download_failure);
+        let failed_download=instance::read_version_action(&product.connection,&root,"download-failure").unwrap().unwrap();
+        assert_eq!(failed_download.phase,instance::ActionPhase::Failed);
+        assert!(failed_download.open_driver_id.is_empty());
+        let after_download_failure=managed_snapshot(&product);
+        assert_eq!(managed_user(&mut product,&download_failure),original_failure_reply);
+        assert_eq!(managed_snapshot(&product),after_download_failure);
+        assert!(product.dispatch_user_managed_cli(external_failure("download-failure","UPGRADE_FAILED","different error").as_bytes()).is_err());
+        assert_eq!(instance::read_version_action(&product.connection,&root,"download-failure").unwrap().unwrap(),failed_download);
+        assert_eq!(managed_snapshot(&product),after_download_failure);
         managed_user(&mut product,&begin("failed-before-launch","1.18.33","upgrade"));
         managed_user(&mut product,&version_frame("stage","1.18.33",Some(&stage33),Some("failed-before-launch")));
         let probe_home=image33.ancestors().find(|path|path.file_name().and_then(|name|name.to_str())==Some("content"))
@@ -1187,9 +1205,9 @@ mod tests {
         let before_failure_c=table_rows(&product,"SELECT operation_id,state,COALESCE(stop_proof_hash,'') FROM main.gogoke_coordination_process_custody ORDER BY operation_id",3);
         let failed=version_frame("probe","1.18.33",Some(&stage33),Some("failed-before-launch"));
         assert!(product.dispatch_user_managed_cli(failed.as_bytes()).is_err());
-        let failure=instance::read_version_action(&product.connection,&root,"failed-before-launch").unwrap().unwrap();
-        assert_eq!(failure.phase,instance::ActionPhase::Failed);
-        assert!(failure.open_driver_id.is_empty());assert!(!failure.original_error_hex.is_empty());
+        let failed_action=instance::read_version_action(&product.connection,&root,"failed-before-launch").unwrap().unwrap();
+        assert_eq!(failed_action.phase,instance::ActionPhase::Failed);
+        assert!(failed_action.open_driver_id.is_empty());assert!(!failed_action.original_error_hex.is_empty());
         let blocked=instance::read_managed_cli(&product.connection,&root,"opencode").unwrap().unwrap();
         assert_eq!(blocked.state,"BLOCKED");
         assert!(blocked.raw_error.as_deref().unwrap().contains("private probe home identity"));
@@ -1212,12 +1230,20 @@ mod tests {
         let after_stage=managed_snapshot(&product);
         assert_eq!(managed_user(&mut product,&stage),staged);
         assert_eq!(managed_snapshot(&product),after_stage);
+        let staged_action=instance::read_version_action(&product.connection,&root,"bound-upgrade").unwrap().unwrap();
+        assert!(product.dispatch_user_managed_cli(external_failure("bound-upgrade","UPGRADE_FAILED","late downloader error").as_bytes()).is_err());
+        assert_eq!(managed_snapshot(&product),after_stage);
+        assert_eq!(instance::read_version_action(&product.connection,&root,"bound-upgrade").unwrap().unwrap(),staged_action);
         let probe=version_frame("probe","1.18.33",Some(&stage33),Some("bound-upgrade"));
         let probed_reply=managed_user(&mut product,&probe);
         let custody=table_rows(&product,"SELECT operation_id,state,COALESCE(stop_proof_hash,'') FROM main.gogoke_coordination_process_custody ORDER BY operation_id",3);
         let after_probe=managed_snapshot(&product);
         assert_eq!(managed_user(&mut product,&probe),probed_reply);
         assert_eq!(managed_snapshot(&product),after_probe);
+        let probed_action=instance::read_version_action(&product.connection,&root,"bound-upgrade").unwrap().unwrap();
+        assert!(product.dispatch_user_managed_cli(external_failure("bound-upgrade","BLOCKED","late caller error").as_bytes()).is_err());
+        assert_eq!(managed_snapshot(&product),after_probe);
+        assert_eq!(instance::read_version_action(&product.connection,&root,"bound-upgrade").unwrap().unwrap(),probed_action);
         assert_eq!(table_rows(&product,"SELECT operation_id,state,COALESCE(stop_proof_hash,'') FROM main.gogoke_coordination_process_custody ORDER BY operation_id",3),custody);
         let copy=instance::read_managed_cli(&product.connection,&root,"opencode").unwrap().unwrap();
         let final_frame=|operation:&str,id:&str,target:&str,revision:i64|format!(
@@ -1250,6 +1276,32 @@ mod tests {
         // revision chain, even for a readback of its original final bytes.
         assert!(product.dispatch_user_managed_cli(up.as_bytes()).is_err());
         assert_eq!(managed_snapshot(&product),after);
+        // Model a crash immediately after the real production intent COMMIT,
+        // before any H launch. A later public error cannot assert that fact or
+        // release this unresolved action; replay must not launch a new probe.
+        managed_user(&mut product,&begin("held-probe-intent","1.18.33","upgrade"));
+        managed_user(&mut product,&version_frame("stage","1.18.33",Some(&stage33),Some("held-probe-intent")));
+        let held_probe=version_frame("probe","1.18.33",Some(&stage33),Some("held-probe-intent"));
+        let held_hex=action_hex(held_probe.as_bytes());
+        let held=product.version_action_transaction(|this| {
+            let row=this.bound_version_action("opencode","1.18.33","held-probe-intent")?;
+            this.managed_version_action_resources("opencode",Some(&row))?;
+            instance::begin_probe_version_action_in_current_transaction(&this.connection,this.root,&this.owner,
+                &row.request_id,row.revision,&held_hex,&stage33,&row.current_copy_fingerprint,&row.current_source_fingerprint)
+                .map_err(|error|failure("test original prelaunch intent",error))
+        }).unwrap();
+        let instance::BeginOutcome::Created(held)=held else {panic!("new original probe intent")};
+        assert_eq!(held.phase,instance::ActionPhase::Probing);
+        let unresolved=managed_snapshot(&product);
+        for state in ["UPGRADE_FAILED","BLOCKED","PROBE_UNKNOWN"] {
+            assert!(product.dispatch_user_managed_cli(external_failure("held-probe-intent",state,"caller has no native outcome").as_bytes()).is_err());
+            assert_eq!(managed_snapshot(&product),unresolved);
+            assert_eq!(instance::read_version_action(&product.connection,&root,"held-probe-intent").unwrap().unwrap(),held);
+        }
+        assert!(product.dispatch_user_managed_cli(begin("replacement-for-held","1.18.33","upgrade").as_bytes()).is_err());
+        assert!(product.dispatch_user_managed_cli(held_probe.as_bytes()).is_err());
+        assert_eq!(managed_snapshot(&product),unresolved);
+        assert_eq!(instance::read_version_action(&product.connection,&root,"held-probe-intent").unwrap().unwrap(),held);
         product.close_checked().unwrap();drop(root);fs::remove_dir_all(path).unwrap();
     }
 

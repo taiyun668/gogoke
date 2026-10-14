@@ -356,6 +356,7 @@ jobs:
           $utf8 = [Text.UTF8Encoding]::new($false, $true)
           $journal = 'apps/desktop/native-host/src/store/instance/managed_version_action.rs'
           $legacy = 'apps/desktop/native-host/src/process/session/legacy_holders_gone.rs'
+          $bridge = 'apps/desktop/native-host/src/store/product_database/v37_managed_cli.rs'
           $journalText = [IO.File]::ReadAllText($journal)
           $newline = if ($journalText.Contains("`r`n")) { "`r`n" } else { "`n" }
           $cases = @(
@@ -370,7 +371,11 @@ jobs:
             @{ id='probe-replay-intent'; source=$journal;
               test='store::instance::managed_version_action::tests::staged_probed_consume_chain_and_transaction_rollback';
               needle='row.probe_hex == exact_probe_hex { return Ok(BeginOutcome::Replayed(row)); }';
-              replacement='row.probe_hex == exact_probe_hex { return Ok(BeginOutcome::Created(row)); }' }
+              replacement='row.probe_hex == exact_probe_hex { return Ok(BeginOutcome::Created(row)); }' },
+            @{ id='public-failure-phase'; source=$bridge;
+              test='store::product_database::v37_managed_cli::tests::real_bound_version_action_replays_without_relaunch_and_rollback_uses_new_action';
+              needle='if row.driver!=driver || !matches!(row.phase,instance::ActionPhase::Begun|instance::ActionPhase::Failed) {';
+              replacement='if row.driver!=driver || !matches!(row.phase,instance::ActionPhase::Begun|instance::ActionPhase::Failed|instance::ActionPhase::Probing) {' }
           )
           function Invoke-ExactVersionTest([string]$axis, [string]$phase, [string]$test, [bool]$expectFailure) {
             $output = & cargo test --locked --manifest-path $manifest --lib $test -- --exact --nocapture 2>&1
