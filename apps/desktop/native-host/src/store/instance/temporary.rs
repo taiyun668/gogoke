@@ -976,7 +976,7 @@ fn create_request_from_fingerprint(value: &str) -> Result<Vec<u8>, TemporaryHome
 
 fn original_create_source(connection: &VerifiedDatabaseConnection<'_>, home_id: &str,
     row: &HomeRow, selector: &UserTemporaryHomeSelector<'_>, sid: &str)
-    -> Result<(String, String, String, String), TemporaryHomeError> {
+    -> Result<(String, String, String, String, String), TemporaryHomeError> {
     let tag = b"temporary-create-detached";
     let prefix = format!("{:016x}{}", tag.len(), hex(tag));
     let query = Statement::prepare(connection.as_ptr(),
@@ -1113,7 +1113,7 @@ fn original_create_source(connection: &VerifiedDatabaseConnection<'_>, home_id: 
         },
         _ => return Err(TemporaryHomeError::RequestConflict),
     }
-    Ok((operation_id, request.request_id, stored, sha256_hex(&raw)))
+    Ok((operation_id, request.request_id, request.operation, stored, sha256_hex(&raw)))
 }
 
 fn selected_user_request(input: &UserTemporaryHomeCloseInput<'_>)
@@ -1342,12 +1342,40 @@ pub(crate) fn close_user_temporary_home(connection: &mut VerifiedDatabaseConnect
             || (episode_request.operation == "resume" && old_generation.is_empty()) {
             return Err(TemporaryHomeError::StopFactUnavailable);
         }
+        if episode_request.operation == "open" {
+            let original_open = Statement::prepare(connection.as_ptr(),
+                "SELECT raw_hex,status FROM main.gogoke_v37_h_operation
+                  WHERE domain_id=?1 AND request_id=?2 AND session_id=?3
+                    AND operation='open'")?;
+            for (index, value) in [&row.1, &episode_request_id, &row.3]
+                .iter().enumerate() { original_open.bind_text(index as i32 + 1, value)?; }
+            if !original_open.step_row()? || original_open.column_text(0)? != episode_raw_hex
+                || original_open.column_text(1)? != "APPLIED" || original_open.step_row()? {
+                return Err(TemporaryHomeError::StopFactUnavailable);
+            }
+        } else {
+            let unexpected = Statement::prepare(connection.as_ptr(),
+                "SELECT COUNT(*) FROM main.gogoke_v37_h_operation
+                  WHERE domain_id=?1 AND request_id=?2")?;
+            unexpected.bind_text(1, &row.1)?;
+            unexpected.bind_text(2, &episode_request_id)?;
+            if !unexpected.step_row()? || unexpected.column_text(0)? != "0" {
+                return Err(TemporaryHomeError::StopFactUnavailable);
+            }
+        }
         let expected_suffix = sha256_hex(format!("{}\n{}\n{}\n{}\n{}",
             root.canonical_root().identity.opaque(), row.1, row.3, incarnation, row.4).as_bytes());
         if suffix != &expected_suffix[..40] { return Err(TemporaryHomeError::HomeConflict); }
         drop(original_seat);
-        let (create_id, original_create_request_id, create_fingerprint, create_raw_sha256) =
+        let (create_id, original_create_request_id, create_operation, create_fingerprint,
+            create_raw_sha256) =
             original_create_source(connection, &home_id, &row, &input.selector, &sid)?;
+        if !matches!((create_operation.as_str(), episode_request.operation.as_str()),
+            ("admission-reserve", "open") | ("open", "open") | ("resume", "resume"))
+            || (create_operation != "admission-reserve"
+                && original_create_request_id != episode_request_id) {
+            return Err(TemporaryHomeError::StopFactUnavailable);
+        }
         let physical = match transition_stage(connection, root, &home_id, &row, &sid)? {
             Some(DirectoryStage::Marked(identity, _)) if identity.opaque() == row.6 => identity,
             _ => return Err(TemporaryHomeError::IdentityChanged),
@@ -1883,13 +1911,14 @@ mod tests {
                 "INSERT INTO main.gogoke_v37_h_generation(domain_id,session_id,generation,request_id,process_operation_id) VALUES('projectA','sessionA','1','openUserA',?1)").unwrap();
             generation.bind_text(1, &process_id).unwrap(); generation.step_done().unwrap();
             for (id, raw, operation) in [("reserveUserA", create_raw.as_slice(), "admission-reserve"),
+                ("openUserA", open_raw.as_slice(), "open"),
                 ("stopUserA", stop_raw.as_slice(), "stop")] {
                 let h = Statement::prepare(connection.as_ptr(),
                     "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA',?1,?2,?3,'sessionA','APPLIED',?4,?5)").unwrap();
                 h.bind_text(1, id).unwrap(); h.bind_text(2, &hex(raw)).unwrap();
                 h.bind_text(3, operation).unwrap();
-                h.bind_i64(4, if operation == "stop" { 1 } else { 0 }).unwrap();
-                h.bind_i64(5, if operation == "stop" { 2 } else { 1 }).unwrap();
+                h.bind_i64(4, if operation == "admission-reserve" { 0 } else { 1 }).unwrap();
+                h.bind_i64(5, if operation == "admission-reserve" { 1 } else { 2 }).unwrap();
                 h.step_done().unwrap();
             }
             let close = UserTemporaryHomeCloseInput { request_id: "closeUserA",
@@ -1902,9 +1931,15 @@ mod tests {
             let restore_episode = Statement::prepare(connection.as_ptr(),
                 "UPDATE main.gogoke_v37_h_process_episode SET raw_hex=?1 WHERE request_id='openUserA'").unwrap();
             restore_episode.bind_text(1, &hex(open_raw)).unwrap(); restore_episode.step_done().unwrap();
+            connection.execute("UPDATE main.gogoke_v37_h_operation SET raw_hex='00' WHERE request_id='openUserA'").unwrap();
+            assert!(matches!(close_user_temporary_home(connection, root, &owner, &close),
+                Err(TemporaryHomeError::StopFactUnavailable)));
+            let restore_open = Statement::prepare(connection.as_ptr(),
+                "UPDATE main.gogoke_v37_h_operation SET raw_hex=?1 WHERE request_id='openUserA'").unwrap();
+            restore_open.bind_text(1, &hex(open_raw)).unwrap(); restore_open.step_done().unwrap();
             connection.execute("UPDATE main.gogoke_v37_h_operation SET raw_hex='00' WHERE request_id='reserveUserA'").unwrap();
             assert!(matches!(close_user_temporary_home(connection, root, &owner, &close),
-                Err(TemporaryHomeError::RequestConflict)));
+                Err(TemporaryHomeError::StopFactUnavailable)));
             let original = Statement::prepare(connection.as_ptr(),
                 "UPDATE main.gogoke_v37_h_operation SET raw_hex=?1 WHERE request_id='reserveUserA'").unwrap();
             original.bind_text(1, &hex(create_raw)).unwrap(); original.step_done().unwrap();
