@@ -483,7 +483,7 @@ Owner 已认可最小方案，替换上一节“只沿原具名初始化、不�
 
 F.2 已要求显式升级、退回、自检、查更新和零实例卸载；原 USER dispatcher 目前只接安装流程。只新增 `apps/desktop/native-host/src/store/product_database/v37_managed_cli.rs` 为 INTEGRATOR 共享路径，将这些既定 USER 动作接到 F 的可信版本目录、原 copy/instance/SOURCE 和已有 ProductDatabase 权威事务。其私有 H/custody/intent 核对不能从 F 兄弟模块或已列桌面转发文件取得；现有桌面与 Node 共享路径继续由汇合席位使用，不新增其他写路径。
 
-升级或退回必须选择编译内已验证的官方 archive/image/version，写前和完成时核对静止状态、精确 H/C、未结 intent 和 revision CAS；活跃或 UNKNOWN 一律拒绝。原 HOME 与凭据字节保留，失败原文和 UNKNOWN 不改写。查更新只记未验证通知，不能激活；doctor 必须有已证明不登录、不改账户、不花模型额度的官方只读行为，不能顶替登录检测。零实例卸载由原 F 门槛拒绝任何现存实例。没有同家双版本可信字节时，真实升级/退回成功仍为 NOT_RUN，不把候选换装或 latest 通知算通过。
+升级或退回必须选择编译内已验证的官方 archive/image/version，写前和完成时核对静止状态、精确 H/C、未结 intent 和 revision CAS；活跃或 UNKNOWN 默认拒绝；仅后述 2026-10-14 待审原生直接事实提案获准并精确读回后，才可对已证明不存在的一个历史单元作一次版本动作的限定重评。当前规则仍为 Busy。原 HOME 与凭据字节保留，失败原文和 UNKNOWN 不改写。查更新只记未验证通知，不能激活；doctor 必须有已证明不登录、不改账户、不花模型额度的官方只读行为，不能顶替登录检测。零实例卸载由原 F 门槛拒绝任何现存实例。没有同家双版本可信字节时，真实升级/退回成功仍为 NOT_RUN，不把候选换装或 latest 通知算通过。
 
 不新增数据库/issuer accessor、模型进程、调度器、权限、全局 npm/PATH 发现、自动升级、凭据读取或 Owner 登录步骤。`product_database.rs` 的 E.3 组合授权及其他 helper 不扩大；F 写域、需求、阶段、契约写方、不变量和 Owner 触点保持。本次仅增加一个 shared path，同 PR 更新范围摘要、v2 回执、MANIFEST 和三处固定回执 blob；Owner 合并且 Controller 精确读回前，不施工该路径。
 
@@ -502,3 +502,40 @@ H 发起，Integrator 只在既有 apps/desktop/native-host/src/main.rs 接线�
 ## 2026-10-14：prepared child 的两条失败清理路径（范围提案，待 Owner 合并）
 
 `apps/desktop/native-host/src/store/product_database/v37_runtime.rs` 的 open 与 resume 在 C PREPARED 成功记录后、H 绑定或 activation 前，alias bind 失败会直接返回，遗漏调用仍由原 host 持有的 `abort_prepared`。提案只为这两处加入原 custodian 清理，并覆盖 `apps/desktop/native-host/src/store/product_database/v37_runtime_tests.rs` 的真实 suspended child 故障注入与有效 mutation。保留首因、清理错误及全部 UNKNOWN、claim 和 alias 状态；abort 不构成 StopFact，也不提供冷恢复，不改历史数据。Owner 在同一 PR 合并并读回前不施工。
+
+
+## 2026-10-14：以直接原生事实限定重评历史版本阻断（待 Claude 复核合并）
+
+Owner 已授权准备本提案，并指定提案 PR 交 Claude 复核合并；本段不代表产品实现或任何历史单元已资格化。Claude 经 Owner 授权审定后合并这一份提案，Controller 核实际 merge、回执 Git 字节及 main 的 scope_digest 后，才按生效写域施工。其余 Owner 触点、最终验收与公开发布权限保持。审定前 OpenCode 的 Busy 不变，F.2 正向验证先用经实际守卫核准、未被阻挡的自管 Claude/Codex 副本继续。
+
+### 事实与不可变历史
+
+版本变更默认拒绝活跃、UNKNOWN 和未结 intent。拟议例外只接受 H 的只读原生事实：受信内核直接证实重启边界已截断原执行所属进程世代；或按原 PID 与完整 creation FILETIME 精确确认原执行已不存在。精确对象族必须证明集合完整，不能将单个 PID 消失扩大为未知后代已停；经旧来源绑定的未激活 host/child 集合可作为有限集合。两族是各自资格化的选择，不要求缺失的历史 Job-ID，不把 ACL-only 列名 holder fence 自动提升为全树证明。不得用超时、时间差、阈值、宽限期、外层关窗或 abort bool 代替事实，不要求 Owner 重启来凑证据。
+
+旧 C/H UNKNOWN、claim/owner-binding、alias、temporary home、原成功/失败和错误原文原样保留；不回填 STOPPED、StopFact、APPLIED 或新成功/失败结论。新原生观察不提供 admission release、旧会话 continuation、凭据读取、alias/worktree/HOME 清理或强杀权限。注册/认证 HOME 与凭据字节不动。若同一 PID 已可靠对应不同 creation，则只能证明旧精确对象已消失，不得操作当前对象；PID 重用或出生身份不能判清、查询拒绝/不确定、来源不可信或集合不完整一律 NOT_QUALIFIED，并保留原 OS 错误；不能降格为通过。
+
+### 主体、原 namespace 与完整守卫
+
+观察主体绑定原物理 Root/DB FileID、driver、instance、原 domain/session/generation/request/operation 的完整权威关联、原 PID/creation、原 image 和 HOME 身份、原 alias namespace/name/target 与相关 row 指纹。证明来源必须由受审原生 producer 直接取得、或由原有可信生产链验证；D 报告、操作员字符串与调用方自报 bool 不是资格。原来源链或原 namespace 无法核准时保持 Busy，不从新 logon 的同名盘符缺席推断旧 alias 已结算。
+
+同一限定历史单元的 claim、owner-binding、open、alias、target temporary-home、C custody 与桥接层重复资源拒绝必须逐项关联并重评。所有其它单元、临时 HOME、driver、holder、intent、credential、image、签名、SOURCE 与 CAS 守卫仍执行；不能只处理最先遇到的三个 SQL。目标 temporary home 的状态只在该版本动作视图中参与精确资格，原 ACTIVE 行不改写。这个例外不关闭其它已停止或未启动释放的 temporary home，也不承诺一个历史单元解堵即可完成全部 F.2。
+
+### 一次动作与重复检查的精确关联
+
+使用现有 Design37InstallCliRequest 的 requestId，不发明新的用户输入。现有 product_entry.rs 在 versioned native begin、stage 和 probe 中转发同一个 requestId；最终仍是已有六字段 USER frame，requestId 必须相同。旧无绑定的 versioned frame 可以继续走原严格规则，但不得消费冷例外；first-copy 的旧路径不继承新权限。
+
+首次显式 USER begin 在原 verified ProductDatabase/F 事务内建立一个严格动作行，以物理 authority、driver、requestId 唯一标识；保存 operation、原 source/copy/行级 revision 指纹、编译内 target archive/image/version、确切旧单元和原生事实来源。每 driver 最多一个未结动作。相同 requestId 与原始 begin bytes 只能只读回取原结果并重验资格；更换 bytes、target、operation、旧主体或来源即拒绝。不同 requestId 遇未结动作保持 Busy。后续 stage/probe 必须携带同一 requestId、匹配实际 stage 与已记录的 copy/source 前后 revision 链；不把动作自身合法写入误判为外部漂移。
+
+每次 begin/stage/probe、写前、最终 switch 与 receipt 对账都重验资格和其它完整守卫；只读 guard 不耗尽资格。最终 USER 原 raw frame/hash 在原 switch 事务绑定同一动作，效果、原 F switch receipt 与动作消费原子完成。COMMIT 结果未知时只读原动作和原 receipt，不能以新 ID 重做或重放旧 open；已明确失败的准备保留其原错误，另一次动作仍须满足现有失败/重试守卫。rollback 是一个新的 requestId/动作和当前资格核对，不能沿用上次一次性许可。原历史 image 永远保持原值，与本次 source/target image 分开。
+
+### 最小实现写域与生产者
+
+新增 H 观察实现和声明限于现有 process/session/；现有共享 process/mod.rs 只 re-export 受限类型，类型不允许外部构造或 Deserialize 冒充事实。F 的严格动作 journal/schema、版本消费者和测试限于现有 store/instance/，包括 managed_cli.rs、program_source.rs、mod.rs 及必要的 F-owned helper；F/K-INSTANCE 仍是唯一持久写方。原十表形到新增精确动作表形的迁移必须完整、原子且拒绝影子/损坏/未知表，不分类或清除旧 H/C 行。
+
+现有共享 v37_managed_cli.rs 是同一 ProductDatabase/RootLock/VerifiedDatabaseConnection/OwnerIssuer 桥；product_entry.rs 仅转发既有 USER requestId，不增加 UI 字段、登录、权限或第二调度器。没有新增冷 helper 共享文件，不触及 product_database.rs 的 E.3 限定。PR #93 的两条 runtime 共享路径在本提案完整保留，仍仅供同原 host prepared child 的预防性 abort，不用于冷证明或历史结算。发生其它共享路径、writer、UI/命令或权限需求时，施工先返回 Controller，不自行扩大。
+
+### 验证与非结论
+
+正式原生构建和测试遵循 docs/governance/gogoke-build-and-release.md，全部走云端。先验仪器，核实际加载的源码、构建与文件身份；用真实原生精确对象消失和可靠 PID 复用正例，以及活的同一精确对象、伪造/不明出生身份、拒绝访问、原始查询失败、未知后代/旧来源、namespace/目标漂移、跨单元/driver/home、缺 requestId、重复 begin/各 stage/final 不同 ID、行级 CAS、COMMIT unknown 与独立 rollback 反例。真实重启族正例必须有直接重启证据，模拟时间或 mock 不算。有效 production mutation 必须仍可编译，并因行为断言失败，恢复精确字节后再通过。新候选实际 Win11 USER 路径沿用共用 READY、StopFact/绑定表、正常关闭和十三项仪器。
+
+本提案只授权边界，不生成缺少的历史证据。任何具体历史单元仍须在未来原生资格中逐项核准；未执行的原生/云端/Win11/协议 golden/F.2 结果均为 NOT_RUN，跳过不是通过，合并不是验收。
