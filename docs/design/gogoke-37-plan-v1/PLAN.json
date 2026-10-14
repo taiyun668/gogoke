@@ -2497,7 +2497,7 @@
   },
   {
    "path": "docs/design/gogoke-37-plan-v1/LEGACY_SOURCE_MIGRATION.md",
-   "sha256_git_lf": "4edd5daaa227014e5fd70d599c2a69312e5e190d73fbb68a53da9be98e1e0206",
+   "sha256_git_lf": "1391983cb55a51bd8823730c96cbab64cc6ec611d4ac854d7f047b7cccd92bc8",
    "meaning": "Reviewable one-instance migration contract only; not a native fact, implementation, execution permission or acceptance."
   }
  ]
