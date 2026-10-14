@@ -147,11 +147,11 @@ fn original_prepared_alias_bind_failure_aborts_exact_open_child_without_stopfact
 #[test]
 fn original_prepared_alias_bind_failure_aborts_exact_resume_child_and_preserves_old_stop() {
     health_control_product("codex", |product| {
-        let claim = runtime::observe_claim_bound(&product.connection, "projectA", "seatA", "sessionA").unwrap();
+        let claim = runtime::observe_claim_bound(&product.connection, "projectA", "seatA", "sessionA").unwrap().unwrap();
         let stop = operation("K-SESSION", "stop", "prebind-original-stop", "sessionA", claim.revision as u64,
             &format!(r#"{{"seatId":"seatA","generation":"{}"}}"#, claim.generation));
         assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status, V37Status::Applied);
-        let stopped = runtime::observe_claim_bound(&product.connection, "projectA", "seatA", "sessionA").unwrap();
+        let stopped = runtime::observe_claim_bound(&product.connection, "projectA", "seatA", "sessionA").unwrap().unwrap();
         let old_proof = health_control_rows(product,
             "SELECT state,stop_proof_hash FROM main.gogoke_coordination_process_custody WHERE state='STOPPED'");
         FAIL_ORIGINAL_PREPARED_ALIAS_BIND.with(|flag| assert!(!flag.replace(true)));
@@ -161,7 +161,7 @@ fn original_prepared_alias_bind_failure_aborts_exact_resume_child_and_preserves_
         assert!(format!("{error:?}").contains("injected original PREPARED alias binding failure"));
         assert!(format!("{error:?}").contains("exact prepared abort: Ok(true)"));
         assert_original_prepared_alias_abort(product);
-        assert_eq!(runtime::observe_claim_bound(&product.connection, "projectA", "seatA", "sessionA").unwrap(), stopped);
+        assert_eq!(runtime::observe_claim_bound(&product.connection, "projectA", "seatA", "sessionA").unwrap().unwrap(), stopped);
         let episode = health_control_rows(product,
             "SELECT phase,raw_hex FROM main.gogoke_v37_h_process_episode WHERE request_id='prebind-failed-resume'");
         assert_eq!(episode, vec![vec!["INTENT".to_owned(), hex(&resume.raw_bytes)]],

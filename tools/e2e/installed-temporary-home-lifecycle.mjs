@@ -190,7 +190,9 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
         if (attemptFor(request.requestId)) throw Error('Duplicate original temporary-HOME create requestId');
         const attempt = {
           caseId: producer.caseId, domainId, sessionId: producer.sessionId, instanceId: producer.instanceId,
-          operation: request.operation, generation: String(request.payload.generation),
+          operation: request.operation,
+          producerGeneration: String(request.payload.generation),
+          generation: request.operation === 'resume' ? null : String(request.payload.generation),
           originalCreateRequestId: request.requestId,
           originalCreateRawFrame: record.rawFrame,
           originalCreateRawSha256: digest(record.rawFrame),
@@ -294,6 +296,12 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
       for (const attempt of attempts) {
         activeCaseId = attempt.caseId;
         if (attempt.teardownState.startsWith('CLOSED')) continue;
+        if (!nonempty(attempt.generation)) {
+          attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_ORIGINAL_RESUME_GENERATION_UNKNOWN';
+          errors.push(`${attempt.originalCreateRequestId}: no original native new-generation receipt`);
+          save();
+          continue;
+        }
         const session = journal.sessions.find(row => row.id === attempt.sessionId);
         const producer = manifest.producers.find(row => row.sessionId === attempt.sessionId);
         if (!session || !producer || product.socket?.readyState !== WebSocket.OPEN) {

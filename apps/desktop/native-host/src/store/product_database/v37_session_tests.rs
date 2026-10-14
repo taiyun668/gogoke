@@ -61,6 +61,91 @@ fn temporary_home_close_user_boundary_rejects_caller_proof_and_ambiguous_selecto
 }
 
 #[test]
+fn temporary_home_close_user_bridge_consumes_actual_native_claude_stop_without_model_call() {
+    let _guard = route_b_test_guard();
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path = std::env::temp_dir().join(format!("gogoke-home-close-real-{}-{nonce}", std::process::id()));
+    std::fs::create_dir(&path).unwrap();
+    let root = RootLock::acquire(&path).unwrap();
+    let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+    managed_cli_test_setup::ready(&mut product, &root, "claude");
+    let frame = |family: &str, verb: &str, id: &str, target: &str, domain: &str,
+        revision: u64, payload: &str| decode_request(format!(
+        r#"{{"schema":"gogoke.37.operations.v1","family":"{family}","operation":"{verb}","requestId":"{id}","targetId":"{target}","domainId":"{domain}","expectedRevision":"{revision}","payload":{payload}}}"#
+    ).as_bytes()).unwrap();
+    let register = frame("K-INSTANCE", "register", "homeProofRegister", "instanceA", "global", 0,
+        r#"{"driverId":"claude"}"#);
+    assert_eq!(status(&mut product, &register), V37Status::Applied);
+    // Existing cloud provider fixture: login presence only, no credentials or
+    // model input. The fixed CLI itself produces its initialization ACK.
+    instance::record_observation(&mut product.connection, &root, &instance::ObservationRequest {
+        request_id: "homeProofPresence", request_bytes: b"SYNTHETIC_PRESENCE_NOT_AUTHENTICATION",
+        instance_id: "instanceA", expected_revision: 1,
+        observation: instance::InstanceObservation::LoggedIn,
+    }).unwrap();
+    instance::set_instance_concurrency_cap(&mut product.connection, &product.owner, "instanceA", 1).unwrap();
+    seat::set_project_parallel_cap(&mut product.connection, &product.owner, "projectA", 1).unwrap();
+    seat::store_template(&mut product.connection, NativeOrigin::user(&product.owner), StoreTemplate {
+        domain_id: "projectA", template_id: "templateA",
+        settings_json: br#"{"effort":"high","model":"claude-sonnet-4-6","permissionTier":"NETWORKED_WRITE"}"#,
+    }).unwrap();
+    seat::create(&mut product.connection, NativeOrigin::user(&product.owner), CreateSeat {
+        domain_id: "projectA", seat_id: "seatA", template_id: "templateA", instance_id: Some("instanceA"),
+        kind: Kind::Long, request_id: "homeProofSeat", request_bytes: b"home close real provider fixture",
+    }).unwrap();
+    let source = crate::store::worktree::tests::make_source_fixture(&mut product.connection,
+        &root, &product.owner, &mut product.process_custodian);
+    let git = std::env::var_os("GOGOKE_CONTROLLED_GIT_PATH").unwrap();
+    let configuration = Json::Object(BTreeMap::from([
+        (JsonString::from_str("schema"), text("gogoke.37.owner-configuration.v1")),
+        (JsonString::from_str("command"), text("worktree-source")),
+        (JsonString::from_str("repositoryId"), text("fixtureRepo")),
+        (JsonString::from_str("sourcePath"), text(source.to_str().unwrap())),
+        (JsonString::from_str("gitPath"), text(git.to_str().unwrap())),
+    ])).canonical();
+    product.configure_user_v37(configuration.as_bytes()).unwrap();
+    assert_eq!(status(&mut product, &worktree_request("homeProofTree", "treeA", "projectA", "seatA")), V37Status::Applied);
+    for (verb, id, rev) in [("admission-reserve", "homeProofReserve", 0),
+        ("admission-commit", "homeProofCommit", 1)] {
+        assert_eq!(status(&mut product, &request(verb, id, "sessionA", "seatA", rev)), V37Status::Applied);
+    }
+    let open = frame("K-SESSION", "open", "homeProofOpen", "sessionA", "projectA", 2,
+        r#"{"seatId":"seatA","generation":"2","repositoryId":"fixtureRepo","worktreeId":"treeA"}"#);
+    assert_eq!(status(&mut product, &open), V37Status::Applied);
+    let stop = request("stop", "homeProofStop", "sessionA", "seatA", 3);
+    let stopped = h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap();
+    assert_eq!(stopped.status, V37Status::Applied);
+    let mut stop_result = stopped.into_result();
+    let Some(Json::String(stop_fact)) = stop_result.remove(&JsonString::from_str("stopFact")) else {
+        panic!("actual native StopFact absent");
+    };
+    let stop_fact = stop_fact.to_well_formed_string().unwrap();
+    assert!(stop_fact.starts_with("sha256:"));
+    let close = frame("K-INSTANCE", "temporary-home-close", "homeProofClose", "instanceA", "projectA", 1,
+        r#"{"sessionId":"sessionA","originalCreateRequestId":"homeProofReserve"}"#);
+    let closed = h::decode_receipt(&product.dispatch_user_request(&close).unwrap()).unwrap();
+    assert_eq!(closed.status, V37Status::Applied, "{}", String::from_utf8_lossy(&closed.raw_bytes));
+    assert_eq!((closed.previous_revision, closed.revision), (1, 2));
+    assert_eq!(status(&mut product, &close), V37Status::Replayed);
+    let durable = Statement::prepare(product.connection.as_ptr(),
+        "SELECT h.state,h.revision,c.stop_proof_hash,o.native_receipt_id
+         FROM main.gogoke_v37_instance_homes h
+         JOIN main.gogoke_v37_h_process_episode e ON e.home_id=h.home_id
+         JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id
+         JOIN main.gogoke_v37_instance_operations o ON o.target_id=h.home_id AND o.request_id='homeProofClose'").unwrap();
+    assert!(durable.step_row().unwrap());
+    assert_eq!(durable.column_text(0).unwrap(), "CLOSED");
+    assert_eq!(durable.column_text(1).unwrap(), "2");
+    assert_eq!(durable.column_text(2).unwrap(), stop_fact);
+    assert!(durable.column_text(3).unwrap().starts_with("f-home-close-v2-"));
+    assert!(!durable.step_row().unwrap());
+    drop(durable);
+    product.close_checked().unwrap();
+    drop(root);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn global_secretary_cannot_be_selected_by_wire_role_or_unset_e() {
     let _guard=route_b_test_guard();
     let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
