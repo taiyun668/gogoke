@@ -495,11 +495,14 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
         (facts.homeInventoryMatchesDeclaredScope === true ||
           (manifest.authorizedRepairs.length === 0 && facts.homeInventoryUnchangedExceptOwnClosed === true)) &&
         startup.applyFacts(facts);
-      manifest.sharedReadback = valid ? 'EXACT_OWN_HOMES_CLOSED' : 'NOT_QUALIFIED';
+      manifest.sharedReadback = valid ? (manifest.authorizedRepairs.length
+        ? 'EXACT_DECLARED_HOME_OUTCOMES' : 'EXACT_OWN_HOMES_CLOSED') : 'NOT_QUALIFIED';
       manifest.state = valid ? 'CASE_TEARDOWN_COMPLETE_REVIEW_REQUIRED' : 'CASE_TEARDOWN_INCOMPLETE';
       for (const caseRow of manifest.cases) {
         caseRow.state = caseRow.state === 'NO_HOME_CREATE_DISPATCHED'
           ? (valid ? caseRow.state : 'CASE_TEARDOWN_INCOMPLETE')
+          : caseRow.state === 'CASE_HOME_CLOSE_REFUSED'
+          ? (valid ? 'CASE_HOME_REFUSAL_READBACK_CONFIRMED' : 'CASE_TEARDOWN_INCOMPLETE')
           : (valid ? 'CASE_TEARDOWN_COMPLETE_REVIEW_REQUIRED' : 'CASE_TEARDOWN_INCOMPLETE');
       }
       save();

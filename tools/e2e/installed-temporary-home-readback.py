@@ -165,8 +165,7 @@ def startup_baseline(db, core, root, home_by_id):
 
 def declared_repairs(config, homes):
     repairs = config.get("authorizedRepairs", [])
-    need(isinstance(repairs, list) and len(repairs) <= 4,
-         "Authorized repairs must be an explicitly bounded list")
+    need(isinstance(repairs, list), "Authorized repairs must be an explicit list")
     by_id = {row["home_id"]: row for row in homes}
     seen = set()
     result = []
@@ -186,6 +185,47 @@ def declared_repairs(config, homes):
         result.append({key: repair[key] for key in ("homeId", "instanceId", "domainId",
             "sessionId", "generation", "expectedRevision", "provenance")})
     return result
+
+
+def verify_repair_refusal(db, repair, before_home, after_home):
+    """A known original USER refusal has no F close journal or HOME mutation."""
+    need(repair.get("closeDispatchState") == "RECEIPT_RECORDED" and
+         isinstance(repair.get("closeRequestId"), str) and repair["closeRequestId"] and
+         isinstance(repair.get("closeRawFrame"), str) and
+         isinstance(repair.get("closeRawSha256"), str) and
+         isinstance(repair.get("closeReceipt"), dict),
+         "Original USER refusal was not recorded after dispatch")
+    raw = repair["closeRawFrame"].encode("utf-8")
+    need(sha(raw) == repair["closeRawSha256"], "Original USER refusal raw hash differs")
+    request = json.loads(raw)
+    need(request == {"schema": "gogoke.37.operations.v1", "family": "K-INSTANCE",
+            "operation": "temporary-home-close", "requestId": repair["closeRequestId"],
+            "domainId": repair["domainId"], "targetId": repair["instanceId"],
+            "expectedRevision": "1", "payload": {"sessionId": repair["sessionId"],
+                "historicalHomeId": repair["homeId"]}},
+         "Original USER refusal close request tuple differs")
+    receipt = repair["closeReceipt"]
+    reason = receipt.get("result", {}).get("reason") if isinstance(receipt.get("result"), dict) else None
+    need(receipt.get("schema") == request["schema"] and
+         receipt.get("family") == request["family"] and
+         receipt.get("operation") == request["operation"] and
+         receipt.get("requestId") == request["requestId"] and
+         receipt.get("targetId") == request["targetId"] and
+         receipt.get("status") in ("DENIED", "CONFLICT", "STALE") and
+         receipt.get("previousRevision") == receipt.get("revision") == "1" and
+         isinstance(reason, str) and bool(reason.strip()),
+         "Original USER refusal receipt tuple/status/revision/reason differs")
+    need(not list(db.execute("SELECT request_id FROM gogoke_v37_instance_operations WHERE request_id=?",
+         (repair["closeRequestId"],))),
+         "Refused USER close has an F operation journal row")
+    need(before_home is not None and after_home == before_home and
+         before_home["home_id"] == repair["homeId"] and
+         before_home["state"] == "ACTIVE" and before_home["revision"] == "1",
+         "Refused HOME differs from its exact baseline physical row")
+    return {"caseId": repair.get("caseId"), "homeId": repair["homeId"],
+        "domainId": repair["domainId"], "sessionId": repair["sessionId"],
+        "instanceId": repair["instanceId"], "closeRequestId": repair["closeRequestId"],
+        "status": receipt["status"], "reason": reason, "state": "ACTIVE", "revision": "1"}
 
 
 def original_stop_source(db, core, home, attempt):
@@ -534,6 +574,7 @@ def run(input_path, output_path):
             declared = baseline.get("authorizedRepairs", [])
             wanted = {row["homeId"]: row for row in declared}
             seen_repairs = set()
+            repair_refusals = []
             for repair in manifest.get("authorizedRepairs", []):
                 try:
                     home_id = repair["homeId"]
@@ -548,13 +589,21 @@ def run(input_path, output_path):
                         "Repair selector/provenance differs from baseline intent")
                     pinned(repair["provenance"])
                     home = home_by_id[home_id]
-                    close = one_operation(db, repair["closeRequestId"])
-                    native = json.loads(close["receipt_json"])
-                    sourced, _ = source_attempt(db, home, dict(repair,
-                        originalCreateRequestId=native["originalCreateRequestId"]), True)
-                    need(sourced["originalCreateRequestId"] == native["originalCreateRequestId"],
-                         "Repair native receipt original create selector differs")
-                    repairs.append(verify_attempt(db, core, root, sourced, home_by_id, True))
+                    status = repair.get("closeReceipt", {}).get("status") if isinstance(
+                        repair.get("closeReceipt"), dict) else None
+                    if status in ("DENIED", "CONFLICT", "STALE"):
+                        repair_refusals.append(verify_repair_refusal(db, repair,
+                            authorized["beforeHome"], home))
+                    else:
+                        need(status in ("APPLIED", "REPLAYED"),
+                             "Repair USER close is missing, UNKNOWN, or not a known refusal")
+                        close = one_operation(db, repair["closeRequestId"])
+                        native = json.loads(close["receipt_json"])
+                        sourced, _ = source_attempt(db, home, dict(repair,
+                            originalCreateRequestId=native["originalCreateRequestId"]), True)
+                        need(sourced["originalCreateRequestId"] == native["originalCreateRequestId"],
+                             "Repair native receipt original create selector differs")
+                        repairs.append(verify_attempt(db, core, root, sourced, home_by_id, True))
                 except Exception as error:
                     errors.append({"source": "authorizedRepair", "homeId": repair.get("homeId"),
                                    "error": repr(error)})
@@ -562,7 +611,9 @@ def run(input_path, output_path):
             if len(set(own_ids)) != len(own_ids) or any(value in before for value in own_ids):
                 errors.append({"source": "inventory", "error": "Own HOME duplicated or pre-existing"})
             repaired_ids = {row["homeId"] for row in repairs}
-            if repaired_ids != seen_repairs or len(seen_repairs) != len(wanted):
+            refused_ids = {row["homeId"] for row in repair_refusals}
+            if (repaired_ids & refused_ids or (repaired_ids | refused_ids) != seen_repairs or
+                    len(seen_repairs) != len(wanted)):
                 errors.append({"source": "authorizedRepair",
                     "error": "Declared baseline repairs lack exact final proof"})
             after = {row["home_id"]: row for row in homes}
@@ -583,8 +634,9 @@ def run(input_path, output_path):
                 "NO_HOME_CREATE_DISPATCHED") if exact else "READBACK_FAILED",
                 baseline=config["baseline"], facts={"temporaryHomes": own,
                     "startupHomes": startup_homes, "authorizedRepairs": repairs,
+                    "authorizedRepairRefusals": repair_refusals,
                     "homeInventoryMatchesDeclaredScope": exact,
-                    "homeInventoryUnchangedExceptOwnClosed": exact and not repairs},
+                    "homeInventoryUnchangedExceptOwnClosed": exact and not wanted},
                 differences={"changed": changed, "missing": missing, "extra": extra},
                 proofFailures=errors)
             for source_ref in launch_sources:

@@ -67,12 +67,15 @@ function fixture(name, { startup = plan, repair = false, stopStatus = 'APPLIED',
       assert.equal(pending.receipt, null);
       calls.push({ kind: 'operation', frame });
       const status = frame.operation === 'stop' ? stopStatus :
-        frame.payload.historicalHomeId ? repairCloseStatus : startupCloseStatus;
+        frame.payload.historicalHomeId ? (typeof repairCloseStatus === 'function'
+          ? repairCloseStatus(frame.payload.historicalHomeId) : repairCloseStatus) : startupCloseStatus;
+      const denied = ['DENIED', 'CONFLICT', 'STALE'].includes(status);
       return JSON.stringify({ schema: frame.schema, family: frame.family,
         operation: frame.operation, requestId: frame.requestId, targetId: frame.targetId,
         status, previousRevision: frame.expectedRevision,
-        revision: frame.operation === 'stop' ? '10' : '2',
+        revision: denied ? '1' : frame.operation === 'stop' ? '10' : '2',
         result: frame.operation === 'stop' ? { stopFact } :
+          denied ? { reason: 'native temporary HOME close: original proof refused' } :
           status === 'UNKNOWN' ? {} : { homeId: frame.payload.historicalHomeId ?? 'home25',
             state: 'CLOSED', nativeReceiptId: 'native-' + frame.requestId,
             sourceFingerprint: 'c'.repeat(64) } });
@@ -118,6 +121,51 @@ test('actual shared USER ingress closes repair24, then stops and closes startup2
   assert.equal(f.manifest.startupAttempts[0].hStopSource.stopFact, stopFact);
   assert.equal(f.manifest.authorizedRepairs[0].closeReceipt.result.homeId, 'home24');
   assert.equal(f.manifest.startupAttempts[0].closeReceipt.result.homeId, 'home25');
+});
+
+test('fifteen explicit repairs retain known refusals and continue independent selectors', async () => {
+  const f = fixture('mixedFifteen', { repair: true, repairCloseStatus: home =>
+    ({home24:'DENIED',home0:'CONFLICT',home1:'STALE'})[home] ?? 'APPLIED' });
+  f.lifecycle.initializeRepairs({ authorizedRepairs: Array.from({length:14}, (_,i) =>
+    ({...repairIntent, homeId:'home'+i, beforeHome:{...repairIntent.beforeHome,home_id:'home'+i}})) });
+  await f.lifecycle.beforeLaunch(); await f.lifecycle.afterLaunch();
+  const settled = await f.lifecycle.settle();
+  assert.equal(settled.complete, true, settled.errors.join('; '));
+  const frames = f.calls.filter(row => row.kind === 'operation').map(row => row.frame);
+  assert.equal(frames.length,17);
+  assert.deepEqual(frames.slice(-2).map(frame => frame.operation),['stop','temporary-home-close']);
+  assert.equal(new Set(frames.slice(0,15).map(frame => frame.payload.historicalHomeId)).size,15);
+  assert.equal(f.manifest.cases.filter(row => row.state==='CASE_HOME_CLOSE_REFUSED').length,3);
+  await f.lifecycle.settle();
+  assert.equal(f.calls.filter(row => row.kind === 'operation').length,17);
+  const closedFact = row => ({caseId:row.caseId,domainId:row.domainId,sessionId:row.sessionId,
+    instanceId:row.instanceId,homeId:row.closeReceipt.result.homeId,state:'CLOSED',revision:'2',
+    originalCreateRequestId:row.originalCreateRequestId,closeRequestId:row.closeRequestId,
+    nativeReceiptId:row.closeReceipt.result.nativeReceiptId,sourceFingerprint:row.closeReceipt.result.sourceFingerprint});
+  const facts = {startupHomes:f.manifest.startupAttempts.map(closedFact),
+    authorizedRepairs:f.manifest.authorizedRepairs.filter(row=>row.closeReceipt.status==='APPLIED').map(closedFact),
+    authorizedRepairRefusals:f.manifest.authorizedRepairs.filter(row=>row.closeReceipt.status!=='APPLIED').map(row=>
+      ({caseId:row.caseId,domainId:row.domainId,sessionId:row.sessionId,instanceId:row.instanceId,
+        homeId:row.homeId,state:'ACTIVE',revision:'1',closeRequestId:row.closeRequestId,
+        status:row.closeReceipt.status,reason:row.closeReceipt.result.reason}))};
+  assert.equal(f.lifecycle.applyFacts(facts),true);
+  facts.authorizedRepairRefusals[0].state='CLOSED';
+  assert.equal(f.lifecycle.applyFacts(facts),false);
+});
+
+test('an UNKNOWN historical close stops later selectors without retry and still settles its own startup', async () => {
+  const f=fixture('unknownRepair',{repair:true,repairCloseStatus:'UNKNOWN'});
+  f.lifecycle.initializeRepairs({authorizedRepairs:[{...repairIntent,homeId:'laterHome',
+    beforeHome:{...repairIntent.beforeHome,home_id:'laterHome'}}]});
+  await f.lifecycle.beforeLaunch(); await f.lifecycle.afterLaunch();
+  assert.equal((await f.lifecycle.settle()).complete,false);
+  const frames=f.calls.filter(row=>row.kind==='operation').map(row=>row.frame);
+  assert.deepEqual(frames.map(row=>row.operation),['temporary-home-close','stop','temporary-home-close']);
+  assert.equal(frames[0].payload.historicalHomeId,'home24');
+  assert.equal(f.manifest.authorizedRepairs[1].closeDispatchState,'NOT_DISPATCHED');
+  assert.equal(f.manifest.startupAttempts[0].closeReceipt.result.state,'CLOSED');
+  await assert.rejects(()=>ActualProduct.prototype.closeNormally.call(f.product),/teardown incomplete/);
+  assert.equal(f.calls.filter(row=>row.kind==='operation').length,3);
 });
 
 test('UNKNOWN startup stop is retained and caption close remains blocked without replay', async () => {

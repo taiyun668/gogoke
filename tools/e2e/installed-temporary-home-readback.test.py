@@ -1,6 +1,7 @@
 """Focused offline checks for the common reader's pre-launch selection boundary."""
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -87,6 +88,81 @@ class RepairSelection(unittest.TestCase):
             path.write_text("{ }", encoding="utf-8")
             with self.assertRaises(RuntimeError):
                 READER.declared_repairs({"authorizedRepairs": [repair]}, [home])
+
+    def test_fifteen_explicit_unique_prior_homes_have_no_arbitrary_cap(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "capture.json"
+            path.write_text("{}", encoding="utf-8")
+            provenance = {"path": str(path), "sha256": hashlib.sha256(b"{}").hexdigest()}
+            homes, repairs = [], []
+            for number in range(15):
+                home_id = f"home-{number}"
+                homes.append({"home_id": home_id, "instance_id": "inst", "domain_id": "global",
+                    "owner_id": "session", "generation": str(number + 1),
+                    "state": "ACTIVE", "revision": "1"})
+                repairs.append({"homeId": home_id, "instanceId": "inst", "domainId": "global",
+                    "sessionId": "session", "generation": str(number + 1),
+                    "expectedRevision": "1", "provenance": provenance})
+            self.assertEqual(READER.declared_repairs({"authorizedRepairs": repairs}, homes), repairs)
+            with self.assertRaises(RuntimeError):
+                READER.declared_repairs({"authorizedRepairs": repairs + [repairs[0]]}, homes)
+
+
+class RepairRefusal(unittest.TestCase):
+    def setUp(self):
+        self.db = sqlite3.connect(":memory:")
+        self.db.row_factory = sqlite3.Row
+        self.db.execute("CREATE TABLE gogoke_v37_instance_operations(request_id TEXT,phase TEXT)")
+        self.before = {"home_id": "home-24", "instance_id": "inst", "domain_id": "global",
+            "owner_id": "session", "generation": "24", "directory_ref": "temp-home-original",
+            "directory_identity": "volume:original/file:original", "kind": "SESSION",
+            "state": "ACTIVE", "revision": "1"}
+        self.request = {"schema": "gogoke.37.operations.v1", "family": "K-INSTANCE",
+            "operation": "temporary-home-close", "requestId": "close-24", "domainId": "global",
+            "targetId": "inst", "expectedRevision": "1",
+            "payload": {"sessionId": "session", "historicalHomeId": "home-24"}}
+        raw = json.dumps(self.request, separators=(",", ":"))
+        self.repair = {"caseId": "repair-24", "homeId": "home-24", "instanceId": "inst",
+            "domainId": "global", "sessionId": "session", "generation": "24",
+            "closeDispatchState": "RECEIPT_RECORDED", "closeRequestId": "close-24",
+            "closeRawFrame": raw, "closeRawSha256": hashlib.sha256(raw.encode()).hexdigest(),
+            "closeReceipt": {"schema": self.request["schema"], "family": "K-INSTANCE",
+                "operation": "temporary-home-close", "requestId": "close-24",
+                "targetId": "inst", "status": "DENIED", "previousRevision": "1",
+                "revision": "1", "result": {"reason": "original source refused"}}}
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_known_refusal_requires_unchanged_full_home_and_no_f_journal(self):
+        for status in ("DENIED", "CONFLICT", "STALE"):
+            repair = dict(self.repair, closeReceipt=dict(self.repair["closeReceipt"], status=status))
+            result = READER.verify_repair_refusal(self.db, repair, self.before, dict(self.before))
+            self.assertEqual((result["status"], result["state"], result["revision"]),
+                             (status, "ACTIVE", "1"))
+        for changed in (dict(self.before, state="CLOSED", revision="2"),
+                        dict(self.before, directory_identity="volume:other/file:other")):
+            with self.assertRaises(RuntimeError):
+                READER.verify_repair_refusal(self.db, self.repair, self.before, changed)
+        self.db.execute("INSERT INTO gogoke_v37_instance_operations VALUES('close-24','APPLIED')")
+        with self.assertRaises(RuntimeError):
+            READER.verify_repair_refusal(self.db, self.repair, self.before, self.before)
+
+    def test_bad_tuple_unknown_and_unsent_are_not_known_refusals(self):
+        for mutation in (
+            {"closeReceipt": dict(self.repair["closeReceipt"], targetId="foreign")},
+            {"closeReceipt": dict(self.repair["closeReceipt"], status="UNKNOWN")},
+            {"closeReceipt": dict(self.repair["closeReceipt"], previousRevision="0")},
+            {"closeReceipt": dict(self.repair["closeReceipt"], result={"reason": ""})},
+            {"closeDispatchState": "NOT_DISPATCHED"},
+        ):
+            with self.subTest(mutation=mutation), self.assertRaises(RuntimeError):
+                READER.verify_repair_refusal(self.db, dict(self.repair, **mutation),
+                                             self.before, self.before)
+        altered = dict(self.repair, closeRawFrame=self.repair["closeRawFrame"].replace(
+            '"home-24"', '"home-25"'))
+        with self.assertRaises(RuntimeError):
+            READER.verify_repair_refusal(self.db, altered, self.before, self.before)
 
 
 if __name__ == "__main__":

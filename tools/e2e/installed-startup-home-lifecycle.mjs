@@ -20,6 +20,22 @@ const exactReply = row => row?.rawFrame === JSON.stringify(row.request) &&
 const closed = row => ['APPLIED', 'REPLAYED'].includes(row?.closeReceipt?.status) &&
   row.closeReceipt.result?.state === 'CLOSED' &&
   row.closeReceipt.previousRevision === '1' && row.closeReceipt.revision === '2';
+const refused = row => {
+  if (row.sourceKind !== 'AUTHORIZED_REPAIR' || row.closeDispatchState !== 'RECEIPT_RECORDED') return false;
+  try {
+    const request = JSON.parse(row.closeRawFrame), receipt = row.closeReceipt;
+    return row.closeRawFrame === JSON.stringify(request) && digest(row.closeRawFrame) === row.closeRawSha256 &&
+      request.schema === 'gogoke.37.operations.v1' && request.family === 'K-INSTANCE' &&
+      request.operation === 'temporary-home-close' && request.requestId === row.closeRequestId &&
+      request.targetId === row.instanceId && request.domainId === row.domainId &&
+      request.expectedRevision === '1' && Object.keys(request.payload).sort().join('|') === 'historicalHomeId|sessionId' &&
+      request.payload.historicalHomeId === row.homeId && request.payload.sessionId === row.sessionId &&
+      receipt?.schema === request.schema && receipt.family === request.family && receipt.operation === request.operation &&
+      receipt.requestId === request.requestId && receipt.targetId === request.targetId &&
+      ['DENIED', 'CONFLICT', 'STALE'].includes(receipt.status) &&
+      receipt.previousRevision === '1' && receipt.revision === '1' && nonempty(receipt.result?.reason);
+  } catch { return false; }
+};
 const check = (ok, reason) => { if (!ok) throw Error(reason); };
 
 export function createStartupHomeLifecycle(product, manifest, save, runReadback, baseline) {
@@ -66,15 +82,17 @@ export function createStartupHomeLifecycle(product, manifest, save, runReadback,
     return conversation;
   };
   const closeRow = async row => {
-    if (closed(row)) return;
+    if (closed(row) || refused(row)) return;
     check(row.closeDispatchState === 'NOT_DISPATCHED',
       'Original startup/repair close unresolved; no resend');
     const payload = row.sourceKind === 'AUTHORIZED_REPAIR'
       ? { sessionId: row.sessionId, historicalHomeId: row.homeId }
       : { sessionId: row.sessionId, originalCreateRequestId: row.originalCreateRequestId };
     await product.operation('K-INSTANCE', 'temporary-home-close', row.instanceId,
-      payload, '1', ['APPLIED', 'REPLAYED', 'UNKNOWN'], row.domainId);
-    check(closed(row), 'Startup/repair F receipt did not prove CLOSED(2)');
+      payload, '1', row.sourceKind === 'AUTHORIZED_REPAIR'
+        ? ['APPLIED', 'REPLAYED', 'UNKNOWN', 'DENIED', 'CONFLICT', 'STALE']
+        : ['APPLIED', 'REPLAYED', 'UNKNOWN'], row.domainId);
+    check(closed(row) || refused(row), 'Startup/repair F receipt did not prove CLOSED(2) or an exact repair refusal');
   };
   return {
     initializeRepairs(report) {
@@ -152,7 +170,8 @@ export function createStartupHomeLifecycle(product, manifest, save, runReadback,
       if (!row) return false;
       row.closeReceipt = record.receipt;
       row.closeDispatchState = 'RECEIPT_RECORDED';
-      caseFor(row).state = closed(row) ? 'CASE_HOME_CLOSE_RECEIPTS_COMPLETE' : 'CASE_TEARDOWN_INCOMPLETE';
+      caseFor(row).state = closed(row) ? 'CASE_HOME_CLOSE_RECEIPTS_COMPLETE' :
+        refused(row) ? 'CASE_HOME_CLOSE_REFUSED' : 'CASE_TEARDOWN_INCOMPLETE';
       save(); return true;
     },
     afterError(record, error) {
@@ -168,7 +187,7 @@ export function createStartupHomeLifecycle(product, manifest, save, runReadback,
       const errors = [];
       for (const row of manifest.authorizedRepairs) {
         try { await closeRow(row); }
-        catch (error) { errors.push(String(error?.stack ?? error)); }
+        catch (error) { errors.push(String(error?.stack ?? error)); break; }
       }
       if (current && !closed(current)) {
         try {
@@ -223,8 +242,18 @@ export function createStartupHomeLifecycle(product, manifest, save, runReadback,
           (attempt.sourceKind === 'AUTHORIZED_REPAIR'
             ? row.homeId === attempt.homeId
             : row.originalCreateRequestId === attempt.originalCreateRequestId)).length === 1);
+      const refusals = manifest.authorizedRepairs.filter(refused);
+      const refusedFacts = facts?.authorizedRepairRefusals ?? [];
       return matches(manifest.startupAttempts, facts?.startupHomes ?? []) &&
-        matches(manifest.authorizedRepairs, facts?.authorizedRepairs ?? []);
+        matches(manifest.authorizedRepairs.filter(closed), facts?.authorizedRepairs ?? []) &&
+        Array.isArray(refusedFacts) && refusedFacts.length === refusals.length &&
+        manifest.authorizedRepairs.every(row => closed(row) || refused(row)) &&
+        refusals.every(attempt => refusedFacts.filter(row =>
+          row.caseId === attempt.caseId && row.homeId === attempt.homeId &&
+          row.domainId === attempt.domainId && row.sessionId === attempt.sessionId &&
+          row.instanceId === attempt.instanceId && row.state === 'ACTIVE' && row.revision === '1' &&
+          row.closeRequestId === attempt.closeRequestId && row.status === attempt.closeReceipt.status &&
+          row.reason === attempt.closeReceipt.result.reason).length === 1);
     },
     hasTrackedHomes: () => all().length > 0,
     hasCreatedHomes: () => manifest.startupAttempts.length > 0,
