@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { createStartupHomeLifecycle } from './installed-startup-home-lifecycle.mjs';
 
 const digest = value => createHash('sha256').update(value, 'utf8').digest('hex');
 const fileDigest = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -94,19 +95,26 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
     return { path: readbackConfig.path, sha256: readbackConfig.sha256,
       corePath: readbackConfig.corePath, coreSha256: readbackConfig.coreSha256 };
   };
-  const runReadback = async (mode, baseline = null) => {
+  const runReadback = async (mode, baseline = null, phase = mode) => {
     const pins = requireReadbackPins();
-    const inputPath = path.join(config.evidenceDirectory, `temporary-home-readback-${mode}-input.json`);
-    const outputPath = path.join(config.evidenceDirectory, `temporary-home-readback-${mode}.json`);
-    if (fs.existsSync(inputPath) || fs.existsSync(outputPath)) {
-      throw Error(`Temporary-HOME ${mode} readback evidence already exists; no overwrite`);
+    if (!/^(baseline|verify|startup-\d+)$/.test(phase)) throw Error('Invalid shared readback phase');
+    const inputPath = path.join(config.evidenceDirectory, `temporary-home-readback-${phase}-input.json`);
+    const outputPath = path.join(config.evidenceDirectory, `temporary-home-readback-${phase}.json`);
+    const snapshotPath = path.join(config.evidenceDirectory, `temporary-home-readback-${phase}-manifest.json`);
+    if (fs.existsSync(inputPath) || fs.existsSync(outputPath) || fs.existsSync(snapshotPath)) {
+      throw Error(`Temporary-HOME ${phase} readback evidence already exists; no overwrite`);
     }
+    // Keep the bytes used by this read even when its failure is subsequently
+    // recorded in the live manifest. A pin to that mutable file is not custody.
+    fs.writeFileSync(snapshotPath, fs.readFileSync(manifestPath), { flag: 'wx' });
     const input = {
-      schema: 'gogoke.37.temporary-home-readback-input.v1', mode,
+      schema: 'gogoke.37.temporary-home-readback-input.v1', mode, phase,
       stateRoot: config.stateRoot,
       readerSha256: pins.sha256,
       core: { path: pins.corePath, sha256: pins.coreSha256 },
-      manifest: { path: manifestPath, sha256: fileDigest(manifestPath) },
+      manifest: { path: snapshotPath, sha256: fileDigest(snapshotPath) },
+      manifestOrigin: manifestPath,
+      authorizedRepairs: mode === 'baseline' ? (readbackConfig.authorizedRepairs ?? []) : [],
       baseline,
     };
     fs.writeFileSync(inputPath, `${JSON.stringify(input, null, 2)}\n`, { flag: 'wx' });
@@ -118,24 +126,25 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
       child.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-8192); });
       child.once('error', reject);
       child.once('exit', code => code === 0 ? resolve() :
-        reject(Error(`Temporary-HOME ${mode} shared readback exit=${code}: ${stderr}`)));
+        reject(Error(`Temporary-HOME ${phase} shared readback exit=${code}: ${stderr}`)));
     });
     if (fileDigest(pins.path) !== pins.sha256 || fileDigest(pins.corePath) !== pins.coreSha256 ||
         !fs.existsSync(outputPath)) {
-      throw Error(`Temporary-HOME ${mode} reader/core identity changed or output is absent`);
+      throw Error(`Temporary-HOME ${phase} reader/core identity changed or output is absent`);
     }
     const report = JSON.parse(fs.readFileSync(outputPath, 'utf8').replace(/^\uFEFF/, ''));
     const expectedState = mode === 'baseline' ? 'BASELINE_MEASURED' :
-      (manifest.attempts.length ? 'EXACT_OWN_HOMES_CLOSED' : 'NO_HOME_CREATE_DISPATCHED');
+      mode === 'startup' ? 'STARTUP_SOURCE_MEASURED' :
+      (manifest.attempts.length || startup.hasCreatedHomes() ? 'EXACT_OWN_HOMES_CLOSED' : 'NO_HOME_CREATE_DISPATCHED');
     if (report.schema !== 'gogoke.37.temporary-home-readback.v1' || report.mode !== mode ||
         report.acceptance !== false || report.state !== expectedState) {
-      throw Error(`Temporary-HOME ${mode} shared readback was not qualified: ${report.state ?? 'missing state'}`);
+      throw Error(`Temporary-HOME ${phase} shared readback was not qualified: ${report.state ?? 'missing state'}`);
     }
     const reference = { file: path.basename(outputPath), sha256: fileDigest(outputPath),
       input: path.basename(inputPath), inputSha256: fileDigest(inputPath),
       readerSha256: pins.sha256, coreSha256: pins.coreSha256 };
     journal.temporaryHomeReadback ??= {};
-    journal.temporaryHomeReadback[mode] = reference;
+    journal.temporaryHomeReadback[phase] = reference;
     product.save();
     return { report, reference };
   };
@@ -145,6 +154,8 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
     row.request.operation === operation &&
     (generation === undefined || String(row.request.payload?.generation ?? '') === String(generation)));
 
+  const startup = createStartupHomeLifecycle(product, manifest, save, runReadback, () => baselineReference);
+  save();
   const lifecycle = {
     manifestPath,
     manifest,
@@ -153,8 +164,11 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
       const { report, reference } = await runReadback('baseline', null);
       baselineReference = { path: path.join(config.evidenceDirectory, reference.file),
         sha256: reference.sha256 };
+      startup.initializeRepairs(report);
       return report;
     },
+    beforeProductLaunch: () => startup.beforeLaunch(),
+    afterProductLaunch: () => startup.afterLaunch(),
     beginCase(caseId) {
       if (!nonempty(caseId) || activeCaseId !== null || manifest.cases.some(row => row.caseId === caseId)) {
         throw Error('Unique temporary-HOME case anchor required');
@@ -216,6 +230,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
         record.temporaryHomeAttemptRequestId = request.requestId;
         save();
       } else if (request?.family === 'K-INSTANCE' && request.operation === 'temporary-home-close') {
+        if (startup.beforeDispatch(record)) return;
         const sessionId = request.payload?.sessionId;
         const originalCreateRequestId = request.payload?.originalCreateRequestId;
         const attempt = attemptFor(originalCreateRequestId);
@@ -237,6 +252,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
       }
     },
     afterReceipt(record) {
+      if (startup.afterReceipt(record)) return;
       const request = record.request;
       const attempt = request?.family === 'K-INSTANCE' && request.operation === 'temporary-home-close'
         ? attemptFor(request.payload?.originalCreateRequestId) : attemptFor(request?.requestId);
@@ -256,6 +272,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
       save();
     },
     afterRejectedReceipt(record) {
+      if (startup.afterReceipt(record)) return;
       const request = record.request;
       const attempt = request?.family === 'K-INSTANCE' && request.operation === 'temporary-home-close'
         ? attemptFor(request.payload?.originalCreateRequestId) : attemptFor(request?.requestId);
@@ -271,6 +288,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
       save();
     },
     afterDispatchError(record, error) {
+      if (startup.afterError(record, error)) return;
       if (record.request?.family === 'K-INSTANCE' && record.request.operation === 'temporary-home-close') {
         const closeAttempt = attemptFor(record.request.payload?.originalCreateRequestId);
         if (closeAttempt) {
@@ -442,10 +460,15 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
       return { complete, state: caseRow.state, errors: settled.errors };
     },
     async beforeCaptionClose() {
-      return lifecycle.settleAttempts(manifest.attempts);
+      const own = await lifecycle.settleAttempts(manifest.attempts);
+      const boot = await startup.settle();
+      if (!own.complete || !boot.complete) {
+        manifest.state = 'CASE_TEARDOWN_INCOMPLETE'; save();
+      }
+      return { complete: own.complete && boot.complete, errors: [...own.errors, ...boot.errors] };
     },
     applySharedClosedReadback(facts) {
-      if (manifest.attempts.length === 0) {
+      if (manifest.attempts.length === 0 && !startup.hasTrackedHomes()) {
         const unchanged = Array.isArray(facts?.temporaryHomes) && facts.temporaryHomes.length === 0 &&
           facts.homeInventoryUnchangedExceptOwnClosed === true;
         manifest.sharedReadback = unchanged ? 'NO_CREATE_HOME_INVENTORY_UNCHANGED' : 'NOT_QUALIFIED';
@@ -469,7 +492,9 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
         return attempt.hStopSource && rows.length === 1 && closeReceipt({ receipt: attempt.closeReceipt },
           attempt.closeRequestId, attempt.instanceId);
       }) && homes.length === manifest.attempts.length &&
-        facts.homeInventoryUnchangedExceptOwnClosed === true;
+        (facts.homeInventoryMatchesDeclaredScope === true ||
+          (manifest.authorizedRepairs.length === 0 && facts.homeInventoryUnchangedExceptOwnClosed === true)) &&
+        startup.applyFacts(facts);
       manifest.sharedReadback = valid ? 'EXACT_OWN_HOMES_CLOSED' : 'NOT_QUALIFIED';
       manifest.state = valid ? 'CASE_TEARDOWN_COMPLETE_REVIEW_REQUIRED' : 'CASE_TEARDOWN_INCOMPLETE';
       for (const caseRow of manifest.cases) {

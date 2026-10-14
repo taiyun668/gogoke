@@ -8,6 +8,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { observeInstalledReadiness, closeInstalledNormally, recordLateReadyAfterFailure, lifecycleSource } from './installed-lifecycle-observation.mjs';
 import { isTemporaryHomeCreateRequest, assertSupportedTemporaryHomeOperation } from './installed-temporary-home-lifecycle.mjs';
+import { startupLifecycleSource } from './installed-startup-home-lifecycle.mjs';
 
 export const readJson = file => JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
 export const sha256 = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -22,8 +23,10 @@ export class ActualProduct {
       'product-cdp.mjs', 'candidate-close-events.ps1', 'e2e-webview.mjs', 'm1-win11.mjs', 'candidate-custody.ps1',
       'm1-readback.py', 'package-lock.json', 'installed-lifecycle-observation.mjs',
       'installed-temporary-home-lifecycle.mjs',
+      'installed-startup-home-lifecycle.mjs',
     ].map(relative => [relative, sha256(path.join(here, relative))]));
     journal.driverBytes['installed-lifecycle-observation.mjs'] = lifecycleSource().sha256;
+    journal.driverBytes['installed-startup-home-lifecycle.mjs'] = startupLifecycleSource().sha256;
     journal.nodeVersion = process.version;
   }
   save() {
@@ -81,6 +84,7 @@ export class ActualProduct {
   }
   async launch() {
     await this.custody(true); this.verifyBytes();
+    await this.temporaryHomeLifecycle?.beforeProductLaunch();
     const index = readJson(path.join(this.config.installed, 'resource-index.json'));
     const setId = sha256(path.join(this.config.installed, 'resource-index.json'));
     const listener = createServer();
@@ -126,6 +130,7 @@ export class ActualProduct {
       this.journal.connectionBackend = { name: 'tester-army/e2e', telemetryDisabled: true, agentActs: 0 };
       this.save();
     }
+    await this.temporaryHomeLifecycle?.afterProductLaunch();
   }
   async connectDiagnostic(target) {
     const socketUrl = new URL(target.webSocketDebuggerUrl);
@@ -173,9 +178,10 @@ export class ActualProduct {
     // Only status is exported. No authorization URL, code, output or account is captured here.
     return this.evaluate("window.__TAURI_INTERNALS__.invoke('gogoke_design37_instances').then(p=>({schema:p.schema,instances:p.instances.map(r=>({instanceId:r.instanceId,driverId:r.driverId,version:r.version,revision:r.revision,state:r.state}))}))");
   }
-  async operation(family, operation, targetId, payload = {}, expectedRevision = '0', allowed = ['APPLIED']) {
+  async operation(family, operation, targetId, payload = {}, expectedRevision = '0', allowed = ['APPLIED'],
+      domainId = this.config.domainId) {
     const request = { schema: 'gogoke.37.operations.v1', family, operation, requestId: id('e2e'),
-      domainId: this.config.domainId, targetId, expectedRevision, payload };
+      domainId, targetId, expectedRevision, payload };
     assertSupportedTemporaryHomeOperation(request);
     const rawFrame = JSON.stringify(request);
     const record = { request, rawFrame, startedAt: new Date().toISOString(), receipt: null };
@@ -250,8 +256,11 @@ export class ActualProduct {
     return receipt;
   }
   async closeNormally() {
-    if (this.temporaryHomeLifecycle?.manifest.attempts.length) {
-      try { await this.temporaryHomeLifecycle.beforeCaptionClose(); }
+    if (this.temporaryHomeLifecycle) {
+      try {
+        const teardown = await this.temporaryHomeLifecycle.beforeCaptionClose();
+        if (!teardown.complete) throw Error('Temporary-HOME teardown incomplete: ' + teardown.errors.join('; '));
+      }
       catch (error) {
         this.journal.temporaryHomeLifecycle = {
           manifest: this.temporaryHomeLifecycle.manifestPath,
@@ -259,6 +268,9 @@ export class ActualProduct {
           error: String(error?.stack ?? error),
         };
         this.save();
+        // Keep the original USER pipe available. Caption shutdown can itself
+        // stop the resident generation; it must not follow an unresolved stop.
+        throw error;
       }
     }
     return closeInstalledNormally(this);
