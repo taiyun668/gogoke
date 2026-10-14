@@ -1007,8 +1007,8 @@ fn original_create_source(connection: &VerifiedDatabaseConnection<'_>, home_id: 
         return Err(TemporaryHomeError::RequestConflict);
     }
     match selector {
-        UserTemporaryHomeSelector::OriginalCreateRequestId(id) if id == request.request_id.as_str() => {},
-        UserTemporaryHomeSelector::HistoricalHomeId(id) if id == home_id => {},
+        UserTemporaryHomeSelector::OriginalCreateRequestId(id) if *id == request.request_id.as_str() => {},
+        UserTemporaryHomeSelector::HistoricalHomeId(id) if *id == home_id => {},
         _ => return Err(TemporaryHomeError::RequestConflict),
     }
     let create = CreateTemporaryHome { request_id: &operation_id, request_bytes: &raw,

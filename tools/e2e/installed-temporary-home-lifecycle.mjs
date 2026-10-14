@@ -119,7 +119,8 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
       throw Error(`Temporary-HOME ${mode} reader/core identity changed or output is absent`);
     }
     const report = JSON.parse(fs.readFileSync(outputPath, 'utf8').replace(/^\uFEFF/, ''));
-    const expectedState = mode === 'baseline' ? 'BASELINE_MEASURED' : 'EXACT_OWN_HOMES_CLOSED';
+    const expectedState = mode === 'baseline' ? 'BASELINE_MEASURED' :
+      (manifest.attempts.length ? 'EXACT_OWN_HOMES_CLOSED' : 'NO_HOME_CREATE_DISPATCHED');
     if (report.schema !== 'gogoke.37.temporary-home-readback.v1' || report.mode !== mode ||
         report.acceptance !== false || report.state !== expectedState) {
       throw Error(`Temporary-HOME ${mode} shared readback was not qualified: ${report.state ?? 'missing state'}`);
