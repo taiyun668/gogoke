@@ -7,6 +7,7 @@ import { createServer } from 'node:net';
 import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { observeInstalledReadiness, closeInstalledNormally, recordLateReadyAfterFailure, lifecycleSource } from './installed-lifecycle-observation.mjs';
+import { isTemporaryHomeCreateRequest } from './installed-temporary-home-lifecycle.mjs';
 
 export const readJson = file => JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
 export const sha256 = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -177,6 +178,11 @@ export class ActualProduct {
       domainId: this.config.domainId, targetId, expectedRevision, payload };
     const rawFrame = JSON.stringify(request);
     const record = { request, rawFrame, startedAt: new Date().toISOString(), receipt: null };
+    if ((isTemporaryHomeCreateRequest(request) ||
+        (family === 'K-INSTANCE' && operation === 'temporary-home-close')) &&
+        !this.temporaryHomeLifecycle) {
+      throw Error('Temporary-HOME operation blocked: shared case lifecycle producer anchor is missing');
+    }
     this.temporaryHomeLifecycle?.beforeDispatch(record);
     this.journal.operations.push(record); this.save();
     // Persist once before writing. UNKNOWN/disconnect/timeout stops; no implicit resend.
@@ -189,12 +195,22 @@ export class ActualProduct {
       throw error;
     }
     record.receipt = JSON.parse(raw); record.finishedAt = new Date().toISOString(); this.save();
+    if (record.receipt?.requestId !== request.requestId || record.receipt?.targetId !== targetId ||
+        record.receipt?.family !== family || record.receipt?.operation !== operation ||
+        typeof record.receipt?.status !== 'string') {
+      const error = Error(`Original ${family}/${operation} result=${record.receipt?.status}; inspect durable request, no replay`);
+      this.temporaryHomeLifecycle?.afterDispatchError(record, error);
+      this.save();
+      throw error;
+    }
+    if (!allowed.includes(record.receipt.status)) {
+      const error = Error(`Original ${family}/${operation} result=${record.receipt.status}; inspect durable request, no replay`);
+      this.temporaryHomeLifecycle?.afterRejectedReceipt(record);
+      this.save();
+      throw error;
+    }
     this.temporaryHomeLifecycle?.afterReceipt(record);
     this.save();
-    if (record.receipt.requestId !== request.requestId || record.receipt.targetId !== targetId ||
-        record.receipt.family !== family || record.receipt.operation !== operation || !allowed.includes(record.receipt.status)) {
-      throw Error(`Original ${family}/${operation} result=${record.receipt.status}; inspect durable request, no replay`);
-    }
     return record.receipt;
   }
   async reconcile(record) {
@@ -208,12 +224,18 @@ export class ActualProduct {
     this.journal.operations.push(observation); this.save();
     const raw = await this.evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_design37_user_operation',{frame:${JSON.stringify(record.rawFrame)}})`);
     observation.receipt = JSON.parse(raw); this.save();
+    if (observation.receipt?.requestId !== record.request.requestId ||
+        observation.receipt?.targetId !== record.request.targetId ||
+        observation.receipt?.family !== record.request.family ||
+        observation.receipt?.operation !== record.request.operation ||
+        !['APPLIED', 'REPLAYED', 'UNKNOWN'].includes(observation.receipt?.status)) {
+      const error = Error(`Original native reconciliation returned ${observation.receipt?.status}`);
+      this.temporaryHomeLifecycle?.afterDispatchError(record, error);
+      this.save();
+      throw error;
+    }
     this.temporaryHomeLifecycle?.afterReconciliation(record, observation);
     this.save();
-    if (observation.receipt.requestId !== record.request.requestId ||
-        !['APPLIED', 'REPLAYED', 'UNKNOWN'].includes(observation.receipt.status)) {
-      throw Error(`Original native reconciliation returned ${observation.receipt.status}`);
-    }
     return observation;
   }
   async seat() {

@@ -681,12 +681,16 @@ async function runClaudeSequenceTurns(row, record, session) {
 
 async function runCase(row, instances) {
   const grokWrite = row.caseMode === 'grokWrite';
-  const record = { driverId: row.driverId, instanceId: row.instanceId, seatId: row.seatId,
+  const record = { caseId: id('m2ProviderCase'), driverId: row.driverId, instanceId: row.instanceId, seatId: row.seatId,
     worktreeId: row.worktreeId, fixedVersion: row.version, fixedSha256: row.sha256,
     expectedModel: row.model, expectedEffort: row.effort, caseMode: row.caseMode ?? 'singleAnswer',
     ...(row.contextAfterResume === true ? { contextAfterResume: true } : {}),
     state: 'PREFLIGHT', acceptance: false };
   journal.cases.push(record); product.save();
+  homeLifecycle.beginCase(record.caseId);
+  let businessError = null;
+  let teardownJournalError = null;
+  try {
   const instance = instances.instances.find(value => value.instanceId === row.instanceId && value.driverId === row.driverId);
   // This one preserved Claude test instance predates managed CLI lifecycle
   // records. Its raw install_state is UNKNOWN, which the UI maps to ERROR.
@@ -772,11 +776,11 @@ async function runCase(row, instances) {
     record.write.expectedContent = bytes;
     product.save();
   }
-  const session = { id: id('m2ProviderSession'), caseId: journal.caseId,
+  const session = { id: id('m2ProviderSession'), caseId: record.caseId,
     seatId: row.seatId, instanceId: row.instanceId, worktreeId: row.worktreeId,
     generation: (BigInt(seat.result.generation) + 1n).toString(), revision: '0', cursor: '0', events: [], turns: [] };
   record.sessionId = session.id; journal.sessions.push(session); product.save();
-  homeLifecycle.registerProducer(session, row.instanceId);
+  homeLifecycle.registerProducer(session, row.instanceId, record.caseId);
   for (const action of ['admission-reserve', 'admission-commit']) await sessionStep(session, action, { seatId: row.seatId });
   const opened = await sessionStep(session, 'open', { seatId: row.seatId,
     repositoryId: config.repositoryId, worktreeId: row.worktreeId });
@@ -920,6 +924,27 @@ async function runCase(row, instances) {
   record.stopFact = stopped.result.stopFact;
   await sessionStep(session, 'admission-release', { seatId: row.seatId });
   record.result = 'DIRECT_H_RECEIPT_A_READBACK_REQUIRED'; product.save();
+  } catch (error) {
+    businessError = error;
+  } finally {
+    try {
+      const teardown = await homeLifecycle.finishCase(record.caseId);
+      record.homeTeardown = { state: teardown.state, complete: teardown.complete,
+        errors: teardown.errors };
+      if (!teardown.complete) record.result = 'CASE_TEARDOWN_INCOMPLETE';
+    } catch (teardownError) {
+      record.homeTeardown = { state: 'CASE_TEARDOWN_INCOMPLETE', complete: false,
+        error: String(teardownError?.stack ?? teardownError) };
+      record.result = 'CASE_TEARDOWN_INCOMPLETE';
+    }
+    try { product.save(); }
+    catch (error) { teardownJournalError = error; }
+  }
+  if (businessError) throw businessError;
+  if (teardownJournalError) throw teardownJournalError;
+  if (record.homeTeardown?.complete !== true) {
+    throw Error(`${row.driverId}: CASE_TEARDOWN_INCOMPLETE; next creating case blocked`);
+  }
 }
 
 async function readbackAndGolden() {
@@ -1042,6 +1067,7 @@ try {
       'm2-provider-managed-source.mjs', 'm2-provider-capture-readback.py']
       .map(name => [name, sha256(path.join(here, name))])) };
   await snapshot('before');
+  await homeLifecycle.captureBaseline();
   // Verify the sealed closure before startup can change the original database.
   for (const row of config.cases) {
     const proof = readManagedSource(row, config.stateRoot);
@@ -1057,8 +1083,13 @@ try {
   await product.closeNormally();
   await snapshot('after');
   compareProtection();
-  const finalFacts = await readbackAndGolden();
-  if (!homeLifecycle.applySharedClosedReadback(finalFacts)) {
+  await readbackAndGolden();
+  let homesClosed = false;
+  try { homesClosed = await homeLifecycle.verifyClosedReadback(); }
+  catch (readbackError) {
+    journal.temporaryHomeReadbackError = String(readbackError?.stack ?? readbackError);
+  }
+  if (!homesClosed) {
     journal.state = 'CASE_TEARDOWN_INCOMPLETE'; journal.acceptance = false; product.save();
     process.exitCode = 1;
   } else {

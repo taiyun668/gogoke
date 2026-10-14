@@ -397,6 +397,8 @@ async function connectSelected(association, workspaceName, requireClick, threadI
 let hStopped = false;
 try {
   await snapshot('before'); // Product is still normally closed.
+  await homeLifecycle.captureBaseline();
+  homeLifecycle.beginCase(journal.caseId);
   await product.launch();
   check(product.tester && journal.connectionBackend?.agentActs === 0,
     'Actual installed WebView CDP has no zero-agent-action locator.');
@@ -507,13 +509,18 @@ try {
     check(released.result && released.status === 'APPLIED', 'Original stopped admission release not confirmed.');
     step('original-stopped-admission-release', { requestId: released.requestId, revision: released.revision });
   }
+  let caseBusinessError = null;
+  let caseCaptionError = null;
+  let caseJournalError = null;
+  let caseTeardown = null;
+  try {
   const card = await seatCard();
   check(card.result?.state === 'IDLE' && card.result.instanceId === config.instanceId &&
     /^\d+$/.test(String(card.result.generation)), 'Existing E USER seat is not idle on its registered instance.');
   const session = { id: id('g37UserSession'), seatId: config.seatId,
     generation: (BigInt(card.result.generation) + 1n).toString(), revision: '0', cursor: '0', threadId: null };
   journal.sessions.push(session); product.save();
-  homeLifecycle.registerProducer(session, config.instanceId);
+  homeLifecycle.registerProducer(session, config.instanceId, journal.caseId);
   await hOperation(session, 'admission-reserve', { seatId: config.seatId });
   await hOperation(session, 'admission-commit', { seatId: config.seatId });
   if (config.startupObservationMarker) fs.writeFileSync(config.startupObservationMarker, JSON.stringify({ state: 'BEFORE_ORIGINAL_OPEN', sourceCommit: SOURCE, sessionId: session.id, domainId: config.domainId, at: new Date().toISOString() }) + '\n');
@@ -657,10 +664,38 @@ try {
   step('cold-hydration', { threadId: session.threadId, turns: cold.turns.length });
   const released = await hOperation(session, 'admission-release', { seatId: config.seatId });
   check(released.status === 'APPLIED', `Original H admission release failed: ${JSON.stringify(released)}`);
-  await product.closeNormally();
+  } catch (error) {
+    caseBusinessError = error;
+  } finally {
+    try {
+      caseTeardown = await homeLifecycle.finishCase(journal.caseId);
+      journal.caseHomeTeardown = { state: caseTeardown.state,
+        complete: caseTeardown.complete, errors: caseTeardown.errors };
+    } catch (teardownError) {
+      journal.caseHomeTeardown = { state: 'CASE_TEARDOWN_INCOMPLETE', complete: false,
+        error: String(teardownError?.stack ?? teardownError) };
+    }
+    if (product.socket?.readyState === WebSocket.OPEN) {
+      try { await product.closeNormally(); }
+      catch (closeError) {
+        caseCaptionError = closeError;
+        journal.captionCloseError = String(closeError?.stack ?? closeError);
+      }
+    }
+    try { product.save(); }
+    catch (error) { caseJournalError = error; }
+  }
+  if (caseBusinessError) throw caseBusinessError;
+  if (caseCaptionError) throw caseCaptionError;
+  if (caseJournalError) throw caseJournalError;
   await snapshot('after'); // Product has normally exited after original H physical stop.
   compareSnapshots();
-  if (homeLifecycle.applySharedClosedReadback(null)) {
+  let homesClosed = false;
+  try { homesClosed = caseTeardown?.complete && await homeLifecycle.verifyClosedReadback(); }
+  catch (readbackError) {
+    journal.temporaryHomeReadbackError = String(readbackError?.stack ?? readbackError);
+  }
+  if (homesClosed) {
     journal.state = homeLifecycle.manifest.state === 'NO_HOME_CREATE_DISPATCHED'
       ? 'EVIDENCE_READY_NO_HOME_CREATE_DISPATCHED_REQUIRES_REVIEW'
       : 'EVIDENCE_READY_REQUIRES_REVIEW';
@@ -682,4 +717,17 @@ try {
   }
   if (product.child && product.child.exitCode === null) await product.preserveFailure();
   throw error;
+} finally {
+  const caseRow = homeLifecycle.manifest.cases.find(row => row.caseId === journal.caseId);
+  if (caseRow?.state === 'RUNNING') {
+    try {
+      const teardown = await homeLifecycle.finishCase(journal.caseId);
+      journal.caseHomeTeardown = { state: teardown.state,
+        complete: teardown.complete, errors: teardown.errors };
+    } catch (teardownError) {
+      journal.caseHomeTeardown = { state: 'CASE_TEARDOWN_INCOMPLETE', complete: false,
+        error: String(teardownError?.stack ?? teardownError) };
+    }
+    product.save();
+  }
 }
