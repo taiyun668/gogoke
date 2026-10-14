@@ -29,7 +29,7 @@ pub(crate) struct VerifiedOfficialCli {
     pub(crate) raw_image: bool,
 }
 
-const OFFICIAL: [VerifiedOfficialCli; 6] = [
+const OFFICIAL: [VerifiedOfficialCli; 8] = [
     VerifiedOfficialCli { driver: "codex", version: "0.160.0",
         archive_sha256: "1f4c46470317bf5fabb308ed3e39a80ff544069cedc2cb477005545e694058b9",
         image_sha256: "fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d",
@@ -54,6 +54,14 @@ const OFFICIAL: [VerifiedOfficialCli; 6] = [
         archive_sha256: "ab5d2a424f08281798acbdbb06076166fe000d7995ede94a673417b805210a25",
         image_sha256: "ab5d2a424f08281798acbdbb06076166fe000d7995ede94a673417b805210a25",
         image_relative: "grok.exe", raw_image: true },
+    VerifiedOfficialCli { driver: "codex", version: "0.162.1",
+        archive_sha256: "5d48824f11a512b0ecb351461c2e90a1040c80de1026bc4a80815d5121f3936d",
+        image_sha256: "dd13bdb162a184fa04039488b234a8258ef9b76f84e926c505d5742b19249a6a",
+        image_relative: "package/vendor/x86_64-pc-windows-msvc/bin/codex.exe", raw_image: false },
+    VerifiedOfficialCli { driver: "claude", version: "2.1.299",
+        archive_sha256: "3fed53036bdb0b501da290ff10cc3d8eafbfdf8852d8c0fbb0e7e9e4e0aa53c8",
+        image_sha256: "295b49ec092f31a7de9c6ff286d9d8f120a4f029b9ad9a5ac0b12c35cbf4df2b",
+        image_relative: "package/claude.exe", raw_image: false },
 ];
 
 pub(crate) fn read_fixed_official_cli(driver: &str) -> Option<VerifiedOfficialCli> {
