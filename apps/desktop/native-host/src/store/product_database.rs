@@ -371,7 +371,6 @@ impl<'root> ProductDatabase<'root> {
         if request.family == "K-WORKTREE" { return self.dispatch_user_worktree(request); }
         if request.family == "K-INSTANCE" {
             return match request.operation.as_str() {
-                "temporary-home-close" => self.close_user_temporary_home(request),
                 "register" => self.register_user_instance(request),
                 "install-state" => self.read_user_instance(request, false),
                 "login-state" => self.read_user_instance(request, true),
