@@ -11,6 +11,12 @@ const nonempty = value => typeof value === 'string' && value.length > 0;
 const createHomeFor = request => request?.family === 'K-SESSION' &&
   ['admission-reserve', 'resume'].includes(request.operation);
 
+export function assertSupportedTemporaryHomeOperation(request) {
+  if (request?.family === 'K-SESSION' && ['compact', 'renew-session'].includes(request.operation)) {
+    throw Error('Temporary-HOME operation blocked: compact/renew-session creation ownership and closure are not instrumented');
+  }
+}
+
 function persist(manifestPath, manifest) {
   const temporary = `${manifestPath}.tmp`;
   fs.writeFileSync(temporary, `${JSON.stringify(manifest, null, 2)}\n`, { flag: 'w' });
@@ -178,6 +184,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
     },
     beforeDispatch(record) {
       const request = record.request;
+      assertSupportedTemporaryHomeOperation(request);
       if (createHomeFor(request)) {
         const producer = producerFor(request);
         if (!producer || producer.caseId !== activeCaseId || request.domainId !== domainId ||
@@ -280,9 +287,27 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
       attempt.dispatchError = String(error?.stack ?? error);
       save();
     },
+    beforeReconciliation(originalRecord) {
+      const request = originalRecord?.request;
+      assertSupportedTemporaryHomeOperation(request);
+      const attempt = attemptFor(request?.requestId);
+      const producer = request && producerFor(request);
+      if (!attempt || !nonempty(activeCaseId) || request.operation !== 'resume' ||
+          attempt.caseId !== activeCaseId || producer?.caseId !== activeCaseId ||
+          producer.instanceId !== attempt.instanceId || request.domainId !== attempt.domainId ||
+          request.targetId !== attempt.sessionId ||
+          !journal.operations.includes(originalRecord) ||
+          originalRecord.rawFrame !== JSON.stringify(request) ||
+          originalRecord.rawFrame !== attempt.originalCreateRawFrame ||
+          digest(originalRecord.rawFrame) !== attempt.originalCreateRawSha256 ||
+          !matchesRequestReply(originalRecord, 'K-SESSION', 'resume', ['UNKNOWN']) ||
+          attempt.receipt?.status !== 'UNKNOWN') {
+        throw Error('Temporary-HOME reconciliation requires this active case exact original UNKNOWN resume attempt');
+      }
+    },
     afterReconciliation(originalRecord, observation) {
       const attempt = attemptFor(originalRecord.request?.requestId);
-      if (!attempt) return;
+      if (!attempt) throw Error('Temporary-HOME reconciliation lost its original creation attempt');
       attempt.receipt = observation.receipt;
       attempt.dispatchState = 'ORIGINAL_REQUEST_RECONCILED';
       if (originalRecord.request.operation === 'resume' && nonempty(observation.receipt?.result?.newGeneration)) {

@@ -3,8 +3,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { captureProtection, compareProtection, readProtectionSnapshot,
+  validateProtectionObservers, protectionSources } from './installed-protection-observation.mjs';
 
 const fail = message => { throw Error(message); };
 const check = (condition, message) => { if (!condition) fail(message); };
@@ -62,19 +64,22 @@ check(config.observerTools && typeof config.observerTools === 'object' &&
   'Original formal, memory and ledger observers are required.');
 const observerSpecs = [
   { name: 'formal', runtime: config.pwsh,
-    args: output => ['-NoProfile', '-NonInteractive', '-File', config.observerTools.formal.script,
-      '-OutputFile', output] },
+    args: ['-NoProfile', '-NonInteractive', '-File', config.observerTools.formal.script,
+      '-OutputFile', '{output}'], equalFields: config.observerTools.formal.equalFields },
   { name: 'memory', runtime: config.python,
-    args: output => [config.observerTools.memory.script,
-      path.join(config.stateRoot, 'v37-instances', config.instanceId), output, '0'] },
+    args: [config.observerTools.memory.script,
+      path.join(config.stateRoot, 'v37-instances', config.instanceId), '{output}', '0'],
+    equalFields: config.observerTools.memory.equalFields },
   { name: 'ledger', runtime: config.python,
-    args: output => [config.observerTools.ledger.script, config.stateRoot, output] },
+    args: [config.observerTools.ledger.script, config.stateRoot, '{output}'],
+    equalFields: config.observerTools.ledger.equalFields },
 ];
+validateProtectionObservers(observerSpecs);
 for (const { name, runtime, args } of observerSpecs) {
   const observer = config.observerTools[name];
   const original = originalM2.observers.find(row => row.name === name);
   check(original && runtime === original.runtime &&
-    JSON.stringify(args('{output}')) === JSON.stringify(original.args) &&
+    JSON.stringify(args) === JSON.stringify(original.args) &&
     Array.isArray(observer.equalFields) && observer.equalFields.length > 0 &&
     JSON.stringify(observer.equalFields) === JSON.stringify(original.equalFields) &&
     path.isAbsolute(observer.script) && hex64(observer.sha256) &&
@@ -127,6 +132,7 @@ const homeLifecycle = createTemporaryHomeLifecycle(product,
   path.join(evidenceDirectory, 'temporary-home-attempts.json'));
 let workspaceId = null;
 journal.driverBytes[path.basename(fileURLToPath(import.meta.url))] = digest(fileURLToPath(import.meta.url));
+journal.protectionInstrument = protectionSources();
 product.save();
 const step = (name, value) => { journal.ui.push({ name, value, at: new Date().toISOString() }); product.save(); };
 const exactAssociation = value => {
@@ -142,39 +148,19 @@ const canonical = value => Array.isArray(value) ? value.map(canonical) :
     Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
 const same = (a, b) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
 async function snapshot(phase) {
-  for (const observer of observerSpecs) {
-    const output = path.join(evidenceDirectory, `${observer.name}-${phase}.json`);
-    check(!fs.existsSync(output), `Original ${observer.name}-${phase} snapshot already exists.`);
-    const args = observer.args(output);
-    await new Promise((resolve, reject) => {
-      const child = spawn(observer.runtime, args, { windowsHide: true,
-        stdio: ['ignore', 'ignore', 'pipe'] });
-      let stderr = '';
-      child.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-8192); });
-      child.once('error', reject);
-      child.once('exit', code => code === 0 ? resolve() :
-        reject(Error(`Original read-only ${observer.name} observer exit=${code}: ${stderr}`)));
+  await captureProtection(observerSpecs, null,
+    name => path.join(evidenceDirectory, `${name}-${phase}.json`),
+    (name, reference) => {
+      journal.snapshots[`${name}-${phase}`] = reference;
+      product.save();
     });
-    journal.snapshots[`${observer.name}-${phase}`] = {
-      file: path.basename(output), sha256: digest(output) };
-    product.save();
-  }
 }
 function snapshotValue(name, phase) {
-  const reference = journal.snapshots[`${name}-${phase}`];
-  check(reference && digest(path.join(evidenceDirectory, reference.file)) === reference.sha256,
-    `Original ${name}-${phase} snapshot hash differs.`);
-  return JSON.parse(fs.readFileSync(path.join(evidenceDirectory, reference.file), 'utf8').replace(/^\uFEFF/, ''));
+  return readProtectionSnapshot(evidenceDirectory, journal.snapshots[`${name}-${phase}`]);
 }
 function compareSnapshots() {
-  for (const { name } of observerSpecs) {
-    const before = snapshotValue(name, 'before');
-    const after = snapshotValue(name, 'after');
-    for (const field of config.observerTools[name].equalFields) {
-      check(Object.hasOwn(before, field) && Object.hasOwn(after, field) &&
-        same(before[field], after[field]), `Original ${name}.${field} preservation differs.`);
-    }
-  }
+  journal.protectionComparison = compareProtection(observerSpecs, snapshotValue);
+  check(journal.protectionComparison.allEqual, 'Original thirteen protection fields changed.');
   for (const phase of ['before', 'after']) {
     const memory = snapshotValue('memory', phase);
     check(memory.memoryDataUnchangedByRead === true && memory.stage1OutputCount === 0 &&

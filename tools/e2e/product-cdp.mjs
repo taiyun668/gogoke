@@ -7,7 +7,7 @@ import { createServer } from 'node:net';
 import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { observeInstalledReadiness, closeInstalledNormally, recordLateReadyAfterFailure, lifecycleSource } from './installed-lifecycle-observation.mjs';
-import { isTemporaryHomeCreateRequest } from './installed-temporary-home-lifecycle.mjs';
+import { isTemporaryHomeCreateRequest, assertSupportedTemporaryHomeOperation } from './installed-temporary-home-lifecycle.mjs';
 
 export const readJson = file => JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
 export const sha256 = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -176,6 +176,7 @@ export class ActualProduct {
   async operation(family, operation, targetId, payload = {}, expectedRevision = '0', allowed = ['APPLIED']) {
     const request = { schema: 'gogoke.37.operations.v1', family, operation, requestId: id('e2e'),
       domainId: this.config.domainId, targetId, expectedRevision, payload };
+    assertSupportedTemporaryHomeOperation(request);
     const rawFrame = JSON.stringify(request);
     const record = { request, rawFrame, startedAt: new Date().toISOString(), receipt: null };
     if ((isTemporaryHomeCreateRequest(request) ||
@@ -214,11 +215,16 @@ export class ActualProduct {
     return record.receipt;
   }
   async reconcile(record) {
+    assertSupportedTemporaryHomeOperation(record?.request);
     if (record.receipt?.status !== 'UNKNOWN' || record.request.family !== 'K-SESSION' ||
         !['compact', 'renew-session', 'resume'].includes(record.request.operation) ||
         typeof record.rawFrame !== 'string' || record.rawFrame !== JSON.stringify(record.request)) {
       throw Error('Reconciliation requires the explicit original generation-change UNKNOWN receipt');
     }
+    if (!this.temporaryHomeLifecycle) {
+      throw Error('Temporary-HOME reconciliation blocked: shared case lifecycle producer anchor is missing');
+    }
+    this.temporaryHomeLifecycle.beforeReconciliation(record);
     const observation = { request: record.request, rawFrame: record.rawFrame,
       basis: 'EXACT_NATIVE_REQUEST_RECONCILIATION_NOT_NEW_VENDOR_COMMAND', receipt: null };
     this.journal.operations.push(observation); this.save();
