@@ -512,7 +512,7 @@ Owner 已授权准备本提案，并指定提案 PR 交 Claude 复核合并；�
 
 版本变更默认拒绝活跃、UNKNOWN 和未结 intent。拟议例外只接受 H 的只读原生事实：受信内核直接证实重启边界已截断原执行所属进程世代；或按原 PID 与完整 creation FILETIME 精确确认原执行已不存在。精确对象族必须证明集合完整，不能将单个 PID 消失扩大为未知后代已停；经旧来源绑定的未激活 host/child 集合可作为有限集合。两族是各自资格化的选择，不要求缺失的历史 Job-ID，不把 ACL-only 列名 holder fence 自动提升为全树证明。不得用超时、时间差、阈值、宽限期、外层关窗或 abort bool 代替事实，不要求 Owner 重启来凑证据。
 
-旧 C/H UNKNOWN、claim/owner-binding、alias、temporary home、原成功/失败和错误原文原样保留；不回填 STOPPED、StopFact、APPLIED 或新成功/失败结论。新原生观察不提供 admission release、旧会话 continuation、凭据读取、alias/worktree/HOME 清理或强杀权限。注册/认证 HOME 与凭据字节不动。若同一 PID 已可靠对应不同 creation，则只能证明旧精确对象已消失，不得操作当前对象；PID 重用或出生身份不能判清、查询拒绝/不确定、来源不可信或集合不完整一律 NOT_QUALIFIED，并保留原 OS 错误；不能降格为通过。
+版本准入重评中，旧 C/H UNKNOWN、claim/owner-binding、alias、temporary home、原成功/失败和错误原文原样保留；不回填 STOPPED、StopFact、APPLIED 或新成功/失败结论。新原生观察不提供 admission release、旧会话 continuation、凭据读取、alias/worktree/HOME 清理或强杀权限。注册/认证 HOME 与凭据字节不动。若同一 PID 已可靠对应不同 creation，则只能证明旧精确对象已消失，不得操作当前对象；PID 重用或出生身份不能判清、查询拒绝/不确定、来源不可信或集合不完整一律 NOT_QUALIFIED，并保留原 OS 错误；不能降格为通过。
 
 ### 主体、原 namespace 与完整守卫
 
@@ -532,10 +532,23 @@ Owner 已授权准备本提案，并指定提案 PR 交 Claude 复核合并；�
 
 新增 H 观察实现和声明限于现有 process/session/；现有共享 process/mod.rs 只 re-export 受限类型，类型不允许外部构造或 Deserialize 冒充事实。F 的严格动作 journal/schema、版本消费者和测试限于现有 store/instance/，包括 managed_cli.rs、program_source.rs、mod.rs 及必要的 F-owned helper；F/K-INSTANCE 仍是唯一持久写方。原十表形到新增精确动作表形的迁移必须完整、原子且拒绝影子/损坏/未知表，不分类或清除旧 H/C 行。
 
-现有共享 v37_managed_cli.rs 是同一 ProductDatabase/RootLock/VerifiedDatabaseConnection/OwnerIssuer 桥；product_entry.rs 仅转发既有 USER requestId，不增加 UI 字段、登录、权限或第二调度器。没有新增冷 helper 共享文件，不触及 product_database.rs 的 E.3 限定。PR #93 的两条 runtime 共享路径在本提案完整保留，仍仅供同原 host prepared child 的预防性 abort，不用于冷证明或历史结算。发生其它共享路径、writer、UI/命令或权限需求时，施工先返回 Controller，不自行扩大。
+现有共享 v37_managed_cli.rs 是同一 ProductDatabase/RootLock/VerifiedDatabaseConnection/OwnerIssuer 桥；product_entry.rs 仅转发既有 USER requestId，不增加 UI 字段、登录、权限或第二调度器。版本准入本身没有新增冷 helper 共享文件，也不扩 E.3；下文独立 F HOME 关闭只给 product_database.rs 增一条限定 USER 路由，E.3 本身保持。PR #93 的两条 runtime 共享路径在本提案完整保留，仍仅供同原 host prepared child 的预防性 abort，不用于冷证明或历史结算。发生其它共享路径、writer、UI/命令或权限需求时，施工先返回 Controller，不自行扩大。
 
 ### 验证与非结论
 
 正式原生构建和测试遵循 docs/governance/gogoke-build-and-release.md，全部走云端。先验仪器，核实际加载的源码、构建与文件身份；用真实原生精确对象消失和可靠 PID 复用正例，以及活的同一精确对象、伪造/不明出生身份、拒绝访问、原始查询失败、未知后代/旧来源、namespace/目标漂移、跨单元/driver/home、缺 requestId、重复 begin/各 stage/final 不同 ID、行级 CAS、COMMIT unknown 与独立 rollback 反例。真实重启族正例必须有直接重启证据，模拟时间或 mock 不算。有效 production mutation 必须仍可编译，并因行为断言失败，恢复精确字节后再通过。新候选实际 Win11 USER 路径沿用共用 READY、StopFact/绑定表、正常关闭和十三项仪器。
 
 本提案只授权边界，不生成缺少的历史证据。任何具体历史单元仍须在未来原生资格中逐项核准；未执行的原生/云端/Win11/协议 golden/F.2 结果均为 NOT_RUN，跳过不是通过，合并不是验收。
+## 2026-10-14 补充：原证明关闭历史临时 HOME 与逐案例收尾（同一 PR94）
+
+Owner 指定补充直接并入 PR94，改完重新交 Claude 复核合并，不另开 PR。只准备和修订测试流程；审定、实际 main 回执与范围读回之前保持 Busy，不执行产品关闭或冷例外。旧 head 的审查和检查不覆盖新字节。
+
+采用独立 F-owned K-INSTANCE/temporary-home-close USER 动作，唯一新 close request/raw、严格 selector、原 F create/H/C 完整来源、当前物理身份与 revision、原 StopProof 或合格直接精确身份消失事实，才能把一条 ACTIVE(1) 临时 SESSION HOME 原子写为 CLOSED(2)并给独立 F receipt；目录和 marker 保留。原 H/C UNKNOWN、业务 stop/release/结果原文不改，原 v1 receipt 兼容；新 absence receipt 严格区分证明种类和来源。不凭超时、空集合、release、外层关窗或清单放行；无原执行身份且未启动的历史 HOME 缺证明仍拒绝，不偷增第三证据族。精确 request/receipt、拒绝、COMMIT 未知回读及 finally 流程见 [TEST_CASE_HOME_TEARDOWN.md](TEST_CASE_HOME_TEARDOWN.md)。
+
+[逐项历史清单](HISTORICAL_TEMP_HOME_PROOFS.json) 记录共用闭库报告中的 297 个 HOME：OpenCode 9、Claude 24、Codex 264。183 项仅为记录的核心停止 tuple 候选，19 项投影无完整 tuple，95 项缺旧 episode 投影；不能把缺投影当成不存在原证明。每项都明确保持 REFUSED_PENDING_DIRECT_PROOF_AND_SOURCE_LINKS，当前原生逐 HOME 来源、marker/SID/FID/revision 和精确身份消失资格仍未运行。C71 与未启动 release 不能借候选列表变成已证明。清单属于待证事实，不是批准或原生事实生产者。
+
+最小写域新增 v37_session.rs 与 v37_session_tests.rs 两条共享路径，仅供原 USER 桥精确选择并调用 F writer 及生产接点验证；现有 product_database.rs 仅增加此 K-INSTANCE 路由，process/mod.rs 仅允许 F 读取 H 构造的受限事实。F store/instance 保持唯一 HOME 持久写方；H session_transport/wire 只扩明确 whitelist，不加原 stop/release 副作用。PR93 同原 host abort 与原 cold-version 全部一动作守卫保留；版本 begin 不自动关闭其它 HOME。
+
+测试共用 installed-temporary-home-lifecycle.mjs 与 product-cdp.mjs，并接 provider/visible 案例：每个原创建尝试在 dispatch 前归属本例，部分失败/UNKNOWN也保留；finally 沿合法原停止路径取证，再仅按本例原 createRequestId 请求关闭，保持原业务错误和独立收尾错误。完成前用共用闭库读回确认原 HOME 集合 CLOSED、其它 HOME/认证对象和十三项保护不变；缺证明或缺生产者归属为 CASE_TEARDOWN_INCOMPLETE，不能以关窗、skip 或预期业务拒绝作通过。未迁移的创建路径不得开启新案例；私有历史脚本不改写为新成功。产品桥及新共用调用器需在本授权生效后施工并按实际加载版本验证，当前未运行 HOME 关闭或正向换版。
+
+不物理删除 HOME/alias/worktree、不改凭据或系统权限、不强杀、不伪造 StopFact、不新增 Owner 登录/重启/手工安装触点。相同 PR 内更新 scope_digest、回执、三处固定 blob 和实际 Git LF MANIFEST；旧回执仍直接 supersede 当前 main 生效值，不把未合并 PR93/旧 PR94 作为已生效授权。受影响新 head 云检和 Claude 复核须重新完成。
