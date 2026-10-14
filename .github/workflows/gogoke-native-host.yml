@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       focused_library:
-        description: Affected checks only (seat-scope, policy-unset-stage, ledger-scope, native-takeover, pipe-evidence, grok-permission, claude-holder, claude-initialize, claude-second-init, m2-provider-current, codex-empty-persist, holder-completed-group, managed-first-copy, managed-source-only, managed-lifecycle, service-transport, secretary-configuration, opencode-alias, opencode-pipe, model-options, f2-worktree or f2-seat-page); managed-lifecycle also runs server tests; service-transport includes desktop error cleanup and its compiled mutation; full native and full mutation gates are NOT_RUN
+        description: Affected checks only (seat-scope, policy-unset-stage, ledger-scope, native-takeover, pipe-evidence, grok-permission, claude-holder, claude-initialize, claude-second-init, m2-provider-current, codex-empty-persist, holder-completed-group, managed-first-copy, managed-source-only, managed-lifecycle, service-transport, secretary-configuration, opencode-alias, opencode-pipe, model-options, f2-worktree or f2-seat-page); managed-lifecycle also runs server and IPC tests; managed-lifecycle and service-transport include desktop error cleanup and its compiled mutation; full native and full mutation gates are NOT_RUN
         type: string
         default: ""
       secretary_routine_fixture_only:
@@ -133,6 +133,8 @@ jobs:
           $backend = Join-Path $mingw 'bin/git.exe'
           if (-not (Test-Path -LiteralPath $backend -PathType Leaf)) { throw 'Actual Git backend image unavailable; no launcher substitute' }
           $env:GOGOKE_CONTROLLED_GIT_PATH = $backend
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CONTROLLED_NODE_PATH=$env:GOGOKE_CONTROLLED_NODE_PATH"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CONTROLLED_GIT_PATH=$backend"
           cargo check --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib
           if ($LASTEXITCODE -ne 0) { throw 'Production configuration check failed; test-only historical fixture is not production evidence.' }
           if ($env:FOCUSED_LIBRARY -cin @('service-transport','managed-first-copy','managed-source-only','managed-lifecycle')) {
@@ -140,7 +142,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Actual desktop authority/transport binary did not compile.' }
           }
       - name: Verify original desktop error cleanup and compiled mutation
-        if: ${{ inputs.focused_library == 'service-transport' }}
+        if: ${{ inputs.focused_library == 'service-transport' || inputs.focused_library == 'managed-lifecycle' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -190,7 +192,7 @@ jobs:
             physicalSecretaryStop='NOT_RUN_BY_CONTROL_FLOW_FIXTURE'; installedNormalClose='NOT_RUN'; fullNative='NOT_RUN' } |
             ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $evidence 'result.json') -Encoding utf8NoBOM
       - uses: actions/upload-artifact@v4
-        if: ${{ always() && inputs.focused_library == 'service-transport' }}
+        if: ${{ always() && (inputs.focused_library == 'service-transport' || inputs.focused_library == 'managed-lifecycle') }}
         with:
           name: gogoke-desktop-error-close-${{ github.sha }}
           path: ${{ runner.temp }}/gogoke-desktop-error-close-evidence
@@ -201,6 +203,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $filters = switch ($env:FOCUSED_LIBRARY) {
             'managed-lifecycle' { @(
+              'ipc::',
               'store::instance::managed_cli::',
               'store::instance::registry::tests',
               'store::product_database::v37_managed_cli::tests') }
@@ -335,7 +338,7 @@ jobs:
               ConvertTo-Json | Set-Content (Join-Path $evidence 'lpac-path-shim-result.json') -Encoding utf8NoBOM
             if (-not $shimPassed) { $failures += 'lpac-path-shim' }
           }
-          'Affected checks only; full library, full LPAC, process, full mutation and server gates: NOT_RUN. The pipe-evidence and opencode-pipe selections also run the two focused same-source shim tests. Service-transport separately records desktop error cleanup and its focused compiled mutation; physical Secretary stop and installed normal close remain NOT_RUN for that fixture.' >> $env:GITHUB_STEP_SUMMARY
+          'Affected checks only; full library, full LPAC, process and full mutation gates: NOT_RUN. The pipe-evidence and opencode-pipe selections also run the two focused same-source shim tests. Service-transport and managed-lifecycle separately record desktop error cleanup and its focused compiled mutation; physical Secretary stop and installed normal close remain NOT_RUN for that fixture. Managed-lifecycle also has its original server test job; other selections do not run server tests.' >> $env:GITHUB_STEP_SUMMARY
           if ($failures.Count -gt 0) { throw "Affected checks failed or had no completed tests: $($failures -join ', ')" }
       - uses: actions/upload-artifact@v4
         if: always()

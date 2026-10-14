@@ -518,32 +518,36 @@ mod tests {
     use std::sync::{Mutex,OnceLock};
     use std::time::{SystemTime,UNIX_EPOCH};
 
-    static PINNED_31_ARCHIVES:OnceLock<Mutex<HashMap<(String,String),PathBuf>>>=OnceLock::new();
+    static PINNED_VERSION_ARCHIVES:OnceLock<Mutex<HashMap<(String,String),PathBuf>>>=OnceLock::new();
 
     fn real_opencode_31_stage(root:&RootLock)->(String,PathBuf) {
+        real_opencode_version_stage(root,"1.18.31")
+    }
+
+    fn real_opencode_version_stage(root:&RootLock,version:&str)->(String,PathBuf) {
         assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(),Ok("true"),
             "two-version official CLI fixture is cloud-only");
-        let pin=instance::read_official_cli_version("opencode","1.18.31").unwrap();
+        let pin=instance::read_official_cli_version("opencode",version).unwrap();
         let key=(pin.driver.to_owned(),pin.version.to_owned());
-        let mut cache=PINNED_31_ARCHIVES.get_or_init(||Mutex::new(HashMap::new())).lock().unwrap();
+        let mut cache=PINNED_VERSION_ARCHIVES.get_or_init(||Mutex::new(HashMap::new())).lock().unwrap();
         let archive=cache.entry(key).or_insert_with(||{
             let folder=std::env::temp_dir().join(format!(
                 "gogoke-opencode-two-pin-{}",std::process::id()));
             fs::create_dir_all(&folder).unwrap();
-            let path=folder.join("opencode-1.18.31.download");
+            let path=folder.join(format!("opencode-{version}.download"));
             let status=Command::new("curl.exe").args([
                 "--fail","--location","--silent","--show-error","--output",
-            ]).arg(&path).arg("https://registry.npmjs.org/opencode-windows-x64/-/opencode-windows-x64-1.18.31.tgz")
-                .status().expect("fixed OpenCode 1.18.31 archive download");
-            assert!(status.success(),"fixed OpenCode 1.18.31 archive download: {status}");
+            ]).arg(&path).arg(format!("https://registry.npmjs.org/opencode-windows-x64/-/opencode-windows-x64-{version}.tgz"))
+                .status().expect("fixed OpenCode version archive download");
+            assert!(status.success(),"fixed OpenCode {version} archive download: {status}");
             path
         }).clone();
         drop(cache);
         assert_eq!(crate::store::digest::sha256_hex(&fs::read(&archive).unwrap()),
-            pin.archive_sha256,"fixed OpenCode 1.18.31 archive pin");
+            pin.archive_sha256,"fixed OpenCode version archive pin");
         let staging=instance::managed_cli_root(root).unwrap();
         let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        let stage=format!("opencode-1.18.31-fixture-{nonce}");
+        let stage=format!("opencode-{version}-fixture-{nonce}");
         let folder=staging.join(&stage);
         let content=folder.join("content");
         fs::create_dir(&folder).unwrap();
@@ -551,10 +555,10 @@ mod tests {
         let source=folder.join("source.download");
         fs::copy(&archive,&source).unwrap();
         let status=Command::new("tar.exe").arg("-xzf").arg(&source).arg("-C").arg(&content)
-            .status().expect("fixed OpenCode 1.18.31 archive extraction");
-        assert!(status.success(),"fixed OpenCode 1.18.31 archive extraction: {status}");
+            .status().expect("fixed OpenCode version archive extraction");
+        assert!(status.success(),"fixed OpenCode {version} archive extraction: {status}");
         let image=instance::inspect_staged_official_cli_version(root,pin.driver,pin.version,&stage)
-            .expect("native verified OpenCode 1.18.31 archive and image");
+            .expect("native verified fixed OpenCode version archive and image");
         (stage,image)
     }
 
@@ -694,6 +698,72 @@ mod tests {
         let before=managed_snapshot(&product);
         assert!(product.dispatch_user_managed_cli(begin).is_err());
         assert_eq!(managed_snapshot(&product),before);
+        product.close_checked().unwrap();
+        drop(root);
+        fs::remove_file(database).unwrap();
+        fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).unwrap();
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn real_current_default_upgrades_to_fixed33_and_rolls_back_to_original32() {
+        assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(),Ok("true"),
+            "fixed higher-version USER lifecycle test is cloud-only");
+        let _guard=route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("gogoke-fixed33-user-{}-{nonce}",std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let database=path.join("state.sqlite");
+        let mut product=ProductDatabase::open(&root,&database).unwrap();
+        let (stage32,sentinel)=ready_two_opencode_sources(&mut product,&root);
+        let original_home=fs::read(&sentinel).unwrap();
+        let baseline=managed_snapshot(&product);
+        let copy=instance::read_managed_cli(&product.connection,&root,"opencode").unwrap().unwrap();
+        assert!(copy.previous_version.is_none());
+        assert!(copy.verified_other_versions.iter().any(|version|version=="1.18.33"));
+        let (stage33,_image33)=real_opencode_version_stage(&root,"1.18.33");
+        managed_user(&mut product,&version_frame("begin","1.18.33",None,None));
+        managed_user(&mut product,&version_frame("stage","1.18.33",Some(&stage33),None));
+        managed_user(&mut product,&version_frame("probe","1.18.33",Some(&stage33),Some("probe.33/actual:1")));
+        let probed=instance::read_managed_cli(&product.connection,&root,"opencode").unwrap().unwrap();
+        assert_eq!(probed.state,"PROBED");
+        let upgrade_raw=format!("{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"upgrade\",\"requestId\":\"upgrade.33/actual:1\",\"driverId\":\"opencode\",\"targetVersion\":\"1.18.33\",\"expectedRevision\":\"{}\"}}",probed.revision);
+        let (status,original_upgrade)=receipt_set(&managed_user(&mut product,&upgrade_raw));
+        assert_eq!(status,"APPLIED");
+        assert_eq!(original_upgrade.len(),2);
+        let upgraded=instance::read_managed_cli(&product.connection,&root,"opencode").unwrap().unwrap();
+        assert_eq!(upgraded.version.as_deref(),Some("1.18.33"));
+        assert_eq!(upgraded.previous_version.as_deref(),Some("1.18.32"));
+        let upgrade_snapshot=managed_snapshot(&product);
+        assert!(upgrade_snapshot.instances.iter().all(|row|row[1]=="1.18.33"));
+        assert!(upgrade_snapshot.sources.iter().all(|row|row[2]=="1.18.33"));
+        assert_eq!(upgrade_snapshot.profiles,baseline.profiles);
+        assert_eq!(fs::read(&sentinel).unwrap(),original_home);
+        managed_user(&mut product,&version_frame("begin","1.18.32",None,None));
+        managed_user(&mut product,&version_frame("stage","1.18.32",Some(&stage32),None));
+        managed_user(&mut product,&version_frame("probe","1.18.32",Some(&stage32),Some("probe.32/rollback:1")));
+        let probed=instance::read_managed_cli(&product.connection,&root,"opencode").unwrap().unwrap();
+        let rollback_raw=format!("{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"rollback\",\"requestId\":\"rollback.32/actual:1\",\"driverId\":\"opencode\",\"targetVersion\":\"1.18.32\",\"expectedRevision\":\"{}\"}}",probed.revision);
+        let (status,original_rollback)=receipt_set(&managed_user(&mut product,&rollback_raw));
+        assert_eq!(status,"APPLIED");
+        assert_eq!(original_rollback.len(),2);
+        let rolled_back=managed_snapshot(&product);
+        assert!(rolled_back.instances.iter().all(|row|row[1]=="1.18.32"));
+        assert!(rolled_back.sources.iter().all(|row|row[2]=="1.18.32"));
+        assert_eq!(rolled_back.profiles,baseline.profiles);
+        for (before,after) in baseline.instances.iter().zip(&rolled_back.instances) {
+            assert_eq!((&before[0],&before[3]),(&after[0],&after[3]));
+        }
+        assert_eq!(fs::read(&sentinel).unwrap(),original_home);
+        let (status,replayed)=receipt_set(&managed_user(&mut product,&upgrade_raw));
+        assert_eq!(status,"REPLAYED");
+        assert_eq!(replayed,original_upgrade);
+        assert_eq!(managed_snapshot(&product),rolled_back);
+        let (status,replayed)=receipt_set(&managed_user(&mut product,&rollback_raw));
+        assert_eq!(status,"REPLAYED");
+        assert_eq!(replayed,original_rollback);
+        assert_eq!(managed_snapshot(&product),rolled_back);
         product.close_checked().unwrap();
         drop(root);
         fs::remove_file(database).unwrap();

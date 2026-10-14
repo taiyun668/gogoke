@@ -29,7 +29,7 @@ pub(crate) struct VerifiedOfficialCli {
     pub(crate) raw_image: bool,
 }
 
-const OFFICIAL: [VerifiedOfficialCli; 5] = [
+const OFFICIAL: [VerifiedOfficialCli; 6] = [
     VerifiedOfficialCli { driver: "codex", version: "0.160.0",
         archive_sha256: "1f4c46470317bf5fabb308ed3e39a80ff544069cedc2cb477005545e694058b9",
         image_sha256: "fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d",
@@ -45,6 +45,10 @@ const OFFICIAL: [VerifiedOfficialCli; 5] = [
     VerifiedOfficialCli { driver: "opencode", version: "1.18.31",
         archive_sha256: "8a300ee2b3210ccc6894ff27d21bdb0a60ee44107389c49b743b4caed10aa5cf",
         image_sha256: "0242a0dc705af67c90882b456a36b619883c1c786aad8fe071a1bc64e5d1d440",
+        image_relative: "package/bin/opencode.exe", raw_image: false },
+    VerifiedOfficialCli { driver: "opencode", version: "1.18.33",
+        archive_sha256: "fc76bd4a0f258027594f6a8900e220fd06f7345cb5e67f73dc3b4f53ba3f580e",
+        image_sha256: "52f60248a576b34c9a6dcaa27e0a7f08089af35bcdc0dfb10c04d3e00a98314c",
         image_relative: "package/bin/opencode.exe", raw_image: false },
     VerifiedOfficialCli { driver: "grok", version: "1.0.41",
         archive_sha256: "ab5d2a424f08281798acbdbb06076166fe000d7995ede94a673417b805210a25",
@@ -1108,7 +1112,7 @@ mod first_copy_tests {
         assert_eq!(prior.image_relative,"package/bin/opencode.exe");
         assert!(!prior.raw_image);
         assert!(read_official_cli_version("opencode","1.18.30").is_none());
-        assert_eq!(OFFICIAL.iter().filter(|pin|pin.driver=="opencode").count(),2);
+        assert_eq!(OFFICIAL.iter().filter(|pin|pin.driver=="opencode").count(),3);
         let raw=b"{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"rollback\",\"requestId\":\"switchA\",\"driverId\":\"opencode\",\"targetVersion\":\"1.18.31\",\"expectedRevision\":\"7\"}";
         let request=super::super::registry::ManagedSwitchRequest{
             request_bytes:raw,request_id:"switchA",driver:"opencode",
