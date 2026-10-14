@@ -40,7 +40,8 @@ function decodeInvocation(expression) {
 }
 
 function fixture(name, { startup = plan, repair = false, stopStatus = 'APPLIED',
-    startupCloseStatus = 'APPLIED', repairCloseStatus = 'APPLIED' } = {}) {
+    startupCloseStatus = 'APPLIED', repairCloseStatus = 'APPLIED', closedResumeStatus = 'CONFLICT',
+    closedSeatState = 'BUSY', closedExtraReceiptField = false } = {}) {
   const dir = path.join(fixtureRoot, name); fs.mkdirSync(dir);
   const journal = { caseId: name, operations: [] };
   const manifest = { schema: 'gogoke.37.temporary-home-attempts.v1', caseId: name,
@@ -52,6 +53,15 @@ function fixture(name, { startup = plan, repair = false, stopStatus = 'APPLIED',
       const frame = decodeInvocation(expression);
       if (frame.command === 'secretary-configuration-read') {
         calls.push({ kind: 'configuration', frame });
+        if(startup.state==='CLOSED_PREDECESSOR') return JSON.stringify({
+          schema:'gogoke.37.secretary-configuration.v1',state:'DESIGNATED',seatState:closedSeatState,seatId:startup.seatId,
+          incarnation:startup.seatIncarnation,instanceId:startup.instanceId,
+          conversation:{state:'FOUND',sessionId:startup.sessionId,generation:startup.oldGeneration,
+            revision:startup.oldRevision,claimState:'STOPPED',runtimeAvailable:false,stoppedFact:true},
+          startupReason:'Original Secretary resume result: '+JSON.stringify({schema:'gogoke.37.operations.v1',
+            family:'K-SESSION',operation:'resume',requestId:startup.expectedCreateRequestId,targetId:startup.sessionId,
+            status:closedResumeStatus,previousRevision:startup.oldRevision,revision:startup.oldRevision,result:{},
+            ...(closedExtraReceiptField?{contradictory:'unqualified'}:{})})});
         return JSON.stringify(startup.state === 'NONE'
           ? { schema: 'gogoke.37.secretary-configuration.v1', state: 'UNSET',
               conversation: { state: 'NONE' } }
@@ -121,6 +131,46 @@ test('actual shared USER ingress closes repair24, then stops and closes startup2
   assert.equal(f.manifest.startupAttempts[0].hStopSource.stopFact, stopFact);
   assert.equal(f.manifest.authorizedRepairs[0].closeReceipt.result.homeId, 'home24');
   assert.equal(f.manifest.startupAttempts[0].closeReceipt.result.homeId, 'home25');
+});
+
+test('a closed predecessor is an observed native no-create, never a CLOSED new HOME', async()=>{
+  const source={...plan,state:'CLOSED_PREDECESSOR',baselineHomeId:'closedHome',oldGeneration:'25',
+    oldRevision:'12',expectedGeneration:'26',expectedCreateRequestId:'native-refused-resume'};
+  const f=fixture('closedPredecessor',{startup:source});
+  await f.lifecycle.beforeLaunch();await f.lifecycle.afterLaunch();
+  assert.equal((await f.lifecycle.settle()).complete,true);
+  assert.equal(f.calls.filter(row=>row.kind==='operation').length,0);
+  assert.equal(f.manifest.startupAttempts.length,0);
+  assert.equal(f.manifest.noStartupHomes.length,1);
+  assert.equal(f.lifecycle.hasCreatedHomes(),false);
+  assert.equal(f.lifecycle.hasTrackedHomes(),true);
+  const row=f.manifest.noStartupHomes[0];
+  const facts={temporaryHomes:[],startupHomes:[],authorizedRepairs:[],authorizedRepairRefusals:[],
+    noStartupHomes:[{caseId:row.caseId,domainId:row.domainId,sessionId:row.sessionId,instanceId:row.instanceId,
+      homeId:row.baselineHomeId,originalCreateRequestId:row.expectedCreateRequestId,state:'NOT_CREATED',
+      generation:row.oldGeneration,revision:row.oldRevision,status:'CONFLICT'}]};
+  assert.equal(f.lifecycle.applyFacts(facts),true);
+  facts.noStartupHomes[0].state='CLOSED';assert.equal(f.lifecycle.applyFacts(facts),false);
+});
+
+test('an unknown resume cannot pass the closed-predecessor no-create branch or close caption',async()=>{
+  const f=fixture('closedUnknown',{startup:{...plan,state:'CLOSED_PREDECESSOR',baselineHomeId:'closedHome'},closedResumeStatus:'UNKNOWN'});
+  await f.lifecycle.beforeLaunch();
+  await assert.rejects(()=>f.lifecycle.afterLaunch(),/prewrite CONFLICT/);
+  assert.equal((await f.lifecycle.settle()).complete,false);
+  await assert.rejects(()=>ActualProduct.prototype.closeNormally.call(f.product),/teardown incomplete/);
+  await assert.rejects(()=>f.lifecycle.beforeLaunch(),/identity\/refusal differs/);
+  assert.equal(f.calls.filter(row=>row.kind==='operation').length,0);
+});
+
+test('wrong E seat state or an inexact native receipt blocks closed-predecessor teardown before caption',async()=>{
+  for(const [name,option] of [['idle',{closedSeatState:'IDLE'}],['extra',{closedExtraReceiptField:true}]]){
+    const f=fixture('closed-'+name,{startup:{...plan,state:'CLOSED_PREDECESSOR',baselineHomeId:'closedHome'},...option});
+    await f.lifecycle.beforeLaunch();await assert.rejects(()=>f.lifecycle.afterLaunch());
+    assert.equal((await f.lifecycle.settle()).complete,false);
+    await assert.rejects(()=>ActualProduct.prototype.closeNormally.call(f.product),/teardown incomplete/);
+    assert.equal(f.calls.filter(row=>row.kind==='operation').length,0);
+  }
 });
 
 test('fifteen explicit repairs retain known refusals and continue independent selectors', async () => {

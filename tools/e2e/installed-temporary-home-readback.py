@@ -121,8 +121,11 @@ def startup_baseline(db, core, root, home_by_id):
     if (not old_home or old_home["domain_id"] != "global" or
             old_home["instance_id"] != claim["instance_id"] or
             old_home["owner_id"] != claim["session_id"] or
-            old_home["generation"] != claim["generation"]):
+            old_home["generation"] != claim["generation"] or
+            old_home["kind"] != "SESSION"):
         return blocked("Secretary stopped claim does not bind an existing original HOME")
+    if (old_home["state"], old_home["revision"]) not in (("ACTIVE", "1"), ("CLOSED", "2")):
+        return blocked("Secretary predecessor HOME state/revision is not native ACTIVE(1) or CLOSED(2)")
     episodes = [dict(row) for row in db.execute(EPISODE_SQL,
         (claim["home_id"], claim["instance_id"], "global", claim["session_id"],
          claim["generation"]))]
@@ -157,7 +160,8 @@ def startup_baseline(db, core, root, home_by_id):
         core.windows_file_identity(root), claim["session_id"],
         claim["generation"], claim["revision"]])
     request_id = "resident-resume-" + sha(identity.encode())[:40]
-    return dict(common, state="RESUME_EXPECTED", sessionId=claim["session_id"],
+    return dict(common, state="RESUME_EXPECTED" if old_home["state"] == "ACTIVE" else
+        "CLOSED_PREDECESSOR", sessionId=claim["session_id"],
         oldGeneration=claim["generation"], oldRevision=claim["revision"],
         expectedGeneration=expected, expectedCreateRequestId=request_id,
         baselineHomeId=claim["home_id"])
@@ -401,6 +405,70 @@ def source_attempt(db, home, close_fields, historical=False):
     return generated, (episodes[0] if episodes else None)
 
 
+def verify_no_startup_home(db, attempt, launch, current_start, current_home):
+    source_start = launch["startup"]
+    fields = ("state", "domainId", "seatId", "seatIncarnation", "instanceId",
+        "sessionId", "oldGeneration", "oldRevision", "expectedGeneration",
+        "expectedCreateRequestId", "baselineHomeId")
+    need(source_start["state"] == "CLOSED_PREDECESSOR" and
+         all(attempt.get(key) == source_start[key] for key in fields) and
+         current_start == source_start,
+         "No-create Secretary source/current stopped predecessor differs")
+    prior = [row for row in launch["homes"] if row["home_id"] == source_start["baselineHomeId"]]
+    need(len(prior) == 1 and prior[0]["state"] == "CLOSED" and prior[0]["revision"] == "2" and
+         current_home == prior[0],
+         "No-create original CLOSED(2) HOME changed after launch")
+    bootstrap = attempt["bootstrap"]
+    frame = json.loads(bootstrap["rawFrame"])
+    reply = json.loads(bootstrap["rawReply"])
+    need(frame == bootstrap["frame"] == {
+            "schema": "gogoke.37.owner-configuration.v1",
+            "command": "secretary-configuration-read"} and
+         reply == bootstrap["reply"] and
+         reply.get("schema") == "gogoke.37.secretary-configuration.v1" and
+         reply.get("state") == "DESIGNATED" and reply.get("seatState") == "BUSY" and
+         reply.get("seatId") == source_start["seatId"] and
+         reply.get("incarnation") == source_start["seatIncarnation"] and
+         reply.get("instanceId") == source_start["instanceId"] and
+         bootstrap["startedAt"] <= bootstrap["finishedAt"],
+         "No-create original USER configuration frame/E identity differs")
+    conversation = reply.get("conversation")
+    need(isinstance(conversation, dict) and conversation.get("state") == "FOUND" and
+         conversation.get("sessionId") == source_start["sessionId"] and
+         conversation.get("generation") == source_start["oldGeneration"] and
+         conversation.get("revision") == source_start["oldRevision"] and
+         conversation.get("claimState") == "STOPPED" and
+         conversation.get("runtimeAvailable") is False and
+         conversation.get("stoppedFact") is True,
+         "No-create original USER conversation is not the stopped predecessor")
+    prefix = "Original Secretary resume result: "
+    reason = reply.get("startupReason")
+    need(isinstance(reason, str) and reason.startswith(prefix),
+         "No-create USER startupReason is not the original resume receipt")
+    refusal = json.loads(reason[len(prefix):])
+    need(refusal == {"schema": "gogoke.37.operations.v1", "family": "K-SESSION",
+            "operation": "resume", "requestId": source_start["expectedCreateRequestId"],
+            "targetId": source_start["sessionId"], "status": "CONFLICT",
+            "previousRevision": source_start["oldRevision"],
+            "revision": source_start["oldRevision"], "result": {}},
+         "No-create native resume conflict receipt is not exact")
+    request_id = source_start["expectedCreateRequestId"]
+    create_id = "homeprep-" + sha(("global\n" + request_id).encode())[:40]
+    for query, args in (
+        ("SELECT 1 FROM gogoke_v37_instance_operations WHERE request_id=?", (create_id,)),
+        ("SELECT 1 FROM gogoke_v37_h_operation WHERE domain_id='global' AND request_id=?", (request_id,)),
+        ("SELECT 1 FROM gogoke_v37_h_process_episode WHERE domain_id='global' AND request_id=?", (request_id,)),
+    ):
+        need(not list(db.execute(query, args)),
+             "No-create resume has an unexpected original F/H journal entry")
+    return {"caseId": attempt["caseId"], "domainId": "global",
+        "sessionId": source_start["sessionId"], "instanceId": source_start["instanceId"],
+        "homeId": source_start["baselineHomeId"],
+        "originalCreateRequestId": request_id, "state": "NOT_CREATED",
+        "generation": source_start["oldGeneration"], "revision": source_start["oldRevision"],
+        "status": "CONFLICT"}
+
+
 def run(input_path, output_path):
     source = Path(__file__).resolve(strict=True)
     config = read(input_path)
@@ -424,6 +492,7 @@ def run(input_path, output_path):
     need(manifest.get("schema") == "gogoke.37.temporary-home-attempts.v1" and
          isinstance(manifest.get("attempts"), list) and
          isinstance(manifest.get("startupAttempts", []), list) and
+         isinstance(manifest.get("noStartupHomes", []), list) and
          isinstance(manifest.get("authorizedRepairs", []), list),
          "Own creation manifest differs")
     producers = manifest.get("producers")
@@ -455,7 +524,8 @@ def run(input_path, output_path):
         report.update({"measurement": measured, "databasePhysicalIdentity": db_identity})
         if mode in ("baseline", "startup"):
             need((mode != "baseline" or not manifest["attempts"] and
-                 not manifest.get("startupAttempts", []) and config.get("baseline") is None),
+                 not manifest.get("startupAttempts", []) and
+                 not manifest.get("noStartupHomes", []) and config.get("baseline") is None),
                  "Baseline must precede all native creation attempts")
             repairs = declared_repairs(config, homes) if mode == "baseline" else None
             report.update(state="BASELINE_MEASURED" if mode == "baseline" else
@@ -493,6 +563,7 @@ def run(input_path, output_path):
                                    "error": repr(error)})
             startup_ids = set()
             launch_sources = []
+            no_startup_homes = []
             for attempt in manifest.get("startupAttempts", []):
                 try:
                     need(attempt.get("sourceKind") == "NATIVE_STARTUP" and
@@ -571,6 +642,35 @@ def run(input_path, output_path):
                 except Exception as error:
                     errors.append({"source": "startup", "caseId": attempt.get("caseId"),
                                    "error": repr(error)})
+            current_start = startup_baseline(db, core, root, home_by_id)
+            no_startup_ids = set()
+            for attempt in manifest.get("noStartupHomes", []):
+                try:
+                    case_id = attempt["caseId"]
+                    need(attempt.get("sourceKind") == "NATIVE_STARTUP_NO_CREATE" and
+                         case_id not in startup_ids and case_id not in no_startup_ids and
+                         len([row for row in cases if row["caseId"] == case_id]) == 1,
+                         "No-create startup case/source identity differs")
+                    no_startup_ids.add(case_id)
+                    launch_path = pinned(attempt["launchSource"])
+                    launch_sources.append(attempt["launchSource"])
+                    launch = read(launch_path)
+                    need(launch.get("schema") == REPORT_SCHEMA and
+                         launch.get("mode") == "startup" and
+                         launch.get("state") == "STARTUP_SOURCE_MEASURED" and
+                         launch.get("caseId") == manifest["caseId"] and
+                         launch["source"]["reader"] == report["source"]["reader"] and
+                         launch["source"]["core"] == config["core"] and
+                         launch["source"]["manifestOrigin"] == str(manifest_origin) and
+                         launch["measurement"]["rootPhysicalIdentity"] ==
+                             measured["rootPhysicalIdentity"] and
+                         launch["databasePhysicalIdentity"] == db_identity,
+                         "No-create startup launch source/root identity differs")
+                    no_startup_homes.append(verify_no_startup_home(db, attempt, launch,
+                        current_start, home_by_id.get(attempt["baselineHomeId"])))
+                except Exception as error:
+                    errors.append({"source": "noStartupHome", "caseId": attempt.get("caseId"),
+                                   "error": repr(error)})
             declared = baseline.get("authorizedRepairs", [])
             wanted = {row["homeId"]: row for row in declared}
             seen_repairs = set()
@@ -634,6 +734,7 @@ def run(input_path, output_path):
                 "NO_HOME_CREATE_DISPATCHED") if exact else "READBACK_FAILED",
                 baseline=config["baseline"], facts={"temporaryHomes": own,
                     "startupHomes": startup_homes, "authorizedRepairs": repairs,
+                    "noStartupHomes": no_startup_homes,
                     "authorizedRepairRefusals": repair_refusals,
                     "homeInventoryMatchesDeclaredScope": exact,
                     "homeInventoryUnchangedExceptOwnClosed": exact and not wanted},

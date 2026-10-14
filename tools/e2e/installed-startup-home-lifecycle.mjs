@@ -42,8 +42,10 @@ export function createStartupHomeLifecycle(product, manifest, save, runReadback,
   startupLifecycleSource();
   const journal = product.journal;
   manifest.startupAttempts = [];
+  manifest.noStartupHomes = [];
   manifest.authorizedRepairs = [];
   let current = null;
+  let expectedNoCreate = null;
   let launches = 0;
   const all = () => [...manifest.startupAttempts, ...manifest.authorizedRepairs];
   const caseFor = row => manifest.cases.find(value => value.caseId === row.caseId);
@@ -81,6 +83,28 @@ export function createStartupHomeLifecycle(product, manifest, save, runReadback,
       /^\d+$/.test(String(conversation.revision)), 'Current startup E/H identity differs');
     return conversation;
   };
+  const noStartupCreated = (row, metadata) => {
+    const value = metadata?.reply, conversation = value?.conversation;
+    const prefix = 'Original Secretary resume result: ';
+    check(value?.state === 'DESIGNATED' && value.seatState === 'BUSY' && value.seatId === row.seatId &&
+      value.incarnation === row.seatIncarnation && value.instanceId === row.instanceId &&
+      conversation?.state === 'FOUND' && conversation.sessionId === row.sessionId &&
+      String(conversation.generation) === row.oldGeneration &&
+      String(conversation.revision) === row.oldRevision && conversation.claimState === 'STOPPED' &&
+      conversation.runtimeAvailable === false && conversation.stoppedFact === true &&
+      value.startupReason?.startsWith(prefix), 'Closed predecessor startup identity/refusal differs');
+    const receipt = JSON.parse(value.startupReason.slice(prefix.length));
+    check(Object.keys(receipt).sort().join('|') ===
+      'family|operation|previousRevision|requestId|result|revision|schema|status|targetId' &&
+      receipt.schema === 'gogoke.37.operations.v1' && receipt.family === 'K-SESSION' &&
+      receipt.operation === 'resume' && receipt.requestId === row.expectedCreateRequestId &&
+      receipt.targetId === row.sessionId && receipt.status === 'CONFLICT' &&
+      receipt.previousRevision === row.oldRevision && receipt.revision === row.oldRevision &&
+      receipt.result && typeof receipt.result === 'object' && !Array.isArray(receipt.result) &&
+      Object.keys(receipt.result).length === 0,
+    'Closed predecessor lacks its exact original native prewrite CONFLICT');
+    return receipt;
+  };
   const closeRow = async row => {
     if (closed(row) || refused(row)) return;
     check(row.closeDispatchState === 'NOT_DISPATCHED',
@@ -110,11 +134,13 @@ export function createStartupHomeLifecycle(product, manifest, save, runReadback,
       startupLifecycleSource();
       check(baseline(), 'Closed original HOME baseline required before product launch');
       check(!current || closed(current), 'Previous startup HOME is not closed; no successor launch');
+      for (const row of manifest.noStartupHomes) noStartupCreated(row,row.bootstrap);
       const { report, reference } = await runReadback('startup', null, 'startup-' + launches++);
       const plan = report.startup;
-      check(plan && ['NONE', 'RESUME_EXPECTED'].includes(plan.state),
+      check(plan && ['NONE', 'RESUME_EXPECTED', 'CLOSED_PREDECESSOR'].includes(plan.state),
         'Native startup source is unresolved; product launch blocked: ' + (plan?.reason ?? 'missing source'));
       current = null;
+      expectedNoCreate = null;
       if (plan.state === 'RESUME_EXPECTED') {
         const caseId = journal.caseId + '_startup_' + manifest.startupAttempts.length;
         manifest.cases.push({ caseId, sourceKind: 'NATIVE_STARTUP', state: 'RUNNING', attempts: [] });
@@ -125,6 +151,12 @@ export function createStartupHomeLifecycle(product, manifest, save, runReadback,
             sha256: reference.sha256 },
           closeDispatchState: 'NOT_DISPATCHED', closeReceipt: null };
         manifest.startupAttempts.push(current);
+      } else if (plan.state === 'CLOSED_PREDECESSOR') {
+        const caseId = journal.caseId + '_no_startup_' + manifest.noStartupHomes.length;
+        manifest.cases.push({caseId, sourceKind:'NATIVE_STARTUP_NO_CREATE', state:'RUNNING', attempts:[]});
+        expectedNoCreate = {...plan, caseId, sourceKind:'NATIVE_STARTUP_NO_CREATE',
+          launchSource:{path:path.join(product.config.evidenceDirectory,reference.file),sha256:reference.sha256}};
+        manifest.noStartupHomes.push(expectedNoCreate);
       }
       journal.startupHomeLaunchSource = reference;
       save(); product.save();
@@ -132,6 +164,13 @@ export function createStartupHomeLifecycle(product, manifest, save, runReadback,
     async afterLaunch() {
       startupLifecycleSource();
       const metadata = await readSecretary();
+      if (expectedNoCreate) {
+        noStartupCreated(expectedNoCreate, metadata);
+        expectedNoCreate.bootstrap = metadata;
+        caseFor(expectedNoCreate).state = 'CASE_NO_STARTUP_HOME_PENDING_CLOSED_READBACK';
+        save(); product.save();
+        return;
+      }
       if (!current) {
         check(metadata.reply.state === 'UNSET' && metadata.reply.conversation?.state === 'NONE',
           'Unplanned native startup designation appeared');
@@ -185,7 +224,12 @@ export function createStartupHomeLifecycle(product, manifest, save, runReadback,
     async settle() {
       startupLifecycleSource();
       const errors = [];
+      for (const row of manifest.noStartupHomes) {
+        try { noStartupCreated(row,row.bootstrap); }
+        catch(error) { errors.push(String(error?.stack ?? error)); }
+      }
       for (const row of manifest.authorizedRepairs) {
+        if (errors.length) break;
         try { await closeRow(row); }
         catch (error) { errors.push(String(error?.stack ?? error)); break; }
       }
@@ -244,9 +288,19 @@ export function createStartupHomeLifecycle(product, manifest, save, runReadback,
             : row.originalCreateRequestId === attempt.originalCreateRequestId)).length === 1);
       const refusals = manifest.authorizedRepairs.filter(refused);
       const refusedFacts = facts?.authorizedRepairRefusals ?? [];
+      const noCreates = facts?.noStartupHomes ?? [];
       return matches(manifest.startupAttempts, facts?.startupHomes ?? []) &&
         matches(manifest.authorizedRepairs.filter(closed), facts?.authorizedRepairs ?? []) &&
-        Array.isArray(refusedFacts) && refusedFacts.length === refusals.length &&
+        Array.isArray(noCreates) && noCreates.length === manifest.noStartupHomes.length &&
+        manifest.noStartupHomes.every(attempt => {
+          try { noStartupCreated(attempt,attempt.bootstrap); } catch { return false; }
+          return noCreates.filter(row => row.caseId === attempt.caseId &&
+            row.domainId === attempt.domainId && row.sessionId === attempt.sessionId &&
+            row.instanceId === attempt.instanceId && row.homeId === attempt.baselineHomeId &&
+            row.originalCreateRequestId === attempt.expectedCreateRequestId &&
+            row.state === 'NOT_CREATED' && row.generation === attempt.oldGeneration &&
+            row.revision === attempt.oldRevision && row.status === 'CONFLICT').length === 1;
+        }) && Array.isArray(refusedFacts) && refusedFacts.length === refusals.length &&
         manifest.authorizedRepairs.every(row => closed(row) || refused(row)) &&
         refusals.every(attempt => refusedFacts.filter(row =>
           row.caseId === attempt.caseId && row.homeId === attempt.homeId &&
@@ -255,7 +309,7 @@ export function createStartupHomeLifecycle(product, manifest, save, runReadback,
           row.closeRequestId === attempt.closeRequestId && row.status === attempt.closeReceipt.status &&
           row.reason === attempt.closeReceipt.result.reason).length === 1);
     },
-    hasTrackedHomes: () => all().length > 0,
+    hasTrackedHomes: () => all().length + manifest.noStartupHomes.length > 0,
     hasCreatedHomes: () => manifest.startupAttempts.length > 0,
   };
 }
