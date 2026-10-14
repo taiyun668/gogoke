@@ -503,6 +503,48 @@ jobs:
           }
           cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml resource_trust --lib
           if ($LASTEXITCODE -ne 0) { throw "resource trust tests failed: $LASTEXITCODE" }
+          $boundSteps = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml managed_cli_bound_step --lib 2>&1
+          $boundSteps | Out-Host
+          if ($LASTEXITCODE -ne 0 -or
+              @($boundSteps | Where-Object { $_ -match 'test result: ok\. 2 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+            throw "Managed CLI original action step identity tests failed or did not execute exactly two tests: $LASTEXITCODE"
+          }
+          $boundSource = 'src-tauri/src/public_runtime/product_entry.rs'
+          $boundOriginal = [IO.File]::ReadAllBytes($boundSource)
+          $boundHash = (Get-FileHash -LiteralPath $boundSource).Hash.ToLowerInvariant()
+          $boundText = [Text.UTF8Encoding]::new($false,$true).GetString($boundOriginal)
+          $boundNeedle = '["driverId","requestId","targetVersion"]'
+          if ([regex]::Matches($boundText,[regex]::Escape($boundNeedle)).Count -ne 1) {
+            throw 'Managed CLI reply identity mutation target is not unique'
+          }
+          $boundMutation = [ordered]@{ source=$env:GITHUB_SHA; originalHash=$boundHash; state='NOT_RUN' }
+          try {
+            [IO.File]::WriteAllText($boundSource,$boundText.Replace($boundNeedle,'["driverId","targetVersion"]'),[Text.UTF8Encoding]::new($false))
+            $boundMutation.changedHash = (Get-FileHash -LiteralPath $boundSource).Hash.ToLowerInvariant()
+            & cargo +1.89.0 check --locked --manifest-path src-tauri/Cargo.toml --lib
+            $boundMutation.checkExit = $LASTEXITCODE
+            if ($LASTEXITCODE -ne 0) { throw 'Reply identity mutation did not compile; not a behavioral failure' }
+            $wrongReply = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml managed_cli_bound_step_requires_original_request_and_operation --lib 2>&1
+            $boundMutation.testExit = $LASTEXITCODE
+            $wrongReply | Out-Host
+            $wrongReply | Set-Content -LiteralPath (Join-Path $evidence 'managed-cli-reply-identity-mutation.log') -Encoding utf8
+            if ($LASTEXITCODE -eq 0 -or
+                @($wrongReply | Where-Object { $_ -match 'test result: FAILED\. 0 passed; 1 failed; 0 ignored' }).Count -ne 1) {
+              throw 'Wrong-request reply mutation was not rejected by the original behavior assertion'
+            }
+            $boundMutation.state = 'COMPILED_BEHAVIOR_MUTATION_KILLED'
+          } finally {
+            [IO.File]::WriteAllBytes($boundSource,$boundOriginal)
+            $boundMutation.restoredHash = (Get-FileHash -LiteralPath $boundSource).Hash.ToLowerInvariant()
+            $boundMutation | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence 'managed-cli-reply-identity-mutation.json') -Encoding utf8
+            if ($boundMutation.restoredHash -cne $boundHash) { throw 'Reply identity source not restored exactly' }
+          }
+          $boundRestored = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml managed_cli_bound_step --lib 2>&1
+          $boundRestored | Out-Host
+          if ($LASTEXITCODE -ne 0 -or
+              @($boundRestored | Where-Object { $_ -match 'test result: ok\. 2 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+            throw 'Restored managed CLI reply identity controls did not pass'
+          }
           $custody = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml cancelled_reply_retains_job_and_lease_until_accounted_settlement --lib 2>&1
           $custody | Out-Host
           if ($LASTEXITCODE -ne 0 -or -not (@($custody | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed' }).Count -eq 1)) {

@@ -10,10 +10,17 @@ use crate::store::atomic::Statement;
 use crate::store::authority::{check_owner_in_current_transaction, OwnerIssuer};
 use crate::store::orchestration::OrchestrationError;
 use crate::store::same_open::VerifiedDatabaseConnection;
+use super::managed_version_action::{ActionPhase, ActionRecord};
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+
+#[path = "managed_cli_cold_version.rs"]
+mod cold_version;
+pub(crate) use cold_version::{observe_version_scope, revalidate_version_action,
+    revalidate_version_action_at_fingerprints,
+    no_unsettled_managed_version_change_for_action, QualifiedVersionAction};
 
 const REPARSE_POINT: u32 = 0x400;
 const CONTAINER: &str = "v37-managed-cli";
@@ -267,6 +274,32 @@ fn transaction<T>(db: &mut VerifiedDatabaseConnection<'_>,
             Err(error)
         },
     }
+}
+
+fn no_open_version_action(db:&VerifiedDatabaseConnection<'_>,driver:&str)
+    ->Result<(),ManagedCliError>{
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_instance_version_actions WHERE open_driver_id=?1 LIMIT 1")?;
+    q.bind_text(1,driver)?;
+    if q.step_row()? {Err(ManagedCliError::Busy)} else {Ok(())}
+}
+
+fn require_open_action(action:&ActionRecord,driver:&str,phase:ActionPhase)
+    ->Result<(),ManagedCliError>{
+    if action.driver==driver && action.open_driver_id==driver && action.phase==phase {
+        Ok(())
+    } else {Err(ManagedCliError::Busy)}
+}
+
+fn version_mutation_guard(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
+    driver:&str,action:Option<&ActionRecord>)->Result<(),ManagedCliError>{
+    if let Some(action)=action {
+        no_unsettled_managed_version_change_for_action(db,root,driver,action)?;
+    } else {
+        no_open_version_action(db,driver)?;
+        no_unsettled_managed_version_change(db,driver)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn no_unsettled_instance_use(db: &VerifiedDatabaseConnection<'_>, driver: &str)
@@ -657,10 +690,40 @@ fn record_managed_cli_stage_inner(db: &mut VerifiedDatabaseConnection<'_>,
     };
     let progress_bytes=i64::try_from(fs::symlink_metadata(&downloaded)?.len())
         .map_err(|_|ManagedCliError::Invalid)?;
-    transaction(db, |db| {
+    transaction(db, |db| record_managed_cli_stage_in_current_transaction(
+        db,root,owner,driver,version,stage_name,default_first_copy,progress_bytes,None))
+}
+
+pub(crate) fn record_managed_cli_stage_for_version_action_in_current_transaction(
+    db:&VerifiedDatabaseConnection<'_>,root:&RootLock,owner:&OwnerIssuer,
+    driver:&str,version:&str,stage_name:&str,action:&ActionRecord,
+)->Result<(),ManagedCliError>{
+    require_open_action(action,driver,ActionPhase::Begun)?;
+    let pin=read_official_cli_version(driver,version).ok_or(ManagedCliError::Unsupported)?;
+    let image=inspect_staged_official_cli_version(root,driver,version,stage_name)?;
+    let downloaded=if pin.raw_image {image} else {
+        managed_cli_root(root)?.join(stage_name).join("source.download")
+    };
+    let bytes=i64::try_from(fs::symlink_metadata(&downloaded)?.len())
+        .map_err(|_|ManagedCliError::Invalid)?;
+    record_managed_cli_stage_in_current_transaction(db,root,owner,driver,version,stage_name,
+        false,bytes,Some(action))
+}
+
+fn record_managed_cli_stage_in_current_transaction(
+    db:&VerifiedDatabaseConnection<'_>,root:&RootLock,owner:&OwnerIssuer,
+    driver:&str,version:&str,stage_name:&str,default_first_copy:bool,
+    progress_bytes:i64,action:Option<&ActionRecord>,
+)->Result<(),ManagedCliError>{
+    let pin=read_official_cli_version(driver,version).ok_or(ManagedCliError::Unsupported)?;
         check_owner_in_current_transaction(db, owner)?;
         if default_first_copy {require_default_first_copy(db,driver)?;}
-        no_unsettled_instance_use(db, driver)?;
+        if let Some(action)=action {
+            no_unsettled_managed_version_change_for_action(db,root,driver,action)?;
+        } else {
+            no_open_version_action(db,driver)?;
+            no_unsettled_instance_use(db,driver)?;
+        }
         // Recheck bytes under the same held root before selecting the copy.
         inspect_staged_official_cli_version(root, driver, version, stage_name)?;
         let prior = Statement::prepare(db.as_ptr(),
@@ -692,7 +755,7 @@ fn record_managed_cli_stage_inner(db: &mut VerifiedDatabaseConnection<'_>,
                     _=>return Err(ManagedCliError::Busy),
                 };
                 inspect_staged_official_cli_version(root,driver,&selected.0,&selected.2)?;
-                no_unsettled_managed_version_change(db,driver)?;
+                version_mutation_guard(db,root,driver,action)?;
                 Some(selected)
             } else if no_previous {
                 require_default_first_copy(db,driver)?;
@@ -715,7 +778,6 @@ fn record_managed_cli_stage_inner(db: &mut VerifiedDatabaseConnection<'_>,
         write.bind_i64(9,progress_bytes)?;
         write.step_done()?;
         Ok(())
-    })
 }
 
 /// Only the native H launch/probe caller may invoke this after the exact
@@ -736,13 +798,40 @@ pub(crate) fn confirm_managed_cli_launch_for_version(db: &mut VerifiedDatabaseCo
     if observed_digest != format!("sha256:{}", pin.image_sha256) || observed_version != pin.version {
         return Err(ManagedCliError::IdentityChanged);
     }
-    transaction(db, |db| {
-        no_unsettled_instance_use(db, driver)?;
+    transaction(db, |db| confirm_managed_cli_launch_in_current_transaction(
+        db,root,driver,version,stage_name,observed_digest,observed_version,None))
+}
+
+pub(crate) fn confirm_managed_cli_launch_for_version_action_in_current_transaction(
+    db:&VerifiedDatabaseConnection<'_>,root:&RootLock,owner:&OwnerIssuer,
+    driver:&str,version:&str,
+    stage_name:&str,observed_digest:&str,observed_version:&str,
+    action:&ActionRecord)->Result<(),ManagedCliError>{
+    require_open_action(action,driver,ActionPhase::Probing)?;
+    check_owner_in_current_transaction(db,owner)?;
+    confirm_managed_cli_launch_in_current_transaction(db,root,driver,version,stage_name,
+        observed_digest,observed_version,Some(action))
+}
+
+fn confirm_managed_cli_launch_in_current_transaction(
+    db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,version:&str,
+    stage_name:&str,observed_digest:&str,observed_version:&str,
+    action:Option<&ActionRecord>)->Result<(),ManagedCliError>{
+    let pin=read_official_cli_version(driver,version).ok_or(ManagedCliError::Unsupported)?;
+    if observed_digest!=format!("sha256:{}",pin.image_sha256)||observed_version!=pin.version {
+        return Err(ManagedCliError::IdentityChanged);
+    }
+        if let Some(action)=action {
+            no_unsettled_managed_version_change_for_action(db,root,driver,action)?;
+        } else {
+            no_open_version_action(db,driver)?;
+            no_unsettled_instance_use(db,driver)?;
+        }
         inspect_staged_official_cli_version(root, driver, version, stage_name)?;
         let previous = Statement::prepare(db.as_ptr(),
             "SELECT 1 FROM main.gogoke_v37_instance_cli_copies WHERE driver_id=?1 AND previous_version IS NOT NULL LIMIT 1")?;
         previous.bind_text(1,driver)?;
-        if previous.step_row()? { no_unsettled_managed_version_change(db,driver)?; }
+        if previous.step_row()? { version_mutation_guard(db,root,driver,action)?; }
         let write = Statement::prepare(db.as_ptr(), "UPDATE main.gogoke_v37_instance_cli_copies SET state='PROBED',raw_error=NULL,revision=revision+1 WHERE driver_id=?1 AND state='STAGED' AND stage_name=?2 AND image_sha256=?3 AND version=?4")?;
         write.bind_text(1, driver)?;
         write.bind_text(2, stage_name)?;
@@ -755,7 +844,6 @@ pub(crate) fn confirm_managed_cli_launch_for_version(db: &mut VerifiedDatabaseCo
             return Err(ManagedCliError::Busy);
         }
         Ok(())
-    })
 }
 
 /// Preserve the original Windows/CLI error rather than synthesizing a state.
@@ -767,12 +855,45 @@ pub(crate) fn record_managed_cli_failure(db: &mut VerifiedDatabaseConnection<'_>
         return Err(ManagedCliError::Invalid);
     }
     transaction(db, |db| {
+        no_open_version_action(db,driver)?;
         let write = Statement::prepare(db.as_ptr(),
             "INSERT INTO main.gogoke_v37_instance_cli_copies(driver_id,state,raw_error,revision) VALUES(?1,?2,?3,1) ON CONFLICT(driver_id) DO UPDATE SET state=excluded.state,raw_error=excluded.raw_error,revision=revision+1")?;
         write.bind_text(1, driver)?; write.bind_text(2, state)?; write.bind_text(3, raw_error)?;
         write.step_done()?;
         Ok(())
     })
+}
+
+/// Persist the original failure bytes only for the already bound action, in
+/// the caller's transaction with its terminal journal transition.
+pub(crate) fn record_managed_cli_failure_for_version_action_in_current_transaction(
+    db:&VerifiedDatabaseConnection<'_>,root:&RootLock,owner:&OwnerIssuer,
+    driver:&str,state:&str,
+    raw_error:&str,action:&ActionRecord)->Result<(),ManagedCliError>{
+    if action.driver!=driver || action.open_driver_id!=driver ||
+        !matches!(action.phase,ActionPhase::Begun|ActionPhase::Staged|
+            ActionPhase::Probing|ActionPhase::Probed) {return Err(ManagedCliError::Busy)}
+    if read_fixed_official_cli(driver).is_none() ||
+        !matches!(state,"INSTALL_FAILED"|"UPGRADE_FAILED"|"BLOCKED"|"PROBE_UNKNOWN") ||
+        raw_error.is_empty() || raw_error.len()>16_384 {return Err(ManagedCliError::Invalid)}
+    // An H probe error may make fresh holder observation impossible. Preserve
+    // its original bytes under the still-open action and exact copy/source
+    // CAS, without granting any version permission from this failure path.
+    check_owner_in_current_transaction(db,owner)?;
+    cold_version::require_saved_action(db,root,action)?;
+    let observed=super::program_source::managed_version_fingerprints(db,root,driver)
+        .map_err(|error|ManagedCliError::Observation(format!("version failure fingerprint: {error:?}")))?;
+    if observed.0!=action.current_copy_fingerprint ||
+        observed.1!=action.current_source_fingerprint {return Err(ManagedCliError::Busy)}
+    let write=Statement::prepare(db.as_ptr(),
+        "UPDATE main.gogoke_v37_instance_cli_copies SET state=?2,raw_error=?3,revision=revision+1 WHERE driver_id=?1")?;
+    write.bind_text(1,driver)?;write.bind_text(2,state)?;
+    write.bind_text(3,raw_error)?;write.step_done()?;
+    let changed=Statement::prepare(db.as_ptr(),"SELECT changes()")?;
+    if !changed.step_row()? || changed.column_text(0)?!="1" || changed.step_row()? {
+        return Err(ManagedCliError::Busy);
+    }
+    Ok(())
 }
 
 /// Persist actual received/extracted byte progress from the signed Node
@@ -790,6 +911,15 @@ pub(crate) fn record_managed_cli_progress_for_version(db: &mut VerifiedDatabaseC
     record_managed_cli_progress_inner(db,owner,driver,version,state,bytes,false)
 }
 
+pub(crate) fn record_managed_cli_progress_for_version_action_in_current_transaction(
+    db:&VerifiedDatabaseConnection<'_>,root:&RootLock,owner:&OwnerIssuer,
+    driver:&str,version:&str,state:&str,bytes:i64,action:&ActionRecord,
+)->Result<(),ManagedCliError>{
+    require_open_action(action,driver,ActionPhase::Begun)?;
+    record_managed_cli_progress_in_current_transaction(db,Some(root),owner,driver,version,
+        state,bytes,false,Some(action))
+}
+
 fn record_managed_cli_progress_inner(db:&mut VerifiedDatabaseConnection<'_>,
     owner:&OwnerIssuer,driver:&str,version:&str,state:&str,bytes:i64,
     default_first_copy:bool)->Result<(),ManagedCliError> {
@@ -798,10 +928,28 @@ fn record_managed_cli_progress_inner(db:&mut VerifiedDatabaseConnection<'_>,
         !matches!(state, "DOWNLOADING" | "INSTALLING" | "UPGRADING") {
         return Err(ManagedCliError::Invalid);
     }
-    transaction(db, |db| {
+    transaction(db, |db| record_managed_cli_progress_in_current_transaction(
+        db,None,owner,driver,version,state,bytes,default_first_copy,None))
+}
+
+fn record_managed_cli_progress_in_current_transaction(
+    db:&VerifiedDatabaseConnection<'_>,root:Option<&RootLock>,owner:&OwnerIssuer,
+    driver:&str,version:&str,state:&str,bytes:i64,default_first_copy:bool,
+    action:Option<&ActionRecord>,
+)->Result<(),ManagedCliError>{
+    let pin=read_official_cli_version(driver,version).ok_or(ManagedCliError::Unsupported)?;
+    if bytes<0 || !matches!(state,"DOWNLOADING"|"INSTALLING"|"UPGRADING") {
+        return Err(ManagedCliError::Invalid);
+    }
         check_owner_in_current_transaction(db, owner)?;
         if default_first_copy {require_default_first_copy(db,driver)?;}
-        no_unsettled_instance_use(db, driver)?;
+        if let Some(action)=action {
+            let root=root.ok_or(ManagedCliError::Busy)?;
+            no_unsettled_managed_version_change_for_action(db,root,driver,action)?;
+        } else {
+            no_open_version_action(db,driver)?;
+            no_unsettled_instance_use(db,driver)?;
+        }
         let prior = Statement::prepare(db.as_ptr(),
             "SELECT state,progress_bytes,COALESCE(version,''),COALESCE(archive_sha256,''),COALESCE(image_sha256,''),COALESCE(stage_name,''),COALESCE(previous_version,''),COALESCE(previous_image_sha256,''),COALESCE(previous_stage_name,''),previous_version IS NULL AND previous_image_sha256 IS NULL AND previous_stage_name IS NULL FROM main.gogoke_v37_instance_cli_copies WHERE driver_id=?1")?;
         prior.bind_text(1, driver)?;
@@ -840,7 +988,11 @@ fn record_managed_cli_progress_inner(db:&mut VerifiedDatabaseConnection<'_>,
             }
             if matches!(old.as_str(),"READY"|"UPGRADING") ||
                 (!no_previous && matches!(old.as_str(),"BLOCKED"|"UPGRADE_FAILED")) {
-                no_unsettled_managed_version_change(db,driver)?;
+                if let Some(root)=root {
+                    version_mutation_guard(db,root,driver,action)?;
+                } else {
+                    no_unsettled_managed_version_change(db,driver)?;
+                }
             }
         }
         let write = Statement::prepare(db.as_ptr(),
@@ -848,7 +1000,6 @@ fn record_managed_cli_progress_inner(db:&mut VerifiedDatabaseConnection<'_>,
         write.bind_text(1, driver)?; write.bind_text(2, state)?; write.bind_i64(3, bytes)?;
         write.step_done()?;
         Ok(())
-    })
 }
 
 /// Read-only official release metadata is an unverified notice. It never
@@ -864,6 +1015,7 @@ pub(crate) fn record_official_cli_notice(db: &mut VerifiedDatabaseConnection<'_>
     }
     transaction(db, |db| {
         check_owner_in_current_transaction(db, owner)?;
+        no_open_version_action(db,driver)?;
         let write = Statement::prepare(db.as_ptr(),
             "INSERT INTO main.gogoke_v37_instance_cli_copies(driver_id,state,checked_at,official_notice,revision) VALUES(?1,'NOT_INSTALLED',?2,?3,1) ON CONFLICT(driver_id) DO UPDATE SET checked_at=excluded.checked_at,official_notice=excluded.official_notice,revision=revision+1")?;
         write.bind_text(1, driver)?;
@@ -975,6 +1127,7 @@ pub(crate) fn uninstall_managed_cli(db: &mut VerifiedDatabaseConnection<'_>, roo
     }
     let stages = transaction(db, |db| {
         check_owner_in_current_transaction(db, owner)?;
+        no_open_version_action(db,driver)?;
         no_unsettled_instance_use(db, driver)?;
         no_unsettled_global_cli_custody(db, driver)?;
         no_unsettled_version_change(db, driver)?;
@@ -1051,6 +1204,7 @@ pub(crate) fn uninstall_managed_cli(db: &mut VerifiedDatabaseConnection<'_>, roo
     }
     transaction(db, |db| {
         check_owner_in_current_transaction(db, owner)?;
+        no_open_version_action(db,driver)?;
         no_unsettled_instance_use(db, driver)?;
         no_unsettled_global_cli_custody(db, driver)?;
         no_unsettled_version_change(db, driver)?;
@@ -1193,6 +1347,47 @@ mod lifecycle_repair_tests {
         db.close_checked().unwrap();
         drop(root);
         fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn pending_version_action_blocks_unbound_copy_writer() {
+        fixture(|root,db,owner| {
+            let (copy,source)=super::super::program_source::managed_version_fingerprints(
+                db,root,"opencode").unwrap();
+            db.execute("BEGIN IMMEDIATE").unwrap();
+            let begin=super::super::managed_version_action::ActionBegin {
+                request_id:"versionActionA",driver:"opencode",
+                operation:super::super::managed_version_action::ActionOperation::Upgrade,
+                target_version:"1.18.31",begin_hex:"01",begin_receipt_hex:"02",
+                mode:super::super::managed_version_action::ActionMode::Strict,
+                proof_family:"",source_hex:"",source_digest:"",pairs_hex:"",
+                pairs_digest:"",copy_fingerprint:&copy,source_fingerprint:&source,
+            };
+            super::super::managed_version_action::begin_in_current_transaction(
+                db,root,owner,&begin).unwrap();
+            db.execute("COMMIT").unwrap();
+            assert!(matches!(record_official_cli_notice(db,owner,"opencode",
+                Some("1.18.31"),"2026-10-14"),Err(ManagedCliError::Busy)));
+            let copy=Statement::prepare(db.as_ptr(),
+                "SELECT 1 FROM main.gogoke_v37_instance_cli_copies WHERE driver_id='opencode'").unwrap();
+            assert!(!copy.step_row().unwrap());
+        });
+    }
+
+    #[test]
+    fn cold_version_rejects_unknown_custody_without_original_h_source() {
+        fixture(|root,db,_owner| {
+            db.execute("INSERT INTO main.gogoke_v37_instances(instance_id,driver_id,home_ref,home_identity,program_digest,version,install_state,login_state,revision) VALUES('instanceA','opencode','home-A','identity-A','sha256:old','1.18.32','UNKNOWN','UNKNOWN',1)").unwrap();
+            db.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) VALUES('oldProcess','oldTicket','oldNonce','4294967295','1','oldImage','sha256:old','instanceA','global','1','UNKNOWN',NULL)").unwrap();
+            assert!(matches!(observe_version_scope(db,root,"opencode"),
+                Err(ManagedCliError::Busy)));
+            let old=Statement::prepare(db.as_ptr(),
+                "SELECT state,stop_proof_hash IS NULL FROM main.gogoke_coordination_process_custody WHERE operation_id='oldProcess'").unwrap();
+            assert!(old.step_row().unwrap());
+            assert_eq!(old.column_text(0).unwrap(),"UNKNOWN");
+            assert_eq!(old.column_text(1).unwrap(),"1");
+            assert!(!old.step_row().unwrap());
+        });
     }
 
     fn copy(db:&VerifiedDatabaseConnection<'_>)->Vec<String> {

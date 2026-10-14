@@ -205,6 +205,10 @@ jobs:
             'managed-lifecycle' { @(
               'ipc::',
               'store::instance::managed_cli::',
+              'store::instance::managed_version_action::',
+              'store::instance::program_source::tests',
+              'store::instance::tests',
+              'process::session::version_namespace::',
               'store::instance::registry::tests',
               'store::product_database::v37_managed_cli::tests') }
             'service-transport' { @('ipc::') }
@@ -340,6 +344,120 @@ jobs:
           }
           'Affected checks only; full library, full LPAC, process and full mutation gates: NOT_RUN. The pipe-evidence and opencode-pipe selections also run the two focused same-source shim tests. Service-transport and managed-lifecycle separately record desktop error cleanup and its focused compiled mutation; physical Secretary stop and installed normal close remain NOT_RUN for that fixture. Managed-lifecycle also has its original server test job; other selections do not run server tests.' >> $env:GITHUB_STEP_SUMMARY
           if ($failures.Count -gt 0) { throw "Affected checks failed or had no completed tests: $($failures -join ', ')" }
+      - name: Verify managed version boundaries with compiled production mutations
+        if: ${{ inputs.focused_library == 'managed-lifecycle' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $manifest = 'apps/desktop/native-host/Cargo.toml'
+          $evidence = Join-Path $env:RUNNER_TEMP "native-affected-$env:GITHUB_RUN_ID"
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $utf8 = [Text.UTF8Encoding]::new($false, $true)
+          $journal = 'apps/desktop/native-host/src/store/instance/managed_version_action.rs'
+          $legacy = 'apps/desktop/native-host/src/process/session/legacy_holders_gone.rs'
+          $journalText = [IO.File]::ReadAllText($journal)
+          $newline = if ($journalText.Contains("`r`n")) { "`r`n" } else { "`n" }
+          $cases = @(
+            @{ id='boot-boundary'; source=$legacy;
+              test='process::session::legacy_holders_gone::tests::stopped_process_created_this_boot_still_cannot_pass';
+              needle='if boot_start <= creation_time_100ns {';
+              replacement='if false && boot_start <= creation_time_100ns {' },
+            @{ id='begin-replay-bytes'; source=$journal;
+              test='store::instance::managed_version_action::tests::one_open_per_driver_exact_replay_and_tamper_rejection';
+              needle=('row.begin_hex != begin.begin_hex ||' + $newline + '            row.begin_hash != begin_hash || ');
+              replacement='' },
+            @{ id='probe-replay-intent'; source=$journal;
+              test='store::instance::managed_version_action::tests::staged_probed_consume_chain_and_transaction_rollback';
+              needle='row.probe_hex == exact_probe_hex { return Ok(BeginOutcome::Replayed(row)); }';
+              replacement='row.probe_hex == exact_probe_hex { return Ok(BeginOutcome::Created(row)); }' }
+          )
+          function Invoke-ExactVersionTest([string]$axis, [string]$phase, [string]$test, [bool]$expectFailure) {
+            $output = & cargo test --locked --manifest-path $manifest --lib $test -- --exact --nocapture 2>&1
+            $exitCode = $LASTEXITCODE
+            $output | Set-Content -LiteralPath (Join-Path $evidence "managed-version-$axis-$phase.log") -Encoding utf8NoBOM
+            $output | Write-Host
+            $text = ($output | ForEach-Object { $_.ToString() }) -join "`n"
+            $summary = [regex]::Match($text, 'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;')
+            $one = [regex]::IsMatch($text, '(?m)^running 1 test\s*$')
+            $assertion = [regex]::IsMatch($text, 'assertion failed:')
+            $compileError = [regex]::IsMatch($text, 'could not compile|error\[E\d+\]')
+            $valid = $one -and $summary.Success -and -not $compileError -and
+              $(if ($expectFailure) {
+                $exitCode -ne 0 -and $summary.Groups[1].Value -ceq 'FAILED' -and
+                $summary.Groups[2].Value -ceq '0' -and $summary.Groups[3].Value -ceq '1' -and
+                $summary.Groups[4].Value -ceq '0' -and $assertion
+              } else {
+                $exitCode -eq 0 -and $summary.Groups[1].Value -ceq 'ok' -and
+                $summary.Groups[2].Value -ceq '1' -and $summary.Groups[3].Value -ceq '0' -and
+                $summary.Groups[4].Value -ceq '0'
+              })
+            return [ordered]@{ testName=$test; phase=$phase; exitCode=$exitCode;
+              passed=$(if ($summary.Success) { [int]$summary.Groups[2].Value } else { -1 });
+              failed=$(if ($summary.Success) { [int]$summary.Groups[3].Value } else { -1 });
+              ignored=$(if ($summary.Success) { [int]$summary.Groups[4].Value } else { -1 });
+              exactOne=$one; assertionFailed=$assertion; compileError=$compileError;
+              state=$(if ($valid) { 'PASS' } else { 'FAIL' }) }
+          }
+          $failures = @()
+          foreach ($case in $cases) {
+            $sourceBytes = [IO.File]::ReadAllBytes($case.source)
+            $sourceHash = (Get-FileHash -LiteralPath $case.source -Algorithm SHA256).Hash.ToLowerInvariant()
+            $record = [ordered]@{ axis=$case.id; scope='MANAGED_LIFECYCLE_DIRECTED_MUTATION_ONLY';
+              acceptance=$false; fullNative='NOT_RUN'; source=$case.source; testName=$case.test;
+              sourceHash=$sourceHash; changedHash='NOT_RUN'; checkExit='NOT_RUN';
+              restoredHash='NOT_RUN'; baseline=$null; mutation=$null; restored=$null;
+              state='FAIL'; error='' }
+            try {
+              $sourceText = $utf8.GetString($sourceBytes)
+              if ([Convert]::ToBase64String($utf8.GetBytes($sourceText)) -cne [Convert]::ToBase64String($sourceBytes)) {
+                throw "Production source encoding roundtrip changed bytes: $($case.id)"
+              }
+              $testStart = $sourceText.IndexOf('mod tests {')
+              if ($testStart -lt 0 -or [regex]::Matches($sourceText, [regex]::Escape($case.needle)).Count -ne 1 -or
+                  $sourceText.IndexOf($case.needle) -ge $testStart) {
+                throw "Unique production mutation needle absent: $($case.id)"
+              }
+              $mutated = $sourceText.Replace($case.needle, $case.replacement)
+              if ($sourceText.Substring($testStart) -cne $mutated.Substring($mutated.IndexOf('mod tests {'))) {
+                throw "Test region changed by production mutation: $($case.id)"
+              }
+              $record.baseline = Invoke-ExactVersionTest $case.id 'baseline' $case.test $false
+              if ($record.baseline.state -ne 'PASS') { throw "Baseline exact test invalid: $($case.id)" }
+              if ((Get-FileHash -LiteralPath $case.source -Algorithm SHA256).Hash.ToLowerInvariant() -cne $sourceHash) {
+                throw "Production source changed before mutation: $($case.id)"
+              }
+              [IO.File]::WriteAllText($case.source, $mutated, $utf8)
+              $record.changedHash = (Get-FileHash -LiteralPath $case.source -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($record.changedHash -ceq $sourceHash) { throw "Production mutation changed no bytes: $($case.id)" }
+              $checkOutput = & cargo check --locked --manifest-path $manifest --lib 2>&1
+              $record.checkExit = $LASTEXITCODE
+              $checkOutput | Set-Content -LiteralPath (Join-Path $evidence "managed-version-$($case.id)-check.log") -Encoding utf8NoBOM
+              $checkOutput | Write-Host
+              if ($record.checkExit -ne 0) { throw "Production mutation did not compile: $($case.id)" }
+              $record.mutation = Invoke-ExactVersionTest $case.id 'mutation' $case.test $true
+              if ($record.mutation.state -ne 'PASS') { throw "Compiled mutation did not kill unchanged assertion: $($case.id)" }
+            } catch {
+              $record.error = $_.Exception.Message
+            } finally {
+              try {
+                [IO.File]::WriteAllBytes($case.source, $sourceBytes)
+                $record.restoredHash = (Get-FileHash -LiteralPath $case.source -Algorithm SHA256).Hash.ToLowerInvariant()
+                if ($record.restoredHash -cne $sourceHash) {
+                  $record.error = "Exact production source restoration failed: $($case.id)"
+                } else {
+                  $record.restored = Invoke-ExactVersionTest $case.id 'restored' $case.test $false
+                  if ($record.restored.state -ne 'PASS') { $record.error = "Restored exact test invalid: $($case.id)" }
+                }
+              } catch {
+                $record.error = "Source restore or restored-test error: $($_.Exception.Message)"
+              }
+              if ($record.error -eq '') { $record.state = 'PASS' } else { $failures += $case.id }
+              $record | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $evidence "managed-version-$($case.id)-result.json") -Encoding utf8NoBOM
+            }
+            if ($record.restoredHash -cne $sourceHash) { throw "Mutation source restoration is UNKNOWN: $($case.id)" }
+          }
+          if ($failures.Count -gt 0) { throw "Managed version production mutations failed: $($failures -join ', ')" }
       - uses: actions/upload-artifact@v4
         if: always()
         with:

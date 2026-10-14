@@ -37,6 +37,32 @@ fn result(command:&str,fields:impl IntoIterator<Item=(&'static str,Json)>)->Vec<
 }
 fn string(value:&str)->Json{Json::String(JsonString::from_str(value))}
 fn optional(value:Option<&str>)->Json{value.map_or(Json::Null,string)}
+fn action_hex(bytes:&[u8])->String {
+    const DIGITS:&[u8;16]=b"0123456789abcdef";
+    let mut out=String::with_capacity(bytes.len()*2);
+    for byte in bytes {out.push(DIGITS[(byte>>4) as usize] as char);out.push(DIGITS[(byte&15) as usize] as char);}
+    out
+}
+fn action_bytes(hex:&str)->Result<Vec<u8>> {
+    if hex.is_empty() || hex.len()>2_097_152 || hex.len()%2!=0 {
+        return Err(OrchestrationError::Invalid("version action receipt bytes"));
+    }
+    hex.as_bytes().chunks_exact(2).map(|pair| {
+        let high=hex_nibble(pair[0]).ok_or(OrchestrationError::Invalid("version action receipt hex"))?;
+        let low=hex_nibble(pair[1]).ok_or(OrchestrationError::Invalid("version action receipt hex"))?;
+        Ok((high<<4)|low)
+    }).collect()
+}
+fn action_failure_hex(driver:&str,state:&str,raw:&str)->String {
+    action_hex(&result("failure",[("driverId",string(driver)),("state",string(state)),("raw",string(raw))]))
+}
+fn bound_step_response(command:&str,driver:&str,target:&str,request:&str,
+    operation:&str,state:&str,stage:Option<&str>)->Vec<u8> {
+    let mut fields=vec![("driverId",string(driver)),("state",string(state)),
+        ("requestId",string(request)),("operation",string(operation)),("targetVersion",string(target))];
+    if let Some(stage)=stage {fields.push(("stageName",string(stage)));}
+    result(command,fields)
+}
 fn positive_revision(fields:&BTreeMap<JsonString,Json>)->Result<i64>{
     let text=field(fields,"expectedRevision")?;
     let value=text.parse::<i64>().ok().filter(|value|*value>0)
@@ -61,6 +87,11 @@ fn switch_response(command:&str,driver:&str,receipts:Vec<instance::ManagedSwitch
         ("status",string(if replayed{"REPLAYED"}else{"APPLIED"})),
         ("migrated",Json::Number(count.to_string())),("receipts",Json::Array(originals))]))
 }
+fn receipt_set_digest(receipts:&[instance::ManagedSwitchReceipt])->Result<String> {
+    let originals=receipts.iter().map(|receipt|Parser::parse(&receipt.receipt_json)
+        .map_err(OrchestrationError::from)).collect::<Result<Vec<_>>>()?;
+    Ok(crate::store::digest::sha256_hex(Json::Array(originals).canonical().as_bytes()))
+}
 
 fn require_first_managed_copy(db:&VerifiedDatabaseConnection<'_>,driver:&str)->Result<()> {
     let row=Statement::prepare(db.as_ptr(),
@@ -73,6 +104,263 @@ fn require_first_managed_copy(db:&VerifiedDatabaseConnection<'_>,driver:&str)->R
 }
 
 impl<'a> ProductDatabase<'a> {
+    fn version_action_transaction<T>(&mut self,operation:impl FnOnce(&mut Self)->Result<T>)->Result<T> {
+        self.connection.execute("BEGIN IMMEDIATE").map_err(|error|failure("action begin transaction",error))?;
+        let outcome=authority::check_owner_in_current_transaction(&self.connection,&self.owner)
+            .map_err(|error|failure("action transaction owner",error)).and_then(|()|operation(self));
+        match outcome {
+            Ok(value)=>{
+                self.connection.execute("COMMIT").map_err(OrchestrationError::CommitUnknownWithCause)?;
+                Ok(value)
+            },
+            Err(primary)=>{
+                if let Err(rollback)=self.connection.execute("ROLLBACK") {
+                    return Err(OrchestrationError::V37StoreFailure(format!("{primary:?}; action rollback: {rollback:?}")));
+                }
+                Err(primary)
+            },
+        }
+    }
+
+    /// In-memory liveness stays strict. Only the F-produced view can match a
+    /// particular durable historical row; an instance-wide exception is never
+    /// passed into the resource checks below.
+    fn managed_version_action_resources(&self,driver:&str,action:Option<&instance::ActionRecord>)
+        ->Result<instance::QualifiedVersionAction> {
+        if !self.pending_native_launches.is_empty() || !self.pending_credential_preparations.is_empty() {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let scope=if let Some(action)=action {
+            instance::revalidate_version_action(&self.connection,self.root,driver,action)
+        } else {
+            instance::observe_version_scope(&self.connection,self.root,driver)
+        }.map_err(|error|failure("version action qualification",error))?;
+        self.check_managed_version_scope(driver,scope)
+    }
+
+    fn managed_version_action_resources_at_fingerprints(&self,driver:&str,action:&instance::ActionRecord,
+        copy:&str,source:&str)->Result<instance::QualifiedVersionAction> {
+        let scope=instance::revalidate_version_action_at_fingerprints(&self.connection,self.root,driver,
+            action,copy,source).map_err(|error|failure("version action post-write qualification",error))?;
+        self.check_managed_version_scope(driver,scope)
+    }
+
+    fn check_managed_version_scope(&self,driver:&str,scope:instance::QualifiedVersionAction)
+        ->Result<instance::QualifiedVersionAction> {
+        if !self.pending_native_launches.is_empty() || !self.pending_credential_preparations.is_empty() {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let rows=Statement::prepare(self.connection.as_ptr(),
+            "SELECT instance_id FROM main.gogoke_v37_instances WHERE driver_id=?1 ORDER BY instance_id")?;
+        rows.bind_text(1,driver)?;
+        let mut ids=Vec::new();
+        while rows.step_row()? {ids.push(rows.column_text(0)?);}
+        drop(rows);
+        for id in ids {
+            if self.owner_login.as_ref().is_some_and(|session|v37_login::pending_login_for_instance(session,&id)) ||
+                self.native_sessions.values().any(|session|session.evidence.instance_id()==id) {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let custody=Statement::prepare(self.connection.as_ptr(),
+                "SELECT operation_id FROM main.gogoke_coordination_process_custody
+                 WHERE domain_id='global' AND profile_id=?1 AND
+                   (state IN ('PREPARED','ACTIVE') OR
+                    (state='STOPPED' AND (stop_proof_hash IS NULL OR stop_proof_hash='')))")?;
+            custody.bind_text(1,&id)?;
+            while custody.step_row()? {
+                if !scope.allows_custody(&custody.column_text(0)?) {return Err(OrchestrationError::AccessDenied);}
+            }
+            drop(custody);
+            self.qualified_managed_source_resources_in_action(&id,driver,Some(&scope))?;
+        }
+        scope.recheck_native().map_err(|error|failure("version action final observation",error))?;
+        Ok(scope)
+    }
+
+    fn bound_version_action(&self,driver:&str,target:&str,request:&str)->Result<instance::ActionRecord> {
+        let row=instance::read_version_action(&self.connection,self.root,request)
+            .map_err(|error|failure("original version action",error))?
+            .ok_or(OrchestrationError::AccessDenied)?;
+        if row.driver!=driver || row.target_version!=target || row.phase==instance::ActionPhase::Failed {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        Ok(row)
+    }
+
+    fn pending_managed_version_action(&self,driver:&str)->Result<Json> {
+        let q=Statement::prepare(self.connection.as_ptr(),
+            "SELECT request_id FROM main.gogoke_v37_instance_version_actions WHERE open_driver_id=?1")?;
+        q.bind_text(1,driver)?;
+        if !q.step_row()? {return Ok(Json::Null);}
+        let request=q.column_text(0)?;
+        if q.step_row()? {return Err(OrchestrationError::AccessDenied);}
+        drop(q);
+        let row=instance::read_version_action(&self.connection,self.root,&request)
+            .map_err(|error|failure("pending original action readback",error))?.ok_or(OrchestrationError::AccessDenied)?;
+        if row.driver!=driver || row.open_driver_id!=driver {return Err(OrchestrationError::AccessDenied);}
+        let phase=match row.phase {
+            instance::ActionPhase::Begun=>"BEGUN",instance::ActionPhase::Staged=>"STAGED",
+            instance::ActionPhase::Probing=>"PROBING",instance::ActionPhase::Probed=>"PROBED",
+            _=>return Err(OrchestrationError::AccessDenied),
+        };
+        // Read-only original identity, never a release or cold authorization.
+        Ok(Json::Object(BTreeMap::from([(key("requestId"),string(&row.request_id)),
+            (key("operation"),string(&row.operation)),(key("targetVersion"),string(&row.target_version)),
+            (key("phase"),string(phase))])))
+    }
+
+    fn failed_managed_version_action(&self,driver:&str)->Result<Json> {
+        let q=Statement::prepare(self.connection.as_ptr(),
+            "SELECT request_id FROM main.gogoke_v37_instance_version_actions WHERE driver_id=?1 AND phase='FAILED' ORDER BY rowid DESC LIMIT 1")?;
+        q.bind_text(1,driver)?;
+        if !q.step_row()? {return Ok(Json::Null);}
+        let request=q.column_text(0)?;drop(q);
+        let row=instance::read_version_action(&self.connection,self.root,&request)
+            .map_err(|error|failure("original known failure readback",error))?.ok_or(OrchestrationError::AccessDenied)?;
+        if row.driver!=driver || row.phase!=instance::ActionPhase::Failed ||
+            !row.open_driver_id.is_empty() || row.original_error_hex.is_empty() {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        Ok(Json::Object(BTreeMap::from([(key("requestId"),string(&row.request_id)),
+            (key("operation"),string(&row.operation)),(key("targetVersion"),string(&row.target_version)),
+            (key("phase"),string("FAILED"))])))
+    }
+
+    fn begin_managed_version_action(&mut self,driver:&str,target:&str,request:&str,
+        operation:&str,frame:&[u8])->Result<Vec<u8>> {
+        let operation_kind=match operation {
+            "upgrade"=>instance::ActionOperation::Upgrade,
+            "rollback"=>instance::ActionOperation::Rollback,
+            _=>return Err(OrchestrationError::Invalid("version action operation")),
+        };
+        let raw=action_hex(frame);
+        self.version_action_transaction(|this| {
+            if let Some(row)=instance::read_version_action(&this.connection,this.root,request)
+                .map_err(|error|failure("begin original action",error))? {
+                if row.driver!=driver || row.target_version!=target || row.operation!=operation || row.begin_hex!=raw ||
+                    row.phase==instance::ActionPhase::Failed {
+                    return Err(OrchestrationError::AccessDenied);
+                }
+                this.managed_version_action_resources(driver,Some(&row))?;
+                return action_bytes(&row.begin_receipt_hex);
+            }
+            let before=instance::managed_version_fingerprints(&this.connection,this.root,driver)
+                .map_err(|error|failure("begin copy/source fingerprint",error))?;
+            let scope=this.managed_version_action_resources(driver,None)?;
+            let receipt=bound_step_response("begin",driver,target,request,operation,"UPGRADING",None);
+            let receipt_hex=action_hex(&receipt);
+            let begin=instance::ActionBegin {
+                request_id:request,driver,operation:operation_kind,target_version:target,
+                begin_hex:&raw,begin_receipt_hex:&receipt_hex,
+                mode:if scope.is_cold(){instance::ActionMode::Cold}else{instance::ActionMode::Strict},
+                proof_family:scope.proof_family(),source_hex:scope.source_hex(),source_digest:scope.source_digest(),
+                pairs_hex:scope.pairs_hex(),pairs_digest:scope.pairs_digest(),
+                copy_fingerprint:&before.0,source_fingerprint:&before.1,
+            };
+            let row=match instance::begin_version_action_in_current_transaction(&this.connection,this.root,&this.owner,&begin)
+                .map_err(|error|failure("begin action journal",error))? {
+                instance::BeginOutcome::Created(row)=>row,
+                instance::BeginOutcome::Replayed(_)=>return Err(OrchestrationError::AccessDenied),
+            };
+            instance::record_managed_cli_progress_for_version_action_in_current_transaction(
+                &this.connection,this.root,&this.owner,driver,target,"UPGRADING",0,&row)
+                .map_err(|error|failure("bound begin progress",error))?;
+            let after=instance::managed_version_fingerprints(&this.connection,this.root,driver)
+                .map_err(|error|failure("begin post-effect fingerprint",error))?;
+            this.managed_version_action_resources_at_fingerprints(driver,&row,&after.0,&after.1)?;
+            instance::record_begin_version_action_effect_in_current_transaction(&this.connection,this.root,&this.owner,
+                request,row.revision,&before.0,&before.1,&after.0,&after.1)
+                .map_err(|error|failure("begin effect chain",error))?;
+            Ok(receipt)
+        })
+    }
+
+    fn stage_managed_version_action(&mut self,driver:&str,target:&str,stage:&str,
+        request:&str,frame:&[u8])->Result<Vec<u8>> {
+        let raw=action_hex(frame);
+        self.version_action_transaction(|this| {
+            let row=this.bound_version_action(driver,target,request)?;
+            this.managed_version_action_resources(driver,Some(&row))?;
+            if !row.stage_receipt_hex.is_empty() {
+                if row.stage_hex!=raw || row.stage_name!=stage {return Err(OrchestrationError::AccessDenied);}
+                return action_bytes(&row.stage_receipt_hex);
+            }
+            if row.phase!=instance::ActionPhase::Begun {return Err(OrchestrationError::AccessDenied);}
+            instance::record_managed_cli_stage_for_version_action_in_current_transaction(
+                &this.connection,this.root,&this.owner,driver,target,stage,&row)
+                .map_err(|error|failure("bound version stage",error))?;
+            let next=instance::managed_version_fingerprints(&this.connection,this.root,driver)
+                .map_err(|error|failure("stage post-effect fingerprint",error))?;
+            this.managed_version_action_resources_at_fingerprints(driver,&row,&next.0,&next.1)?;
+            let receipt=bound_step_response("stage",driver,target,request,&row.operation,"STAGED",Some(stage));
+            let receipt_hex=action_hex(&receipt);
+            instance::advance_version_action_in_current_transaction(&this.connection,this.root,&this.owner,
+                request,row.revision,&instance::ActionStep {
+                    next_phase:instance::ActionPhase::Staged,raw_hex:&raw,receipt_hex:&receipt_hex,stage_name:stage,
+                    expected_copy_fingerprint:&row.current_copy_fingerprint,
+                    expected_source_fingerprint:&row.current_source_fingerprint,
+                    next_copy_fingerprint:&next.0,next_source_fingerprint:&next.1,
+                }).map_err(|error|failure("stage action receipt",error))?;
+            Ok(receipt)
+        })
+    }
+
+    fn probe_managed_version_action(&mut self,driver:&str,target:&str,stage:&str,
+        request:&str,frame:&[u8])->Result<Vec<u8>> {
+        let raw=action_hex(frame);
+        let (intent,replayed)=self.version_action_transaction(|this| {
+            let row=this.bound_version_action(driver,target,request)?;
+            this.managed_version_action_resources(driver,Some(&row))?;
+            if row.stage_name!=stage {return Err(OrchestrationError::AccessDenied);}
+            if row.phase==instance::ActionPhase::Probed || row.phase==instance::ActionPhase::Consumed {
+                if row.probe_hex!=raw {return Err(OrchestrationError::AccessDenied);}
+                return Ok((None,action_bytes(&row.probe_receipt_hex)?));
+            }
+            // An existing PROBING row is an unresolved original effect. Reading
+            // that intent never grants permission for a second H launch.
+            if row.phase!=instance::ActionPhase::Staged {return Err(OrchestrationError::AccessDenied);}
+            let outcome=instance::begin_probe_version_action_in_current_transaction(&this.connection,this.root,&this.owner,
+                request,row.revision,&raw,stage,&row.current_copy_fingerprint,&row.current_source_fingerprint)
+                .map_err(|error|failure("probe durable intent",error))?;
+            match outcome {
+                instance::BeginOutcome::Created(intent)=>Ok((Some(intent),Vec::new())),
+                instance::BeginOutcome::Replayed(_)=>Err(OrchestrationError::AccessDenied),
+            }
+        })?;
+        // Reached only after a confirmed intent COMMIT. COMMIT unknown returns
+        // above; a later caller can only read the existing unresolved intent.
+        let Some(intent)=intent else{return Ok(replayed)};
+        self.probe_staged_managed_cli_for_version(driver,target,stage,request,true,Some(&intent))?;
+        let row=self.bound_version_action(driver,target,request)?;
+        self.managed_version_action_resources(driver,Some(&row))?;
+        if row.phase!=instance::ActionPhase::Probed || row.probe_hex!=raw {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        action_bytes(&row.probe_receipt_hex)
+    }
+
+    fn fail_managed_version_action(&mut self,driver:&str,state:&str,raw:&str,
+        action:&instance::ActionRecord)->Result<()> {
+        let original_hex=action_failure_hex(driver,state,raw);
+        self.version_action_transaction(|this| {
+            instance::record_managed_cli_failure_for_version_action_in_current_transaction(
+                &this.connection,this.root,&this.owner,driver,state,raw,action)
+                .map_err(|error|failure("bound original failure copy",error))?;
+            let next=instance::managed_version_fingerprints(&this.connection,this.root,driver)
+                .map_err(|error|failure("bound failure post-effect fingerprints",error))?;
+            let observed=instance::record_version_action_error_in_current_transaction(&this.connection,this.root,&this.owner,
+                &action.request_id,action.revision,&original_hex,
+                &action.current_copy_fingerprint,&action.current_source_fingerprint,&next.0,&next.1)
+                .map_err(|error|failure("bound original failure journal",error))?;
+            if state!="PROBE_UNKNOWN" {
+                instance::fail_version_action_in_current_transaction(&this.connection,this.root,&this.owner,
+                    &action.request_id,observed.revision,&original_hex)
+                    .map_err(|error|failure("bound known failure",error))?;
+            }
+            Ok(())
+        })
+    }
+
     fn require_first_managed_copy(&self,driver:&str)->Result<()> {
         require_first_managed_copy(&self.connection,driver)?;
         instance::require_default_first_copy(&self.connection,driver)
@@ -80,6 +368,11 @@ impl<'a> ProductDatabase<'a> {
     }
 
     fn strict_managed_version_resources(&mut self,driver:&str)->Result<()> {
+        let action=Statement::prepare(self.connection.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_instance_version_actions WHERE open_driver_id=?1 LIMIT 1")?;
+        action.bind_text(1,driver)?;
+        if action.step_row()? {return Err(OrchestrationError::AccessDenied);}
+        drop(action);
         if !self.pending_native_launches.is_empty() ||
             !self.pending_credential_preparations.is_empty() {
             return Err(OrchestrationError::AccessDenied);
@@ -99,6 +392,10 @@ impl<'a> ProductDatabase<'a> {
 
     fn switch_managed_cli(&mut self,command:&str,driver:&str,target:&str,revision:i64,
         request:&str,frame:&[u8])->Result<Vec<u8>> {
+        if instance::read_version_action(&self.connection,self.root,request)
+            .map_err(|error|failure("switch bound action lookup",error))?.is_some() {
+            return self.switch_managed_version_action(command,driver,target,revision,request,frame);
+        }
         // Read the original effect before looking at today's copy/stage/holders.
         if let Some(receipts)=instance::reconcile_managed_switch(&self.connection,self.root,
             request,driver,target,revision,frame).map_err(|error|failure("original switch receipt",error))? {
@@ -132,6 +429,47 @@ impl<'a> ProductDatabase<'a> {
                 Err(primary)
             },
         }
+    }
+
+    fn switch_managed_version_action(&mut self,command:&str,driver:&str,target:&str,revision:i64,
+        request:&str,frame:&[u8])->Result<Vec<u8>> {
+        let raw=action_hex(frame);
+        self.version_action_transaction(|this| {
+            let row=this.bound_version_action(driver,target,request)?;
+            if row.operation!=command {return Err(OrchestrationError::AccessDenied);}
+            this.managed_version_action_resources(driver,Some(&row))?;
+            let originals=instance::reconcile_managed_switch(&this.connection,this.root,request,driver,target,
+                revision,frame).map_err(|error|failure("action original switch receipt",error))?;
+            if row.phase==instance::ActionPhase::Consumed {
+                let receipts=originals.ok_or(OrchestrationError::AccessDenied)?;
+                if row.final_hex!=raw || row.final_receipt_set_digest!=receipt_set_digest(&receipts)? {
+                    return Err(OrchestrationError::AccessDenied);
+                }
+                return switch_response(command,driver,receipts,true);
+            }
+            if row.phase!=instance::ActionPhase::Probed || originals.is_some() {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let copy=instance::read_managed_cli(&this.connection,this.root,driver)
+                .map_err(|error|failure("action final copy",error))?.ok_or(OrchestrationError::AccessDenied)?;
+            let stage=copy.stage_name.ok_or(OrchestrationError::AccessDenied)?;
+            if copy.revision!=revision || stage!=row.stage_name {return Err(OrchestrationError::AccessDenied);}
+            instance::activate_managed_version_action_in_current_transaction(&this.connection,this.root,&this.owner,
+                driver,target,&stage,revision,request,frame,&row)
+                .map_err(|error|failure("action original F source switch",error))?;
+            let next=instance::managed_version_fingerprints(&this.connection,this.root,driver)
+                .map_err(|error|failure("action switch post-effect fingerprints",error))?;
+            this.managed_version_action_resources_at_fingerprints(driver,&row,&next.0,&next.1)?;
+            let receipts=instance::reconcile_managed_switch(&this.connection,this.root,request,driver,target,
+                revision,frame).map_err(|error|failure("action effect receipts",error))?
+                .ok_or(OrchestrationError::AccessDenied)?;
+            let consumed=instance::consume_version_action_in_current_transaction(&this.connection,this.root,&this.owner,
+                request,row.revision,&raw,&receipt_set_digest(&receipts)?,
+                &row.current_copy_fingerprint,&row.current_source_fingerprint,&next.0,&next.1)
+                .map_err(|error|failure("action atomic consume",error))?;
+            this.managed_version_action_resources(driver,Some(&consumed))?;
+            switch_response(command,driver,receipts,false)
+        })
     }
     /// Check current global login/observer custody without turning historical
     /// UNKNOWN rows into a fabricated live process.
@@ -196,6 +534,11 @@ impl<'a> ProductDatabase<'a> {
     }
 
     pub(super) fn qualified_managed_source_resources(&self,id:&str,driver:&str)->Result<()> {
+        self.qualified_managed_source_resources_in_action(id,driver,None)
+    }
+
+    fn qualified_managed_source_resources_in_action(&self,id:&str,driver:&str,
+        scope:Option<&instance::QualifiedVersionAction>)->Result<()> {
         let first_claude_copy=driver=="claude" &&
             instance::is_first_same_pin_copy(&self.connection,driver)
                 .map_err(|error|failure("first source copy scope",error))?;
@@ -214,6 +557,7 @@ impl<'a> ProductDatabase<'a> {
         while ops.step_row()? {retained.push((ops.column_text(0)?,ops.column_text(1)?,ops.column_text(2)?));}
         drop(ops);
         for (domain,session,request) in retained {
+            if scope.is_some_and(|scope|scope.allows_operation(&domain,&session,&request)) {continue}
             if !first_claude_copy || !self.completed_claude_managed_pending_operation(id,&domain,&session,&request)? {
                 return Err(OrchestrationError::AccessDenied);
             }
@@ -229,8 +573,17 @@ impl<'a> ProductDatabase<'a> {
                 return Err(OrchestrationError::AccessDenied);
             }
         }
+        let homes=Statement::prepare(self.connection.as_ptr(),
+            "SELECT home_id FROM main.gogoke_v37_instance_homes WHERE instance_id=?1 AND state NOT IN ('ACTIVE','CLEANED','CLOSED')")?;
+        homes.bind_text(1,id)?;
+        while homes.step_row()? {
+            let home=homes.column_text(0)?;
+            if !scope.is_some_and(|scope|scope.allows_home(&home)) {
+                return Err(OrchestrationError::AccessDenied);
+            }
+        }
+        drop(homes);
         for sql in [
-            "SELECT 1 FROM main.gogoke_v37_instance_homes WHERE instance_id=?1 AND state NOT IN ('ACTIVE','CLEANED','CLOSED') LIMIT 1",
             "SELECT 1 FROM main.gogoke_v37_instance_operations WHERE target_id=?1 AND phase!='APPLIED' LIMIT 1",
             "SELECT 1 FROM main.gogoke_v37_credential_objects WHERE instance_id=?1 AND phase!='ACTIVE' LIMIT 1",
             "SELECT 1 FROM main.gogoke_v37_credential_aliases WHERE instance_id=?1 AND state IN ('PREPARING','REMOVE_PENDING','UNKNOWN') LIMIT 1",
@@ -238,14 +591,15 @@ impl<'a> ProductDatabase<'a> {
         ] {if pending(sql)? {return Err(OrchestrationError::AccessDenied)}}
 
         let claims=Statement::prepare(self.connection.as_ptr(),
-            "SELECT a.domain_id,a.session_id,a.state,COALESCE(a.process_operation_id,''),COALESCE(a.stop_fact_id,''),COALESCE(c.state,''),COALESCE(c.stop_proof_hash,'') FROM main.gogoke_v37_h_claim a LEFT JOIN main.gogoke_coordination_process_custody c ON c.operation_id=a.process_operation_id AND c.profile_id=a.instance_id AND c.domain_id=a.domain_id AND c.generation=a.generation WHERE a.instance_id=?1")?;
+            "SELECT a.domain_id,a.session_id,a.state,COALESCE(a.process_operation_id,''),COALESCE(a.stop_fact_id,''),COALESCE(c.state,''),COALESCE(c.stop_proof_hash,''),a.generation,COALESCE(a.binding_id,'') FROM main.gogoke_v37_h_claim a LEFT JOIN main.gogoke_coordination_process_custody c ON c.operation_id=a.process_operation_id AND c.profile_id=a.instance_id AND c.domain_id=a.domain_id AND c.generation=a.generation WHERE a.instance_id=?1")?;
         claims.bind_text(1,id)?;
         let mut rows=Vec::new();
-        while claims.step_row()? {rows.push((0..7).map(|n|claims.column_text(n)).collect::<std::result::Result<Vec<_>,_>>()?);}
+        while claims.step_row()? {rows.push((0..9).map(|n|claims.column_text(n)).collect::<std::result::Result<Vec<_>,_>>()?);}
         drop(claims);
         for row in rows {
             let (domain,session,state,operation,stop,custody,proof)=
                 (&row[0],&row[1],&row[2],&row[3],&row[4],&row[5],&row[6]);
+            if scope.is_some_and(|scope|scope.allows_claim(id,domain,session,&row[7],&row[8],operation)) {continue}
             if state=="RELEASED" && operation.is_empty() && stop.is_empty() {
                 let q=Statement::prepare(self.connection.as_ptr(),
                     "SELECT 1 FROM main.gogoke_v37_h_process_episode WHERE domain_id=?1 AND session_id=?2 UNION ALL SELECT 1 FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND session_id=?2 AND operation='open' LIMIT 1")?;
@@ -265,14 +619,15 @@ impl<'a> ProductDatabase<'a> {
         }
 
         let episodes=Statement::prepare(self.connection.as_ptr(),
-            "SELECT e.domain_id,e.session_id,COALESCE(e.process_operation_id,''),e.phase,COALESCE(e.stop_fact_id,''),COALESCE(c.state,''),COALESCE(c.stop_proof_hash,'') FROM main.gogoke_v37_h_process_episode e LEFT JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id AND c.profile_id=e.instance_id AND c.domain_id=e.domain_id AND c.generation=e.generation WHERE e.instance_id=?1")?;
+            "SELECT e.domain_id,e.session_id,COALESCE(e.process_operation_id,''),e.phase,COALESCE(e.stop_fact_id,''),COALESCE(c.state,''),COALESCE(c.stop_proof_hash,''),e.request_id FROM main.gogoke_v37_h_process_episode e LEFT JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id AND c.profile_id=e.instance_id AND c.domain_id=e.domain_id AND c.generation=e.generation WHERE e.instance_id=?1")?;
         episodes.bind_text(1,id)?;
         let mut rows=Vec::new();
-        while episodes.step_row()? {rows.push((0..7).map(|n|episodes.column_text(n)).collect::<std::result::Result<Vec<_>,_>>()?);}
+        while episodes.step_row()? {rows.push((0..8).map(|n|episodes.column_text(n)).collect::<std::result::Result<Vec<_>,_>>()?);}
         drop(episodes);
         for row in rows {
             let (domain,session,operation,phase,stop,custody,proof)=
                 (&row[0],&row[1],&row[2],&row[3],&row[4],&row[5],&row[6]);
+            if scope.is_some_and(|scope|scope.allows_episode(domain,&row[7],operation)) {continue}
             if operation.is_empty() && phase=="FAILED" {continue}
             if matches!(phase.as_str(),"STOPPED"|"FAILED") && !stop.is_empty() &&
                 custody=="STOPPED" && proof==stop {continue}
@@ -347,6 +702,8 @@ impl<'a> ProductDatabase<'a> {
         match command.as_str(){
             "status" if fields.len()==3=>{
                 let driver=field(&fields,"driverId")?;
+                let pending=self.pending_managed_version_action(&driver)?;
+                let failed=self.failed_managed_version_action(&driver)?;
                 let copy=instance::read_managed_cli(&self.connection,self.root,&driver)
                     .map_err(|error|failure("status",error))?;
                 let prepared=instance::read_prepared_managed_replacement(&self.connection,self.root,&driver)
@@ -355,7 +712,7 @@ impl<'a> ProductDatabase<'a> {
                     None=>result("status",[("driverId",string(&driver)),("state",string("NOT_INSTALLED")),
                         ("revision",Json::Null),("version",Json::Null),
                         ("stageName",Json::Null),("preparedReplacement",Json::Null),
-                        ("progressBytes",Json::Null)]),
+                        ("progressBytes",Json::Null),("pendingAction",pending),("failedAction",failed)]),
                     Some(copy)=>result("status",[("driverId",string(&driver)),("state",string(&copy.state)),
                         ("revision",string(&copy.revision.to_string())),("version",optional(copy.version.as_deref())),
                         ("stageName",optional(copy.stage_name.as_deref())),
@@ -364,7 +721,8 @@ impl<'a> ProductDatabase<'a> {
                         ("previousVersion",optional(copy.previous_version.as_deref())),
                         ("verifiedOtherVersions",Json::Array(copy.verified_other_versions.iter().map(|version|string(version)).collect())),
                         ("officialVersion",optional(copy.official_notice.as_deref())),
-                        ("checkedAt",optional(copy.checked_at.as_deref())),("raw",optional(copy.raw_error.as_deref()))]),
+                        ("checkedAt",optional(copy.checked_at.as_deref())),("raw",optional(copy.raw_error.as_deref())),
+                        ("pendingAction",pending),("failedAction",failed)]),
                 })
             },
             "upgrade"|"rollback" if fields.len()==6=>{
@@ -442,6 +800,12 @@ impl<'a> ProductDatabase<'a> {
                     &driver,&version,"UPGRADING",0).map_err(|error|failure("begin verified version",error))?;
                 Ok(result("begin",[("driverId",string(&driver)),("state",string("UPGRADING"))]))
             },
+            "begin" if fields.len()==6=>{
+                let driver=field(&fields,"driverId")?;
+                let target=field(&fields,"targetVersion")?;
+                let request=request_id(&fields)?;
+                self.begin_managed_version_action(&driver,&target,&request,&field(&fields,"operation")?,frame)
+            },
             "stage" if fields.len()==4=>{
                 let driver=field(&fields,"driverId")?;
                 let stage=field(&fields,"stageName")?;
@@ -460,6 +824,30 @@ impl<'a> ProductDatabase<'a> {
                 instance::record_managed_cli_stage_for_version(&mut self.connection,self.root,&self.owner,
                     &driver,&version,&stage).map_err(|error|failure("record verified version stage",error))?;
                 Ok(result("stage",[("driverId",string(&driver)),("state",string("STAGED"))]))
+            },
+            "stage" if fields.len()==6=>{
+                let driver=field(&fields,"driverId")?;
+                let target=field(&fields,"targetVersion")?;
+                let stage=field(&fields,"stageName")?;
+                let request=request_id(&fields)?;
+                self.stage_managed_version_action(&driver,&target,&stage,&request,frame)
+            },
+            "failure" if fields.len()==6=>{
+                let driver=field(&fields,"driverId")?;
+                let state=field(&fields,"state")?;
+                let raw=field(&fields,"raw")?;
+                let request=request_id(&fields)?;
+                let row=instance::read_version_action(&self.connection,self.root,&request)
+                    .map_err(|error|failure("bound failure action",error))?.ok_or(OrchestrationError::AccessDenied)?;
+                if row.driver!=driver || row.phase==instance::ActionPhase::Consumed {
+                    return Err(OrchestrationError::AccessDenied);
+                }
+                if row.phase==instance::ActionPhase::Failed {
+                    if row.original_error_hex!=action_failure_hex(&driver,&state,&raw) {return Err(OrchestrationError::AccessDenied);}
+                } else {
+                    self.fail_managed_version_action(&driver,&state,&raw,&row)?;
+                }
+                Ok(result("failure",[("driverId",string(&driver)),("state",string(&state))]))
             },
             "failure" if fields.len()==5=>{
                 let driver=field(&fields,"driverId")?;
@@ -491,6 +879,10 @@ impl<'a> ProductDatabase<'a> {
                 let stage=field(&fields,"stageName")?;
                 let version=field(&fields,"targetVersion")?;
                 let request=request_id(&fields)?;
+                if instance::read_version_action(&self.connection,self.root,&request)
+                    .map_err(|error|failure("probe bound action lookup",error))?.is_some() {
+                    return self.probe_managed_version_action(&driver,&version,&stage,&request,frame);
+                }
                 self.strict_managed_version_resources(&driver)?;
                 self.probe_staged_managed_cli_version(&driver,&version,&stage,&request)?;
                 Ok(result("probe",[("driverId",string(&driver)),("state",string("PROBED"))]))
@@ -769,6 +1161,96 @@ mod tests {
         fs::remove_file(database).unwrap();
         fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).unwrap();
         fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn real_bound_version_action_replays_without_relaunch_and_rollback_uses_new_action() {
+        assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(),Ok("true"),"official CLI lifecycle is cloud-only");
+        let _guard=route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("gogoke-bound-version-{}-{nonce}",std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let database=path.join("state.sqlite");
+        let mut product=ProductDatabase::open(&root,&database).unwrap();
+        let (stage32,sentinel)=ready_two_opencode_sources(&mut product,&root);
+        let original_home=fs::read(&sentinel).unwrap();
+        let original_profiles=managed_snapshot(&product).profiles;
+        let (stage33,image33)=real_opencode_version_stage(&root,"1.18.33");
+        let begin=|id:&str,version:&str,operation:&str|format!(
+            "{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"begin\",\"driverId\":\"opencode\",\"targetVersion\":\"{version}\",\"requestId\":\"{id}\",\"operation\":\"{operation}\"}}");
+        managed_user(&mut product,&begin("failed-before-launch","1.18.33","upgrade"));
+        managed_user(&mut product,&version_frame("stage","1.18.33",Some(&stage33),Some("failed-before-launch")));
+        let probe_home=image33.ancestors().find(|path|path.file_name().and_then(|name|name.to_str())==Some("content"))
+            .unwrap().parent().unwrap().join("probe-home");
+        fs::write(&probe_home,b"known non-directory fixture before any H prepare").unwrap();
+        let before_failure_c=table_rows(&product,"SELECT operation_id,state,COALESCE(stop_proof_hash,'') FROM main.gogoke_coordination_process_custody ORDER BY operation_id",3);
+        let failed=version_frame("probe","1.18.33",Some(&stage33),Some("failed-before-launch"));
+        assert!(product.dispatch_user_managed_cli(failed.as_bytes()).is_err());
+        let failure=instance::read_version_action(&product.connection,&root,"failed-before-launch").unwrap().unwrap();
+        assert_eq!(failure.phase,instance::ActionPhase::Failed);
+        assert!(failure.open_driver_id.is_empty());assert!(!failure.original_error_hex.is_empty());
+        let blocked=instance::read_managed_cli(&product.connection,&root,"opencode").unwrap().unwrap();
+        assert_eq!(blocked.state,"BLOCKED");
+        assert!(blocked.raw_error.as_deref().unwrap().contains("private probe home identity"));
+        assert_eq!(table_rows(&product,"SELECT operation_id,state,COALESCE(stop_proof_hash,'') FROM main.gogoke_coordination_process_custody ORDER BY operation_id",3),before_failure_c);
+        fs::remove_file(probe_home).unwrap();
+        let up_begin=begin("bound-upgrade","1.18.33","upgrade");
+        let begun=managed_user(&mut product,&up_begin);
+        let after_begin=managed_snapshot(&product);
+        assert_eq!(managed_user(&mut product,&up_begin),begun);
+        assert_eq!(managed_snapshot(&product),after_begin);
+        for foreign in [begin("other-id","1.18.33","upgrade"),begin("bound-upgrade","1.18.33","rollback"),
+            version_frame("begin","1.18.33",None,None),
+            version_frame("stage","1.18.33",Some(&stage33),Some("other-id")),
+            version_frame("probe","1.18.33",Some(&stage33),Some("other-id"))] {
+            assert!(product.dispatch_user_managed_cli(foreign.as_bytes()).is_err());
+            assert_eq!(managed_snapshot(&product),after_begin);
+        }
+        let stage=version_frame("stage","1.18.33",Some(&stage33),Some("bound-upgrade"));
+        let staged=managed_user(&mut product,&stage);
+        let after_stage=managed_snapshot(&product);
+        assert_eq!(managed_user(&mut product,&stage),staged);
+        assert_eq!(managed_snapshot(&product),after_stage);
+        let probe=version_frame("probe","1.18.33",Some(&stage33),Some("bound-upgrade"));
+        let probed_reply=managed_user(&mut product,&probe);
+        let custody=table_rows(&product,"SELECT operation_id,state,COALESCE(stop_proof_hash,'') FROM main.gogoke_coordination_process_custody ORDER BY operation_id",3);
+        let after_probe=managed_snapshot(&product);
+        assert_eq!(managed_user(&mut product,&probe),probed_reply);
+        assert_eq!(managed_snapshot(&product),after_probe);
+        assert_eq!(table_rows(&product,"SELECT operation_id,state,COALESCE(stop_proof_hash,'') FROM main.gogoke_coordination_process_custody ORDER BY operation_id",3),custody);
+        let copy=instance::read_managed_cli(&product.connection,&root,"opencode").unwrap().unwrap();
+        let final_frame=|operation:&str,id:&str,target:&str,revision:i64|format!(
+            "{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"{operation}\",\"driverId\":\"opencode\",\"targetVersion\":\"{target}\",\"requestId\":\"{id}\",\"expectedRevision\":\"{revision}\"}}");
+        assert!(product.dispatch_user_managed_cli(final_frame("upgrade","other-id","1.18.33",copy.revision).as_bytes()).is_err());
+        let up=final_frame("upgrade","bound-upgrade","1.18.33",copy.revision);
+        let (status,receipts)=receipt_set(&managed_user(&mut product,&up));
+        assert_eq!(status,"APPLIED");assert_eq!(receipts.len(),2);
+        let upgraded=managed_snapshot(&product);
+        let (status,replayed)=receipt_set(&managed_user(&mut product,&up));
+        assert_eq!(status,"REPLAYED");assert_eq!(replayed,receipts);
+        assert_eq!(managed_snapshot(&product),upgraded);
+        assert_eq!(instance::read_version_action(&product.connection,&root,"bound-upgrade").unwrap().unwrap().phase,
+            instance::ActionPhase::Consumed);
+        product.close_checked().unwrap();
+        let mut product=ProductDatabase::open(&root,&database).unwrap();
+        managed_user(&mut product,&begin("bound-rollback","1.18.32","rollback"));
+        managed_user(&mut product,&version_frame("stage","1.18.32",Some(&stage32),Some("bound-rollback")));
+        managed_user(&mut product,&version_frame("probe","1.18.32",Some(&stage32),Some("bound-rollback")));
+        let copy=instance::read_managed_cli(&product.connection,&root,"opencode").unwrap().unwrap();
+        let rollback=final_frame("rollback","bound-rollback","1.18.32",copy.revision);
+        assert_eq!(receipt_set(&managed_user(&mut product,&rollback)).0,"APPLIED");
+        assert_eq!(receipt_set(&managed_user(&mut product,&rollback)).0,"REPLAYED");
+        assert_eq!(fs::read(&sentinel).unwrap(),original_home);
+        let after=managed_snapshot(&product);
+        assert_eq!(after.profiles,original_profiles);
+        assert!(after.instances.iter().all(|row|row[1]=="1.18.32"));
+        assert!(after.sources.iter().all(|row|row[2]=="1.18.32"));
+        // An older action cannot silently adopt the later action's copy/source
+        // revision chain, even for a readback of its original final bytes.
+        assert!(product.dispatch_user_managed_cli(up.as_bytes()).is_err());
+        assert_eq!(managed_snapshot(&product),after);
+        product.close_checked().unwrap();drop(root);fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
@@ -1084,17 +1566,31 @@ impl<'a> ProductDatabase<'a> {
         self.require_first_managed_copy(driver)?;
         let pin=instance::read_fixed_official_cli(driver)
             .ok_or(OrchestrationError::Invalid("fixed CLI driver"))?;
-        self.probe_staged_managed_cli_for_version(driver,pin.version,stage,request,false)
+        self.probe_staged_managed_cli_for_version(driver,pin.version,stage,request,false,None)
     }
 
     fn probe_staged_managed_cli_version(&mut self,driver:&str,version:&str,
         stage:&str,request:&str)->Result<()> {
-        self.probe_staged_managed_cli_for_version(driver,version,stage,request,true)
+        self.probe_staged_managed_cli_for_version(driver,version,stage,request,true,None)
     }
 
     fn probe_staged_managed_cli_for_version(&mut self,driver:&str,version:&str,
-        stage:&str,request:&str,strict_version_change:bool)->Result<()> {
-        if strict_version_change {self.strict_managed_version_resources(driver)?;}
+        stage:&str,request:&str,strict_version_change:bool,action:Option<&instance::ActionRecord>)->Result<()> {
+        if let Some(action)=action {
+            if action.phase!=instance::ActionPhase::Probing || action.request_id!=request ||
+                action.target_version!=version || action.stage_name!=stage {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            self.managed_version_action_resources(driver,Some(action))?;
+        } else if strict_version_change {self.strict_managed_version_resources(driver)?;}
+        let failure_record=|this:&mut Self,state:&str,raw:String| {
+            if let Some(action)=action {
+                match this.fail_managed_version_action(driver,state,&raw,action) {
+                    Ok(())=>OrchestrationError::V37StoreFailure(raw),
+                    Err(error)=>OrchestrationError::V37StoreFailure(format!("{raw}; original action failure record: {error:?}")),
+                }
+            } else {this.managed_cli_failure(driver,state,raw)}
+        };
         let pin=instance::read_official_cli_version(driver,version)
             .ok_or(OrchestrationError::Invalid("compiled CLI version"))?;
         let copy=instance::read_managed_cli(&self.connection,self.root,driver)
@@ -1108,13 +1604,14 @@ impl<'a> ProductDatabase<'a> {
             Ok(image)=>image,
             Err(error)=>{
                 let raw=format!("staged archive/image verification: {error:?}");
-                return Err(self.managed_cli_failure(driver,"BLOCKED",raw));
+                return Err(failure_record(self,"BLOCKED",raw));
             },
         };
-        let home=image.ancestors().find(|path|
-            path.file_name().and_then(|name|name.to_str())==Some("content"))
-            .ok_or(OrchestrationError::AccessDenied)?.parent()
-            .ok_or(OrchestrationError::AccessDenied)?.join("probe-home");
+        let home=match image.ancestors().find(|path|
+            path.file_name().and_then(|name|name.to_str())==Some("content")).and_then(Path::parent) {
+            Some(stage)=>stage.join("probe-home"),
+            None=>return Err(failure_record(self,"BLOCKED","private probe stage parent is absent".into())),
+        };
         match fs::create_dir(&home) {
             Ok(()) => {},
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -1122,14 +1619,16 @@ impl<'a> ProductDatabase<'a> {
                 // after its original durable stop. The source stage and all
                 // prior custody were checked above; reuse only a plain folder.
                 let metadata = fs::symlink_metadata(&home)
-                    .map_err(|cause| failure("existing private probe home", cause))?;
+                    .map_err(|cause|failure_record(self,"BLOCKED",format!("existing private probe home: {cause:?}")))?;
                 if !metadata.is_dir() || metadata.file_attributes() & 0x400 != 0 {
-                    return Err(OrchestrationError::Invalid("private probe home identity"));
+                    return Err(failure_record(self,"BLOCKED",format!("private probe home identity: directory={}, attributes={:#x}",
+                        metadata.is_dir(),metadata.file_attributes())));
                 }
             },
-            Err(error) => return Err(failure("private probe home", error)),
+            Err(error) => return Err(failure_record(self,"BLOCKED",format!("private probe home: {error:?}"))),
         }
-        let system_root=std::env::var("SystemRoot").map_err(|error|failure("SystemRoot",error))?;
+        let system_root=std::env::var("SystemRoot")
+            .map_err(|error|failure_record(self,"BLOCKED",format!("SystemRoot: {error:?}")))?;
         let mut launch=ProcessLaunch::new(&image);
         launch.arguments=vec!["--version".into()];
         launch.current_directory=Some(home.clone());
@@ -1163,7 +1662,7 @@ impl<'a> ProductDatabase<'a> {
             Err(error)=>{
                 let state=if matches!(error,crate::process::ProcessCustodyError::LaunchCleanup{..})
                     {"PROBE_UNKNOWN"}else{"BLOCKED"};
-                return Err(self.managed_cli_failure(driver, state,
+                return Err(failure_record(self, state,
                     format!("version probe prepare: {error:?}")));
             },
         };
@@ -1171,18 +1670,18 @@ impl<'a> ProductDatabase<'a> {
             let abort=self.process_custodian.abort_prepared(&prepared);
             let raw=format!("probe prepared record: {error:?}; abort: {abort:?}");
             let state=if abort.is_ok(){"BLOCKED"}else{"PROBE_UNKNOWN"};
-            return Err(self.managed_cli_failure(driver,state,raw));
+            return Err(failure_record(self,state,raw));
         }
         if let Err(error)=self.process_custodian.activate(&prepared){
             let unknown=authority::mark_process_unknown(&mut self.connection,&operation_id,&prepared);
             let raw=format!("probe activate: {error:?}; custody: {unknown:?}");
-            return Err(self.managed_cli_failure(driver,"PROBE_UNKNOWN",raw));
+            return Err(failure_record(self,"PROBE_UNKNOWN",raw));
         }
         if let Err(error)=authority::mark_process_active(&mut self.connection,&operation_id,&prepared){
             let stop=self.process_custodian.stop(&prepared.ticket,StopBudgets::production(),||Ok(()));
             let unknown=authority::mark_process_unknown(&mut self.connection,&operation_id,&prepared);
             let raw=format!("probe active record: {error:?}; stop: {stop:?}; custody: {unknown:?}");
-            return Err(self.managed_cli_failure(driver,"PROBE_UNKNOWN",raw));
+            return Err(failure_record(self,"PROBE_UNKNOWN",raw));
         }
         let output=self.process_custodian.active(&prepared.ticket)
             .ok_or(OrchestrationError::AccessDenied)?
@@ -1192,14 +1691,14 @@ impl<'a> ProductDatabase<'a> {
             Err(error)=>{
                 let unknown=authority::mark_process_unknown(&mut self.connection,&operation_id,&prepared);
                 let raw=format!("probe stop: {error:?}; custody: {unknown:?}");
-                return Err(self.managed_cli_failure(driver,"PROBE_UNKNOWN",raw));
+                return Err(failure_record(self,"PROBE_UNKNOWN",raw));
             },
         };
         if !proof.errors.is_empty()||!proof.parent_exited||!proof.writer_fence_verified||
             proof.active_job_processes!=Some(0){
             let unknown=authority::mark_process_unknown(&mut self.connection,&operation_id,&prepared);
             let raw=format!("probe stop unresolved: {proof:?}; custody: {unknown:?}");
-            return Err(self.managed_cli_failure(driver,"PROBE_UNKNOWN",raw));
+            return Err(failure_record(self,"PROBE_UNKNOWN",raw));
         }
         // The exact child may finish writing stderr after stdout. The Job
         // writer fence makes this drain final before durable confirmation
@@ -1217,7 +1716,7 @@ impl<'a> ProductDatabase<'a> {
             Err(error)=>{
                 let unknown=authority::mark_process_unknown(&mut self.connection,&operation_id,&prepared);
                 let raw=format!("probe stop record: {error:?}; STDERR_TAIL: {stderr}; custody: {unknown:?}");
-                return Err(self.managed_cli_failure(driver,"PROBE_UNKNOWN",raw));
+                return Err(failure_record(self,"PROBE_UNKNOWN",raw));
             },
         };
         if let Err(error)=self.process_custodian.confirm_stop_durable(&DurableStopConfirmation{
@@ -1225,35 +1724,57 @@ impl<'a> ProductDatabase<'a> {
             identity:prepared.identity.clone(),proof_hash:proof.proof_hash(),durable_revision:revision,
         }){
             let raw=format!("probe durable stop confirmation: {error:?}; proof: {proof:?}; STDERR_TAIL: {stderr}");
-            return Err(self.managed_cli_failure(driver,"PROBE_UNKNOWN",raw));
+            return Err(failure_record(self,"PROBE_UNKNOWN",raw));
         }
         if let Some(error)=stderr_drain {
             let raw=format!("version stderr drain: {error}; STDERR_TAIL: {stderr}");
-            return Err(self.managed_cli_failure(driver,"BLOCKED",raw));
+            return Err(failure_record(self,"BLOCKED",raw));
         }
         let stdout=match output {
             Ok(bytes)=>bytes,
             Err(error)=>{
                 let raw=format!("version stdout: {error}; STDERR_TAIL: {stderr}");
-                return Err(self.managed_cli_failure(driver,"BLOCKED",raw));
+                return Err(failure_record(self,"BLOCKED",raw));
             },
         };
         let observed=match std::str::from_utf8(&stdout) {
             Ok(value)=>value,
             Err(error)=>{
                 let raw=format!("version UTF-8: {error}; STDERR_TAIL: {stderr}");
-                return Err(self.managed_cli_failure(driver,"BLOCKED",raw));
+                return Err(failure_record(self,"BLOCKED",raw));
             },
         };
         if proof.exit_code!=Some(0)||observed.len()>256||
             !observed.split(|ch:char|!ch.is_ascii_alphanumeric()&&ch!='.')
                 .any(|token|token==pin.version){
             let raw=format!("version probe refused: exit={:?}; stdout={observed:?}; STDERR_TAIL: {stderr}",proof.exit_code);
-            return Err(self.managed_cli_failure(driver,"BLOCKED",raw));
+            return Err(failure_record(self,"BLOCKED",raw));
         }
-        if strict_version_change {self.strict_managed_version_resources(driver)?;}
-        instance::confirm_managed_cli_launch_for_version(&mut self.connection,self.root,
-            driver,version,stage,&digest,pin.version)
-            .map_err(|error|failure("READY confirmation",error))
+        if let Some(action)=action {
+            self.version_action_transaction(|this| {
+                this.managed_version_action_resources(driver,Some(action))?;
+                instance::confirm_managed_cli_launch_for_version_action_in_current_transaction(&this.connection,this.root,
+                    &this.owner,driver,version,stage,&digest,pin.version,action)
+                    .map_err(|error|failure("bound PROBED confirmation",error))?;
+                let next=instance::managed_version_fingerprints(&this.connection,this.root,driver)
+                    .map_err(|error|failure("probe post-effect fingerprints",error))?;
+                this.managed_version_action_resources_at_fingerprints(driver,action,&next.0,&next.1)?;
+                let receipt=bound_step_response("probe",driver,version,request,&action.operation,"PROBED",Some(stage));
+                let receipt_hex=action_hex(&receipt);
+                instance::advance_version_action_in_current_transaction(&this.connection,this.root,&this.owner,
+                    request,action.revision,&instance::ActionStep {
+                        next_phase:instance::ActionPhase::Probed,raw_hex:&action.probe_hex,receipt_hex:&receipt_hex,
+                        stage_name:stage,expected_copy_fingerprint:&action.current_copy_fingerprint,
+                        expected_source_fingerprint:&action.current_source_fingerprint,
+                        next_copy_fingerprint:&next.0,next_source_fingerprint:&next.1,
+                    }).map_err(|error|failure("probe original action receipt",error))?;
+                Ok(())
+            })
+        } else {
+            if strict_version_change {self.strict_managed_version_resources(driver)?;}
+            instance::confirm_managed_cli_launch_for_version(&mut self.connection,self.root,
+                driver,version,stage,&digest,pin.version)
+                .map_err(|error|failure("READY confirmation",error))
+        }
     }
 }

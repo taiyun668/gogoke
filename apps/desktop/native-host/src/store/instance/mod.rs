@@ -17,6 +17,18 @@ mod credential_registry;
 mod grok_home_grants;
 mod legacy_fence;
 pub(crate) mod holder_disappearance;
+mod managed_version_action;
+
+pub(crate) use managed_version_action::{begin_in_current_transaction as begin_version_action_in_current_transaction,
+    record_begin_effect_in_current_transaction as record_begin_version_action_effect_in_current_transaction,
+    begin_probe_in_current_transaction as begin_probe_version_action_in_current_transaction,
+    record_probe_error_in_current_transaction as record_probe_error_version_action_in_current_transaction,
+    record_error_in_current_transaction as record_version_action_error_in_current_transaction,
+    read as read_version_action, advance_in_current_transaction as advance_version_action_in_current_transaction,
+    fail_in_current_transaction as fail_version_action_in_current_transaction,
+    consume_in_current_transaction as consume_version_action_in_current_transaction,
+    ActionBegin, ActionError, ActionMode, ActionOperation, ActionPhase, ActionRecord,
+    ActionStep, BeginOutcome};
 
 pub(crate) use legacy_fence::{initialize_legacy_fence_schema, capture_legacy_fence,
     read_legacy_fence, read_legacy_step, begin_legacy_acl_step, validate_legacy_acl_write, finish_legacy_acl_step,
@@ -41,9 +53,18 @@ pub(crate) use managed_cli::{read_official_cli_version,inspect_staged_official_c
     record_managed_cli_progress_for_version,no_unsettled_managed_version_change};
 pub(crate) use managed_cli::{require_default_first_copy,read_prepared_managed_replacement};
 pub(crate) use managed_cli::{no_unsettled_instance_use,is_first_same_pin_copy};
+pub(crate) use managed_cli::{observe_version_scope,revalidate_version_action,
+    revalidate_version_action_at_fingerprints,
+    no_unsettled_managed_version_change_for_action,QualifiedVersionAction};
+pub(crate) use managed_cli::{record_managed_cli_progress_for_version_action_in_current_transaction,
+    record_managed_cli_stage_for_version_action_in_current_transaction,
+    confirm_managed_cli_launch_for_version_action_in_current_transaction,
+    record_managed_cli_failure_for_version_action_in_current_transaction};
 pub(crate) use program_source::{bind_managed_instance_program, migrate_quiescent_legacy_instances,
     locate_bound_instance_program,activate_quiescent_managed_version,
-    activate_quiescent_managed_version_in_current_transaction,ProgramSourceError};
+    activate_quiescent_managed_version_in_current_transaction,
+    activate_managed_version_action_in_current_transaction,managed_version_fingerprints,
+    ProgramSourceError};
 pub(crate) use registry::{preflight_register_request, reconcile_register_replay,
     register_instance, record_observation, repin_program, reconcile_program_repin,
     reconcile_managed_switch,valid_managed_switch_request_id,ManagedSwitchReceipt,
@@ -95,7 +116,7 @@ use super::atomic::Statement;
 use super::orchestration::OrchestrationError;
 use super::same_open::VerifiedDatabaseConnection;
 
-const SCHEMA: [(&str, &str); 10] = [
+const SCHEMA: [(&str, &str); 11] = [
     (
         "gogoke_v37_instances",
         "CREATE TABLE gogoke_v37_instances(instance_id TEXT PRIMARY KEY, driver_id TEXT NOT NULL, home_ref TEXT NOT NULL UNIQUE, home_identity TEXT NOT NULL UNIQUE, program_digest TEXT NOT NULL, version TEXT NOT NULL, install_state TEXT NOT NULL CHECK(install_state IN ('UNKNOWN','INSTALLED','MISSING')), login_state TEXT NOT NULL CHECK(login_state IN ('UNKNOWN','LOGGED_IN','LOGGED_OUT')), revision INTEGER NOT NULL CHECK(revision >= 1)) STRICT",
@@ -118,6 +139,7 @@ const SCHEMA: [(&str, &str); 10] = [
     ("gogoke_v37_instance_evidence", "CREATE TABLE gogoke_v37_instance_evidence(instance_id TEXT PRIMARY KEY REFERENCES gogoke_v37_instances(instance_id),account_masked TEXT,subscription TEXT,account_confirmed_at TEXT,account_source TEXT,available_models_json TEXT,models_source TEXT,models_observed_at TEXT,models_program_digest TEXT,detect_error TEXT,detect_error_at TEXT) STRICT"),
     ("gogoke_v37_instance_cli_copies", "CREATE TABLE gogoke_v37_instance_cli_copies(driver_id TEXT PRIMARY KEY,state TEXT NOT NULL CHECK(state IN ('NOT_INSTALLED','DOWNLOADING','INSTALLING','UPGRADING','STAGED','PROBED','READY','INSTALL_FAILED','BLOCKED','PROBE_UNKNOWN','UPGRADE_FAILED','UNINSTALLING')),version TEXT,archive_sha256 TEXT,image_sha256 TEXT,stage_name TEXT,previous_version TEXT,previous_image_sha256 TEXT,previous_stage_name TEXT,progress_bytes INTEGER NOT NULL DEFAULT 0,raw_error TEXT,checked_at TEXT,official_notice TEXT,revision INTEGER NOT NULL CHECK(revision>=1)) STRICT"),
     ("gogoke_v37_instance_program_sources", "CREATE TABLE gogoke_v37_instance_program_sources(instance_id TEXT PRIMARY KEY REFERENCES gogoke_v37_instances(instance_id),source TEXT NOT NULL CHECK(source='MANAGED'),stage_name TEXT NOT NULL,program_digest TEXT NOT NULL,version TEXT NOT NULL,home_identity TEXT NOT NULL,registration_request_id TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>=1)) STRICT"),
+    ("gogoke_v37_instance_version_actions", managed_version_action::SCHEMA),
 ];
 
 fn observed_schema(
@@ -188,7 +210,8 @@ pub(crate) fn initialize_schema(
     }
     if !observed.is_empty() && observed != previous_schema() && observed != pre_history_schema()
         && observed != sorted_schema_prefix(6) && observed != sorted_schema_prefix(7)
-        && observed != sorted_schema_prefix(8) && observed != sorted_schema_prefix(9) {
+        && observed != sorted_schema_prefix(8) && observed != sorted_schema_prefix(9)
+        && observed != sorted_schema_prefix(10) {
         return Err(OrchestrationError::AccessDenied);
     }
     connection
@@ -318,6 +341,26 @@ mod tests {
     }
 
     #[test]
+    fn exact_ten_table_schema_adds_only_action_table_and_preserves_old_rows() {
+        fixture(|connection| {
+            for (_, sql) in &SCHEMA[..10] { connection.execute(sql).unwrap(); }
+            connection.execute("INSERT INTO main.gogoke_v37_instances VALUES('instanceA','codex','homeA','identityA','sha256:test','1','UNKNOWN','UNKNOWN',7)").unwrap();
+            connection.execute("INSERT INTO main.gogoke_v37_instance_cli_copies(driver_id,state,revision) VALUES('codex','READY',9)").unwrap();
+            let snapshot = |db: &VerifiedDatabaseConnection<'_>| {
+                let q = Statement::prepare(db.as_ptr(), "SELECT i.instance_id,i.revision,c.driver_id,c.state,c.revision FROM main.gogoke_v37_instances i JOIN main.gogoke_v37_instance_cli_copies c ON c.driver_id=i.driver_id").unwrap();
+                assert!(q.step_row().unwrap());
+                let row: Vec<_> = (0..5).map(|index| q.column_text(index).unwrap()).collect();
+                assert!(!q.step_row().unwrap());
+                row
+            };
+            let before = snapshot(connection);
+            initialize_schema(connection).unwrap();
+            assert_eq!(observed_schema(connection).unwrap(), expected_schema());
+            assert_eq!(snapshot(connection), before);
+        });
+    }
+
+    #[test]
     fn partial_or_changed_family_is_rejected_without_repair() {
         fixture(|connection| {
             connection.execute(SCHEMA[0].1).unwrap();
@@ -340,6 +383,15 @@ mod tests {
             assert!(matches!(initialize_schema(connection), Err(OrchestrationError::AccessDenied)));
             connection.execute("DROP TABLE temp.gogoke_v37_instances").unwrap();
             connection.execute("CREATE TRIGGER unrelated_name BEFORE INSERT ON gogoke_v37_instances BEGIN SELECT RAISE(ABORT,'blocked'); END").unwrap();
+            assert!(matches!(initialize_schema(connection), Err(OrchestrationError::AccessDenied)));
+        });
+    }
+
+    #[test]
+    fn explicit_index_on_action_family_is_rejected() {
+        fixture(|connection| {
+            initialize_schema(connection).unwrap();
+            connection.execute("CREATE INDEX side_effect_index ON gogoke_v37_instance_version_actions(driver_id)").unwrap();
             assert!(matches!(initialize_schema(connection), Err(OrchestrationError::AccessDenied)));
         });
     }

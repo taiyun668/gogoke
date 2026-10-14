@@ -22,7 +22,7 @@ pub(crate) use session::{AppContainerProfile, CompatModule, DirectoryRoots, Isol
     NativeBootIdentity, NativeBootIdentityError,
     native_boot_start, NativeLegacyHoldersGone, NativeLegacyHoldersGoneError,
     LegacyAclInventory, LegacyHomeReceipt, LegacySourceReceipt,
-    NativeProcessHoldersGone, NativeCredentialAclRecoveryStep,
+    NativeProcessHoldersGone, NativeVersionAliasNamespace, NativeCredentialAclRecoveryStep,
     GrokAuthMetadata, GrokAclSnapshot, GrokHomeObject,
     grok_root_acl, grok_residue_acl, observe_grok_auth, observe_grok_auth_candidate,
     observe_grok_recorded_auth,

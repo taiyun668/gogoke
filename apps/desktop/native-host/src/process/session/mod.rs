@@ -5,6 +5,7 @@ mod compat_module;
 mod credential_binding;
 mod boot_identity;
 mod legacy_holders_gone;
+mod version_namespace;
 
 pub(crate) use isolation::{AppContainerProfile, IsolationError, SecurityCapabilities,
     ClaudeAclRetirement, ClaudeAclObject,
@@ -23,3 +24,4 @@ pub(crate) use credential_binding::{CredentialAlias, CredentialAliasScope,
 pub(crate) use boot_identity::{NativeBootIdentity, NativeBootIdentityError};
 pub(crate) use legacy_holders_gone::{native_boot_start, NativeLegacyHoldersGone,
     NativeLegacyHoldersGoneError, NativeProcessHoldersGone};
+pub(crate) use version_namespace::NativeVersionAliasNamespace;

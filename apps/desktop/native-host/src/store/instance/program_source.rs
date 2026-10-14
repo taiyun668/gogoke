@@ -20,6 +20,53 @@ pub(crate) enum ProgramSourceError {
     Registry(registry::RegistryError),
     Store(OrchestrationError),
     Credential(String),
+    Observation(String),
+}
+
+/// Full mutable copy/source state is kept apart from the immutable historical
+/// execution snapshot. Length framing preserves NULL and empty string via
+/// SQLite's quote(), and binds every legal self-write to the next action step.
+pub(crate) fn managed_version_fingerprints(db:&VerifiedDatabaseConnection<'_>,
+    root:&RootLock,driver:&str)->Result<(String,String),ProgramSourceError> {
+    let observed=crate::root::inspect_root(&root.canonical_root().canonical_path)
+        .map_err(|error|ProgramSourceError::Observation(format!("version root observation: {error:?}")))?;
+    if observed.identity!=root.canonical_root().identity ||
+        db.root_identity()!=&observed.identity {
+        return Err(ProgramSourceError::Conflict);
+    }
+    fn rows(db:&VerifiedDatabaseConnection<'_>,driver:&str,sql:&str,columns:i32)
+        ->Result<String,ProgramSourceError> {
+        let q=Statement::prepare(db.as_ptr(),sql)?;
+        q.bind_text(1,driver)?;
+        let mut bytes=Vec::new();
+        while q.step_row()? {
+            bytes.extend_from_slice(b"row:");
+            for n in 0..columns {
+                let value=q.column_text(n)?;
+                bytes.extend_from_slice(value.len().to_string().as_bytes());
+                bytes.push(b':');bytes.extend_from_slice(value.as_bytes());
+            }
+        }
+        Ok(crate::store::digest::content_hash(&bytes))
+    }
+    let copy=rows(db,driver,
+        "SELECT quote(driver_id),quote(state),quote(version),quote(archive_sha256),
+            quote(image_sha256),quote(stage_name),quote(previous_version),
+            quote(previous_image_sha256),quote(previous_stage_name),quote(progress_bytes),
+            quote(raw_error),quote(checked_at),quote(official_notice),quote(revision)
+         FROM main.gogoke_v37_instance_cli_copies WHERE driver_id=?1",14)?;
+    let source=rows(db,driver,
+        "SELECT quote(i.instance_id),quote(i.driver_id),quote(i.home_ref),quote(i.home_identity),
+            quote(i.program_digest),quote(i.version),quote(i.install_state),quote(i.login_state),quote(i.revision),
+            quote(s.instance_id),quote(s.source),quote(s.stage_name),quote(s.program_digest),
+            quote(s.version),quote(s.home_identity),quote(s.registration_request_id),quote(s.revision),
+            quote(p.instance_id),quote(p.display_name),quote(p.enabled),quote(p.connected_model_source),
+            quote(p.tombstoned),quote(p.revision)
+         FROM main.gogoke_v37_instances i
+         LEFT JOIN main.gogoke_v37_instance_program_sources s ON s.instance_id=i.instance_id
+         LEFT JOIN main.gogoke_v37_instance_profiles p ON p.instance_id=i.instance_id
+         WHERE i.driver_id=?1 ORDER BY i.instance_id",23)?;
+    Ok((copy,source))
 }
 
 /// Called inside the Owner's immediate transaction after ProductDatabase has
@@ -275,6 +322,31 @@ pub(crate) fn activate_quiescent_managed_version_in_current_transaction(
     driver:&str, target_version:&str, target_stage:&str, expected_copy_revision:i64,
     request_id:&str, request_bytes:&[u8],
 ) -> Result<usize,ProgramSourceError> {
+    activate_managed_version_in_current_transaction(db,root,owner,driver,target_version,
+        target_stage,expected_copy_revision,request_id,request_bytes,None)
+}
+
+/// A bound action shares the original F switch writer and its receipts. The
+/// action does not authorize a second source writer or alter old H/C rows.
+pub(crate) fn activate_managed_version_action_in_current_transaction(
+    db:&VerifiedDatabaseConnection<'_>, root:&RootLock, owner:&OwnerIssuer,
+    driver:&str, target_version:&str, target_stage:&str, expected_copy_revision:i64,
+    request_id:&str, request_bytes:&[u8], action:&super::ActionRecord,
+) -> Result<usize,ProgramSourceError> {
+    if action.request_id!=request_id || action.driver!=driver ||
+        action.target_version!=target_version || action.stage_name!=target_stage ||
+        action.phase!=super::ActionPhase::Probed {
+        return Err(ProgramSourceError::Conflict);
+    }
+    activate_managed_version_in_current_transaction(db,root,owner,driver,target_version,
+        target_stage,expected_copy_revision,request_id,request_bytes,Some(action))
+}
+
+fn activate_managed_version_in_current_transaction(
+    db:&VerifiedDatabaseConnection<'_>, root:&RootLock, owner:&OwnerIssuer,
+    driver:&str, target_version:&str, target_stage:&str, expected_copy_revision:i64,
+    request_id:&str, request_bytes:&[u8], action:Option<&super::ActionRecord>,
+) -> Result<usize,ProgramSourceError> {
     if expected_copy_revision<1 || target_stage.is_empty() {
         return Err(ProgramSourceError::Invalid);
     }
@@ -288,7 +360,15 @@ pub(crate) fn activate_quiescent_managed_version_in_current_transaction(
     managed_cli::inspect_staged_official_cli_version(root,driver,target_version,target_stage)?;
         check_owner_in_current_transaction(db,owner)?;
         registry::managed_request_command(&request)?;
-        managed_cli::no_unsettled_managed_version_change(db,driver)?;
+        if let Some(action)=action {
+            managed_cli::no_unsettled_managed_version_change_for_action(db,root,driver,action)?;
+        } else {
+            let pending=Statement::prepare(db.as_ptr(),
+                "SELECT 1 FROM main.gogoke_v37_instance_version_actions WHERE open_driver_id=?1 LIMIT 1")?;
+            pending.bind_text(1,driver)?;
+            if pending.step_row()? {return Err(ProgramSourceError::Conflict);}
+            managed_cli::no_unsettled_managed_version_change(db,driver)?;
+        }
         let copy=Statement::prepare(db.as_ptr(),
             "SELECT state,version,archive_sha256,image_sha256,stage_name,previous_version,previous_image_sha256,previous_stage_name,revision FROM main.gogoke_v37_instance_cli_copies WHERE driver_id=?1")?;
         copy.bind_text(1,driver)?;

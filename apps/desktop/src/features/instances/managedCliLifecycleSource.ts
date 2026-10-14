@@ -5,7 +5,10 @@ import type { InstancePageSource } from "./InstancesPage";
 
 type Driver = Exclude<VendorId, "antigravity">;
 type Switch = "upgrade" | "rollback";
-type Pending = { operation: Switch; frame: string; requestId: string; targetVersion: string };
+type Pending = { operation: Switch; frame?: string; requestId: string; targetVersion: string };
+type NativePending = { requestId: string; operation: Switch; targetVersion: string;
+  phase: "BEGUN" | "STAGED" | "PROBING" | "PROBED" };
+type NativeFailed = { requestId: string; operation: Switch; targetVersion: string; phase: "FAILED" };
 // This map survives a page/source recreation in this UI process. It is deliberately not durable.
 const pending = new Map<Driver, Pending>();
 const drivers: Driver[] = ["codex", "claude", "opencode", "grok"];
@@ -16,6 +19,29 @@ const version = (v: unknown): v is string => typeof v === "string" && /^(0|[1-9]
 const optional = (v: unknown, valid: (v: unknown) => boolean): boolean => v === undefined || v === null || valid(v);
 const nullableVersion = (v: unknown): v is string | null => v === null || version(v);
 const nonnegative = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+const actionId = (v: unknown): v is string => typeof v === "string" &&
+  v.length > 0 && v.length <= 64 && /^[A-Za-z0-9_.:/-]+$/.test(v);
+
+function parseNativePending(value: unknown): NativePending | null {
+  if (value === null) return null;
+  if (!object(value) || Object.keys(value).length !== 4 || !actionId(value.requestId) ||
+      !["upgrade", "rollback"].includes(value.operation as string) ||
+      !version(value.targetVersion) ||
+      !["BEGUN", "STAGED", "PROBING", "PROBED"].includes(value.phase as string)) {
+    throw new Error("Invalid native CLI pending action.");
+  }
+  return value as NativePending;
+}
+
+function parseNativeFailed(value: unknown): NativeFailed | null {
+  if (value === null) return null;
+  if (!object(value) || Object.keys(value).length !== 4 || !actionId(value.requestId) ||
+      !["upgrade", "rollback"].includes(value.operation as string) ||
+      !version(value.targetVersion) || value.phase !== "FAILED") {
+    throw new Error("Invalid native CLI failed action.");
+  }
+  return value as NativeFailed;
+}
 
 function compareVersion(a: string, b: string): number {
   const left = a.split(".").map(BigInt), right = b.split(".").map(BigInt);
@@ -29,7 +55,8 @@ function compareVersion(a: string, b: string): number {
 type Status = { state: CliState; revision: string | null; version: string | null;
   preparedReplacement: boolean | null;
   previousVersion: string | null; verifiedOtherVersions: string[]; officialVersion: string | null;
-  checkedAt: string | null; progressBytes?: number; raw: string | null };
+  checkedAt: string | null; progressBytes?: number; raw: string | null;
+  pendingAction?: NativePending | null; failedAction?: NativeFailed | null };
 
 function parseStatus(value: unknown, driverId: Driver): Status {
   if (!object(value) || value.schema !== "gogoke.37.managed-cli.v1" || value.command !== "status" ||
@@ -52,6 +79,8 @@ function parseStatus(value: unknown, driverId: Driver): Status {
   } else if (!revision(value.revision) || !nullableVersion(value.version)) {
     throw new Error(`Invalid native ${driverId} CLI version or revision.`);
   }
+  const nativePending = value.pendingAction === undefined ? undefined : parseNativePending(value.pendingAction);
+  const nativeFailed = value.failedAction === undefined ? undefined : parseNativeFailed(value.failedAction);
   return { state: value.state as CliState, revision: value.revision as string | null,
     preparedReplacement: value.preparedReplacement as boolean | null,
     version: value.version as string | null, previousVersion: (value.previousVersion ?? null) as string | null,
@@ -59,11 +88,32 @@ function parseStatus(value: unknown, driverId: Driver): Status {
     officialVersion: (value.officialVersion ?? null) as string | null,
     checkedAt: (value.checkedAt ?? null) as string | null,
     ...(value.progressBytes === undefined || value.progressBytes === null ? {} : { progressBytes: value.progressBytes as number }),
-    raw: (value.raw ?? null) as string | null };
+    raw: (value.raw ?? null) as string | null, pendingAction: nativePending, failedAction: nativeFailed };
 }
 
 async function status(driverId: Driver): Promise<Status> {
   return parseStatus(await design37UserFrame({ schema: "gogoke.37.managed-cli.v1", command: "status", driverId }), driverId);
+}
+
+function syncPending(driverId: Driver, status: Status): void {
+  const native = status.pendingAction;
+  const original = pending.get(driverId);
+  if (native) {
+    if (original) {
+      if (original.requestId !== native.requestId || original.operation !== native.operation ||
+          original.targetVersion !== native.targetVersion) {
+        throw new Error("Native CLI pending action differs from the original request.");
+      }
+      return;
+    }
+    pending.set(driverId, { requestId: native.requestId, operation: native.operation,
+      targetVersion: native.targetVersion });
+    return;
+  }
+  const failed = status.failedAction;
+  if (status.pendingAction === null && original && failed &&
+      original.requestId === failed.requestId && original.operation === failed.operation &&
+      original.targetVersion === failed.targetVersion) pending.delete(driverId);
 }
 
 function target(s: Status, operation: Switch): string | null {
@@ -133,6 +183,7 @@ function validateSwitchReceipt(value: unknown, driverId: Driver, intent: Pending
 }
 
 async function finalSwitch(driverId: Driver, intent: Pending): Promise<void> {
+  if (intent.frame === undefined) throw new Error("Native CLI final frame has not been prepared.");
   const receipt = await design37ExactManagedCliFrame(intent.frame);
   validateSwitchReceipt(receipt, driverId, intent);
   pending.delete(driverId);
@@ -148,17 +199,21 @@ export function createManagedCliLifecycleSource(): InstancePageSource {
     const driverId = asDriver(vendor);
     if (pending.has(driverId)) throw new Error("上次升级或退回的结果待确认，请先读回结果。");
     const fresh = await status(driverId);
+    syncPending(driverId, fresh);
+    if (pending.has(driverId)) throw new Error("上次升级或退回的结果待确认，请先读回结果。");
     const targetVersion = target(fresh, operation);
     if (!fresh.revision || !targetVersion) throw new Error("当前没有已验证的目标版本，请刷新状态后重试。");
     const requestId = `ui-${crypto.randomUUID()}`;
-    const prepared = await design37ManagedCliAction({ driverId, requestId, operation, targetVersion });
-    const frame = validatePrepared(prepared, driverId, operation, requestId, targetVersion);
-    const intent = { operation, frame, requestId, targetVersion };
+    const intent: Pending = { operation, requestId, targetVersion };
     pending.set(driverId, intent);
+    const prepared = await design37ManagedCliAction({ driverId, requestId, operation, targetVersion });
+    intent.frame = validatePrepared(prepared, driverId, operation, requestId, targetVersion);
     await finalSwitch(driverId, intent);
   };
   const simple = async (vendor: VendorId, operation: "check-updates" | "uninstall"): Promise<void> => {
     const driverId = asDriver(vendor);
+    if (pending.has(driverId)) throw new Error("上次升级或退回的结果待确认，请先读回结果。");
+    syncPending(driverId, await status(driverId));
     if (pending.has(driverId)) throw new Error("上次升级或退回的结果待确认，请先读回结果。");
     const reply = await design37ManagedCliAction({ driverId, requestId: `ui-${crypto.randomUUID()}`, operation });
     if (!object(reply) || reply.schema !== "gogoke.37.managed-cli.v1" || reply.command !== operation || reply.driverId !== driverId) {
@@ -171,6 +226,7 @@ export function createManagedCliLifecycleSource(): InstancePageSource {
       const page = await base.read();
       const statuses = await Promise.all(drivers.map(status));
       for (const [index, driverId] of drivers.entries()) {
+        syncPending(driverId, statuses[index]);
         const section = page.sections.find((item) => item.vendor === driverId);
         if (section) section.cli = display(statuses[index], driverId);
       }
@@ -181,8 +237,23 @@ export function createManagedCliLifecycleSource(): InstancePageSource {
       rollbackCli: (vendor: VendorId) => switchCli(vendor, "rollback"),
       reconcileCli: async (vendor: VendorId) => {
         const driverId = asDriver(vendor);
+        const original = pending.get(driverId);
+        const fresh = await status(driverId);
+        syncPending(driverId, fresh);
         const intent = pending.get(driverId);
+        if (original && !intent) return;
         if (!intent) throw new Error("没有可读回的上次操作。");
+        if (fresh.pendingAction?.phase === "PROBING") {
+          throw new Error("原生探测结果仍未确定，请稍后读回原操作。");
+        }
+        if (intent.frame !== undefined && fresh.pendingAction && fresh.pendingAction.phase !== "PROBED") {
+          throw new Error("Native CLI pending phase differs from the prepared final frame.");
+        }
+        if (intent.frame === undefined) {
+          const prepared = await design37ManagedCliAction({ driverId, requestId: intent.requestId,
+            operation: intent.operation, targetVersion: intent.targetVersion });
+          intent.frame = validatePrepared(prepared, driverId, intent.operation, intent.requestId, intent.targetVersion);
+        }
         await finalSwitch(driverId, intent);
       },
       checkCliUpdates: (vendor: VendorId) => simple(vendor, "check-updates"),
