@@ -162,6 +162,10 @@ fn original_prepared_alias_bind_failure_aborts_exact_resume_child_and_preserves_
         assert!(format!("{error:?}").contains("exact prepared abort: Ok(true)"));
         assert_original_prepared_alias_abort(product);
         assert_eq!(runtime::observe_claim_bound(&product.connection, "projectA", "seatA", "sessionA").unwrap(), stopped);
+        let episode = health_control_rows(product,
+            "SELECT phase,raw_hex FROM main.gogoke_v37_h_process_episode WHERE request_id='prebind-failed-resume'");
+        assert_eq!(episode, vec![vec!["INTENT".to_owned(), hex(&resume.raw_bytes)]],
+            "original resume intention and bytes survive exact child abort");
         assert_eq!(health_control_rows(product,
             "SELECT state,stop_proof_hash FROM main.gogoke_coordination_process_custody WHERE state='STOPPED'"), old_proof);
     });
