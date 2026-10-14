@@ -115,12 +115,16 @@ fs.mkdirSync(evidenceDirectory);
 const result = path.join(evidenceDirectory, 'result.json');
 const { ActualProduct, id, delay } = await import(pathToFileURL(
   path.join(sourceRoot, 'tools', 'e2e', 'product-cdp.mjs')).href);
+const { createTemporaryHomeLifecycle } = await import(pathToFileURL(
+  path.join(sourceRoot, 'tools', 'e2e', 'installed-temporary-home-lifecycle.mjs')).href);
 const runConfig = { ...config, evidenceDirectory, result, testerArmy: true };
-const journal = { schema: 'gogoke.37.native-visible-e2e.v1',
+const journal = { schema: 'gogoke.37.native-visible-e2e.v1', caseId: id('g37VisibleCase'),
   sourceCommit: SOURCE, state: 'RUNNING', acceptance: false, agentActs: 0,
   baselineMetadata: { sha256: config.readyEvidence.sha256 },
   launches: [], closes: [], operations: [], sessions: [], ui: [], readbacks: [], snapshots: {} };
 const product = new ActualProduct(runConfig, journal);
+const homeLifecycle = createTemporaryHomeLifecycle(product,
+  path.join(evidenceDirectory, 'temporary-home-attempts.json'));
 let workspaceId = null;
 journal.driverBytes[path.basename(fileURLToPath(import.meta.url))] = digest(fileURLToPath(import.meta.url));
 product.save();
@@ -509,6 +513,7 @@ try {
   const session = { id: id('g37UserSession'), seatId: config.seatId,
     generation: (BigInt(card.result.generation) + 1n).toString(), revision: '0', cursor: '0', threadId: null };
   journal.sessions.push(session); product.save();
+  homeLifecycle.registerProducer(session, config.instanceId);
   await hOperation(session, 'admission-reserve', { seatId: config.seatId });
   await hOperation(session, 'admission-commit', { seatId: config.seatId });
   if (config.startupObservationMarker) fs.writeFileSync(config.startupObservationMarker, JSON.stringify({ state: 'BEFORE_ORIGINAL_OPEN', sourceCommit: SOURCE, sessionId: session.id, domainId: config.domainId, at: new Date().toISOString() }) + '\n');
@@ -655,12 +660,26 @@ try {
   await product.closeNormally();
   await snapshot('after'); // Product has normally exited after original H physical stop.
   compareSnapshots();
-  journal.state = 'EVIDENCE_READY_REQUIRES_REVIEW'; product.save();
+  if (homeLifecycle.applySharedClosedReadback(null)) {
+    journal.state = homeLifecycle.manifest.state === 'NO_HOME_CREATE_DISPATCHED'
+      ? 'EVIDENCE_READY_NO_HOME_CREATE_DISPATCHED_REQUIRES_REVIEW'
+      : 'EVIDENCE_READY_REQUIRES_REVIEW';
+  } else {
+    journal.state = 'CASE_TEARDOWN_INCOMPLETE'; process.exitCode = 1;
+  }
+  product.save();
 } catch (error) {
   journal.state = 'FAIL';
   journal.error = error instanceof Error ? (error.stack ?? error.message) : String(error);
   journal.hPhysicalStopReadback = hStopped;
   product.save();
+  if (homeLifecycle.manifest.attempts.length && product.socket?.readyState === WebSocket.OPEN) {
+    try { await homeLifecycle.beforeCaptionClose(); }
+    catch (teardownError) {
+      journal.temporaryHomeLifecycleError = String(teardownError.stack ?? teardownError);
+      product.save();
+    }
+  }
   if (product.child && product.child.exitCode === null) await product.preserveFailure();
   throw error;
 }

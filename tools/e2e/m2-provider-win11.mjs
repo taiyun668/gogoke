@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { ActualProduct, readJson, sha256, id, delay } from './product-cdp.mjs';
 import { captureProtection, compareProtection as compareSharedProtection, protectionSources } from './installed-protection-observation.mjs';
 import { readManagedSource } from './m2-provider-managed-source.mjs';
+import { createTemporaryHomeLifecycle } from './installed-temporary-home-lifecycle.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const drivers = ['claude', 'opencode', 'grok'];
@@ -85,6 +86,8 @@ const journal = { schema: 'gogoke.37.m2-provider-win11-e2e.v1', caseId: id('m2Pr
   notRun: drivers.filter(driverId => !config.cases.some(row => row.driverId === driverId))
     .map(driverId => ({ driverId, result: 'NOT_RUN_NOT_SELECTED_FOR_THIS_ORIGINAL_CASE' })) };
 const product = new ActualProduct(config, journal);
+const homeLifecycle = createTemporaryHomeLifecycle(product,
+  path.join(config.evidenceDirectory, 'temporary-home-attempts.json'));
 journal.protectionInstrument = protectionSources();
 journal.driverBytes['installed-protection-observation.mjs'] = journal.protectionInstrument.module.sha256;
 journal.driverBytes['installed-protection-fields.json'] = journal.protectionInstrument.fieldMap.sha256;
@@ -773,6 +776,7 @@ async function runCase(row, instances) {
     seatId: row.seatId, instanceId: row.instanceId, worktreeId: row.worktreeId,
     generation: (BigInt(seat.result.generation) + 1n).toString(), revision: '0', cursor: '0', events: [], turns: [] };
   record.sessionId = session.id; journal.sessions.push(session); product.save();
+  homeLifecycle.registerProducer(session, row.instanceId);
   for (const action of ['admission-reserve', 'admission-commit']) await sessionStep(session, action, { seatId: row.seatId });
   const opened = await sessionStep(session, 'open', { seatId: row.seatId,
     repositoryId: config.repositoryId, worktreeId: row.worktreeId });
@@ -967,6 +971,7 @@ async function readbackAndGolden() {
     journal.goldens.push({ driverId: record.driverId, file: path.basename(bundle), sha256: sha256(bundle),
       state: 'REVIEW_REQUIRED_ACCEPTANCE_NOT_ASSESSED' }); product.save();
   }
+  return facts;
 }
 
 const hEntries = (session, action) => journal.operations.filter(entry =>
@@ -1052,11 +1057,25 @@ try {
   await product.closeNormally();
   await snapshot('after');
   compareProtection();
-  await readbackAndGolden();
-  journal.state = 'REVIEW_REQUIRED'; journal.acceptance = false; product.save();
+  const finalFacts = await readbackAndGolden();
+  if (!homeLifecycle.applySharedClosedReadback(finalFacts)) {
+    journal.state = 'CASE_TEARDOWN_INCOMPLETE'; journal.acceptance = false; product.save();
+    process.exitCode = 1;
+  } else {
+    journal.state = homeLifecycle.manifest.state === 'NO_HOME_CREATE_DISPATCHED'
+      ? 'REVIEW_REQUIRED_NO_HOME_CREATE_DISPATCHED' : 'REVIEW_REQUIRED';
+    journal.acceptance = false; product.save();
+  }
 } catch (error) {
   journal.state = 'FAIL'; journal.error = String(error.stack ?? error);
   journal.currentEndpoint = product.endpoint ?? null; product.save(); process.exitCode = 1;
+  if (homeLifecycle.manifest.attempts.length && product.socket?.readyState === WebSocket.OPEN) {
+    try { await homeLifecycle.beforeCaptionClose(); }
+    catch (teardownError) {
+      journal.temporaryHomeLifecycleError = String(teardownError.stack ?? teardownError);
+      product.save();
+    }
+  }
   if (writeCases.length === 1) {
     const session = journal.sessions.find(row => row.id === journal.cases[0]?.sessionId);
     let settled = journal.closes.length === 1 && session && stoppedReleased(session);

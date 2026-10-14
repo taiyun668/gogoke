@@ -20,6 +20,7 @@ export class ActualProduct {
     journal.driverBytes = Object.fromEntries([
       'product-cdp.mjs', 'candidate-close-events.ps1', 'e2e-webview.mjs', 'm1-win11.mjs', 'candidate-custody.ps1',
       'm1-readback.py', 'package-lock.json', 'installed-lifecycle-observation.mjs',
+      'installed-temporary-home-lifecycle.mjs',
     ].map(relative => [relative, sha256(path.join(here, relative))]));
     journal.driverBytes['installed-lifecycle-observation.mjs'] = lifecycleSource().sha256;
     journal.nodeVersion = process.version;
@@ -176,10 +177,20 @@ export class ActualProduct {
       domainId: this.config.domainId, targetId, expectedRevision, payload };
     const rawFrame = JSON.stringify(request);
     const record = { request, rawFrame, startedAt: new Date().toISOString(), receipt: null };
+    this.temporaryHomeLifecycle?.beforeDispatch(record);
     this.journal.operations.push(record); this.save();
     // Persist once before writing. UNKNOWN/disconnect/timeout stops; no implicit resend.
-    const raw = await this.evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_design37_user_operation',{frame:${JSON.stringify(rawFrame)}})`);
+    let raw;
+    try {
+      raw = await this.evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_design37_user_operation',{frame:${JSON.stringify(rawFrame)}})`);
+    } catch (error) {
+      this.temporaryHomeLifecycle?.afterDispatchError(record, error);
+      this.save();
+      throw error;
+    }
     record.receipt = JSON.parse(raw); record.finishedAt = new Date().toISOString(); this.save();
+    this.temporaryHomeLifecycle?.afterReceipt(record);
+    this.save();
     if (record.receipt.requestId !== request.requestId || record.receipt.targetId !== targetId ||
         record.receipt.family !== family || record.receipt.operation !== operation || !allowed.includes(record.receipt.status)) {
       throw Error(`Original ${family}/${operation} result=${record.receipt.status}; inspect durable request, no replay`);
@@ -197,6 +208,8 @@ export class ActualProduct {
     this.journal.operations.push(observation); this.save();
     const raw = await this.evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_design37_user_operation',{frame:${JSON.stringify(record.rawFrame)}})`);
     observation.receipt = JSON.parse(raw); this.save();
+    this.temporaryHomeLifecycle?.afterReconciliation(record, observation);
+    this.save();
     if (observation.receipt.requestId !== record.request.requestId ||
         !['APPLIED', 'REPLAYED', 'UNKNOWN'].includes(observation.receipt.status)) {
       throw Error(`Original native reconciliation returned ${observation.receipt.status}`);
@@ -208,7 +221,20 @@ export class ActualProduct {
     if (receipt.status === 'STALE') receipt = await this.operation('K-SEAT', 'state-card', this.config.seatId, {}, receipt.revision);
     return receipt;
   }
-  async closeNormally() { return closeInstalledNormally(this); }
+  async closeNormally() {
+    if (this.temporaryHomeLifecycle?.manifest.attempts.length) {
+      try { await this.temporaryHomeLifecycle.beforeCaptionClose(); }
+      catch (error) {
+        this.journal.temporaryHomeLifecycle = {
+          manifest: this.temporaryHomeLifecycle.manifestPath,
+          state: 'CASE_TEARDOWN_INCOMPLETE',
+          error: String(error?.stack ?? error),
+        };
+        this.save();
+      }
+    }
+    return closeInstalledNormally(this);
+  }
   async preserveFailure() {
     // Retain the original task and child handle until Controller settles and
     // normally closes the real product. No kill, input replay or OS stop claim.
