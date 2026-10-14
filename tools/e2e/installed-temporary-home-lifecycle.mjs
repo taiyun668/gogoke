@@ -421,7 +421,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
           manifest: path.basename(manifestPath), state: manifest.state,
           independentSharedReadback: manifest.sharedReadback };
         product.save();
-        return true;
+        return unchanged;
       }
       const homes = facts?.temporaryHomes;
       const valid = Array.isArray(homes) && manifest.attempts.every(attempt => {

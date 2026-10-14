@@ -691,6 +691,9 @@ async function runCase(row, instances) {
   let businessError = null;
   let teardownJournalError = null;
   try {
+  // Sequence branches return from the business body. Keep those returns inside
+  // this body so the shared finally and the post-finally refusal still run.
+  await (async () => {
   const instance = instances.instances.find(value => value.instanceId === row.instanceId && value.driverId === row.driverId);
   // This one preserved Claude test instance predates managed CLI lifecycle
   // records. Its raw install_state is UNKNOWN, which the UI maps to ERROR.
@@ -924,6 +927,7 @@ async function runCase(row, instances) {
   record.stopFact = stopped.result.stopFact;
   await sessionStep(session, 'admission-release', { seatId: row.seatId });
   record.result = 'DIRECT_H_RECEIPT_A_READBACK_REQUIRED'; product.save();
+  })();
   } catch (error) {
     businessError = error;
   } finally {
