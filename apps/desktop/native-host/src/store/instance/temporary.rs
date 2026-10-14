@@ -7,6 +7,7 @@ use crate::root::{inspect_root, RootIdentity, RootLock};
 use crate::store::atomic::{AtomicError, Statement};
 use crate::store::digest::sha256_hex;
 use crate::store::same_open::{SameOpenError, VerifiedDatabaseConnection};
+use crate::store::authority::{check_owner_in_current_transaction, OwnerIssuer};
 use crate::store::session_transport::{verify_home_owner_in_transaction,
     verify_home_stop_in_transaction, fence_home_admission_in_transaction, AdmissionError};
 use std::fs::{self, OpenOptions};
@@ -63,6 +64,8 @@ pub(crate) enum TemporaryHomeError {
     Registry(RegistryError),
     Admission(AdmissionError),
     Isolation(IsolationError),
+    Owner(crate::store::orchestration::OrchestrationError),
+    ExactGone(crate::store::session_transport::ExactHomeGoneError),
 }
 impl From<io::Error> for TemporaryHomeError {
     fn from(error: io::Error) -> Self { Self::Io(error) }
@@ -81,6 +84,9 @@ impl From<AdmissionError> for TemporaryHomeError {
 }
 impl From<IsolationError> for TemporaryHomeError {
     fn from(error: IsolationError) -> Self { Self::Isolation(error) }
+}
+impl From<crate::store::session_transport::ExactHomeGoneError> for TemporaryHomeError {
+    fn from(error: crate::store::session_transport::ExactHomeGoneError) -> Self { Self::ExactGone(error) }
 }
 
 fn valid_id(value: &str) -> bool {
@@ -906,6 +912,367 @@ pub(crate) fn cleanup_temporary_home(connection: &mut VerifiedDatabaseConnection
     })
 }
 
+/// The authenticated USER bridge selects exactly one lookup key. Neither key
+/// is proof: the F/H/C original producer chain is reread below.
+#[derive(Clone, Copy)]
+pub(crate) enum UserTemporaryHomeSelector<'a> {
+    OriginalCreateRequestId(&'a str),
+    HistoricalHomeId(&'a str),
+}
+pub(crate) struct UserTemporaryHomeCloseInput<'a> {
+    pub(crate) request_id: &'a str,
+    pub(crate) request_bytes: &'a [u8],
+    pub(crate) instance_id: &'a str,
+    pub(crate) domain_id: &'a str,
+    pub(crate) session_id: &'a str,
+    pub(crate) expected_revision: i64,
+    pub(crate) selector: UserTemporaryHomeSelector<'a>,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct UserTemporaryHomeCloseReceipt {
+    pub(crate) disposition: &'static str,
+    pub(crate) home_id: String,
+    pub(crate) directory_ref: String,
+    pub(crate) native_receipt_id: String,
+    pub(crate) proof_kind: &'static str,
+    pub(crate) source_fingerprint: String,
+    pub(crate) before_revision: i64,
+    pub(crate) after_revision: i64,
+}
+
+fn decode_lower_hex(value: &str) -> Result<Vec<u8>, TemporaryHomeError> {
+    if value.is_empty() || value.len() % 2 != 0 || value.len() > 262_144
+        || !value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) {
+        return Err(TemporaryHomeError::Invalid("original create fingerprint"));
+    }
+    value.as_bytes().chunks_exact(2).map(|pair| {
+        let digit = |byte: u8| if byte.is_ascii_digit() { byte - b'0' } else { byte - b'a' + 10 };
+        Ok((digit(pair[0]) << 4) | digit(pair[1]))
+    }).collect()
+}
+
+fn create_request_from_fingerprint(value: &str) -> Result<Vec<u8>, TemporaryHomeError> {
+    let framed = decode_lower_hex(value)?;
+    let mut offset = 0usize;
+    let mut parts = Vec::with_capacity(9);
+    for _ in 0..9 {
+        let length_end = offset.checked_add(8).ok_or(TemporaryHomeError::Unknown)?;
+        let length_bytes: [u8; 8] = framed.get(offset..length_end)
+            .ok_or(TemporaryHomeError::Unknown)?.try_into()
+            .map_err(|_| TemporaryHomeError::Unknown)?;
+        let length = usize::try_from(u64::from_be_bytes(length_bytes))
+            .map_err(|_| TemporaryHomeError::Unknown)?;
+        offset = length_end;
+        let end = offset.checked_add(length).ok_or(TemporaryHomeError::Unknown)?;
+        parts.push(framed.get(offset..end).ok_or(TemporaryHomeError::Unknown)?);
+        offset = end;
+    }
+    if offset != framed.len() || parts[0] != b"temporary-create-detached"
+        || parts[1].is_empty() || parts[1].len() > 65_536 {
+        return Err(TemporaryHomeError::Unknown);
+    }
+    Ok(parts[1].to_vec())
+}
+
+fn original_create_source(connection: &VerifiedDatabaseConnection<'_>, home_id: &str,
+    row: &HomeRow, selector: &UserTemporaryHomeSelector<'_>, sid: &str)
+    -> Result<(String, String, String, String), TemporaryHomeError> {
+    let tag = b"temporary-create-detached";
+    let prefix = format!("{:016x}{}", tag.len(), hex(tag));
+    let query = Statement::prepare(connection.as_ptr(),
+        "SELECT request_id,request_hex,phase FROM main.gogoke_v37_instance_operations
+          WHERE target_id=?1")?;
+    query.bind_text(1, home_id)?;
+    let mut source = None;
+    while query.step_row()? {
+        let id = query.column_text(0)?;
+        let fingerprint = query.column_text(1)?;
+        let phase = query.column_text(2)?;
+        if fingerprint.starts_with(&prefix) {
+            if source.replace((id, fingerprint, phase)).is_some() {
+                return Err(TemporaryHomeError::HomeConflict);
+            }
+        }
+    }
+    let (operation_id, stored, phase) = source.ok_or(TemporaryHomeError::Unknown)?;
+    if phase != "APPLIED" { return Err(TemporaryHomeError::Unknown); }
+    let raw = create_request_from_fingerprint(&stored)?;
+    let request = crate::store::session_transport::decode_request(&raw)
+        .map_err(|_| TemporaryHomeError::Invalid("original create USER raw"))?;
+    let digest = sha256_hex(format!("{}\n{}", row.1, request.request_id).as_bytes());
+    if operation_id != format!("homeprep-{}", &digest[..40])
+        || request.domain_id != row.1 || request.target_id != row.3
+        || !matches!(request.operation.as_str(), "admission-reserve" | "open" | "resume") {
+        return Err(TemporaryHomeError::RequestConflict);
+    }
+    match selector {
+        UserTemporaryHomeSelector::OriginalCreateRequestId(id) if id == request.request_id.as_str() => {},
+        UserTemporaryHomeSelector::HistoricalHomeId(id) if id == home_id => {},
+        _ => return Err(TemporaryHomeError::RequestConflict),
+    }
+    let create = CreateTemporaryHome { request_id: &operation_id, request_bytes: &raw,
+        home_id, instance_id: &row.0, domain_id: &row.1, kind: TemporaryKind::Session,
+        owner_id: &row.3, generation: &row.4 };
+    if fingerprint(&create, sid) != stored { return Err(TemporaryHomeError::RequestConflict); }
+    // The F record contains original raw bytes, but cannot by itself assert
+    // that H admitted the same USER request. Require the exact H producer row.
+    let h = Statement::prepare(connection.as_ptr(),
+        "SELECT raw_hex FROM main.gogoke_v37_h_operation
+           WHERE domain_id=?1 AND request_id=?2 AND session_id=?3 AND operation=?4
+         UNION ALL
+         SELECT raw_hex FROM main.gogoke_v37_h_process_episode
+           WHERE domain_id=?1 AND request_id=?2 AND session_id=?3")?;
+    for (index, value) in [row.1.as_str(), request.request_id.as_str(), row.3.as_str(),
+        request.operation.as_str()].iter().enumerate() {
+        h.bind_text(index as i32 + 1, value)?;
+    }
+    let mut sources = 0;
+    while h.step_row()? {
+        if h.column_text(0)? != hex(&raw) { return Err(TemporaryHomeError::RequestConflict); }
+        sources += 1;
+        if sources > 2 { return Err(TemporaryHomeError::HomeConflict); }
+    }
+    if sources == 0 { return Err(TemporaryHomeError::StopFactUnavailable); }
+    Ok((operation_id, request.request_id, stored, sha256_hex(&raw)))
+}
+
+fn selected_user_request(input: &UserTemporaryHomeCloseInput<'_>)
+    -> Result<(), TemporaryHomeError> {
+    use crate::store::atomic::{Json, JsonString};
+    if !valid_id(input.request_id) || !valid_id(input.instance_id)
+        || !valid_id(input.domain_id) || !valid_id(input.session_id)
+        || input.expected_revision != 1 || input.request_bytes.is_empty()
+        || input.request_bytes.len() > 65_536 {
+        return Err(TemporaryHomeError::Invalid("temporary-home-close input"));
+    }
+    let request = crate::store::session_transport::decode_request(input.request_bytes)
+        .map_err(|_| TemporaryHomeError::Invalid("temporary-home-close frame"))?;
+    if request.family != "K-INSTANCE" || request.operation != "temporary-home-close"
+        || request.request_id != input.request_id || request.target_id != input.instance_id
+        || request.domain_id != input.domain_id || request.expected_revision != 1
+        || request.payload.len() != 2 {
+        return Err(TemporaryHomeError::RequestConflict);
+    }
+    let value = |name: &str| -> Option<String> {
+        match request.payload.get(&JsonString::from_str(name)) {
+            Some(Json::String(value)) => value.to_well_formed_string(), _ => None,
+        }
+    };
+    if value("sessionId").as_deref() != Some(input.session_id) {
+        return Err(TemporaryHomeError::RequestConflict);
+    }
+    let selected = match input.selector {
+        UserTemporaryHomeSelector::OriginalCreateRequestId(id) =>
+            value("originalCreateRequestId").as_deref() == Some(id)
+                && value("historicalHomeId").is_none() && valid_id(id),
+        UserTemporaryHomeSelector::HistoricalHomeId(id) =>
+            value("historicalHomeId").as_deref() == Some(id)
+                && value("originalCreateRequestId").is_none() && valid_id(id),
+    };
+    if !selected { return Err(TemporaryHomeError::RequestConflict); }
+    Ok(())
+}
+
+fn selected_home(connection: &VerifiedDatabaseConnection<'_>, input: &UserTemporaryHomeCloseInput<'_>)
+    -> Result<String, TemporaryHomeError> {
+    match input.selector {
+        UserTemporaryHomeSelector::HistoricalHomeId(id) => Ok(id.to_owned()),
+        UserTemporaryHomeSelector::OriginalCreateRequestId(id) => {
+            let digest = sha256_hex(format!("{}\n{}", input.domain_id, id).as_bytes());
+            let create_id = format!("homeprep-{}", &digest[..40]);
+            let selected = Statement::prepare(connection.as_ptr(),
+                "SELECT target_id FROM main.gogoke_v37_instance_operations WHERE request_id=?1")?;
+            selected.bind_text(1, &create_id)?;
+            if !selected.step_row()? { return Err(TemporaryHomeError::HomeConflict); }
+            let home = selected.column_text(0)?;
+            if selected.step_row()? { return Err(TemporaryHomeError::HomeConflict); }
+            Ok(home)
+        }
+    }
+}
+
+fn prior_stop_marker(connection: &VerifiedDatabaseConnection<'_>, home: &str,
+    row: &HomeRow) -> Result<bool, TemporaryHomeError> {
+    let query = Statement::prepare(connection.as_ptr(),
+        "SELECT COUNT(*) FROM main.gogoke_v37_h_process_episode e
+          LEFT JOIN main.gogoke_coordination_process_custody c
+            ON c.operation_id=e.process_operation_id
+          WHERE e.home_id=?1 AND e.instance_id=?2 AND e.domain_id=?3
+            AND e.session_id=?4 AND e.generation=?5
+            AND (e.phase='STOPPED' OR e.stop_fact_id IS NOT NULL
+              OR c.state='STOPPED' OR c.stop_proof_hash IS NOT NULL)")?;
+    for (index, value) in [home, &row.0, &row.1, &row.3, &row.4].iter().enumerate() {
+        query.bind_text(index as i32 + 1, value)?;
+    }
+    if !query.step_row()? { return Err(TemporaryHomeError::Unknown); }
+    Ok(query.column_text(0)? != "0")
+}
+
+fn original_stop_request(connection: &VerifiedDatabaseConnection<'_>, home: &str,
+    row: &HomeRow, stop_fact: &str) -> Result<String, TemporaryHomeError> {
+    let source = Statement::prepare(connection.as_ptr(),
+        "SELECT e.stop_request_id,o.raw_hex,o.status
+           FROM main.gogoke_v37_h_process_episode e
+           JOIN main.gogoke_v37_h_operation o ON o.domain_id=e.domain_id
+             AND o.request_id=e.stop_request_id AND o.session_id=e.session_id
+             AND o.operation='stop'
+          WHERE e.home_id=?1 AND e.instance_id=?2 AND e.domain_id=?3
+            AND e.session_id=?4 AND e.generation=?5 AND e.phase='STOPPED'
+            AND e.stop_fact_id=?6")?;
+    for (index, value) in [home, &row.0, &row.1, &row.3, &row.4, stop_fact]
+        .iter().enumerate() { source.bind_text(index as i32 + 1, value)?; }
+    if !source.step_row()? { return Err(TemporaryHomeError::StopFactUnavailable); }
+    let request_id = source.column_text(0)?;
+    let raw_hex = source.column_text(1)?;
+    let status = source.column_text(2)?;
+    if source.step_row()? || status != "APPLIED" || request_id.is_empty() {
+        return Err(TemporaryHomeError::StopFactUnavailable);
+    }
+    let raw = decode_lower_hex(&raw_hex)?;
+    let request = crate::store::session_transport::decode_request(&raw)
+        .map_err(|_| TemporaryHomeError::StopFactUnavailable)?;
+    if request.family != "K-SESSION" || request.operation != "stop"
+        || request.request_id != request_id || request.domain_id != row.1
+        || request.target_id != row.3 || hex(&raw) != raw_hex {
+        return Err(TemporaryHomeError::StopFactUnavailable);
+    }
+    Ok(sha256_hex(&raw))
+}
+
+/// Independently journaled F USER action. This leaves both the original H/C
+/// uncertainty and the physical HOME directory/marker untouched.
+pub(crate) fn close_user_temporary_home(connection: &mut VerifiedDatabaseConnection<'_>,
+    root: &RootLock, owner: &OwnerIssuer, input: &UserTemporaryHomeCloseInput<'_>)
+    -> Result<UserTemporaryHomeCloseReceipt, TemporaryHomeError> {
+    selected_user_request(input)?;
+    if connection.root_identity() != &root.canonical_root().identity {
+        return Err(TemporaryHomeError::IdentityChanged);
+    }
+    transaction(connection, |connection| {
+        check_owner_in_current_transaction(connection, owner).map_err(TemporaryHomeError::Owner)?;
+        let home_id = selected_home(connection, input)?;
+        if !valid_id(&home_id) { return Err(TemporaryHomeError::HomeConflict); }
+        let row = home_row(connection, &home_id)?.ok_or(TemporaryHomeError::HomeConflict)?;
+        if row.0 != input.instance_id || row.1 != input.domain_id || row.2 != "SESSION"
+            || row.3 != input.session_id || !valid_generation(&row.4) {
+            return Err(TemporaryHomeError::HomeConflict);
+        }
+        row_identity(&row, &home_id)?;
+        let suffix = home_id.strip_prefix("home-")
+            .ok_or(TemporaryHomeError::HomeConflict)?;
+        if suffix.len() != 40 || !suffix.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) {
+            return Err(TemporaryHomeError::HomeConflict);
+        }
+        let profile = AppContainerProfile::derive_for_revocation(&format!("Gogoke37.Session.{suffix}"))?;
+        let sid = profile.sid_identity()?;
+        let binding = verify_home_owner_in_transaction(connection, &row.0, &row.1,
+            &row.2, &row.3, &row.4)?;
+        if binding != format!("binding-{suffix}") {
+            return Err(TemporaryHomeError::HomeConflict);
+        }
+        let original_seat = Statement::prepare(connection.as_ptr(),
+            "SELECT seat_incarnation FROM main.gogoke_v37_h_process_episode
+              WHERE home_id=?1 AND instance_id=?2 AND domain_id=?3
+                AND session_id=?4 AND generation=?5 AND binding_id=?6")?;
+        for (index, value) in [&home_id, &row.0, &row.1, &row.3, &row.4, &binding]
+            .iter().enumerate() { original_seat.bind_text(index as i32 + 1, value)?; }
+        if !original_seat.step_row()? {
+            return Err(TemporaryHomeError::StopFactUnavailable);
+        }
+        let incarnation = original_seat.column_text(0)?;
+        if incarnation.is_empty() || original_seat.step_row()? {
+            return Err(TemporaryHomeError::HomeConflict);
+        }
+        let expected_suffix = sha256_hex(format!("{}\n{}\n{}\n{}\n{}",
+            root.canonical_root().identity.opaque(), row.1, row.3, incarnation, row.4).as_bytes());
+        if suffix != &expected_suffix[..40] { return Err(TemporaryHomeError::HomeConflict); }
+        drop(original_seat);
+        let (create_id, original_create_request_id, create_fingerprint, create_raw_sha256) =
+            original_create_source(connection, &home_id, &row, &input.selector, &sid)?;
+        let physical = match transition_stage(connection, root, &home_id, &row, &sid)? {
+            Some(DirectoryStage::Marked(identity, _)) if identity.opaque() == row.6 => identity,
+            _ => return Err(TemporaryHomeError::IdentityChanged),
+        };
+        let (proof_kind, proof_fingerprint) = match exact_stopped_home(connection, &home_id, &row) {
+            Ok(stop) => {
+                let stop_request_sha256 = original_stop_request(connection, &home_id, &row, &stop)?;
+                ("ORIGINAL_STOP", sha256_hex(format!(
+                    "home-stop-v1\n{home_id}\n{create_id}\n{create_raw_sha256}\n{stop_request_sha256}\n{stop}"
+                ).as_bytes()))
+            },
+            Err(TemporaryHomeError::StopFactUnavailable)
+            | Err(TemporaryHomeError::Admission(AdmissionError::Denied
+                | AdmissionError::Unknown | AdmissionError::Conflict | AdmissionError::Stale)) => {
+                // A damaged or contradictory StopFact never falls back to an
+                // absence proof. The original facts remain unchanged.
+                if prior_stop_marker(connection, &home_id, &row)? {
+                    return Err(TemporaryHomeError::StopFactUnavailable);
+                }
+                crate::store::session_transport::observe_exact_home_gone(
+                    connection, &home_id, &row.0, &row.1, &row.3, &row.4, &binding)?;
+                return Err(TemporaryHomeError::StopFactUnavailable);
+            },
+            Err(error) => return Err(error),
+        };
+        let source_fingerprint = sha256_hex(format!(
+            "temporary-home-close-v2\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            root.canonical_root().identity.opaque(), connection.identity().opaque(),
+            home_id, row.0, row.1, row.3, row.4, row.6, sid,
+            create_fingerprint, create_raw_sha256, proof_kind, proof_fingerprint
+        ).as_bytes());
+        let request = TransitionTemporaryHome { request_id: input.request_id,
+            request_bytes: input.request_bytes, home_id: &home_id,
+            expected_revision: input.expected_revision };
+        let request_hex = transition_fingerprint("temporary-home-close-v2", &request, &sid);
+        let stored_receipt = format!(
+            "{{\"schema\":\"gogoke.37.temporary-home-close.v2\",\"proofKind\":\"{proof_kind}\",\"sourceFingerprint\":\"{source_fingerprint}\",\"homeId\":\"{home_id}\",\"originalCreateRequestId\":\"{original_create_request_id}\",\"fCreateOperationId\":\"{create_id}\",\"beforeRevision\":1,\"afterRevision\":2}}"
+        );
+        if let Some((stored, target, phase, receipt_json)) =
+            transition_operation(connection, input.request_id)? {
+            if stored != request_hex || target != home_id {
+                return Err(TemporaryHomeError::RequestConflict);
+            }
+            if phase != "APPLIED" || row.7 != "CLOSED" || row.8 != "2"
+                || receipt_json != stored_receipt {
+                return Err(TemporaryHomeError::Unknown);
+            }
+            return Ok(UserTemporaryHomeCloseReceipt {
+                disposition: "REPLAYED", home_id, directory_ref: row.5,
+                native_receipt_id: row.6, proof_kind, source_fingerprint,
+                before_revision: 1, after_revision: 2,
+            });
+        }
+        if row.7 != "ACTIVE" || row.8 != "1" {
+            return Err(TemporaryHomeError::StaleRevision);
+        }
+        if physical.opaque() != row.6 { return Err(TemporaryHomeError::IdentityChanged); }
+        let insert = Statement::prepare(connection.as_ptr(),
+            "INSERT INTO main.gogoke_v37_instance_operations
+             (request_id,request_hex,target_id,phase,receipt_json)
+             VALUES(?1,?2,?3,'APPLIED',?4)")?;
+        for (index, value) in [input.request_id, &request_hex, &home_id, &stored_receipt]
+            .iter().enumerate() { insert.bind_text(index as i32 + 1, value)?; }
+        insert.step_done()?;
+        let update = Statement::prepare(connection.as_ptr(),
+            "UPDATE main.gogoke_v37_instance_homes SET state='CLOSED',revision=2
+               WHERE home_id=?1 AND instance_id=?2 AND domain_id=?3 AND kind='SESSION'
+                 AND owner_id=?4 AND generation=?5 AND directory_identity=?6
+                 AND state='ACTIVE' AND revision=1")?;
+        for (index, value) in [&home_id, &row.0, &row.1, &row.3, &row.4, &row.6]
+            .iter().enumerate() { update.bind_text(index as i32 + 1, value)?; }
+        update.step_done()?;
+        let changed = Statement::prepare(connection.as_ptr(), "SELECT changes()")?;
+        if !changed.step_row()? || changed.column_text(0)? != "1" {
+            return Err(TemporaryHomeError::StaleRevision);
+        }
+        Ok(UserTemporaryHomeCloseReceipt {
+            disposition: "APPLIED", home_id, directory_ref: row.5,
+            native_receipt_id: row.6, proof_kind, source_fingerprint,
+            before_revision: 1, after_revision: 2,
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1305,6 +1672,93 @@ mod tests {
             assert!(fence.step_row().unwrap());
             assert_eq!(fence.column_text(0).unwrap(), "0");
             assert!(directory(root, &first).exists());
+        });
+    }
+
+    #[test]
+    fn user_close_requires_original_h_stop_and_keeps_independent_f_receipt() {
+        fixture(|connection, root, _| {
+            let owner = crate::store::authority::initialize_profile(connection, root).unwrap();
+            let create_raw = br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"admission-reserve","requestId":"reserveUserA","targetId":"sessionA","domainId":"projectA","expectedRevision":"0","payload":{}}"#;
+            let stop_raw = br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"stop","requestId":"stopUserA","targetId":"sessionA","domainId":"projectA","expectedRevision":"1","payload":{}}"#;
+            let close_raw = br#"{"schema":"gogoke.37.operations.v1","family":"K-INSTANCE","operation":"temporary-home-close","requestId":"closeUserA","targetId":"instanceA","domainId":"projectA","expectedRevision":"1","payload":{"sessionId":"sessionA","originalCreateRequestId":"reserveUserA"}}"#;
+            let suffix = sha256_hex(format!("{}\nprojectA\nsessionA\nincA\n1",
+                root.canonical_root().identity.opaque()).as_bytes());
+            let suffix = &suffix[..40];
+            let home_id = format!("home-{suffix}");
+            let binding_id = format!("binding-{suffix}");
+            let prepare_hash = sha256_hex(b"projectA\nreserveUserA");
+            let prepare_id = format!("homeprep-{}", &prepare_hash[..40]);
+            connection.execute("BEGIN IMMEDIATE").unwrap();
+            let bind = Statement::prepare(connection.as_ptr(),
+                "UPDATE main.gogoke_v37_h_owner_binding SET binding_id=?1 WHERE binding_id='bindingA'").unwrap();
+            bind.bind_text(1, &binding_id).unwrap(); bind.step_done().unwrap();
+            connection.execute("COMMIT").unwrap();
+            let profile = AppContainerProfile::derived_for_test(&format!("Gogoke37.Session.{suffix}")).unwrap();
+            let create = CreateTemporaryHome { request_id: &prepare_id, request_bytes: create_raw,
+                home_id: &home_id, instance_id: "instanceA", domain_id: "projectA",
+                kind: TemporaryKind::Session, owner_id: "sessionA", generation: "1" };
+            create_temporary_home(connection, root, &profile, &create).unwrap();
+            connection.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) VALUES('processA','ticketA','nonceA','11','1','fixture-program','sha256:fixture','instanceA','projectA','1','STOPPED','proofA')").unwrap();
+            let insert = Statement::prepare(connection.as_ptr(),
+                "INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision,process_operation_id,stop_fact_id) VALUES('projectA','sessionA','instanceA',?1,?2,'1','STOPPED',1,'processA','proofA')").unwrap();
+            insert.bind_text(1, &home_id).unwrap(); insert.bind_text(2, &binding_id).unwrap();
+            insert.step_done().unwrap();
+            let episode = Statement::prepare(connection.as_ptr(),
+                "INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,result_revision,process_operation_id,instance_id,home_id,binding_id,seat_incarnation,stop_request_id,phase,stop_fact_id) VALUES('projectA','openUserA','sessionA','1',?1,0,1,'processA','instanceA',?2,?3,'incA','stopUserA','STOPPED','proofA')").unwrap();
+            episode.bind_text(1, &hex(br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"open","requestId":"openUserA","targetId":"sessionA","domainId":"projectA","expectedRevision":"1","payload":{}}"#)).unwrap();
+            episode.bind_text(2, &home_id).unwrap(); episode.bind_text(3, &binding_id).unwrap();
+            episode.step_done().unwrap();
+            connection.execute("INSERT INTO main.gogoke_v37_h_generation(domain_id,session_id,generation,request_id,process_operation_id) VALUES('projectA','sessionA','1','openUserA','processA')").unwrap();
+            for (id, raw, operation) in [("reserveUserA", create_raw.as_slice(), "admission-reserve"),
+                ("stopUserA", stop_raw.as_slice(), "stop")] {
+                let h = Statement::prepare(connection.as_ptr(),
+                    "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA',?1,?2,?3,'sessionA','APPLIED',0,1)").unwrap();
+                h.bind_text(1, id).unwrap(); h.bind_text(2, &hex(raw)).unwrap();
+                h.bind_text(3, operation).unwrap(); h.step_done().unwrap();
+            }
+            let close = UserTemporaryHomeCloseInput { request_id: "closeUserA",
+                request_bytes: close_raw, instance_id: "instanceA", domain_id: "projectA",
+                session_id: "sessionA", expected_revision: 1,
+                selector: UserTemporaryHomeSelector::OriginalCreateRequestId("reserveUserA") };
+            connection.execute("UPDATE main.gogoke_v37_h_operation SET raw_hex='00' WHERE request_id='reserveUserA'").unwrap();
+            assert!(matches!(close_user_temporary_home(connection, root, &owner, &close),
+                Err(TemporaryHomeError::RequestConflict)));
+            let original = Statement::prepare(connection.as_ptr(),
+                "UPDATE main.gogoke_v37_h_operation SET raw_hex=?1 WHERE request_id='reserveUserA'").unwrap();
+            original.bind_text(1, &hex(create_raw)).unwrap(); original.step_done().unwrap();
+            connection.execute("UPDATE main.gogoke_v37_h_operation SET raw_hex='00' WHERE request_id='stopUserA'").unwrap();
+            assert!(matches!(close_user_temporary_home(connection, root, &owner, &close),
+                Err(TemporaryHomeError::StopFactUnavailable)));
+            let repair = Statement::prepare(connection.as_ptr(),
+                "UPDATE main.gogoke_v37_h_operation SET raw_hex=?1 WHERE request_id='stopUserA'").unwrap();
+            repair.bind_text(1, &hex(stop_raw)).unwrap(); repair.step_done().unwrap();
+            connection.execute("UPDATE main.gogoke_v37_h_process_episode SET phase='ACTIVE',stop_fact_id=NULL WHERE request_id='openUserA'").unwrap();
+            connection.execute("UPDATE main.gogoke_coordination_process_custody SET state='UNKNOWN',stop_proof_hash=NULL WHERE operation_id='processA'").unwrap();
+            connection.execute("UPDATE main.gogoke_v37_h_claim SET state='COMMITTED',stop_fact_id=NULL WHERE session_id='sessionA'").unwrap();
+            assert!(matches!(close_user_temporary_home(connection, root, &owner, &close),
+                Err(TemporaryHomeError::ExactGone(
+                    crate::store::session_transport::ExactHomeGoneError::Missing(
+                        "complete original execution-set provenance")))));
+            assert_eq!(home_row(connection, &home_id).unwrap().unwrap().7, "ACTIVE");
+            connection.execute("UPDATE main.gogoke_v37_h_process_episode SET phase='STOPPED',stop_fact_id='proofA' WHERE request_id='openUserA'").unwrap();
+            connection.execute("UPDATE main.gogoke_coordination_process_custody SET state='STOPPED',stop_proof_hash='proofA' WHERE operation_id='processA'").unwrap();
+            connection.execute("UPDATE main.gogoke_v37_h_claim SET state='STOPPED',stop_fact_id='proofA' WHERE session_id='sessionA'").unwrap();
+            connection.execute("INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('otherDomain','otherUnknown','00','open','otherSession','UNKNOWN',0,0)").unwrap();
+            let applied = close_user_temporary_home(connection, root, &owner, &close).unwrap();
+            assert_eq!(applied.disposition, "APPLIED");
+            assert_eq!(applied.proof_kind, "ORIGINAL_STOP");
+            assert_eq!(applied.home_id, home_id);
+            assert_eq!(close_user_temporary_home(connection, root, &owner, &close).unwrap().disposition,
+                "REPLAYED");
+            let mut changed_raw = close_raw.to_vec();
+            changed_raw.push(b' ');
+            let changed = UserTemporaryHomeCloseInput { request_bytes: &changed_raw, ..close };
+            assert!(matches!(close_user_temporary_home(connection, root, &owner, &changed),
+                Err(TemporaryHomeError::RequestConflict)));
+            let row = home_row(connection, &home_id).unwrap().unwrap();
+            assert_eq!((row.7.as_str(), row.8.as_str()), ("CLOSED", "2"));
+            assert!(directory(root, &create).exists(), "logical close retains the original HOME");
         });
     }
 }

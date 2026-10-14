@@ -253,6 +253,7 @@ fn operation_admitted(family: &str, operation: &str) -> bool {
             "repin-after-manual-upgrade",
             "concurrency-input",
             "home-lifecycle",
+            "temporary-home-close",
         ],
         "K-WORKTREE" => &[
             "create",

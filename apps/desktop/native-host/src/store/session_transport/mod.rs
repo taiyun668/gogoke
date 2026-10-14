@@ -1,6 +1,7 @@
 //! Native-only Design 37 request framing. The existing Node service pipe stays unwired.
 mod wire;
 mod admission;
+mod temporary_home_close;
 mod dos_alias;
 pub(crate) mod session_binding;
 mod episodes;
@@ -55,6 +56,7 @@ pub(crate) use admission::{initialize_admission_schema, bind_owner_in_transactio
     record_generation_change_stop_in_transaction,
     revoke_owner_binding_in_transaction, AdmissionError, AdmissionRequest,
     AdmissionResult, OwnerBinding, TrustedLimits, recover_orphan_opencode_dos_alias};
+pub(crate) use temporary_home_close::{observe_exact_home_gone, ExactHomeGoneError};
 pub(crate) use episodes::{record_initial, mark_active, begin_resume,
     attach_resume_process, mark_resume_unknown, promote_resume,
     mark_stopped as mark_episode_stopped};
