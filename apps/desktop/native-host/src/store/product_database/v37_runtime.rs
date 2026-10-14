@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 thread_local! {
     static FAIL_AFTER_DURABLE_STOP_BEFORE_CREDENTIAL_REVOKE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static HISTORICAL_UNMATERIALIZED_CODEX_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_ORIGINAL_PREPARED_ALIAS_BIND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Reconstructs the old empty-thread source for existing recovery safety tests.
@@ -653,6 +654,37 @@ impl<'root> ProductDatabase<'root> {
         Ok((evidence,custody,model,effort))
     }
 
+    /// This seam is called only after this custodian prepared the suspended
+    /// child and before H attachment or activation. Failure must settle that
+    /// exact retained preparation, while leaving the original H/C/alias facts.
+    fn bind_original_prepared_alias(&mut self, key: &(String, String),
+        operation_id: &str, custody: &PreparedCustody) -> Result<()> {
+        let run = self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?;
+        if run.operation_id != operation_id || &run.custody != custody
+            || run.startup_observed.activate_started.is_some() {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        #[cfg(test)]
+        let injected = FAIL_ORIGINAL_PREPARED_ALIAS_BIND.with(|flag| flag.replace(false));
+        #[cfg(not(test))]
+        let injected = false;
+        let bound = if injected {
+            Err("injected original PREPARED alias binding failure".to_owned())
+        } else {
+            run.evidence.bind_opencode_process_custody(&mut self.connection, operation_id, custody)
+        };
+        match bound {
+            Ok(()) => Ok(()),
+            Err(original) => {
+                // abort_prepared verifies this custodian nonce, full identity
+                // and retained PREPARED ticket. Its bool is not a StopFact.
+                let abort = self.process_custodian.abort_prepared(custody);
+                Err(OrchestrationError::V37StoreFailure(format!(
+                    "native original PREPARED alias bind: {original}; exact prepared abort: {abort:?}")))
+            },
+        }
+    }
+
     fn reconcile_original_opencode_aliases(&mut self,domain:&str,session:&str)->Result<()> {
         let query=Statement::prepare(self.connection.as_ptr(),
             "SELECT generation FROM main.gogoke_v37_h_dos_alias
@@ -1090,8 +1122,7 @@ impl<'root> ProductDatabase<'root> {
             startup_observed:StartupObservationTimes::prepared_now(),
         });
         authority::record_prepared_process(&mut self.connection,&operation_id,&custody)?;
-        failure(self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?
-            .evidence.bind_opencode_process_custody(&mut self.connection,&operation_id,&custody))?;
+        self.bind_original_prepared_alias(&key, &operation_id, &custody)?;
         failure(self.connection.execute("BEGIN IMMEDIATE"))?;
         let attached=(|| -> Result<()> {
             authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
@@ -2459,8 +2490,7 @@ impl<'root> ProductDatabase<'root> {
             return Err(OrchestrationError::V37StoreFailure(format!(
                 "native open PREPARED record: {error:?}; abort: {abort:?}")));
         }
-        failure(self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?
-            .evidence.bind_opencode_process_custody(&mut self.connection,&operation_id,&custody))?;
+        self.bind_original_prepared_alias(&key, &operation_id, &custody)?;
         failure(self.connection.execute("BEGIN IMMEDIATE"))?;
         let bind = (|| -> Result<()> {
             authority::check_owner_in_current_transaction(&self.connection, &self.owner)?;

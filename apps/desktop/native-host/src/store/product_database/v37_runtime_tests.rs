@@ -15,6 +15,11 @@ fn health_control_product(driver:&str, run:impl FnOnce(&mut ProductDatabase<'_>)
 }
 
 fn health_control_product_fixture(driver:&str,retain_original:bool,run:impl FnOnce(&mut ProductDatabase<'_>)) {
+    health_control_product_prepared_fixture(driver, retain_original, false, run);
+}
+
+fn health_control_product_prepared_fixture(driver:&str,retain_original:bool,
+    fail_initial_alias_bind:bool,run:impl FnOnce(&mut ProductDatabase<'_>)) {
     let _guard=route_b_test_guard();
     let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
     let path=std::env::temp_dir().join(format!("gogoke-v37-health-control-{}-{stamp}",std::process::id()));
@@ -64,6 +69,17 @@ fn health_control_product_fixture(driver:&str,retain_original:bool,run:impl FnOn
     }
     let open=operation("K-SESSION","open","health-open","sessionA",2,
         r#"{"seatId":"seatA","generation":"2","repositoryId":"fixtureRepo","worktreeId":"treeA"}"#);
+    if fail_initial_alias_bind {
+        FAIL_ORIGINAL_PREPARED_ALIAS_BIND.with(|flag| assert!(!flag.replace(true)));
+        let original = product.dispatch_user_request(&open).expect_err("actual suspended child bind failure");
+        assert!(format!("{original:?}").contains("injected original PREPARED alias binding failure"));
+        assert!(format!("{original:?}").contains("exact prepared abort: Ok(true)"));
+        run(&mut product);
+        product.close_checked().unwrap();
+        drop(root);
+        std::fs::remove_dir_all(path).unwrap();
+        return;
+    }
     assert_eq!(h::decode_receipt(&product.dispatch_user_request(&open).unwrap()).unwrap().status,V37Status::Applied);
     run(&mut product);
     let claim=Statement::prepare(product.connection.as_ptr(),
@@ -98,6 +114,57 @@ fn health_control_rows(product:&ProductDatabase<'_>,sql:&str)->Vec<Vec<String>> 
     let row=Statement::prepare(product.connection.as_ptr(),sql).unwrap();let mut result=Vec::new();
     while row.step_row().unwrap() {result.push(vec![row.column_text(0).unwrap(),row.column_text(1).unwrap()]);}
     result
+}
+
+fn assert_original_prepared_alias_abort(product: &ProductDatabase<'_>) {
+    let key = ("projectA".to_owned(), "sessionA".to_owned());
+    let run = product.native_sessions.get(&key).expect("original NativeSession is retained");
+    assert!(run.startup_observed.activate_started.is_none());
+    assert!(run.stop_proof.is_none(), "abort never creates a StopFact");
+    crate::process::NativeProcessHoldersGone::observe(&[
+        (run.custody.identity.pid, run.custody.identity.creation_time_100ns)
+    ]).expect("the exact suspended child is gone before the authority closes");
+    let row = Statement::prepare(product.connection.as_ptr(),
+        "SELECT state,COALESCE(stop_proof_hash,'') FROM main.gogoke_coordination_process_custody WHERE operation_id=?1").unwrap();
+    row.bind_text(1, &run.operation_id).unwrap();
+    assert!(row.step_row().unwrap());
+    assert_eq!(row.column_text(0).unwrap(), "PREPARED", "original C history remains unchanged");
+    assert_eq!(row.column_text(1).unwrap(), "", "no StopProof is manufactured");
+    assert!(!row.step_row().unwrap());
+}
+
+#[test]
+fn original_prepared_alias_bind_failure_aborts_exact_open_child_without_stopfact() {
+    health_control_product_prepared_fixture("codex", false, true, |product| {
+        assert_original_prepared_alias_abort(product);
+        let original = health_control_rows(product,
+            "SELECT status,raw_hex FROM main.gogoke_v37_h_operation WHERE request_id='health-open'");
+        assert_eq!(original.len(), 1);
+        assert_eq!(original[0][0], "UNKNOWN", "original H result is not rewritten");
+    });
+}
+
+#[test]
+fn original_prepared_alias_bind_failure_aborts_exact_resume_child_and_preserves_old_stop() {
+    health_control_product("codex", |product| {
+        let claim = runtime::observe_claim_bound(&product.connection, "projectA", "seatA", "sessionA").unwrap();
+        let stop = operation("K-SESSION", "stop", "prebind-original-stop", "sessionA", claim.revision as u64,
+            &format!(r#"{{"seatId":"seatA","generation":"{}"}}"#, claim.generation));
+        assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap().status, V37Status::Applied);
+        let stopped = runtime::observe_claim_bound(&product.connection, "projectA", "seatA", "sessionA").unwrap();
+        let old_proof = health_control_rows(product,
+            "SELECT state,stop_proof_hash FROM main.gogoke_coordination_process_custody WHERE state='STOPPED'");
+        FAIL_ORIGINAL_PREPARED_ALIAS_BIND.with(|flag| assert!(!flag.replace(true)));
+        let resume = operation("K-SESSION", "resume", "prebind-failed-resume", "sessionA", stopped.revision as u64,
+            &format!(r#"{{"generation":"{}"}}"#, stopped.generation));
+        let error = product.dispatch_user_request(&resume).expect_err("original bind failure before attachment");
+        assert!(format!("{error:?}").contains("injected original PREPARED alias binding failure"));
+        assert!(format!("{error:?}").contains("exact prepared abort: Ok(true)"));
+        assert_original_prepared_alias_abort(product);
+        assert_eq!(runtime::observe_claim_bound(&product.connection, "projectA", "seatA", "sessionA").unwrap(), stopped);
+        assert_eq!(health_control_rows(product,
+            "SELECT state,stop_proof_hash FROM main.gogoke_coordination_process_custody WHERE state='STOPPED'"), old_proof);
+    });
 }
 
 fn original_codex_control_rpc(product:&ProductDatabase<'_>,operation:&str,step:&str)->(Vec<u8>,Vec<u8>) {

@@ -54,6 +54,83 @@ fn admission_status(error: &AdmissionError) -> V37Status {
 }
 
 impl<'root> ProductDatabase<'root> {
+    /// Independent F closure on the existing authenticated USER authority.
+    /// The two selectors are lookup keys only; F resolves the original raw
+    /// creation and H/C proof. No instance-global revision or stop side effect.
+    pub(super) fn close_user_temporary_home(&mut self, request: &V37Request) -> Result<Vec<u8>> {
+        use instance::{TemporaryHomeError, UserTemporaryHomeCloseInput,
+            UserTemporaryHomeSelector};
+        let refused = |status, reason: String| encode_receipt(request, status,
+            request.expected_revision, request.expected_revision,
+            BTreeMap::from([(JsonString::from_str("reason"), text(&reason))]));
+        let original_key = JsonString::from_str("originalCreateRequestId");
+        let historical_key = JsonString::from_str("historicalHomeId");
+        let original = request.payload.contains_key(&original_key);
+        let historical = request.payload.contains_key(&historical_key);
+        if request.family != "K-INSTANCE" || request.operation != "temporary-home-close"
+            || request.payload.len() != 2 || original == historical
+            || !request.payload.contains_key(&JsonString::from_str("sessionId")) {
+            return Ok(refused(V37Status::Denied, "temporary HOME close requires sessionId and exactly one original selector".into()));
+        }
+        let parsed = (|| -> Result<(String, String)> {
+            Ok((user_payload_string(request, "sessionId")?,
+                user_payload_string(request, if original { "originalCreateRequestId" }
+                    else { "historicalHomeId" })?))
+        })();
+        let (session_id, selected) = match parsed {
+            Ok(value) => value,
+            Err(error) => return Ok(refused(V37Status::Denied,
+                format!("temporary HOME close selector: {error:?}"))),
+        };
+        let expected_revision = match i64::try_from(request.expected_revision) {
+            Ok(value) => value,
+            Err(error) => return Ok(refused(V37Status::Stale,
+                format!("temporary HOME revision: {error}"))),
+        };
+        let selector = if original { UserTemporaryHomeSelector::OriginalCreateRequestId(&selected) }
+            else { UserTemporaryHomeSelector::HistoricalHomeId(&selected) };
+        let input = UserTemporaryHomeCloseInput {
+            request_id: &request.request_id, request_bytes: &request.raw_bytes,
+            instance_id: &request.target_id, domain_id: &request.domain_id,
+            session_id: &session_id, expected_revision, selector,
+        };
+        match instance::close_user_temporary_home(&mut self.connection, self.root, &self.owner, &input) {
+            Ok(receipt) => {
+                let status = match receipt.disposition {
+                    "APPLIED" => V37Status::Applied,
+                    "REPLAYED" => V37Status::Replayed,
+                    value => return Err(OrchestrationError::V37StoreFailure(format!(
+                        "native temporary HOME close disposition: {value}"))),
+                };
+                let before = u64::try_from(receipt.before_revision).map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!("native HOME before revision: {error}")))?;
+                let after = u64::try_from(receipt.after_revision).map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!("native HOME after revision: {error}")))?;
+                let result = BTreeMap::from([
+                    (JsonString::from_str("homeId"), text(&receipt.home_id)),
+                    (JsonString::from_str("directoryRef"), text(&receipt.directory_ref)),
+                    (JsonString::from_str("nativeReceiptId"), text(&receipt.native_receipt_id)),
+                    (JsonString::from_str("proofKind"), text(receipt.proof_kind)),
+                    (JsonString::from_str("sourceFingerprint"), text(&receipt.source_fingerprint)),
+                    (JsonString::from_str("state"), text("CLOSED")),
+                ]);
+                Ok(encode_receipt(request, status, before, after, result))
+            },
+            Err(error) => {
+                let status = match &error {
+                    TemporaryHomeError::RequestConflict | TemporaryHomeError::HomeConflict => V37Status::Conflict,
+                    TemporaryHomeError::StaleRevision => V37Status::Stale,
+                    TemporaryHomeError::Invalid(_) | TemporaryHomeError::InstanceChanged
+                    | TemporaryHomeError::IdentityChanged | TemporaryHomeError::StopFactUnavailable
+                    | TemporaryHomeError::ExactGone(_)
+                    | TemporaryHomeError::Owner(OrchestrationError::AccessDenied) => V37Status::Denied,
+                    _ => V37Status::Unknown,
+                };
+                Ok(refused(status, format!("native temporary HOME close: {error:?}")))
+            },
+        }
+    }
+
     fn require_one_active_secretary_claim(&self,session_id:&str,
         seat_id:&str,incarnation:&str)->Result<()> {
         let q=Statement::prepare(self.connection.as_ptr(),

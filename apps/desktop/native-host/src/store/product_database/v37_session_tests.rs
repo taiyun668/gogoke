@@ -17,6 +17,50 @@ fn worktree_request(id: &str, target: &str, domain: &str, seat_id: &str) -> V37R
 }
 
 #[test]
+fn temporary_home_close_user_boundary_rejects_caller_proof_and_ambiguous_selectors() {
+    let _guard = route_b_test_guard();
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path = std::env::temp_dir().join(format!("gogoke-home-close-user-{}-{nonce}", std::process::id()));
+    std::fs::create_dir(&path).unwrap();
+    let root = RootLock::acquire(&path).unwrap();
+    let mut product = ProductDatabase::open(&root, &path.join("state.sqlite")).unwrap();
+    let payloads = [
+        r#"{}"#,
+        r#"{"sessionId":"sessionA"}"#,
+        r#"{"sessionId":"sessionA","originalCreateRequestId":"createA","historicalHomeId":"homeA"}"#,
+        r#"{"sessionId":"sessionA","originalCreateRequestId":"createA","gone":true}"#,
+        r#"{"sessionId":"sessionA","historicalHomeId":"homeA","stopFactId":"claimed"}"#,
+        r#"{"sessionId":1,"originalCreateRequestId":"createA"}"#,
+        r#"{"sessionId":"sessionA","historicalHomeId":null}"#,
+        r#"{"sessionId":"sessionA","originalCreateRequestId":""}"#,
+        r#"{"originalCreateRequestId":"createA","unrelated":"sessionA"}"#,
+    ];
+    for (index, payload) in payloads.iter().enumerate() {
+        let raw = format!(r#"{{"schema":"gogoke.37.operations.v1","family":"K-INSTANCE","operation":"temporary-home-close","requestId":"close{index}","targetId":"instanceA","domainId":"projectA","expectedRevision":"1","payload":{payload}}}"#);
+        let request = decode_request(raw.as_bytes()).unwrap();
+        assert_eq!(status(&mut product, &request), V37Status::Denied,
+            "caller keys are not native source/proof: {payload}");
+    }
+    // A legal selector still has no authority without the actual original F
+    // creation. Neither a project nor global target may manufacture a HOME.
+    for (index, domain) in ["projectA", "global"].iter().enumerate() {
+        let raw = format!(r#"{{"schema":"gogoke.37.operations.v1","family":"K-INSTANCE","operation":"temporary-home-close","requestId":"missing{index}","targetId":"instanceA","domainId":"{domain}","expectedRevision":"1","payload":{{"sessionId":"sessionA","originalCreateRequestId":"missingCreate"}}}}"#);
+        let request = decode_request(raw.as_bytes()).unwrap();
+        let receipt = h::decode_receipt(&product.dispatch_user_request(&request).unwrap()).unwrap();
+        assert!(!matches!(receipt.status, V37Status::Applied | V37Status::Replayed));
+    }
+    for table in ["gogoke_v37_instance_homes", "gogoke_v37_instance_operations",
+        "gogoke_v37_h_claim", "gogoke_coordination_process_custody"] {
+        let query = Statement::prepare(product.connection.as_ptr(), &format!("SELECT COUNT(*) FROM main.{table}")).unwrap();
+        assert!(query.step_row().unwrap());
+        assert_eq!(query.column_text(0).unwrap(), "0", "refusal must leave {table} untouched");
+    }
+    product.close_checked().unwrap();
+    drop(root);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn global_secretary_cannot_be_selected_by_wire_role_or_unset_e() {
     let _guard=route_b_test_guard();
     let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
