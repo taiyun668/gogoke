@@ -2660,7 +2660,8 @@ mod tests {
             .expect("both distinct sessions and the retained pending stdin must qualify together");
         assert!(qualified.is_cold(),"a complete stopped family must produce COLD, not strict empty scope");
         assert_eq!(table_rows(&product,"SELECT session_id,generation FROM main.gogoke_v37_h_process_episode ORDER BY session_id",2),
-            vec![vec!["sessionA".into(),"1".into()],vec!["sessionB".into(),"3".into()]]);
+            vec![vec!["sessionA".to_owned(),"1".to_owned()],
+                vec!["sessionB".to_owned(),"3".to_owned()]]);
         let original_h=table_rows(&product,"SELECT session_id,phase,stop_request_id,stop_fact_id,raw_hex FROM main.gogoke_v37_h_process_episode ORDER BY session_id",5);
         let original_h_operations=table_rows(&product,"SELECT session_id,request_id,raw_hex,status,revision FROM main.gogoke_v37_h_operation ORDER BY session_id,request_id",5);
         let original_stdin=table_rows(&product,"SELECT request_id,request_hex,phase,ticket,custodian_nonce FROM main.gogoke_v37_h_stdin_journal ORDER BY request_id",5);
@@ -2670,6 +2671,8 @@ mod tests {
             ("C stop proof","UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash=NULL WHERE operation_id=?1",vec![operation_a.as_str()]),
             ("stdin raw","UPDATE main.gogoke_v37_h_stdin_journal SET request_hex='00' WHERE request_id='sendA'",vec![]),
             ("stdin nonce","UPDATE main.gogoke_v37_h_stdin_journal SET custodian_nonce='changed' WHERE request_id='sendA'",vec![]),
+            ("original native selection","UPDATE main.gogoke_v37_native_selection SET seat_authorization_generation=seat_authorization_generation+1 WHERE session_id='sessionA'",vec![]),
+            ("unattributed official image C","INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) SELECT operation_id||'-unowned',ticket||'-unowned',custodian_nonce||'-unowned',pid,creation_time_100ns,image_path,binary_digest_sha256,'unregistered-family-profile',domain_id,generation,'UNKNOWN',NULL FROM main.gogoke_coordination_process_custody WHERE operation_id=?1",vec![operation_a.as_str()]),
         ] {
             product.connection.execute("SAVEPOINT family_damage").unwrap();
             family_insert(&product,sql,&values);
@@ -2699,6 +2702,100 @@ mod tests {
         fs::remove_file(database).unwrap();
         fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).unwrap();
         fs::remove_dir_all(path).unwrap();
+    }
+
+    // Exercise the original F observation writer and native C stop writer for
+    // login-observe. The child is only the pinned --version
+    // process: this is a source/version guard, not a USER login execution.
+    fn login_observe_original_source_case() {
+        assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(),Ok("true"),
+            "official native source controls are cloud-only");
+        let driver="codex";
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!(
+            "gogoke-global-login-observe-{}-{nonce}",std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let database=path.join("state.sqlite");
+        let mut product=ProductDatabase::open(&root,&database).unwrap();
+        let (stage,image)=super::super::managed_cli_test_setup::prepared_image(&root,driver);
+        let begin=format!("{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"begin\",\"driverId\":\"{driver}\"}}");
+        managed_user(&mut product,&begin);
+        instance::record_managed_cli_stage(&mut product.connection,&root,&product.owner,
+            driver,&stage).unwrap();
+        let pin=instance::read_fixed_official_cli(driver).unwrap();
+        // As in the existing stopped-family control, the first PROBED version
+        // is an explicit fixed-pin seed. No unbound probe C is created/deleted.
+        instance::confirm_managed_cli_launch(&mut product.connection,&root,driver,
+            &stage,&format!("sha256:{}",pin.image_sha256),pin.version).unwrap();
+        let observed=instance::ProgramObservation::observe(&image,pin.version).unwrap();
+        instance::register_instance(&mut product.connection,&root,&instance::Registration {
+            request_id:"register-global-source",request_bytes:b"register-global-source",
+            instance_id:"instanceA",driver_id:driver,program:&observed,
+        }).unwrap();
+        family_insert(&product,"INSERT INTO main.gogoke_v37_instance_profiles(instance_id,display_name,enabled,revision) VALUES('instanceA','source control',1,1)",&[]);
+        let migrate=format!("{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"migrate\",\"driverId\":\"{driver}\",\"stageName\":\"{stage}\"}}");
+        managed_user(&mut product,&migrate);
+
+        let request_id="observeA";
+        let raw=b"{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-INSTANCE\",\"operation\":\"login-state\",\"requestId\":\"observeA\",\"targetId\":\"instanceA\",\"domainId\":\"global\",\"expectedRevision\":\"1\",\"payload\":{}}".to_vec();
+        let operation_id=format!("login-observe-{}",
+            &crate::store::digest::sha256_hex(&raw)[..40]);
+        let mut launch=ProcessLaunch::new(image);
+        launch.arguments=vec!["--version".into()];
+        launch.current_directory=Some(root.canonical_root().canonical_path.clone());
+        let prepared=product.process_custodian.prepare(&PrepareRequest {
+            launch,binding:NativeBinding {
+                binary_digest_sha256:format!("sha256:{}",pin.image_sha256),
+                profile_id:"instanceA".into(),domain_id:"global".into(),
+                generation:"1".into(),
+            },
+        }).unwrap();
+        authority::record_prepared_process(&mut product.connection,&operation_id,&prepared).unwrap();
+        product.process_custodian.activate(&prepared).unwrap();
+        authority::mark_process_active(&mut product.connection,&operation_id,&prepared).unwrap();
+        let proof=product.process_custodian.stop(&prepared.ticket,
+            StopBudgets::production(),||Ok(())).unwrap();
+        let revision=authority::mark_process_stopped(&mut product.connection,&operation_id,&proof).unwrap();
+        confirm_durable_test_stop(&mut product,&prepared,&proof,revision);
+        assert!(matches!(instance::record_observation(&mut product.connection,&root,
+            &instance::ObservationRequest {
+                request_id,request_bytes:&raw,instance_id:"instanceA",
+                expected_revision:1,observation:instance::InstanceObservation::LoggedOut,
+            }).unwrap(),instance::RegistrationDisposition::Applied),
+            "the original F writer must persist the observation frame and phase");
+        let original_f=table_rows(&product,&format!("SELECT request_hex,phase,receipt_json IS NULL,native_receipt_id IS NULL FROM main.gogoke_v37_instance_operations WHERE request_id='{request_id}'"),4);
+        assert_eq!(original_f.len(),1);
+        assert_eq!(&original_f[0][1..],
+            &["APPLIED".to_owned(),"1".to_owned(),"1".to_owned()]);
+        assert!(product.managed_version_action_resources(driver,None).unwrap().is_cold(),
+            "original F writer and stopped C must qualify together");
+        for (name,sql) in [
+            ("missing F source",format!("DELETE FROM main.gogoke_v37_instance_operations WHERE request_id='{request_id}'")),
+            ("changed F raw",format!("UPDATE main.gogoke_v37_instance_operations SET request_hex='00' WHERE request_id='{request_id}'")),
+            ("changed F phase",format!("UPDATE main.gogoke_v37_instance_operations SET phase='UNKNOWN' WHERE request_id='{request_id}'")),
+            ("invented F receipt",format!("UPDATE main.gogoke_v37_instance_operations SET receipt_json='{{}}' WHERE request_id='{request_id}'")),
+            ("invented native receipt",format!("UPDATE main.gogoke_v37_instance_operations SET native_receipt_id='changed' WHERE request_id='{request_id}'")),
+        ] {
+            product.connection.execute("SAVEPOINT global_source_damage").unwrap();
+            product.connection.execute(&sql).unwrap();
+            assert!(product.managed_version_action_resources(driver,None).is_err(),
+                "{name} must reject the same original family");
+            product.connection.execute("ROLLBACK TO global_source_damage").unwrap();
+            product.connection.execute("RELEASE global_source_damage").unwrap();
+            assert!(product.managed_version_action_resources(driver,None).unwrap().is_cold(),
+                "restoring {name} must restore qualification");
+        }
+        product.close_checked().unwrap();drop(root);
+        fs::remove_file(database).unwrap();
+        fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).unwrap();
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn original_global_login_observer_guards_f_source_and_native_c() {
+        let _guard=route_b_test_guard();
+        login_observe_original_source_case();
     }
 }
 impl<'a> ProductDatabase<'a> {
