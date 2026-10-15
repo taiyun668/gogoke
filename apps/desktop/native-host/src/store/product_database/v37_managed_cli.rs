@@ -983,11 +983,40 @@ mod tests {
         let home=original.column_text(1).unwrap();
         assert_eq!(original.column_text(2).unwrap(),"APPLIED");
         assert!(!original.step_row().unwrap());drop(original);
-        let original_before=table_rows(&product,
-            "SELECT request_id,request_hex,target_id,phase,COALESCE(native_receipt_id,'') FROM main.gogoke_v37_instance_operations WHERE target_id='legacyA' ORDER BY request_id",5);
         let instance_before=table_rows(&product,
             "SELECT instance_id,program_digest,version,home_identity,revision FROM main.gogoke_v37_instances WHERE instance_id='legacyA'",5);
         let frame=format!("{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"migrate-legacy-codex-source\",\"driverId\":\"codex\",\"requestId\":\"sourceMoveA\",\"targetId\":\"legacyA\",\"originalRequestId\":\"registerA\",\"originalRequestFingerprint\":\"{fingerprint}\",\"originalNativeReceiptHex\":\"{}\",\"originalHomeIdentity\":\"{home}\"}}",action_hex(home.as_bytes()));
+        let home_path=root.canonical_root().canonical_path.join("v37-instances").join("legacyA");
+        let home_identity=crate::root::inspect_root(&home_path).unwrap().identity;
+        let auth_path=home_path.join("auth.json");
+        fs::write(&auth_path,b"synthetic fixture source; never a real credential").unwrap();
+        // An unregistered physical source must not be made eligible by the
+        // original registration's UNKNOWN login state or missing F object.
+        assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err());
+        let (file_identity,links)=crate::process::CredentialBinding::observe_source_metadata(
+            &root,&auth_path,&home_identity).unwrap();
+        let custody=Statement::prepare(product.connection.as_ptr(),
+            "INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) VALUES('backendStopA','backendTicketA','backendNonceA','4294967295','1','synthetic.exe',?1,'legacyA','global','1','STOPPED','sha256:1111111111111111111111111111111111111111111111111111111111111111')").unwrap();
+        custody.bind_text(1,&observed_digest).unwrap();custody.step_done().unwrap();drop(custody);
+        // The backend journal is bound to the actual current program tuple
+        // and original stopped C source, not just a copied FILE enum.
+        instance::record_credential_backend(&mut product.connection,&instance::BackendSource {
+            request_id:"backendA".into(),instance_id:"legacyA".into(),
+            home_identity:home_identity.clone(),program_digest:observed_digest.clone(),
+            version:pin.version.into(),backend:instance::CredentialBackend::File,
+            startup_selector:instance::CredentialStartupSelector::FileBound,
+            operation_id:"backendStopA".into(),ticket:"backendTicketA".into(),
+            nonce:"backendNonceA".into(),generation:"1".into(),
+        }).unwrap();
+        let root_identity=product.connection.root_identity().clone();
+        instance::bind_credential_object(&mut product.connection,&instance::CredentialObjectInput {
+            request_id:"objectA".into(),instance_id:"legacyA".into(),
+            root_identity,
+            home_identity:home_identity.clone(),file_identity,source_parent_identity:home_identity,
+            observed_nlink:u64::from(links),expected_revision:0,rebind_from:None,
+        }).unwrap();
+        let original_before=table_rows(&product,
+            "SELECT request_id,request_hex,target_id,phase,COALESCE(native_receipt_id,'') FROM main.gogoke_v37_instance_operations ORDER BY request_id",5);
         assert!(product.dispatch_user_managed_cli(frame.replace(&fingerprint,"00").as_bytes()).is_err());
         assert!(product.dispatch_user_managed_cli(frame.replacen("}",",\"extra\":\"x\"}",1).as_bytes()).is_err());
         product.connection.execute("UPDATE main.gogoke_v37_instance_cli_copies SET stage_name='missing-stage' WHERE driver_id='codex'").unwrap();
@@ -998,12 +1027,23 @@ mod tests {
         product.connection.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state) VALUES('unsettledA','ticketA','nonceA','4294967295','1','synthetic.exe','sha256:0000000000000000000000000000000000000000000000000000000000000000','legacyA','global','1','UNKNOWN')").unwrap();
         assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err());
         product.connection.execute("DELETE FROM main.gogoke_coordination_process_custody WHERE operation_id='unsettledA'").unwrap();
+        product.connection.execute("INSERT INTO main.gogoke_v37_instance_homes(home_id,instance_id,domain_id,kind,owner_id,generation,state,revision) VALUES('temporaryA','legacyA','projectA','SESSION','sessionA','1','CLOSED',2)").unwrap();
+        product.connection.execute("INSERT INTO main.gogoke_v37_instance_operations(request_id,request_hex,target_id,phase) VALUES('pendingHomeA','pendingHomeA','temporaryA','PREPARING')").unwrap();
+        assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err());
+        product.connection.execute("DELETE FROM main.gogoke_v37_instance_operations WHERE request_id='pendingHomeA'").unwrap();
+        product.connection.execute("DELETE FROM main.gogoke_v37_instance_homes WHERE home_id='temporaryA'").unwrap();
+        let credential_target=format!("credential-instance-{}",crate::store::digest::sha256_hex(b"legacyA"));
+        let pending=Statement::prepare(product.connection.as_ptr(),
+            "INSERT INTO main.gogoke_v37_instance_operations(request_id,request_hex,target_id,phase) VALUES('pendingCredentialA','pendingCredentialA',?1,'PREPARING')").unwrap();
+        pending.bind_text(1,&credential_target).unwrap();pending.step_done().unwrap();drop(pending);
+        assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err());
+        product.connection.execute("DELETE FROM main.gogoke_v37_instance_operations WHERE request_id='pendingCredentialA'").unwrap();
         assert!(table_rows(&product,
             "SELECT request_id FROM main.gogoke_v37_instance_legacy_source_migrations",1).is_empty());
         let applied=product.dispatch_user_managed_cli(frame.as_bytes()).unwrap();
         assert!(String::from_utf8_lossy(&applied).contains("\"status\":\"APPLIED\""));
         assert_eq!(table_rows(&product,
-            "SELECT request_id,request_hex,target_id,phase,COALESCE(native_receipt_id,'') FROM main.gogoke_v37_instance_operations WHERE target_id='legacyA' ORDER BY request_id",5),original_before);
+            "SELECT request_id,request_hex,target_id,phase,COALESCE(native_receipt_id,'') FROM main.gogoke_v37_instance_operations ORDER BY request_id",5),original_before);
         assert_eq!(table_rows(&product,
             "SELECT instance_id,program_digest,version,home_identity,revision FROM main.gogoke_v37_instances WHERE instance_id='legacyA'",5),instance_before);
         assert_eq!(table_rows(&product,
@@ -1012,7 +1052,7 @@ mod tests {
                 pin.version.into(),home.clone(),"registerA".into(),"1".into()]]);
         assert_eq!(table_rows(&product,
             "SELECT request_id,phase FROM main.gogoke_v37_instance_legacy_source_migrations",2),
-            vec![vec!["sourceMoveA".into(),"APPLIED".into()]]);
+            vec![vec![String::from("sourceMoveA"),String::from("APPLIED")]]);
         assert_eq!(product.dispatch_user_managed_cli(frame.as_bytes()).unwrap(),applied);
         assert!(product.dispatch_user_managed_cli(format!(" {frame}").as_bytes()).is_err());
         assert!(product.dispatch_user_managed_cli(frame.replace("sourceMoveA","sourceMoveB").as_bytes()).is_err());
