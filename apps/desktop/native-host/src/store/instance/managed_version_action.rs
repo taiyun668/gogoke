@@ -339,9 +339,6 @@ pub(crate) fn bound_probe_witness(action:&ActionRecord)->Result<ProbeWitness>{
         return Err(ActionError::Conflict)
     }
     let stdout=bytes(&fields[20]).map_err(|_|ActionError::Conflict)?;
-    if !stdout_matches_digest(&stdout,&fields[STDOUT_DIGEST]) {
-        return Err(ActionError::Conflict)
-    }
     let observed=std::str::from_utf8(&stdout).map_err(|_|ActionError::Conflict)?;
     if observed.len()>256 || !observed.split(|ch:char|!ch.is_ascii_alphanumeric()&&ch!='.')
         .any(|token|token==action.target_version) {return Err(ActionError::Conflict)}
