@@ -2589,6 +2589,68 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
 
+    fn assert_original_history_creation_f_damage_refuses(product:&mut ProductDatabase<'_>,
+        operation:&str,begin:&str,action:Option<&instance::ActionRecord>,replay:Option<&[u8]>) {
+        let query=Statement::prepare(product.connection.as_ptr(),"SELECT request_hex,target_id,
+            phase,receipt_json IS NULL,COALESCE(native_receipt_id,''),native_receipt_id IS NULL
+            FROM main.gogoke_v37_instance_operations WHERE request_id=?1").unwrap();
+        query.bind_text(1,operation).unwrap();
+        assert!(query.step_row().unwrap());
+        let original=(query.column_text(0).unwrap(),query.column_text(1).unwrap(),
+            query.column_text(2).unwrap(),query.column_text(3).unwrap(),
+            query.column_text(4).unwrap(),query.column_text(5).unwrap());
+        assert!(!query.step_row().unwrap());drop(query);
+        assert_eq!(original.2,"APPLIED");
+        assert_eq!(original.3,"1");
+        assert_eq!(original.5,"0");
+        for damage in ["native receipt","request fingerprint","missing F"] {
+            assert!(!product.managed_version_action_resources("codex",action).unwrap().is_cold(),
+                "exact original creation F must qualify before {damage}");
+            match damage {
+                "native receipt"=>product.connection.execute(&format!(
+                    "UPDATE main.gogoke_v37_instance_operations SET native_receipt_id='wrong-native-receipt' WHERE request_id='{operation}'")).unwrap(),
+                "request fingerprint"=>product.connection.execute(&format!(
+                    "UPDATE main.gogoke_v37_instance_operations SET request_hex='wrong-fingerprint' WHERE request_id='{operation}'")).unwrap(),
+                _=>product.connection.execute(&format!(
+                    "DELETE FROM main.gogoke_v37_instance_operations WHERE request_id='{operation}'")).unwrap(),
+            }
+            assert!(product.managed_version_action_resources("codex",action).is_err(),
+                "{damage} must refuse qualification with all other sources intact");
+            let before=managed_snapshot(product);
+            let actions_before=table_rows(product,"SELECT request_id,phase,revision
+                FROM main.gogoke_v37_instance_version_actions ORDER BY request_id",3);
+            let history_before=table_rows(product,"SELECT history_id,state,revision,
+                directory_identity FROM main.gogoke_v37_instance_histories ORDER BY history_id",4);
+            assert!(product.dispatch_user_managed_cli(begin.as_bytes()).is_err(),
+                "{damage} must refuse public begin/replay");
+            assert_eq!(managed_snapshot(product),before,
+                "{damage} must not persist an action or alter history");
+            assert_eq!(table_rows(product,"SELECT request_id,phase,revision
+                FROM main.gogoke_v37_instance_version_actions ORDER BY request_id",3),actions_before);
+            assert_eq!(table_rows(product,"SELECT history_id,state,revision,
+                directory_identity FROM main.gogoke_v37_instance_histories ORDER BY history_id",4),
+                history_before);
+            if damage=="missing F" {
+                let restore=Statement::prepare(product.connection.as_ptr(),
+                    "INSERT INTO main.gogoke_v37_instance_operations
+                     (request_id,request_hex,target_id,phase,receipt_json,native_receipt_id)
+                     VALUES(?1,?2,?3,?4,NULL,?5)").unwrap();
+                for (index,value) in [operation,&original.0,&original.1,&original.2,&original.4]
+                    .iter().enumerate(){restore.bind_text(index as i32+1,value).unwrap();}
+                restore.step_done().unwrap();drop(restore);
+            } else {
+                let column=if damage=="native receipt" {"native_receipt_id"} else {"request_hex"};
+                let restore=Statement::prepare(product.connection.as_ptr(),&format!(
+                    "UPDATE main.gogoke_v37_instance_operations SET {column}=?1 WHERE request_id=?2")).unwrap();
+                restore.bind_text(1,if damage=="native receipt" {&original.4} else {&original.0}).unwrap();
+                restore.bind_text(2,operation).unwrap();restore.step_done().unwrap();drop(restore);
+            }
+            assert!(!product.managed_version_action_resources("codex",action).unwrap().is_cold(),
+                "exact creation F restoration must recover {damage} positive");
+            if let Some(expected)=replay {assert_eq!(managed_user(product,begin).as_slice(),expected);}
+        }
+    }
+
     #[test]
     fn real_codex_credential_history_source_requires_original_h_and_c() {
         let _guard=route_b_test_guard();
@@ -2720,6 +2782,11 @@ mod tests {
         assert!(!product.managed_version_action_resources("codex",None).unwrap().is_cold(),
             "bound original FHG, H episode and C qualify before action begin");
 
+        let begin=r#"{"schema":"gogoke.37.managed-cli.v1","command":"begin","driverId":"codex","targetVersion":"0.162.1","requestId":"history-upgrade","operation":"upgrade"}"#;
+        let creation_operation=format!("private-history-create-{}",history.generation.history_id);
+        assert_original_history_creation_f_damage_refuses(&mut product,&creation_operation,
+            begin,None,None);
+
         let source=table_rows(&product,&format!("SELECT process_operation_id,ticket,custodian_nonce
             FROM main.gogoke_v37_instance_history_generations WHERE binding_id='{binding_id}'"),3);
         assert_eq!(source.len(),1);
@@ -2739,11 +2806,12 @@ mod tests {
             restore.step_done().unwrap();drop(restore);
             assert!(!product.managed_version_action_resources("codex",None).unwrap().is_cold());
         }
-        let begin=r#"{"schema":"gogoke.37.managed-cli.v1","command":"begin","driverId":"codex","targetVersion":"0.162.1","requestId":"history-upgrade","operation":"upgrade"}"#;
         let replay=managed_user(&mut product,begin);
         let action=instance::read_version_action(&product.connection,&root,"history-upgrade")
             .unwrap().unwrap();
         assert_eq!(action.mode,"STRICT");
+        assert_original_history_creation_f_damage_refuses(&mut product,&creation_operation,
+            begin,Some(&action),Some(&replay));
         for (name,column) in [("ticket","ticket"),("nonce","custodian_nonce"),
             ("missing operation","process_operation_id")] {
             product.connection.execute(&format!("UPDATE main.gogoke_v37_instance_history_generations

@@ -420,8 +420,55 @@ fn credential_original_backend_c(db:&VerifiedDatabaseConnection<'_>,root:&RootLo
 // this reverse association; qualify every retained generation before either
 // action mode snapshots its credential data. A source-less prepared generation
 // remains source-less here and is never interpreted as a NoLaunch fact.
-fn credential_history_sources_clear(db:&VerifiedDatabaseConnection<'_>,instance:&str)
+fn original_private_history_creation_clear(db:&VerifiedDatabaseConnection<'_>,
+    root:&RootLock,instance:&str)->Result<(),ManagedCliError>{
+    let histories=rows(db,"SELECT history_id,root_identity,parent_identity,home_identity,
+        domain_id,session_id,seat_id,seat_incarnation,initial_binding_id,
+        initial_generation,initial_request_id,directory_ref,COALESCE(directory_identity,''),
+        state,revision,directory_identity IS NULL FROM main.gogoke_v37_instance_histories
+        WHERE instance_id=?1 ORDER BY history_id",instance,16)?;
+    for h in histories {
+        let initial=super::super::private_history::read_private_history_generation(
+            db,&h[8],&h[9]).map_err(|error|ManagedCliError::Observation(format!(
+                "original private-history initial generation: {error:?}")))?
+            .ok_or(ManagedCliError::Busy)?;
+        if initial.history_id!=h[0] || initial.instance_id!=instance ||
+            initial.domain_id!=h[4] || initial.session_id!=h[5] ||
+            initial.seat_id!=h[6] || initial.seat_incarnation!=h[7] ||
+            initial.binding_id!=h[8] || initial.generation!=h[9] ||
+            initial.request_id!=h[10] || initial.predecessor_binding_id.is_some() ||
+            h[11]!=format!("history-{}",h[0]) || h[12].is_empty() ||
+            h[13]!="READY" || h[14]!="1" || h[15]!="0" {
+            return Err(ManagedCliError::Busy)
+        }
+        // Reproduce create_initial_private_history's original framed request.
+        // The directory reader below independently checks these stored root,
+        // parent and HOME identities against the physical registered source.
+        let fingerprint=hex(&frame(&["private-history-create-v1".to_owned(),
+            h[1].clone(),h[2].clone(),h[3].clone(),instance.to_owned(),
+            h[4].clone(),h[5].clone(),h[6].clone(),h[7].clone(),
+            h[8].clone(),h[9].clone(),h[10].clone()]));
+        let id=sha256_hex(fingerprint.as_bytes());
+        if id!=h[0] {return Err(ManagedCliError::Busy)}
+        let operation=format!("private-history-create-{id}");
+        let f=rows(db,"SELECT request_id,request_hex,target_id,phase,COALESCE(native_receipt_id,''),
+            receipt_json IS NULL,native_receipt_id IS NULL
+            FROM main.gogoke_v37_instance_operations WHERE request_id=?1",
+            &operation,7)?;
+        if f.len()!=1 || f[0][0]!=operation || f[0][1]!=fingerprint ||
+            f[0][2]!=id || f[0][3]!="APPLIED" || f[0][4]!=h[12] ||
+            f[0][5]!="1" || f[0][6]!="0" {return Err(ManagedCliError::Busy)}
+        let physical=super::super::private_history::resolve_private_history_directory(
+            db,root,&id).map_err(|error|ManagedCliError::Observation(format!(
+                "original private-history creation directory: {error:?}")))?;
+        if physical.identity.opaque()!=f[0][4] {return Err(ManagedCliError::IdentityChanged)}
+    }
+    Ok(())
+}
+fn credential_history_sources_clear(db:&VerifiedDatabaseConnection<'_>,
+    root:&RootLock,instance:&str)
     ->Result<(),ManagedCliError>{
+    original_private_history_creation_clear(db,root,instance)?;
     let generations=rows(db,"SELECT g.binding_id,g.generation FROM
         main.gogoke_v37_instance_history_generations g JOIN main.gogoke_v37_instance_histories h
         ON h.history_id=g.history_id WHERE h.instance_id=?1 ORDER BY g.binding_id",instance,2)?;
@@ -554,7 +601,7 @@ fn credential_source(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&s
             .map_err(|error|ManagedCliError::Observation(format!(
                 "original credential registered HOME: {error:?}")))?;
         if home.identity.opaque()!=instance[1] {return Err(ManagedCliError::IdentityChanged)}
-        credential_history_sources_clear(db,id)?;
+        credential_history_sources_clear(db,root,id)?;
         let source=home.path.join("auth.json");
         let observed=match CredentialBinding::observe_source_metadata(
             root,&source,&home.identity) {
