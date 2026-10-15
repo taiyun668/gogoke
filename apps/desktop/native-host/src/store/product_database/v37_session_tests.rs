@@ -112,6 +112,22 @@ fn temporary_home_close_user_bridge_consumes_actual_native_claude_stop_without_m
     let open = frame("K-SESSION", "open", "homeProofOpen", "sessionA", "projectA", 2,
         r#"{"seatId":"seatA","generation":"2","repositoryId":"fixtureRepo","worktreeId":"treeA"}"#);
     assert_eq!(status(&mut product, &open), V37Status::Applied);
+    // This is the real USER bridge and original H/C producer. Its process was
+    // created during the current boot, so a kernel-cutoff HOME close must
+    // reach H's native fact and refuse before any F journal/effect is written.
+    let same_boot = frame("K-INSTANCE", "temporary-home-close", "homeProofSameBoot",
+        "instanceA", "projectA", 1,
+        r#"{"sessionId":"sessionA","originalCreateRequestId":"homeProofReserve"}"#);
+    let refused = h::decode_receipt(&product.dispatch_user_request(&same_boot).unwrap()).unwrap();
+    assert_eq!(refused.status, V37Status::Denied);
+    assert!(String::from_utf8_lossy(&refused.raw_bytes).contains("HolderCreatedThisBoot"),
+        "the qualified original source must reach the real kernel cutoff: {}",
+        String::from_utf8_lossy(&refused.raw_bytes));
+    let no_close = Statement::prepare(product.connection.as_ptr(),
+        "SELECT COUNT(*) FROM main.gogoke_v37_instance_operations WHERE request_id='homeProofSameBoot'").unwrap();
+    assert!(no_close.step_row().unwrap());
+    assert_eq!(no_close.column_text(0).unwrap(), "0");
+    drop(no_close);
     let stop = request("stop", "homeProofStop", "sessionA", "seatA", 3);
     let stopped = h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap();
     assert_eq!(stopped.status, V37Status::Applied);
