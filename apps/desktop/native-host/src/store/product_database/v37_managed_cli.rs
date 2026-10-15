@@ -964,6 +964,8 @@ mod tests {
             driver_id:"codex",program:&original_program,
         }).unwrap();
         let observed=instance::ProgramObservation::observe(&image,pin.version).unwrap();
+        let observed_digest=format!("sha256:{}",pin.image_sha256);
+        assert!(observed.matches_pin(&observed_digest,pin.version));
         let repin_raw=br#"{"schema":"gogoke.37.operations.v1","family":"K-INSTANCE","operation":"repin-after-manual-upgrade","requestId":"repinA","targetId":"legacyA","domainId":"global","expectedRevision":"1","payload":{}}"#;
         instance::repin_program(&mut product.connection,&root,&product.owner,
             &instance::ProgramRepin {request_id:"repinA",request_bytes:repin_raw,
@@ -1006,7 +1008,7 @@ mod tests {
             "SELECT instance_id,program_digest,version,home_identity,revision FROM main.gogoke_v37_instances WHERE instance_id='legacyA'",5),instance_before);
         assert_eq!(table_rows(&product,
             "SELECT source,stage_name,program_digest,version,home_identity,registration_request_id,revision FROM main.gogoke_v37_instance_program_sources WHERE instance_id='legacyA'",7),
-            vec![vec!["MANAGED".into(),stage.clone(),observed.digest.clone(),
+            vec![vec!["MANAGED".into(),stage.clone(),observed_digest,
                 pin.version.into(),home.clone(),"registerA".into(),"1".into()]]);
         assert_eq!(table_rows(&product,
             "SELECT request_id,phase FROM main.gogoke_v37_instance_legacy_source_migrations",2),

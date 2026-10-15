@@ -547,7 +547,7 @@ mod tests {
 
     #[test]
     fn snapshot_sees_actual_row_and_revision_changes() {
-        fixture(|_, db| {
+        fixture(|_, mut db| {
             let before = database_snapshot(&db).unwrap();
             db.execute("INSERT INTO main.gogoke_v37_instances VALUES('oldA','codex','homeA','identityA','sha256:old','1','UNKNOWN','UNKNOWN',1)").unwrap();
             let after_insert = database_snapshot(&db).unwrap();
@@ -561,7 +561,7 @@ mod tests {
 
     #[test]
     fn applied_replay_reads_exact_source_and_original_receipt_only() {
-        fixture(|root, db| {
+        fixture(|root, mut db| {
             let home = super::super::home::prepare_persistent_home(root, "oldA").unwrap();
             let identity = home.identity.opaque();
             let raw = b"exact OWNER frame";
