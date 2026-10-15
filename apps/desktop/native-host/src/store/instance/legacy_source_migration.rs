@@ -860,10 +860,8 @@ fn qualify(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
         &source_identity, &[]).map_err(|error| fail("held physical credential source", error))?;
     let names = historical_profile_names(db, root, input.target_id, &home.identity)?;
     let provenance = sha256_hex(names.join("\n").as_bytes());
-    let fence = if legacy_fence_schema_present {
-        legacy_fence::read_legacy_fence(db, input.target_id)
-            .map_err(|error| fail("prior legacy ACL fence", error))?
-    } else { None };
+    let fence = legacy_fence::read_legacy_fence(db, input.target_id)
+        .map_err(|error| fail("prior legacy ACL fence", error))?;
     let inventory = if let Some(record) = &fence {
         if record.database_identity != db.identity().opaque()
             || record.root_identity != db.root_identity().opaque()
