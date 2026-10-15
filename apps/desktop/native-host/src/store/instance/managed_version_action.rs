@@ -381,7 +381,7 @@ fn valid_family_codec(driver:&str,source_hex:&str,pairs_hex:&str)->Result<()> {
                 matches!(source[25].as_str(),"PREPARED"|"ACTIVE"|"UNKNOWN"|"STOPPED") &&
                 matches!(source[26].as_str(),"PREPARED"|"ACTIVE"|"UNKNOWN"|"STOPPED") &&
                 (source[11]=="RECEIPTED" ||
-                    source[25]!="STOPPED" && source[26]!="STOPPED") &&
+                    (source[25]=="STOPPED")== (source[26]=="STOPPED")) &&
                 ((source[11]=="PREPARED" && source[17]=="1" && source[18]=="1" &&
                     source[19]=="1" && source[20]=="1") ||
                  (source[11]=="UNKNOWN" &&

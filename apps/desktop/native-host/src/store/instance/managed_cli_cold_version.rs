@@ -328,7 +328,8 @@ fn original_units(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
     let request=crate::store::session_transport::decode_request(&open_bytes)
         .map_err(|error|ManagedCliError::Observation(format!(
             "original H OPEN raw: {error:?}")))?;
-    if request.family!="K-SESSION" || request.operation!="open" ||
+    if !original_open_equations(&request,raw) ||
+        request.family!="K-SESSION" || request.operation!="open" ||
         request.request_id!=raw[5] || request.domain_id!=raw[2] ||
         request.target_id!=raw[3] || raw[38].is_empty() || raw[39].is_empty() {
         return Err(ManagedCliError::Busy)
@@ -700,11 +701,72 @@ fn original_global_observation(db:&VerifiedDatabaseConnection<'_>,row:&[String])
     Ok(sha256_hex(&frame(&fields)))
 }
 
+fn original_open_equations(request:&crate::store::session_transport::V37Request,
+    r:&[String])->bool {
+    let (Ok(before),Ok(after))=(r[11].parse::<u64>(),r[12].parse::<u64>()) else {
+        return false
+    };
+    if request.expected_revision!=before || r[11]!=before.to_string() ||
+        r[12]!=after.to_string() || r[32]!=r[11] || r[33]!=r[12] ||
+        !(match r[30].as_str() {
+            "APPLIED"=>before.checked_add(1)==Some(after),
+            // The original pre-launch UNKNOWN intention has not advanced.
+            "UNKNOWN"=>after==before || before.checked_add(1)==Some(after),
+            _=>false,
+        }) {return false}
+    if r[2]=="global" {return request.payload.is_empty()}
+    let field=|name:&str| match request.payload.get(&JsonString::from_str(name)) {
+        Some(Json::String(value))=>value.to_well_formed_string(),_=>None,
+    };
+    let formal=field("purpose").as_deref()==Some("FORMAL_REVIEW");
+    request.payload.len()==if formal{5}else{4} &&
+        field("generation").as_deref()==Some(r[4].as_str()) &&
+        field("seatId").as_deref()==Some(r[38].as_str()) &&
+        field("repositoryId").is_some_and(|value|!value.is_empty()) &&
+        field("worktreeId").is_some_and(|value|!value.is_empty())
+}
+
 fn verified_original_worktree(db:&VerifiedDatabaseConnection<'_>,
     request:&crate::store::session_transport::V37Request,
     instance:&str,domain:&str,seat:&str,incarnation:&str)
     ->Result<String,ManagedCliError>{
-    if domain=="global" {return Ok("global-native-selection".into())}
+    if domain=="global" {
+        // Native V2 selections and bindings are immutable per session. The
+        // physical H generation is independent of E authorization generation.
+        let q=Statement::prepare(db.as_ptr(),
+            "SELECT p.domain_id,p.session_id,p.seat_id,p.seat_incarnation,
+             CAST(p.seat_authorization_generation AS TEXT),p.selected_instance_id,'NATIVE_V2'
+             FROM main.gogoke_v37_native_selection p
+             JOIN main.gogoke_v37_session_binding_v2 v ON v.domain_id=p.domain_id
+               AND v.session_id=p.session_id AND v.seat_id=p.seat_id
+               AND v.seat_incarnation=p.seat_incarnation
+               AND v.seat_authorization_generation=p.seat_authorization_generation
+               AND v.selected_instance_id=p.selected_instance_id AND v.provenance='NATIVE_V2'
+             JOIN main.gogoke_v37_seat_secretary d ON d.domain_id=p.domain_id
+               AND d.seat_id=p.seat_id AND d.incarnation=p.seat_incarnation
+             WHERE p.domain_id='global' AND p.session_id=?1 AND p.seat_id=?2
+               AND p.seat_incarnation=?3 AND p.selected_instance_id=?4
+             UNION ALL
+             SELECT b.domain_id,b.session_id,b.seat_id,b.seat_incarnation,
+               b.generation,c.instance_id,'LEGACY_V1'
+             FROM main.gogoke_v37_h_seat_binding b
+             JOIN main.gogoke_v37_h_claim c ON c.domain_id=b.domain_id
+               AND c.session_id=b.session_id AND c.generation=b.generation
+             JOIN main.gogoke_v37_seat_secretary d ON d.domain_id=b.domain_id
+               AND d.seat_id=b.seat_id AND d.incarnation=b.seat_incarnation
+             WHERE b.domain_id='global' AND b.session_id=?1 AND b.seat_id=?2
+               AND b.seat_incarnation=?3 AND c.instance_id=?4
+               AND NOT EXISTS(SELECT 1 FROM main.gogoke_v37_native_selection n
+                   WHERE n.domain_id=b.domain_id AND n.session_id=b.session_id)")?;
+        for (n,value) in [request.target_id.as_str(),seat,incarnation,instance].iter().enumerate(){
+            q.bind_text(n as i32+1,value)?;
+        }
+        if !q.step_row()? {return Err(ManagedCliError::Busy)}
+        let values=(0..7).map(|n|q.column_text(n))
+            .collect::<std::result::Result<Vec<_>,_>>()?;
+        if q.step_row()? {return Err(ManagedCliError::Busy)}
+        return Ok(sha256_hex(&frame(&values)))
+    }
     let field=|name:&str| match request.payload.get(&JsonString::from_str(name)) {
         Some(Json::String(value))=>value.to_well_formed_string(),_=>None,
     };
@@ -1272,7 +1334,7 @@ fn original_stdin_sources(db:&VerifiedDatabaseConnection<'_>,driver:&str,
             r[7].is_empty() || r[8].is_empty() || r[7]!=r[20] || r[8]!=r[21] ||
             !matches!(r[24].as_str(),"PREPARED"|"ACTIVE"|"UNKNOWN"|"STOPPED") ||
             !matches!(r[25].as_str(),"PREPARED"|"ACTIVE"|"UNKNOWN"|"STOPPED") ||
-            (pending && (r[24]=="STOPPED" || r[25]=="STOPPED")) ||
+            (pending && ((r[24]=="STOPPED") != (r[25]=="STOPPED"))) ||
             (r[10]=="PREPARED" && !(r[16]=="1" && r[17]=="1" &&
                 r[18]=="1" && r[19]=="1")) ||
             (r[10]=="UNKNOWN" && !(
@@ -1811,6 +1873,38 @@ pub(crate) fn no_unsettled_managed_version_change_for_action_with_probe(
 mod source_image_selection_tests {
     use super::*;
     use std::time::{SystemTime,UNIX_EPOCH};
+
+    #[test]
+    fn original_open_equations_keep_pending_revision_and_bind_project_payload() {
+        let global=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"open","requestId":"openA","targetId":"sessionA","domainId":"global","expectedRevision":"2","payload":{}}"#;
+        let request=crate::store::session_transport::decode_request(global).unwrap();
+        let mut source=vec![String::new();40];
+        for (index,value) in [(2,"global"),(4,"1"),(11,"2"),(12,"2"),
+            (30,"UNKNOWN"),(32,"2"),(33,"2"),(38,"seatA")] {
+            source[index]=value.into();
+        }
+        assert!(original_open_equations(&request,&source),
+            "the original pending intention has not advanced its revision");
+        for (index,value) in [(11,"1"),(12,"3"),(32,"1"),(33,"3")] {
+            let mut changed=source.clone();changed[index]=value.into();
+            assert!(!original_open_equations(&request,&changed),
+                "original OPEN producer revision column {index} must bind");
+        }
+        source[30]="APPLIED".into();
+        assert!(!original_open_equations(&request,&source));
+        source[12]="3".into();source[33]="3".into();
+        assert!(original_open_equations(&request,&source));
+        let project=r#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"open","requestId":"openA","targetId":"sessionA","domainId":"projectA","expectedRevision":"2","payload":{"seatId":"seatA","generation":"1","repositoryId":"repoA","worktreeId":"treeA"}}"#;
+        source[2]="projectA".into();
+        let decode=|raw:&str|crate::store::session_transport::decode_request(raw.as_bytes()).unwrap();
+        assert!(original_open_equations(&decode(project),&source));
+        for raw in [project.replace("\"generation\":\"1\"","\"generation\":\"2\""),
+            project.replace("\"seatId\":\"seatA\"","\"seatId\":\"seatB\""),
+            project.replace("\"expectedRevision\":\"2\"","\"expectedRevision\":\"3\""),
+            project.replace("\"worktreeId\":\"treeA\"","\"worktreeId\":\"treeA\",\"extra\":\"x\"")] {
+            assert!(!original_open_equations(&decode(&raw),&source));
+        }
+    }
 
     #[test]
     fn old_image_stage_requires_canonical_catalog_path_under_owned_staging() {

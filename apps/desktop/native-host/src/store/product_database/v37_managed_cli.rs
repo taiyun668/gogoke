@@ -2491,6 +2491,215 @@ mod tests {
         drop(root);
         fs::remove_dir_all(path).unwrap();
     }
+
+    // These controls seed only the old H wire-operation metadata and the
+    // already-probed first copy. F HOME, H admission/episode, C identity and
+    // native StopProof still come from their production writers. In particular,
+    // a seeded H STOP row is not evidence that ProductDatabase ran a USER stop.
+    fn family_insert(product:&ProductDatabase<'_>,sql:&str,values:&[&str]) {
+        let row=Statement::prepare(product.connection.as_ptr(),sql).unwrap();
+        for (index,value) in values.iter().enumerate() {
+            row.bind_text(index as i32+1,value).unwrap();
+        }
+        row.step_done().unwrap();
+    }
+
+    fn stopped_official_family_member(product:&mut ProductDatabase<'_>,root:&RootLock,
+        image:&std::path::Path,tag:&str,pending_stdin:bool)->(String,String,String) {
+        use crate::store::session_transport as h;
+        let session=format!("session{tag}");
+        let seat="seatA".to_owned();
+        let incarnation="incA".to_owned();
+        let reserve_id=format!("reserve{tag}");
+        let commit_id=format!("commit{tag}");
+        let open_id=format!("open{tag}");
+        let stop_id=format!("stop{tag}");
+        let suffix=crate::store::digest::sha256_hex(format!("{}\nglobal\n{session}\n{incarnation}\n1",
+            root.canonical_root().identity.opaque()).as_bytes());
+        let suffix=&suffix[..40];
+        let home=format!("home-{suffix}");
+        let binding=format!("binding-{suffix}");
+        let profile=crate::process::AppContainerProfile::derive_for_revocation(
+            &format!("Gogoke37.Session.{suffix}")).unwrap();
+        if tag=="A" {
+            family_insert(product,"INSERT INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('global',?1,?2,'USER','LONG','instanceA','BUSY',1,1)",
+                &[&seat,&incarnation]);
+            family_insert(product,"INSERT INTO main.gogoke_v37_seat_secretary VALUES(1,'global',?1,?2,'family-designation','family-history-fixture')",
+                &[&seat,&incarnation]);
+        }
+        let reserve_raw=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"admission-reserve\",\"requestId\":\"{reserve_id}\",\"targetId\":\"{session}\",\"domainId\":\"global\",\"expectedRevision\":\"0\",\"payload\":{{}}}}");
+        let home_request=format!("homeprep-{}",&crate::store::digest::sha256_hex(
+            format!("global\n{reserve_id}").as_bytes())[..40]);
+        product.connection.execute("BEGIN IMMEDIATE").unwrap();
+        h::bind_owner_in_transaction(&mut product.connection,&h::OwnerBinding {
+            binding_id:&binding,instance_id:"instanceA",domain_id:"global",
+            kind:"SESSION",owner_id:&session,generation:"1"}).unwrap();
+        product.connection.execute("COMMIT").unwrap();
+        instance::create_temporary_home(&mut product.connection,root,&profile,
+            &instance::CreateTemporaryHome {request_id:&home_request,
+                request_bytes:reserve_raw.as_bytes(),home_id:&home,instance_id:"instanceA",
+                domain_id:"global",kind:instance::TemporaryKind::Session,
+                owner_id:&session,generation:"1"}).unwrap();
+        let selection=h::session_binding::SessionBinding {
+            domain_id:"global".into(),session_id:session.clone(),seat_id:seat.clone(),
+            seat_incarnation:incarnation.clone(),seat_authorization_generation:
+                crate::store::seat::get(&product.connection,"global",&seat)
+                    .unwrap().unwrap().generation,
+            selected_instance_id:"instanceA".into(),
+            provenance:h::session_binding::Provenance::NativeV2,
+        };
+        let reserve=h::AdmissionRequest {domain_id:"global",session_id:&session,
+            request_id:&reserve_id,raw_bytes:reserve_raw.as_bytes(),instance_id:"instanceA",
+            home_id:&home,generation:"1",expected_revision:0};
+        assert!(matches!(h::reserve_admission(&mut product.connection,&reserve,|db|{
+            h::session_binding::select_native_in_transaction(db,&selection)
+                .map_err(h::AdmissionError::Relationship)?;
+            Ok(h::TrustedLimits {project_parallel:4,instance_concurrency:4})
+        }).unwrap(),h::AdmissionResult::Applied(1)));
+        let commit_raw=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"admission-commit\",\"requestId\":\"{commit_id}\",\"targetId\":\"{session}\",\"domainId\":\"global\",\"expectedRevision\":\"1\",\"payload\":{{}}}}");
+        let commit=h::AdmissionRequest {domain_id:"global",session_id:&session,
+            request_id:&commit_id,raw_bytes:commit_raw.as_bytes(),instance_id:"instanceA",
+            home_id:&home,generation:"1",expected_revision:1};
+        assert!(matches!(h::commit_admission(&mut product.connection,&commit,|_|Ok(())).unwrap(),
+            h::AdmissionResult::Applied(2)));
+        let open_raw=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"open\",\"requestId\":\"{open_id}\",\"targetId\":\"{session}\",\"domainId\":\"global\",\"expectedRevision\":\"2\",\"payload\":{{}}}}");
+        let operation=format!("h-open-{}",&crate::store::digest::sha256_hex(open_raw.as_bytes())[..40]);
+        let open_hex=action_hex(open_raw.as_bytes());
+        family_insert(product,"INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('global',?1,?2,'open',?3,'UNKNOWN',2,2)",
+            &[&open_id,&open_hex,&session]);
+        let pin=instance::read_fixed_official_cli("opencode").unwrap();
+        let mut launch=ProcessLaunch::new(image.to_path_buf());
+        launch.arguments=vec!["--version".into()];
+        launch.current_directory=Some(root.canonical_root().canonical_path.clone());
+        let prepared=product.process_custodian.prepare(&PrepareRequest {launch,binding:NativeBinding {
+            binary_digest_sha256:format!("sha256:{}",pin.image_sha256),
+            profile_id:"instanceA".into(),domain_id:"global".into(),generation:"1".into(),
+        }}).unwrap();
+        authority::record_prepared_process(&mut product.connection,&operation,&prepared).unwrap();
+        product.connection.execute("BEGIN IMMEDIATE").unwrap();
+        h::bind_process_operation_in_transaction(&mut product.connection,"global",&session,&operation).unwrap();
+        h::record_initial(&product.connection,"global",&session,&open_id,&operation).unwrap();
+        h::session_binding::insert_native_in_transaction(&product.connection,&selection).unwrap();
+        product.connection.execute("COMMIT").unwrap();
+        product.process_custodian.activate(&prepared).unwrap();
+        authority::mark_process_active(&mut product.connection,&operation,&prepared).unwrap();
+        family_insert(product,"UPDATE main.gogoke_v37_h_operation SET status='APPLIED',revision=3 WHERE domain_id='global' AND request_id=?1 AND status='UNKNOWN' AND previous_revision=2 AND revision=2",
+            &[&open_id]);
+        h::mark_active(&product.connection,&operation).unwrap();
+        // Seed the completed OPEN's H claim revision before the original stdin
+        // prepare; the later native STOP remains a distinct transition to 4.
+        family_insert(product,"UPDATE main.gogoke_v37_h_claim SET revision=3 WHERE domain_id='global' AND session_id=?1 AND revision=2",
+            &[&session]);
+        if pending_stdin {
+            let send_raw=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"send\",\"requestId\":\"send{tag}\",\"targetId\":\"{session}\",\"domainId\":\"global\",\"expectedRevision\":\"3\",\"payload\":{{\"generation\":\"1\",\"body\":\"retained intent only\"}}}}\n");
+            h::prepare_stdin_request(&mut product.connection,&h::StdinRequest {
+                domain_id:"global",session_id:&session,ticket:prepared.ticket.opaque(),
+                generation:"1",request_bytes:send_raw.as_bytes(),
+            }).unwrap();
+        }
+        let stop_raw=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"stop\",\"requestId\":\"{stop_id}\",\"targetId\":\"{session}\",\"domainId\":\"global\",\"expectedRevision\":\"3\",\"payload\":{{\"seatId\":\"{seat}\",\"generation\":\"1\"}}}}");
+        let stop_hex=action_hex(stop_raw.as_bytes());
+        family_insert(product,"INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('global',?1,?2,'stop',?3,'APPLIED',3,4)",
+            &[&stop_id,&stop_hex,&session]);
+        family_insert(product,"UPDATE main.gogoke_v37_h_process_episode SET stop_request_id=?1 WHERE process_operation_id=?2",
+            &[&stop_id,&operation]);
+        let proof=product.process_custodian.stop(&prepared.ticket,StopBudgets::production(),||Ok(())).unwrap();
+        let revision=authority::mark_process_stopped(&mut product.connection,&operation,&proof).unwrap();
+        product.connection.execute("BEGIN IMMEDIATE").unwrap();
+        let stored=h::record_session_stop_in_transaction(&mut product.connection,"global",&session,&operation).unwrap();
+        product.connection.execute("COMMIT").unwrap();
+        assert_eq!(stored,proof.proof_hash());
+        confirm_durable_test_stop(product,&prepared,&proof,revision);
+        (home,operation,session)
+    }
+
+    #[test]
+    fn original_stopped_family_with_pending_stdin_reaches_bound_user_action() {
+        assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(),Ok("true"),
+            "official family and native stop controls are cloud-only");
+        let _guard=route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("gogoke-family-stop-{}-{nonce}",std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let database=path.join("state.sqlite");
+        let mut product=ProductDatabase::open(&root,&database).unwrap();
+        let (source_stage,image)=super::super::managed_cli_test_setup::prepared_image(&root,"opencode");
+        // This first-copy PROBED state is an explicit fixture seed. F's actual
+        // stage/confirm/switch writers and official bytes are used, but the
+        // first version string is supplied from the fixed pin, not H stdout.
+        default_begin(&mut product,&root);
+        instance::record_managed_cli_stage(&mut product.connection,&root,&product.owner,
+            "opencode",&source_stage).unwrap();
+        let pin=instance::read_fixed_official_cli("opencode").unwrap();
+        instance::confirm_managed_cli_launch(&mut product.connection,&root,"opencode",
+            &source_stage,&format!("sha256:{}",pin.image_sha256),pin.version).unwrap();
+        let observed=instance::ProgramObservation::observe(&image,pin.version).unwrap();
+        instance::register_instance(&mut product.connection,&root,&instance::Registration {
+            request_id:"register-family",request_bytes:b"register-family",instance_id:"instanceA",
+            driver_id:"opencode",program:&observed,
+        }).unwrap();
+        family_insert(&product,"INSERT INTO main.gogoke_v37_instance_profiles(instance_id,display_name,enabled,revision) VALUES('instanceA','instanceA',1,1)",&[]);
+        let migrate=format!("{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"migrate\",\"driverId\":\"opencode\",\"stageName\":\"{source_stage}\"}}");
+        managed_user(&mut product,&migrate);
+        let (home_a,operation_a,_)=stopped_official_family_member(&mut product,&root,&image,"A",true);
+        // A genuine Secretary cannot acquire a sibling until the earlier H
+        // claim is RELEASED. Keep its original HOME, pending stdin and STOP.
+        let release_raw=b"{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"admission-release\",\"requestId\":\"releaseA\",\"targetId\":\"sessionA\",\"domainId\":\"global\",\"expectedRevision\":\"4\",\"payload\":{}}";
+        assert!(matches!(crate::store::session_transport::release_admission(
+            &mut product.connection,&crate::store::session_transport::AdmissionRequest {
+                domain_id:"global",session_id:"sessionA",request_id:"releaseA",
+                raw_bytes:release_raw,instance_id:"instanceA",home_id:&home_a,
+                generation:"1",expected_revision:4},|_|Ok(())).unwrap(),
+            crate::store::session_transport::AdmissionResult::Applied(5)));
+        let seat=crate::store::seat::get(&product.connection,"global","seatA")
+            .unwrap().unwrap();
+        crate::store::seat::set_dispatch_state(&mut product.connection,&seat,true).unwrap();
+        let (_home_b,_operation_b,_)=stopped_official_family_member(&mut product,&root,&image,"B",false);
+        let qualified=product.managed_version_action_resources("opencode",None)
+            .expect("both distinct sessions and the retained pending stdin must qualify together");
+        assert!(qualified.is_cold(),"a complete stopped family must produce COLD, not strict empty scope");
+        assert_eq!(table_rows(&product,"SELECT session_id,generation FROM main.gogoke_v37_h_process_episode ORDER BY session_id",2),
+            vec![vec!["sessionA".into(),"1".into()],vec!["sessionB".into(),"1".into()]]);
+        let original_h=table_rows(&product,"SELECT session_id,phase,stop_request_id,stop_fact_id,raw_hex FROM main.gogoke_v37_h_process_episode ORDER BY session_id",5);
+        let original_h_operations=table_rows(&product,"SELECT session_id,request_id,raw_hex,status,revision FROM main.gogoke_v37_h_operation ORDER BY session_id,request_id",5);
+        let original_stdin=table_rows(&product,"SELECT request_id,request_hex,phase,ticket,custodian_nonce FROM main.gogoke_v37_h_stdin_journal ORDER BY request_id",5);
+        let original_c=table_rows(&product,"SELECT operation_id,state,stop_proof_hash FROM main.gogoke_coordination_process_custody WHERE profile_id='instanceA' ORDER BY operation_id",3);
+        for (name,sql,values) in [
+            ("F create receipt","UPDATE main.gogoke_v37_instance_operations SET native_receipt_id='changed' WHERE target_id=?1",vec![home_a.as_str()]),
+            ("C stop proof","UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash=NULL WHERE operation_id=?1",vec![operation_a.as_str()]),
+            ("stdin raw","UPDATE main.gogoke_v37_h_stdin_journal SET request_hex='00' WHERE request_id='sendA'",vec![]),
+            ("stdin nonce","UPDATE main.gogoke_v37_h_stdin_journal SET custodian_nonce='changed' WHERE request_id='sendA'",vec![]),
+        ] {
+            product.connection.execute("SAVEPOINT family_damage").unwrap();
+            family_insert(&product,sql,&values);
+            assert!(product.managed_version_action_resources("opencode",None).is_err(),
+                "{name} must independently refuse from the same positive family");
+            product.connection.execute("ROLLBACK TO family_damage").unwrap();
+            product.connection.execute("RELEASE family_damage").unwrap();
+            assert!(product.managed_version_action_resources("opencode",None).unwrap().is_cold(),
+                "restoring {name} must restore the same original family");
+        }
+        let (stage33,_)=real_opencode_version_stage(&root,"1.18.33");
+        let begin=r#"{"schema":"gogoke.37.managed-cli.v1","command":"begin","driverId":"opencode","targetVersion":"1.18.33","requestId":"family-upgrade","operation":"upgrade"}"#;
+        managed_user(&mut product,begin);
+        managed_user(&mut product,&version_frame("stage","1.18.33",Some(&stage33),Some("family-upgrade")));
+        managed_user(&mut product,&version_frame("probe","1.18.33",Some(&stage33),Some("family-upgrade")));
+        let copy=instance::read_managed_cli(&product.connection,&root,"opencode").unwrap().unwrap();
+        assert_eq!(copy.state,"PROBED","the target --version must be observed by the native probe");
+        let switch=format!("{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"upgrade\",\"driverId\":\"opencode\",\"targetVersion\":\"1.18.33\",\"requestId\":\"family-switch\",\"expectedRevision\":\"{}\"}}",copy.revision);
+        let (status,receipts)=receipt_set(&managed_user(&mut product,&switch));
+        assert_eq!(status,"APPLIED");assert_eq!(receipts.len(),1);
+        assert_eq!(table_rows(&product,"SELECT session_id,phase,stop_request_id,stop_fact_id,raw_hex FROM main.gogoke_v37_h_process_episode ORDER BY session_id",5),original_h);
+        assert_eq!(table_rows(&product,"SELECT session_id,request_id,raw_hex,status,revision FROM main.gogoke_v37_h_operation ORDER BY session_id,request_id",5),original_h_operations);
+        assert_eq!(table_rows(&product,"SELECT request_id,request_hex,phase,ticket,custodian_nonce FROM main.gogoke_v37_h_stdin_journal ORDER BY request_id",5),original_stdin);
+        assert_eq!(table_rows(&product,"SELECT operation_id,state,stop_proof_hash FROM main.gogoke_coordination_process_custody WHERE profile_id='instanceA' ORDER BY operation_id",3),original_c,
+            "the action must preserve the original two STOP facts and pending stdin");
+        product.close_checked().unwrap();drop(root);
+        fs::remove_file(database).unwrap();
+        fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).unwrap();
+        fs::remove_dir_all(path).unwrap();
+    }
 }
 impl<'a> ProductDatabase<'a> {
     fn managed_cli_failure(&mut self, driver: &str, state: &str, raw: String) -> OrchestrationError {
