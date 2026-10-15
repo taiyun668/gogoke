@@ -1528,7 +1528,7 @@ fn verified_stopped_resume_worktree(db:&VerifiedDatabaseConnection<'_>,
              FROM main.gogoke_v37_h_process_episode e
              WHERE e.instance_id=?1 AND e.domain_id=?2 AND e.session_id=?3
                AND e.generation=?4")?;
-        for (n,value) in [instance,domain,session,predecessor.as_str()].iter().enumerate(){
+        for (n,value) in [instance,domain,session,child.as_str()].iter().enumerate(){
             q.bind_text(n as i32+1,value)?;
         }
         if !q.step_row()? {return Err(ManagedCliError::Busy)}
