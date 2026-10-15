@@ -365,9 +365,21 @@ fn qualified_stopped_h(db: &VerifiedDatabaseConnection<'_>, operation: &str,
     if home.len()!=1 || home[0][0]!=expected_ref ||
         !home[0][1].starts_with("volume:") || !home[0][1].contains("/file:") ||
         !matches!(home[0][2].as_str(),"ACTIVE"|"CLOSED"|"CLEANED") { return Err(denied()); }
-    let home_source=temporary::validate_original_execution_home_source(db,&e[7],instance,
-        domain,&e[1],generation,&e[0],&request.operation)
-        .map_err(|error|fail("original F HOME create source",error))?;
+    let creation=rows(db,
+        "SELECT request_id,request_hex FROM main.gogoke_v37_instance_operations WHERE target_id=?1 AND phase='APPLIED' AND native_receipt_id=?2",
+        &[&e[7],&home[0][1]],2)?;
+    if creation.len()!=1 { return Err(denied()); }
+    let fields=unframe(&creation[0][1])?;
+    let preparation=sha256_hex(format!("{domain}\n{}",e[0]).as_bytes());
+    let expected_request=format!("homeprep-{}",&preparation[..40]);
+    if fields.len()!=9 || fields[0]!=b"temporary-create-detached" ||
+        creation[0][0]!=expected_request || fields[1]!=raw ||
+        fields[2]!=e[7].as_bytes() ||
+        fields[3]!=instance.as_bytes() || fields[4]!=domain.as_bytes() ||
+        fields[5]!=b"SESSION" || fields[6]!=e[1].as_bytes() ||
+        fields[7]!=generation.as_bytes() ||
+        !fields[8].starts_with(b"S-1-15-2-") { return Err(denied()); }
+    let home_source=sha256_hex(&fields[1]);
     let binding=rows(db,
         "SELECT state FROM main.gogoke_v37_h_owner_binding WHERE binding_id=?1 AND instance_id=?2 AND domain_id=?3 AND kind='SESSION' AND owner_id=?4 AND generation=?5",
         &[&e[8],instance,domain,&e[1],generation],1)?;
