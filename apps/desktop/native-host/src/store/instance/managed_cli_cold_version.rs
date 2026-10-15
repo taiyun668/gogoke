@@ -2846,9 +2846,12 @@ fn revalidate_version_action_at_fingerprints_inner(
             cold(db,root,driver,Some(action),live_probe)?,
         _=>return Err(ManagedCliError::Busy),
     };
-    if view.proof_family()!=action.proof_family || view.source_hex!=action.source_hex ||
-        view.source_digest!=action.source_digest || view.pairs_hex!=action.pairs_hex ||
-        view.pairs_digest!=action.pairs_digest {return Err(ManagedCliError::Busy);}
+    if view.proof_family()!=action.proof_family ||
+        view.proof_family()!="strict-source-v1" &&
+            (view.source_hex!=action.source_hex || view.source_digest!=action.source_digest) ||
+        view.pairs_hex!=action.pairs_hex || view.pairs_digest!=action.pairs_digest {
+        return Err(ManagedCliError::Busy);
+    }
     view.recheck_native()?;
     Ok(view)
 }
