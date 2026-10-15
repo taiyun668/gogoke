@@ -377,6 +377,41 @@ fn record_credential_physical(physical:&mut Vec<Vec<String>>,facts:&mut Vec<Stri
         .chain(std::iter::once(key)).chain(values).collect());
 }
 
+fn credential_original_backend_c(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
+    instance:&[String],home:&str,fields:&[String],verified:Option<&Vec<String>>)
+    ->Result<Vec<String>,ManagedCliError>{
+    if fields.len()!=12 || fields[0]!="credential-backend-v1" ||
+        fields[1]!=instance[0] || fields[2]!=home ||
+        !matches!(fields[5].as_str(),"FILE"|"OTHER"|"UNKNOWN") ||
+        !matches!(fields[6].as_str(),"FILE_BOUND"|"UNKNOWN") {
+        return Err(ManagedCliError::Busy)
+    }
+    let pin=original_catalog_pin("codex",&fields[3])?;
+    if fields[4]!=pin.version {return Err(ManagedCliError::Busy)}
+    // Multiple original requests can refer to one exact C. Its physical
+    // source is observed once in this qualification, never across calls.
+    let c=if let Some(original)=verified {vec![original.clone()]} else {rows(db,"SELECT operation_id,ticket,custodian_nonce,pid,
+        creation_time_100ns,image_path,binary_digest_sha256,profile_id,
+        domain_id,generation,state,COALESCE(stop_proof_hash,''),
+        stop_proof_hash IS NULL
+        FROM main.gogoke_coordination_process_custody WHERE operation_id=?1",&fields[8],13)?};
+    if c.len()!=1 || c[0][0]!=fields[8] || c[0][1]!=fields[9] || c[0][2]!=fields[10] ||
+        c[0][6]!=fields[3] || c[0][7]!=instance[0] || c[0][8]!="global" ||
+        c[0][9]!=fields[11] || c[0][10]!="STOPPED" ||
+        c[0][11].is_empty() || c[0][12]!="0" ||
+        c[0][3].parse::<u32>().ok().filter(|n|*n>0)
+            .is_none_or(|n|c[0][3]!=n.to_string()) ||
+        c[0][4].parse::<u64>().ok().filter(|n|*n>0)
+            .is_none_or(|n|c[0][4]!=n.to_string()) {
+        return Err(ManagedCliError::Busy)
+    }
+    if verified.is_none() {
+        verified_source_images(db,root,"codex",&instance[0],home,&instance[2],
+            &instance[3],&c[0][5],&c[0][6])?;
+    }
+    Ok(c.into_iter().next().ok_or(ManagedCliError::Busy)?)
+}
+
 /// Bind the original credential writer, the physical fixed source, and its
 /// complete known registry shape without comparing an old backend pin to the
 /// current instance version. No credential stream is read.
@@ -480,27 +515,28 @@ fn credential_source(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&s
             cb[10].clone()]));
         credential_f_applied(&operations,&backend_key,&backend_fingerprint,&target,
             "BACKEND_METADATA_RECORDED")?;
-        let c=rows(db,"SELECT operation_id,ticket,custodian_nonce,pid,
-            creation_time_100ns,image_path,binary_digest_sha256,profile_id,
-            domain_id,generation,state,COALESCE(stop_proof_hash,''),
-            stop_proof_hash IS NULL
-            FROM main.gogoke_coordination_process_custody WHERE operation_id=?1",&cb[7],13)?;
-        if c.len()!=1 || c[0][1]!=cb[8] || c[0][2]!=cb[9] ||
-            c[0][6]!=cb[2] || c[0][7]!=*id || c[0][8]!="global" ||
-            c[0][9]!=cb[10] || c[0][10]!="STOPPED" || c[0][11].is_empty() ||
-            c[0][12]!="0" ||
-            c[0][3].parse::<u32>().ok().filter(|n|*n>0)
-                .is_none_or(|n|c[0][3]!=n.to_string()) ||
-            c[0][4].parse::<u64>().ok().filter(|n|*n>0)
-                .is_none_or(|n|c[0][4]!=n.to_string()) {
-            return Err(ManagedCliError::Busy)
+        let mut original_backend_c=std::collections::BTreeMap::<String,
+            (Vec<String>,String,String)>::new();
+        for (operation,fields) in operations.iter().zip(&operation_inputs) {
+            if fields[0]!="credential-backend-v1" {continue}
+            let key=fields[8].clone();
+            let verified=original_backend_c.get(&key).map(|(c,_,_)|c);
+            let c=credential_original_backend_c(db,root,instance,
+                &home.identity.opaque(),fields,verified)?;
+            if let Some((earlier,_,_))=original_backend_c.get(&key) {
+                if earlier!=&c {return Err(ManagedCliError::Busy)}
+            } else {
+                original_backend_c.insert(key,(c,fields[7].clone(),operation[0].clone()));
+            }
         }
-        verified_source_images(db,root,"codex",id,&instance[1],&instance[2],
-            &instance[3],&c[0][5],&c[0][6])?;
-        if !backend_operations.insert(cb[7].clone()) {return Err(ManagedCliError::Busy)}
-        backend_c.push(std::iter::once("CREDENTIAL_BACKEND_C-v1".to_owned())
-            .chain(c[0].iter().cloned())
-            .chain([cb[6].clone(),backend_key.clone()]).collect());
+        if !original_backend_c.contains_key(&cb[7]) {return Err(ManagedCliError::Busy)}
+        for (operation,(c,request,key)) in original_backend_c {
+            if !backend_operations.insert(operation) {return Err(ManagedCliError::Busy)}
+            backend_c.push(std::iter::once("CREDENTIAL_BACKEND_C-v1".to_owned())
+                .chain(c.iter().cloned()).chain([request,key]).collect());
+            facts.push(hex(&frame(&std::iter::once("BACKEND_C".to_owned())
+                .chain(c.iter().cloned()).collect::<Vec<_>>())));
+        }
         let current_object=operations.iter().zip(&operation_inputs)
             .filter(|(_,fields)|fields[0]=="credential-object-v1" &&
                 fields[5]==object.file_identity.opaque() &&
@@ -629,8 +665,6 @@ fn credential_source(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&s
             ManagedCliError::Observation(format!(
                 "original credential complete alias set: {error:?}")))?;
         bindings.push((held,scopes));
-        facts.push(hex(&frame(&std::iter::once("BACKEND_C".to_owned())
-            .chain(c[0].iter().cloned()).collect::<Vec<_>>())));
         for operation in &operations {
             facts.push(hex(&frame(&std::iter::once("CREDENTIAL_F".to_owned())
                 .chain(operation.iter().cloned()).collect::<Vec<_>>())));

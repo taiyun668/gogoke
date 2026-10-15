@@ -1754,8 +1754,6 @@ mod tests {
     }
 
     fn real_official_version_stage(root:&RootLock,driver:&str,version:&str)->(String,PathBuf) {
-        assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(),Ok("true"),
-            "two-version official CLI fixture is cloud-only");
         let pin=instance::read_official_cli_version(driver,version).unwrap();
         let url=match (driver,version) {
             ("opencode","1.18.31"|"1.18.32"|"1.18.33")=>format!(
@@ -2147,8 +2145,6 @@ mod tests {
 
     #[test]
     fn real_codex_credential_origin_and_physical_absence_bind_strict_action() {
-        assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(),Ok("true"),
-            "fixed official Codex credential control is cloud-only");
         let _guard=route_b_test_guard();
         let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let path=std::env::temp_dir().join(format!(
@@ -2170,6 +2166,15 @@ mod tests {
         managed_user(&mut product,&migrate);
         let home=root.canonical_root().canonical_path.join("v37-instances").join("codexA");
         let home_identity=crate::root::inspect_root(&home).unwrap().identity;
+        let private_home=home.to_string_lossy().into_owned();
+        let private_environment=vec![
+            ("SystemRoot".into(),std::env::var("SystemRoot").unwrap()),
+            ("HOME".into(),private_home.clone()),
+            ("USERPROFILE".into(),private_home.clone()),
+            ("APPDATA".into(),private_home.clone()),
+            ("LOCALAPPDATA".into(),private_home.clone()),
+            ("CODEX_HOME".into(),private_home),
+        ];
         let auth=home.join("auth.json");
         assert!(!product.managed_version_action_resources("codex",None).unwrap().is_cold(),
             "the actual fixed auth NotFound is an explicit STRICT absence source");
@@ -2187,6 +2192,7 @@ mod tests {
         let mut launch=ProcessLaunch::new(image.clone());
         launch.arguments=vec!["--version".into()];
         launch.current_directory=Some(home.clone());
+        launch.environment=Some(private_environment.clone());
         let prepared=product.process_custodian.prepare(&PrepareRequest {launch,
             binding:NativeBinding {binary_digest_sha256:format!("sha256:{}",pin.image_sha256),
                 profile_id:"codexA".into(),domain_id:"global".into(),generation:"1".into()}}).unwrap();
@@ -2196,6 +2202,23 @@ mod tests {
         let proof=product.process_custodian.stop(&prepared.ticket,StopBudgets::production(),||Ok(())).unwrap();
         let revision=authority::mark_process_stopped(&mut product.connection,&operation,&proof).unwrap();
         confirm_durable_test_stop(&mut product,&prepared,&proof,revision);
+        // Retain legal configured observations before the usable backend.
+        // Their original C remains evidence; they do not qualify startup.
+        for (request,backend,startup_selector) in [
+            ("backend-config-unknown",instance::CredentialBackend::Unknown,
+                instance::CredentialStartupSelector::Unknown),
+            ("backend-config-other",instance::CredentialBackend::Other,
+                instance::CredentialStartupSelector::Unknown),
+            ("backend-config-file-unknown",instance::CredentialBackend::File,
+                instance::CredentialStartupSelector::Unknown),
+        ] {
+            instance::record_credential_backend(&mut product.connection,&instance::BackendSource{
+                request_id:request.into(),instance_id:"codexA".into(),
+                home_identity:home_identity.clone(),program_digest:format!("sha256:{}",pin.image_sha256),
+                version:pin.version.into(),backend,startup_selector,
+                operation_id:operation.clone(),ticket:prepared.ticket.opaque().into(),
+                nonce:prepared.custodian_nonce.clone(),generation:"1".into()}).unwrap();
+        }
         instance::record_credential_backend(&mut product.connection,&instance::BackendSource{
             request_id:"backend-source".into(),instance_id:"codexA".into(),
             home_identity:home_identity.clone(),program_digest:format!("sha256:{}",pin.image_sha256),
@@ -2203,6 +2226,37 @@ mod tests {
             startup_selector:instance::CredentialStartupSelector::FileBound,
             operation_id:operation.clone(),ticket:prepared.ticket.opaque().into(),
             nonce:prepared.custodian_nonce.clone(),generation:"1".into()}).unwrap();
+        // A second original request may name the same exact stopped C. It is
+        // another retained F member, but not another native process pair.
+        instance::record_credential_backend(&mut product.connection,&instance::BackendSource{
+            request_id:"backend-source-repeat".into(),instance_id:"codexA".into(),
+            home_identity:home_identity.clone(),program_digest:format!("sha256:{}",pin.image_sha256),
+            version:pin.version.into(),backend:instance::CredentialBackend::File,
+            startup_selector:instance::CredentialStartupSelector::FileBound,
+            operation_id:operation.clone(),ticket:prepared.ticket.opaque().into(),
+            nonce:prepared.custodian_nonce.clone(),generation:"1".into()}).unwrap();
+        let newer_digest=crate::store::digest::sha256_hex(b"codexA/backend-new-c");
+        let newer_operation=format!("credential-source-{}",&newer_digest[..40]);
+        let mut newer_launch=ProcessLaunch::new(image.clone());
+        newer_launch.arguments=vec!["--version".into()];
+        newer_launch.current_directory=Some(home.clone());
+        newer_launch.environment=Some(private_environment);
+        let newer=product.process_custodian.prepare(&PrepareRequest {launch:newer_launch,
+            binding:NativeBinding {binary_digest_sha256:format!("sha256:{}",pin.image_sha256),
+                profile_id:"codexA".into(),domain_id:"global".into(),generation:"2".into()}}).unwrap();
+        authority::record_prepared_process(&mut product.connection,&newer_operation,&newer).unwrap();
+        product.process_custodian.activate(&newer).unwrap();
+        authority::mark_process_active(&mut product.connection,&newer_operation,&newer).unwrap();
+        let newer_proof=product.process_custodian.stop(&newer.ticket,StopBudgets::production(),||Ok(())).unwrap();
+        let newer_revision=authority::mark_process_stopped(&mut product.connection,&newer_operation,&newer_proof).unwrap();
+        confirm_durable_test_stop(&mut product,&newer,&newer_proof,newer_revision);
+        instance::record_credential_backend(&mut product.connection,&instance::BackendSource{
+            request_id:"backend-source-new-c".into(),instance_id:"codexA".into(),
+            home_identity:home_identity.clone(),program_digest:format!("sha256:{}",pin.image_sha256),
+            version:pin.version.into(),backend:instance::CredentialBackend::File,
+            startup_selector:instance::CredentialStartupSelector::FileBound,
+            operation_id:newer_operation.clone(),ticket:newer.ticket.opaque().into(),
+            nonce:newer.custodian_nonce.clone(),generation:"2".into()}).unwrap();
         let root_identity=product.connection.root_identity().clone();
         instance::bind_credential_object(&mut product.connection,&instance::CredentialObjectInput{
             request_id:"object-source".into(),instance_id:"codexA".into(),
@@ -2212,18 +2266,22 @@ mod tests {
             expected_revision:0,rebind_from:None}).unwrap();
         assert!(!product.managed_version_action_resources("codex",None).unwrap().is_cold(),
             "the exact original backend F/C and physical FileID qualify STRICT");
-        assert!(matches!(instance::test_collect_cold_version_scope(
-            &product.connection,&root,"codex"),Err(instance::ManagedCliError::NativeGone(ref raw))
-            if raw.contains("original credential backend kernel cutoff")),
-            "same-boot backend C cannot be promoted from STOPPED/hash to a cold kernel fact");
+        let cold=instance::test_collect_cold_version_scope(&product.connection,&root,"codex");
+        let cold_error=cold.as_ref().err();
+        assert!(matches!(cold_error,Some(instance::ManagedCliError::Busy)),
+            "the full COLD family refuses the existing real first-copy probe shape: {cold_error:?}");
         let begin=r#"{"schema":"gogoke.37.managed-cli.v1","command":"begin","driverId":"codex","targetVersion":"0.162.1","requestId":"credential-upgrade","operation":"upgrade"}"#;
         let first=managed_user(&mut product,begin);
         let action=instance::read_version_action(&product.connection,&root,"credential-upgrade")
             .unwrap().unwrap();
         assert_eq!(action.mode,"STRICT");
         let backend_f=table_rows(&product,
-            "SELECT request_id,request_hex FROM main.gogoke_v37_instance_operations WHERE receipt_json='BACKEND_METADATA_RECORDED'",2);
-        assert_eq!(backend_f.len(),1);
+            "SELECT request_id,request_hex FROM main.gogoke_v37_instance_operations WHERE receipt_json='BACKEND_METADATA_RECORDED' ORDER BY request_id",2);
+        assert_eq!(backend_f.len(),6,"all original backend F writes remain after the CB upsert");
+        let original_backend_f=backend_f.iter().find(|row|{
+            let fields=action_frame_parts(&action_bytes(&row[1]).unwrap());
+            fields.len()==12 && fields[7].as_slice()==b"backend-source"
+        }).expect("first original backend F request");
         let original_cb=table_rows(&product,
             "SELECT program_digest FROM main.gogoke_v37_credential_backend_evidence WHERE instance_id='codexA'",1)[0][0].clone();
         let original_ticket=table_rows(&product,&format!(
@@ -2232,14 +2290,13 @@ mod tests {
         for (name,sql,restore,value) in [
             ("old backend pin","UPDATE main.gogoke_v37_credential_backend_evidence SET program_digest='sha256:0000000000000000000000000000000000000000000000000000000000000000' WHERE instance_id='codexA'",
                 "UPDATE main.gogoke_v37_credential_backend_evidence SET program_digest=?1 WHERE instance_id='codexA'",original_cb.as_str()),
-            ("original F fingerprint","UPDATE main.gogoke_v37_instance_operations SET request_hex='00' WHERE receipt_json='BACKEND_METADATA_RECORDED'",
-                "UPDATE main.gogoke_v37_instance_operations SET request_hex=?1 WHERE request_id=?2",backend_f[0][1].as_str()),
-            ("old C ticket","UPDATE main.gogoke_coordination_process_custody SET ticket='changed-ticket' WHERE profile_id='codexA' AND operation_id LIKE 'credential-source-%'",
+            ("old C ticket","UPDATE main.gogoke_coordination_process_custody SET ticket='changed-ticket' WHERE operation_id=?1",
                 "UPDATE main.gogoke_coordination_process_custody SET ticket=?1 WHERE operation_id=?2",original_ticket.as_str()),
             ("registered FileID","UPDATE main.gogoke_v37_credential_objects SET file_identity='wrong-file' WHERE instance_id='codexA'",
                 "UPDATE main.gogoke_v37_credential_objects SET file_identity=?1 WHERE instance_id='codexA'",original_file.as_str()),
         ] {
-            product.connection.execute(sql).unwrap();
+            if name=="old C ticket" {family_insert(&product,sql,&[&operation]);}
+            else {product.connection.execute(sql).unwrap();}
             let before=managed_snapshot(&product);
             assert!(product.managed_version_action_resources("codex",Some(&action)).is_err(),
                 "{name} must invalidate original credential source");
@@ -2247,12 +2304,49 @@ mod tests {
             assert_eq!(managed_snapshot(&product),before);
             let update=Statement::prepare(product.connection.as_ptr(),restore).unwrap();
             update.bind_text(1,value).unwrap();
-            if name=="original F fingerprint" {update.bind_text(2,&backend_f[0][0]).unwrap();}
             if name=="old C ticket" {update.bind_text(2,&operation).unwrap();}
             update.step_done().unwrap();drop(update);
             assert_eq!(managed_user(&mut product,begin),first,
                 "restoring {name} must recover exact original replay");
         }
+        let mut changed_f_fields=action_frame_parts(&action_bytes(&original_backend_f[1]).unwrap());
+        assert_eq!(changed_f_fields.len(),12);
+        changed_f_fields[8]=b"missing-old-backend-operation".to_vec();
+        changed_f_fields[9]=b"missing-old-backend-ticket".to_vec();
+        let changed_f=action_frame_hex(&changed_f_fields);
+        assert_ne!(changed_f,original_backend_f[1]);
+        family_insert(&product,
+            "UPDATE main.gogoke_v37_instance_operations SET request_hex=?1 WHERE request_id=?2",
+            &[&changed_f,&original_backend_f[0]]);
+        assert!(product.managed_version_action_resources("codex",Some(&action)).is_err(),
+            "an old APPLIED backend F frame cannot name a missing C tuple");
+        assert!(product.dispatch_user_managed_cli(begin.as_bytes()).is_err());
+        family_insert(&product,
+            "UPDATE main.gogoke_v37_instance_operations SET request_hex=?1 WHERE request_id=?2",
+            &[&original_backend_f[1],&original_backend_f[0]]);
+        assert_eq!(managed_user(&mut product,begin),first);
+        product.connection.execute(&format!(
+            "CREATE TEMP TABLE original_backend_c_restore AS SELECT rowid AS original_c_rowid,* FROM main.gogoke_coordination_process_custody WHERE operation_id='{operation}'")).unwrap();
+        assert_eq!(table_rows(&product,
+            "SELECT CAST(COUNT(*) AS TEXT) FROM temp.original_backend_c_restore",1),
+            vec![vec!["1".to_owned()]]);
+        family_insert(&product,
+            "DELETE FROM main.gogoke_coordination_process_custody WHERE operation_id=?1",
+            &[&operation]);
+        assert!(product.managed_version_action_resources("codex",Some(&action)).is_err(),
+            "a retained old backend F without its exact old C must refuse");
+        assert!(product.dispatch_user_managed_cli(begin.as_bytes()).is_err());
+        product.connection.execute("INSERT INTO main.gogoke_coordination_process_custody(rowid,operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) SELECT * FROM temp.original_backend_c_restore").unwrap();
+        product.connection.execute("DROP TABLE temp.original_backend_c_restore").unwrap();
+        assert_eq!(managed_user(&mut product,begin),first);
+        product.connection.execute("CREATE TEMP TABLE original_backend_cb_restore AS SELECT * FROM main.gogoke_v37_credential_backend_evidence WHERE instance_id='codexA'").unwrap();
+        product.connection.execute("DELETE FROM main.gogoke_v37_credential_backend_evidence WHERE instance_id='codexA'").unwrap();
+        assert!(product.managed_version_action_resources("codex",Some(&action)).is_err(),
+            "object plus old backend F cannot survive deleting current CB");
+        assert!(product.dispatch_user_managed_cli(begin.as_bytes()).is_err());
+        product.connection.execute("INSERT INTO main.gogoke_v37_credential_backend_evidence SELECT * FROM temp.original_backend_cb_restore").unwrap();
+        product.connection.execute("DROP TABLE temp.original_backend_cb_restore").unwrap();
+        assert_eq!(managed_user(&mut product,begin),first);
         let unregistered=path.join("unregistered-auth-link");
         fs::hard_link(&auth,&unregistered).unwrap();
         assert!(product.dispatch_user_managed_cli(begin.as_bytes()).is_err(),
@@ -2263,7 +2357,7 @@ mod tests {
             "SELECT instance_id,home_identity,program_digest,version,backend,startup_selector,request_id,operation_id,ticket,custodian_nonce,generation FROM main.gogoke_v37_credential_backend_evidence WHERE instance_id='codexA'",11);
         let original_backend_f=table_rows(&product,
             "SELECT request_id,request_hex,target_id,phase,receipt_json,native_receipt_id FROM main.gogoke_v37_instance_operations WHERE receipt_json='BACKEND_METADATA_RECORDED'",6);
-        assert_eq!((original_cb_rows.len(),original_backend_f.len()),(1,1));
+        assert_eq!((original_cb_rows.len(),original_backend_f.len()),(1,6));
         let auth_metadata=fs::metadata(&auth).unwrap();
         let original_auth_attributes=(auth_metadata.len(),auth_metadata.modified().unwrap());
         let assert_original_credential=|product:&ProductDatabase<'_>| {
@@ -2327,10 +2421,140 @@ mod tests {
         assert_eq!((current.version.as_deref(),current.previous_version.as_deref()),
             (Some("0.160.0"),Some("0.162.1")));
         assert_original_credential(&product);
-        assert_eq!(receipt_set(&managed_user(&mut product,&upgrade)).0,"REPLAYED");
+        let after_rollback=managed_snapshot(&product);
+        assert!(product.dispatch_user_managed_cli(upgrade.as_bytes()).is_err(),
+            "the older action cannot adopt the subsequent rollback's version chain");
+        assert_eq!(managed_snapshot(&product),after_rollback);
         assert_eq!(receipt_set(&managed_user(&mut product,&rollback)).0,"REPLAYED");
         assert_original_credential(&product);
         drop(action);product.close_checked().unwrap();drop(root);
+        fs::remove_file(database).unwrap();
+        fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).unwrap();
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn real_codex_credential_backend_same_boot_cold_kernel_refusal() {
+        let _guard=route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!(
+            "gogoke-codex-backend-kernel-{}-{nonce}",std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let database=path.join("state.sqlite");
+        let mut product=ProductDatabase::open(&root,&database).unwrap();
+        let (stage,image)=super::super::managed_cli_test_setup::prepared_image(&root,"codex");
+        managed_user(&mut product,r#"{"schema":"gogoke.37.managed-cli.v1","command":"begin","driverId":"codex"}"#);
+        // Explicit first-copy fixed-pin seed: the version is not H stdout.
+        // This keeps the earlier, real-probe action test intact and lets the
+        // independent original backend C reach the native kernel cutoff.
+        instance::record_managed_cli_stage(&mut product.connection,&root,&product.owner,
+            "codex",&stage).unwrap();
+        let pin=instance::read_fixed_official_cli("codex").unwrap();
+        instance::confirm_managed_cli_launch(&mut product.connection,&root,"codex",
+            &stage,&format!("sha256:{}",pin.image_sha256),pin.version).unwrap();
+        let observed=instance::ProgramObservation::observe(&image,pin.version).unwrap();
+        instance::register_instance(&mut product.connection,&root,&instance::Registration{
+            request_id:"register-kernel-backend",request_bytes:b"register-kernel-backend",
+            instance_id:"codexKernel",driver_id:"codex",program:&observed}).unwrap();
+        product.connection.execute("INSERT INTO main.gogoke_v37_instance_profiles(instance_id,display_name,enabled,revision) VALUES('codexKernel','kernel backend source',1,1)").unwrap();
+        let migrate=format!("{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"migrate\",\"driverId\":\"codex\",\"stageName\":\"{stage}\"}}");
+        managed_user(&mut product,&migrate);
+        let home=root.canonical_root().canonical_path.join("v37-instances").join("codexKernel");
+        let home_identity=crate::root::inspect_root(&home).unwrap().identity;
+        let private_home=home.to_string_lossy().into_owned();
+        let private_environment=vec![
+            ("SystemRoot".into(),std::env::var("SystemRoot").unwrap()),
+            ("HOME".into(),private_home.clone()),
+            ("USERPROFILE".into(),private_home.clone()),
+            ("APPDATA".into(),private_home.clone()),
+            ("LOCALAPPDATA".into(),private_home.clone()),
+            ("CODEX_HOME".into(),private_home),
+        ];
+        let auth=home.join("auth.json");
+        fs::write(&auth,b"synthetic disposable metadata, not a credential").unwrap();
+        let (file_identity,links)=crate::process::CredentialBinding::observe_source_metadata(
+            &root,&auth,&home_identity).unwrap();
+        assert_eq!(links,1);
+        let operation=format!("credential-source-{}",&crate::store::digest::sha256_hex(
+            b"codexKernel/backend")[..40]);
+        let mut launch=ProcessLaunch::new(image);
+        launch.arguments=vec!["--version".into()];
+        launch.current_directory=Some(home.clone());
+        launch.environment=Some(private_environment);
+        let prepared=product.process_custodian.prepare(&PrepareRequest {launch,
+            binding:NativeBinding {binary_digest_sha256:format!("sha256:{}",pin.image_sha256),
+                profile_id:"codexKernel".into(),domain_id:"global".into(),
+                generation:"1".into()}}).unwrap();
+        authority::record_prepared_process(&mut product.connection,&operation,&prepared).unwrap();
+        product.process_custodian.activate(&prepared).unwrap();
+        authority::mark_process_active(&mut product.connection,&operation,&prepared).unwrap();
+        let proof=product.process_custodian.stop(&prepared.ticket,StopBudgets::production(),||Ok(())).unwrap();
+        let revision=authority::mark_process_stopped(&mut product.connection,&operation,&proof).unwrap();
+        confirm_durable_test_stop(&mut product,&prepared,&proof,revision);
+        instance::record_credential_backend(&mut product.connection,&instance::BackendSource{
+            request_id:"kernel-backend-source".into(),instance_id:"codexKernel".into(),
+            home_identity:home_identity.clone(),program_digest:format!("sha256:{}",pin.image_sha256),
+            version:pin.version.into(),backend:instance::CredentialBackend::File,
+            startup_selector:instance::CredentialStartupSelector::FileBound,
+            operation_id:operation,ticket:prepared.ticket.opaque().into(),
+            nonce:prepared.custodian_nonce.clone(),generation:"1".into()}).unwrap();
+        let root_identity=product.connection.root_identity().clone();
+        instance::bind_credential_object(&mut product.connection,&instance::CredentialObjectInput{
+            request_id:"kernel-object-source".into(),instance_id:"codexKernel".into(),
+            root_identity,home_identity:home_identity.clone(),file_identity,
+            source_parent_identity:home_identity,
+            observed_nlink:1,expected_revision:0,rebind_from:None}).unwrap();
+        assert!(!product.managed_version_action_resources("codex",None).unwrap().is_cold(),
+            "exact original F/C and physical source qualify STRICT");
+        let cold=instance::test_collect_cold_version_scope(&product.connection,&root,"codex");
+        let cold_error=cold.as_ref().err();
+        assert!(matches!(cold_error,Some(instance::ManagedCliError::NativeGone(raw))
+            if raw.contains("original credential backend kernel cutoff")),
+            "same-boot backend C must reach and fail the native kernel cutoff: {cold_error:?}");
+        product.close_checked().unwrap();drop(root);
+        fs::remove_file(database).unwrap();
+        fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).unwrap();
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn codex_absent_fixed_auth_becoming_physical_refuses_saved_action() {
+        let _guard=route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!(
+            "gogoke-codex-absent-auth-{}-{nonce}",std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let database=path.join("state.sqlite");
+        let mut product=ProductDatabase::open(&root,&database).unwrap();
+        let (stage,image)=super::super::managed_cli_test_setup::prepared_image(&root,"codex");
+        managed_user(&mut product,r#"{"schema":"gogoke.37.managed-cli.v1","command":"begin","driverId":"codex"}"#);
+        super::super::managed_cli_test_setup::staged_probe(&mut product,"codex",&stage);
+        let pin=instance::read_fixed_official_cli("codex").unwrap();
+        let observed=instance::ProgramObservation::observe(&image,pin.version).unwrap();
+        instance::register_instance(&mut product.connection,&root,&instance::Registration{
+            request_id:"register-absent-auth",request_bytes:b"register-absent-auth",
+            instance_id:"codexAbsent",driver_id:"codex",program:&observed}).unwrap();
+        product.connection.execute("INSERT INTO main.gogoke_v37_instance_profiles(instance_id,display_name,enabled,revision) VALUES('codexAbsent','absent auth source',1,1)").unwrap();
+        let migrate=format!("{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"migrate\",\"driverId\":\"codex\",\"stageName\":\"{stage}\"}}");
+        managed_user(&mut product,&migrate);
+        let auth=root.canonical_root().canonical_path.join("v37-instances")
+            .join("codexAbsent").join("auth.json");
+        assert!(!auth.exists());
+        let begin=r#"{"schema":"gogoke.37.managed-cli.v1","command":"begin","driverId":"codex","targetVersion":"0.162.1","requestId":"absent-auth-upgrade","operation":"upgrade"}"#;
+        let first=managed_user(&mut product,begin);
+        let action=instance::read_version_action(&product.connection,&root,"absent-auth-upgrade")
+            .unwrap().unwrap();
+        assert_eq!(action.mode,"STRICT");
+        fs::write(&auth,b"synthetic unexpected fixed source; no real credential").unwrap();
+        assert!(product.managed_version_action_resources("codex",Some(&action)).is_err(),
+            "a previously absent fixed auth source cannot appear after begin");
+        assert!(product.dispatch_user_managed_cli(begin.as_bytes()).is_err());
+        fs::remove_file(&auth).unwrap();
+        assert_eq!(managed_user(&mut product,begin),first,
+            "restored physical absence must restore saved STRICT replay");
+        product.close_checked().unwrap();drop(root);
         fs::remove_file(database).unwrap();
         fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).unwrap();
         fs::remove_dir_all(path).unwrap();
