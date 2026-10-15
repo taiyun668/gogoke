@@ -336,13 +336,9 @@ fn qualified_stopped_h(db: &VerifiedDatabaseConnection<'_>, operation: &str,
         let formal=request_field(&request,"purpose").as_deref()==Some("FORMAL_REVIEW");
         if domain=="global" {
             if !request.payload.is_empty() { return Err(denied()); }
-            // effective_seat projects generation from the current claim and
-            // cannot authenticate an older stopped Secretary generation. The
-            // native selection (or its legacy seat binding fallback) preserves
-            // the original seat/incarnation independently of that projection.
             let selected=rows(db,
-                "SELECT 1 FROM main.gogoke_v37_native_selection s JOIN main.gogoke_v37_seat_secretary d ON d.domain_id=s.domain_id AND d.seat_id=s.seat_id AND d.incarnation=s.seat_incarnation WHERE s.domain_id='global' AND s.session_id=?1 AND s.seat_id=?2 AND s.seat_incarnation=?3 AND s.selected_instance_id=?4 UNION ALL SELECT 1 FROM main.gogoke_v37_h_seat_binding s JOIN main.gogoke_v37_seat_secretary d ON d.domain_id=s.domain_id AND d.seat_id=s.seat_id AND d.incarnation=s.seat_incarnation JOIN main.gogoke_v37_h_claim c ON c.domain_id=s.domain_id AND c.session_id=s.session_id WHERE s.domain_id='global' AND s.session_id=?1 AND s.seat_id=?2 AND s.seat_incarnation=?3 AND c.instance_id=?4 AND NOT EXISTS(SELECT 1 FROM main.gogoke_v37_native_selection n WHERE n.domain_id=s.domain_id AND n.session_id=s.session_id)",
-                &[&e[1],&e[9],&e[10],instance],1)?;
+                "SELECT 1 FROM main.gogoke_v37_effective_seat s JOIN main.gogoke_v37_seat_secretary d ON d.domain_id=s.domain_id AND d.seat_id=s.seat_id AND d.incarnation=s.seat_incarnation WHERE s.domain_id='global' AND s.session_id=?1 AND s.generation=?2 AND s.seat_id=?3 AND s.seat_incarnation=?4 AND s.selected_instance_id=?5",
+                &[&e[1],generation,&e[9],&e[10],instance],1)?;
             if selected.len()!=1 { return Err(denied()); }
         } else if request.payload.len()!=if formal{5}else{4} ||
             request_field(&request,"generation").as_deref()!=Some(generation) ||
