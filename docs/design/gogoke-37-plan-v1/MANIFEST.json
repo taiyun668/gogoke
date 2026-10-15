@@ -6,7 +6,7 @@
   },
   "sha256": {
     "PLAN.md": "0bc66da76fe30529106a20145e52de6d924e5767bbf3cdca4d6d92363aa09722",
-    "PLAN.json": "fabf8227d4c73002a146c67054fb067c693c37ec7253397ed34c8933cf0e8bb2",
+    "PLAN.json": "a517eccc048e7a0779eba65b3d5a0d76e7bd9ea6c91efec9201ebf85e69230fc",
     "verify_plan.py": "b6d8bde90e4dead4f169c7922bfba295513f91ae962d1cdc8cc0b1726d9176b5"
   },
   "excluded": [
@@ -33,7 +33,7 @@
     },
     {
       "path": "docs/design/gogoke-37-plan-v1/MANAGED_CLI_HISTORICAL_FAMILIES.md",
-      "sha256_git_lf": "ac6ab00ac7bf311fe7ae6cfa30981147e780665e4c0792ea6f6a8f96ff240597",
+      "sha256_git_lf": "c1098c875f6bbee717a4bcbd38c8c7be6d3ef9a45a1c5c49a735cc7ba63f76e7",
       "meaning": "Complete three-driver contract and reviewable observation inventory only; not a native proof, qualification or acceptance."
     },
     {
