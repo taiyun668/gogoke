@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 
 #[path = "managed_cli_cold_version.rs"]
 mod cold_version;
+#[cfg(test)]
+pub(crate) use cold_version::test_collect_cold_version_scope;
 pub(crate) use cold_version::{observe_version_scope, revalidate_version_action,
     revalidate_version_action_at_fingerprints,revalidate_version_action_with_probe,
     revalidate_version_action_at_fingerprints_with_probe,

@@ -2768,8 +2768,12 @@ mod tests {
         assert_eq!(original_f.len(),1);
         assert_eq!(&original_f[0][1..],
             &["APPLIED".to_owned(),"1".to_owned(),"1".to_owned()]);
-        assert!(product.managed_version_action_resources(driver,None).unwrap().is_cold(),
-            "original F writer and stopped C must qualify together");
+        assert!(!product.managed_version_action_resources(driver,None).unwrap().is_cold(),
+            "an already clear stopped observer keeps the original STRICT path");
+        let collect_cold=|product:&ProductDatabase<'_>|
+            instance::test_collect_cold_version_scope(&product.connection,&root,driver);
+        assert!(collect_cold(&product).unwrap().is_cold(),
+            "the existing cold collector must bind the original F writer and stopped C");
         for (name,sql) in [
             ("missing F source",format!("DELETE FROM main.gogoke_v37_instance_operations WHERE request_id='{request_id}'")),
             ("changed F raw",format!("UPDATE main.gogoke_v37_instance_operations SET request_hex='00' WHERE request_id='{request_id}'")),
@@ -2779,11 +2783,11 @@ mod tests {
         ] {
             product.connection.execute("SAVEPOINT global_source_damage").unwrap();
             product.connection.execute(&sql).unwrap();
-            assert!(product.managed_version_action_resources(driver,None).is_err(),
+            assert!(collect_cold(&product).is_err(),
                 "{name} must reject the same original family");
             product.connection.execute("ROLLBACK TO global_source_damage").unwrap();
             product.connection.execute("RELEASE global_source_damage").unwrap();
-            assert!(product.managed_version_action_resources(driver,None).unwrap().is_cold(),
+            assert!(collect_cold(&product).unwrap().is_cold(),
                 "restoring {name} must restore qualification");
         }
         product.close_checked().unwrap();drop(root);
