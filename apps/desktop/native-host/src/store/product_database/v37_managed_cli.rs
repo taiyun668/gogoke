@@ -980,6 +980,11 @@ mod tests {
     }
 
     #[test]
+    fn strict_legacy_source_released_route_fixtures() {
+        instance::LegacySourceResult::run_released_source_fixtures();
+    }
+
+    #[test]
     fn strict_legacy_codex_unregistered_physical_acl_applies_and_replays() {
         strict_legacy_codex_physical_acl_applies_and_replays(false,false,false);
     }

@@ -35,6 +35,10 @@ impl LegacySourceResult {
         tests::plain_resume_accepts_only_direct_or_original_unknown_promotion_equation();
         tests::stopped_h_requires_original_raw_home_binding_generation_and_c_proof();
     }
+
+    pub(crate) fn run_released_source_fixtures() {
+        tests::global_native_never_started_release_uses_original_empty_payload();
+    }
 }
 
 struct Qualification {
@@ -363,12 +367,13 @@ fn qualified_stopped_h(db: &VerifiedDatabaseConnection<'_>, operation: &str,
 /// historical UNKNOWN needs the native whole-boot fact over every original
 /// global C identity, independently of any ACL fence.
 fn qualified_executions(db: &VerifiedDatabaseConnection<'_>, evidence: &mut Vec<u8>)
-    -> Result<BTreeSet<String>> {
+    -> Result<(BTreeSet<String>,BTreeSet<String>)> {
     let custody = rows(db,
         "SELECT c.operation_id,c.profile_id,c.domain_id,c.generation,c.state,COALESCE(c.stop_proof_hash,''),c.pid,c.creation_time_100ns FROM main.gogoke_coordination_process_custody c JOIN main.gogoke_v37_instances i ON i.instance_id=c.profile_id WHERE i.driver_id='codex' ORDER BY c.operation_id", &[], 8)?;
     let mut seen_h = BTreeSet::new();
     let mut qualified_bindings = BTreeSet::new();
-    let mut global_unknown = BTreeSet::new();
+    let mut qualified_operations = BTreeSet::new();
+    let mut global_bare = BTreeSet::new();
     for c in &custody {
         let (operation, instance, domain, generation, state, stop) =
             (&c[0], &c[1], &c[2], &c[3], &c[4], &c[5]);
@@ -384,12 +389,15 @@ fn qualified_executions(db: &VerifiedDatabaseConnection<'_>, evidence: &mut Vec<
                 frame(evidence,source.as_bytes());
                 seen_h.insert(operation.clone());
                 qualified_bindings.insert(h[3].clone());
-            } else if domain != "global" { return Err(denied()); }
+                qualified_operations.insert(operation.clone());
+            } else if domain == "global" {
+                global_bare.insert(instance.clone());
+            } else { return Err(denied()); }
             continue;
         }
         if state != "UNKNOWN" || !stop.is_empty() { return Err(denied()); }
         if episode.is_empty() && domain == "global" {
-            global_unknown.insert(instance.clone()); continue;
+            global_bare.insert(instance.clone()); continue;
         }
         if episode.len() != 1 || episode[0][2] != *generation ||
             !matches!(episode[0][4].as_str(), "ACTIVE" | "UNKNOWN") || !episode[0][5].is_empty() {
@@ -401,12 +409,13 @@ fn qualified_executions(db: &VerifiedDatabaseConnection<'_>, evidence: &mut Vec<
         fact.validate(&pairs).map_err(|error| fail("H kernel recheck", error))?;
         seen_h.insert(operation.clone());
         qualified_bindings.insert(episode[0][3].clone());
+        qualified_operations.insert(operation.clone());
         for value in [source_digest.as_str(), &fact.boot_start().to_string()] {
             frame(evidence, value.as_bytes());
         }
         for (pid, creation) in pairs { frame(evidence, &pid.to_be_bytes()); frame(evidence, &creation.to_be_bytes()); }
     }
-    for instance in global_unknown {
+    for instance in global_bare {
         let original = rows(db,
             "SELECT operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,COALESCE(stop_proof_hash,'') FROM main.gogoke_coordination_process_custody WHERE profile_id=?1 AND domain_id='global' ORDER BY operation_id",
             &[&instance], 12)?;
@@ -441,13 +450,17 @@ fn qualified_executions(db: &VerifiedDatabaseConnection<'_>, evidence: &mut Vec<
             if c[10] == "UNKNOWN" { pairs.push((pid, created)); }
             for field in c { frame(&mut source, field.as_bytes()); }
         }
-        if pairs.is_empty() { return Err(denied()); }
-        let fact = NativeLegacyHoldersGone::observe(&pairs)
-            .map_err(|error| fail("global kernel fact", error))?;
-        fact.validate(&pairs).map_err(|error| fail("global kernel recheck", error))?;
         frame(evidence, sha256_hex(&source).as_bytes());
-        frame(evidence, &fact.boot_start().to_be_bytes());
-        for (pid, created) in pairs { frame(evidence, &pid.to_be_bytes()); frame(evidence, &created.to_be_bytes()); }
+        if !pairs.is_empty() {
+            let fact = NativeLegacyHoldersGone::observe(&pairs)
+                .map_err(|error| fail("global kernel fact", error))?;
+            fact.validate(&pairs).map_err(|error| fail("global kernel recheck", error))?;
+            frame(evidence, &fact.boot_start().to_be_bytes());
+            for (pid, created) in pairs {
+                frame(evidence, &pid.to_be_bytes()); frame(evidence, &created.to_be_bytes());
+            }
+        }
+        for c in original { qualified_operations.insert(c[0].clone()); }
     }
     // Every H episode with an original process must be accounted for by the
     // corresponding custody row above. A process-less COMMITTED claim cannot
@@ -458,7 +471,7 @@ fn qualified_executions(db: &VerifiedDatabaseConnection<'_>, evidence: &mut Vec<
             return Err(denied());
         }
     }
-    Ok(qualified_bindings)
+    Ok((qualified_bindings,qualified_operations))
 }
 
 /// A released reservation with no process is settled only by its original
@@ -466,7 +479,7 @@ fn qualified_executions(db: &VerifiedDatabaseConnection<'_>, evidence: &mut Vec<
 /// producers. An empty native pair list is never a holder-gone observation.
 fn qualified_released_never_started(db: &VerifiedDatabaseConnection<'_>,
     instance: &str, domain: &str, session: &str, home: &str,
-    binding: &str, generation: &str) -> Result<()> {
+    binding: &str, generation: &str, qualified_operations: &BTreeSet<String>) -> Result<()> {
     let claims = rows(db,
         "SELECT state,CAST(revision AS TEXT),COALESCE(process_operation_id,''),COALESCE(stop_fact_id,'') FROM main.gogoke_v37_h_claim WHERE instance_id=?1 AND domain_id=?2 AND session_id=?3 AND home_id=?4 AND binding_id=?5 AND generation=?6",
         &[instance,domain,session,home,binding,generation],4)?;
@@ -480,11 +493,13 @@ fn qualified_released_never_started(db: &VerifiedDatabaseConnection<'_>,
             &[home,instance,domain,session,generation])? { return Err(denied()); }
     for (sql,values) in [
         ("SELECT 1 FROM main.gogoke_v37_h_process_episode WHERE domain_id=?1 AND session_id=?2 LIMIT 1",vec![domain,session]),
+        ("SELECT 1 FROM main.gogoke_v37_h_generation WHERE domain_id=?1 AND session_id=?2 LIMIT 1",vec![domain,session]),
         ("SELECT 1 FROM main.gogoke_v37_h_generation_change WHERE domain_id=?1 AND session_id=?2 LIMIT 1",vec![domain,session]),
         ("SELECT 1 FROM main.gogoke_v37_h_dos_alias WHERE domain_id=?1 AND session_id=?2 LIMIT 1",vec![domain,session]),
         ("SELECT 1 FROM main.gogoke_v37_h_stdin_journal WHERE domain_id=?1 AND session_id=?2 LIMIT 1",vec![domain,session]),
-        ("SELECT 1 FROM main.gogoke_coordination_process_custody WHERE profile_id=?1 AND domain_id=?2 AND generation=?3 LIMIT 1",vec![instance,domain,generation]),
     ] { if any(db,sql,&values)? { return Err(denied()); } }
+    qualified_custody_disjoint_from_session(db,instance,domain,session,generation,
+        qualified_operations)?;
     let history = rows(db,
         "SELECT operation,raw_hex,status,CAST(previous_revision AS TEXT),CAST(revision AS TEXT),request_id FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND session_id=?2 ORDER BY revision",
         &[domain,session],6)?;
@@ -514,8 +529,8 @@ fn qualified_released_never_started(db: &VerifiedDatabaseConnection<'_>,
         return Err(denied());
     }
     let seat = rows(db,
-        "SELECT seat_id,seat_incarnation,CAST(seat_authorization_generation AS TEXT),selected_instance_id,'NATIVE_V2' FROM main.gogoke_v37_native_selection WHERE domain_id=?1 AND session_id=?2 UNION ALL SELECT b.seat_id,b.seat_incarnation,b.generation,c.instance_id,'LEGACY_V1' FROM main.gogoke_v37_h_seat_binding b JOIN main.gogoke_v37_h_claim c ON c.domain_id=b.domain_id AND c.session_id=b.session_id WHERE b.domain_id=?1 AND b.session_id=?2 AND NOT EXISTS(SELECT 1 FROM main.gogoke_v37_native_selection n WHERE n.domain_id=b.domain_id AND n.session_id=b.session_id)",
-        &[domain,session],5)?;
+            "SELECT seat_id,seat_incarnation,CAST(seat_authorization_generation AS TEXT),selected_instance_id,'NATIVE_V2' FROM main.gogoke_v37_native_selection WHERE domain_id=?1 AND session_id=?2 UNION ALL SELECT b.seat_id,b.seat_incarnation,b.generation,c.instance_id,'LEGACY_V1' FROM main.gogoke_v37_h_seat_binding b JOIN main.gogoke_v37_h_claim c ON c.domain_id=b.domain_id AND c.session_id=b.session_id WHERE b.domain_id=?1 AND b.session_id=?2 AND NOT EXISTS(SELECT 1 FROM main.gogoke_v37_native_selection n WHERE n.domain_id=b.domain_id AND n.session_id=b.session_id)",
+            &[domain,session],5)?;
     if seat.len()!=1 || seat[0][3]!=instance || seat[0][0].is_empty()
         || seat[0][1].is_empty() || seat[0][2]!=generation { return Err(denied()); }
     if any(db,"SELECT 1 FROM main.gogoke_v37_session_binding_v2 WHERE domain_id=?1 AND session_id=?2 LIMIT 1",
@@ -527,6 +542,12 @@ fn qualified_released_never_started(db: &VerifiedDatabaseConnection<'_>,
         if any(db,"SELECT 1 FROM main.gogoke_v37_h_seat_binding WHERE domain_id=?1 AND session_id=?2 LIMIT 1",
             &[domain,session])? { return Err(denied()); }
     } else if seat[0][4]!="LEGACY_V1" { return Err(denied()); }
+    // Historical USER admission used the exact two fields on every domain.
+    // The later empty global payload belongs only to the designated native
+    // Secretary selection; it does not replace those original raw frames.
+    let native_secretary = domain=="global" && seat[0][4]=="NATIVE_V2"
+        && any(db,"SELECT 1 FROM main.gogoke_v37_seat_secretary WHERE domain_id=?1 AND seat_id=?2 AND incarnation=?3",
+            &[domain,&seat[0][0],&seat[0][1]])?;
     for (index,row) in history.iter().enumerate() {
         let operation=operations[index];
         if row[0]!=operation || row[2]!="APPLIED" || row[3]!=index.to_string()
@@ -534,19 +555,41 @@ fn qualified_released_never_started(db: &VerifiedDatabaseConnection<'_>,
         let raw=unhex(&row[1])?;
         let request=crate::store::session_transport::decode_request(&raw)
             .map_err(|error|fail("original never-started H request",error))?;
+        let payload_matches=(native_secretary && request.payload.is_empty())
+            || (request.payload.len()==2
+                && request_field(&request,"seatId").as_deref()==Some(seat[0][0].as_str())
+                && request_field(&request,"generation").as_deref()==Some(generation));
         if request.family!="K-SESSION" || request.operation!=operation
             || request.domain_id!=domain || request.target_id!=session
             || request.request_id!=row[5] || request.expected_revision!=index as u64
-            || request.payload.len()!=2
-            || request_field(&request,"seatId").as_deref()!=Some(seat[0][0].as_str())
-            || request_field(&request,"generation").as_deref()!=Some(generation) {
+            || !payload_matches {
             return Err(denied());
         }
     }
     Ok(())
 }
 
-fn qualified_resources(db: &VerifiedDatabaseConnection<'_>) -> Result<()> {
+fn qualified_custody_disjoint_from_session(db: &VerifiedDatabaseConnection<'_>,
+    instance: &str, domain: &str, session: &str, generation: &str,
+    qualified_operations: &BTreeSet<String>) -> Result<()> {
+    let custody=rows(db,
+        "SELECT operation_id FROM main.gogoke_coordination_process_custody WHERE profile_id=?1 AND domain_id=?2 AND generation=?3 ORDER BY operation_id",
+        &[instance,domain,generation],1)?;
+    for c in custody {
+        if !qualified_operations.contains(&c[0]) { return Err(denied()); }
+        let episode=rows(db,
+            "SELECT session_id,generation FROM main.gogoke_v37_h_process_episode WHERE process_operation_id=?1 AND instance_id=?2 AND domain_id=?3",
+            &[&c[0],instance,domain],2)?;
+        if episode.len()>1 { return Err(denied()); }
+        if let Some(e)=episode.first() {
+            if e[0]==session || e[1]!=generation { return Err(denied()); }
+        } else if domain!="global" { return Err(denied()); }
+    }
+    Ok(())
+}
+
+fn qualified_resources(db: &VerifiedDatabaseConnection<'_>,
+    qualified_operations: &BTreeSet<String>) -> Result<()> {
     for (sql, values) in [
         // F producers address the instance, temporary HOME, private history,
         // and credential-instance digest in distinct target namespaces. An
@@ -558,6 +601,9 @@ fn qualified_resources(db: &VerifiedDatabaseConnection<'_>) -> Result<()> {
         ("SELECT 1 FROM main.gogoke_v37_h_operation WHERE status!='APPLIED' LIMIT 1", vec![]),
         ("SELECT 1 FROM main.gogoke_v37_h_generation_change WHERE stage NOT IN ('APPLIED','CANCELLED','UNSUPPORTED') LIMIT 1", vec![]),
         ("SELECT 1 FROM main.gogoke_v37_h_stdin_journal WHERE phase!='RECEIPTED' LIMIT 1", vec![]),
+        // A generation without its exact original episode has no instance
+        // owner to classify. Refuse it before the Codex joins can hide it.
+        ("SELECT 1 FROM main.gogoke_v37_h_generation g WHERE NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e WHERE e.domain_id=g.domain_id AND e.session_id=g.session_id AND e.generation=g.generation AND e.request_id=g.request_id AND e.process_operation_id=g.process_operation_id) LIMIT 1", vec![]),
         ("SELECT 1 FROM main.gogoke_v37_h_dos_alias a JOIN main.gogoke_v37_instances i ON i.instance_id=a.instance_id WHERE i.driver_id='codex' AND (a.cleanup_status IN ('NOT_REQUESTED','UNKNOWN') OR a.phase IN ('INTENT','PREPARE_STARTED','UNKNOWN')) LIMIT 1", vec![]),
         ("SELECT 1 FROM main.gogoke_v37_instance_homes h JOIN main.gogoke_v37_instances i ON i.instance_id=h.instance_id WHERE i.driver_id='codex' AND h.state IN ('PREPARING','CLOSE_UNKNOWN','CLEANUP_UNKNOWN','UNKNOWN') LIMIT 1", vec![]),
         ("SELECT 1 FROM main.gogoke_v37_credential_objects o JOIN main.gogoke_v37_instances i ON i.instance_id=o.instance_id WHERE i.driver_id='codex' AND o.phase!='ACTIVE' LIMIT 1", vec![]),
@@ -612,7 +658,8 @@ fn qualified_resources(db: &VerifiedDatabaseConnection<'_>) -> Result<()> {
             let claim = rows(db,"SELECT binding_id,state,COALESCE(process_operation_id,'') FROM main.gogoke_v37_h_claim WHERE instance_id=?1 AND domain_id=?2 AND session_id=?3 AND home_id=?4 AND generation=?5",
                 &[&h[1],&h[2],&h[3],&h[0],&h[4]],3)?;
             if claim.len()!=1 || claim[0][1]!="RELEASED" || !claim[0][2].is_empty() { return Err(denied()); }
-            qualified_released_never_started(db,&h[1],&h[2],&h[3],&h[0],&claim[0][0],&h[4])?;
+            qualified_released_never_started(db,&h[1],&h[2],&h[3],&h[0],&claim[0][0],&h[4],
+                qualified_operations)?;
         }
     }
     Ok(())
@@ -785,9 +832,9 @@ fn qualify(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
         LegacyAclInventory::capture(root, &home.path, &home.identity,
             &binding, &names).map_err(|error| fail("fresh physical historical HOME ACL", error))?
     };
-    qualified_resources(db)?;
     let mut evidence = Vec::new();
-    let historical_bindings=qualified_executions(db, &mut evidence)?;
+    let (historical_bindings,qualified_operations)=qualified_executions(db, &mut evidence)?;
+    qualified_resources(db,&qualified_operations)?;
     qualified_owner_bindings(db,&historical_bindings)?;
     for value in [inventory.original_digest(), inventory.home_original_digest(),
         inventory.source_original_digest(), provenance,
@@ -1168,6 +1215,124 @@ mod tests {
     }
 
     #[test]
+    pub(super) fn global_native_never_started_release_uses_original_empty_payload() {
+        for (committed,payload,source,mutation,accepted) in [
+            (false,"{}","native","none",true),
+            (true,"{}","native","none",true),
+            (false,r#"{"seatId":"seatA","generation":"1"}"#,"native","none",true),
+            (false,r#"{"seatId":"wrongSeat","generation":"1"}"#,"native","none",false),
+            (false,r#"{"seatId":"seatA","generation":"2"}"#,"native","none",false),
+            (false,"{}","native","missing-secretary",false),
+            (false,"{}","native","missing-incarnation",false),
+            (false,r#"{"seatId":"seatA","generation":"1"}"#,"legacy","none",true),
+            (false,"{}","legacy","none",false),
+        ] {
+            fixture(|root, mut db| {
+                crate::store::orchestration::apply_orchestration_slice_schema(&mut db).unwrap();
+                let owner=crate::store::authority::initialize_profile(&mut db,root).unwrap();
+                super::super::initialize_credential_schema(&mut db).unwrap();
+                crate::store::authority::initialize_process_custody_schema(&mut db).unwrap();
+                crate::store::seat::initialize_schema(&mut db).unwrap();
+                crate::store::session_transport::initialize_admission_schema(&mut db).unwrap();
+                crate::store::session_transport::session_binding::initialize_schema(&mut db).unwrap();
+                let persistent=super::super::home::prepare_persistent_home(root,"oldA").unwrap();
+                let instance=Statement::prepare(db.as_ptr(),
+                    "INSERT INTO main.gogoke_v37_instances VALUES('oldA','codex','instance-home-oldA',?1,'sha256:0000000000000000000000000000000000000000000000000000000000000000','0.160.0','INSTALLED','LOGGED_IN',1)").unwrap();
+                instance.bind_text(1,persistent.identity.opaque()).unwrap();
+                instance.step_done().unwrap();drop(instance);
+                // These are the exact durable E rows produced by designation
+                // and configuration. Admission, F HOME and release below use
+                // their production writers and preserve the original raw.
+                db.execute("INSERT INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('global','seatA','incA','USER','LONG','oldA','BUSY',1,1)").unwrap();
+                db.execute("INSERT INTO main.gogoke_v37_seat_secretary VALUES(1,'global','seatA','incA','designationA','original-secretary-fixture')").unwrap();
+                let session=if committed {"committedRelease"} else {"directRelease"};
+                let reserve_id=if committed {"commitReserve"} else {"directReserve"};
+                let suffix=sha256_hex(format!("{}\nglobal\n{session}\nincA\n1",
+                    root.canonical_root().identity.opaque()).as_bytes());
+                let suffix=&suffix[..40];
+                let home_id=format!("home-{suffix}");
+                let binding_id=format!("binding-{suffix}");
+                let profile=crate::process::AppContainerProfile::derive_for_revocation(
+                    &format!("Gogoke37.Session.{suffix}")).unwrap();
+                let reserve_raw=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"admission-reserve\",\"requestId\":\"{reserve_id}\",\"targetId\":\"{session}\",\"domainId\":\"global\",\"expectedRevision\":\"0\",\"payload\":{payload}}}");
+                let preparation=sha256_hex(format!("global\n{reserve_id}").as_bytes());
+                let preparation_id=format!("homeprep-{}",&preparation[..40]);
+                db.execute("BEGIN IMMEDIATE").unwrap();
+                crate::store::session_transport::bind_owner_in_transaction(&mut db,
+                    &crate::store::session_transport::OwnerBinding {binding_id:&binding_id,
+                        instance_id:"oldA",domain_id:"global",kind:"SESSION",
+                        owner_id:session,generation:"1"}).unwrap();
+                db.execute("COMMIT").unwrap();
+                super::super::temporary::create_temporary_home(&mut db,root,&profile,
+                    &super::super::temporary::CreateTemporaryHome {request_id:&preparation_id,
+                        request_bytes:reserve_raw.as_bytes(),home_id:&home_id,instance_id:"oldA",
+                        domain_id:"global",kind:super::super::temporary::TemporaryKind::Session,
+                        owner_id:session,generation:"1"}).unwrap();
+                let selection=crate::store::session_transport::session_binding::SessionBinding {
+                    domain_id:"global".into(),session_id:session.into(),seat_id:"seatA".into(),
+                    seat_incarnation:"incA".into(),seat_authorization_generation:1,
+                    selected_instance_id:"oldA".into(),
+                    provenance:crate::store::session_transport::session_binding::Provenance::NativeV2,
+                };
+                if source=="legacy" {
+                    db.execute(&format!("INSERT INTO main.gogoke_v37_h_seat_binding(domain_id,session_id,seat_id,seat_incarnation,generation) VALUES('global','{session}','seatA','incA','1')")).unwrap();
+                }
+                let reserve=crate::store::session_transport::AdmissionRequest {domain_id:"global",
+                    session_id:session,request_id:reserve_id,raw_bytes:reserve_raw.as_bytes(),
+                    instance_id:"oldA",home_id:&home_id,generation:"1",expected_revision:0};
+                assert!(matches!(crate::store::session_transport::reserve_admission(&mut db,&reserve,
+                    |db| {
+                        if source=="native" {
+                            crate::store::session_transport::session_binding::select_native_in_transaction(
+                                db,&selection).map_err(crate::store::session_transport::AdmissionError::Relationship)?;
+                        }
+                        Ok(crate::store::session_transport::TrustedLimits {
+                            project_parallel:4,instance_concurrency:4})
+                    }).unwrap(),crate::store::session_transport::AdmissionResult::Applied(1)));
+                let release_revision=if committed {
+                    let raw=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"admission-commit\",\"requestId\":\"commitA\",\"targetId\":\"{session}\",\"domainId\":\"global\",\"expectedRevision\":\"1\",\"payload\":{payload}}}");
+                    let input=crate::store::session_transport::AdmissionRequest {domain_id:"global",
+                        session_id:session,request_id:"commitA",raw_bytes:raw.as_bytes(),
+                        instance_id:"oldA",home_id:&home_id,generation:"1",expected_revision:1};
+                    assert!(matches!(crate::store::session_transport::commit_admission(&mut db,&input,
+                        |_|Ok(())).unwrap(),crate::store::session_transport::AdmissionResult::Applied(2)));
+                    2
+                } else {1};
+                let release_id=if committed {"commitRelease"} else {"directReleaseA"};
+                let raw=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"admission-release\",\"requestId\":\"{release_id}\",\"targetId\":\"{session}\",\"domainId\":\"global\",\"expectedRevision\":\"{release_revision}\",\"payload\":{payload}}}");
+                let input=crate::store::session_transport::AdmissionRequest {domain_id:"global",
+                    session_id:session,request_id:release_id,raw_bytes:raw.as_bytes(),
+                    instance_id:"oldA",home_id:&home_id,generation:"1",
+                    expected_revision:release_revision};
+                let released=if source=="native" {
+                    crate::store::session_transport::runtime::release_native(&mut db,
+                        &crate::store::seat::NativeOrigin::user(&owner),&input)
+                } else {
+                    crate::store::session_transport::release_admission(&mut db,&input,|_|Ok(()))
+                };
+                assert!(matches!(released.unwrap(),
+                    crate::store::session_transport::AdmissionResult::Applied(_)));
+                match mutation {
+                    "missing-secretary"=>db.execute("DELETE FROM main.gogoke_v37_seat_secretary").unwrap(),
+                    "missing-incarnation"=>db.execute(&format!("UPDATE main.gogoke_v37_native_selection SET seat_incarnation='missingIncarnation' WHERE domain_id='global' AND session_id='{session}'")).unwrap(),
+                    "none"=>{},
+                    _=>panic!("unknown fixture mutation"),
+                }
+                let (_,operations)=qualified_executions(&db,&mut Vec::new()).unwrap();
+                assert_eq!(qualified_resources(&db,&operations).is_ok(),accepted,
+                    "global historical two-field and current native Secretary sources stay distinct");
+                if accepted && source=="native" && payload=="{}" && !committed {
+                    db.execute(&format!("INSERT INTO main.gogoke_v37_h_seat_binding(domain_id,session_id,seat_id,seat_incarnation,generation) VALUES('global','{session}','seatA','incA','1')")).unwrap();
+                    db.execute(&format!("UPDATE main.gogoke_v37_native_selection SET selected_instance_id='wrongInstance' WHERE domain_id='global' AND session_id='{session}'")).unwrap();
+                    assert!(qualified_resources(&db,&operations).is_err(),
+                        "a bad native Secretary selection cannot fall through to legacy identity");
+                }
+                db.close_checked().unwrap();
+            });
+        }
+    }
+
+    #[test]
     pub(super) fn stopped_h_requires_original_raw_home_binding_generation_and_c_proof() {
         fixture(|root, mut db| {
             // This fixture drives the real ProductDatabase H/C/ledger producers
@@ -1315,8 +1480,66 @@ mod tests {
             // Match the session-stop producer: release native custody only
             // after H committed the exact C StopProof.
             confirm_durable_stop(&mut custodian,&prepared,&native_stop,native_stop_revision);
+            // Build A through the existing historical admission/F producers.
+            // B above is a real STOPPED execution with the same instance,
+            // domain and numeric generation, but a different session.
+            db.execute("INSERT INTO main.gogoke_v37_seats(domain_id,seat_id,incarnation,layer,kind,instance_id,state,generation,revision) VALUES('global','siblingSeat','siblingInc','USER','LONG','oldA','BUSY',1,1)").unwrap();
+            let sibling_session="releasedSibling";
+            let sibling_suffix=sha256_hex(format!("{}\nglobal\n{sibling_session}\nsiblingInc\n1",
+                root.canonical_root().identity.opaque()).as_bytes());
+            let sibling_suffix=&sibling_suffix[..40];
+            let sibling_home=format!("home-{sibling_suffix}");
+            let sibling_binding=format!("binding-{sibling_suffix}");
+            let sibling_profile=crate::process::AppContainerProfile::derive_for_revocation(
+                &format!("Gogoke37.Session.{sibling_suffix}")).unwrap();
+            let sibling_reserve=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"admission-reserve","requestId":"siblingReserve","targetId":"releasedSibling","domainId":"global","expectedRevision":"0","payload":{"seatId":"siblingSeat","generation":"1"}}"#;
+            let sibling_preparation=sha256_hex(b"global\nsiblingReserve");
+            let sibling_preparation=format!("homeprep-{}",&sibling_preparation[..40]);
+            db.execute("BEGIN IMMEDIATE").unwrap();
+            crate::store::session_transport::bind_owner_in_transaction(&mut db,
+                &crate::store::session_transport::OwnerBinding {binding_id:&sibling_binding,
+                    instance_id:"oldA",domain_id:"global",kind:"SESSION",
+                    owner_id:sibling_session,generation:"1"}).unwrap();
+            db.execute("COMMIT").unwrap();
+            super::super::temporary::create_temporary_home(&mut db,root,&sibling_profile,
+                &super::super::temporary::CreateTemporaryHome {request_id:&sibling_preparation,
+                    request_bytes:sibling_reserve,home_id:&sibling_home,instance_id:"oldA",
+                    domain_id:"global",kind:super::super::temporary::TemporaryKind::Session,
+                    owner_id:sibling_session,generation:"1"}).unwrap();
+            db.execute("INSERT INTO main.gogoke_v37_h_seat_binding(domain_id,session_id,seat_id,seat_incarnation,generation) VALUES('global','releasedSibling','siblingSeat','siblingInc','1')").unwrap();
+            let sibling_reserve_input=crate::store::session_transport::AdmissionRequest {
+                domain_id:"global",session_id:sibling_session,request_id:"siblingReserve",
+                raw_bytes:sibling_reserve,instance_id:"oldA",home_id:&sibling_home,
+                generation:"1",expected_revision:0};
+            assert!(matches!(crate::store::session_transport::reserve_admission(&mut db,
+                &sibling_reserve_input,|_|Ok(crate::store::session_transport::TrustedLimits {
+                    project_parallel:4,instance_concurrency:4})).unwrap(),
+                crate::store::session_transport::AdmissionResult::Applied(1)));
+            let sibling_release=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"admission-release","requestId":"siblingRelease","targetId":"releasedSibling","domainId":"global","expectedRevision":"1","payload":{"seatId":"siblingSeat","generation":"1"}}"#;
+            let sibling_release_input=crate::store::session_transport::AdmissionRequest {
+                domain_id:"global",session_id:sibling_session,request_id:"siblingRelease",
+                raw_bytes:sibling_release,instance_id:"oldA",home_id:&sibling_home,
+                generation:"1",expected_revision:1};
+            assert!(matches!(crate::store::session_transport::release_admission(&mut db,
+                &sibling_release_input,|_|Ok(())).unwrap(),
+                crate::store::session_transport::AdmissionResult::Applied(2)));
             let check=|db:&VerifiedDatabaseConnection<'_>| qualified_executions(db,&mut Vec::new());
-            check(&db).unwrap();
+            let (_,operations)=check(&db).unwrap();
+            assert!(operations.contains(&operation));
+            qualified_resources(&db,&operations).unwrap();
+            assert!(qualified_custody_disjoint_from_session(&db,"oldA","global",
+                "sessionA","1",&operations).is_err(),
+                "the target session's own execution cannot be classified as a sibling");
+            assert!(qualified_custody_disjoint_from_session(&db,"oldA","global",
+                "neverStartedSibling","1",&BTreeSet::new()).is_err(),
+                "an unqualified or orphan custody row cannot disappear through association");
+            db.execute("INSERT INTO main.gogoke_v37_h_generation(domain_id,session_id,generation,request_id,process_operation_id) VALUES('global','sessionA','2','orphanGeneration','orphanProcess')").unwrap();
+            let (_,operations)=check(&db).unwrap();
+            assert!(qualified_resources(&db,&operations).is_err(),
+                "an orphan H generation cannot be hidden by the episode join");
+            db.execute("DELETE FROM main.gogoke_v37_h_generation WHERE request_id='orphanGeneration'").unwrap();
+            let (_,operations)=check(&db).unwrap();
+            qualified_resources(&db,&operations).unwrap();
 
             // Drive the real UNKNOWN-resume producers. This narrow test seeds
             // the initial global seat/Secretary and OPEN journal row because
@@ -1402,7 +1625,7 @@ mod tests {
             assert_eq!(resume_proof,resume_stop.proof_hash());
             confirm_durable_stop(&mut resume_custodian,&resume_prepared,&resume_stop,
                 resume_stop_revision);
-            let historical=check(&db).unwrap();
+            let (historical,_)=check(&db).unwrap();
             qualified_owner_bindings(&db,&historical).unwrap();
             assert!(qualified_owner_bindings(&db,&BTreeSet::new()).is_err(),
                 "a retained ACTIVE binding needs its independently qualified historical episode");
