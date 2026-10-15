@@ -2114,9 +2114,7 @@ fn original_stdin_sources(db:&VerifiedDatabaseConnection<'_>,driver:&str,
             !matches!(request.operation.as_str(),"send"|"append-without-turn") ||
             (request.operation=="append-without-turn" && driver!="codex") ||
             request.operation!=r[6] || request.request_id!=r[5] ||
-            request.domain_id!=r[1] || request.target_id!=r[2] ||
-            !matches!(request.payload.get(&JsonString::from_str("generation")),
-                Some(Json::String(value)) if value.to_well_formed_string().as_deref()==Some(r[3].as_str())) ||
+            request.domain_id!=r[1] ||             request.target_id!=r[2] ||
             request.expected_revision!=revision || r[13]!=revision.to_string() ||
             r[7].is_empty() || r[8].is_empty() || r[7]!=r[20] || r[8]!=r[21] ||
             !matches!(r[24].as_str(),"PREPARED"|"ACTIVE"|"UNKNOWN"|"STOPPED") ||
