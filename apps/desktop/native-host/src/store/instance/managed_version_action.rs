@@ -392,7 +392,9 @@ fn valid_family_codec(driver:&str,source_hex:&str,pairs_hex:&str)->Result<()> {
     let mut previous:Option<(String,String,String,String,String,String)>=None;
     let mut pairs=std::collections::BTreeSet::new();
     for (source,proof) in sources[2..].iter().zip(&proofs[2..]) {
-        let source=unframe(&bytes(source).map_err(|_|ActionError::Conflict)?)?;
+        let mut source=unframe(&bytes(source).map_err(|_|ActionError::Conflict)?)?;
+        let credential_digest=source.pop().ok_or(ActionError::Conflict)?;
+        if !digest(&credential_digest) {return Err(ActionError::Conflict)}
         let proof=unframe(&bytes(proof).map_err(|_|ActionError::Conflict)?)?;
         let stdin=source.first().is_some_and(|kind|matches!(kind.as_str(),
             "H_STDIN_PENDING-v1"|"H_STDIN_RECEIPTED-v1"));
@@ -408,7 +410,7 @@ fn valid_family_codec(driver:&str,source_hex:&str,pairs_hex:&str)->Result<()> {
                 digest(&source[41]) && digest(&source[42]) =>
                 ((&source[1],&source[3],&source[4],&source[5],&source[7]),
                     &source[16],&source[17]),
-            Some("H_SESSION_STOP-v1"|"H_SESSION_RESUME_STOP-v1") if source.len()==42 &&
+            Some("H_SESSION_STOP-v1"|"H_SESSION_RESUME_STOP-v1") if source.len()==50 &&
                 proof[0]=="ORIGINAL_STOP" && source[15]=="STOPPED" &&
                 source[19]=="STOPPED" && source[14]==source[20] &&
                 ((source[0]=="H_SESSION_STOP-v1" && source[12].is_empty() &&
@@ -421,7 +423,16 @@ fn valid_family_codec(driver:&str,source_hex:&str,pairs_hex:&str)->Result<()> {
                 matches!(source[37].as_str(),"ACTIVE"|"CLOSED"|"CLEANED") &&
                 source[38].parse::<u64>().is_ok() &&
                 source[39]==format!("temp-home-{}",sha256_hex(source[7].as_bytes())) &&
-                !source[40].is_empty() && digest(&source[41]) =>
+                 !source[40].is_empty() && digest(&source[41]) &&
+                 ((source[42]=="ABSENT" && source[43..].iter().all(|value|value.is_empty())) ||
+                  (source[42]=="PRESENT" &&
+                   matches!(source[48].as_str(),"RESERVED"|"COMMITTED"|"STOPPED"|
+                       "UNKNOWN"|"RELEASED") &&
+                   source[49].parse::<u64>().ok().filter(|n|*n>0)
+                       .is_some_and(|n|source[49]==n.to_string()) &&
+                   (source[43]!=source[4] ||
+                    (source[44]==source[7] && source[45]==source[8] &&
+                     source[46]==source[6] && source[47]==source[14])))) =>
                 ((&source[1],&source[2],&source[3],&source[4],&source[6]),
                     &source[23],&source[24]),
             Some("H_SESSION_RESUME_PENDING-v1"|"H_SESSION_RESUME-v1") if
@@ -454,6 +465,16 @@ fn valid_family_codec(driver:&str,source_hex:&str,pairs_hex:&str)->Result<()> {
                     source[12].is_empty() && source[13]=="1") ||
                  (source[11]=="STOPPED" && source[13]=="0" &&
                     source[12].strip_prefix("sha256:").is_some_and(digest))) =>
+                ((&source[8],&source[9],&source[1],&source[10],&source[1]),
+                    &source[4],&source[5]),
+            Some("CREDENTIAL_BACKEND_C-v1") if source.len()==16 &&
+                driver=="codex" && proof[0]=="KERNEL_REBOOT" &&
+                source[9]=="global" && source[11]=="STOPPED" &&
+                source[13]=="0" &&
+                source[12].strip_prefix("sha256:").is_some_and(digest) &&
+                !source[14].is_empty() &&
+                source[15].strip_prefix("credential-intent-")
+                    .is_some_and(digest) =>
                 ((&source[8],&source[9],&source[1],&source[10],&source[1]),
                     &source[4],&source[5]),
             Some("MANAGED_PROBE_C-v1") if source.len()==19 &&
@@ -566,7 +587,7 @@ fn strict_row_width(kind:&str)->Option<usize> {
         "HO"|"FHG"=>10, "FO"|"NS"|"WTL"=>8, "HJ"=>17,
         "RS"|"WT"=>22, "WTP"=>4, "WTO"=>16,
         "HGC"=>24, "HA"=>30, "FH"=>18, "CP"=>11,
-        "LR"=>14, "VA"=>4,
+        "LR"=>14, "VA"=>4, "HDS"=>5, "CB"=>13, "CPH"=>8,
         _=>return None,
     })
 }
@@ -590,6 +611,24 @@ fn valid_strict_source_codec(driver:&str,source_hex:&str)->Result<()> {
         }
         if row[0]=="VA" && (key.len()!=1 || !row[3].strip_prefix('\'')
             .and_then(|value|value.strip_suffix('\'')).is_some_and(digest)) {
+            return Err(ActionError::Conflict)
+        }
+        if row[0]=="HDS" && (key.len()!=1 ||
+            row[2]!="'gogoke_v37_holder_disappearance'" ||
+            !((row[3]=="'ABSENT'" && row[4]=="NULL") ||
+              (row[3]=="'table'" &&
+               row[4].starts_with("'CREATE TABLE gogoke_v37_holder_disappearance(") &&
+               row[4].ends_with(" STRICT'")))) {
+            return Err(ActionError::Conflict)
+        }
+        if row[0]=="CPH" && (key.len()!=1 ||
+            !matches!(row[4].as_str(),"'ABSENT'"|"'PRESENT'") ||
+            !row[7].strip_prefix('\'').and_then(|value|value.strip_suffix('\''))
+                .is_some_and(digest) ||
+            (row[4]=="'ABSENT'" && (row[5]!="NULL" || row[6]!="0")) ||
+            (row[4]=="'PRESENT'" &&
+                (row[5]=="NULL" || row[6].parse::<u32>().ok()
+                    .is_none_or(|count|count==0 || row[6]!=count.to_string())))) {
             return Err(ActionError::Conflict)
         }
         let identity=(row[0].clone(),row[1].clone());
@@ -1165,7 +1204,8 @@ mod tests {
             source[4].clone(), source[5].clone()];
         let family=|proof:&[String]| {
             let sources=vec!["managed-cli-family-source-v1".to_owned(), "codex".to_owned(),
-                hex_bytes(&frame_strings(&source))];
+                hex_bytes(&frame_strings(&source.iter().cloned()
+                    .chain(std::iter::once("c".repeat(64))).collect::<Vec<_>>()))];
             let proofs=vec!["managed-cli-family-proof-v1".to_owned(), "codex".to_owned(),
                 hex_bytes(&frame_strings(proof))];
             valid_family_codec("codex",&hex_bytes(&frame_strings(&sources)),
@@ -1174,6 +1214,41 @@ mod tests {
         assert!(family(&proof).is_ok());
         proof[0]="ORIGINAL_STOP".into();
         assert!(matches!(family(&proof),Err(ActionError::Conflict)));
+    }
+
+    #[test]
+    fn original_credential_backend_c_needs_full_pair_and_kernel_proof() {
+        let mut source=vec![String::new();16];
+        source[0]="CREDENTIAL_BACKEND_C-v1".into();
+        source[1]="backend-operation".into();
+        source[2]="ticket".into();source[3]="nonce".into();
+        source[4]="123".into();source[5]="456".into();
+        source[6]="official-image".into();
+        source[7]=format!("sha256:{}","a".repeat(64));
+        source[8]="codexA".into();source[9]="global".into();
+        source[10]="1".into();source[11]="STOPPED".into();
+        source[12]=format!("sha256:{}","b".repeat(64));
+        source[13]="0".into();source[14]="backend-request".into();
+        source[15]=format!("credential-intent-{}","c".repeat(64));
+        let mut proof=vec!["KERNEL_REBOOT".to_owned(),"codexA".into(),
+            "global".into(),"backend-operation".into(),"1".into(),
+            "backend-operation".into(),"123".into(),"456".into()];
+        let family=|source:&[String],proof:&[String],credential:bool| {
+            let mut member=source.to_vec();
+            if credential {member.push("d".repeat(64));}
+            let sources=vec!["managed-cli-family-source-v1".to_owned(),"codex".to_owned(),
+                hex_bytes(&frame_strings(&member))];
+            let proofs=vec!["managed-cli-family-proof-v1".to_owned(),"codex".to_owned(),
+                hex_bytes(&frame_strings(proof))];
+            valid_family_codec("codex",&hex_bytes(&frame_strings(&sources)),
+                &hex_bytes(&frame_strings(&proofs)))
+        };
+        assert!(family(&source,&proof,true).is_ok());
+        assert!(family(&source,&proof,false).is_err());
+        proof[0]="ORIGINAL_STOP".into();
+        assert!(family(&source,&proof,true).is_err());
+        proof[0]="KERNEL_REBOOT".into();source[13]="1".into();
+        assert!(family(&source,&proof,true).is_err());
     }
 
     fn fixture(run: impl FnOnce(&RootLock, &mut VerifiedDatabaseConnection<'_>, &OwnerIssuer)) {

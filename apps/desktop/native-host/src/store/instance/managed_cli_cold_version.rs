@@ -5,7 +5,8 @@
 use super::{inspect_staged_official_cli_version, no_unsettled_managed_version_change,
     read_official_cli_version, read_prepared_managed_replacement, ManagedCliError, OFFICIAL};
 use super::super::{managed_version_action::{self,ActionRecord}, program_source, registry};
-use crate::process::{NativeLegacyHoldersGone,NativeStopProof};
+use crate::process::{CredentialAliasScope,CredentialBinding,CredentialError,
+    NativeLegacyHoldersGone,NativeStopProof};
 use crate::root::{inspect_root, RootLock};
 use crate::store::atomic::Statement;
 use crate::store::digest::{content_hash, sha256_hex};
@@ -32,6 +33,15 @@ pub(crate) struct QualifiedVersionAction {
     stdin: Vec<StdinMember>,
     global_operations: Vec<String>,
     global_native: Vec<(Vec<(u32,u64)>,NativeLegacyHoldersGone)>,
+    credential_bindings: Vec<(std::sync::Arc<CredentialBinding>,Vec<CredentialAliasScope>)>,
+}
+
+struct CredentialEvidence {
+    physical: Vec<Vec<String>>,
+    digest: String,
+    bindings: Vec<(std::sync::Arc<CredentialBinding>,Vec<CredentialAliasScope>)>,
+    backend_operations: std::collections::BTreeSet<String>,
+    backend_c: Vec<Vec<String>>,
 }
 
 impl QualifiedVersionAction {
@@ -73,6 +83,11 @@ impl QualifiedVersionAction {
             row.request==request && row.ticket==ticket && row.nonce==nonce)
     }
     pub(crate) fn recheck_native(&self) -> Result<(), ManagedCliError> {
+        for (binding,scopes) in &self.credential_bindings {
+            binding.verify_registered_aliases(scopes).map_err(|error|
+                ManagedCliError::Observation(format!(
+                    "registered credential metadata recheck: {error:?}")))?;
+        }
         for member in &self.units {
             match &member.absence {
                 NativeVersionAbsence::Reboot(fact) => fact.validate(&member.source.pairs)
@@ -164,6 +179,8 @@ const STRICT_PROJECTIONS: &[StrictProjection] = &[
         from:"FROM main.gogoke_v37_instance_history_generations g JOIN main.gogoke_v37_instance_histories h ON h.history_id=g.history_id JOIN main.gogoke_v37_instances i ON i.instance_id=h.instance_id WHERE i.driver_id=?1",key_columns:1,width:8},
     StrictProjection{kind:"CO",columns:"c.instance_id,c.root_identity,c.home_identity,c.file_identity,c.source_parent_identity,c.phase,c.revision",
         from:"FROM main.gogoke_v37_credential_objects c JOIN main.gogoke_v37_instances i ON i.instance_id=c.instance_id WHERE i.driver_id=?1",key_columns:1,width:7},
+    StrictProjection{kind:"CB",columns:"b.instance_id,b.home_identity,b.program_digest,b.version,b.backend,b.startup_selector,b.request_id,b.operation_id,b.ticket,b.custodian_nonce,b.generation",
+        from:"FROM main.gogoke_v37_credential_backend_evidence b JOIN main.gogoke_v37_instances i ON i.instance_id=b.instance_id WHERE i.driver_id=?1",key_columns:1,width:11},
     StrictProjection{kind:"CA",columns:"a.history_id,a.instance_id,a.directory_identity,a.source_file_identity,a.intent_request,a.state,a.revision",
         from:"FROM main.gogoke_v37_credential_aliases a JOIN main.gogoke_v37_instances i ON i.instance_id=a.instance_id WHERE i.driver_id=?1",key_columns:1,width:7},
     StrictProjection{kind:"CP",columns:"p.binding_id,p.instance_id,p.history_id,p.generation,p.profile_sid,p.source_file_identity,p.intent_request,p.state,p.revision",
@@ -232,6 +249,404 @@ fn strict_project(db:&VerifiedDatabaseConnection<'_>,driver:&str,
         }
     }
     Ok(())
+}
+
+/// HD is created by its original effect, not by ProductDatabase::open. Bind
+/// its validated schema state even when no HD row/table exists yet.
+fn strict_holder_schema_state(db:&VerifiedDatabaseConnection<'_>,
+    members:&mut std::collections::BTreeMap<(String,String),Vec<String>>)
+    ->Result<bool,ManagedCliError>{
+    const TABLE:&str="gogoke_v37_holder_disappearance";
+    super::super::holder_disappearance::read_holder_disappearance(
+        db,"managed-cli-strict-hd-schema")
+        .map_err(|error|ManagedCliError::Observation(format!(
+            "original HD schema/source: {error:?}")))?;
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT quote(name),quote(type),quote(sql) FROM main.sqlite_schema
+         WHERE lower(name)=?1")?;
+    q.bind_text(1,TABLE)?;
+    let (present,values)=if q.step_row()? {
+        let values=(0..3).map(|n|q.column_text(n))
+            .collect::<std::result::Result<Vec<_>,_>>()?;
+        if q.step_row()? {return Err(ManagedCliError::Busy)}
+        (true,values)
+    } else {
+        (false,vec![format!("'{TABLE}'"),"'ABSENT'".to_owned(),"NULL".to_owned()])
+    };
+    let key=hex(&frame(&values[..1]));
+    let row=std::iter::once("HDS".to_owned()).chain(std::iter::once(key.clone()))
+        .chain(values).collect::<Vec<_>>();
+    if members.insert(("HDS".to_owned(),key),row).is_some() {
+        return Err(ManagedCliError::Busy)
+    }
+    Ok(present)
+}
+
+fn credential_fields(value:&str,expected:usize)->Result<Vec<String>,ManagedCliError>{
+    let fields=decode_original_frames(value)?;
+    if fields.len()!=expected || fields.iter().any(|field|field.len()>256) {
+        return Err(ManagedCliError::Busy)
+    }
+    fields.into_iter().map(|field|String::from_utf8(field)
+        .map_err(|_|ManagedCliError::Busy)).collect()
+}
+
+fn credential_f_key(kind:&str,instance:&str,request:&str)->String{
+    let input=hex(&frame(&[kind.to_owned(),instance.to_owned(),request.to_owned()]));
+    format!("credential-intent-{}",sha256_hex(input.as_bytes()))
+}
+
+fn credential_receipt(key:&str,result:&str)->String{
+    let input=hex(&frame(&[key.to_owned(),result.to_owned()]));
+    format!("credential-receipt-{}",sha256_hex(input.as_bytes()))
+}
+
+fn credential_f_rows(db:&VerifiedDatabaseConnection<'_>,instance:&str)
+    ->Result<Vec<Vec<String>>,ManagedCliError>{
+    let target=format!("credential-instance-{}",sha256_hex(instance.as_bytes()));
+    rows(db,"SELECT request_id,request_hex,target_id,phase,COALESCE(receipt_json,''),
+        COALESCE(native_receipt_id,''),receipt_json IS NULL,native_receipt_id IS NULL
+        FROM main.gogoke_v37_instance_operations WHERE target_id=?1 ORDER BY request_id",
+        &target,8)
+}
+
+fn credential_f_applied(rows:&[Vec<String>],key:&str,fingerprint:&str,
+    target:&str,result:&str)->Result<(),ManagedCliError>{
+    let mut matching=rows.iter().filter(|row|row[0]==key);
+    let row=matching.next().ok_or(ManagedCliError::Busy)?;
+    if matching.next().is_some() || row[1]!=fingerprint || row[2]!=target ||
+        row[3]!="APPLIED" || row[4]!=result ||
+        row[5]!=credential_receipt(key,result) || row[6]!="0" || row[7]!="0" {
+        return Err(ManagedCliError::Busy)
+    }
+    Ok(())
+}
+
+fn credential_f_input(row:&[String],rows:&[Vec<String>],instance:&str,
+    target:&str)->Result<Vec<String>,ManagedCliError>{
+    let raw=decode_original_frames(&row[1])?;
+    let tag=raw.first().ok_or(ManagedCliError::Busy)?;
+    let expected=if tag==b"credential-backend-v1" {12}
+        else if tag==b"credential-object-v1" || tag==b"credential-profile-v1" {10}
+        else if tag==b"credential-alias-v1" {8}
+        else {return Err(ManagedCliError::Busy)};
+    let fields=credential_fields(&row[1],expected)?;
+    let (kind,request,result)=match fields[0].as_str() {
+        "credential-backend-v1" if fields[1]==instance=>("backend",&fields[7],
+            "BACKEND_METADATA_RECORDED".to_owned()),
+        "credential-object-v1" if fields[2]==instance=>("object",&fields[1],
+            "OBJECT_METADATA_RECORDED".to_owned()),
+        "credential-alias-v1" if fields[1]==instance=>{
+            let result=credential_fields(&row[4],4)?;
+            if !matches!(result[0].as_str(),"ACTIVE"|"DORMANT"|"REMOVED") ||
+                result[3].parse::<u32>().ok().filter(|n|*n>0)
+                    .is_none_or(|n|result[3]!=n.to_string()) {
+                return Err(ManagedCliError::Busy)
+            }
+            ("alias",&fields[3],row[4].clone())
+        },
+        "credential-profile-v1" if fields[1]==instance &&
+            matches!(row[4].as_str(),"ACTIVE"|"REVOKED") =>
+                ("profile",&fields[7],row[4].clone()),
+        _=>return Err(ManagedCliError::Busy),
+    };
+    let key=credential_f_key(kind,instance,request);
+    if row[0]!=key || row[1]!=hex(&frame(&fields)) {
+        return Err(ManagedCliError::Busy)
+    }
+    credential_f_applied(rows,&key,&row[1],target,&result)?;
+    Ok(fields)
+}
+
+fn credential_sql_quote(value:&str)->String{
+    format!("'{}'",value.replace('\'',"''"))
+}
+
+fn record_credential_physical(physical:&mut Vec<Vec<String>>,facts:&mut Vec<String>,
+    instance:&str,home:&str,state:&str,file:&str,links:u32,aliases:&str){
+    let marker=vec![instance.to_owned(),home.to_owned(),state.to_owned(),file.to_owned(),
+        links.to_string(),aliases.to_owned()];
+    facts.push(hex(&frame(&std::iter::once("PHYSICAL".to_owned())
+        .chain(marker.iter().cloned()).collect::<Vec<_>>())));
+    let values=vec![credential_sql_quote(instance),credential_sql_quote(home),
+        credential_sql_quote(state),if state=="ABSENT" {"NULL".to_owned()}
+            else {credential_sql_quote(file)},links.to_string(),
+        credential_sql_quote(aliases)];
+    let key=hex(&frame(&values[..1]));
+    physical.push(std::iter::once("CPH".to_owned())
+        .chain(std::iter::once(key)).chain(values).collect());
+}
+
+/// Bind the original credential writer, the physical fixed source, and its
+/// complete known registry shape without comparing an old backend pin to the
+/// current instance version. No credential stream is read.
+fn credential_source(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str)
+    ->Result<CredentialEvidence,ManagedCliError>{
+    for table in ["gogoke_v37_credential_backend_evidence",
+        "gogoke_v37_credential_objects","gogoke_v37_credential_aliases",
+        "gogoke_v37_credential_profiles"] {
+        let q=Statement::prepare(db.as_ptr(),&format!(
+            "SELECT instance_id FROM main.{table}"))?;
+        while q.step_row()? {
+            let instance=q.column_text(0)?;
+            let owner=Statement::prepare(db.as_ptr(),
+                "SELECT driver_id FROM main.gogoke_v37_instances WHERE instance_id=?1")?;
+            owner.bind_text(1,&instance)?;
+            if !owner.step_row()? || owner.column_text(0)?.is_empty() ||
+                owner.step_row()? {return Err(ManagedCliError::Busy)}
+        }
+    }
+    let instances=rows(db,"SELECT instance_id,home_identity,program_digest,version
+        FROM main.gogoke_v37_instances WHERE driver_id=?1 ORDER BY instance_id",driver,4)?;
+    let mut physical=Vec::new();
+    let mut facts=Vec::new();
+    let mut bindings=Vec::new();
+    let mut backend_operations=std::collections::BTreeSet::new();
+    let mut backend_c=Vec::new();
+    let empty_digest=sha256_hex(&frame(&[]));
+    for instance in &instances {
+        let id=&instance[0];
+        let backend=rows(db,"SELECT instance_id,home_identity,program_digest,version,
+            backend,startup_selector,request_id,operation_id,ticket,custodian_nonce,generation
+            FROM main.gogoke_v37_credential_backend_evidence WHERE instance_id=?1",id,11)?;
+        let object=super::super::credential_registry::read_credential_object(db,id)
+            .map_err(|error|ManagedCliError::Observation(format!(
+                "original credential object: {error:?}")))?;
+        let aliases=super::super::credential_registry::read_credential_aliases(db,id)
+            .map_err(|error|ManagedCliError::Observation(format!(
+                "original credential aliases: {error:?}")))?;
+        let profiles=super::super::credential_registry::read_credential_profiles(db,id)
+            .map_err(|error|ManagedCliError::Observation(format!(
+                "original credential profiles: {error:?}")))?;
+        let operations=credential_f_rows(db,id)?;
+        if driver!="codex" {
+            if !backend.is_empty() || object.is_some() || !aliases.is_empty() ||
+                !profiles.is_empty() || !operations.is_empty() {
+                return Err(ManagedCliError::Busy)
+            }
+            continue
+        }
+        if backend.len()>1 || backend.is_empty()!=object.is_none() ||
+            (!backend.is_empty() && operations.is_empty()) ||
+            (backend.is_empty() && !operations.is_empty()) {
+            return Err(ManagedCliError::Busy)
+        }
+        let target=format!("credential-instance-{}",sha256_hex(id.as_bytes()));
+        let operation_inputs=operations.iter().map(|row|
+            credential_f_input(row,&operations,id,&target))
+            .collect::<Result<Vec<_>,_>>()?;
+        let home=super::super::resolve_codex_instance_home(db,root,id)
+            .map_err(|error|ManagedCliError::Observation(format!(
+                "original credential registered HOME: {error:?}")))?;
+        if home.identity.opaque()!=instance[1] {return Err(ManagedCliError::IdentityChanged)}
+        let source=home.path.join("auth.json");
+        let observed=match CredentialBinding::observe_source_metadata(
+            root,&source,&home.identity) {
+            Ok(value)=>Some(value),
+            Err(CredentialError::Io{operation:"observe source metadata",source:error})
+                if error.kind()==std::io::ErrorKind::NotFound=>None,
+            Err(error)=>return Err(ManagedCliError::Observation(format!(
+                "original credential fixed source metadata: {error:?}"))),
+        };
+        let (state,file,links)=if let Some((file,links))=observed {
+            if backend.is_empty() || object.is_none() {return Err(ManagedCliError::Busy)}
+            ("PRESENT",file.opaque(),links)
+        } else {
+            if !backend.is_empty() || object.is_some() || !aliases.is_empty() ||
+                !profiles.is_empty() {return Err(ManagedCliError::Busy)}
+            ("ABSENT",String::new(),0)
+        };
+        if state=="ABSENT" {
+            record_credential_physical(&mut physical,&mut facts,id,&home.identity.opaque(),
+                state,&file,links,&empty_digest);
+            continue
+        }
+        let object=object.ok_or(ManagedCliError::Busy)?;
+        if object.root_identity.opaque()!=db.root_identity().opaque() ||
+            object.home_identity!=home.identity ||
+            object.source_parent_identity!=home.identity ||
+            object.file_identity.opaque()!=file {
+            return Err(ManagedCliError::Busy)
+        }
+        let cb=&backend[0];
+        if cb[0]!=*id || cb[1]!=home.identity.opaque() || cb[4]!="FILE" ||
+            cb[5]!="FILE_BOUND" {return Err(ManagedCliError::Busy)}
+        let old=original_catalog_pin("codex",&cb[2])?;
+        if cb[3]!=old.version {return Err(ManagedCliError::Busy)}
+        let backend_key=credential_f_key("backend",id,&cb[6]);
+        let backend_fingerprint=hex(&frame(&["credential-backend-v1".to_owned(),
+            id.clone(),cb[1].clone(),cb[2].clone(),cb[3].clone(),cb[4].clone(),
+            cb[5].clone(),cb[6].clone(),cb[7].clone(),cb[8].clone(),cb[9].clone(),
+            cb[10].clone()]));
+        credential_f_applied(&operations,&backend_key,&backend_fingerprint,&target,
+            "BACKEND_METADATA_RECORDED")?;
+        let c=rows(db,"SELECT operation_id,ticket,custodian_nonce,pid,
+            creation_time_100ns,image_path,binary_digest_sha256,profile_id,
+            domain_id,generation,state,COALESCE(stop_proof_hash,''),
+            stop_proof_hash IS NULL
+            FROM main.gogoke_coordination_process_custody WHERE operation_id=?1",&cb[7],13)?;
+        if c.len()!=1 || c[0][1]!=cb[8] || c[0][2]!=cb[9] ||
+            c[0][6]!=cb[2] || c[0][7]!=*id || c[0][8]!="global" ||
+            c[0][9]!=cb[10] || c[0][10]!="STOPPED" || c[0][11].is_empty() ||
+            c[0][12]!="0" ||
+            c[0][3].parse::<u32>().ok().filter(|n|*n>0)
+                .is_none_or(|n|c[0][3]!=n.to_string()) ||
+            c[0][4].parse::<u64>().ok().filter(|n|*n>0)
+                .is_none_or(|n|c[0][4]!=n.to_string()) {
+            return Err(ManagedCliError::Busy)
+        }
+        verified_source_images(db,root,"codex",id,&instance[1],&instance[2],
+            &instance[3],&c[0][5],&c[0][6])?;
+        if !backend_operations.insert(cb[7].clone()) {return Err(ManagedCliError::Busy)}
+        backend_c.push(std::iter::once("CREDENTIAL_BACKEND_C-v1".to_owned())
+            .chain(c[0].iter().cloned())
+            .chain([cb[6].clone(),backend_key.clone()]).collect());
+        let current_object=operations.iter().zip(&operation_inputs)
+            .filter(|(_,fields)|fields[0]=="credential-object-v1" &&
+                fields[5]==object.file_identity.opaque() &&
+                fields[8].parse::<i64>().ok().and_then(|n|n.checked_add(1))
+                    ==Some(object.revision))
+            .collect::<Vec<_>>();
+        if current_object.len()!=1 {return Err(ManagedCliError::Busy)}
+        let (object_f,input)=current_object[0];
+        let expected_revision=input[8].parse::<i64>().map_err(|_|ManagedCliError::Busy)?;
+        if input[0]!="credential-object-v1" || input[2]!=*id ||
+            input[3]!=object.root_identity.opaque() ||
+            input[4]!=object.home_identity.opaque() ||
+            input[5]!=object.file_identity.opaque() ||
+            input[6]!=object.source_parent_identity.opaque() ||
+            input[7].parse::<u64>().ok().filter(|n|*n>0)
+                .is_none_or(|n|input[7]!=n.to_string()) ||
+            expected_revision<0 || input[8]!=expected_revision.to_string() ||
+            expected_revision.checked_add(1)!=Some(object.revision) ||
+            (!input[9].is_empty() && input[9]==input[5]) {
+            return Err(ManagedCliError::Busy)
+        }
+        let object_key=credential_f_key("object",id,&input[1]);
+        credential_f_applied(&operations,&object_key,&object_f[1],&target,
+            "OBJECT_METADATA_RECORDED")?;
+        let mut scopes=Vec::new();
+        let mut alias_facts=Vec::new();
+        for alias in &aliases {
+            let latest=operations.iter().zip(&operation_inputs)
+                .filter(|(row,fields)|row[0]==alias.intent_request &&
+                    fields[0]=="credential-alias-v1")
+                .collect::<Vec<_>>();
+            if latest.len()!=1 {return Err(ManagedCliError::Busy)}
+            let (operation,fields)=latest[0];
+            let prior=fields[7].parse::<i64>().map_err(|_|ManagedCliError::Busy)?;
+            let completed=credential_fields(&operation[4],4)?;
+            let action=fields[6].as_str();
+            if fields[1]!=*id || fields[2]!=alias.history_id ||
+                fields[4]!=alias.directory_identity.opaque() ||
+                fields[5]!=alias.source_file_identity.opaque() ||
+                prior<0 || fields[7]!=prior.to_string() ||
+                prior.checked_add(2)!=Some(alias.revision) ||
+                completed[0]!=alias.state ||
+                completed[1]!=alias.source_file_identity.opaque() ||
+                completed[2]!=alias.directory_identity.opaque() ||
+                !matches!((action,alias.state.as_str()),
+                    ("CREATE"|"REACTIVATE","ACTIVE")|
+                    ("DORMANT","DORMANT")|("REMOVE","REMOVED")) {
+                return Err(ManagedCliError::Busy)
+            }
+            if matches!(alias.state.as_str(),"ACTIVE"|"DORMANT") {
+                if alias.source_file_identity!=object.file_identity {
+                    return Err(ManagedCliError::Busy)
+                }
+                let directory=super::super::private_history::resolve_private_history_directory(
+                    db,root,&alias.history_id)
+                    .map_err(|error|ManagedCliError::Observation(format!(
+                        "original credential alias history directory: {error:?}")))?;
+                if directory.identity!=alias.directory_identity {
+                    return Err(ManagedCliError::IdentityChanged)
+                }
+                alias_facts.push(hex(&frame(&[alias.history_id.clone(),
+                    directory.path.to_string_lossy().into_owned(),
+                    directory.identity.opaque(),alias.source_file_identity.opaque()])));
+                scopes.push(CredentialAliasScope{root:directory.path,
+                    root_identity:directory.identity});
+            } else if alias.state!="REMOVED" {return Err(ManagedCliError::Busy)}
+        }
+        for profile in &profiles {
+            let latest=operations.iter().zip(&operation_inputs)
+                .filter(|(row,fields)|row[0]==profile.intent_request &&
+                    fields[0]=="credential-profile-v1")
+                .collect::<Vec<_>>();
+            if latest.len()!=1 {return Err(ManagedCliError::Busy)}
+            let (_,fields)=latest[0];
+            let prior=fields[9].parse::<i64>().map_err(|_|ManagedCliError::Busy)?;
+            if fields[1]!=*id || fields[2]!=profile.history_id ||
+                fields[3]!=profile.binding_id || fields[4]!=profile.generation ||
+                fields[5]!=profile.profile_sid ||
+                fields[6]!=profile.source_file_identity.opaque() ||
+                prior<0 || fields[9]!=prior.to_string() ||
+                prior.checked_add(2)!=Some(profile.revision) ||
+                !matches!((fields[8].as_str(),profile.state.as_str()),
+                    ("GRANT","ACTIVE")|("REVOKE","REVOKED")) ||
+                !aliases.iter().any(|alias|alias.history_id==profile.history_id) {
+                return Err(ManagedCliError::Busy)
+            }
+            let generation=super::super::private_history::read_private_history_generation(
+                db,&profile.binding_id,&profile.generation)
+                .map_err(|error|ManagedCliError::Observation(format!(
+                    "original credential profile history generation: {error:?}")))?
+                .ok_or(ManagedCliError::Busy)?;
+            if generation.instance_id!=*id || generation.history_id!=profile.history_id {
+                return Err(ManagedCliError::Busy)
+            }
+            if profile.state=="ACTIVE" {
+                if profile.source_file_identity!=object.file_identity ||
+                    !aliases.iter().any(|alias|alias.history_id==profile.history_id &&
+                        matches!(alias.state.as_str(),"ACTIVE"|"DORMANT")) {
+                    return Err(ManagedCliError::Busy)
+                }
+            } else {
+                let input=super::super::credential_registry::CredentialProfileIntent{
+                    request_id:fields[7].clone(),instance_id:id.clone(),
+                    history_id:profile.history_id.clone(),
+                    binding_id:profile.binding_id.clone(),
+                    generation:profile.generation.clone(),
+                    profile_sid:profile.profile_sid.clone(),
+                    source_file_identity:profile.source_file_identity.clone(),
+                    expected_revision:prior,
+                    action:super::super::credential_registry::CredentialProfileAction::Revoke};
+                super::super::credential_registry::read_historical_profile_revoke(db,&input)
+                    .map_err(|error|ManagedCliError::Observation(format!(
+                        "original completed credential profile revoke: {error:?}")))?;
+            }
+        }
+        alias_facts.sort();
+        let alias_digest=sha256_hex(&frame(&alias_facts));
+        if links!=u32::try_from(scopes.len()).ok().and_then(|n|n.checked_add(1))
+            .ok_or(ManagedCliError::Busy)? {return Err(ManagedCliError::Busy)}
+        record_credential_physical(&mut physical,&mut facts,id,&home.identity.opaque(),
+            state,&file,links,&alias_digest);
+        let held=CredentialBinding::open_registered(root,&source,&home.identity,
+            &object.file_identity,&scopes).map_err(|error|ManagedCliError::Observation(
+                format!("original credential registered binding: {error:?}")))?;
+        held.verify_registered_aliases(&scopes).map_err(|error|
+            ManagedCliError::Observation(format!(
+                "original credential complete alias set: {error:?}")))?;
+        bindings.push((held,scopes));
+        facts.push(hex(&frame(&std::iter::once("BACKEND_C".to_owned())
+            .chain(c[0].iter().cloned()).collect::<Vec<_>>())));
+        for operation in &operations {
+            facts.push(hex(&frame(&std::iter::once("CREDENTIAL_F".to_owned())
+                .chain(operation.iter().cloned()).collect::<Vec<_>>())));
+        }
+    }
+    let mut registry=std::collections::BTreeMap::new();
+    let excluded=std::collections::BTreeSet::new();
+    for kind in ["CB","CO","CA","CP"] {
+        let spec=STRICT_PROJECTIONS.iter().find(|spec|spec.kind==kind)
+            .ok_or(ManagedCliError::Busy)?;
+        strict_project(db,driver,spec,&excluded,&mut registry)?;
+    }
+    for (_,row) in registry {facts.push(hex(&frame(&row)))}
+    facts.sort();
+    Ok(CredentialEvidence{physical,digest:sha256_hex(&frame(&facts)),
+        bindings,backend_operations,backend_c})
 }
 fn rows(db: &VerifiedDatabaseConnection<'_>, sql: &str, driver: &str,
     width: i32) -> Result<Vec<Vec<String>>, ManagedCliError> {
@@ -638,18 +1053,27 @@ fn original_stopped_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,dr
                 "original USER STOP: {error:?}")))?;
         let current=Statement::prepare(db.as_ptr(),
             "SELECT generation,home_id,binding_id,COALESCE(process_operation_id,''),
-             COALESCE(stop_fact_id,'') FROM main.gogoke_v37_h_claim WHERE domain_id=?1
+             COALESCE(stop_fact_id,''),state,CAST(revision AS TEXT)
+             FROM main.gogoke_v37_h_claim WHERE domain_id=?1
              AND session_id=?2 AND instance_id=?3")?;
         current.bind_text(1,&row[1])?;current.bind_text(2,&row[2])?;
         current.bind_text(3,&row[0])?;
+        let mut claim_source=vec!["ABSENT".to_owned()];
+        claim_source.extend((0..7).map(|_|String::new()));
         if current.step_row()? {
-            let values=(0..5).map(|n|current.column_text(n))
+            let values=(0..7).map(|n|current.column_text(n))
                 .collect::<std::result::Result<Vec<_>,_>>()?;
             if current.step_row()? || (values[0]==row[3] &&
                 (values[1]!=row[6] || values[2]!=row[7] ||
-                 values[3]!=row[5] || values[4]!=row[13])) {
+                 values[3]!=row[5] || values[4]!=row[13])) ||
+                !matches!(values[5].as_str(),"RESERVED"|"COMMITTED"|"STOPPED"|
+                    "UNKNOWN"|"RELEASED") ||
+                values[6].parse::<u64>().ok().filter(|n|*n>0)
+                    .is_none_or(|n|values[6]!=n.to_string()) {
                 return Err(ManagedCliError::Busy)
             }
+            claim_source=std::iter::once("PRESENT".to_owned())
+                .chain(values).collect();
         }
         verified_source_images(db,root,driver,&row[0],&row[26],&row[27],&row[28],
             &row[24],&row[25])?;
@@ -694,6 +1118,7 @@ fn original_stopped_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,dr
         source.push(sha256_hex(&frame(&[db.root_identity().opaque(),
             db.identity().opaque(),row[0].clone(),row[1].clone(),row[2].clone(),
             row[3].clone(),row[6].clone(),row[7].clone(),physical.opaque()])));
+        source.extend(claim_source);
         let proof=vec!["ORIGINAL_STOP".to_owned(),source[1].clone(),source[2].clone(),
             source[3].clone(),source[4].clone(),source[6].clone(),
             pid.to_string(),created.to_string()];
@@ -1223,7 +1648,8 @@ const ORIGINAL_GLOBAL_C_SQL:&str="SELECT c.operation_id,c.ticket,c.custodian_non
 
 /// Global login/observer custody has no H episode by original design. It is
 /// enumerated independently; a source digest is not a native stop proof.
-fn original_global_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str)
+fn original_global_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
+    credential_backend:&std::collections::BTreeSet<String>)
     ->Result<(Vec<(Vec<String>,Vec<String>)>,Vec<String>,
         Vec<(Vec<(u32,u64)>,NativeLegacyHoldersGone)>),ManagedCliError>{
     let original=rows(db,ORIGINAL_GLOBAL_C_SQL,driver,16)?;
@@ -1233,6 +1659,7 @@ fn original_global_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,dri
     let mut operations=Vec::new();
     let mut native=Vec::new();
     for row in original {
+        if credential_backend.contains(&row[0]) {continue}
         let observation=original_global_observation(db,&row)?;
         if row[1].is_empty() || row[2].is_empty() || row[5].is_empty() ||
             row[7].is_empty() || row[8]!="global" ||
@@ -1702,7 +2129,9 @@ fn original_c_image_has_owned_ancestor(image:&std::path::Path,staging:&std::path
 
 fn no_unattributed_managed_image_c(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
     driver:&str,units:&[(Unit,Vec<String>)],stopped:&[Unit],
-    globals:&[(Vec<String>,Vec<String>)],strict:bool)->Result<(),ManagedCliError>{
+    globals:&[(Vec<String>,Vec<String>)],
+    credential_backend:&std::collections::BTreeSet<String>,strict:bool)
+    ->Result<(),ManagedCliError>{
     let all=Statement::prepare(db.as_ptr(),
         "SELECT operation_id,profile_id,domain_id,generation,image_path,binary_digest_sha256 FROM main.gogoke_coordination_process_custody ORDER BY operation_id")?;
     let staging=root.canonical_root().canonical_path.join("v37-managed-cli").join("staging");
@@ -1763,7 +2192,8 @@ fn no_unattributed_managed_image_c(db:&VerifiedDatabaseConnection<'_>,root:&Root
         }
         let managed=managed && r[2]=="global";
         let known_strict=strict && known_driver;
-        if !h && !global && !managed && !known_strict {return Err(ManagedCliError::Observation(
+        if !h && !global && !managed && !known_strict &&
+            !credential_backend.contains(&r[0]) {return Err(ManagedCliError::Observation(
             "original C managed image has no authenticated family producer".into()))}
     }
     Ok(())
@@ -1828,6 +2258,7 @@ fn all_blockers_are_family(db:&VerifiedDatabaseConnection<'_>,driver:&str,
 fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     action:Option<&ActionRecord>,live_probe:Option<&NativeStopProof>)
     ->Result<QualifiedVersionAction,ManagedCliError>{
+    let credentials=credential_source(db,root,driver)?;
     let stopped=original_stopped_sources(db,root,driver)?;
     let mut original=original_units(db,root,driver)?;
     let (resumes,before_promotion)=original_resume_units(db,root,driver,&stopped)?;
@@ -1848,9 +2279,35 @@ fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     })).collect::<Result<Vec<_>,ManagedCliError>>()?;
     let all_stdin=original_stdin_sources(db,driver,&original,&stopped_units)?;
     let rpc=original_rpc_sources(db,driver,&original,&stopped_units)?;
-    let (global,global_operations,global_native)=original_global_sources(db,root,driver)?;
+    let (mut global,mut global_operations,mut global_native)=original_global_sources(
+        db,root,driver,&credentials.backend_operations)?;
     let probes=original_probe_sources(db,root,driver,action,live_probe)?;
-    no_unattributed_managed_image_c(db,root,driver,&original,&stopped_units,&global,false)?;
+    for source in &credentials.backend_c {
+        let covered=original.iter().any(|(unit,_)|unit.process==source[1]) ||
+            stopped_units.iter().any(|unit|unit.process==source[1]) ||
+            global.iter().any(|(member,_)|member[1]==source[1]) ||
+            probes.iter().any(|(_,proof)|proof[5]==source[1]);
+        if !global_operations.contains(&source[1]) {
+            global_operations.push(source[1].clone());
+        }
+        if covered {continue}
+        let pid=source[4].parse::<u32>().map_err(|_|ManagedCliError::Busy)?;
+        let created=source[5].parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
+        let pairs=vec![(pid,created)];
+        let fact=NativeLegacyHoldersGone::observe(&pairs).map_err(|error|
+            ManagedCliError::NativeGone(format!(
+                "original credential backend kernel cutoff: {error:?}")))?;
+        fact.validate(&pairs).map_err(|error|
+            ManagedCliError::NativeGone(format!(
+                "original credential backend kernel recheck: {error:?}")))?;
+        global_native.push((pairs,fact));
+        let proof=vec!["KERNEL_REBOOT".to_owned(),source[8].clone(),
+            source[9].clone(),source[1].clone(),source[10].clone(),
+            source[1].clone(),pid.to_string(),created.to_string()];
+        global.push((source.clone(),proof));
+    }
+    no_unattributed_managed_image_c(db,root,driver,&original,&stopped_units,
+        &global,&credentials.backend_operations,false)?;
     all_blockers_are_family(db,driver,&original,&stopped_units,&global_operations)?;
     let mut source_parts=vec!["managed-cli-family-source-v1".to_owned(),driver.to_owned()];
     let mut pair_parts=vec!["managed-cli-family-proof-v1".to_owned(),driver.to_owned()];
@@ -1914,13 +2371,15 @@ fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
         no_unsettled_managed_version_change(db,driver)?;
         return Ok(QualifiedVersionAction{cold:true,source_hex:String::new(),source_digest:String::new(),
             pairs_hex:String::new(),pairs_digest:String::new(),units:Vec::new(),stdin:Vec::new(),
-            global_operations:Vec::new(),global_native:Vec::new()});
+            global_operations:Vec::new(),global_native:Vec::new(),
+            credential_bindings:credentials.bindings});
     }
     members.sort_by(|a,b|a.0.cmp(&b.0));
     if members.windows(2).any(|pair|pair[0].0==pair[1].0) {
         return Err(ManagedCliError::Busy)
     }
-    for (_,source,proof) in members {
+    for (_,mut source,proof) in members {
+        source.push(credentials.digest.clone());
         source_parts.push(hex(&frame(&source)));
         pair_parts.push(hex(&frame(&proof)));
     }
@@ -1928,7 +2387,8 @@ fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     let pair_bytes=frame(&pair_parts);
     Ok(QualifiedVersionAction{cold:true,source_hex:hex(&source_bytes),source_digest:content_hash(&source_bytes),
         pairs_hex:hex(&pair_bytes),pairs_digest:content_hash(&pair_bytes),
-        units,stdin,global_operations,global_native})
+        units,stdin,global_operations,global_native,
+        credential_bindings:credentials.bindings})
 }
 
 fn strict_own_probe(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
@@ -2040,13 +2500,20 @@ fn strict_own_switch_keys(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
 /// historical rows already written by C/H/F without asking an old settled C
 /// for a new StopProof, stdout, or a fresh kernel absence observation.
 fn strict_history_source(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
-    driver:&str,action:Option<&ActionRecord>)
+    driver:&str,action:Option<&ActionRecord>,credentials:&CredentialEvidence)
     ->Result<(String,String),ManagedCliError>{
     let mut members=std::collections::BTreeMap::new();
     let empty=std::collections::BTreeSet::new();
     let mut own_c=std::collections::BTreeSet::new();
     let mut own_f=std::collections::BTreeSet::new();
     let mut own_action=std::collections::BTreeSet::new();
+    let hd_present=strict_holder_schema_state(db,&mut members)?;
+    for member in &credentials.physical {
+        let key=member[1].clone();
+        if members.insert(("CPH".to_owned(),key),member.clone()).is_some() {
+            return Err(ManagedCliError::Busy)
+        }
+    }
     if let Some(action)=action {
         own_action.insert(format!("'{}'",action.request_id));
         let prefix=format!("managed-probe-{driver}-{}-",
@@ -2064,6 +2531,7 @@ fn strict_history_source(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
         own_f=strict_own_switch_keys(db,root,driver,action)?;
     }
     for spec in STRICT_PROJECTIONS {
+        if spec.kind=="HD" && !hd_present {continue}
         if spec.kind=="VA" {
             let requests=rows(db,"SELECT request_id FROM main.gogoke_v37_instance_version_actions WHERE driver_id=?1",driver,1)?;
             for request in requests {
@@ -2094,13 +2562,17 @@ fn strict_scope(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     action:Option<&ActionRecord>,live:Option<&NativeStopProof>)
     ->Result<QualifiedVersionAction,ManagedCliError>{
     no_unsettled_managed_version_change(db,driver)?;
+    no_unowned_original_h_rows(db)?;
     independent_f_targets_clear(db,driver)?;
-    no_unattributed_managed_image_c(db,root,driver,&[],&[],&[],true)?;
+    no_unattributed_managed_image_c(db,root,driver,&[],&[],&[],
+        &std::collections::BTreeSet::new(),true)?;
     if let Some(action)=action {strict_own_probe(db,root,driver,action,live)?}
-    let (source_hex,source_digest)=strict_history_source(db,root,driver,action)?;
+    let credentials=credential_source(db,root,driver)?;
+    let (source_hex,source_digest)=strict_history_source(db,root,driver,action,&credentials)?;
     Ok(QualifiedVersionAction{cold:false,source_hex,source_digest,
         pairs_hex:String::new(),pairs_digest:String::new(),units:Vec::new(),stdin:Vec::new(),
-        global_operations:Vec::new(),global_native:Vec::new()})
+        global_operations:Vec::new(),global_native:Vec::new(),
+        credential_bindings:credentials.bindings})
 }
 
 pub(super) fn require_saved_action(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
@@ -2119,8 +2591,10 @@ pub(crate) fn observe_version_scope(db:&VerifiedDatabaseConnection<'_>,root:&Roo
     // source cannot be converted into a different qualification mode.
     let admission=(|| {
         no_unsettled_managed_version_change(db,driver)?;
+        no_unowned_original_h_rows(db)?;
         independent_f_targets_clear(db,driver)?;
-        no_unattributed_managed_image_c(db,root,driver,&[],&[],&[],true)
+        no_unattributed_managed_image_c(db,root,driver,&[],&[],&[],
+            &std::collections::BTreeSet::new(),true)
     })();
     match admission {
         Ok(())=>strict_scope(db,root,driver,None,None),
