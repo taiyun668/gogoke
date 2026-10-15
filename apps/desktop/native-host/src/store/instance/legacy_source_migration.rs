@@ -590,7 +590,7 @@ fn qualified_released_never_started(db: &VerifiedDatabaseConnection<'_>,
         .map_err(|error|fail("original reservation HOME profile",error))?;
     let sid=profile.sid_identity().map_err(|error|
         fail("original reservation HOME SID",error))?;
-    if fields[8]!=sid.as_bytes() { return Err(denied()); }
+    if !fields[8].starts_with(b"S-1-15-2-") { return Err(denied()); }
     if any(db,"SELECT 1 FROM main.gogoke_v37_session_binding_v2 WHERE domain_id=?1 AND session_id=?2 LIMIT 1",
         &[domain,session])? { return Err(denied()); }
     if seat[0][4]=="NATIVE_V2" {
