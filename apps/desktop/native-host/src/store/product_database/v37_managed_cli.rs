@@ -1215,9 +1215,15 @@ mod tests {
                 request_bytes:b"create historical test seat"}).unwrap().seat;
         let busy=crate::store::seat::set_dispatch_state(&mut product.connection,&created,true).unwrap();
         let generation=busy.generation.to_string();
+        let released_suffix=crate::store::digest::sha256_hex(format!(
+            "{}\nunstartedProjectA\nreleasedSessionA\n{}\n{generation}",
+            root.canonical_root().identity.opaque(),busy.incarnation).as_bytes());
+        let released_suffix=&released_suffix[..40];
+        let released_home=format!("home-{released_suffix}");
+        let released_binding=format!("binding-{released_suffix}");
         product.connection.execute("BEGIN IMMEDIATE").unwrap();
         crate::store::session_transport::bind_owner_in_transaction(&mut product.connection,
-            &crate::store::session_transport::OwnerBinding {binding_id:"releasedBindingA",
+            &crate::store::session_transport::OwnerBinding {binding_id:&released_binding,
                 instance_id:"legacyA",domain_id:"unstartedProjectA",kind:"SESSION",
                 owner_id:"releasedSessionA",generation:&generation}).unwrap();
         let selection=crate::store::session_transport::session_binding::SessionBinding {
@@ -1233,12 +1239,10 @@ mod tests {
         let preparation=crate::store::digest::sha256_hex(b"unstartedProjectA\nreleasedReserveA");
         let home_request=format!("homeprep-{}",&preparation[..40]);
         let session_profile=crate::process::AppContainerProfile::derive_for_revocation(
-            &format!("Gogoke37.Session.{}",&crate::store::digest::sha256_hex(
-                format!("{}\nunstartedProjectA\nreleasedSessionA\n{}\n{generation}",
-                    root.canonical_root().identity.opaque(),busy.incarnation).as_bytes())[..40])).unwrap();
+            &format!("Gogoke37.Session.{released_suffix}")).unwrap();
         instance::create_temporary_home(&mut product.connection,&root,&session_profile,
             &instance::CreateTemporaryHome {request_id:&home_request,request_bytes:reserve_raw.as_bytes(),
-                home_id:"releasedHomeA",instance_id:"legacyA",domain_id:"unstartedProjectA",
+                home_id:&released_home,instance_id:"legacyA",domain_id:"unstartedProjectA",
                 kind:instance::TemporaryKind::Session,owner_id:"releasedSessionA",generation:&generation}).unwrap();
         for (operation,request,expected) in [
             ("admission-reserve","releasedReserveA",0_i64),
@@ -1247,7 +1251,7 @@ mod tests {
             let raw=if expected==0 {reserve_raw.clone()} else {format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"{operation}\",\"requestId\":\"{request}\",\"targetId\":\"releasedSessionA\",\"domainId\":\"unstartedProjectA\",\"expectedRevision\":\"{expected}\",\"payload\":{{\"seatId\":\"{}\",\"generation\":\"{generation}\"}}}}",busy.seat_id)};
             let input=crate::store::session_transport::AdmissionRequest {domain_id:"unstartedProjectA",
                 session_id:"releasedSessionA",request_id:request,raw_bytes:raw.as_bytes(),
-                instance_id:"legacyA",home_id:"releasedHomeA",generation:&generation,
+                instance_id:"legacyA",home_id:&released_home,generation:&generation,
                 expected_revision:expected};
             let result=if expected==0 {
                 crate::store::session_transport::reserve_admission(&mut product.connection,&input,
@@ -1264,7 +1268,7 @@ mod tests {
         let release_raw=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"admission-release\",\"requestId\":\"releasedReleaseA\",\"targetId\":\"releasedSessionA\",\"domainId\":\"unstartedProjectA\",\"expectedRevision\":\"2\",\"payload\":{{\"seatId\":\"{}\",\"generation\":\"{generation}\"}}}}",busy.seat_id);
         let release=crate::store::session_transport::AdmissionRequest {domain_id:"unstartedProjectA",
             session_id:"releasedSessionA",request_id:"releasedReleaseA",raw_bytes:release_raw.as_bytes(),
-            instance_id:"legacyA",home_id:"releasedHomeA",generation:&generation,expected_revision:2};
+            instance_id:"legacyA",home_id:&released_home,generation:&generation,expected_revision:2};
         assert!(matches!(crate::store::session_transport::runtime::release_native(
             &mut product.connection,&crate::store::seat::NativeOrigin::user(&product.owner),&release).unwrap(),
             crate::store::session_transport::AdmissionResult::Applied(3)));
@@ -1284,9 +1288,15 @@ mod tests {
         let direct_busy=crate::store::seat::set_dispatch_state(
             &mut product.connection,&direct_created,true).unwrap();
         let direct_generation=direct_busy.generation.to_string();
+        let direct_suffix=crate::store::digest::sha256_hex(format!(
+            "{}\ndirectProjectA\ndirectSessionA\n{}\n{direct_generation}",
+            root.canonical_root().identity.opaque(),direct_busy.incarnation).as_bytes());
+        let direct_suffix=&direct_suffix[..40];
+        let direct_home=format!("home-{direct_suffix}");
+        let direct_binding=format!("binding-{direct_suffix}");
         product.connection.execute("BEGIN IMMEDIATE").unwrap();
         crate::store::session_transport::bind_owner_in_transaction(&mut product.connection,
-            &crate::store::session_transport::OwnerBinding {binding_id:"directBindingA",
+            &crate::store::session_transport::OwnerBinding {binding_id:&direct_binding,
                 instance_id:"legacyA",domain_id:"directProjectA",kind:"SESSION",
                 owner_id:"directSessionA",generation:&direct_generation}).unwrap();
         let direct_selection=crate::store::session_transport::session_binding::SessionBinding {
@@ -1303,18 +1313,16 @@ mod tests {
         let direct_preparation=crate::store::digest::sha256_hex(b"directProjectA\ndirectReserveA");
         let direct_home_request=format!("homeprep-{}",&direct_preparation[..40]);
         let direct_profile=crate::process::AppContainerProfile::derive_for_revocation(
-            &format!("Gogoke37.Session.{}",&crate::store::digest::sha256_hex(
-                format!("{}\ndirectProjectA\ndirectSessionA\n{}\n{direct_generation}",
-                    root.canonical_root().identity.opaque(),direct_busy.incarnation).as_bytes())[..40])).unwrap();
+            &format!("Gogoke37.Session.{direct_suffix}")).unwrap();
         instance::create_temporary_home(&mut product.connection,&root,&direct_profile,
             &instance::CreateTemporaryHome {request_id:&direct_home_request,
-                request_bytes:direct_reserve_raw.as_bytes(),home_id:"directHomeA",
+                request_bytes:direct_reserve_raw.as_bytes(),home_id:&direct_home,
                 instance_id:"legacyA",domain_id:"directProjectA",
                 kind:instance::TemporaryKind::Session,owner_id:"directSessionA",
                 generation:&direct_generation}).unwrap();
         let direct_reserve=crate::store::session_transport::AdmissionRequest {
             domain_id:"directProjectA",session_id:"directSessionA",request_id:"directReserveA",
-            raw_bytes:direct_reserve_raw.as_bytes(),instance_id:"legacyA",home_id:"directHomeA",
+            raw_bytes:direct_reserve_raw.as_bytes(),instance_id:"legacyA",home_id:&direct_home,
             generation:&direct_generation,expected_revision:0};
         assert!(matches!(crate::store::session_transport::reserve_admission(
             &mut product.connection,&direct_reserve,|_|Ok(
@@ -1326,7 +1334,7 @@ mod tests {
         let direct_release_raw=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"admission-release\",\"requestId\":\"directReleaseA\",\"targetId\":\"directSessionA\",\"domainId\":\"directProjectA\",\"expectedRevision\":\"1\",\"payload\":{{\"seatId\":\"{}\",\"generation\":\"{direct_generation}\"}}}}",direct_busy.seat_id);
         let direct_release=crate::store::session_transport::AdmissionRequest {
             domain_id:"directProjectA",session_id:"directSessionA",request_id:"directReleaseA",
-            raw_bytes:direct_release_raw.as_bytes(),instance_id:"legacyA",home_id:"directHomeA",
+            raw_bytes:direct_release_raw.as_bytes(),instance_id:"legacyA",home_id:&direct_home,
             generation:&direct_generation,expected_revision:1};
         assert!(matches!(crate::store::session_transport::runtime::release_native(
             &mut product.connection,&crate::store::seat::NativeOrigin::user(&product.owner),
@@ -1355,6 +1363,72 @@ mod tests {
             "SELECT request_id,request_hex,target_id,phase,COALESCE(native_receipt_id,'') FROM main.gogoke_v37_instance_operations ORDER BY request_id",5);
         let legacy_schema_before=legacy_fence_schema_rows(&product);
         let legacy_rows_before=legacy_fence_family_rows(&product,legacy_family_present);
+        let original_receipt_hex=action_hex(home.as_bytes());
+        let qualification_input=instance::LegacySourceRequest {
+            raw:frame.as_bytes(),request_id:"sourceMoveA",target_id:"legacyA",
+            original_request_id:"registerA",original_fingerprint:&fingerprint,
+            original_receipt_hex:&original_receipt_hex,original_home_identity:&home,
+            expected_root_identity:&expected_root,expected_database_identity:&expected_database,
+        };
+        let qualified=instance::LegacySourceResult::qualification_digest_for_test(
+            &product.connection,&root,&qualification_input).unwrap();
+        // Back up exact SQL values/types without enclosing the USER dispatcher
+        // in a SAVEPOINT: the dispatcher owns its own authority transactions.
+        for (table,predicate,value) in [
+            ("gogoke_v37_instance_homes","home_id=?1",released_home.as_str()),
+            ("gogoke_v37_h_operation","domain_id='unstartedProjectA' AND request_id=?1","releasedReserveA"),
+            ("gogoke_v37_instance_operations","request_id=?1",home_request.as_str()),
+        ] {
+            let backup=Statement::prepare(product.connection.as_ptr(),&format!(
+                "CREATE TEMP TABLE source_history_restore AS SELECT * FROM main.{table} WHERE {predicate}")).unwrap();
+            backup.bind_text(1,value).unwrap();backup.step_done().unwrap();drop(backup);
+            assert_eq!(table_rows(&product,
+                "SELECT CAST(COUNT(*) AS TEXT) FROM temp.source_history_restore",1),
+                vec![vec!["1".to_owned()]]);
+            assert_eq!(instance::LegacySourceResult::qualification_digest_for_test(
+                &product.connection,&root,&qualification_input).unwrap(),qualified);
+            let remove=Statement::prepare(product.connection.as_ptr(),&format!(
+                "DELETE FROM main.{table} WHERE {predicate}")).unwrap();
+            remove.bind_text(1,value).unwrap();remove.step_done().unwrap();drop(remove);
+            assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err(),
+                "a RELEASED claim still requires its original {table} source");
+            assert!(table_rows(&product,
+                "SELECT request_id FROM main.gogoke_v37_instance_legacy_source_migrations",1).is_empty());
+            assert!(table_rows(&product,
+                "SELECT instance_id FROM main.gogoke_v37_instance_program_sources WHERE instance_id='legacyA'",1).is_empty());
+            product.connection.execute(&format!(
+                "INSERT INTO main.{table} SELECT * FROM temp.source_history_restore; DROP TABLE temp.source_history_restore")).unwrap();
+            assert_eq!(instance::LegacySourceResult::qualification_digest_for_test(
+                &product.connection,&root,&qualification_input).unwrap(),qualified,
+                "restoring the exact original source must restore the complete positive qualification");
+        }
+        let create=Statement::prepare(product.connection.as_ptr(),
+            "SELECT request_hex FROM main.gogoke_v37_instance_operations WHERE request_id=?1").unwrap();
+        create.bind_text(1,&home_request).unwrap();assert!(create.step_row().unwrap());
+        let original_create=create.column_text(0).unwrap();
+        assert!(!create.step_row().unwrap());drop(create);
+        let original_sid=session_profile.sid_identity().unwrap();
+        let mut changed_sid=original_sid.clone();
+        let last=changed_sid.pop().unwrap();changed_sid.push(if last=='0' {'1'} else {'0'});
+        assert!(changed_sid.starts_with("S-1-15-2-"));assert_ne!(changed_sid,original_sid);
+        let sid_hex=action_hex(original_sid.as_bytes());
+        let prefix=original_create.strip_suffix(&sid_hex).expect("original F create ends in its exact native SID");
+        let changed_create=format!("{prefix}{}",action_hex(changed_sid.as_bytes()));
+        assert_eq!(changed_create.len(),original_create.len());
+        let change=Statement::prepare(product.connection.as_ptr(),
+            "UPDATE main.gogoke_v37_instance_operations SET request_hex=?1 WHERE request_id=?2").unwrap();
+        change.bind_text(1,&changed_create).unwrap();change.bind_text(2,&home_request).unwrap();
+        change.step_done().unwrap();drop(change);
+        assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err(),
+            "another well-formed AppContainer SID cannot replace the original native HOME SID");
+        let restore=Statement::prepare(product.connection.as_ptr(),
+            "UPDATE main.gogoke_v37_instance_operations SET request_hex=?1 WHERE request_id=?2").unwrap();
+        restore.bind_text(1,&original_create).unwrap();restore.bind_text(2,&home_request).unwrap();
+        restore.step_done().unwrap();drop(restore);
+        assert_eq!(instance::LegacySourceResult::qualification_digest_for_test(
+            &product.connection,&root,&qualification_input).unwrap(),qualified);
+        assert_eq!(table_rows(&product,
+            "SELECT request_id,request_hex,target_id,phase,COALESCE(native_receipt_id,'') FROM main.gogoke_v37_instance_operations ORDER BY request_id",5),original_before);
         assert!(product.dispatch_user_managed_cli(frame.replace(&fingerprint,"00").as_bytes()).is_err());
         assert!(product.dispatch_user_managed_cli(frame.replacen("}",",\"extra\":\"x\"}",1).as_bytes()).is_err());
         let missing_stage=format!("codex-{}-missing",pin.version);

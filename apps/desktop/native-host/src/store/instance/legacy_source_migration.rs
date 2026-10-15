@@ -34,6 +34,11 @@ pub(crate) struct LegacySourceResult {
 
 #[cfg(all(test, windows))]
 impl LegacySourceResult {
+    pub(crate) fn qualification_digest_for_test(db: &VerifiedDatabaseConnection<'_>,
+        root: &RootLock, input: &LegacySourceRequest<'_>) -> Result<String> {
+        qualify(db, root, input).map(|value| value.qualification_digest)
+    }
+
     pub(crate) fn run_focused_history_fixtures() {
         tests::optional_legacy_fence_family_classifier_matrix();
         tests::plain_resume_accepts_only_direct_or_original_unknown_promotion_equation();
@@ -564,7 +569,7 @@ fn qualified_released_never_started(db: &VerifiedDatabaseConnection<'_>,
         || fields[1]!=unhex(&history[0][1])? || fields[2]!=home.as_bytes()
         || fields[3]!=instance.as_bytes() || fields[4]!=domain.as_bytes()
         || fields[5]!=b"SESSION" || fields[6]!=session.as_bytes()
-        || fields[7]!=generation.as_bytes() || !fields[8].starts_with(b"S-1-15-2-") {
+        || fields[7]!=generation.as_bytes() {
         return Err(denied());
     }
     let seat = rows(db,
@@ -572,6 +577,20 @@ fn qualified_released_never_started(db: &VerifiedDatabaseConnection<'_>,
             &[domain,session],5)?;
     if seat.len()!=1 || seat[0][3]!=instance || seat[0][0].is_empty()
         || seat[0][1].is_empty() || seat[0][2]!=generation { return Err(denied()); }
+    // Match the original native admission naming and SID producer, rather
+    // than accepting an arbitrary HOME/binding or an AppContainer SID prefix.
+    let suffix=sha256_hex(format!("{}\n{domain}\n{session}\n{}\n{generation}",
+        db.root_identity().opaque(),seat[0][1]).as_bytes());
+    let suffix=&suffix[..40];
+    if home!=format!("home-{suffix}") || binding!=format!("binding-{suffix}") {
+        return Err(denied());
+    }
+    let profile=crate::process::AppContainerProfile::derive_for_revocation(
+        &format!("Gogoke37.Session.{suffix}"))
+        .map_err(|error|fail("original reservation HOME profile",error))?;
+    let sid=profile.sid_identity().map_err(|error|
+        fail("original reservation HOME SID",error))?;
+    if fields[8]!=sid.as_bytes() { return Err(denied()); }
     if any(db,"SELECT 1 FROM main.gogoke_v37_session_binding_v2 WHERE domain_id=?1 AND session_id=?2 LIMIT 1",
         &[domain,session])? { return Err(denied()); }
     if seat[0][4]=="NATIVE_V2" {
@@ -652,12 +671,14 @@ fn qualified_resources(db: &VerifiedDatabaseConnection<'_>,
         if any(db, sql, &values)? { return Err(denied()); }
     }
     let claims = rows(db,
-        "SELECT c.instance_id,c.domain_id,c.session_id,c.state,COALESCE(c.process_operation_id,''),COALESCE(c.stop_fact_id,''),c.generation,c.binding_id FROM main.gogoke_v37_h_claim c JOIN main.gogoke_v37_instances i ON i.instance_id=c.instance_id WHERE i.driver_id='codex'", &[], 8)?;
+        "SELECT c.instance_id,c.domain_id,c.session_id,c.state,COALESCE(c.process_operation_id,''),COALESCE(c.stop_fact_id,''),c.generation,c.binding_id,c.home_id FROM main.gogoke_v37_h_claim c JOIN main.gogoke_v37_instances i ON i.instance_id=c.instance_id WHERE i.driver_id='codex'", &[], 9)?;
     for c in &claims {
         if c[4].is_empty() {
             if c[3]!="RELEASED" || !c[5].is_empty() || any(db,
                 "SELECT 1 FROM main.gogoke_v37_h_process_episode WHERE domain_id=?1 AND session_id=?2 LIMIT 1",
                 &[&c[1],&c[2]])? { return Err(denied()); }
+            qualified_released_never_started(db,&c[0],&c[1],&c[2],&c[8],&c[7],&c[6],
+                qualified_operations)?;
             continue;
         }
         let custody = rows(db, "SELECT state,COALESCE(stop_proof_hash,''),generation FROM main.gogoke_coordination_process_custody WHERE operation_id=?1 AND profile_id=?2 AND domain_id=?3", &[&c[4], &c[0], &c[1]], 3)?;
