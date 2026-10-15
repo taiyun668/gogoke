@@ -10,6 +10,8 @@ use crate::store::authority::{check_owner_in_current_transaction, OwnerIssuer};
 use crate::store::digest::sha256_hex;
 use crate::store::orchestration::OrchestrationError;
 use crate::store::same_open::VerifiedDatabaseConnection;
+#[cfg(all(test, windows))]
+use crate::store::same_open::SameOpenError;
 use std::collections::BTreeSet;
 
 pub(super) const SCHEMA: &str = "CREATE TABLE gogoke_v37_instance_legacy_source_migrations(request_id TEXT PRIMARY KEY,target_id TEXT NOT NULL,raw_hex TEXT NOT NULL,raw_sha256 TEXT NOT NULL,original_request_id TEXT NOT NULL,original_fingerprint TEXT NOT NULL,original_receipt_hex TEXT NOT NULL,original_home_identity TEXT NOT NULL,root_identity TEXT NOT NULL,database_identity TEXT NOT NULL,qualification_digest TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('PREPARING','APPLIED','UNKNOWN')),source_fingerprint TEXT,receipt_hex TEXT,CHECK((phase='PREPARING' AND source_fingerprint IS NULL AND receipt_hex IS NULL) OR (phase='UNKNOWN' AND source_fingerprint IS NULL AND receipt_hex IS NULL) OR (phase='APPLIED' AND source_fingerprint IS NOT NULL AND receipt_hex IS NOT NULL))) STRICT";
@@ -867,6 +869,50 @@ fn transaction<T>(db: &mut VerifiedDatabaseConnection<'_>,
     }
 }
 
+// The first reservation is the only point where an unknown COMMIT can leave
+// no durable request to reconcile. Preserve SQLite's original error while
+// making that admission boundary explicit to the caller.
+fn admission_commit(db: &mut VerifiedDatabaseConnection<'_>) -> Result<()> {
+    #[cfg(all(test, windows))]
+    if let Some(commit_first) = FIRST_ADMISSION_COMMIT_FAULT.with(|fault| fault.take()) {
+        // These are distinct real SQLite transaction controls. The synthetic
+        // error represents a lost/error return; readback asserts which control
+        // actually reached the database rather than guessing from the return.
+        db.execute(if commit_first { "COMMIT" } else { "ROLLBACK" })
+            .map_err(|error| fail("admission test transaction control", error))?;
+        return Err(fail("ADMISSION_COMMIT_UNKNOWN", SameOpenError::SqliteExec {
+            code: 5, message: "controlled first COMMIT return error".to_owned(),
+        }));
+    }
+    db.execute("COMMIT")
+        .map_err(|error| fail("ADMISSION_COMMIT_UNKNOWN", error))
+}
+
+#[cfg(all(test, windows))]
+std::thread_local! {
+    static FIRST_ADMISSION_COMMIT_FAULT: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(all(test, windows))]
+pub(crate) fn test_first_admission_commit_error_after(commit_first: bool) {
+    FIRST_ADMISSION_COMMIT_FAULT.with(|fault| {
+        assert!(fault.get().is_none(), "one admission fault at a time");
+        fault.set(Some(commit_first));
+    });
+}
+
+fn admission_transaction<T>(db: &mut VerifiedDatabaseConnection<'_>,
+    work: impl FnOnce(&mut VerifiedDatabaseConnection<'_>) -> Result<T>) -> Result<T> {
+    db.execute("BEGIN IMMEDIATE").map_err(|error| fail("admission begin", error))?;
+    match work(db) {
+        Ok(value) => { admission_commit(db)?; Ok(value) },
+        Err(original) => match db.execute("ROLLBACK") {
+            Ok(()) => Err(original),
+            Err(rollback) => Err(fail("admission rollback unknown", (original, rollback))),
+        },
+    }
+}
+
 pub(crate) fn migrate_legacy_codex_source(db: &mut VerifiedDatabaseConnection<'_>,
     root: &RootLock, owner: &OwnerIssuer, input: &LegacySourceRequest<'_>,
     applied_receipt: &[u8]) -> Result<LegacySourceResult> {
@@ -876,7 +922,7 @@ pub(crate) fn migrate_legacy_codex_source(db: &mut VerifiedDatabaseConnection<'_
         return applied_readback(db, root, input, &prior, applied_receipt);
     }
     let initial = qualify(db, root, input)?;
-    transaction(db, |db| {
+    admission_transaction(db, |db| {
         check_owner_in_current_transaction(db, owner)?;
         if read_journal(db, input.request_id)?.is_some() || any(db,
             "SELECT 1 FROM main.gogoke_v37_instance_legacy_source_migrations LIMIT 1", &[])? ||
@@ -898,6 +944,14 @@ pub(crate) fn migrate_legacy_codex_source(db: &mut VerifiedDatabaseConnection<'_
             prior.qualification_digest != current.qualification_digest { return Err(denied()); }
         Ok(())
     })?;
+    // A successful COMMIT return is necessary but the committed intent must
+    // also be readable from this verified physical database before SOURCE.
+    let committed = read_journal(db, input.request_id)?.ok_or_else(denied)?;
+    if !same_intent(db, input, &committed) || committed.phase != "PREPARING" ||
+        committed.qualification_digest != initial.qualification_digest ||
+        !source_rows(db, input.target_id)?.is_empty() {
+        return Err(denied());
+    }
     // Only this uninterrupted invocation can enter the effect transaction.
     transaction(db, |db| {
         check_owner_in_current_transaction(db, owner)?;

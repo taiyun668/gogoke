@@ -68,6 +68,8 @@ pub(crate) use program_source::{bind_managed_instance_program, migrate_quiescent
     ProgramSourceError};
 pub(crate) use legacy_source_migration::{migrate_legacy_codex_source, LegacySourceRequest,
     LegacySourceResult};
+#[cfg(all(test, windows))]
+pub(crate) use legacy_source_migration::test_first_admission_commit_error_after;
 pub(crate) use registry::{preflight_register_request, reconcile_register_replay,
     register_instance, record_observation, repin_program, reconcile_program_repin,
     reconcile_managed_switch,valid_managed_switch_request_id,ManagedSwitchReceipt,

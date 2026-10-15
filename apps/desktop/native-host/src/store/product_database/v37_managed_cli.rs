@@ -986,21 +986,32 @@ mod tests {
 
     #[test]
     fn strict_legacy_codex_unregistered_physical_acl_applies_and_replays() {
-        strict_legacy_codex_physical_acl_applies_and_replays(false,false,false);
+        strict_legacy_codex_physical_acl_applies_and_replays(false,false,false,None);
     }
 
     #[test]
     fn strict_legacy_codex_registered_physical_acl_applies_and_replays() {
-        strict_legacy_codex_physical_acl_applies_and_replays(true,true,true);
+        strict_legacy_codex_physical_acl_applies_and_replays(true,true,true,None);
     }
 
     #[test]
     fn strict_legacy_codex_complete_fence_family_without_target_row_applies_and_replays() {
-        strict_legacy_codex_physical_acl_applies_and_replays(true,false,true);
+        strict_legacy_codex_physical_acl_applies_and_replays(true,false,true,None);
+    }
+
+    #[test]
+    fn strict_legacy_source_first_commit_error_after_real_commit_blocks_effect() {
+        strict_legacy_codex_physical_acl_applies_and_replays(false,false,false,Some(true));
+    }
+
+    #[test]
+    fn strict_legacy_source_first_commit_error_after_real_rollback_allows_fresh_admission() {
+        strict_legacy_codex_physical_acl_applies_and_replays(false,false,false,Some(false));
     }
 
     fn strict_legacy_codex_physical_acl_applies_and_replays(
         registered: bool,fenced: bool,legacy_family_present: bool,
+        first_commit_error_after: Option<bool>,
     ) {
         assert!(!fenced || legacy_family_present);
         let _guard=route_b_test_guard();
@@ -1384,6 +1395,52 @@ mod tests {
             assert!(table_rows(&product,
                 "SELECT instance_id FROM main.gogoke_v37_instance_program_sources WHERE instance_id='legacyA'",1).is_empty());
             product.connection.execute("DELETE FROM main.gogoke_v37_instance_legacy_source_migrations WHERE request_id='priorMigration'").unwrap();
+        }
+        if let Some(commit_first) = first_commit_error_after {
+            instance::test_first_admission_commit_error_after(commit_first);
+            let error=product.dispatch_user_managed_cli(frame.as_bytes()).unwrap_err();
+            assert!(format!("{error:?}").contains("ADMISSION_COMMIT_UNKNOWN"),
+                "the original first-COMMIT error must retain its admission-unknown label: {error:?}");
+            assert!(format!("{error:?}").contains("controlled first COMMIT return error"),
+                "the admission-unknown label cannot erase the original error: {error:?}");
+            assert!(table_rows(&product,
+                "SELECT instance_id FROM main.gogoke_v37_instance_program_sources WHERE instance_id='legacyA'",1).is_empty(),
+                "a first-COMMIT error cannot enter the SOURCE transaction");
+            let journal=table_rows(&product,
+                "SELECT request_id,phase FROM main.gogoke_v37_instance_legacy_source_migrations",2);
+            if commit_first {
+                assert_eq!(journal,vec![vec!["sourceMoveA".into(),"PREPARING".into()]],
+                    "actual committed PREPARING retains the original ID");
+                assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err(),
+                    "a durable PREPARING row cannot resume the effect");
+                assert!(product.dispatch_user_managed_cli(frame.replace("sourceMoveA","sourceMoveB").as_bytes()).is_err(),
+                    "a fresh ID cannot pass a durable PREPARING row");
+            } else {
+                assert!(journal.is_empty(), "actual rollback left no durable admission");
+                let journal_schema=table_rows(&product,
+                    "SELECT sql FROM main.sqlite_schema WHERE type='table' AND name='gogoke_v37_instance_legacy_source_migrations'",1);
+                assert_eq!(journal_schema.len(),1);
+                product.connection.execute("DROP TABLE main.gogoke_v37_instance_legacy_source_migrations").unwrap();
+                assert!(product.dispatch_user_managed_cli(
+                    frame.replace("sourceMoveA","sourceMoveB").as_bytes()).is_err(),
+                    "missing dedicated journal schema cannot be treated as empty");
+                assert!(table_rows(&product,
+                    "SELECT instance_id FROM main.gogoke_v37_instance_program_sources WHERE instance_id='legacyA'",1).is_empty());
+                product.connection.execute(&journal_schema[0][0]).unwrap();
+                let fresh=product.dispatch_user_managed_cli(
+                    frame.replace("sourceMoveA","sourceMoveB").as_bytes()).unwrap();
+                assert!(String::from_utf8_lossy(&fresh).contains("\"status\":\"APPLIED\""));
+                assert_eq!(table_rows(&product,
+                    "SELECT request_id,phase FROM main.gogoke_v37_instance_legacy_source_migrations",2),
+                    vec![vec!["sourceMoveB".into(),"APPLIED".into()]]);
+            }
+            assert_eq!(table_rows(&product,
+                "SELECT request_id,request_hex,target_id,phase,COALESCE(native_receipt_id,'') FROM main.gogoke_v37_instance_operations ORDER BY request_id",5),original_before);
+            product.close_checked().unwrap();drop(root);
+            fs::remove_file(database).unwrap();
+            fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).unwrap();
+            fs::remove_dir_all(path).unwrap();
+            return;
         }
         let applied=product.dispatch_user_managed_cli(frame.as_bytes()).unwrap();
         assert!(String::from_utf8_lossy(&applied).contains("\"status\":\"APPLIED\""));
