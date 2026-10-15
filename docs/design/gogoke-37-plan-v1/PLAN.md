@@ -583,3 +583,9 @@ Owner 要求一次查全 Claude、Codex、OpenCode 当前库所有阻挡类型�
 ### D-NOLAUNCH 的原单一 M1 SOURCE 静止消费者
 
 同一待裁决项还精确列入 legacy_source_migration.rs：仅原 PR95 单一 M1 的 processless claim 及精确关联 ACTIVE 临时 HOME 的 H 执行资源静止检查可消费同一 H sealed 原未跨启动边界事实。不得把 COMMITTED/HOME 改称 RELEASED/CLOSED，不改原行；原注册、物理 Root/DB/HOME、官方来源、全局 C/H/F/凭据效果与 CAS 均独立，PR96 首次持久意图状态表不变。缺该历史实际 producer/原证明或任何其它独立条件，继续拒绝；不是新增 SOURCE 目标或写方，不是实际迁移授权。
+
+### T07 旧 probe 占用与新版输出的限定修订草案
+
+Owner 已同意按同一三家合同修订 T07：旧 first-copy/四字段非 action managed probe 的原 C/native StopProof 完整链可只用于未来执行资源占用重评，须精确绑定原 request/attempt、ticket/nonce、PID/完整 creation、image/digest、profile/domain/generation、writer fence、parent exit、Job process count=0、持久 STOPPED/StopProof hash，以及原官方物理 stage/pin 和相关 F source/registration/switch 链。旧 stdout 未持久保存即 `NOT_RETAINED`，绝不称旧 probe 版本成功或用它证明新目标版本；旧 PREPARED/ACTIVE/UNKNOWN、未结 action/PROBING 或任一来源/物理事实缺证仍拒绝，原 F qualifier 不改。新版 STRICT/COLD action 则须在原 PROBING→PROBED 事务持久保存实际 custodian confirmed StopProof/唯一原 C tuple、stdout/exit 和原公开 receipt bytes；PROBED/CONSUMED 每次重验原唯一 C。只扩既有内部 receipt codec，不加 schema、OS producer、公开字段或写者；原 UNKNOWN/HOME/错误/凭据结果不变。完整正反例见同份 MANAGED_CLI_HISTORICAL_FAMILIES.md。
+
+这是同一三家合同的限定修订准备；Claude 独立复核、授权 main 合并与精确 scope/receipt 读回前不实施旧 probe 例外或新版动作，不新增 Owner 触点。
