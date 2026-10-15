@@ -5,8 +5,8 @@
     "main": "5b638c73200c0fb691a74c5717e3bdbbba45357d"
   },
   "sha256": {
-    "PLAN.md": "81ceee4cf0f93daeb675cc86ab0471b2fd205f4033c204081867d029a86f5f4e",
-    "PLAN.json": "e29b32ef86a445647faa5dbef839dfc91d47805330581f14999179b7f90341b5",
+    "PLAN.md": "c66fc000738318258f4c814218da2d137e20462f99d8e1ebc709cddddd1bf6bb",
+    "PLAN.json": "b9670cceb27890c6cdc81d4b24b82494b7ac72081eb08d391cefbeb01d2c90d0",
     "verify_plan.py": "b6d8bde90e4dead4f169c7922bfba295513f91ae962d1cdc8cc0b1726d9176b5"
   },
   "excluded": [
@@ -14,7 +14,7 @@
     "VALIDATION.json"
   ],
   "exclusion_reason": "self-reference and generated diagnostic output; neither grants authority or product acceptance",
-  "scope_digest": "881ce146990df47d73a87cec8ab7bba9490516133ec11ad23922c96a0b0d7a83",
+  "scope_digest": "9194d46d59dd4cf3023122eef589c5fe55e594bb6cf3500ae1efb54d75a45650",
   "proposal_evidence": [
     {
       "path": "docs/design/gogoke-37-plan-v1/HISTORICAL_TEMP_HOME_PROOFS.json",
@@ -28,8 +28,18 @@
     },
     {
       "path": "docs/design/gogoke-37-plan-v1/LEGACY_SOURCE_MIGRATION.md",
-      "sha256_git_lf": "e4077625dfcb9f693f5eb3ff8d5b29f4b1357d03baae8a29e7f1c2fbf31d99c3",
+      "sha256_git_lf": "057e0db511ae2aa8752996c747027e54a1f0d0052a28a2984eea2deb3fdc075c",
       "meaning": "Reviewable one-instance migration contract only; not a native fact, implementation, execution permission or acceptance."
+    },
+    {
+      "path": "docs/design/gogoke-37-plan-v1/MANAGED_CLI_HISTORICAL_FAMILIES.md",
+      "sha256_git_lf": "0e6dfef7d19de84e7b20460c708bc97ffaf58f6af4f58da5e171be8609412376",
+      "meaning": "Complete three-driver contract and reviewable observation inventory only; not a native proof, qualification or acceptance."
+    },
+    {
+      "path": "docs/design/gogoke-37-plan-v1/CURRENT_HISTORICAL_OBSERVATIONS.json",
+      "sha256_git_lf": "e5217265ff004369ccd7fcec21468d12a425f48a93125be6a17fc65fbb649f0e",
+      "meaning": "Single closed-basis anonymous stored-row/member observation only; no native eligibility, proof, approval or current process/namespace inference."
     }
   ]
 }

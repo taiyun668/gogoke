@@ -86,3 +86,8 @@ Stop and return to the Controller before construction if any of these is true: t
 ## Non-claims and handoff
 
 Merging this proposal authorizes only later implementation of this exact contract. It does not qualify `LEGACY_CODEX_M1`, execute a migration, close a HOME, clear Busy, prepare a replacement, start a version action, pass F.2, accept a candidate or publish a release. Review, merge and exact readback are gates; all real SOURCE and version actions remain refused until the later implementation and every direct evidence check pass.
+
+
+### Pending family-boundary consumer (D-NOLAUNCH)
+
+The same three-driver proposal explicitly requests the narrow original one-M1 SOURCE quiescence consumer defined in MANAGED_CLI_HISTORICAL_FAMILIES.md under D-NOLAUNCH. Only after that concrete Owner decision and reviewed main merge/readback may the original processless H claim and exactly associated ACTIVE temporary HOME H-resource check consume the same sealed original-unstarted-boundary fact. This does not relabel RELEASED/CLOSED, modify historical rows, broaden the original target/writer/registration/physical/official-source chain, settle any independent C/H/F/credential/PREPARED effect, or alter the first-durable state table above. Missing original historical producer/boundary/complete negative sources or any other guard keeps refusal. No actual current member is qualified by this proposal.
