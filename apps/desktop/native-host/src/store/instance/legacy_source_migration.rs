@@ -1245,14 +1245,18 @@ mod tests {
             let h_operation=Statement::prepare(db.as_ptr(),
                 "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('global','openA',?1,'open','sessionA','UNKNOWN',2,2)").unwrap();
             h_operation.bind_text(1,&original_hex).unwrap();h_operation.step_done().unwrap();drop(h_operation);
-            let fixture_cwd=root.canonical_root().canonical_path.to_str().unwrap().to_owned();
+            // CMD does not accept the extended-length spelling as its cwd.
+            // Keep the same bound local directory in its DOS spelling.
+            let fixture_cwd=root.canonical_root().canonical_path.to_str().unwrap()
+                .strip_prefix(r"\\?\").expect("local extended-length fixture root").to_owned();
+            let fixture_directory=std::path::PathBuf::from(&fixture_cwd);
             let cwd_json=crate::store::atomic::json_string(&fixture_cwd);
-            let open_response=root.canonical_root().canonical_path.join("open-response.jsonl");
+            let open_response=fixture_directory.join("open-response.jsonl");
             std::fs::write(&open_response,
                 format!("{{\"id\":17,\"result\":{{\"thread\":{{\"id\":\"thread-a\",\"cwd\":{cwd_json}}}}}}}\n")).unwrap();
             let mut launch=crate::process::ProcessLaunch::new(command.clone());
             launch.arguments=vec!["/D".into(),"/C".into(),"type open-response.jsonl".into()];
-            launch.current_directory=Some(root.canonical_root().canonical_path.clone());
+            launch.current_directory=Some(fixture_directory.clone());
             launch.protocol_stdio=true;launch.persistent_protocol_stdio=true;
             let mut custodian=crate::process::ProcessCustodian::new().unwrap();
             let prepared=custodian.prepare(&crate::process::PrepareRequest {launch,
@@ -1342,12 +1346,12 @@ mod tests {
                     owner_id:"sessionA",generation:"2"}).unwrap();
             crate::store::session_transport::begin_resume(&db,"global","sessionA","resumeB",
                 resume_raw,"1","2",3,&resume_home,&resume_binding).unwrap();
-            let response_file=root.canonical_root().canonical_path.join("resume-response.jsonl");
+            let response_file=fixture_directory.join("resume-response.jsonl");
             std::fs::write(&response_file,
                 format!("{{\"id\":19,\"result\":{{\"thread\":{{\"id\":\"thread-a\",\"cwd\":{cwd_json}}}}}}}\n")).unwrap();
             let mut resume_launch=crate::process::ProcessLaunch::new(command.clone());
             resume_launch.arguments=vec!["/D".into(),"/C".into(),"type resume-response.jsonl".into()];
-            resume_launch.current_directory=Some(root.canonical_root().canonical_path.clone());
+            resume_launch.current_directory=Some(fixture_directory.clone());
             resume_launch.protocol_stdio=true;resume_launch.persistent_protocol_stdio=true;
             let mut resume_custodian=crate::process::ProcessCustodian::new().unwrap();
             let resume_prepared=resume_custodian.prepare(&crate::process::PrepareRequest {
