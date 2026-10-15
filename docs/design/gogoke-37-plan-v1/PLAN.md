@@ -483,7 +483,7 @@ Owner 已认可最小方案，替换上一节“只沿原具名初始化、不�
 
 F.2 已要求显式升级、退回、自检、查更新和零实例卸载；原 USER dispatcher 目前只接安装流程。只新增 `apps/desktop/native-host/src/store/product_database/v37_managed_cli.rs` 为 INTEGRATOR 共享路径，将这些既定 USER 动作接到 F 的可信版本目录、原 copy/instance/SOURCE 和已有 ProductDatabase 权威事务。其私有 H/custody/intent 核对不能从 F 兄弟模块或已列桌面转发文件取得；现有桌面与 Node 共享路径继续由汇合席位使用，不新增其他写路径。
 
-升级或退回必须选择编译内已验证的官方 archive/image/version，写前和完成时核对静止状态、精确 H/C、未结 intent 和 revision CAS；活跃或 UNKNOWN 默认拒绝；仅后述 2026-10-14 待审原生直接事实提案获准并精确读回后，才可对已证明不存在的一个历史单元作一次版本动作的限定重评。当前规则仍为 Busy。原 HOME 与凭据字节保留，失败原文和 UNKNOWN 不改写。查更新只记未验证通知，不能激活；doctor 必须有已证明不登录、不改账户、不花模型额度的官方只读行为，不能顶替登录检测。零实例卸载由原 F 门槛拒绝任何现存实例。没有同家双版本可信字节时，真实升级/退回成功仍为 NOT_RUN，不把候选换装或 latest 通知算通过。
+升级或退回必须选择编译内已验证的官方 archive/image/version，写前和完成时核对静止状态、精确 H/C、未结 intent 和 revision CAS；活跃或 UNKNOWN 默认拒绝；仅后述 2026-10-14 待审原生直接事实提案获准并精确读回后，才可对该动作完整历史集合中有原证明的成员作限定重评；2026-10-15 三家完整集合补充提案见后文，审定前仍按原单元守卫拒绝。当前规则仍为 Busy。原 HOME 与凭据字节保留，失败原文和 UNKNOWN 不改写。查更新只记未验证通知，不能激活；doctor 必须有已证明不登录、不改账户、不花模型额度的官方只读行为，不能顶替登录检测。零实例卸载由原 F 门槛拒绝任何现存实例。没有同家双版本可信字节时，真实升级/退回成功仍为 NOT_RUN，不把候选换装或 latest 通知算通过。
 
 不新增数据库/issuer accessor、模型进程、调度器、权限、全局 npm/PATH 发现、自动升级、凭据读取或 Owner 登录步骤。`product_database.rs` 的 E.3 组合授权及其他 helper 不扩大；F 写域、需求、阶段、契约写方、不变量和 Owner 触点保持。本次仅增加一个 shared path，同 PR 更新范围摘要、v2 回执、MANIFEST 和三处固定回执 blob；Owner 合并且 Controller 精确读回前，不施工该路径。
 
@@ -568,3 +568,18 @@ Owner 已明确允许准备 PR94 之后的后续授权 PR 并交独立 Claude �
 现有受控施工源的 `program_source.rs::migrate_quiescent_legacy_instances` 和 `v37_managed_cli.rs::migrate_managed_cli` 只作规划来源，当前批量/直接写 SOURCE 的形状不满足独立 Owner request/journal 和唯一 disabled candidate 契约，不能因本提案合并就用于该案例。施工仍限 F 的 `store/instance/` 与已列共享 `v37_managed_cli.rs`；允许在既有 authenticated USER managed-cli schema/桥内新增一个精确字段的严格迁移 command arm，把独立 requestId/raw 与原目标锚点交给 F journal，旧四字段 migrate 帧不能隐式获得该效果。H 只提供既有受限 typed native facts；新顶层入口/transport、新 writer、未列 shared path、UI/权限或第三证据族均先返回 Controller。
 
 完整契约、验证负例和停止点见 [LEGACY_SOURCE_MIGRATION.md](LEGACY_SOURCE_MIGRATION.md)。本 PR 只改变授权范围，不实现或执行迁移；未跑 native/云端/真机均为 NOT_RUN。即使以后 SOURCE migration APPLIED，原 version begin/stage/probe/switch、SOURCE/CAS、COLD/Busy、credential、其它实例与历史阻断仍全部执行，不承诺 preparedReplacement 或 F.2 通过。
+
+
+## 三家受管 CLI 完整历史集合补充提案（2026-10-15）
+
+Owner 要求一次查全 Claude、Codex、OpenCode 当前库所有阻挡类型，统一采用有原证明才处理、缺证逐项拒绝。完整 28 类原表、原守卫、原证明、独立拒绝和当前观察清单见 [MANAGED_CLI_HISTORICAL_FAMILIES.md](MANAGED_CLI_HISTORICAL_FAMILIES.md)。本补充仅拟将前述单历史单元限制改为 native 独立枚举的单 driver、单 requestId、同一物理 Root/DB 完整有限集合；原 StopFact/StopProof 或既有完整精确消失/内核重启证明逐成员资格化，所有重复守卫消费同一事实。旧 UNKNOWN、PREPARED、HOME、H/C/F 原结果不改，不自动关闭 HOME。SOURCE 缺口、未结版本/F/凭据效果和旧 namespace 缺证仍逐项拒绝；NoLaunch 仅另列同份 D-NOLAUNCH 待 Owner 明确裁决。除该项获准后的限定只读原启动边界 constructor 外，不增加证明生产者、写方、OS/namespace 观察、transport、UI 或权限。未来写域仅合同列出的九文件，H 两文件保留 H 所有权，只有 D 明确获准后才可增加该 sealed 只读源接口；否则仅原语义 helper/re-export。Owner 已指定该同一提案交 Claude 独立复核合并，Controller 精确读回后才施工；已合并 PR96 的 SOURCE 首次持久意图状态规则完整保留；本提案另明确 D-NOLAUNCH 对原单一 M1 静止判定的有限消费者，仍须同一待裁决项批准。当前已完成一次同库原始采集，完整匿名逐项观察见 CURRENT_HISTORICAL_OBSERVATIONS.json；未运行的 native/内存/kernel/namespace/ACL 资格仍为 NOT_OBSERVED/NOT_RUN，不能当作零或已解堵。
+
+
+### 同一三家提案的 D-NOLAUNCH 待裁决项
+
+已观察到 processless COMMITTED 历史类型，现有三类证明不能处理。具体提案在 MANAGED_CLI_HISTORICAL_FAMILIES.md 的 D-NOLAUNCH：仅拟在九个精确写域内由 H 构造 sealed 只读原未跨持久启动边界事实，F 用独立第四 kind 消费；必须证明该历史实际 producer/原合同、原 raw/receipt/关联/负集合及每条对应 OS prepare 路径均受同一持久 H OPEN/RESUME 支配。当前 e995 源码、无 C、空 PID、release 或时间均不足；全局登录/credential/ACL/history 准备效果独立拒绝。无原证明仍拒绝、不释放 claim、不关 HOME、不改 UNKNOWN/PREPARED，不新增 OS/namespace 观察或其它写方。因这是新的封闭证明边界，Owner 必须明确批准该项后，Claude 才可在独立复核和最终提交全部检查后合并同一提案；审定前整份保持 draft/Busy，不预授权施工。
+
+
+### D-NOLAUNCH 的原单一 M1 SOURCE 静止消费者
+
+同一待裁决项还精确列入 legacy_source_migration.rs：仅原 PR95 单一 M1 的 processless claim 及精确关联 ACTIVE 临时 HOME 的 H 执行资源静止检查可消费同一 H sealed 原未跨启动边界事实。不得把 COMMITTED/HOME 改称 RELEASED/CLOSED，不改原行；原注册、物理 Root/DB/HOME、官方来源、全局 C/H/F/凭据效果与 CAS 均独立，PR96 首次持久意图状态表不变。缺该历史实际 producer/原证明或任何其它独立条件，继续拒绝；不是新增 SOURCE 目标或写方，不是实际迁移授权。
