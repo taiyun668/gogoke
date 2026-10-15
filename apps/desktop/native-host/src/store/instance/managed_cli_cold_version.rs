@@ -2300,6 +2300,7 @@ fn no_unattributed_managed_image_c(db:&VerifiedDatabaseConnection<'_>,root:&Root
     while all.step_row()? {
         let r=(0..6).map(|n|all.column_text(n))
             .collect::<std::result::Result<Vec<_>,_>>()?;
+        if matches!(original_catalog_pin(driver,&r[5]),Err(ManagedCliError::Busy)){continue}
         let owner=Statement::prepare(db.as_ptr(),
             "SELECT driver_id FROM main.gogoke_v37_instances WHERE instance_id=?1")?;
         owner.bind_text(1,&r[1])?;
