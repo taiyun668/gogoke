@@ -1245,9 +1245,11 @@ mod tests {
             let h_operation=Statement::prepare(db.as_ptr(),
                 "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('global','openA',?1,'open','sessionA','UNKNOWN',2,2)").unwrap();
             h_operation.bind_text(1,&original_hex).unwrap();h_operation.step_done().unwrap();drop(h_operation);
+            let fixture_cwd=root.canonical_root().canonical_path.to_str().unwrap().to_owned();
+            let cwd_json=crate::store::atomic::json_string(&fixture_cwd);
             let open_response=root.canonical_root().canonical_path.join("open-response.jsonl");
             std::fs::write(&open_response,
-                b"{\"id\":17,\"result\":{\"thread\":{\"id\":\"thread-a\",\"cwd\":\"D:/sealed-tree\"}}}\n").unwrap();
+                format!("{{\"id\":17,\"result\":{{\"thread\":{{\"id\":\"thread-a\",\"cwd\":{cwd_json}}}}}}}\n")).unwrap();
             let mut launch=crate::process::ProcessLaunch::new(command.clone());
             launch.arguments=vec!["/D".into(),"/C".into(),"type open-response.jsonl".into()];
             launch.current_directory=Some(root.canonical_root().canonical_path.clone());
@@ -1267,7 +1269,7 @@ mod tests {
             db.execute("COMMIT").unwrap();
             let open_rpc_id=crate::store::session_transport::codex_rpc::RpcId::client(17).unwrap();
             let open_rpc_command=crate::store::session_transport::codex_rpc::Command::ThreadStartSecretaryTools {
-                cwd:"D:/sealed-tree".into(),model:"m".into()};
+                cwd:fixture_cwd.clone(),model:"m".into()};
             let open_step_id="thread-start";
             let open_step=crate::store::session_transport::rpc_journal::Step {
                 domain_id:"global",session_id:"sessionA",open_request_id:"openA",
@@ -1330,7 +1332,7 @@ mod tests {
                 resume_raw,"1","2",3,&resume_home,&resume_binding).unwrap();
             let response_file=root.canonical_root().canonical_path.join("resume-response.jsonl");
             std::fs::write(&response_file,
-                b"{\"id\":19,\"result\":{\"thread\":{\"id\":\"thread-a\",\"cwd\":\"D:/sealed-tree\"}}}\n").unwrap();
+                format!("{{\"id\":19,\"result\":{{\"thread\":{{\"id\":\"thread-a\",\"cwd\":{cwd_json}}}}}}}\n")).unwrap();
             let mut resume_launch=crate::process::ProcessLaunch::new(command.clone());
             resume_launch.arguments=vec!["/D".into(),"/C".into(),"type resume-response.jsonl".into()];
             resume_launch.current_directory=Some(root.canonical_root().canonical_path.clone());
@@ -1348,7 +1350,7 @@ mod tests {
                 &resume_operation).unwrap();
             let rpc_id=crate::store::session_transport::codex_rpc::RpcId::client(19).unwrap();
             let rpc_command=crate::store::session_transport::codex_rpc::Command::ThreadResume {
-                thread_id:"thread-a".into(),cwd:"D:/sealed-tree".into(),model:"m".into()};
+                thread_id:"thread-a".into(),cwd:fixture_cwd.clone(),model:"m".into()};
             let step_id=format!("{resume_operation}-thread-resume");
             let rpc_step=crate::store::session_transport::rpc_journal::Step {
                 domain_id:"global",session_id:"sessionA",open_request_id:"resumeB",
