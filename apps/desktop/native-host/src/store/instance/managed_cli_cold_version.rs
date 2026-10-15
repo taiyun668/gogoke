@@ -2549,7 +2549,7 @@ fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
         return Err(ManagedCliError::Busy)
     }
     for (_,mut source,proof) in members {
-        source.push(complete_data_digest.clone());
+        source.push(credentials.digest.clone());
         source_parts.push(hex(&frame(&source)));
         pair_parts.push(hex(&frame(&proof)));
     }
