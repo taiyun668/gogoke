@@ -547,12 +547,7 @@ fn qualified_released_never_started(db: &VerifiedDatabaseConnection<'_>,
     let history = rows(db,
         "SELECT operation,raw_hex,status,CAST(previous_revision AS TEXT),CAST(revision AS TEXT),request_id FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND session_id=?2 ORDER BY revision",
         &[domain,session],6)?;
-    let operations:&[&str]=match history.len() {
-        2=>&["admission-reserve","admission-release"],
-        3=>&["admission-reserve","admission-commit","admission-release"],
-        _=>return Err(denied()),
-    };
-    if claims[0][1]!=history.len().to_string() { return Err(denied()); }
+    if history.len()!=3 || claims[0][1]!="3" { return Err(denied()); }
     let physical_home=rows(db,
         "SELECT directory_ref,directory_identity FROM main.gogoke_v37_instance_homes WHERE home_id=?1 AND instance_id=?2 AND domain_id=?3 AND kind='SESSION' AND owner_id=?4 AND generation=?5 AND state='ACTIVE'",
         &[home,instance,domain,session,generation],2)?;
@@ -607,7 +602,7 @@ fn qualified_released_never_started(db: &VerifiedDatabaseConnection<'_>,
         && any(db,"SELECT 1 FROM main.gogoke_v37_seat_secretary WHERE domain_id=?1 AND seat_id=?2 AND incarnation=?3",
             &[domain,&seat[0][0],&seat[0][1]])?;
     for (index,row) in history.iter().enumerate() {
-        let operation=operations[index];
+        let operation=["admission-reserve","admission-commit","admission-release"][index];
         if row[0]!=operation || row[2]!="APPLIED" || row[3]!=index.to_string()
             || row[4]!=(index+1).to_string() { return Err(denied()); }
         let raw=unhex(&row[1])?;
