@@ -1361,6 +1361,30 @@ mod tests {
         product.connection.execute("DELETE FROM main.gogoke_v37_instance_operations WHERE request_id='pendingCredentialA'").unwrap();
         assert!(table_rows(&product,
             "SELECT request_id FROM main.gogoke_v37_instance_legacy_source_migrations",1).is_empty());
+        // The otherwise complete positive fixture must refuse ANY previous
+        // migration, including one for a different target. These controlled
+        // journal rows test exclusion; they are not another migration proof.
+        let journal_rows="SELECT request_id,target_id,raw_hex,raw_sha256,original_request_id,original_fingerprint,original_receipt_hex,original_home_identity,root_identity,database_identity,qualification_digest,phase,COALESCE(source_fingerprint,''),COALESCE(receipt_hex,'') FROM main.gogoke_v37_instance_legacy_source_migrations ORDER BY request_id";
+        for phase in ["PREPARING","APPLIED"] {
+            let prior=Statement::prepare(product.connection.as_ptr(),
+                "INSERT INTO main.gogoke_v37_instance_legacy_source_migrations(request_id,target_id,raw_hex,raw_sha256,original_request_id,original_fingerprint,original_receipt_hex,original_home_identity,root_identity,database_identity,qualification_digest,phase,source_fingerprint,receipt_hex) VALUES('priorMigration','priorTarget',?1,?2,'priorRegistration',?3,?4,?5,?6,?7,'controlled-prior-qualification',?8,CASE WHEN ?8='APPLIED' THEN 'controlled-prior-source' ELSE NULL END,CASE WHEN ?8='APPLIED' THEN '7b7d' ELSE NULL END)").unwrap();
+            for (index,value) in [action_hex(frame.as_bytes()),
+                crate::store::digest::sha256_hex(frame.as_bytes()),fingerprint.clone(),
+                action_hex(b"controlled prior registration receipt"),home.clone(),
+                product.connection.root_identity().opaque(),product.connection.identity().opaque(),
+                phase.to_owned()].iter().enumerate() {
+                prior.bind_text((index+1) as i32,value).unwrap();
+            }
+            prior.step_done().unwrap();drop(prior);
+            let prior_rows=table_rows(&product,journal_rows,14);
+            assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err(),
+                "a different target's {phase} migration blocks a new migration");
+            assert_eq!(table_rows(&product,journal_rows,14),prior_rows,
+                "refusal must leave the previous journal and request set unchanged");
+            assert!(table_rows(&product,
+                "SELECT instance_id FROM main.gogoke_v37_instance_program_sources WHERE instance_id='legacyA'",1).is_empty());
+            product.connection.execute("DELETE FROM main.gogoke_v37_instance_legacy_source_migrations WHERE request_id='priorMigration'").unwrap();
+        }
         let applied=product.dispatch_user_managed_cli(frame.as_bytes()).unwrap();
         assert!(String::from_utf8_lossy(&applied).contains("\"status\":\"APPLIED\""));
         assert_eq!(table_rows(&product,

@@ -879,7 +879,7 @@ pub(crate) fn migrate_legacy_codex_source(db: &mut VerifiedDatabaseConnection<'_
     transaction(db, |db| {
         check_owner_in_current_transaction(db, owner)?;
         if read_journal(db, input.request_id)?.is_some() || any(db,
-            "SELECT 1 FROM main.gogoke_v37_instance_legacy_source_migrations WHERE target_id=?1 LIMIT 1", &[input.target_id])? ||
+            "SELECT 1 FROM main.gogoke_v37_instance_legacy_source_migrations LIMIT 1", &[])? ||
             !source_rows(db, input.target_id)?.is_empty() { return Err(denied()); }
         let current = qualify(db, root, input)?;
         if current.qualification_digest != initial.qualification_digest { return Err(denied()); }
@@ -904,8 +904,8 @@ pub(crate) fn migrate_legacy_codex_source(db: &mut VerifiedDatabaseConnection<'_
         let prior = read_journal(db, input.request_id)?.ok_or_else(denied)?;
         if !same_intent(db, input, &prior) || prior.phase != "PREPARING" ||
             !source_rows(db, input.target_id)?.is_empty() ||
-            any(db, "SELECT 1 FROM main.gogoke_v37_instance_legacy_source_migrations WHERE target_id=?1 AND request_id<>?2 LIMIT 1",
-                &[input.target_id, input.request_id])? { return Err(denied()); }
+            any(db, "SELECT 1 FROM main.gogoke_v37_instance_legacy_source_migrations WHERE request_id<>?1 LIMIT 1",
+                &[input.request_id])? { return Err(denied()); }
         let current = qualify(db, root, input)?;
         if current.qualification_digest != prior.qualification_digest ||
             current.source_fingerprint != initial.source_fingerprint { return Err(denied()); }
