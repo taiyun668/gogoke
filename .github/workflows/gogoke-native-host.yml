@@ -2268,12 +2268,12 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: 1.85.1
       PR94_MUTATION_AXIS: ${{ matrix.axis }}
-      PR94_MUTATION_EVIDENCE: ${{ runner.temp }}/pr94-kernel-home-${{ matrix.axis }}-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Initialize original-only evidence as NOT_RUN
         shell: pwsh
         run: |
-          $root = $env:PR94_MUTATION_EVIDENCE
+          $root = Join-Path $env:RUNNER_TEMP "pr94-kernel-home-$env:PR94_MUTATION_AXIS-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "PR94_MUTATION_EVIDENCE=$root"
           New-Item -ItemType Directory -Path $root -Force | Out-Null
           [ordered]@{
             schema='gogoke.pr94.kernel-home-mutation.v1'
