@@ -1556,6 +1556,18 @@ mod tests {
         let applied_source=table_rows(&product,
             "SELECT source,stage_name,program_digest,version,home_identity,registration_request_id,revision FROM main.gogoke_v37_instance_program_sources WHERE instance_id='legacyA'",7);
         let applied_journal=table_rows(&product,journal_rows,14);
+        product.connection.execute("UPDATE main.gogoke_v37_instance_program_sources SET version='3' WHERE instance_id='legacyA'").unwrap();
+        assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err(),
+            "APPLIED replay cannot use changed SOURCE contents");
+        let restore=Statement::prepare(product.connection.as_ptr(),
+            "UPDATE main.gogoke_v37_instance_program_sources SET version=?1 WHERE instance_id='legacyA'").unwrap();
+        restore.bind_text(1,pin.version).unwrap();restore.step_done().unwrap();drop(restore);
+        assert_eq!(table_rows(&product,journal_rows,14),applied_journal,
+            "SOURCE mismatch refusal leaves the migration journal unchanged");
+        assert_eq!(table_rows(&product,
+            "SELECT source,stage_name,program_digest,version,home_identity,registration_request_id,revision FROM main.gogoke_v37_instance_program_sources WHERE instance_id='legacyA'",7),applied_source);
+        assert_eq!(product.dispatch_user_managed_cli(frame.as_bytes()).unwrap(),applied,
+            "restored SOURCE yields only the original migration receipt");
         assert_eq!(table_rows(&product,
             "SELECT typeof(receipt_json) FROM main.gogoke_v37_instance_operations WHERE request_id='registerA'",1),
             vec![vec!["null".to_owned()]],
