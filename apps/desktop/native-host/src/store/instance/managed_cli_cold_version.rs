@@ -468,7 +468,6 @@ fn original_private_history_creation_clear(db:&VerifiedDatabaseConnection<'_>,
 fn credential_history_sources_clear(db:&VerifiedDatabaseConnection<'_>,
     root:&RootLock,instance:&str)
     ->Result<(),ManagedCliError>{
-    original_private_history_creation_clear(db,root,instance)?;
     let generations=rows(db,"SELECT g.binding_id,g.generation FROM
         main.gogoke_v37_instance_history_generations g JOIN main.gogoke_v37_instance_histories h
         ON h.history_id=g.history_id WHERE h.instance_id=?1 ORDER BY g.binding_id",instance,2)?;
