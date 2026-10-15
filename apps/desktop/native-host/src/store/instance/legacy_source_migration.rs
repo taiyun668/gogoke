@@ -1,8 +1,8 @@
 //! One authenticated, original-intent migration of a proven legacy Codex SOURCE.
 //! This F journal never advances an old instance operation or H/C outcome.
 
-use super::{credential_registry, legacy_fence, managed_cli, private_history, registry};
-use crate::process::{CredentialAliasScope, CredentialBinding, NativeLegacyHoldersGone};
+use super::{credential_registry, legacy_fence, managed_cli, registry, resolve_codex_instance_home};
+use crate::process::{CredentialBinding, LegacyAclInventory, NativeLegacyHoldersGone};
 use crate::root::RootLock;
 use crate::store::atomic::{Json, JsonString, Statement};
 use crate::store::authority::{check_owner_in_current_transaction, OwnerIssuer};
@@ -347,7 +347,8 @@ fn qualified_stopped_h(db: &VerifiedDatabaseConnection<'_>, operation: &str,
 
 /// All affected original C rows are read. STOPPED requires its original proof;
 /// an unsettled H row needs H's unique original-source kernel fact; a global
-/// historical UNKNOWN needs the already applied original legacy fence.
+/// historical UNKNOWN needs the native whole-boot fact over every original
+/// global C identity, independently of any ACL fence.
 fn qualified_executions(db: &VerifiedDatabaseConnection<'_>, evidence: &mut Vec<u8>) -> Result<()> {
     let custody = rows(db,
         "SELECT c.operation_id,c.profile_id,c.domain_id,c.generation,c.state,COALESCE(c.stop_proof_hash,''),c.pid,c.creation_time_100ns FROM main.gogoke_coordination_process_custody c JOIN main.gogoke_v37_instances i ON i.instance_id=c.profile_id WHERE i.driver_id='codex' ORDER BY c.operation_id", &[], 8)?;
@@ -388,22 +389,42 @@ fn qualified_executions(db: &VerifiedDatabaseConnection<'_>, evidence: &mut Vec<
         for (pid, creation) in pairs { frame(evidence, &pid.to_be_bytes()); frame(evidence, &creation.to_be_bytes()); }
     }
     for instance in global_unknown {
-        let fence = legacy_fence::read_applied_legacy_retirement(db, &instance)
-            .map_err(|error| fail("original global fence", error))?.ok_or_else(denied)?;
-        let unknown: Vec<_> = custody.iter().filter(|c| c[1] == instance && c[2] == "global" && c[4] == "UNKNOWN").collect();
-        if unknown.is_empty() || unknown.iter().any(|c|
-            !fence.custody.iter().any(|original| original.operation_id == c[0] &&
-                original.pid == c[6] && original.creation_time_100ns == c[7])) {
-            return Err(denied());
+        let original = rows(db,
+            "SELECT operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,COALESCE(stop_proof_hash,'') FROM main.gogoke_coordination_process_custody WHERE profile_id=?1 AND domain_id='global' ORDER BY operation_id",
+            &[&instance], 12)?;
+        let expected: Vec<_> = custody.iter().filter(|c| c[1] == instance && c[2] == "global").collect();
+        if original.is_empty() || original.len() != expected.len() ||
+            original.iter().filter(|c| c[10] == "UNKNOWN").count() !=
+                expected.iter().filter(|c| c[4] == "UNKNOWN").count() { return Err(denied()); }
+        let mut pairs = Vec::with_capacity(original.len());
+        let mut source = Vec::new();
+        for c in &original {
+            let original_login_suffix=c[0].strip_prefix("owner-login-")
+                .or_else(||c[0].strip_prefix("login-observe-"));
+            if c[7] != instance || c[8] != "global" || c[0].is_empty() || c[1].is_empty()
+                || c[2].is_empty() || c[5].is_empty() || c[6].len() != 71
+                || !c[6].starts_with("sha256:") || !c[6][7..].bytes().all(|byte|byte.is_ascii_hexdigit())
+                || c[9].parse::<u64>().ok().filter(|v| *v != 0).is_none()
+                || !expected.iter().any(|row| row[0] == c[0] && row[3] == c[9]
+                    && row[4] == c[10] && row[5] == c[11] && row[6] == c[3] && row[7] == c[4])
+                || (c[10] == "UNKNOWN" && (!c[11].is_empty()
+                    || original_login_suffix.is_none_or(|suffix|suffix.len()!=40
+                        || !suffix.bytes().all(|byte|byte.is_ascii_hexdigit()))))
+                || (c[10] == "STOPPED" && c[11].is_empty())
+                || !matches!(c[10].as_str(), "STOPPED" | "UNKNOWN") { return Err(denied()); }
+            let pid = c[3].parse::<u32>().map_err(|error| fail("global original PID", error))?;
+            let created = c[4].parse::<u64>().map_err(|error| fail("global original FILETIME", error))?;
+            if pid == 0 || created == 0 || c[3] != pid.to_string() || c[4] != created.to_string()
+                || pairs.contains(&(pid, created)) { return Err(denied()); }
+            pairs.push((pid, created));
+            for field in c { frame(&mut source, field.as_bytes()); }
         }
-        let pairs = fence.custody.iter().map(legacy_fence::LegacyCustodyRow::native_pair)
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|error| fail("global exact pairs", error))?;
         let fact = NativeLegacyHoldersGone::observe(&pairs)
             .map_err(|error| fail("global kernel fact", error))?;
         fact.validate(&pairs).map_err(|error| fail("global kernel recheck", error))?;
-        frame(evidence, fence.custody_digest.as_bytes());
+        frame(evidence, sha256_hex(&source).as_bytes());
         frame(evidence, &fact.boot_start().to_be_bytes());
+        for (pid, created) in pairs { frame(evidence, &pid.to_be_bytes()); frame(evidence, &created.to_be_bytes()); }
     }
     // Every H episode with an original process must be accounted for by the
     // corresponding custody row above. A process-less COMMITTED claim cannot
@@ -411,6 +432,79 @@ fn qualified_executions(db: &VerifiedDatabaseConnection<'_>, evidence: &mut Vec<
     let episodes = rows(db, "SELECT e.process_operation_id,e.phase,COALESCE(e.stop_fact_id,'') FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id WHERE i.driver_id='codex' AND e.process_operation_id IS NOT NULL", &[], 3)?;
     for e in episodes {
         if !seen_h.contains(&e[0]) && !(e[1] == "FAILED" && e[2].is_empty()) {
+            return Err(denied());
+        }
+    }
+    Ok(())
+}
+
+/// A released reservation with no process is settled only by its original
+/// reserve/commit/Owner-release history and a complete absence of launch
+/// producers. An empty native pair list is never a holder-gone observation.
+fn qualified_released_never_started(db: &VerifiedDatabaseConnection<'_>,
+    instance: &str, domain: &str, session: &str, home: &str,
+    binding: &str, generation: &str) -> Result<()> {
+    let claims = rows(db,
+        "SELECT state,CAST(revision AS TEXT),COALESCE(process_operation_id,''),COALESCE(stop_fact_id,'') FROM main.gogoke_v37_h_claim WHERE instance_id=?1 AND domain_id=?2 AND session_id=?3 AND home_id=?4 AND binding_id=?5 AND generation=?6",
+        &[instance,domain,session,home,binding,generation],4)?;
+    if claims.len()!=1 || claims[0][0]!="RELEASED" || !claims[0][2].is_empty()
+        || !claims[0][3].is_empty() { return Err(denied()); }
+    let owner = rows(db,
+        "SELECT state FROM main.gogoke_v37_h_owner_binding WHERE binding_id=?1 AND instance_id=?2 AND domain_id=?3 AND kind='SESSION' AND owner_id=?4 AND generation=?5",
+        &[binding,instance,domain,session,generation],1)?;
+    if owner.len()!=1 || !matches!(owner[0][0].as_str(),"ACTIVE"|"REVOKED")
+        || !any(db,"SELECT 1 FROM main.gogoke_v37_instance_homes WHERE home_id=?1 AND instance_id=?2 AND domain_id=?3 AND kind='SESSION' AND owner_id=?4 AND generation=?5 AND state='ACTIVE'",
+            &[home,instance,domain,session,generation])? { return Err(denied()); }
+    for (sql,values) in [
+        ("SELECT 1 FROM main.gogoke_v37_h_process_episode WHERE domain_id=?1 AND session_id=?2 LIMIT 1",vec![domain,session]),
+        ("SELECT 1 FROM main.gogoke_v37_h_generation_change WHERE domain_id=?1 AND session_id=?2 LIMIT 1",vec![domain,session]),
+        ("SELECT 1 FROM main.gogoke_v37_h_dos_alias WHERE domain_id=?1 AND session_id=?2 LIMIT 1",vec![domain,session]),
+        ("SELECT 1 FROM main.gogoke_v37_h_stdin_journal WHERE domain_id=?1 AND session_id=?2 LIMIT 1",vec![domain,session]),
+        ("SELECT 1 FROM main.gogoke_coordination_process_custody WHERE profile_id=?1 AND domain_id=?2 AND generation=?3 LIMIT 1",vec![instance,domain,generation]),
+    ] { if any(db,sql,&values)? { return Err(denied()); } }
+    let history = rows(db,
+        "SELECT operation,raw_hex,status,CAST(previous_revision AS TEXT),CAST(revision AS TEXT),request_id FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND session_id=?2 ORDER BY revision",
+        &[domain,session],6)?;
+    if history.len()!=3 || claims[0][1]!="3" { return Err(denied()); }
+    let physical_home=rows(db,
+        "SELECT directory_ref,directory_identity FROM main.gogoke_v37_instance_homes WHERE home_id=?1 AND instance_id=?2 AND domain_id=?3 AND kind='SESSION' AND owner_id=?4 AND generation=?5 AND state='ACTIVE'",
+        &[home,instance,domain,session,generation],2)?;
+    if physical_home.len()!=1 || physical_home[0][0]!=format!("temp-home-{}",sha256_hex(home.as_bytes()))
+        || !physical_home[0][1].starts_with("volume:")
+        || !physical_home[0][1].contains("/file:") { return Err(denied()); }
+    let preparation=sha256_hex(format!("{domain}\n{}",history[0][5]).as_bytes());
+    let creation=rows(db,
+        "SELECT request_id,request_hex FROM main.gogoke_v37_instance_operations WHERE target_id=?1 AND phase='APPLIED' AND native_receipt_id=?2",
+        &[home,&physical_home[0][1]],2)?;
+    if creation.len()!=1 || creation[0][0]!=format!("homeprep-{}",&preparation[..40]) { return Err(denied()); }
+    let fields=unframe(&creation[0][1])?;
+    if fields.len()!=9 || fields[0]!=b"temporary-create-detached"
+        || fields[1]!=unhex(&history[0][1])? || fields[2]!=home.as_bytes()
+        || fields[3]!=instance.as_bytes() || fields[4]!=domain.as_bytes()
+        || fields[5]!=b"SESSION" || fields[6]!=session.as_bytes()
+        || fields[7]!=generation.as_bytes() || !fields[8].starts_with(b"S-1-15-2-") {
+        return Err(denied());
+    }
+    let seat = rows(db,
+        "SELECT seat_id,seat_incarnation,CAST(seat_authorization_generation AS TEXT),selected_instance_id FROM main.gogoke_v37_effective_seat WHERE domain_id=?1 AND session_id=?2 AND generation=?3",
+        &[domain,session,generation],4)?;
+    if seat.len()!=1 || seat[0][3]!=instance || seat[0][0].is_empty()
+        || seat[0][1].is_empty() || seat[0][2]!=generation
+        || !any(db,"SELECT 1 FROM main.gogoke_v37_h_seat_binding WHERE domain_id=?1 AND session_id=?2 AND seat_id=?3 AND seat_incarnation=?4 AND generation=?5",
+            &[domain,session,&seat[0][0],&seat[0][1],generation])? { return Err(denied()); }
+    for (index,row) in history.iter().enumerate() {
+        let operation=["admission-reserve","admission-commit","admission-release"][index];
+        if row[0]!=operation || row[2]!="APPLIED" || row[3]!=index.to_string()
+            || row[4]!=(index+1).to_string() { return Err(denied()); }
+        let raw=unhex(&row[1])?;
+        let request=crate::store::session_transport::decode_request(&raw)
+            .map_err(|error|fail("original never-started H request",error))?;
+        if request.family!="K-SESSION" || request.operation!=operation
+            || request.domain_id!=domain || request.target_id!=session
+            || request.request_id!=row[5] || request.expected_revision!=index as u64
+            || request.payload.len()!=2
+            || request_field(&request,"seatId").as_deref()!=Some(seat[0][0].as_str())
+            || request_field(&request,"generation").as_deref()!=Some(generation) {
             return Err(denied());
         }
     }
@@ -441,10 +535,9 @@ fn qualified_resources(db: &VerifiedDatabaseConnection<'_>) -> Result<()> {
         "SELECT c.instance_id,c.domain_id,c.session_id,c.state,COALESCE(c.process_operation_id,''),COALESCE(c.stop_fact_id,''),c.generation,c.binding_id FROM main.gogoke_v37_h_claim c JOIN main.gogoke_v37_instances i ON i.instance_id=c.instance_id WHERE i.driver_id='codex'", &[], 8)?;
     for c in &claims {
         if c[4].is_empty() {
-            if c[3] != "RELEASED" || !c[5].is_empty() || any(db,
-                "SELECT 1 FROM main.gogoke_v37_h_process_episode WHERE domain_id=?1 AND session_id=?2 LIMIT 1", &[&c[1], &c[2]])? {
-                return Err(denied());
-            }
+            if c[3]!="RELEASED" || !c[5].is_empty() || any(db,
+                "SELECT 1 FROM main.gogoke_v37_h_process_episode WHERE domain_id=?1 AND session_id=?2 LIMIT 1",
+                &[&c[1],&c[2]])? { return Err(denied()); }
             continue;
         }
         let custody = rows(db, "SELECT state,COALESCE(stop_proof_hash,''),generation FROM main.gogoke_coordination_process_custody WHERE operation_id=?1 AND profile_id=?2 AND domain_id=?3", &[&c[4], &c[0], &c[1]], 3)?;
@@ -474,10 +567,53 @@ fn qualified_resources(db: &VerifiedDatabaseConnection<'_>) -> Result<()> {
         "SELECT h.home_id,h.instance_id,h.domain_id,h.owner_id,h.generation FROM main.gogoke_v37_instance_homes h JOIN main.gogoke_v37_instances i ON i.instance_id=h.instance_id WHERE i.driver_id='codex' AND h.state='ACTIVE'", &[], 5)?;
     for h in active_homes {
         let execution = rows(db,
-            "SELECT e.process_operation_id,c.state FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id AND c.profile_id=e.instance_id AND c.domain_id=e.domain_id AND c.generation=e.generation WHERE e.home_id=?1 AND e.instance_id=?2 AND e.domain_id=?3 AND e.session_id=?4 AND e.generation=?5", &[&h[0], &h[1], &h[2], &h[3], &h[4]], 2)?;
-        if execution.len() != 1 || execution[0][1] != "UNKNOWN" { return Err(denied()); }
+            "SELECT e.process_operation_id,c.state,COALESCE(c.stop_proof_hash,''),e.binding_id,e.phase,COALESCE(e.stop_fact_id,'') FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id AND c.profile_id=e.instance_id AND c.domain_id=e.domain_id AND c.generation=e.generation WHERE e.home_id=?1 AND e.instance_id=?2 AND e.domain_id=?3 AND e.session_id=?4 AND e.generation=?5", &[&h[0], &h[1], &h[2], &h[3], &h[4]], 6)?;
+        if execution.len()>1 { return Err(denied()); }
+        if let Some(e)=execution.first() {
+            if e[1]=="STOPPED" && !e[2].is_empty() && e[4]=="STOPPED" && e[5]==e[2] {
+                qualified_stopped_h(db,&e[0],&h[1],&h[2],&h[4],&e[2])?;
+            } else if e[1]=="UNKNOWN" && e[2].is_empty()
+                && matches!(e[4].as_str(),"ACTIVE"|"UNKNOWN") && e[5].is_empty() {
+                let (fact,_,pairs)=crate::store::session_transport::observe_exact_home_gone(
+                    db,&h[0],&h[1],&h[2],&h[3],&h[4],&e[3])
+                    .map_err(|error|fail("ACTIVE HOME original execution",error))?;
+                fact.validate(&pairs).map_err(|error|fail("ACTIVE HOME kernel recheck",error))?;
+            } else { return Err(denied()); }
+        } else {
+            let claim = rows(db,"SELECT binding_id,state,COALESCE(process_operation_id,'') FROM main.gogoke_v37_h_claim WHERE instance_id=?1 AND domain_id=?2 AND session_id=?3 AND home_id=?4 AND generation=?5",
+                &[&h[1],&h[2],&h[3],&h[0],&h[4]],3)?;
+            if claim.len()!=1 || claim[0][1]!="RELEASED" || !claim[0][2].is_empty() { return Err(denied()); }
+            qualified_released_never_started(db,&h[1],&h[2],&h[3],&h[0],&claim[0][0],&h[4])?;
+        }
     }
     Ok(())
+}
+
+/// Reproduce F's original profile naming from every C custody row and its
+/// unique H episode. A missing H association cannot silently omit a SID from
+/// the physical ACL inventory.
+fn historical_profile_names(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
+    instance: &str, home: &crate::root::RootIdentity) -> Result<Vec<String>> {
+    let owner = sha256_hex(format!("{}\n{instance}", home.opaque()).as_bytes());
+    let mut names = vec![format!("Gogoke37.OwnerLogin.{}", &owner[..40])];
+    let custody = rows(db,
+        "SELECT operation_id,profile_id,domain_id,generation FROM main.gogoke_coordination_process_custody WHERE profile_id=?1 ORDER BY operation_id",
+        &[instance], 4)?;
+    for c in custody {
+        if c[1] != instance { return Err(denied()); }
+        if c[2] == "global" { continue; }
+        let episode = rows(db,
+            "SELECT domain_id,session_id,seat_incarnation,generation,instance_id FROM main.gogoke_v37_h_process_episode WHERE process_operation_id=?1",
+            &[&c[0]], 5)?;
+        if episode.len() != 1 || episode[0][0] != c[2] || episode[0][3] != c[3]
+            || episode[0][4] != instance || episode[0][2].is_empty() { return Err(denied()); }
+        let e = &episode[0];
+        let digest = sha256_hex(format!("{}\n{}\n{}\n{}\n{}",
+            root.canonical_root().identity.opaque(), e[0], e[1], e[2], e[3]).as_bytes());
+        names.push(format!("Gogoke37.Session.{}", &digest[..40]));
+    }
+    names.sort(); names.dedup();
+    Ok(names)
 }
 
 fn qualify(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
@@ -511,41 +647,85 @@ fn qualify(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
         input.original_home_identity, &observed)
         .map_err(|error| fail("original USER replay", error))?
         != registry::LegacyReplayClass::ProvenIneligible { return Err(denied()); }
-    // Registry absence does not prove physical auth.json absence or an empty
-    // HOME ACL. This route has a positive producer only for a registered,
-    // metadata-held source; unsupported absent-source shapes stay refused.
+    // A missing credential registry row does not mean auth.json is absent.
+    // Resolve the original registered HOME, then ask the native metadata and
+    // ACL producers about the physical source without reading its contents.
+    let home = resolve_codex_instance_home(db, root, input.target_id)
+        .map_err(|error| fail("registered physical HOME", error))?;
+    if home.identity.opaque() != input.original_home_identity { return Err(denied()); }
+    let source = home.path.join("auth.json");
+    let (source_identity, links) = CredentialBinding::observe_source_metadata(
+        root, &source, &home.identity).map_err(|error| fail("physical credential metadata", error))?;
+    if links != 1 { return Err(denied()); }
+    let aliases = credential_registry::read_credential_aliases(db, input.target_id)
+        .map_err(|error| fail("credential aliases", error))?;
+    if aliases.iter().any(|alias| alias.state != "REMOVED") { return Err(denied()); }
     let object = credential_registry::read_credential_object(db, input.target_id)
-        .map_err(|error| fail("credential object", error))?.ok_or_else(denied)?;
-    {
+        .map_err(|error| fail("credential object", error))?;
+    if let Some(object) = &object {
         let backend = credential_registry::read_usable_credential_backend(db, input.target_id)
             .map_err(|error| fail("credential source", error))?;
-        if object.home_identity.opaque() != input.original_home_identity ||
-            backend.home_identity.opaque() != input.original_home_identity { return Err(denied()); }
-        let source = root.canonical_root().canonical_path.join("v37-instances")
-            .join(input.target_id).join("auth.json");
-        let aliases = credential_registry::read_credential_aliases(db, input.target_id)
-            .map_err(|error| fail("credential aliases", error))?;
-        let mut scopes = Vec::new();
-        for alias in aliases {
-            match alias.state.as_str() {
-                "ACTIVE" | "DORMANT" => {
-                    if alias.source_file_identity != object.file_identity { return Err(denied()); }
-                    let directory = private_history::resolve_private_history_directory(db, root,
-                        &alias.history_id).map_err(|error| fail("alias directory", error))?;
-                    if directory.identity != alias.directory_identity { return Err(denied()); }
-                    scopes.push(CredentialAliasScope { root: directory.path,
-                        root_identity: directory.identity });
-                },
-                "REMOVED" => (),
-                _ => return Err(denied()),
+        if object.root_identity.opaque() != db.root_identity().opaque()
+            || object.home_identity.opaque() != home.identity.opaque()
+            || object.source_parent_identity.opaque() != home.identity.opaque()
+            || object.file_identity != source_identity
+            || backend.home_identity.opaque() != home.identity.opaque() { return Err(denied()); }
+    } else if any(db,
+        "SELECT 1 FROM main.gogoke_v37_credential_backend_evidence WHERE instance_id=?1 LIMIT 1",
+        &[input.target_id])? {
+        // A partial credential registration is neither the pristine legacy
+        // shape nor an authenticated registered object.
+        return Err(denied());
+    }
+    let binding = CredentialBinding::open_registered(root, &source, &home.identity,
+        &source_identity, &[]).map_err(|error| fail("held physical credential source", error))?;
+    let names = historical_profile_names(db, root, input.target_id, &home.identity)?;
+    let provenance = sha256_hex(names.join("\n").as_bytes());
+    let fence = legacy_fence::read_legacy_fence(db, input.target_id)
+        .map_err(|error| fail("prior legacy ACL fence", error))?;
+    let inventory = if let Some(record) = &fence {
+        if record.database_identity != db.identity().opaque()
+            || record.root_identity != db.root_identity().opaque()
+            || record.home_identity != home.identity.opaque()
+            || record.source_identity != source_identity.opaque()
+            || record.source_parent_identity != home.identity.opaque()
+            || record.source_revision != object.as_ref().map(|row| row.revision)
+            || record.acl_provenance_digest != provenance { return Err(denied()); }
+        let inventory = LegacyAclInventory::restore(root, &home.path, &home.identity,
+            &binding, &names, &record.native_snapshot, &record.native_snapshot_digest)
+            .map_err(|error| fail("complete fenced physical HOME ACL", error))?;
+        if record.home_acl_digest != inventory.home_original_digest()
+            || record.source_acl_digest != inventory.source_original_digest() { return Err(denied()); }
+        let home_step=legacy_fence::read_legacy_step(db,input.target_id,legacy_fence::LegacyAclStep::Home)
+            .map_err(|error|fail("legacy HOME ACL step",error))?;
+        let baseline_step=legacy_fence::read_legacy_step(db,input.target_id,legacy_fence::LegacyAclStep::Baseline)
+            .map_err(|error|fail("legacy baseline step",error))?;
+        if baseline_step.is_some() && home_step.is_none() { return Err(denied()); }
+        for (step,intent) in [(legacy_fence::LegacyAclStep::Home,home_step),
+            (legacy_fence::LegacyAclStep::Baseline,baseline_step)] {
+            if let Some(intent) = intent {
+                if intent.phase != legacy_fence::LegacyStepPhase::Applied { return Err(denied()); }
+                if step == legacy_fence::LegacyAclStep::Home
+                    && intent.target_home_acl_digest != inventory.home_target_digest() { return Err(denied()); }
+                if step == legacy_fence::LegacyAclStep::Baseline
+                    && intent.target_source_acl_digest != inventory.source_target_digest() { return Err(denied()); }
             }
         }
-        CredentialBinding::open_registered(root, &source, &object.home_identity,
-            &object.file_identity, &scopes).map_err(|error| fail("original credential metadata", error))?;
-    }
+        inventory
+    } else {
+        if legacy_fence::read_legacy_step(db, input.target_id, legacy_fence::LegacyAclStep::Home)
+            .map_err(|error| fail("unbound HOME ACL step", error))?.is_some()
+            || legacy_fence::read_legacy_step(db, input.target_id, legacy_fence::LegacyAclStep::Baseline)
+                .map_err(|error| fail("unbound baseline step", error))?.is_some() { return Err(denied()); }
+        LegacyAclInventory::capture(root, &home.path, &home.identity,
+            &binding, &names).map_err(|error| fail("fresh physical historical HOME ACL", error))?
+    };
     qualified_resources(db)?;
     let mut evidence = Vec::new();
     qualified_executions(db, &mut evidence)?;
+    for value in [inventory.original_digest(), inventory.home_original_digest(),
+        inventory.source_original_digest(), provenance,
+        source_identity.opaque()] { frame(&mut evidence, value.as_bytes()); }
     let after = database_snapshot(db)?;
     if after != before { return Err(denied()); }
     frame(&mut evidence, before.as_bytes());

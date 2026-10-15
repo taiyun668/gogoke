@@ -945,7 +945,16 @@ mod tests {
     static PINNED_VERSION_ARCHIVES:OnceLock<Mutex<HashMap<(String,String),PathBuf>>>=OnceLock::new();
 
     #[test]
-    fn strict_legacy_codex_arm_applies_once_and_replays_only_its_original_receipt() {
+    fn strict_legacy_codex_unregistered_physical_acl_applies_and_replays() {
+        strict_legacy_codex_physical_acl_applies_and_replays(false,false);
+    }
+
+    #[test]
+    fn strict_legacy_codex_registered_physical_acl_applies_and_replays() {
+        strict_legacy_codex_physical_acl_applies_and_replays(true,true);
+    }
+
+    fn strict_legacy_codex_physical_acl_applies_and_replays(registered: bool,fenced: bool) {
         let _guard=route_b_test_guard();
         let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let path=std::env::temp_dir().join(format!("gogoke-legacy-source-arm-{}-{nonce}",std::process::id()));
@@ -990,9 +999,43 @@ mod tests {
         let home_identity=crate::root::inspect_root(&home_path).unwrap().identity;
         let auth_path=home_path.join("auth.json");
         fs::write(&auth_path,b"synthetic fixture source; never a real credential").unwrap();
-        // An unregistered physical source must not be made eligible by the
-        // original registration's UNKNOWN login state or missing F object.
+        // The real native ACL producer must reject an otherwise complete
+        // migration until the historical SID is physically on the HOME tree.
         assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err());
+        let owner_name={
+            let digest=crate::store::digest::sha256_hex(
+                format!("{}\nlegacyA",home_identity.opaque()).as_bytes());
+            format!("Gogoke37.OwnerLogin.{}",&digest[..40])
+        };
+        let (source_id,source_links)=crate::process::CredentialBinding::observe_source_metadata(
+            &root,&auth_path,&home_identity).unwrap();
+        assert_eq!(source_links,1);
+        let original_binding=crate::process::CredentialBinding::open_registered(&root,
+            &auth_path,&home_identity,&source_id,&[]).unwrap();
+        assert!(crate::process::LegacyAclInventory::capture(&root,&home_path,
+            &home_identity,&original_binding,&[owner_name.clone()]).is_err(),
+            "the actual physical HOME lacks its historical broad SID ACE");
+        drop(original_binding);
+        let historical=crate::process::AppContainerProfile::derive_for_revocation(&owner_name).unwrap();
+        historical.grant_bound_tree(&home_path,&home_identity,true).unwrap();
+        historical.verify_bound_tree_grant(&home_path,&home_identity,true).unwrap();
+        let unregistered_alias=path.join("unregistered-auth-alias");
+        fs::hard_link(&auth_path,&unregistered_alias).unwrap();
+        assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err(),
+            "a second physical link without an F alias must refuse");
+        fs::remove_file(&unregistered_alias).unwrap();
+        assert!(product.dispatch_user_managed_cli(frame.replace(&home,"wrong-home").as_bytes()).is_err(),
+            "caller HOME cannot replace the original registered HOME FileID");
+        let original_binding=crate::process::CredentialBinding::open_registered(&root,
+            &auth_path,&home_identity,&source_id,&[]).unwrap();
+        let physical=crate::process::LegacyAclInventory::capture(&root,&home_path,
+            &home_identity,&original_binding,&[owner_name.clone()]).unwrap();
+        assert!(!physical.original_digest().is_empty());
+        assert!(crate::process::LegacyAclInventory::capture(&root,&home_path,
+            &root.canonical_root().identity,&original_binding,&[owner_name.clone()]).is_err(),
+            "the native producer rejects a wrong physical HOME FileID");
+        drop(original_binding);
+        if registered {
         let (file_identity,links)=crate::process::CredentialBinding::observe_source_metadata(
             &root,&auth_path,&home_identity).unwrap();
         let custody=Statement::prepare(product.connection.as_ptr(),
@@ -1012,9 +1055,141 @@ mod tests {
         instance::bind_credential_object(&mut product.connection,&instance::CredentialObjectInput {
             request_id:"objectA".into(),instance_id:"legacyA".into(),
             root_identity,
-            home_identity:home_identity.clone(),file_identity,source_parent_identity:home_identity,
+            home_identity:home_identity.clone(),file_identity,source_parent_identity:home_identity.clone(),
             observed_nlink:u64::from(links),expected_revision:0,rebind_from:None,
         }).unwrap();
+        }
+        assert_eq!(instance::read_credential_object(&product.connection,"legacyA")
+            .unwrap().is_some(),registered,
+            "the two positive cases differ in F credential registration");
+        product.connection.execute(&format!(
+            "INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state) VALUES('owner-login-1111111111111111111111111111111111111111','globalTicketA','globalNonceA','4294967295','2','synthetic.exe','{observed_digest}','legacyA','global','2','UNKNOWN')"
+        )).unwrap();
+        assert!(instance::read_legacy_fence(&product.connection,"legacyA").unwrap().is_none(),
+            "global UNKNOWN fixture must use the real kernel producer without an ACL fence");
+        if fenced {
+            let custody=table_rows(&product,
+                "SELECT operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,COALESCE(stop_proof_hash,'') FROM main.gogoke_coordination_process_custody WHERE profile_id='legacyA' ORDER BY operation_id",12)
+                .into_iter().map(|c|instance::LegacyCustodyRow {
+                    operation_id:c[0].clone(),ticket:c[1].clone(),custodian_nonce:c[2].clone(),
+                    pid:c[3].clone(),creation_time_100ns:c[4].clone(),image_path:c[5].clone(),
+                    binary_digest_sha256:c[6].clone(),profile_id:c[7].clone(),
+                    domain_id:c[8].clone(),generation:c[9].clone(),state:c[10].clone(),
+                    stop_proof_hash:if c[11].is_empty(){None}else{Some(c[11].clone())},
+                }).collect();
+            let capture=instance::LegacyFenceCapture {
+                instance_id:"legacyA".into(),
+                original_boot:format!("boot-start:{:016x}",crate::process::native_boot_start().unwrap()),
+                database_identity:product.connection.identity().clone(),
+                root_identity:product.connection.root_identity().clone(),
+                home_identity:home_identity.clone(),source_identity:source_id.clone(),
+                source_parent_identity:home_identity.clone(),
+                source_revision:instance::read_credential_object(&product.connection,"legacyA")
+                    .unwrap().map(|row|row.revision),
+                source_link_count:1,registered_alias_count:0,custody,
+                home_acl_digest:physical.home_original_digest(),
+                source_acl_digest:physical.source_original_digest(),
+                acl_provenance_digest:crate::store::digest::sha256_hex(owner_name.as_bytes()),
+                native_snapshot:physical.encode_snapshot(),
+                native_snapshot_digest:physical.original_digest(),
+            };
+            instance::capture_legacy_fence(&mut product.connection,&capture).unwrap();
+            let drift=home_path.join("post-fence-extra-runtime");
+            fs::write(&drift,b"not in the original HOME inventory").unwrap();
+            assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err(),
+                "fenced restore must reject physical HOME tree drift");
+            fs::remove_file(drift).unwrap();
+        }
+        product.connection.execute("INSERT INTO main.gogoke_v37_h_owner_binding(binding_id,instance_id,domain_id,kind,owner_id,generation,state) VALUES('unstartedBindingA','legacyA','unstartedProjectA','SESSION','unstartedSessionA','1','ACTIVE')").unwrap();
+        product.connection.execute("INSERT INTO main.gogoke_v37_instance_homes(home_id,instance_id,domain_id,kind,owner_id,generation,state,revision) VALUES('unstartedHomeA','legacyA','unstartedProjectA','SESSION','unstartedSessionA','1','ACTIVE',1)").unwrap();
+        product.connection.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision) VALUES('unstartedProjectA','unstartedSessionA','legacyA','unstartedHomeA','unstartedBindingA','1','COMMITTED',2)").unwrap();
+        assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err(),
+            "a process-less COMMITTED reservation cannot be discharged by empty native pairs");
+        product.connection.execute("UPDATE main.gogoke_v37_h_claim SET state='RELEASED',revision=3 WHERE domain_id='unstartedProjectA' AND session_id='unstartedSessionA'").unwrap();
+        assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err(),
+            "RELEASED alone cannot substitute for original H raw and F HOME creation");
+        product.connection.execute("DELETE FROM main.gogoke_v37_h_claim WHERE domain_id='unstartedProjectA' AND session_id='unstartedSessionA'").unwrap();
+        product.connection.execute("DELETE FROM main.gogoke_v37_instance_homes WHERE home_id='unstartedHomeA'").unwrap();
+        product.connection.execute("DELETE FROM main.gogoke_v37_h_owner_binding WHERE binding_id='unstartedBindingA'").unwrap();
+        let origin=crate::store::seat::NativeOrigin::user(&product.owner);
+        crate::store::seat::store_template(&mut product.connection,origin,
+            crate::store::seat::StoreTemplate {domain_id:"unstartedProjectA",template_id:"unstartedTemplateA",
+                settings_json:br#"{"instruction":"default"}"#}).unwrap();
+        let created=crate::store::seat::create(&mut product.connection,
+            crate::store::seat::NativeOrigin::user(&product.owner),
+            crate::store::seat::CreateSeat {domain_id:"unstartedProjectA",seat_id:"unstartedSeatA",
+                template_id:"unstartedTemplateA",instance_id:Some("legacyA"),
+                kind:crate::store::seat::Kind::Long,request_id:"unstartedSeatCreateA",
+                request_bytes:b"create historical test seat"}).unwrap().seat;
+        let busy=crate::store::seat::set_dispatch_state(&mut product.connection,&created,true).unwrap();
+        let generation=busy.generation.to_string();
+        product.connection.execute("BEGIN IMMEDIATE").unwrap();
+        crate::store::session_transport::bind_owner_in_transaction(&mut product.connection,
+            &crate::store::session_transport::OwnerBinding {binding_id:"releasedBindingA",
+                instance_id:"legacyA",domain_id:"unstartedProjectA",kind:"SESSION",
+                owner_id:"releasedSessionA",generation:&generation}).unwrap();
+        let seat_binding=Statement::prepare(product.connection.as_ptr(),
+            "INSERT INTO main.gogoke_v37_h_seat_binding(domain_id,session_id,seat_id,seat_incarnation,generation) VALUES('unstartedProjectA','releasedSessionA',?1,?2,?3)").unwrap();
+        for (index,value) in [&busy.seat_id,&busy.incarnation,&generation].iter().enumerate() {
+            seat_binding.bind_text((index+1) as i32,value).unwrap();
+        }
+        seat_binding.step_done().unwrap();drop(seat_binding);
+        let selection=crate::store::session_transport::session_binding::SessionBinding {
+            domain_id:"unstartedProjectA".into(),session_id:"releasedSessionA".into(),
+            seat_id:busy.seat_id.clone(),seat_incarnation:busy.incarnation.clone(),
+            seat_authorization_generation:busy.generation,selected_instance_id:"legacyA".into(),
+            provenance:crate::store::session_transport::session_binding::Provenance::NativeV2,
+        };
+        crate::store::session_transport::session_binding::select_native_in_transaction(
+            &product.connection,&selection).unwrap();
+        crate::store::session_transport::session_binding::insert_native_in_transaction(
+            &product.connection,&selection).unwrap();
+        product.connection.execute("COMMIT").unwrap();
+        let reserve_raw=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"admission-reserve\",\"requestId\":\"releasedReserveA\",\"targetId\":\"releasedSessionA\",\"domainId\":\"unstartedProjectA\",\"expectedRevision\":\"0\",\"payload\":{{\"seatId\":\"{}\",\"generation\":\"{generation}\"}}}}",busy.seat_id);
+        let preparation=crate::store::digest::sha256_hex(b"unstartedProjectA\nreleasedReserveA");
+        let home_request=format!("homeprep-{}",&preparation[..40]);
+        let session_profile=crate::process::AppContainerProfile::derive_for_revocation(
+            &format!("Gogoke37.Session.{}",&crate::store::digest::sha256_hex(
+                format!("{}\nunstartedProjectA\nreleasedSessionA\n{}\n{generation}",
+                    root.canonical_root().identity.opaque(),busy.incarnation).as_bytes())[..40])).unwrap();
+        instance::create_temporary_home(&mut product.connection,&root,&session_profile,
+            &instance::CreateTemporaryHome {request_id:&home_request,request_bytes:reserve_raw.as_bytes(),
+                home_id:"releasedHomeA",instance_id:"legacyA",domain_id:"unstartedProjectA",
+                kind:instance::TemporaryKind::Session,owner_id:"releasedSessionA",generation:&generation}).unwrap();
+        for (operation,request,expected) in [
+            ("admission-reserve","releasedReserveA",0_i64),
+            ("admission-commit","releasedCommitA",1_i64),
+        ] {
+            let raw=if expected==0 {reserve_raw.clone()} else {format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"{operation}\",\"requestId\":\"{request}\",\"targetId\":\"releasedSessionA\",\"domainId\":\"unstartedProjectA\",\"expectedRevision\":\"{expected}\",\"payload\":{{\"seatId\":\"{}\",\"generation\":\"{generation}\"}}}}",busy.seat_id)};
+            let input=crate::store::session_transport::AdmissionRequest {domain_id:"unstartedProjectA",
+                session_id:"releasedSessionA",request_id:request,raw_bytes:raw.as_bytes(),
+                instance_id:"legacyA",home_id:"releasedHomeA",generation:&generation,
+                expected_revision:expected};
+            let result=if expected==0 {
+                crate::store::session_transport::reserve_admission(&mut product.connection,&input,
+                    |_|Ok(crate::store::session_transport::TrustedLimits {
+                        project_parallel:4,instance_concurrency:4})).unwrap()
+            } else {
+                crate::store::session_transport::commit_admission(&mut product.connection,&input,
+                    |_|Ok(())).unwrap()
+            };
+            assert!(matches!(result,crate::store::session_transport::AdmissionResult::Applied(_)));
+        }
+        assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err(),
+            "original process-less COMMITTED reservation remains unqualified");
+        let release_raw=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"admission-release\",\"requestId\":\"releasedReleaseA\",\"targetId\":\"releasedSessionA\",\"domainId\":\"unstartedProjectA\",\"expectedRevision\":\"2\",\"payload\":{{\"seatId\":\"{}\",\"generation\":\"{generation}\"}}}}",busy.seat_id);
+        let release=crate::store::session_transport::AdmissionRequest {domain_id:"unstartedProjectA",
+            session_id:"releasedSessionA",request_id:"releasedReleaseA",raw_bytes:release_raw.as_bytes(),
+            instance_id:"legacyA",home_id:"releasedHomeA",generation:&generation,expected_revision:2};
+        assert!(matches!(crate::store::session_transport::runtime::release_native(
+            &mut product.connection,&crate::store::seat::NativeOrigin::user(&product.owner),&release).unwrap(),
+            crate::store::session_transport::AdmissionResult::Applied(3)));
+        let open=Statement::prepare(product.connection.as_ptr(),
+            "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('unstartedProjectA','unstartedOpenIntentA',?1,'open','releasedSessionA','APPLIED',3,4)").unwrap();
+        open.bind_text(1,&action_hex(b"synthetic open intent only")).unwrap();open.step_done().unwrap();drop(open);
+        assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err(),
+            "a later original H open intent forbids never-started classification");
+        product.connection.execute("DELETE FROM main.gogoke_v37_h_operation WHERE domain_id='unstartedProjectA' AND request_id='unstartedOpenIntentA'").unwrap();
         let original_before=table_rows(&product,
             "SELECT request_id,request_hex,target_id,phase,COALESCE(native_receipt_id,'') FROM main.gogoke_v37_instance_operations ORDER BY request_id",5);
         assert!(product.dispatch_user_managed_cli(frame.replace(&fingerprint,"00").as_bytes()).is_err());
@@ -1059,6 +1234,16 @@ mod tests {
         assert!(product.dispatch_user_managed_cli(frame.replacen("}",",\"extra\":\"x\"}",1).as_bytes()).is_err());
         assert_eq!(table_rows(&product,
             "SELECT request_id,phase FROM main.gogoke_v37_instance_legacy_source_migrations",2).len(),1);
+        let second_name=format!("Gogoke37.Unrecorded.{}",nonce);
+        let unrecorded=crate::process::AppContainerProfile::derive_for_revocation(&second_name).unwrap();
+        unrecorded.grant_bound_tree(&home_path,&home_identity,true).unwrap();
+        let bound=crate::process::CredentialBinding::open_registered(&root,&auth_path,
+            &home_identity,&crate::process::CredentialBinding::observe_source_metadata(
+                &root,&auth_path,&home_identity).unwrap().0,&[]).unwrap();
+        assert!(crate::process::LegacyAclInventory::capture(&root,&home_path,
+            &home_identity,&bound,&[owner_name]).is_err(),
+            "an unrecorded physical package SID cannot be omitted from the ACL proof");
+        drop(bound);
         product.close_checked().unwrap();drop(root);
         fs::remove_file(database).unwrap();
         fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).unwrap();
