@@ -2248,3 +2248,88 @@ jobs:
           path: ${{ runner.temp }}/gogoke-server-evidence
           if-no-files-found: error
           retention-days: 30
+
+# Selected only with the existing home-kernel-close focused route.
+# Install and real preboot proof remain NOT_RUN.
+  native-pr94-kernel-home-mutations:
+    if: ${{ inputs.focused_library == 'home-kernel-close' && !inputs.full_library_only && !inputs.dependency_lock_only && !inputs.secretary_routine_fixture_only && !inputs.security_remainder_source && !inputs.trace_canonicalize && !inputs.job_descendant_fixture_only && !inputs.stop_124_fixture_only && !inputs.ordinary_oauth_fixture_only && !inputs.code_mode_fixture_only && !inputs.private_history_fixture_only && !inputs.catalog_program_fixture_only }}
+    name: PR94 kernel HOME production mutation ${{ matrix.axis }}
+    timeout-minutes: 35
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        axis:
+          - f-kernel-source
+          - h-generation-source
+          - native-boot-cutoff
+          - kernel-replay-boot
+    env:
+      RUSTUP_TOOLCHAIN: 1.85.1
+      PR94_MUTATION_AXIS: ${{ matrix.axis }}
+      PR94_MUTATION_EVIDENCE: ${{ runner.temp }}/pr94-kernel-home-${{ matrix.axis }}-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Initialize original-only evidence as NOT_RUN
+        shell: pwsh
+        run: |
+          $root = $env:PR94_MUTATION_EVIDENCE
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          [ordered]@{
+            schema='gogoke.pr94.kernel-home-mutation.v1'
+            sourceCommit=$env:GITHUB_SHA
+            runId=$env:GITHUB_RUN_ID
+            runAttempt=$env:GITHUB_RUN_ATTEMPT
+            axis=$env:PR94_MUTATION_AXIS
+            state='NOT_RUN'
+            originalChecks='NOT_RUN'
+            baselineTest='NOT_RUN'
+            mutationCheck='NOT_RUN'
+            mutationTest='NOT_RUN'
+            restore='NOT_RUN'
+            restoredChecks='NOT_RUN'
+            restoredTest='NOT_RUN'
+            installedV07='NOT_RUN'
+            actualPrebootProof='NOT_RUN'
+            acceptance=$false
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $root 'original-only.json') -Encoding utf8NoBOM
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.13.1
+      - name: Bind the actual Node image and Git backend
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $node = Get-Command node.exe -CommandType Application | Select-Object -First 1 -ExpandProperty Source
+          if (-not (Test-Path -LiteralPath $node -PathType Leaf)) { throw 'Controlled Node runtime unavailable' }
+          if ((& $node --version) -cne 'v24.13.1' -or $LASTEXITCODE -ne 0) { throw 'Controlled Node version mismatch' }
+          $gitExec = & git --exec-path
+          if ($LASTEXITCODE -ne 0) { throw 'Git exec path unavailable' }
+          $mingw = Split-Path -Parent (Split-Path -Parent $gitExec.Trim())
+          $backend = Join-Path $mingw 'bin/git.exe'
+          if (-not (Test-Path -LiteralPath $backend -PathType Leaf)) { throw 'Actual Git backend image unavailable; no launcher substitute' }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CONTROLLED_NODE_PATH=$node"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "GOGOKE_CONTROLLED_GIT_PATH=$backend"
+          [ordered]@{
+            nodePath=$node
+            nodeVersion=(& $node --version)
+            nodeSha256=(Get-FileHash -LiteralPath $node -Algorithm SHA256).Hash.ToLowerInvariant()
+            gitBackendPath=$backend
+            gitBackendVersion=(& $backend --version)
+            gitBackendSha256=(Get-FileHash -LiteralPath $backend -Algorithm SHA256).Hash.ToLowerInvariant()
+          } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $env:PR94_MUTATION_EVIDENCE 'runtime-original.json') -Encoding utf8NoBOM
+      - uses: dtolnay/rust-toolchain@1.85.1
+      - name: Verify one exact PR94 production mutation with exact restoration
+        shell: pwsh
+        run: |
+          ./tools/ci/gogoke37-pr94-kernel-home-mutation.ps1 `
+            -Axis $env:PR94_MUTATION_AXIS `
+            -EvidenceRoot $env:PR94_MUTATION_EVIDENCE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr94-kernel-home-${{ matrix.axis }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pr94-kernel-home-${{ matrix.axis }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 30
