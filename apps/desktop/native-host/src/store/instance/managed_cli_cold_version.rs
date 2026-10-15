@@ -2733,7 +2733,6 @@ fn strict_scope(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     ->Result<QualifiedVersionAction,ManagedCliError>{
     no_unsettled_managed_version_change(db,driver)?;
     no_unowned_original_h_rows(db)?;
-    independent_f_targets_clear(db,driver)?;
     no_unattributed_managed_image_c(db,root,driver,&[],&[],&[],
         &std::collections::BTreeSet::new(),true)?;
     if let Some(action)=action {strict_own_probe(db,root,driver,action,live)?}
@@ -2762,7 +2761,6 @@ pub(crate) fn observe_version_scope(db:&VerifiedDatabaseConnection<'_>,root:&Roo
     let admission=(|| {
         no_unsettled_managed_version_change(db,driver)?;
         no_unowned_original_h_rows(db)?;
-        independent_f_targets_clear(db,driver)?;
         no_unattributed_managed_image_c(db,root,driver,&[],&[],&[],
             &std::collections::BTreeSet::new(),true)
     })();
