@@ -1238,7 +1238,7 @@ mod tests {
                 let persistent=super::super::home::prepare_persistent_home(root,"oldA").unwrap();
                 let instance=Statement::prepare(db.as_ptr(),
                     "INSERT INTO main.gogoke_v37_instances VALUES('oldA','codex','instance-home-oldA',?1,'sha256:0000000000000000000000000000000000000000000000000000000000000000','0.160.0','INSTALLED','LOGGED_IN',1)").unwrap();
-                instance.bind_text(1,persistent.identity.opaque()).unwrap();
+                instance.bind_text(1,&persistent.identity.opaque()).unwrap();
                 instance.step_done().unwrap();drop(instance);
                 // These are the exact durable E rows produced by designation
                 // and configuration. Admission, F HOME and release below use
