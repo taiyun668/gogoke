@@ -937,12 +937,112 @@ mod tests {
     use super::*;
     use crate::store::same_open::{create_new,route_b_test_guard};
     use std::collections::HashMap;
-    use std::path::PathBuf;
+    use std::path::{Path,PathBuf};
     use std::process::Command;
     use std::sync::{Mutex,OnceLock};
-    use std::time::{SystemTime,UNIX_EPOCH};
+    use std::time::{Duration,SystemTime,UNIX_EPOCH};
 
     static PINNED_VERSION_ARCHIVES:OnceLock<Mutex<HashMap<(String,String),PathBuf>>>=OnceLock::new();
+
+    /// Diagnostic only: this exercises the exact prepared PowerShell/persistent
+    /// stdin boundary which failed in the ef39 login shard. It deliberately
+    /// does not exercise or accept the private Owner-login state machine.
+    #[test]
+    fn diagnostic_same_boundary_powershell_initialize_is_not_owner_login_acceptance() {
+        const PRE_READ:&str="GOGOKE_LOGIN_DIAGNOSTIC_PRE_READ";
+        const POST_READ:&str="GOGOKE_LOGIN_DIAGNOSTIC_POST_READ length=";
+        let _guard=route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!(
+            "gogoke-login-stdin-diagnostic-{}-{nonce}",std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let database=path.join("state.sqlite");
+        let mut product=ProductDatabase::open(&root,&database).unwrap();
+        super::super::managed_cli_test_setup::ready(&mut product,&root,"codex");
+        let register=crate::store::session_transport::decode_request(
+            br#"{"schema":"gogoke.37.operations.v1","family":"K-INSTANCE","operation":"register","requestId":"registerA","targetId":"instanceA","domainId":"global","expectedRevision":"0","payload":{"driverId":"codex"}}"#).unwrap();
+        let registered=crate::store::session_transport::decode_receipt(
+            &product.register_user_instance(&register).unwrap()).unwrap();
+        assert_eq!(registered.status,V37Status::Applied);
+
+        let mut scope=product.prepare_owner_codex_login("instanceA").unwrap();
+        let powershell=Path::new(&std::env::var("SystemRoot").unwrap())
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let powershell_sha256=crate::store::digest::sha256_hex(&fs::read(&powershell).unwrap());
+        let test_exe=std::env::current_exe().unwrap();
+        let test_exe_sha256=crate::store::digest::sha256_hex(&fs::read(&test_exe).unwrap());
+        eprintln!("GOGOKE_LOGIN_DIAGNOSTIC_IDENTITY powershell_sha256={powershell_sha256} test_exe_sha256={test_exe_sha256}");
+        scope.login.binding.binary_digest_sha256=format!("sha256:{powershell_sha256}");
+        scope.login.launch.application=powershell;
+        scope.login.launch.arguments=vec!["-NoProfile".into(),"-NonInteractive".into(),
+            "-Command".into(),r#"
+[Console]::Error.WriteLine('GOGOKE_LOGIN_DIAGNOSTIC_PRE_READ')
+$line = [Console]::In.ReadLine()
+$length = if ($null -eq $line) { -1 } else { $line.Length }
+[Console]::Error.WriteLine("GOGOKE_LOGIN_DIAGNOSTIC_POST_READ length=$length")
+[Console]::Out.WriteLine('{"id":1,"result":{"userAgent":"controlled"}}')
+while ($null -ne [Console]::In.ReadLine()) {}
+exit 0
+"#.into()];
+        scope.login.launch.environment=None;
+
+        let operation_id=format!("login-diagnostic-{}",
+            &crate::store::digest::sha256_hex(format!("{}\n{nonce}",path.display()).as_bytes())[..40]);
+        let prepared=product.process_custodian.prepare(&scope.login).unwrap();
+        crate::store::authority::record_prepared_process(
+            &mut product.connection,&operation_id,&prepared).unwrap();
+        product.process_custodian.activate(&prepared).unwrap();
+        crate::store::authority::mark_process_active(
+            &mut product.connection,&operation_id,&prepared).unwrap();
+
+        let write_result=product.process_custodian.active(&prepared.ticket).unwrap()
+            .write_persistent_frame(super::super::v37_login::INITIALIZE);
+        let read_result=if write_result.is_ok() {
+            Some(product.process_custodian.read_persistent_child_frame(
+                &prepared.ticket,Duration::from_secs(15)))
+        } else {None};
+        let fragment_len=product.process_custodian
+            .persistent_stdout_fragment(&prepared.ticket).ok().map(|bytes|bytes.len());
+
+        // Always finish the original production stop and durable custody path
+        // before evaluating the diagnostic result.
+        let proof=product.process_custodian.stop(&prepared.ticket,
+            StopBudgets::production(),||Ok(())).unwrap();
+        let (stderr,stderr_drain_ok)=match product.process_custodian.active(&prepared.ticket) {
+            Some(process)=>{
+                let drain_ok=process.drain_stderr_after_writers_stopped().is_ok();
+                (process.stderr_tail(),drain_ok)
+            },
+            None=>(String::new(),false),
+        };
+        let revision=crate::store::authority::mark_process_stopped(
+            &mut product.connection,&operation_id,&proof).unwrap();
+        product.process_custodian.confirm_stop_durable(&DurableStopConfirmation{
+            ticket:prepared.ticket.clone(),custodian_nonce:prepared.custodian_nonce.clone(),
+            identity:prepared.identity.clone(),proof_hash:proof.proof_hash(),durable_revision:revision,
+        }).unwrap();
+
+        let pre_count=stderr.lines().filter(|line|*line==PRE_READ).count();
+        let post_lengths:Vec<_>=stderr.lines().filter_map(|line|
+            line.strip_prefix(POST_READ)?.parse::<usize>().ok()).collect();
+        let unexpected_stderr_lines=stderr.lines().filter(|line|
+            *line!=PRE_READ&&!line.starts_with(POST_READ)).count();
+        let write_ok=write_result.is_ok();
+        let read_ok=read_result.as_ref().is_some_and(|result|result.is_ok());
+        let custody_matches=read_result.as_ref().is_some_and(|result|
+            result.as_ref().is_ok_and(|frame|frame.custody()==&prepared));
+        let expected_length=super::super::v37_login::INITIALIZE.len()-1;
+        let marker_ok=pre_count==1&&post_lengths==[expected_length]&&unexpected_stderr_lines==0;
+        eprintln!("GOGOKE_LOGIN_DIAGNOSTIC_RESULT write_ok={write_ok} read_ok={read_ok} custody_matches={custody_matches} fragment_bytes={fragment_len:?} pre_read_count={pre_count} post_read_lengths={post_lengths:?} unexpected_stderr_lines={unexpected_stderr_lines} stderr_drain_ok={stderr_drain_ok} stop_exit={:?}",proof.exit_code);
+
+        drop(scope);
+        product.close_checked().unwrap();
+        drop(root);
+        fs::remove_dir_all(&path).unwrap();
+        assert!(write_ok&&read_ok&&custody_matches&&marker_ok&&stderr_drain_ok,
+            "same-boundary PowerShell diagnostic failed; see fixed marker counts and byte lengths above");
+    }
 
     #[test]
     fn strict_legacy_codex_unregistered_physical_acl_applies_and_replays() {
