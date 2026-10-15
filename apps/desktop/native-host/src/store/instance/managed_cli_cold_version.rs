@@ -6,7 +6,7 @@ use super::{inspect_staged_official_cli_version, no_unsettled_managed_version_ch
     read_official_cli_version, read_prepared_managed_replacement, ManagedCliError, OFFICIAL};
 use super::super::{managed_version_action::{self,ActionRecord}, program_source, registry};
 use crate::process::{NativeLegacyHoldersGone,NativeStopProof};
-use crate::root::{inspect_root, inspect_regular_file, RootLock};
+use crate::root::{inspect_root, RootLock};
 use crate::store::atomic::Statement;
 use crate::store::digest::{content_hash, sha256_hex};
 use crate::store::same_open::VerifiedDatabaseConnection;
@@ -204,8 +204,12 @@ fn verified_source_images(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driv
     if !metadata.is_file() || metadata.file_attributes()&0x400!=0 {
         return Err(ManagedCliError::IdentityChanged)
     }
-    let original_identity=inspect_regular_file(original)
+    let original_observation=registry::ProgramObservation::observe(original,old.version)
         .map_err(|error|ManagedCliError::Observation(format!("original C image: {error:?}")))?;
+    if !original_observation.matches_pin(original_digest,old.version) {
+        return Err(ManagedCliError::IdentityChanged)
+    }
+    let original_path=std::fs::canonicalize(original)?;
     let retained=Statement::prepare(db.as_ptr(),
         "SELECT COALESCE(version,''),COALESCE(image_sha256,''),COALESCE(stage_name,''),COALESCE(previous_version,''),COALESCE(previous_image_sha256,''),COALESCE(previous_stage_name,'') FROM main.gogoke_v37_instance_cli_copies WHERE driver_id=?1")?;
     retained.bind_text(1,driver)?;
@@ -218,9 +222,7 @@ fn verified_source_images(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driv
         if version.as_str()==old.version && image.as_str()==old.image_sha256 &&
             !stage.is_empty() {
             let verified=inspect_staged_official_cli_version(root,driver,old.version,stage)?;
-            let identity=inspect_regular_file(&verified).map_err(|error|
-                ManagedCliError::Observation(format!("retained old stage: {error:?}")))?;
-            if identity==original_identity {return Ok(())}
+            if std::fs::canonicalize(&verified)?==original_path {return Ok(())}
         }
     }
     // Once the old image has left both copy columns, its original C path is
@@ -229,14 +231,8 @@ fn verified_source_images(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driv
     let staging=root.canonical_root().canonical_path.join("v37-managed-cli").join("staging");
     let stage=stage_name_from_original_image(&staging,original,old)?;
     let verified=inspect_staged_official_cli_version(root,driver,old.version,&stage)?;
-    let original_path=std::fs::canonicalize(original)?;
     let verified_path=std::fs::canonicalize(&verified)?;
     if original_path!=verified_path {return Err(ManagedCliError::IdentityChanged)}
-    let verified_identity=inspect_regular_file(&verified)
-        .map_err(|error|ManagedCliError::Observation(format!("original staged image: {error:?}")))?;
-    if original_identity!=verified_identity {
-        return Err(ManagedCliError::IdentityChanged)
-    }
     Ok(())
 }
 

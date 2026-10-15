@@ -1125,17 +1125,6 @@ mod platform {
         Ok(handle)
     }
 
-    /// Read an ordinary file's physical identity with the same existing
-    /// reparse/type/FileId checks used by database custody. Directory roots
-    /// must continue to use inspect_root.
-    pub(crate) fn inspect_regular_file(path: &Path) -> Result<RootIdentity, DatabasePinError> {
-        let handle = open_file_handle(path, FILE_READ_ATTRIBUTES,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, OPEN_EXISTING,
-            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
-            "inspect regular file")?;
-        inspect_database_file(path, &handle)
-    }
-
     fn inspect_database_file(
         path: &Path,
         handle: &OwnedHandle,
@@ -1591,8 +1580,6 @@ mod platform {
 #[cfg(windows)]
 pub(crate) use platform::SqliteMainHandle;
 pub use platform::{inspect_root, DatabaseFilePin, RootLock};
-#[cfg(windows)]
-pub(crate) use platform::inspect_regular_file;
 
 fn hex_bytes(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -1607,7 +1594,7 @@ fn hex_bytes(bytes: &[u8]) -> String {
 #[cfg(all(test, windows))]
 mod tests {
     use super::platform::wide_call_count;
-    use super::{inspect_root, inspect_regular_file, DatabasePinError, DatabaseSidecarState, RootLock, RootLockError};
+    use super::{inspect_root, DatabasePinError, DatabaseSidecarState, RootLock, RootLockError};
     use std::ffi::{OsStr, OsString};
     use std::fs::{self, OpenOptions};
     use std::io::{Seek, SeekFrom, Write};
@@ -1808,15 +1795,6 @@ mod tests {
 
         let file = parent.path().join("file");
         fs::write(&file, b"not a directory").expect("create test file");
-        let file_identity = inspect_regular_file(&file).expect("ordinary file identity");
-        let alias = parent.path().join("file-alias");
-        fs::hard_link(&file, &alias).expect("create physical file alias");
-        assert_eq!(inspect_regular_file(&alias).unwrap(), file_identity);
-        let other = parent.path().join("other-file");
-        fs::write(&other, b"not a directory").expect("create different same-byte file");
-        assert_ne!(inspect_regular_file(&other).unwrap(), file_identity);
-        assert!(matches!(inspect_regular_file(parent.path()),
-            Err(DatabasePinError::NotRegularFile(_))));
         assert!(matches!(
             RootLock::acquire(&file),
             Err(RootLockError::RootNotDirectory(_))
