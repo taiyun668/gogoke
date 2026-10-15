@@ -1409,7 +1409,7 @@ mod tests {
             let journal=table_rows(&product,
                 "SELECT request_id,phase FROM main.gogoke_v37_instance_legacy_source_migrations",2);
             if commit_first {
-                assert_eq!(journal,vec![vec!["sourceMoveA".into(),"PREPARING".into()]],
+                assert_eq!(journal,vec![vec!["sourceMoveA".to_owned(),"PREPARING".to_owned()]],
                     "actual committed PREPARING retains the original ID");
                 assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err(),
                     "a durable PREPARING row cannot resume the effect");
@@ -1432,7 +1432,7 @@ mod tests {
                 assert!(String::from_utf8_lossy(&fresh).contains("\"status\":\"APPLIED\""));
                 assert_eq!(table_rows(&product,
                     "SELECT request_id,phase FROM main.gogoke_v37_instance_legacy_source_migrations",2),
-                    vec![vec!["sourceMoveB".into(),"APPLIED".into()]]);
+                    vec![vec!["sourceMoveB".to_owned(),"APPLIED".to_owned()]]);
             }
             assert_eq!(table_rows(&product,
                 "SELECT request_id,request_hex,target_id,phase,COALESCE(native_receipt_id,'') FROM main.gogoke_v37_instance_operations ORDER BY request_id",5),original_before);
