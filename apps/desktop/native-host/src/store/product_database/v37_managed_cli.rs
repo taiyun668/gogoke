@@ -1922,6 +1922,8 @@ mod tests {
         let mut changed=Vec::new();
         for (name,index,value) in [
             ("original parent exit",33,b"false".to_vec()),
+            ("original parent-grace outcome",34,
+                if fields[34]==b"true" {b"false".to_vec()} else {b"true".to_vec()}),
             ("original Job count",35,b"1".to_vec()),
             ("original writer fence",41,b"false".to_vec()),
             ("original deadline",43,b"true".to_vec()),
