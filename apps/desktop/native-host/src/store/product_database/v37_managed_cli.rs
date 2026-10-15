@@ -1131,7 +1131,8 @@ mod tests {
             "ProductDatabase::open must leave the lazy legacy ACL family wholly absent");
         if legacy_family_present {
             instance::initialize_legacy_fence_schema(&mut product.connection).unwrap();
-            assert_eq!(legacy_fence_schema_rows(&product).len(),3,
+            assert_eq!(legacy_fence_schema_rows(&product).iter()
+                .filter(|row| row[0]=="main" && row[1]=="table").count(),3,
                 "fixture setup must create the exact complete legacy ACL family");
             assert!(instance::read_legacy_fence(&product.connection,"legacyA").unwrap().is_none(),
                 "complete family setup must not fabricate a target fence");
@@ -1522,7 +1523,7 @@ mod tests {
     }
     fn legacy_fence_schema_rows(product:&ProductDatabase<'_>)->Vec<Vec<String>> {
         table_rows(product,
-            "SELECT type,name,tbl_name,sql FROM main.sqlite_schema WHERE lower(substr(name,1,22))='gogoke_v37_legacy_acl_' ORDER BY name",4)
+            "SELECT 'main',type,name,tbl_name,COALESCE(sql,''),sql IS NULL FROM main.sqlite_schema WHERE lower(substr(name,1,22))='gogoke_v37_legacy_acl_' OR lower(substr(tbl_name,1,22))='gogoke_v37_legacy_acl_' UNION ALL SELECT 'temp',type,name,tbl_name,COALESCE(sql,''),sql IS NULL FROM temp.sqlite_schema WHERE lower(substr(name,1,22))='gogoke_v37_legacy_acl_' OR lower(substr(tbl_name,1,22))='gogoke_v37_legacy_acl_' ORDER BY 1,3",6)
     }
     fn legacy_fence_family_rows(product:&ProductDatabase<'_>,present:bool)
         ->Vec<Vec<Vec<String>>> {
@@ -1531,7 +1532,7 @@ mod tests {
             table_rows(product,
                 "SELECT instance_id,boot_identity,database_identity,root_identity,home_identity,source_identity,source_parent_identity,COALESCE(CAST(source_revision AS TEXT),''),custody_digest,home_acl_digest,source_acl_digest,acl_provenance_digest,native_snapshot,native_snapshot_digest,revision FROM main.gogoke_v37_legacy_acl_fences ORDER BY instance_id",15),
             table_rows(product,
-                "SELECT instance_id,operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,COALESCE(stop_proof_hash,'') FROM main.gogoke_v37_legacy_acl_custody ORDER BY instance_id,operation_id",13),
+                "SELECT instance_id,operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,COALESCE(stop_proof_hash,''),stop_proof_hash IS NULL FROM main.gogoke_v37_legacy_acl_custody ORDER BY instance_id,operation_id",14),
             table_rows(product,
                 "SELECT instance_id,step,phase,request_id,boot_identity,before_home_acl_digest,before_source_acl_digest,target_home_acl_digest,target_source_acl_digest,intent_revision,COALESCE(CAST(applied_revision AS TEXT),'') FROM main.gogoke_v37_legacy_acl_steps ORDER BY instance_id,step",11),
         ]
