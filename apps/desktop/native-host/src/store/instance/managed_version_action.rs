@@ -566,7 +566,7 @@ fn strict_row_width(kind:&str)->Option<usize> {
         "HO"|"FHG"=>10, "FO"|"NS"|"WTL"=>8, "HJ"=>17,
         "RS"|"WT"=>22, "WTP"=>4, "WTO"=>16,
         "HGC"=>24, "HA"=>30, "FH"=>18, "CP"=>11,
-        "LR"=>14, "VA"=>45,
+        "LR"=>14, "VA"=>4,
         _=>return None,
     })
 }
@@ -586,6 +586,10 @@ fn valid_strict_source_codec(driver:&str,source_hex:&str)->Result<()> {
         if key.is_empty() || key.len()>row.len()-2 ||
             key.iter().any(|part|part=="NULL" || part=="''" || !strict_sql_quote(part)) ||
             !row[2..].starts_with(&key) {
+            return Err(ActionError::Conflict)
+        }
+        if row[0]=="VA" && (key.len()!=1 || !row[3].strip_prefix('\'')
+            .and_then(|value|value.strip_suffix('\'')).is_some_and(digest)) {
             return Err(ActionError::Conflict)
         }
         let identity=(row[0].clone(),row[1].clone());
@@ -1139,6 +1143,12 @@ mod tests {
         assert!(valid_strict_source_codec("codex",&outer(vec![hex_bytes(&frame_strings(&changed))])).is_err());
         changed=row; changed[3]="'bad'quote'".into();
         assert!(valid_strict_source_codec("codex",&outer(vec![hex_bytes(&frame_strings(&changed))])).is_err());
+        let action_key=hex_bytes(&frame_strings(&["'old-action'".to_owned()]));
+        let mut historical=vec!["VA".to_owned(),action_key,"'old-action'".into(),
+            format!("'{}'","a".repeat(64))];
+        assert!(valid_strict_source_codec("codex",&outer(vec![hex_bytes(&frame_strings(&historical))])).is_ok());
+        historical[3]="'old-source-body'".into();
+        assert!(valid_strict_source_codec("codex",&outer(vec![hex_bytes(&frame_strings(&historical))])).is_err());
     }
 
     #[test]

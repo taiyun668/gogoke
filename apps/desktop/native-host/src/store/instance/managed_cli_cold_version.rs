@@ -219,6 +219,12 @@ fn strict_project(db:&VerifiedDatabaseConnection<'_>,driver:&str,
         }
         if excluded.contains(&values[0]) {continue}
         let key=hex(&frame(&values[..spec.key_columns]));
+        if spec.kind=="VA" {
+            // The original action stays in its own journal and is validated
+            // before projection. Bind every quoted column without recursively
+            // embedding its earlier historical snapshots in the next action.
+            values=vec![values[0].clone(),format!("'{}'",sha256_hex(&frame(&values)))];
+        }
         let row=std::iter::once(spec.kind.to_owned()).chain(std::iter::once(key.clone()))
             .chain(values).collect::<Vec<_>>();
         if members.insert((spec.kind.to_owned(),key),row).is_some() {
@@ -1670,6 +1676,20 @@ fn original_rpc_sources(db:&VerifiedDatabaseConnection<'_>,driver:&str,
 /// Start at C's complete original set, before any instance/profile JOIN. A
 /// row executing this driver's official managed-stage image cannot disappear
 /// merely because its profile no longer resolves to an F instance.
+fn original_c_image_has_owned_ancestor(image:&std::path::Path,staging:&std::path::Path)
+    ->Result<bool,ManagedCliError>{
+    let mut parent=image.parent();
+    while let Some(path)=parent {
+        match std::fs::canonicalize(path) {
+            Ok(observed)=>return Ok(observed.starts_with(staging)),
+            Err(error) if error.kind()==std::io::ErrorKind::NotFound=>parent=path.parent(),
+            Err(error)=>return Err(ManagedCliError::Observation(format!(
+                "original C image ancestor: {error:?}"))),
+        }
+    }
+    Err(ManagedCliError::Observation("original C image has no observable ancestor".into()))
+}
+
 fn no_unattributed_managed_image_c(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
     driver:&str,units:&[(Unit,Vec<String>)],stopped:&[Unit],
     globals:&[(Vec<String>,Vec<String>)],strict:bool)->Result<(),ManagedCliError>{
@@ -1697,7 +1717,9 @@ fn no_unattributed_managed_image_c(db:&VerifiedDatabaseConnection<'_>,root:&Root
         let related=known_driver || h || global || managed;
         let image=match std::fs::canonicalize(std::path::Path::new(&r[4])) {
             Ok(image)=>image,Err(error)=>{
-                if related {return Err(ManagedCliError::Observation(format!(
+                if related || original_c_image_has_owned_ancestor(
+                    std::path::Path::new(&r[4]),&staging)? {
+                    return Err(ManagedCliError::Observation(format!(
                     "original related C image: {error:?}")))}
                 continue
             },

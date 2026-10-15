@@ -1894,6 +1894,22 @@ mod tests {
         }
     }
 
+    fn action_frame_parts(raw:&[u8])->Vec<Vec<u8>> {
+        let mut fields=Vec::new();let mut offset=0;
+        while offset<raw.len() {
+            let length=u64::from_be_bytes(raw[offset..offset+8].try_into().unwrap()) as usize;
+            offset+=8;fields.push(raw[offset..offset+length].to_vec());offset+=length;
+        }
+        assert_eq!(offset,raw.len());fields
+    }
+
+    fn action_frame_hex(parts:&[Vec<u8>])->String {
+        let mut bytes=Vec::new();
+        for part in parts {bytes.extend_from_slice(&(part.len() as u64).to_be_bytes());
+            bytes.extend_from_slice(part);}
+        action_hex(&bytes)
+    }
+
     // Modify the actual durable native-probe record, not a substitute proof.
     // Round-trip the observed frame first; dispatch with no open SAVEPOINT so
     // a transaction-nesting error cannot make a negative control look valid.
@@ -1902,21 +1918,10 @@ mod tests {
         let original=instance::read_version_action(&product.connection,root,request)
             .unwrap().unwrap();
         let raw=action_bytes(&original.probe_receipt_hex).unwrap();
-        let mut fields=Vec::new();
-        let mut offset=0;
-        while offset<raw.len() {
-            let length=u64::from_be_bytes(raw[offset..offset+8].try_into().unwrap()) as usize;
-            offset+=8;
-            fields.push(raw[offset..offset+length].to_vec());offset+=length;
-        }
+        let fields=action_frame_parts(&raw);
         assert_eq!(fields.len(),46);
         assert_eq!(fields[0],b"managed-probe-witness-v3-full-stop-proof-stdout-digest");
-        let encode=|parts:&[Vec<u8>]| {
-            let mut bytes=Vec::new();
-            for part in parts {bytes.extend_from_slice(&(part.len() as u64).to_be_bytes());
-                bytes.extend_from_slice(part);}
-            action_hex(&bytes)
-        };
+        let encode=action_frame_hex;
         assert_eq!(encode(&fields),original.probe_receipt_hex,
             "the mutation reader must round-trip the original native record");
         let wrong_public=bound_step_response("probe",&original.driver,&original.target_version,
@@ -2031,6 +2036,38 @@ mod tests {
         product.connection.execute("UPDATE main.gogoke_v37_instance_operations SET receipt_json=(SELECT receipt_json FROM temp.strict_original_f_restore r WHERE r.request_id=gogoke_v37_instance_operations.request_id) WHERE request_id IN (SELECT request_id FROM temp.strict_original_f_restore)").unwrap();
         assert_eq!(managed_user(product,&frames[2]),original_replay);
         product.connection.execute("DROP TABLE temp.strict_original_f_restore").unwrap();
+        let source=action_frame_parts(&action_bytes(&action.source_hex).unwrap());
+        assert_eq!(action_frame_hex(&source),action.source_hex);
+        let history=table_rows(product,&format!("SELECT request_id FROM main.gogoke_v37_instance_version_actions WHERE driver_id='opencode' AND request_id!='{request}' ORDER BY request_id"),1);
+        let mut historical_count=0;
+        for member in &source[2..] {
+            let member=action_frame_parts(&action_bytes(std::str::from_utf8(member).unwrap()).unwrap());
+            if member[0]!=b"VA" {continue}
+            historical_count+=1;
+            assert_eq!(member.len(),4,"each historical action binds a full-row digest, not a recursively nested snapshot");
+            let request=std::str::from_utf8(&member[2]).unwrap();
+            assert!(history.iter().any(|old|request==format!("'{}'",old[0])));
+            assert_eq!(member[3].len(),66,"the historical row digest has fixed quote+SHA256 width");
+        }
+        assert_eq!(historical_count,history.len());
+        product.connection.execute("CREATE TEMP TABLE strict_original_va_restore AS SELECT * FROM main.gogoke_v37_instance_version_actions WHERE request_id='download-failure'").unwrap();
+        assert_eq!(table_rows(product,"SELECT CAST(COUNT(*) AS TEXT) FROM temp.strict_original_va_restore",1),vec![vec!["1".to_owned()]]);
+        for sql in [
+            format!("UPDATE main.gogoke_v37_instance_version_actions SET original_error_hex='{}' WHERE request_id='download-failure'",action_hex(b"changed original download error")),
+            "DELETE FROM main.gogoke_v37_instance_version_actions WHERE request_id='download-failure'".to_owned(),
+        ] {
+            product.connection.execute(&sql).unwrap();let before=managed_snapshot(product);
+            for raw in frames {
+                assert!(product.dispatch_user_managed_cli(raw.as_bytes()).is_err(),
+                    "all entries must retain the original historical action bytes or member: {sql}");
+                assert_eq!(managed_snapshot(product),before);
+                assert_eq!(instance::read_version_action(&product.connection,root,request).unwrap().unwrap(),action);
+            }
+            product.connection.execute("DELETE FROM main.gogoke_v37_instance_version_actions WHERE request_id='download-failure'").unwrap();
+            product.connection.execute("INSERT INTO main.gogoke_v37_instance_version_actions SELECT * FROM temp.strict_original_va_restore").unwrap();
+            assert_eq!(managed_user(product,&frames[2]),original_replay);
+        }
+        product.connection.execute("DROP TABLE temp.strict_original_va_restore").unwrap();
     }
 
     #[test]
@@ -2322,8 +2359,14 @@ mod tests {
         managed_user(&mut product,&version_frame("probe","1.18.32",Some(&stage32),Some("bound-rollback")));
         let copy=instance::read_managed_cli(&product.connection,&root,"opencode").unwrap().unwrap();
         let rollback=final_frame("rollback","bound-rollback","1.18.32",copy.revision);
+        let rollback_frames=vec![begin("bound-rollback","1.18.32","rollback"),
+            version_frame("stage","1.18.32",Some(&stage32),Some("bound-rollback")),
+            version_frame("probe","1.18.32",Some(&stage32),Some("bound-rollback")),rollback.clone()];
+        assert!(table_rows(&product,"SELECT request_id FROM main.gogoke_v37_instance_version_actions WHERE request_id!='bound-rollback'",1).len()>=3);
+        assert_strict_history_damages_refuse(&mut product,&root,"bound-rollback",&rollback_frames);
         assert_eq!(receipt_set(&managed_user(&mut product,&rollback)).0,"APPLIED");
         assert_eq!(receipt_set(&managed_user(&mut product,&rollback)).0,"REPLAYED");
+        assert_strict_history_damages_refuse(&mut product,&root,"bound-rollback",&rollback_frames);
         assert_eq!(fs::read(&sentinel).unwrap(),original_home);
         let after=managed_snapshot(&product);
         assert_eq!(after.profiles,original_profiles);
@@ -2853,6 +2896,7 @@ mod tests {
             ("original native selection","UPDATE main.gogoke_v37_native_selection SET seat_authorization_generation=seat_authorization_generation+1 WHERE session_id='sessionA'",vec![]),
             ("unattributed official image C","INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) SELECT operation_id||'-unowned',ticket||'-unowned',custodian_nonce||'-unowned',pid,creation_time_100ns,image_path,binary_digest_sha256,'unregistered-family-profile',domain_id,generation,'UNKNOWN',NULL FROM main.gogoke_coordination_process_custody WHERE operation_id=?1",vec![operation_a.as_str()]),
             ("unattributed official image C with foreign digest","INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) SELECT operation_id||'-unowned',ticket||'-unowned',custodian_nonce||'-unowned',pid,creation_time_100ns,image_path,'sha256:0000000000000000000000000000000000000000000000000000000000000000','unregistered-family-profile',domain_id,generation,'UNKNOWN',NULL FROM main.gogoke_coordination_process_custody WHERE operation_id=?1",vec![operation_a.as_str()]),
+            ("unattributed missing managed image C","INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) SELECT operation_id||'-unowned',ticket||'-unowned',custodian_nonce||'-unowned',pid,creation_time_100ns,image_path||'-missing','sha256:0000000000000000000000000000000000000000000000000000000000000000','unregistered-family-profile',domain_id,generation,'UNKNOWN',NULL FROM main.gogoke_coordination_process_custody WHERE operation_id=?1",vec![operation_a.as_str()]),
         ] {
             product.connection.execute("SAVEPOINT family_damage").unwrap();
             family_insert(&product,sql,&values);
