@@ -1470,8 +1470,11 @@ mod tests {
             // same RootLock. The old DB FileID must refuse; the clone's own
             // retained FileID must pass the same native qualifications.
             let copied_database=path.join("state-copy.sqlite");
-            let escaped=copied_database.to_string_lossy().replace('\'',"''");
-            product.connection.execute(&format!("VACUUM main INTO '{escaped}'")).unwrap();
+            // Route-B forbids ATTACH, including VACUUM INTO's internal ATTACH.
+            // Copy only a normally closed database while retaining RootLock.
+            product.close_checked().unwrap();
+            fs::copy(&database,&copied_database).unwrap();
+            product=ProductDatabase::open(&root,&database).unwrap();
             let mut copied=ProductDatabase::open(&root,&copied_database).unwrap();
             let copied_identity=copied.connection.identity().opaque();
             assert_eq!(copied.connection.root_identity().opaque(),expected_root);
