@@ -334,7 +334,7 @@ fn original_units(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
         request.target_id!=raw[3] || raw[38].is_empty() || raw[39].is_empty() {
         return Err(ManagedCliError::Busy)
     }
-    let worktree_source=verified_original_worktree(db,&request,&raw[0],&raw[2],
+    let worktree_source=verified_original_worktree(db,&request,&raw[0],&raw[2],&raw[4],
         &raw[38],&raw[39])?;
     verified_source_images(db,root,driver,&raw[0],&raw[1],&raw[34],&raw[35],
         &raw[17],&raw[18])?;
@@ -536,7 +536,7 @@ fn original_stopped_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,dr
         }
         verified_source_images(db,root,driver,&row[0],&row[26],&row[27],&row[28],
             &row[24],&row[25])?;
-        let worktree_source=verified_original_worktree(db,&request,&row[0],&row[1],
+        let worktree_source=verified_original_worktree(db,&request,&row[0],&row[1],&row[3],
             &row[29],&row[30])?;
         let home=Statement::prepare(db.as_ptr(),
             "SELECT state,CAST(revision AS TEXT),directory_ref,directory_identity FROM main.gogoke_v37_instance_homes WHERE home_id=?1 AND instance_id=?2 AND domain_id=?3 AND generation=?4 AND kind='SESSION' AND owner_id=?5")?;
@@ -728,7 +728,7 @@ fn original_open_equations(request:&crate::store::session_transport::V37Request,
 
 fn verified_original_worktree(db:&VerifiedDatabaseConnection<'_>,
     request:&crate::store::session_transport::V37Request,
-    instance:&str,domain:&str,seat:&str,incarnation:&str)
+    instance:&str,domain:&str,generation:&str,seat:&str,incarnation:&str)
     ->Result<String,ManagedCliError>{
     if domain=="global" {
         // Native V2 selections and bindings are immutable per session. The
@@ -764,7 +764,9 @@ fn verified_original_worktree(db:&VerifiedDatabaseConnection<'_>,
         if !q.step_row()? {return Err(ManagedCliError::Busy)}
         let values=(0..7).map(|n|q.column_text(n))
             .collect::<std::result::Result<Vec<_>,_>>()?;
-        if q.step_row()? {return Err(ManagedCliError::Busy)}
+        if q.step_row()? || request.operation=="open" && values[4]!=generation {
+            return Err(ManagedCliError::Busy)
+        }
         return Ok(sha256_hex(&frame(&values)))
     }
     let field=|name:&str| match request.payload.get(&JsonString::from_str(name)) {

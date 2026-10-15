@@ -2505,7 +2505,7 @@ mod tests {
     }
 
     fn stopped_official_family_member(product:&mut ProductDatabase<'_>,root:&RootLock,
-        image:&std::path::Path,tag:&str,pending_stdin:bool)->(String,String,String) {
+        image:&std::path::Path,tag:&str,generation:&str,pending_stdin:bool)->(String,String,String) {
         use crate::store::session_transport as h;
         let session=format!("session{tag}");
         let seat="seatA".to_owned();
@@ -2514,7 +2514,7 @@ mod tests {
         let commit_id=format!("commit{tag}");
         let open_id=format!("open{tag}");
         let stop_id=format!("stop{tag}");
-        let suffix=crate::store::digest::sha256_hex(format!("{}\nglobal\n{session}\n{incarnation}\n1",
+        let suffix=crate::store::digest::sha256_hex(format!("{}\nglobal\n{session}\n{incarnation}\n{generation}",
             root.canonical_root().identity.opaque()).as_bytes());
         let suffix=&suffix[..40];
         let home=format!("home-{suffix}");
@@ -2533,13 +2533,13 @@ mod tests {
         product.connection.execute("BEGIN IMMEDIATE").unwrap();
         h::bind_owner_in_transaction(&mut product.connection,&h::OwnerBinding {
             binding_id:&binding,instance_id:"instanceA",domain_id:"global",
-            kind:"SESSION",owner_id:&session,generation:"1"}).unwrap();
+            kind:"SESSION",owner_id:&session,generation}).unwrap();
         product.connection.execute("COMMIT").unwrap();
         instance::create_temporary_home(&mut product.connection,root,&profile,
             &instance::CreateTemporaryHome {request_id:&home_request,
                 request_bytes:reserve_raw.as_bytes(),home_id:&home,instance_id:"instanceA",
                 domain_id:"global",kind:instance::TemporaryKind::Session,
-                owner_id:&session,generation:"1"}).unwrap();
+                owner_id:&session,generation}).unwrap();
         let selection=h::session_binding::SessionBinding {
             domain_id:"global".into(),session_id:session.clone(),seat_id:seat.clone(),
             seat_incarnation:incarnation.clone(),seat_authorization_generation:
@@ -2550,7 +2550,7 @@ mod tests {
         };
         let reserve=h::AdmissionRequest {domain_id:"global",session_id:&session,
             request_id:&reserve_id,raw_bytes:reserve_raw.as_bytes(),instance_id:"instanceA",
-            home_id:&home,generation:"1",expected_revision:0};
+            home_id:&home,generation,expected_revision:0};
         assert!(matches!(h::reserve_admission(&mut product.connection,&reserve,|db|{
             h::session_binding::select_native_in_transaction(db,&selection)
                 .map_err(h::AdmissionError::Relationship)?;
@@ -2559,7 +2559,7 @@ mod tests {
         let commit_raw=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"admission-commit\",\"requestId\":\"{commit_id}\",\"targetId\":\"{session}\",\"domainId\":\"global\",\"expectedRevision\":\"1\",\"payload\":{{}}}}");
         let commit=h::AdmissionRequest {domain_id:"global",session_id:&session,
             request_id:&commit_id,raw_bytes:commit_raw.as_bytes(),instance_id:"instanceA",
-            home_id:&home,generation:"1",expected_revision:1};
+            home_id:&home,generation,expected_revision:1};
         assert!(matches!(h::commit_admission(&mut product.connection,&commit,|_|Ok(())).unwrap(),
             h::AdmissionResult::Applied(2)));
         let open_raw=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"open\",\"requestId\":\"{open_id}\",\"targetId\":\"{session}\",\"domainId\":\"global\",\"expectedRevision\":\"2\",\"payload\":{{}}}}");
@@ -2573,7 +2573,7 @@ mod tests {
         launch.current_directory=Some(root.canonical_root().canonical_path.clone());
         let prepared=product.process_custodian.prepare(&PrepareRequest {launch,binding:NativeBinding {
             binary_digest_sha256:format!("sha256:{}",pin.image_sha256),
-            profile_id:"instanceA".into(),domain_id:"global".into(),generation:"1".into(),
+            profile_id:"instanceA".into(),domain_id:"global".into(),generation:generation.into(),
         }}).unwrap();
         authority::record_prepared_process(&mut product.connection,&operation,&prepared).unwrap();
         product.connection.execute("BEGIN IMMEDIATE").unwrap();
@@ -2591,13 +2591,13 @@ mod tests {
         family_insert(product,"UPDATE main.gogoke_v37_h_claim SET revision=3 WHERE domain_id='global' AND session_id=?1 AND revision=2",
             &[&session]);
         if pending_stdin {
-            let send_raw=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"send\",\"requestId\":\"send{tag}\",\"targetId\":\"{session}\",\"domainId\":\"global\",\"expectedRevision\":\"3\",\"payload\":{{\"generation\":\"1\",\"body\":\"retained intent only\"}}}}\n");
+            let send_raw=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"send\",\"requestId\":\"send{tag}\",\"targetId\":\"{session}\",\"domainId\":\"global\",\"expectedRevision\":\"3\",\"payload\":{{\"generation\":\"{generation}\",\"body\":\"retained intent only\"}}}}\n");
             h::prepare_stdin_request(&mut product.connection,&h::StdinRequest {
                 domain_id:"global",session_id:&session,ticket:prepared.ticket.opaque(),
-                generation:"1",request_bytes:send_raw.as_bytes(),
+                generation,request_bytes:send_raw.as_bytes(),
             }).unwrap();
         }
-        let stop_raw=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"stop\",\"requestId\":\"{stop_id}\",\"targetId\":\"{session}\",\"domainId\":\"global\",\"expectedRevision\":\"3\",\"payload\":{{\"seatId\":\"{seat}\",\"generation\":\"1\"}}}}");
+        let stop_raw=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"stop\",\"requestId\":\"{stop_id}\",\"targetId\":\"{session}\",\"domainId\":\"global\",\"expectedRevision\":\"3\",\"payload\":{{\"seatId\":\"{seat}\",\"generation\":\"{generation}\"}}}}");
         let stop_hex=action_hex(stop_raw.as_bytes());
         family_insert(product,"INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('global',?1,?2,'stop',?3,'APPLIED',3,4)",
             &[&stop_id,&stop_hex,&session]);
@@ -2642,7 +2642,7 @@ mod tests {
         family_insert(&product,"INSERT INTO main.gogoke_v37_instance_profiles(instance_id,display_name,enabled,revision) VALUES('instanceA','instanceA',1,1)",&[]);
         let migrate=format!("{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"migrate\",\"driverId\":\"opencode\",\"stageName\":\"{source_stage}\"}}");
         managed_user(&mut product,&migrate);
-        let (home_a,operation_a,_)=stopped_official_family_member(&mut product,&root,&image,"A",true);
+        let (home_a,operation_a,_)=stopped_official_family_member(&mut product,&root,&image,"A","1",true);
         // A genuine Secretary cannot acquire a sibling until the earlier H
         // claim is RELEASED. Keep its original HOME, pending stdin and STOP.
         let release_raw=b"{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"admission-release\",\"requestId\":\"releaseA\",\"targetId\":\"sessionA\",\"domainId\":\"global\",\"expectedRevision\":\"4\",\"payload\":{}}";
@@ -2655,12 +2655,12 @@ mod tests {
         let seat=crate::store::seat::get(&product.connection,"global","seatA")
             .unwrap().unwrap();
         crate::store::seat::set_dispatch_state(&mut product.connection,&seat,true).unwrap();
-        let (_home_b,_operation_b,_)=stopped_official_family_member(&mut product,&root,&image,"B",false);
+        let (_home_b,_operation_b,_)=stopped_official_family_member(&mut product,&root,&image,"B","3",false);
         let qualified=product.managed_version_action_resources("opencode",None)
             .expect("both distinct sessions and the retained pending stdin must qualify together");
         assert!(qualified.is_cold(),"a complete stopped family must produce COLD, not strict empty scope");
         assert_eq!(table_rows(&product,"SELECT session_id,generation FROM main.gogoke_v37_h_process_episode ORDER BY session_id",2),
-            vec![vec!["sessionA".into(),"1".into()],vec!["sessionB".into(),"1".into()]]);
+            vec![vec!["sessionA".into(),"1".into()],vec!["sessionB".into(),"3".into()]]);
         let original_h=table_rows(&product,"SELECT session_id,phase,stop_request_id,stop_fact_id,raw_hex FROM main.gogoke_v37_h_process_episode ORDER BY session_id",5);
         let original_h_operations=table_rows(&product,"SELECT session_id,request_id,raw_hex,status,revision FROM main.gogoke_v37_h_operation ORDER BY session_id,request_id",5);
         let original_stdin=table_rows(&product,"SELECT request_id,request_hex,phase,ticket,custodian_nonce FROM main.gogoke_v37_h_stdin_journal ORDER BY request_id",5);
