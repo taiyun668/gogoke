@@ -371,19 +371,7 @@ fn source(db: &VerifiedDatabaseConnection<'_>, home: &str, instance: &str,
     Ok(OriginalExecution { pairs, source_digest: sha256_hex(&bytes) })
 }
 
-/// Original H/C association only: these identities are not an absence fact
-/// or a statement that an exact-identity set covers unknown descendants.
-/// F must retain every source precondition and independently qualify the
-/// applicable existing native proof before using this source in a family.
-pub(crate) fn original_home_execution_source(
-    db: &VerifiedDatabaseConnection<'_>, home: &str, instance: &str,
-    domain: &str, session: &str, generation: &str, binding: &str,
-) -> Result<(String, Vec<(u32, u64)>), ExactHomeGoneError> {
-    let original = source(db, home, instance, domain, session, generation, binding)?;
-    Ok((original.source_digest, original.pairs))
-}
-
-/// The original source and sealed kernel fact keep their existing semantics.
+/// F may use this sealed native fact only for its independent HOME close.
 pub(crate) fn observe_exact_home_gone(
     db: &VerifiedDatabaseConnection<'_>, home: &str, instance: &str,
     domain: &str, session: &str, generation: &str, binding: &str,

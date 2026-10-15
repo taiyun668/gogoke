@@ -53,6 +53,14 @@ fn action_bytes(hex:&str)->Result<Vec<u8>> {
         Ok((high<<4)|low)
     }).collect()
 }
+fn original_probe_response(action:&instance::ActionRecord)->Result<Vec<u8>> {
+    let original=instance::public_probe_receipt(action)
+        .map_err(|error|failure("probe journal witness",error))?;
+    let expected=bound_step_response("probe",&action.driver,&action.target_version,
+        &action.request_id,&action.operation,"PROBED",Some(&action.stage_name));
+    if original!=expected {return Err(OrchestrationError::AccessDenied)}
+    Ok(original)
+}
 fn action_failure_hex(driver:&str,state:&str,raw:&str)->String {
     action_hex(&result("failure",[("driverId",string(driver)),("state",string(state)),("raw",string(raw))]))
 }
@@ -331,7 +339,7 @@ impl<'a> ProductDatabase<'a> {
             if row.stage_name!=stage {return Err(OrchestrationError::AccessDenied);}
             if row.phase==instance::ActionPhase::Probed || row.phase==instance::ActionPhase::Consumed {
                 if row.probe_hex!=raw {return Err(OrchestrationError::AccessDenied);}
-                return Ok((None,action_bytes(&row.probe_receipt_hex)?));
+                return Ok((None,original_probe_response(&row)?));
             }
             // An existing PROBING row is an unresolved original effect. Reading
             // that intent never grants permission for a second H launch.
@@ -353,7 +361,7 @@ impl<'a> ProductDatabase<'a> {
         if row.phase!=instance::ActionPhase::Probed || row.probe_hex!=raw {
             return Err(OrchestrationError::AccessDenied);
         }
-        action_bytes(&row.probe_receipt_hex)
+        original_probe_response(&row)
     }
 
     fn fail_managed_version_action(&mut self,driver:&str,state:&str,raw:&str,
@@ -580,13 +588,18 @@ impl<'a> ProductDatabase<'a> {
             }
         }
         let stdin=Statement::prepare(self.connection.as_ptr(),
-            "SELECT j.domain_id,j.request_id FROM main.gogoke_v37_h_stdin_journal j JOIN main.gogoke_v37_h_claim c ON c.domain_id=j.domain_id AND c.session_id=j.session_id WHERE c.instance_id=?1 AND j.phase IN ('PREPARED','UNKNOWN')")?;
+            "SELECT j.domain_id,j.request_id,j.session_id,j.generation,j.process_operation_id,j.ticket,j.custodian_nonce FROM main.gogoke_v37_h_stdin_journal j JOIN main.gogoke_v37_h_claim c ON c.domain_id=j.domain_id AND c.session_id=j.session_id WHERE c.instance_id=?1 AND j.phase IN ('PREPARED','UNKNOWN')")?;
         stdin.bind_text(1,id)?;
         let mut retained=Vec::new();
-        while stdin.step_row()? {retained.push((stdin.column_text(0)?,stdin.column_text(1)?));}
+        while stdin.step_row()? {
+            retained.push((0..7).map(|n|stdin.column_text(n))
+                .collect::<std::result::Result<Vec<_>,_>>()?);
+        }
         drop(stdin);
-        for (domain,request) in retained {
-            if !first_claude_copy || !self.completed_claude_managed_pending_stdin(id,&domain,&request)? {
+        for row in retained {
+            if scope.is_some_and(|scope|scope.allows_stdin(id,&row[0],&row[2],&row[3],
+                &row[4],&row[1],&row[5],&row[6])) {continue}
+            if !first_claude_copy || !self.completed_claude_managed_pending_stdin(id,&row[0],&row[1])? {
                 return Err(OrchestrationError::AccessDenied);
             }
         }
@@ -2070,6 +2083,41 @@ mod tests {
         assert_eq!(managed_user(&mut product,&probe),probed_reply);
         assert_eq!(managed_snapshot(&product),after_probe);
         let probed_action=instance::read_version_action(&product.connection,&root,"bound-upgrade").unwrap().unwrap();
+        // Begin with the actual successful native probe above. Preserve exact
+        // SQL values and NULLs, then change one durable C field at a time.
+        let probe_prefix=format!("managed-probe-opencode-{}-*",
+            &crate::store::digest::sha256_hex(b"bound-upgrade")[..40]);
+        let backup=Statement::prepare(product.connection.as_ptr(),
+            "CREATE TEMP TABLE bound_probe_restore AS SELECT * FROM main.gogoke_coordination_process_custody WHERE operation_id GLOB ?1").unwrap();
+        backup.bind_text(1,&probe_prefix).unwrap();backup.step_done().unwrap();drop(backup);
+        assert_eq!(table_rows(&product,"SELECT CAST(COUNT(*) AS TEXT) FROM temp.bound_probe_restore",1),
+            vec![vec!["1".to_owned()]]);
+        assert_eq!(managed_user(&mut product,&probe),probed_reply,
+            "the exact SQL backup must not make the positive replay fail");
+        for alteration in [
+            None,
+            Some("ticket='changed-original-ticket'"),
+            Some("custodian_nonce='changed-original-nonce'"),
+            Some("pid=CAST(CAST(pid AS INTEGER)+1 AS TEXT)"),
+            Some("creation_time_100ns=CAST(CAST(creation_time_100ns AS INTEGER)+1 AS TEXT)"),
+            Some("generation=CAST(CAST(generation AS INTEGER)+1 AS TEXT)"),
+            Some("stop_proof_hash='sha256:0000000000000000000000000000000000000000000000000000000000000000'"),
+        ] {
+            let sql=alteration.map_or_else(||
+                "DELETE FROM main.gogoke_coordination_process_custody WHERE operation_id GLOB ?1".to_owned(),
+                |set|format!("UPDATE main.gogoke_coordination_process_custody SET {set} WHERE operation_id GLOB ?1"));
+            let change=Statement::prepare(product.connection.as_ptr(),&sql).unwrap();
+            change.bind_text(1,&probe_prefix).unwrap();change.step_done().unwrap();drop(change);
+            assert!(product.dispatch_user_managed_cli(probe.as_bytes()).is_err(),
+                "a PROBED receipt cannot replace its missing or changed original C: {alteration:?}");
+            assert_eq!(instance::read_version_action(&product.connection,&root,"bound-upgrade").unwrap().unwrap(),probed_action);
+            let remove=Statement::prepare(product.connection.as_ptr(),
+                "DELETE FROM main.gogoke_coordination_process_custody WHERE operation_id GLOB ?1").unwrap();
+            remove.bind_text(1,&probe_prefix).unwrap();remove.step_done().unwrap();drop(remove);
+            product.connection.execute("INSERT INTO main.gogoke_coordination_process_custody SELECT * FROM temp.bound_probe_restore").unwrap();
+            assert_eq!(managed_user(&mut product,&probe),probed_reply,
+                "restoring the exact C must restore the positive native-probe replay");
+        }
         assert!(product.dispatch_user_managed_cli(external_failure("bound-upgrade","BLOCKED","late caller error").as_bytes()).is_err());
         assert_eq!(managed_snapshot(&product),after_probe);
         assert_eq!(instance::read_version_action(&product.connection,&root,"bound-upgrade").unwrap().unwrap(),probed_action);
@@ -2082,6 +2130,16 @@ mod tests {
         let (status,receipts)=receipt_set(&managed_user(&mut product,&up));
         assert_eq!(status,"APPLIED");assert_eq!(receipts.len(),2);
         let upgraded=managed_snapshot(&product);
+        let remove=Statement::prepare(product.connection.as_ptr(),
+            "DELETE FROM main.gogoke_coordination_process_custody WHERE operation_id GLOB ?1").unwrap();
+        remove.bind_text(1,&probe_prefix).unwrap();remove.step_done().unwrap();drop(remove);
+        let missing_probe_snapshot=managed_snapshot(&product);
+        assert!(product.dispatch_user_managed_cli(up.as_bytes()).is_err(),
+            "a CONSUMED receipt must still bind the original successful probe C");
+        assert_eq!(managed_snapshot(&product),missing_probe_snapshot);
+        product.connection.execute("INSERT INTO main.gogoke_coordination_process_custody SELECT * FROM temp.bound_probe_restore").unwrap();
+        product.connection.execute("DROP TABLE temp.bound_probe_restore").unwrap();
+        assert_eq!(managed_snapshot(&product),upgraded);
         let (status,replayed)=receipt_set(&managed_user(&mut product,&up));
         assert_eq!(status,"REPLAYED");assert_eq!(replayed,receipts);
         assert_eq!(managed_snapshot(&product),upgraded);
@@ -2644,7 +2702,9 @@ impl<'a> ProductDatabase<'a> {
                     .map_err(|error|failure("probe post-effect fingerprints",error))?;
                 this.managed_version_action_resources_at_fingerprints_with_probe(driver,action,&next.0,&next.1,&proof)?;
                 let receipt=bound_step_response("probe",driver,version,request,&action.operation,"PROBED",Some(stage));
-                let receipt_hex=action_hex(&receipt);
+                let receipt_hex=instance::encode_bound_probe_receipt(action,&operation_id,
+                    &proof,&stdout,&receipt)
+                    .map_err(|error|failure("probe original custody receipt",error))?;
                 instance::advance_version_action_in_current_transaction(&this.connection,this.root,&this.owner,
                     request,action.revision,&instance::ActionStep {
                         next_phase:instance::ActionPhase::Probed,raw_hex:&action.probe_hex,receipt_hex:&receipt_hex,

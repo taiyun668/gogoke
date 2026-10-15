@@ -29,7 +29,7 @@ pub(crate) use managed_version_action::{begin_in_current_transaction as begin_ve
     fail_in_current_transaction as fail_version_action_in_current_transaction,
     consume_in_current_transaction as consume_version_action_in_current_transaction,
     ActionBegin, ActionError, ActionMode, ActionOperation, ActionPhase, ActionRecord,
-    ActionStep, BeginOutcome};
+    ActionStep, BeginOutcome, encode_bound_probe_receipt, public_probe_receipt};
 
 pub(crate) use legacy_fence::{initialize_legacy_fence_schema, capture_legacy_fence,
     read_legacy_fence, read_legacy_step, begin_legacy_acl_step, validate_legacy_acl_write, finish_legacy_acl_step,

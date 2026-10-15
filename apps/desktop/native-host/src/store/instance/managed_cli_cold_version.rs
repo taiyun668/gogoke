@@ -28,6 +28,7 @@ pub(crate) struct QualifiedVersionAction {
     pairs_hex: String,
     pairs_digest: String,
     units: Vec<QualifiedUnit>,
+    stdin: Vec<StdinMember>,
     global_operations: Vec<String>,
     global_native: Vec<(Vec<(u32,u64)>,NativeLegacyHoldersGone)>,
 }
@@ -62,10 +63,13 @@ impl QualifiedVersionAction {
         self.units.iter().any(|unit| unit.source.process == process) ||
             self.global_operations.iter().any(|operation|operation==process)
     }
-    pub(crate) fn allows_alias(&self, domain: &str, session: &str,
-        generation: &str) -> bool {
-        self.units.iter().any(|member| { let u=&member.source; u.alias.is_some() &&
-            u.domain==domain && u.session==session && u.generation==generation })
+    pub(crate) fn allows_alias(&self, _domain: &str, _session: &str,
+        _generation: &str) -> bool { false }
+    pub(crate) fn allows_stdin(&self, instance:&str, domain:&str, session:&str,
+        generation:&str, process:&str, request:&str, ticket:&str, nonce:&str)->bool {
+        self.stdin.iter().any(|row| row.pending && row.instance==instance && row.domain==domain &&
+            row.session==session && row.generation==generation && row.process==process &&
+            row.request==request && row.ticket==ticket && row.nonce==nonce)
     }
     pub(crate) fn recheck_native(&self) -> Result<(), ManagedCliError> {
         for member in &self.units {
@@ -88,6 +92,11 @@ struct Unit {
     instance: String, domain: String, session: String, generation: String,
     binding: String, home: String, process: String, open_request: String,
     pairs: Vec<(u32,u64)>,
+}
+
+struct StdinMember {
+    instance:String, domain:String, session:String, generation:String,
+    process:String, request:String, ticket:String, nonce:String,pending:bool,
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -396,9 +405,10 @@ fn original_stopped_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,dr
     let rows=rows(db,sql,driver,35)?;
     let mut result=Vec::with_capacity(rows.len());
     for row in rows {
-        if row[11]!="" {
+        if row[11]!="" && row[11].parse::<u64>().ok().and_then(|n|n.checked_add(1))
+            !=row[3].parse::<u64>().ok() {
             return Err(ManagedCliError::Observation(
-                "unsupported original stopped resume/compound predecessor source".into()));
+                "unsupported original stopped compound or malformed resume predecessor source".into()));
         }
         if row[0].is_empty() || row[1].is_empty() || row[2].is_empty() ||
             row[3].is_empty() || row[4].is_empty() || row[5].is_empty() ||
@@ -408,7 +418,8 @@ fn original_stopped_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,dr
             row[18]!="STOPPED" || row[19]!=row[13] ||
             row[20].is_empty() || row[21].is_empty() || row[24].is_empty() ||
             row[25].is_empty() || row[29].is_empty() || row[30].is_empty() ||
-            row[31]!="1" || row[32]!="0" || row[33]!="0" || row[34]!="0" {
+            row[31]!=if row[11].is_empty(){"1"}else{"0"} ||
+            row[32]!="0" || row[33]!="0" || row[34]!="0" {
             return Err(ManagedCliError::Busy);
         }
         let pid=row[22].parse::<u32>().map_err(|_|ManagedCliError::Busy)?;
@@ -419,19 +430,37 @@ fn original_stopped_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,dr
         let request=crate::store::session_transport::decode_request(&raw)
             .map_err(|error|ManagedCliError::Observation(format!(
                 "original stopped H request: {error:?}")))?;
+        if matches!(request.operation.as_str(),"compact"|"renew-session") {
+            return Err(ManagedCliError::Observation(
+                "unsupported stopped compound original generation-change source".into()))
+        }
         let before=row[9].parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
         let after=row[10].parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
-        if request.family!="K-SESSION" || request.operation!="open" ||
+        let resume=!row[11].is_empty();
+        if request.family!="K-SESSION" ||
+            request.operation!=if resume{"resume"}else{"open"} ||
             request.request_id!=row[4] || request.domain_id!=row[1] ||
-            request.target_id!=row[2] || request.expected_revision!=before ||
+            request.target_id!=row[2] ||
+            !(request.expected_revision==before || resume &&
+                request.expected_revision.checked_add(1)==Some(before)) ||
             before.checked_add(1)!=Some(after) ||
-            row[5]!=format!("h-open-{}",&sha256_hex(&raw)[..40]) {
+            row[5]!=format!("h-{}-{}",if resume{"resume"}else{"open"},
+                &sha256_hex(&raw)[..40]) {
             return Err(ManagedCliError::Busy);
         }
         let field=|name:&str| match request.payload.get(&JsonString::from_str(name)) {
             Some(Json::String(value))=>value.to_well_formed_string(),_=>None,
         };
-        if row[1]=="global" {
+        if resume {
+            if request.payload.len()!=1 ||
+                field("generation").as_deref()!=Some(row[11].as_str()) {
+                return Err(ManagedCliError::Busy)
+            }
+            let unexpected=Statement::prepare(db.as_ptr(),
+                "SELECT 1 FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND request_id=?2 UNION ALL SELECT 1 FROM main.gogoke_v37_h_generation_change WHERE domain_id=?1 AND request_id=?2")?;
+            unexpected.bind_text(1,&row[1])?;unexpected.bind_text(2,&row[4])?;
+            if unexpected.step_row()? {return Err(ManagedCliError::Busy)}
+        } else if row[1]=="global" {
             if !request.payload.is_empty() {return Err(ManagedCliError::Busy)}
             let selected=Statement::prepare(db.as_ptr(),
                 "SELECT 1 FROM main.gogoke_v37_native_selection s JOIN main.gogoke_v37_seat_secretary d ON d.domain_id=s.domain_id AND d.seat_id=s.seat_id AND d.incarnation=s.seat_incarnation WHERE s.domain_id='global' AND s.session_id=?1 AND s.seat_id=?2 AND s.seat_incarnation=?3 AND s.selected_instance_id=?4 UNION ALL SELECT 1 FROM main.gogoke_v37_h_seat_binding s JOIN main.gogoke_v37_seat_secretary d ON d.domain_id=s.domain_id AND d.seat_id=s.seat_id AND d.incarnation=s.seat_incarnation JOIN main.gogoke_v37_h_claim c ON c.domain_id=s.domain_id AND c.session_id=s.session_id WHERE s.domain_id='global' AND s.session_id=?1 AND s.seat_id=?2 AND s.seat_incarnation=?3 AND c.instance_id=?4 AND NOT EXISTS(SELECT 1 FROM main.gogoke_v37_native_selection n WHERE n.domain_id=s.domain_id AND n.session_id=s.session_id)")?;
@@ -455,10 +484,14 @@ fn original_stopped_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,dr
              AND session_id=?3 AND operation='open'")?;
         opened.bind_text(1,&row[1])?;opened.bind_text(2,&row[4])?;
         opened.bind_text(3,&row[2])?;
-        if !opened.step_row()? || opened.column_text(0)?!=row[8] ||
-            opened.column_text(1)?!="APPLIED" || opened.column_text(2)?!=row[9] ||
-            opened.column_text(3)?!=row[10] || opened.step_row()? {
-            return Err(ManagedCliError::Busy);
+        if resume {
+            if opened.step_row()? {return Err(ManagedCliError::Busy)}
+        } else {
+            if !opened.step_row()? || opened.column_text(0)?!=row[8] ||
+                opened.column_text(1)?!="APPLIED" || opened.column_text(2)?!=row[9] ||
+                opened.column_text(3)?!=row[10] || opened.step_row()? {
+                return Err(ManagedCliError::Busy);
+            }
         }
         let generation=Statement::prepare(db.as_ptr(),
             "SELECT 1 FROM main.gogoke_v37_h_generation WHERE domain_id=?1 AND
@@ -477,7 +510,8 @@ fn original_stopped_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,dr
         if !owner.step_row()? || !matches!(owner.column_text(0)?.as_str(),
             "ACTIVE"|"REVOKED") || owner.step_row()? {return Err(ManagedCliError::Busy)}
         let home_source=super::super::temporary::validate_original_execution_home_source(
-            db,&row[6],&row[0],&row[1],&row[2],&row[3],&row[4],"open")
+            db,&row[6],&row[0],&row[1],&row[2],&row[3],&row[4],
+            if resume{"resume"}else{"open"})
             .map_err(|error|ManagedCliError::Observation(format!(
                 "original stopped F HOME: {error:?}")))?;
         let stop_source=super::super::temporary::validate_original_execution_stop_source(
@@ -503,9 +537,40 @@ fn original_stopped_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,dr
             &row[24],&row[25])?;
         let worktree_source=verified_original_worktree(db,&request,&row[0],&row[1],
             &row[29],&row[30])?;
-        let mut source=vec!["H_SESSION_STOP-v1".to_owned()];
-        source.extend(row);
+        let home=Statement::prepare(db.as_ptr(),
+            "SELECT state,CAST(revision AS TEXT),directory_ref,directory_identity FROM main.gogoke_v37_instance_homes WHERE home_id=?1 AND instance_id=?2 AND domain_id=?3 AND generation=?4 AND kind='SESSION' AND owner_id=?5")?;
+        for (n,value) in [&row[6],&row[0],&row[1],&row[3],&row[2]].iter().enumerate(){
+            home.bind_text(n as i32+1,value)?;
+        }
+        if !home.step_row()? {return Err(ManagedCliError::Busy)}
+        let home_values=(0..4).map(|n|home.column_text(n))
+            .collect::<std::result::Result<Vec<_>,_>>()?;
+        if home.step_row()? || home_values[2]!=format!("temp-home-{}",sha256_hex(row[6].as_bytes())) ||
+            home_values[3].is_empty() || home_values[1].parse::<u64>().is_err() ||
+            !matches!(home_values[0].as_str(),"ACTIVE"|"CLOSED"|"CLEANED") {
+            return Err(ManagedCliError::Busy)
+        }
+        let suffix=row[6].strip_prefix("home-").ok_or(ManagedCliError::Busy)?;
+        if suffix.len()!=40 || !suffix.bytes().all(|b|b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+            return Err(ManagedCliError::Busy)
+        }
+        let profile=crate::process::AppContainerProfile::derive_for_revocation(
+            &format!("Gogoke37.Session.{suffix}"))
+            .map_err(|error|ManagedCliError::Observation(format!(
+                "original stopped HOME profile: {error:?}")))?;
+        let (_,physical)=super::super::temporary::resolve_historical_session_home(
+            db,root,&profile,&row[0],&row[6],&row[1],&row[2],&row[3],&row[7])
+            .map_err(|error|ManagedCliError::Observation(format!(
+                "original stopped physical HOME: {error:?}")))?;
+        if physical.opaque()!=home_values[3] {return Err(ManagedCliError::IdentityChanged)}
+        let mut source=vec![if resume{"H_SESSION_RESUME_STOP-v1"}else{"H_SESSION_STOP-v1"}.to_owned()];
+        source.extend(row[..27].iter().cloned());
+        source.extend(row[29..].iter().cloned());
         source.push(home_source);source.push(stop_source);source.push(worktree_source);
+        source.extend(home_values);
+        source.push(sha256_hex(&frame(&[db.root_identity().opaque(),
+            db.identity().opaque(),row[0].clone(),row[1].clone(),row[2].clone(),
+            row[3].clone(),row[6].clone(),row[7].clone(),physical.opaque()])));
         let proof=vec!["ORIGINAL_STOP".to_owned(),source[1].clone(),source[2].clone(),
             source[3].clone(),source[4].clone(),source[6].clone(),
             pid.to_string(),created.to_string()];
@@ -514,6 +579,12 @@ fn original_stopped_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,dr
     result.sort_by(|a,b|(&a.0[1],&a.0[2],&a.0[3],&a.0[4],&a.0[6])
         .cmp(&(&b.0[1],&b.0[2],&b.0[3],&b.0[4],&b.0[6])));
     if result.windows(2).any(|p| p[0].1==p[1].1) {return Err(ManagedCliError::Busy)}
+    for (source,_) in &result {
+        if source[0]=="H_SESSION_RESUME_STOP-v1" &&
+            !result.iter().any(|(parent,_)|parent[1]==source[1] &&
+                parent[2]==source[2] && parent[3]==source[3] &&
+                parent[4]==source[12]) {return Err(ManagedCliError::Busy)}
+    }
     Ok(result)
 }
 
@@ -526,6 +597,107 @@ fn decode_original_hex(value:&str)->Result<Vec<u8>,ManagedCliError>{
         let text=std::str::from_utf8(pair).map_err(|_|ManagedCliError::Busy)?;
         u8::from_str_radix(text,16).map_err(|_|ManagedCliError::Busy)
     }).collect()
+}
+
+fn decode_original_frames(value:&str)->Result<Vec<Vec<u8>>,ManagedCliError>{
+    let raw=decode_original_hex(value)?;
+    let mut offset=0usize;
+    let mut result=Vec::new();
+    while offset<raw.len() {
+        let end=offset.checked_add(8).ok_or(ManagedCliError::Busy)?;
+        let size=u64::from_be_bytes(raw.get(offset..end).ok_or(ManagedCliError::Busy)?
+            .try_into().map_err(|_|ManagedCliError::Busy)?) as usize;
+        offset=end;
+        let end=offset.checked_add(size).ok_or(ManagedCliError::Busy)?;
+        result.push(raw.get(offset..end).ok_or(ManagedCliError::Busy)?.to_vec());
+        offset=end;
+        if result.len()>16 {return Err(ManagedCliError::Busy)}
+    }
+    Ok(result)
+}
+
+fn original_global_observation(db:&VerifiedDatabaseConnection<'_>,row:&[String])
+    ->Result<String,ManagedCliError>{
+    let producer=if row[0].starts_with("owner-login-status-") {"owner-status"}
+        else if row[0].starts_with("owner-login-") {"owner-login"}
+        else if row[0].starts_with("login-observe-") {"login-observe"}
+        else {return Err(ManagedCliError::Observation(
+            "global C lacks a recognized original login producer".into()))};
+    let operations=Statement::prepare(db.as_ptr(),
+        "SELECT request_id,request_hex,phase,COALESCE(receipt_json,''),
+         receipt_json IS NULL,COALESCE(native_receipt_id,''),native_receipt_id IS NULL
+         FROM main.gogoke_v37_instance_operations WHERE target_id=?1")?;
+    operations.bind_text(1,&row[7])?;
+    let mut matched=None;
+    while operations.step_row()? {
+        let fields=(0..7).map(|n|operations.column_text(n))
+            .collect::<std::result::Result<Vec<_>,_>>()?;
+        let frames=match decode_original_frames(&fields[1]) {
+            Ok(value)=>value,Err(_)=>continue,
+        };
+        let kind=frames.first().map(Vec::as_slice);
+        if (kind!=Some(&b"observe"[..]) && kind!=Some(&b"read-login"[..])) ||
+            !matches!(frames.len(),6|7) {continue}
+        let raw=&frames[1];
+        let revision=std::str::from_utf8(&frames[3]).ok()
+            .and_then(|value|value.parse::<u64>().ok());
+        let Some(revision)=revision.filter(|n|*n>0) else {continue};
+        let command=fields[0].strip_suffix("-account-read");
+        let synthetic=command.and_then(|id|{
+            let raw=std::str::from_utf8(raw).ok()?;
+            let instance=&row[7];
+            if raw==format!("owner-login-account-read:{instance}:{id}") {
+                Some("codex-account")
+            } else if raw==format!("owner-login-provider-status:{instance}:{id}") {
+                Some("provider-status")
+            } else if raw==format!("owner-login-opencode-xai-cli-completion:{instance}:{id}") {
+                Some("opencode-completion")
+            } else {None}
+        });
+        let json=if synthetic.is_none() {
+            crate::store::session_transport::decode_request(raw).ok()
+        } else {None};
+        let original_json=json.as_ref().is_some_and(|request|
+            request.family=="K-INSTANCE" && request.operation=="login-state" &&
+            request.domain_id=="global" && request.target_id==row[7] &&
+            request.request_id==fields[0] && request.expected_revision==revision &&
+            request.payload.is_empty());
+        let operation=match producer {
+            "login-observe" if original_json || synthetic==Some("codex-account")=>
+                format!("login-observe-{}",&sha256_hex(raw)[..40]),
+            "owner-login" if synthetic.is_some() => {
+                let id=command.ok_or(ManagedCliError::Busy)?;
+                let source=format!("{}\n{}\n{}",row[7],id,revision);
+                format!("owner-login-{}",&sha256_hex(source.as_bytes())[..40])
+            },
+            "owner-status" if synthetic==Some("provider-status") => {
+                let id=command.ok_or(ManagedCliError::Busy)?;
+                let source=format!("{}\n{}\n{}",row[7],id,revision);
+                let login=format!("owner-login-{}",&sha256_hex(source.as_bytes())[..40]);
+                format!("owner-login-status-{}",&sha256_hex(
+                    format!("{login}\nstatus").as_bytes())[..40])
+            },
+            _=>continue,
+        };
+        if row[0]!=operation {continue}
+        if frames[2].as_slice()!=row[7].as_bytes() ||
+            frames[3].as_slice()!=revision.to_string().as_bytes() ||
+            frames[4].as_slice()!=b"login" ||
+            ![&b"UNKNOWN"[..],&b"LOGGED_IN"[..],&b"LOGGED_OUT"[..]]
+                .contains(&frames[5].as_slice()) ||
+            (frames.len()==7 && (frames[0].as_slice()!=b"read-login" ||
+                frames[6].as_slice()!=b"NO_REVISION_CHANGE")) ||
+            (frames.len()==6 && frames[0].as_slice()!=b"observe") ||
+            row[9]!=revision.to_string() ||
+            fields[2]!="APPLIED" || fields[4]!="1" || fields[6]!="1" ||
+            !fields[3].is_empty() || !fields[5].is_empty() {
+            return Err(ManagedCliError::Busy)
+        }
+        if matched.replace(fields).is_some(){return Err(ManagedCliError::Busy)}
+    }
+    let fields=matched.ok_or(ManagedCliError::Observation(format!(
+        "original {producer} F operation/raw source missing")))?;
+    Ok(sha256_hex(&frame(&fields)))
 }
 
 fn verified_original_worktree(db:&VerifiedDatabaseConnection<'_>,
@@ -564,6 +736,236 @@ fn verified_original_worktree(db:&VerifiedDatabaseConnection<'_>,
     Ok(sha256_hex(&frame(&values)))
 }
 
+/// `mark_resume_unknown` intentionally leaves the old STOPPED claim in place
+/// and does not create h_generation. Authenticate the F create producer and
+/// the physical child HOME without interpreting those absent rows as damage.
+fn prepromotion_resume_home(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
+    r:&[String],raw:&[u8])->Result<String,ManagedCliError>{
+    let suffix=r[7].strip_prefix("home-").ok_or(ManagedCliError::Busy)?;
+    if suffix.len()!=40 || !suffix.bytes().all(|b|b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+        return Err(ManagedCliError::Busy)
+    }
+    let profile=crate::process::AppContainerProfile::derive_for_revocation(
+        &format!("Gogoke37.Session.{suffix}"))
+        .map_err(|error|ManagedCliError::Observation(format!("resume child profile: {error:?}")))?;
+    let sid=profile.sid_identity().map_err(|error|
+        ManagedCliError::Observation(format!("resume child SID: {error:?}")))?;
+    let (_,identity)=super::super::temporary::resolve_active_session_home(db,root,&profile,
+        &r[0],&r[7],&r[1],&r[2],&r[3])
+        .map_err(|error|ManagedCliError::Observation(format!("resume child physical HOME: {error:?}")))?;
+    if identity.opaque()!=r[37] || r[35]!="ACTIVE" ||
+        r[36]!=format!("temp-home-{}",sha256_hex(r[7].as_bytes())) {
+        return Err(ManagedCliError::IdentityChanged)
+    }
+    let id=format!("homeprep-{}",&sha256_hex(format!("{}\n{}",r[1],r[5]).as_bytes())[..40]);
+    let expected=hex(&frame(&["temporary-create-detached".into(),
+        String::from_utf8(raw.to_vec()).map_err(|_|ManagedCliError::Busy)?,
+        r[7].clone(),r[0].clone(),r[1].clone(),"SESSION".into(),
+        r[2].clone(),r[3].clone(),sid]));
+    let operation=Statement::prepare(db.as_ptr(),
+        "SELECT request_hex,phase,COALESCE(native_receipt_id,''),native_receipt_id IS NULL FROM main.gogoke_v37_instance_operations WHERE request_id=?1 AND target_id=?2")?;
+    operation.bind_text(1,&id)?;operation.bind_text(2,&r[7])?;
+    if !operation.step_row()? {return Err(ManagedCliError::Busy)}
+    let values=(0..4).map(|n|operation.column_text(n))
+        .collect::<std::result::Result<Vec<_>,_>>()?;
+    if operation.step_row()? || values[0]!=expected || values[1]!="APPLIED" ||
+        values[2]!=r[37] || values[3]!="0" {return Err(ManagedCliError::Busy)}
+    let duplicates=Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_instance_operations WHERE target_id=?1 AND request_id!=?2 AND request_hex GLOB ?3 LIMIT 1")?;
+    duplicates.bind_text(1,&r[7])?;duplicates.bind_text(2,&id)?;
+    duplicates.bind_text(3,&format!("{:016x}{}*",b"temporary-create-detached".len(),
+        hex(b"temporary-create-detached")))?;
+    if duplicates.step_row()? {return Err(ManagedCliError::Busy)}
+    Ok(sha256_hex(&frame(&[id,expected,values[1].clone(),values[2].clone(),
+        r[35].clone(),r[36].clone(),r[37].clone(),r[38].clone()])))
+}
+
+/// Plain resume has two original producer shapes. Before promotion the child
+/// is UNKNOWN and the stopped parent remains the current claim; after it,
+/// h_generation and the child claim are present. The parent is independently
+/// authenticated as an original STOP member before either shape is admitted.
+fn original_resume_units(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
+    stopped:&[(Vec<String>,Vec<String>)])
+    ->Result<(Vec<(Unit,Vec<String>)>,std::collections::BTreeMap<String,String>),ManagedCliError>{
+    let sql="SELECT e.instance_id,e.domain_id,e.session_id,e.generation,
+        COALESCE(e.old_generation,''),e.request_id,e.process_operation_id,e.home_id,
+        e.binding_id,e.raw_hex,CAST(e.previous_revision AS TEXT),
+        COALESCE(CAST(e.result_revision AS TEXT),''),e.phase,
+        COALESCE(e.seat_id,''),COALESCE(e.seat_incarnation,''),
+        e.stop_request_id IS NULL,e.stop_fact_id IS NULL,c.ticket,c.custodian_nonce,
+        c.pid,c.creation_time_100ns,c.image_path,c.binary_digest_sha256,c.state,
+        c.stop_proof_hash IS NULL,i.home_identity,i.program_digest,i.version,
+        a.generation,a.state,CAST(a.revision AS TEXT),a.home_id,a.binding_id,
+        COALESCE(a.process_operation_id,''),COALESCE(a.stop_fact_id,''),
+        h.state,h.directory_ref,h.directory_identity,CAST(h.revision AS TEXT),b.state,
+        (SELECT COUNT(*) FROM main.gogoke_v37_h_generation g WHERE g.domain_id=e.domain_id
+          AND g.session_id=e.session_id AND g.generation=e.generation
+          AND g.request_id=e.request_id AND g.process_operation_id=e.process_operation_id),
+        (SELECT COUNT(*) FROM main.gogoke_v37_h_generation_change g WHERE
+          g.domain_id=e.domain_id AND g.request_id=e.request_id),
+        (SELECT COUNT(*) FROM main.gogoke_v37_h_operation o WHERE
+          o.domain_id=e.domain_id AND o.request_id=e.request_id)
+        FROM main.gogoke_v37_h_process_episode e
+        JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
+        JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id
+          AND c.profile_id=e.instance_id AND c.domain_id=e.domain_id
+          AND c.generation=e.generation
+        JOIN main.gogoke_v37_h_claim a ON a.instance_id=e.instance_id
+          AND a.domain_id=e.domain_id AND a.session_id=e.session_id
+        JOIN main.gogoke_v37_instance_homes h ON h.home_id=e.home_id
+          AND h.instance_id=e.instance_id AND h.domain_id=e.domain_id
+          AND h.generation=e.generation AND h.kind='SESSION' AND h.owner_id=e.session_id
+        JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=e.binding_id
+          AND b.instance_id=e.instance_id AND b.domain_id=e.domain_id
+          AND b.generation=e.generation AND b.kind='SESSION' AND b.owner_id=e.session_id
+        WHERE i.driver_id=?1 AND e.old_generation IS NOT NULL
+          AND e.phase IN ('PREPARED','ACTIVE','UNKNOWN')";
+    let mut result=Vec::new();
+    let mut before_promotion=std::collections::BTreeMap::new();
+    for r in rows(db,sql,driver,43)? {
+        let old=r[4].parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
+        let generation=r[3].parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
+        if old.checked_add(1)!=Some(generation) || r[3]!=generation.to_string() ||
+            r[4]!=old.to_string() {return Err(ManagedCliError::Busy)}
+        let parent=stopped.iter().find(|(source,_)|source[1]==r[0] &&
+            source[2]==r[1] && source[3]==r[2] && source[4]==r[4])
+            .ok_or(ManagedCliError::Busy)?;
+        if parent.0[28]!=r[13] || parent.0[29]!=r[14] ||
+            r[13].is_empty() || r[14].is_empty() ||
+            r[15]!="1" || r[16]!="1" || r[24]!="1" ||
+            r[17].is_empty() || r[18].is_empty() ||
+            r[21].is_empty() || r[22].is_empty() || r[23].is_empty() ||
+            r[39]!="ACTIVE" || r[41]!="0" || r[42]!="0" ||
+            r[36]!=format!("temp-home-{}",sha256_hex(r[7].as_bytes())) ||
+            r[37].is_empty() {return Err(ManagedCliError::Busy)}
+        let raw=decode_original_hex(&r[9])?;
+        let request=crate::store::session_transport::decode_request(&raw)
+            .map_err(|error|ManagedCliError::Observation(format!(
+                "original plain H resume raw: {error:?}")))?;
+        if matches!(request.operation.as_str(),"compact"|"renew-session") {
+            return Err(ManagedCliError::Observation(
+                "unsupported original compound generation-change source".into()))
+        }
+        let previous=r[10].parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
+        let after=r[11].parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
+        let payload=match request.payload.get(&JsonString::from_str("generation")) {
+            Some(Json::String(value))=>value.to_well_formed_string(),_=>None,
+        };
+        if request.family!="K-SESSION" || request.operation!="resume" ||
+            request.request_id!=r[5] || request.domain_id!=r[1] ||
+            request.target_id!=r[2] || request.payload.len()!=1 ||
+            payload.as_deref()!=Some(r[4].as_str()) ||
+            r[6]!=format!("h-resume-{}",&sha256_hex(&raw)[..40]) ||
+            !(request.expected_revision==previous ||
+              request.expected_revision.checked_add(1)==Some(previous)) ||
+            previous.checked_add(1)!=Some(after) ||
+            r[19].parse::<u32>().ok().filter(|n|*n>0).is_none() ||
+            r[20].parse::<u64>().ok().filter(|n|*n>0).is_none() ||
+            r[22]!=parent.0[26] ||
+            r[38].parse::<u64>().is_err() {return Err(ManagedCliError::Busy)}
+        let pending=r[12]=="UNKNOWN" && r[23]=="UNKNOWN" && r[40]=="0";
+        let promoted=r[40]=="1" &&
+            matches!(r[12].as_str(),"ACTIVE"|"UNKNOWN") &&
+            matches!(r[23].as_str(),"ACTIVE"|"UNKNOWN") &&
+            r[28]==r[3] && matches!(r[29].as_str(),"COMMITTED"|"UNKNOWN") &&
+            r[30]==r[11] && r[31]==r[7] && r[32]==r[8] &&
+            r[33]==r[6] && r[34].is_empty();
+        if pending {
+            // The original mark_resume_unknown writer moves only the parent's
+            // revision. There is deliberately no child generation/claim.
+            if r[28]!=r[4] || r[29]!="STOPPED" || r[30]!=r[11] ||
+                r[31]!=parent.0[7] || r[32]!=parent.0[8] ||
+                r[33]!=parent.0[6] || r[34]!=parent.0[14] ||
+                request.expected_revision!=previous || r[35]!="ACTIVE" {
+                return Err(ManagedCliError::Busy)
+            }
+        } else if !promoted {return Err(ManagedCliError::Busy)}
+        let home_source=if pending {
+            prepromotion_resume_home(db,root,&r,&raw)?
+        } else {
+            super::super::temporary::validate_original_execution_home_source(
+                db,&r[7],&r[0],&r[1],&r[2],&r[3],&r[5],"resume")
+                .map_err(|error|ManagedCliError::Observation(format!(
+                    "original promoted resume HOME: {error:?}")))?
+        };
+        let home_identity=registry::observed_home(root,&r[0])
+            .map_err(|error|ManagedCliError::Observation(format!(
+                "original resume instance home: {error:?}")))?
+            .ok_or(ManagedCliError::Busy)?;
+        if home_identity.opaque()!=r[25] {return Err(ManagedCliError::IdentityChanged)}
+        verified_source_images(db,root,driver,&r[0],&r[25],&r[26],&r[27],
+            &r[21],&r[22])?;
+        let pairs=vec![(r[19].parse::<u32>().map_err(|_|ManagedCliError::Busy)?,
+            r[20].parse::<u64>().map_err(|_|ManagedCliError::Busy)?)];
+        if r[19]!=pairs[0].0.to_string() || r[20]!=pairs[0].1.to_string() {
+            return Err(ManagedCliError::Busy)
+        }
+        let unit=Unit{instance:r[0].clone(),domain:r[1].clone(),session:r[2].clone(),
+            generation:r[3].clone(),open_request:r[5].clone(),process:r[6].clone(),
+            home:r[7].clone(),binding:r[8].clone(),pairs};
+        let mut source=vec![if pending{"H_SESSION_RESUME_PENDING-v1"}
+            else{"H_SESSION_RESUME-v1"}.to_owned()];
+        source.extend(r[..26].iter().cloned());
+        source.extend(r[28..].iter().cloned());
+        source.push(home_source);
+        if pending {
+            before_promotion.insert(r[6].clone(),sha256_hex(&frame(&source)));
+        }
+        result.push((unit,source));
+    }
+    result.sort_by(|a,b|(&a.0.instance,&a.0.domain,&a.0.session,&a.0.generation,&a.0.process)
+        .cmp(&(&b.0.instance,&b.0.domain,&b.0.session,&b.0.generation,&b.0.process)));
+    if result.windows(2).any(|p|p[0].0.process==p[1].0.process) {
+        return Err(ManagedCliError::Busy)
+    }
+    Ok((result,before_promotion))
+}
+
+/// The existing H single-HOME source rejects a second unsettled family
+/// episode and pending stdin. Its per-HOME cardinality is too narrow for a
+/// complete family, so F rechecks each original C generation and the existing
+/// read-only F physical HOME resolver before recording the member source.
+fn family_execution_source(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
+    unit:&Unit,operation:&str,expected_identity:&str)
+    ->Result<(String,String),ManagedCliError>{
+    let exact=Statement::prepare(db.as_ptr(),
+        "SELECT profile_id,domain_id,generation,pid,creation_time_100ns FROM main.gogoke_coordination_process_custody WHERE operation_id=?1")?;
+    exact.bind_text(1,&unit.process)?;
+    if !exact.step_row()? {return Err(ManagedCliError::Busy)}
+    let c=(0..5).map(|n|exact.column_text(n))
+        .collect::<std::result::Result<Vec<_>,_>>()?;
+    let pair=c[3].parse::<u32>().ok().zip(c[4].parse::<u64>().ok());
+    if exact.step_row()? || c[0]!=unit.instance || c[1]!=unit.domain ||
+        c[2]!=unit.generation || pair.is_none_or(|pair|pair.0==0 || pair.1==0 ||
+            c[3]!=pair.0.to_string() || c[4]!=pair.1.to_string() ||
+            vec![pair]!=unit.pairs) {
+        return Err(ManagedCliError::Busy)
+    }
+    let suffix=unit.home.strip_prefix("home-").ok_or(ManagedCliError::Busy)?;
+    if suffix.len()!=40 || !suffix.bytes().all(|b|b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+        return Err(ManagedCliError::Busy)
+    }
+    let profile=crate::process::AppContainerProfile::derive_for_revocation(
+        &format!("Gogoke37.Session.{suffix}"))
+        .map_err(|error|ManagedCliError::Observation(format!("family HOME profile: {error:?}")))?;
+    let (_,physical)=super::super::temporary::resolve_historical_session_home(
+        db,root,&profile,&unit.instance,&unit.home,&unit.domain,&unit.session,
+        &unit.generation,&unit.binding)
+        .map_err(|error|ManagedCliError::Observation(format!(
+            "family original physical HOME: {error:?}")))?;
+    if physical.opaque()!=expected_identity {return Err(ManagedCliError::IdentityChanged)}
+    let home_source=super::super::temporary::validate_original_execution_home_source(
+        db,&unit.home,&unit.instance,&unit.domain,&unit.session,&unit.generation,
+        &unit.open_request,operation)
+        .map_err(|error|ManagedCliError::Observation(format!(
+            "family original F HOME: {error:?}")))?;
+    let physical_source=sha256_hex(&frame(&[db.root_identity().opaque(),
+        db.identity().opaque(),unit.instance.clone(),unit.domain.clone(),
+        unit.session.clone(),unit.generation.clone(),unit.home.clone(),
+        unit.binding.clone(),unit.process.clone(),physical.opaque()]));
+    Ok((home_source,physical_source))
+}
+
 /// Global login/observer custody has no H episode by original design. It is
 /// enumerated independently; the existing applied ACL fence reader validates
 /// the complete old UNKNOWN C set and fresh kernel cutoff on every call.
@@ -587,11 +989,8 @@ fn original_global_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,dri
     let mut operations=Vec::new();
     let mut native=Vec::new();
     for row in original {
-        let suffix=row[0].strip_prefix("owner-login-")
-            .or_else(||row[0].strip_prefix("login-observe-"))
-            .ok_or(ManagedCliError::Busy)?;
-        if suffix.len()!=40 || !suffix.bytes().all(|b|b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) ||
-            row[1].is_empty() || row[2].is_empty() || row[5].is_empty() ||
+        let observation=original_global_observation(db,&row)?;
+        if row[1].is_empty() || row[2].is_empty() || row[5].is_empty() ||
             row[7].is_empty() || row[8]!="global" ||
             !matches!(row[10].as_str(),"UNKNOWN"|"STOPPED") {
             return Err(ManagedCliError::Busy)
@@ -623,8 +1022,9 @@ fn original_global_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,dri
             }
             "ORIGINAL_STOP"
         };
-        let source=std::iter::once("GLOBAL_LOGIN_C-v1".to_owned())
-            .chain(row.iter().cloned()).collect::<Vec<_>>();
+        let mut source=std::iter::once("GLOBAL_LOGIN_C-v1".to_owned())
+            .chain(row[..14].iter().cloned()).collect::<Vec<_>>();
+        source.push(observation);
         let proof=vec![kind.to_owned(),row[7].clone(),"global".to_owned(),
             row[0].clone(),row[9].clone(),row[0].clone(),
             pid.to_string(),created.to_string()];
@@ -721,13 +1121,33 @@ fn original_probe_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driv
                     proof.binding.binary_digest_sha256!=row[6] ||
                     proof.proof_hash()!=row[11] {return Err(ManagedCliError::Busy)}
             } else if !matches!(owner.phase,managed_version_action::ActionPhase::Probed |
-                managed_version_action::ActionPhase::Consumed) || owner.probe_receipt_hex.is_empty() {
+                managed_version_action::ActionPhase::Consumed) {
                 return Err(ManagedCliError::Busy)
+            } else {
+                let witness=managed_version_action::bound_probe_witness(owner)
+                    .map_err(|error|ManagedCliError::Observation(format!(
+                        "same-action original probe witness: {error:?}")))?;
+                if witness.operation_id!=row[0] || witness.ticket!=row[1] ||
+                    witness.nonce!=row[2] || witness.pid!=row[3] ||
+                    witness.creation!=row[4] || witness.image!=row[5] ||
+                    witness.digest!=row[6] || witness.profile!=row[7] ||
+                    witness.domain!=row[8] || witness.generation!=row[9] ||
+                    witness.proof_hash!=row[11] {return Err(ManagedCliError::Busy)}
             }
             continue;
         }
-        if owner.phase!=managed_version_action::ActionPhase::Consumed ||
-            owner.probe_receipt_hex.is_empty() {return Err(ManagedCliError::Busy)}
+        if owner.phase!=managed_version_action::ActionPhase::Consumed {
+            return Err(ManagedCliError::Busy)
+        }
+        let witness=managed_version_action::bound_probe_witness(owner)
+            .map_err(|error|ManagedCliError::Observation(format!(
+                "historical original probe witness: {error:?}")))?;
+        if witness.operation_id!=row[0] || witness.ticket!=row[1] ||
+            witness.nonce!=row[2] || witness.pid!=row[3] ||
+            witness.creation!=row[4] || witness.image!=row[5] ||
+            witness.digest!=row[6] || witness.profile!=row[7] ||
+            witness.domain!=row[8] || witness.generation!=row[9] ||
+            witness.proof_hash!=row[11] {return Err(ManagedCliError::Busy)}
         let mut source=vec!["MANAGED_PROBE_C-v1".to_owned()];
         source.extend(row.iter().cloned());
         source.extend([owner.request_id.clone(),owner.probe_hex.clone(),
@@ -744,6 +1164,11 @@ fn original_probe_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driv
     }
     if live.is_some() && (current.is_none_or(|action|
         action.phase!=managed_version_action::ActionPhase::Probing) || own_count!=1) {
+        return Err(ManagedCliError::Busy)
+    }
+    if current.is_some_and(|action|matches!(action.phase,
+        managed_version_action::ActionPhase::Probed |
+        managed_version_action::ActionPhase::Consumed)) && own_count!=1 {
         return Err(ManagedCliError::Busy)
     }
     Ok(original)
@@ -794,11 +1219,251 @@ fn no_unowned_original_h_rows(db:&VerifiedDatabaseConnection<'_>)
         "SELECT 1 FROM main.gogoke_v37_instance_homes h WHERE h.state NOT IN ('CLOSED','CLEANED') AND NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_claim c WHERE c.home_id=h.home_id) AND NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e WHERE e.home_id=h.home_id) LIMIT 1",
         "SELECT 1 FROM main.gogoke_v37_h_operation o WHERE NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_claim c WHERE c.domain_id=o.domain_id AND c.session_id=o.session_id) AND NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e WHERE e.domain_id=o.domain_id AND e.session_id=o.session_id) LIMIT 1",
         "SELECT 1 FROM main.gogoke_v37_h_stdin_journal j WHERE NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e WHERE e.domain_id=j.domain_id AND e.session_id=j.session_id AND e.generation=j.generation AND e.process_operation_id=j.process_operation_id) LIMIT 1",
+        "SELECT 1 FROM main.gogoke_v37_rpc_steps s WHERE NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e WHERE e.domain_id=s.domain_id AND e.session_id=s.session_id AND e.generation=s.generation AND e.process_operation_id=s.process_operation_id AND e.request_id=s.open_request_id) LIMIT 1",
         "SELECT 1 FROM main.gogoke_v37_h_generation_change g WHERE NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e WHERE e.domain_id=g.domain_id AND e.session_id=g.session_id AND e.process_operation_id=g.old_process_operation_id) LIMIT 1",
         "SELECT 1 FROM main.gogoke_v37_h_dos_alias a WHERE NOT EXISTS(SELECT 1 FROM main.gogoke_v37_instances i WHERE i.instance_id=a.instance_id) LIMIT 1",
     ] {
         let row=Statement::prepare(db.as_ptr(),sql)?;
         if row.step_row()? {return Err(ManagedCliError::Busy)}
+    }
+    Ok(())
+}
+
+/// Every original input, including RECEIPTED history, is an immutable member.
+/// Only PREPARED/UNKNOWN may consume the future-occupancy exception.
+fn original_stdin_sources(db:&VerifiedDatabaseConnection<'_>,driver:&str,
+    units:&[(Unit,Vec<String>)],stopped:&[Unit])
+    ->Result<Vec<(StdinMember,Vec<String>,Vec<String>)>,ManagedCliError>{
+    let sql="SELECT e.instance_id,j.domain_id,j.session_id,j.generation,
+        j.process_operation_id,j.request_id,j.operation,j.ticket,j.custodian_nonce,
+        j.request_hex,j.phase,COALESCE(j.receipt_hex,''),COALESCE(j.receipt_status,''),
+        j.expected_revision,COALESCE(j.receipt_previous_revision,''),
+        COALESCE(j.receipt_revision,''),j.receipt_hex IS NULL,
+        j.receipt_status IS NULL,j.receipt_previous_revision IS NULL,
+        j.receipt_revision IS NULL,c.ticket,c.custodian_nonce,c.pid,
+        c.creation_time_100ns,c.state,e.phase
+        FROM main.gogoke_v37_h_stdin_journal j
+        JOIN main.gogoke_v37_h_process_episode e ON e.domain_id=j.domain_id
+          AND e.session_id=j.session_id AND e.generation=j.generation
+          AND e.process_operation_id=j.process_operation_id
+        JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
+        JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id
+          AND c.profile_id=e.instance_id AND c.domain_id=e.domain_id
+          AND c.generation=e.generation
+        WHERE i.driver_id=?1";
+    let mut found=Vec::new();
+    for r in rows(db,sql,driver,26)? {
+        let unit=units.iter().map(|(u,_)|u).chain(stopped.iter())
+            .find(|u|u.instance==r[0] && u.domain==r[1] &&
+                u.session==r[2] && u.generation==r[3] && u.process==r[4])
+            .ok_or(ManagedCliError::Busy)?;
+        let pending=r[10]!="RECEIPTED";
+        let raw=decode_original_hex(&r[9])?;
+        let request=crate::store::session_transport::decode_request(&raw)
+            .map_err(|error|ManagedCliError::Observation(format!(
+                "original pending H stdin raw: {error:?}")))?;
+        let revision=r[13].parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
+        if request.family!="K-SESSION" ||
+            !matches!(request.operation.as_str(),"send"|"append-without-turn") ||
+            (request.operation=="append-without-turn" && driver!="codex") ||
+            request.operation!=r[6] || request.request_id!=r[5] ||
+            request.domain_id!=r[1] || request.target_id!=r[2] ||
+            request.expected_revision!=revision || r[13]!=revision.to_string() ||
+            r[7].is_empty() || r[8].is_empty() || r[7]!=r[20] || r[8]!=r[21] ||
+            !matches!(r[24].as_str(),"PREPARED"|"ACTIVE"|"UNKNOWN"|"STOPPED") ||
+            !matches!(r[25].as_str(),"PREPARED"|"ACTIVE"|"UNKNOWN"|"STOPPED") ||
+            (pending && (r[24]=="STOPPED" || r[25]=="STOPPED")) ||
+            (r[10]=="PREPARED" && !(r[16]=="1" && r[17]=="1" &&
+                r[18]=="1" && r[19]=="1")) ||
+            (r[10]=="UNKNOWN" && !(
+                r[16]=="1" && r[17]=="1" && r[18]=="1" && r[19]=="1" ||
+                r[16]=="0" && r[17]=="0" && r[18]=="0" && r[19]=="0" &&
+                    r[12]=="UNKNOWN")) ||
+            (r[10]=="RECEIPTED" && !(r[16]=="0" && r[17]=="0" &&
+                r[18]=="0" && r[19]=="0" && r[12]!="UNKNOWN")) {
+            return Err(ManagedCliError::Busy)
+        }
+        if r[16]=="0" {
+            let receipt=crate::store::session_transport::decode_receipt(
+                &decode_original_hex(&r[11])?).map_err(|error|
+                ManagedCliError::Observation(format!("original pending H stdin receipt: {error:?}")))?;
+            if receipt.family!="K-SESSION" || receipt.operation!=r[6] ||
+                receipt.request_id!=r[5] || receipt.target_id!=r[2] ||
+                receipt.status.wire()!=r[12] ||
+                (r[10]=="UNKNOWN" &&
+                    receipt.status!=crate::store::session_transport::V37Status::Unknown) ||
+                (r[10]=="RECEIPTED" &&
+                    receipt.status==crate::store::session_transport::V37Status::Unknown) ||
+                receipt.previous_revision.to_string()!=r[14] ||
+                receipt.revision.to_string()!=r[15] ||
+                receipt.revision<receipt.previous_revision {return Err(ManagedCliError::Busy)}
+        }
+        let pid=r[22].parse::<u32>().map_err(|_|ManagedCliError::Busy)?;
+        let created=r[23].parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
+        if pid==0 || created==0 || r[22]!=pid.to_string() ||
+            r[23]!=created.to_string() || unit.pairs!=vec![(pid,created)] {
+            return Err(ManagedCliError::Busy)
+        }
+        let member=StdinMember{instance:r[0].clone(),domain:r[1].clone(),session:r[2].clone(),
+            generation:r[3].clone(),process:r[4].clone(),request:r[5].clone(),
+            ticket:r[7].clone(),nonce:r[8].clone(),pending};
+        let mut source=vec![if pending{"H_STDIN_PENDING-v1"}
+            else{"H_STDIN_RECEIPTED-v1"}.to_owned()];
+        source.extend(r);
+        let proof=vec![if pending{"ORIGINAL_STDIN_OCCUPANCY"}
+            else{"ORIGINAL_STDIN_HISTORY"}.to_owned(),member.instance.clone(),
+            member.domain.clone(),member.session.clone(),member.generation.clone(),
+            member.process.clone(),pid.to_string(),created.to_string(),
+            member.request.clone()];
+        found.push((member,source,proof));
+    }
+    found.sort_by(|a,b|(&a.0.instance,&a.0.domain,&a.0.session,&a.0.generation,
+        &a.0.process,&a.0.request).cmp(&(&b.0.instance,&b.0.domain,&b.0.session,
+        &b.0.generation,&b.0.process,&b.0.request)));
+    if found.windows(2).any(|p|p[0].0.instance==p[1].0.instance &&
+        p[0].0.domain==p[1].0.domain && p[0].0.request==p[1].0.request){
+        return Err(ManagedCliError::Busy)
+    }
+    Ok(found)
+}
+
+/// RPC rows are bound as original side effects, not proof that an unfinished
+/// command is live or that it received a response. OBSERVED alone requires
+/// its original ledger source key and bytes.
+fn original_rpc_sources(db:&VerifiedDatabaseConnection<'_>,driver:&str,
+    units:&[(Unit,Vec<String>)],stopped:&[Unit])
+    ->Result<Vec<(Vec<String>,Vec<String>)>,ManagedCliError>{
+    let sql="SELECT e.instance_id,s.domain_id,s.session_id,s.open_request_id,
+        s.step_id,s.process_operation_id,s.ticket,s.custodian_nonce,s.pid,
+        s.creation_time,s.image_path,s.binary_digest,s.profile_id,s.generation,
+        s.command_hex,CAST(s.requires_response AS TEXT),s.phase,
+        COALESCE(s.source_epoch,''),COALESCE(s.source_cursor,''),
+        COALESCE(s.original_error,''),COALESCE(s.permission_evidence,''),
+        s.source_epoch IS NULL,s.source_cursor IS NULL,s.original_error IS NULL,
+        s.permission_evidence IS NULL
+        FROM main.gogoke_v37_rpc_steps s
+        JOIN main.gogoke_v37_h_process_episode e ON e.domain_id=s.domain_id
+          AND e.session_id=s.session_id AND e.generation=s.generation
+          AND e.process_operation_id=s.process_operation_id
+          AND e.request_id=s.open_request_id
+        JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
+        WHERE i.driver_id=?1";
+    let mut result=Vec::new();
+    for r in rows(db,sql,driver,25)? {
+        let u=units.iter().map(|(u,_)|u).chain(stopped.iter())
+            .find(|u|u.instance==r[0] && u.domain==r[1] && u.session==r[2] &&
+                u.open_request==r[3] && u.process==r[5] && u.generation==r[13])
+            .ok_or(ManagedCliError::Busy)?;
+        let command=decode_original_hex(&r[14])?;
+        let pid=r[8].parse::<u32>().map_err(|_|ManagedCliError::Busy)?;
+        let created=r[9].parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
+        if command.is_empty() || r[4].is_empty() || r[6].is_empty() ||
+            r[7].is_empty() || r[10].is_empty() || r[11].is_empty() ||
+            r[12]!=r[0] || pid==0 || created==0 ||
+            r[8]!=pid.to_string() || r[9]!=created.to_string() ||
+            u.pairs!=vec![(pid,created)] ||
+            !matches!(r[15].as_str(),"0"|"1") ||
+            !matches!(r[16].as_str(),"INTENT"|"WRITTEN"|"UNKNOWN"|"OBSERVED") ||
+            (r[16]=="OBSERVED" && (r[15]!="1" || r[21]!="0" ||
+                r[22]!="0" || r[23]!="1" || r[17].is_empty() ||
+                r[18].parse::<u64>().ok().filter(|n|*n>0)
+                    .is_none_or(|n|r[18]!=n.to_string()))) ||
+            (r[16]=="UNKNOWN" && (r[21]!="1" || r[22]!="1" ||
+                r[23]!="0" || r[19].is_empty())) ||
+            (matches!(r[16].as_str(),"INTENT"|"WRITTEN") &&
+                !(r[21]=="1" && r[22]=="1" && r[23]=="1")) {
+            return Err(ManagedCliError::Busy)
+        }
+        let c=Statement::prepare(db.as_ptr(),
+            "SELECT ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation FROM main.gogoke_coordination_process_custody WHERE operation_id=?1")?;
+        c.bind_text(1,&r[5])?;
+        if !c.step_row()? {return Err(ManagedCliError::Busy)}
+        let values=(0..9).map(|n|c.column_text(n))
+            .collect::<std::result::Result<Vec<_>,_>>()?;
+        if c.step_row()? || values!=vec![r[6].clone(),r[7].clone(),r[8].clone(),
+            r[9].clone(),r[10].clone(),r[11].clone(),r[12].clone(),
+            r[1].clone(),r[13].clone()] {return Err(ManagedCliError::Busy)}
+        let mut source=vec!["H_RPC_STEP-v1".to_owned()];
+        source.extend(r.iter().cloned());
+        if r[16]=="OBSERVED" {
+            let ledger=Statement::prepare(db.as_ptr(),
+                "SELECT lower(hex(raw_bytes)),state,COALESCE(no_event_reason,''),
+                 no_event_reason IS NULL FROM main.v37_ledger_raw_source WHERE
+                 operation_id=?1 AND process_ticket=?2 AND custodian_nonce=?3 AND
+                 domain_id=?4 AND session_id=?5 AND generation=?6 AND
+                 source_epoch=?7 AND source_cursor=?8")?;
+            for (n,value) in [&r[5],&r[6],&r[7],&r[1],&r[2],&r[13],&r[17],&r[18]]
+                .iter().enumerate(){ledger.bind_text(n as i32+1,value)?;}
+            if !ledger.step_row()? {return Err(ManagedCliError::Busy)}
+            let ledger_row=(0..4).map(|n|ledger.column_text(n))
+                .collect::<std::result::Result<Vec<_>,_>>()?;
+            if ledger.step_row()? || decode_original_hex(&ledger_row[0])?.is_empty() {
+                return Err(ManagedCliError::Busy)
+            }
+            source.extend(ledger_row);
+        } else {source.extend([String::new(),String::new(),String::new(),"1".into()]);}
+        let proof=vec!["ORIGINAL_RPC_HISTORY".to_owned(),r[0].clone(),
+            r[1].clone(),r[2].clone(),r[13].clone(),r[5].clone(),
+            r[8].clone(),r[9].clone(),r[4].clone()];
+        result.push((source,proof));
+    }
+    result.sort_by(|a,b|(&a.1[1],&a.1[2],&a.1[3],&a.1[4],&a.1[5],&a.1[8])
+        .cmp(&(&b.1[1],&b.1[2],&b.1[3],&b.1[4],&b.1[5],&b.1[8])));
+    if result.windows(2).any(|p|p[0].1==p[1].1){return Err(ManagedCliError::Busy)}
+    Ok(result)
+}
+
+/// Start at C's complete original set, before any instance/profile JOIN. A
+/// row executing this driver's official managed-stage image cannot disappear
+/// merely because its profile no longer resolves to an F instance.
+fn no_unattributed_managed_image_c(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
+    driver:&str,units:&[(Unit,Vec<String>)],stopped:&[Unit],
+    globals:&[(Vec<String>,Vec<String>)],strict:bool)->Result<(),ManagedCliError>{
+    let all=Statement::prepare(db.as_ptr(),
+        "SELECT operation_id,profile_id,domain_id,generation,image_path,binary_digest_sha256 FROM main.gogoke_coordination_process_custody ORDER BY operation_id")?;
+    let staging=root.canonical_root().canonical_path.join("v37-managed-cli").join("staging");
+    while all.step_row()? {
+        let r=(0..6).map(|n|all.column_text(n))
+            .collect::<std::result::Result<Vec<_>,_>>()?;
+        let pin=match original_catalog_pin(driver,&r[5]) {
+            Ok(pin)=>pin,Err(ManagedCliError::Busy)=>continue,Err(error)=>return Err(error),
+        };
+        let image=std::fs::canonicalize(std::path::Path::new(&r[4]))?;
+        let staging=match std::fs::canonicalize(&staging) {
+            Ok(value)=>value,
+            Err(error)=>{
+                if image.starts_with(&root.canonical_root().canonical_path.join("v37-managed-cli")) {
+                    return Err(ManagedCliError::Observation(format!(
+                        "managed staging root for original C: {error:?}")))
+                }
+                continue
+            },
+        };
+        if !image.starts_with(&staging) {continue}
+        let stage=stage_name_from_original_image(&staging,&image,pin)?;
+        let verified=inspect_staged_official_cli_version(root,driver,pin.version,&stage)?;
+        if std::fs::canonicalize(&verified)?!=image {
+            return Err(ManagedCliError::IdentityChanged)
+        }
+        let h=units.iter().any(|(u,_)|u.process==r[0] && u.instance==r[1] &&
+            u.domain==r[2] && u.generation==r[3]) ||
+            stopped.iter().any(|u|u.process==r[0] && u.instance==r[1] &&
+                u.domain==r[2] && u.generation==r[3]);
+        let global=globals.iter().any(|(source,_)|source[1]==r[0] &&
+            source[8]==r[1] && source[9]==r[2] && source[10]==r[3]);
+        let managed=r[1]==format!("managed-cli-{driver}") && r[2]=="global";
+        let known_strict=if strict {
+            let q=Statement::prepare(db.as_ptr(),
+                "SELECT driver_id FROM main.gogoke_v37_instances WHERE instance_id=?1")?;
+            q.bind_text(1,&r[1])?;
+            if q.step_row()? {
+                let same=q.column_text(0)?==driver;
+                if q.step_row()? {return Err(ManagedCliError::Busy)}
+                same
+            } else {false}
+        } else {false};
+        if !h && !global && !managed && !known_strict {return Err(ManagedCliError::Observation(
+            "original C managed image has no authenticated family producer".into()))}
     }
     Ok(())
 }
@@ -815,6 +1480,7 @@ fn all_blockers_are_family(db:&VerifiedDatabaseConnection<'_>,driver:&str,
     // These reverse checks run before predicates that join through a claim.
     // A missing claim, generation or producer must not make an H row vanish.
     for sql in [
+        "SELECT 1 FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id WHERE i.driver_id=?1 AND e.phase='FAILED' LIMIT 1",
         "SELECT 1 FROM main.gogoke_v37_h_generation g WHERE EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id WHERE i.driver_id=?1 AND e.domain_id=g.domain_id AND e.session_id=g.session_id) AND NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e WHERE e.domain_id=g.domain_id AND e.session_id=g.session_id AND e.generation=g.generation AND e.request_id=g.request_id AND e.process_operation_id=g.process_operation_id) LIMIT 1",
         "SELECT 1 FROM main.gogoke_v37_h_operation o WHERE o.status!='APPLIED' AND EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id WHERE i.driver_id=?1 AND e.domain_id=o.domain_id AND e.session_id=o.session_id) AND NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e WHERE e.domain_id=o.domain_id AND e.session_id=o.session_id AND ((o.operation='open' AND e.request_id=o.request_id AND e.raw_hex=o.raw_hex) OR (o.operation='stop' AND e.stop_request_id=o.request_id))) LIMIT 1",
         "SELECT 1 FROM main.gogoke_v37_h_stdin_journal j WHERE EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id WHERE i.driver_id=?1 AND e.domain_id=j.domain_id AND e.session_id=j.session_id) AND NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e WHERE e.domain_id=j.domain_id AND e.session_id=j.session_id AND e.generation=j.generation AND e.process_operation_id=j.process_operation_id) LIMIT 1",
@@ -849,7 +1515,7 @@ fn all_blockers_are_family(db:&VerifiedDatabaseConnection<'_>,driver:&str,
         r[2]==u.generation && r[3]==u.open_request && r[4]==u.process)))?;
     for sql in [
         "SELECT 1 FROM main.gogoke_v37_h_generation_change g JOIN main.gogoke_v37_h_process_episode e ON e.process_operation_id=g.old_process_operation_id JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id WHERE i.driver_id=?1 AND g.stage NOT IN ('APPLIED','CANCELLED') LIMIT 1",
-        "SELECT 1 FROM main.gogoke_v37_h_stdin_journal j JOIN main.gogoke_v37_h_process_episode e ON e.domain_id=j.domain_id AND e.session_id=j.session_id AND e.generation=j.generation AND e.process_operation_id=j.process_operation_id JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id WHERE i.driver_id=?1 AND j.phase!='RECEIPTED' LIMIT 1",
+        "SELECT 1 FROM main.gogoke_v37_h_stdin_journal j JOIN main.gogoke_v37_h_process_episode e ON e.domain_id=j.domain_id AND e.session_id=j.session_id AND e.generation=j.generation AND e.process_operation_id=j.process_operation_id JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id WHERE i.driver_id=?1 AND j.phase NOT IN ('RECEIPTED','PREPARED','UNKNOWN') LIMIT 1",
         "SELECT 1 FROM main.gogoke_v37_instance_operations o JOIN main.gogoke_v37_instances i ON i.instance_id=o.target_id WHERE i.driver_id=?1 AND o.phase!='APPLIED' LIMIT 1",
         "SELECT 1 FROM main.gogoke_v37_credential_objects o JOIN main.gogoke_v37_instances i ON i.instance_id=o.instance_id WHERE i.driver_id=?1 AND o.phase!='ACTIVE' LIMIT 1",
         "SELECT 1 FROM main.gogoke_v37_credential_aliases a JOIN main.gogoke_v37_instances i ON i.instance_id=a.instance_id WHERE i.driver_id=?1 AND a.state IN ('PREPARING','REMOVE_PENDING','UNKNOWN') LIMIT 1",
@@ -861,8 +1527,17 @@ fn all_blockers_are_family(db:&VerifiedDatabaseConnection<'_>,driver:&str,
 fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     action:Option<&ActionRecord>,live_probe:Option<&NativeStopProof>)
     ->Result<QualifiedVersionAction,ManagedCliError>{
-    let original=original_units(db,root,driver)?;
     let stopped=original_stopped_sources(db,root,driver)?;
+    let mut original=original_units(db,root,driver)?;
+    let (resumes,before_promotion)=original_resume_units(db,root,driver,&stopped)?;
+    original.extend(resumes);
+    original.sort_by(|a,b|(&a.0.instance,&a.0.domain,&a.0.session,&a.0.generation,&a.0.process)
+        .cmp(&(&b.0.instance,&b.0.domain,&b.0.session,&b.0.generation,&b.0.process)));
+    if original.windows(2).any(|p|p[0].0.instance==p[1].0.instance &&
+        p[0].0.domain==p[1].0.domain && p[0].0.session==p[1].0.session &&
+        p[0].0.generation==p[1].0.generation && p[0].0.process==p[1].0.process){
+        return Err(ManagedCliError::Busy)
+    }
     let stopped_units=stopped.iter().map(|(source,_)|Ok(Unit{
         instance:source[1].clone(),domain:source[2].clone(),session:source[3].clone(),
         generation:source[4].clone(),open_request:source[5].clone(),
@@ -870,23 +1545,32 @@ fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
         pairs:vec![(source[23].parse::<u32>().map_err(|_|ManagedCliError::Busy)?,
             source[24].parse::<u64>().map_err(|_|ManagedCliError::Busy)?)],
     })).collect::<Result<Vec<_>,ManagedCliError>>()?;
+    let all_stdin=original_stdin_sources(db,driver,&original,&stopped_units)?;
+    let rpc=original_rpc_sources(db,driver,&original,&stopped_units)?;
     let (global,global_operations,global_native)=original_global_sources(db,root,driver)?;
     let probes=original_probe_sources(db,root,driver,action,live_probe)?;
+    no_unattributed_managed_image_c(db,root,driver,&original,&stopped_units,&global,false)?;
     all_blockers_are_family(db,driver,&original,&stopped_units,&global_operations)?;
     let mut source_parts=vec!["managed-cli-family-source-v1".to_owned(),driver.to_owned()];
     let mut pair_parts=vec!["managed-cli-family-proof-v1".to_owned(),driver.to_owned()];
     let mut units=Vec::with_capacity(original.len());
     let mut members=Vec::new();
     for (unit,mut source) in original {
-        let (h_source,pairs)=crate::store::session_transport::original_home_execution_source(
-            db,&unit.home,&unit.instance,&unit.domain,&unit.session,&unit.generation,
-            &unit.binding).map_err(|error|ManagedCliError::Observation(format!(
-                "original H execution source: {error:?}")))?;
-        if pairs!=unit.pairs {return Err(ManagedCliError::Busy)}
+        let (home_source,h_source)=if let Some(source)=before_promotion.get(&unit.process) {
+            (String::new(),source.clone())
+        } else {
+            let operation=if source[0]=="H_SESSION_OPEN-v1"{"open"}else{"resume"};
+            let expected_identity=if operation=="open"{&source[29]}else{&source[36]};
+            family_execution_source(db,root,&unit,operation,expected_identity)?
+        };
         let fact=NativeLegacyHoldersGone::observe(&unit.pairs).map_err(|error|
             ManagedCliError::NativeGone(format!("original family kernel cutoff: {error:?}")))?;
         fact.validate(&unit.pairs).map_err(|error|
             ManagedCliError::NativeGone(format!("original family kernel recheck: {error:?}")))?;
+        if source[0]=="H_SESSION_OPEN-v1" {source.push(home_source)}
+        else if !home_source.is_empty() && source[42]!=home_source {
+            return Err(ManagedCliError::Busy)
+        }
         source.push(h_source);
         let mut proof=vec!["KERNEL_REBOOT".to_owned(),unit.instance.clone(),
             unit.domain.clone(),unit.session.clone(),unit.generation.clone(),
@@ -894,29 +1578,41 @@ fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
         proof.extend(unit.pairs.iter().flat_map(|(pid,time)|
             [pid.to_string(),time.to_string()]));
         let key=(unit.instance.clone(),unit.domain.clone(),unit.session.clone(),
-            unit.generation.clone(),unit.process.clone());
+            unit.generation.clone(),unit.process.clone(),String::new());
         members.push((key,source,proof));
         units.push(QualifiedUnit{source:unit,absence:NativeVersionAbsence::Reboot(fact)});
     }
     for (source,proof) in stopped {
         let key=(proof[1].clone(),proof[2].clone(),proof[3].clone(),
-            proof[4].clone(),proof[5].clone());
+            proof[4].clone(),proof[5].clone(),String::new());
         members.push((key,source,proof));
     }
     for (source,proof) in global {
         let key=(proof[1].clone(),proof[2].clone(),proof[3].clone(),
-            proof[4].clone(),proof[5].clone());
+            proof[4].clone(),proof[5].clone(),String::new());
         members.push((key,source,proof));
     }
     for (source,proof) in probes {
         let key=(proof[1].clone(),proof[2].clone(),proof[3].clone(),
-            proof[4].clone(),proof[5].clone());
+            proof[4].clone(),proof[5].clone(),String::new());
+        members.push((key,source,proof));
+    }
+    let mut stdin=Vec::new();
+    for (member,source,proof) in all_stdin {
+        let key=(member.instance.clone(),member.domain.clone(),member.session.clone(),
+            member.generation.clone(),member.process.clone(),format!("stdin:{}",member.request));
+        members.push((key,source,proof));
+        stdin.push(member);
+    }
+    for (source,proof) in rpc {
+        let key=(proof[1].clone(),proof[2].clone(),proof[3].clone(),proof[4].clone(),
+            proof[5].clone(),format!("rpc:{}",proof[8]));
         members.push((key,source,proof));
     }
     if members.is_empty() {
         no_unsettled_managed_version_change(db,driver)?;
         return Ok(QualifiedVersionAction{source_hex:String::new(),source_digest:String::new(),
-            pairs_hex:String::new(),pairs_digest:String::new(),units:Vec::new(),
+            pairs_hex:String::new(),pairs_digest:String::new(),units:Vec::new(),stdin:Vec::new(),
             global_operations:Vec::new(),global_native:Vec::new()});
     }
     members.sort_by(|a,b|a.0.cmp(&b.0));
@@ -931,7 +1627,88 @@ fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     let pair_bytes=frame(&pair_parts);
     Ok(QualifiedVersionAction{source_hex:hex(&source_bytes),source_digest:content_hash(&source_bytes),
         pairs_hex:hex(&pair_bytes),pairs_digest:content_hash(&pair_bytes),
-        units,global_operations,global_native})
+        units,stdin,global_operations,global_native})
+}
+
+fn strict_own_probe(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
+    action:&ActionRecord,live:Option<&NativeStopProof>)->Result<(),ManagedCliError>{
+    let prefix=format!("managed-probe-{driver}-{}-",
+        &sha256_hex(action.request_id.as_bytes())[..40]);
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT operation_id,ticket,custodian_nonce,pid,creation_time_100ns,
+         image_path,binary_digest_sha256,profile_id,domain_id,generation,state,
+         COALESCE(stop_proof_hash,''),stop_proof_hash IS NULL
+         FROM main.gogoke_coordination_process_custody WHERE operation_id GLOB ?1")?;
+    q.bind_text(1,&format!("{prefix}*"))?;
+    let mut rows=Vec::new();
+    while q.step_row()? {
+        rows.push((0..13).map(|n|q.column_text(n))
+            .collect::<std::result::Result<Vec<_>,_>>()?);
+    }
+    let expects=matches!(action.phase,managed_version_action::ActionPhase::Probed |
+        managed_version_action::ActionPhase::Consumed) ||
+        action.phase==managed_version_action::ActionPhase::Probing && live.is_some();
+    if rows.len()!=if expects {1}else{0} {return Err(ManagedCliError::Busy)}
+    if !expects {return Ok(())}
+    let row=&rows[0];
+    let attempt=row[0].strip_prefix(&prefix).ok_or(ManagedCliError::Busy)?;
+    let number=attempt.parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
+    let pid=row[3].parse::<u32>().map_err(|_|ManagedCliError::Busy)?;
+    let created=row[4].parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
+    let generation=row[9].parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
+    if number==0 || attempt!=number.to_string() || pid==0 || created==0 ||
+        generation==0 || row[3]!=pid.to_string() || row[4]!=created.to_string() ||
+        row[9]!=generation.to_string() || row[1].is_empty() || row[2].is_empty() ||
+        row[7]!=format!("managed-cli-{driver}") || row[8]!="global" ||
+        row[10]!="STOPPED" || row[12]!="0" ||
+        !row[11].starts_with("sha256:") || row[11].len()!=71 ||
+        row[6]!=format!("sha256:{}",action.target_image_sha256) {
+        return Err(ManagedCliError::Busy)
+    }
+    let pin=read_official_cli_version(driver,&action.target_version)
+        .ok_or(ManagedCliError::Busy)?;
+    if pin.image_sha256!=action.target_image_sha256 {return Err(ManagedCliError::Busy)}
+    let staged=inspect_staged_official_cli_version(root,driver,pin.version,
+        &action.stage_name)?;
+    if std::fs::canonicalize(&staged)?!=
+        std::fs::canonicalize(std::path::Path::new(&row[5]))? {
+        return Err(ManagedCliError::IdentityChanged)
+    }
+    if let Some(proof)=live {
+        if action.phase!=managed_version_action::ActionPhase::Probing ||
+            !proof.parent_exited || !proof.writer_fence_verified ||
+            proof.active_job_processes!=Some(0) || !proof.errors.is_empty() ||
+            proof.exit_code!=Some(0) || proof.deadline_exceeded ||
+            proof.ticket.opaque()!=row[1] || proof.custodian_nonce!=row[2] ||
+            proof.identity.pid!=pid || proof.identity.creation_time_100ns!=created ||
+            proof.identity.image_path.to_string_lossy().as_ref()!=row[5].as_str() ||
+            proof.binding.profile_id!=row[7] || proof.binding.domain_id!=row[8] ||
+            proof.binding.generation!=row[9] ||
+            proof.binding.binary_digest_sha256!=row[6] ||
+            proof.proof_hash()!=row[11] {return Err(ManagedCliError::Busy)}
+    } else {
+        let witness=managed_version_action::bound_probe_witness(action)
+            .map_err(|error|ManagedCliError::Observation(format!(
+                "strict original own probe witness: {error:?}")))?;
+        if witness.operation_id!=row[0] || witness.ticket!=row[1] ||
+            witness.nonce!=row[2] || witness.pid!=row[3] ||
+            witness.creation!=row[4] || witness.image!=row[5] ||
+            witness.digest!=row[6] || witness.profile!=row[7] ||
+            witness.domain!=row[8] || witness.generation!=row[9] ||
+            witness.proof_hash!=row[11] {return Err(ManagedCliError::Busy)}
+    }
+    Ok(())
+}
+
+fn strict_scope(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
+    action:Option<&ActionRecord>,live:Option<&NativeStopProof>)
+    ->Result<QualifiedVersionAction,ManagedCliError>{
+    no_unsettled_managed_version_change(db,driver)?;
+    no_unattributed_managed_image_c(db,root,driver,&[],&[],&[],true)?;
+    if let Some(action)=action {strict_own_probe(db,root,driver,action,live)?}
+    Ok(QualifiedVersionAction{source_hex:String::new(),source_digest:String::new(),
+        pairs_hex:String::new(),pairs_digest:String::new(),units:Vec::new(),stdin:Vec::new(),
+        global_operations:Vec::new(),global_native:Vec::new()})
 }
 
 pub(super) fn require_saved_action(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
@@ -946,7 +1723,10 @@ pub(super) fn require_saved_action(db:&VerifiedDatabaseConnection<'_>,root:&Root
 /// storing ActionBegin. A strictly clear driver remains strict.
 pub(crate) fn observe_version_scope(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
     driver:&str)->Result<QualifiedVersionAction,ManagedCliError>{
-    cold(db,root,driver,None,None)
+    match strict_scope(db,root,driver,None,None) {
+        Ok(view)=>Ok(view),Err(ManagedCliError::Busy)=>cold(db,root,driver,None,None),
+        Err(error)=>Err(error),
+    }
 }
 
 /// Rebuild from current producer rows. The caller separately checks the live
@@ -1001,11 +1781,7 @@ fn revalidate_version_action_at_fingerprints_inner(
         return Err(ManagedCliError::Busy);
     }
     let view=match action.mode.as_str(){
-        "STRICT"=>{
-            let view=cold(db,root,driver,Some(action),live_probe)?;
-            if view.is_cold(){return Err(ManagedCliError::Busy)}
-            view
-        },
+        "STRICT"=>strict_scope(db,root,driver,Some(action),live_probe)?,
         "COLD" if action.proof_family=="family-v1"=>
             cold(db,root,driver,Some(action),live_probe)?,
         _=>return Err(ManagedCliError::Busy),

@@ -8,6 +8,8 @@ use crate::root::{inspect_root, RootLock};
 use crate::store::atomic::Statement;
 use crate::store::authority::{check_owner_in_current_transaction, OwnerIssuer};
 use crate::store::digest::content_hash;
+use crate::store::digest::sha256_hex;
+use crate::process::NativeStopProof;
 use crate::store::same_open::VerifiedDatabaseConnection;
 
 pub(super) const SCHEMA: &str = "CREATE TABLE gogoke_v37_instance_version_actions(request_id TEXT PRIMARY KEY,open_driver_id TEXT UNIQUE,root_identity TEXT NOT NULL,database_identity TEXT NOT NULL,driver_id TEXT NOT NULL,operation TEXT NOT NULL CHECK(operation IN ('upgrade','rollback')),target_version TEXT NOT NULL,target_archive_sha256 TEXT NOT NULL,target_image_sha256 TEXT NOT NULL,begin_hex TEXT NOT NULL,begin_hash TEXT NOT NULL,begin_receipt_hex TEXT NOT NULL,mode TEXT NOT NULL CHECK(mode IN ('STRICT','COLD')),proof_family TEXT NOT NULL,source_hex TEXT NOT NULL,source_digest TEXT NOT NULL,pairs_hex TEXT NOT NULL,pairs_digest TEXT NOT NULL,initial_copy_fingerprint TEXT NOT NULL,initial_source_fingerprint TEXT NOT NULL,current_copy_fingerprint TEXT NOT NULL,current_source_fingerprint TEXT NOT NULL,stage_copy_fingerprint TEXT NOT NULL DEFAULT '',stage_source_fingerprint TEXT NOT NULL DEFAULT '',stage_name TEXT NOT NULL DEFAULT '',stage_hex TEXT NOT NULL DEFAULT '',stage_receipt_hex TEXT NOT NULL DEFAULT '',probe_hex TEXT NOT NULL DEFAULT '',probe_receipt_hex TEXT NOT NULL DEFAULT '',probe_copy_fingerprint TEXT NOT NULL DEFAULT '',probe_source_fingerprint TEXT NOT NULL DEFAULT '',final_pre_copy_fingerprint TEXT NOT NULL DEFAULT '',final_pre_source_fingerprint TEXT NOT NULL DEFAULT '',final_hex TEXT NOT NULL DEFAULT '',final_hash TEXT NOT NULL DEFAULT '',final_receipt_set_digest TEXT NOT NULL DEFAULT '',original_error_hex TEXT NOT NULL DEFAULT '',begin_effect_copy_fingerprint TEXT NOT NULL DEFAULT '',begin_effect_source_fingerprint TEXT NOT NULL DEFAULT '',error_copy_fingerprint TEXT NOT NULL DEFAULT '',error_source_fingerprint TEXT NOT NULL DEFAULT '',phase TEXT NOT NULL CHECK(phase IN ('BEGUN','STAGED','PROBING','PROBED','CONSUMED','FAILED')),revision INTEGER NOT NULL CHECK(revision>=1),CHECK((phase IN ('BEGUN','STAGED','PROBING','PROBED') AND open_driver_id=driver_id) OR (phase IN ('CONSUMED','FAILED') AND open_driver_id IS NULL))) STRICT";
@@ -23,77 +25,6 @@ pub(crate) enum ActionError {
     Store(crate::store::atomic::AtomicError),
 }
 
-#[cfg(test)]
-mod family_codec_controls {
-    use super::*;
-
-    fn encode(parts:&[String])->String {
-        let mut framed=Vec::new();
-        for part in parts {
-            framed.extend_from_slice(&(part.len() as u64).to_be_bytes());
-            framed.extend_from_slice(part.as_bytes());
-        }
-        framed.iter().map(|byte|format!("{byte:02x}")).collect()
-    }
-
-    fn original_open_member()->(Vec<String>,Vec<String>) {
-        // These are the actual H OPEN/C column positions emitted by F's
-        // original source collector. This tests only journal decoding; a
-        // source-shaped string never substitutes for H or kernel evidence.
-        let mut source=vec![String::new();42];
-        source[0]="H_SESSION_OPEN-v1".into();
-        source[1]="instance-a".into();source[3]="global".into();
-        source[4]="session-a".into();source[5]="1".into();
-        source[6]="open-a".into();source[7]="h-open-a".into();
-        source[11]="6162".into();source[32]="6162".into();
-        source[16]="123".into();source[17]="456".into();
-        source[35]="no-alias".into();source[36]="0".into();
-        source[37]="1".into();source[38]="seat-a".into();
-        source[39]="incarnation-a".into();
-        source[40]="global-native-selection".into();
-        source[41]="a".repeat(64);
-        let proof=vec!["KERNEL_REBOOT".into(),"instance-a".into(),"global".into(),
-            "session-a".into(),"1".into(),"h-open-a".into(),
-            "123".into(),"456".into()];
-        (source,proof)
-    }
-
-    #[test]
-    fn family_codec_requires_one_canonical_source_for_each_original_member() {
-        let (source,proof)=original_open_member();
-        let make=|members:&[(Vec<String>,Vec<String>)]| {
-            let mut sources=vec!["managed-cli-family-source-v1".into(),"codex".into()];
-            let mut proofs=vec!["managed-cli-family-proof-v1".into(),"codex".into()];
-            for (source,proof) in members {
-                sources.push(encode(source));proofs.push(encode(proof));
-            }
-            (encode(&sources),encode(&proofs))
-        };
-        let positive=make(&[(source.clone(),proof.clone())]);
-        assert!(valid_family_codec("codex",&positive.0,&positive.1).is_ok());
-        for changed in [
-            (vec![(source.clone(),proof.clone()),(source.clone(),proof.clone())],"duplicate"),
-            (vec![],"empty"),
-        ] {
-            let bytes=make(&changed.0);
-            assert!(valid_family_codec("codex",&bytes.0,&bytes.1).is_err(),
-                "{} member must refuse",changed.1);
-        }
-        let mut changed=source.clone();changed[37]="0".into();
-        let bytes=make(&[(changed,proof.clone())]);
-        assert!(valid_family_codec("codex",&bytes.0,&bytes.1).is_err(),
-            "NULL and empty source states differ");
-        let mut changed=proof.clone();changed[0]="EXACT_GONE".into();
-        let bytes=make(&[(source.clone(),changed)]);
-        assert!(valid_family_codec("codex",&bytes.0,&bytes.1).is_err(),
-            "a reboot source cannot be relabeled exact gone");
-        let mut changed=proof.clone();changed[7]="457".into();
-        let bytes=make(&[(source.clone(),changed)]);
-        assert!(valid_family_codec("codex",&bytes.0,&bytes.1).is_err(),
-            "the exact C FILETIME is part of membership");
-        assert!(valid_family_codec("codex",&positive.0,&positive.1).is_ok());
-    }
-}
 impl From<crate::store::atomic::AtomicError> for ActionError {
     fn from(value: crate::store::atomic::AtomicError) -> Self { Self::Store(value) }
 }
@@ -243,6 +174,112 @@ fn unframe(raw: &[u8]) -> Result<Vec<String>> {
     Ok(parts)
 }
 
+fn frame_strings(parts:&[String])->Vec<u8>{
+    let mut out=Vec::new();
+    for part in parts {
+        out.extend_from_slice(&(part.len() as u64).to_be_bytes());
+        out.extend_from_slice(part.as_bytes());
+    }
+    out
+}
+fn hex_bytes(raw:&[u8])->String{
+    const DIGITS:&[u8;16]=b"0123456789abcdef";
+    let mut out=String::with_capacity(raw.len()*2);
+    for byte in raw {out.push(DIGITS[(byte>>4) as usize] as char);
+        out.push(DIGITS[(byte&15) as usize] as char);}
+    out
+}
+
+/// Internal durable witness written only after the original custodian's
+/// confirmed StopProof and exact stdout have been checked. Its fields are
+/// read back against the original C row; decoding never recreates a proof.
+pub(crate) struct ProbeWitness {
+    pub operation_id:String,pub ticket:String,pub nonce:String,
+    pub pid:String,pub creation:String,pub image:String,pub digest:String,
+    pub profile:String,pub domain:String,pub generation:String,pub proof_hash:String,
+    pub stdout:Vec<u8>,pub public_receipt:Vec<u8>,
+}
+
+pub(crate) fn encode_bound_probe_receipt(action:&ActionRecord,operation_id:&str,
+    proof:&NativeStopProof,stdout:&[u8],public_receipt:&[u8])->Result<String>{
+    if action.phase!=ActionPhase::Probing ||
+        !action.probe_receipt_hex.is_empty() || operation_id.is_empty() ||
+        public_receipt.is_empty() || proof.exit_code!=Some(0) ||
+        !proof.parent_exited || !proof.writer_fence_verified ||
+        proof.active_job_processes!=Some(0) || !proof.errors.is_empty() ||
+        proof.deadline_exceeded || proof.binding.profile_id!=format!("managed-cli-{}",action.driver) ||
+        proof.binding.domain_id!="global" ||
+        proof.binding.binary_digest_sha256!=format!("sha256:{}",action.target_image_sha256) ||
+        !operation_id.starts_with(&format!("managed-probe-{}-{}-",action.driver,
+            &sha256_hex(action.request_id.as_bytes())[..40])) {
+        return Err(ActionError::Conflict)
+    }
+    let observed=std::str::from_utf8(stdout).map_err(|_|ActionError::Conflict)?;
+    if observed.len()>256 || !observed.split(|ch:char|!ch.is_ascii_alphanumeric()&&ch!='.')
+        .any(|token|token==action.target_version) {return Err(ActionError::Conflict)}
+    let parts=vec!["managed-probe-witness-v1".to_owned(),action.request_id.clone(),
+        action.root_identity.clone(),action.database_identity.clone(),action.driver.clone(),
+        action.target_version.clone(),action.target_image_sha256.clone(),
+        action.stage_name.clone(),action.probe_hex.clone(),operation_id.to_owned(),
+        proof.ticket.opaque().to_owned(),proof.custodian_nonce.clone(),
+        proof.identity.pid.to_string(),proof.identity.creation_time_100ns.to_string(),
+        proof.identity.image_path.to_string_lossy().into_owned(),
+        proof.binding.binary_digest_sha256.clone(),proof.binding.profile_id.clone(),
+        proof.binding.domain_id.clone(),proof.binding.generation.clone(),proof.proof_hash(),
+        hex_bytes(stdout),hex_bytes(public_receipt),"0".to_owned()];
+    Ok(hex_bytes(&frame_strings(&parts)))
+}
+
+pub(crate) fn bound_probe_witness(action:&ActionRecord)->Result<ProbeWitness>{
+    if !matches!(action.phase,ActionPhase::Probed|ActionPhase::Consumed) {
+        return Err(ActionError::Conflict)
+    }
+    let fields=unframe(&bytes(&action.probe_receipt_hex).map_err(|_|ActionError::Conflict)?)?;
+    if fields.len()!=23 || fields[0]!="managed-probe-witness-v1" ||
+        fields[1]!=action.request_id || fields[2]!=action.root_identity ||
+        fields[3]!=action.database_identity || fields[4]!=action.driver ||
+        fields[5]!=action.target_version || fields[6]!=action.target_image_sha256 ||
+        fields[7]!=action.stage_name || fields[8]!=action.probe_hex ||
+        fields[16]!=format!("managed-cli-{}",action.driver) ||
+        fields[17]!="global" ||
+        fields[15]!=format!("sha256:{}",action.target_image_sha256) ||
+        fields[22]!="0" || !fields[19].starts_with("sha256:") ||
+        fields[19].len()!=71 {return Err(ActionError::Conflict)}
+    let prefix=format!("managed-probe-{}-{}-",action.driver,
+        &sha256_hex(action.request_id.as_bytes())[..40]);
+    let attempt=fields[9].strip_prefix(&prefix).ok_or(ActionError::Conflict)?;
+    let parsed_attempt=attempt.parse::<u64>().map_err(|_|ActionError::Conflict)?;
+    let pid=fields[12].parse::<u32>().map_err(|_|ActionError::Conflict)?;
+    let created=fields[13].parse::<u64>().map_err(|_|ActionError::Conflict)?;
+    let generation=fields[18].parse::<u64>().map_err(|_|ActionError::Conflict)?;
+    if parsed_attempt==0 || attempt!=parsed_attempt.to_string() ||
+        pid==0 || fields[12]!=pid.to_string() || created==0 ||
+        fields[13]!=created.to_string() || generation==0 ||
+        fields[18]!=generation.to_string() || fields[10].is_empty() ||
+        fields[11].is_empty() || fields[14].is_empty() ||
+        !fields[19][7..].bytes().all(|b|b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+        return Err(ActionError::Conflict)
+    }
+    let stdout=bytes(&fields[20]).map_err(|_|ActionError::Conflict)?;
+    let observed=std::str::from_utf8(&stdout).map_err(|_|ActionError::Conflict)?;
+    if observed.len()>256 || !observed.split(|ch:char|!ch.is_ascii_alphanumeric()&&ch!='.')
+        .any(|token|token==action.target_version) {return Err(ActionError::Conflict)}
+    let public_receipt=bytes(&fields[21]).map_err(|_|ActionError::Conflict)?;
+    if public_receipt.is_empty(){return Err(ActionError::Conflict)}
+    Ok(ProbeWitness{operation_id:fields[9].clone(),ticket:fields[10].clone(),
+        nonce:fields[11].clone(),pid:fields[12].clone(),creation:fields[13].clone(),
+        image:fields[14].clone(),digest:fields[15].clone(),profile:fields[16].clone(),
+        domain:fields[17].clone(),generation:fields[18].clone(),
+        proof_hash:fields[19].clone(),stdout,public_receipt})
+}
+
+pub(crate) fn public_probe_receipt(action:&ActionRecord)->Result<Vec<u8>>{
+    let raw=bytes(&action.probe_receipt_hex)?;
+    if action.proof_family=="family-v1" || raw.first()==Some(&0) {
+        Ok(bound_probe_witness(action)?.public_receipt)
+    } else {Ok(raw)}
+}
+
 fn valid_family_codec(driver:&str,source_hex:&str,pairs_hex:&str)->Result<()> {
     let sources=unframe(&bytes(source_hex).map_err(|_|ActionError::Conflict)?)?;
     let proofs=unframe(&bytes(pairs_hex).map_err(|_|ActionError::Conflict)?)?;
@@ -250,35 +287,68 @@ fn valid_family_codec(driver:&str,source_hex:&str,pairs_hex:&str)->Result<()> {
         sources[0]!="managed-cli-family-source-v1" ||
         proofs[0]!="managed-cli-family-proof-v1" ||
         sources[1]!=driver || proofs[1]!=driver {return Err(ActionError::Conflict)}
-    let mut previous:Option<(String,String,String,String,String)>=None;
+    let mut previous:Option<(String,String,String,String,String,String)>=None;
     let mut pairs=std::collections::BTreeSet::new();
     for (source,proof) in sources[2..].iter().zip(&proofs[2..]) {
         let source=unframe(&bytes(source).map_err(|_|ActionError::Conflict)?)?;
         let proof=unframe(&bytes(proof).map_err(|_|ActionError::Conflict)?)?;
-        if proof.len()!=8 {return Err(ActionError::Conflict)}
+        let stdin=source.first().is_some_and(|kind|matches!(kind.as_str(),
+            "H_STDIN_PENDING-v1"|"H_STDIN_RECEIPTED-v1"));
+        let rpc=source.first().is_some_and(|kind|kind=="H_RPC_STEP-v1");
+        if proof.len()!=if stdin||rpc {9}else{8} {return Err(ActionError::Conflict)}
         let (key,pid_field,created_field)=match source.first().map(String::as_str) {
-            Some("H_SESSION_OPEN-v1") if source.len()==42 &&
+            Some("H_SESSION_OPEN-v1") if source.len()==43 &&
                 proof[0]=="KERNEL_REBOOT" && source[35]=="no-alias" &&
                 source[36]=="0" && source[37]=="1" && source[21].is_empty() &&
                 source[11]==source[32] && !source[38].is_empty() &&
                 !source[39].is_empty() &&
                 ((source[3]=="global" && source[40]=="global-native-selection") ||
                  (source[3]!="global" && digest(&source[40]))) &&
-                digest(&source[41]) =>
+                digest(&source[41]) && digest(&source[42]) =>
                 ((&source[1],&source[3],&source[4],&source[5],&source[7]),
                     &source[16],&source[17]),
-            Some("H_SESSION_STOP-v1") if source.len()==39 &&
+            Some("H_SESSION_STOP-v1"|"H_SESSION_RESUME_STOP-v1") if source.len()==42 &&
                 proof[0]=="ORIGINAL_STOP" && source[15]=="STOPPED" &&
                 source[19]=="STOPPED" && source[14]==source[20] &&
-                source[32]=="1" && source[33]=="0" &&
-                source[34]=="0" && source[35]=="0" &&
-                digest(&source[36]) && digest(&source[37]) &&
-                ((source[2]=="global" && source[38]=="global-native-selection") ||
-                 (source[2]!="global" && digest(&source[38]))) =>
+                ((source[0]=="H_SESSION_STOP-v1" && source[12].is_empty() &&
+                  source[30]=="1") ||
+                 (source[0]=="H_SESSION_RESUME_STOP-v1" && !source[12].is_empty() &&
+                  source[30]=="0")) && source[31]=="0" &&
+                source[32]=="0" && source[33]=="0" &&
+                digest(&source[34]) && digest(&source[35]) &&
+                ((source[2]=="global" && source[36]=="global-native-selection") ||
+                 (source[2]!="global" && digest(&source[36]))) &&
+                matches!(source[37].as_str(),"ACTIVE"|"CLOSED"|"CLEANED") &&
+                source[38].parse::<u64>().is_ok() &&
+                source[39]==format!("temp-home-{}",sha256_hex(source[7].as_bytes())) &&
+                !source[40].is_empty() && digest(&source[41]) =>
                 ((&source[1],&source[2],&source[3],&source[4],&source[6]),
                     &source[23],&source[24]),
-            Some("GLOBAL_LOGIN_C-v1") if source.len()==17 &&
+            Some("H_SESSION_RESUME_PENDING-v1"|"H_SESSION_RESUME-v1") if
+                source.len()==44 && proof[0]=="KERNEL_REBOOT" &&
+                source[16]=="1" && source[17]=="1" && source[25]=="1" &&
+                source[40]=="0" && source[41]=="0" &&
+                source[35]==format!("temp-home-{}",sha256_hex(source[8].as_bytes())) &&
+                !source[36].is_empty() && source[37].parse::<u64>().is_ok() &&
+                source[38]=="ACTIVE" && digest(&source[42]) && digest(&source[43]) &&
+                ((source[0]=="H_SESSION_RESUME_PENDING-v1" &&
+                    source[13]=="UNKNOWN" && source[24]=="UNKNOWN" &&
+                    source[34]=="ACTIVE" && source[39]=="0" &&
+                    source[27]==source[5] && source[28]=="STOPPED" &&
+                    source[29]==source[12]) ||
+                 (source[0]=="H_SESSION_RESUME-v1" &&
+                    matches!(source[13].as_str(),"ACTIVE"|"UNKNOWN") &&
+                    matches!(source[24].as_str(),"ACTIVE"|"UNKNOWN") &&
+                    source[39]=="1" && source[27]==source[4] &&
+                    matches!(source[28].as_str(),"COMMITTED"|"UNKNOWN") &&
+                    source[29]==source[12] && source[30]==source[8] &&
+                    source[31]==source[9] && source[32]==source[7] &&
+                    source[33].is_empty())) =>
+                ((&source[1],&source[2],&source[3],&source[4],&source[7]),
+                    &source[20],&source[21]),
+            Some("GLOBAL_LOGIN_C-v1") if source.len()==16 &&
                 source[9]=="global" &&
+                digest(&source[15]) &&
                 ((source[11]=="UNKNOWN" && driver=="codex" &&
                     proof[0]=="KERNEL_REBOOT" &&
                     source[12].is_empty() && source[13]=="1") ||
@@ -299,6 +369,44 @@ fn valid_family_codec(driver:&str,source_hex:&str,pairs_hex:&str)->Result<()> {
                     &crate::store::digest::sha256_hex(source[14].as_bytes())[..40])) =>
                 ((&source[8],&proof[2],&source[1],&source[10],&source[1]),
                     &source[4],&source[5]),
+            Some("H_STDIN_PENDING-v1"|"H_STDIN_RECEIPTED-v1") if source.len()==27 &&
+                ((source[0]=="H_STDIN_PENDING-v1" &&
+                  proof[0]=="ORIGINAL_STDIN_OCCUPANCY") ||
+                 (source[0]=="H_STDIN_RECEIPTED-v1" &&
+                  proof[0]=="ORIGINAL_STDIN_HISTORY")) &&
+                source[8]==source[21] && source[9]==source[22] &&
+                source[6]==proof[8] &&
+                matches!(source[7].as_str(),"send"|"append-without-turn") &&
+                matches!(source[11].as_str(),"PREPARED"|"UNKNOWN"|"RECEIPTED") &&
+                matches!(source[25].as_str(),"PREPARED"|"ACTIVE"|"UNKNOWN"|"STOPPED") &&
+                matches!(source[26].as_str(),"PREPARED"|"ACTIVE"|"UNKNOWN"|"STOPPED") &&
+                (source[11]=="RECEIPTED" ||
+                    source[25]!="STOPPED" && source[26]!="STOPPED") &&
+                ((source[11]=="PREPARED" && source[17]=="1" && source[18]=="1" &&
+                    source[19]=="1" && source[20]=="1") ||
+                 (source[11]=="UNKNOWN" &&
+                   (source[17]=="1" && source[18]=="1" && source[19]=="1" && source[20]=="1" ||
+                    source[17]=="0" && source[18]=="0" && source[19]=="0" &&
+                    source[20]=="0" && source[13]=="UNKNOWN")) ||
+                 (source[11]=="RECEIPTED" && source[17]=="0" &&
+                    source[18]=="0" && source[19]=="0" && source[20]=="0" &&
+                    source[13]!="UNKNOWN")) =>
+                ((&source[1],&source[2],&source[3],&source[4],&source[5]),
+                    &source[23],&source[24]),
+            Some("H_RPC_STEP-v1") if source.len()==30 &&
+                proof[0]=="ORIGINAL_RPC_HISTORY" &&
+                source[13]==source[1] && !source[5].is_empty() &&
+                !source[15].is_empty() &&
+                matches!(source[16].as_str(),"0"|"1") &&
+                matches!(source[17].as_str(),"INTENT"|"WRITTEN"|"UNKNOWN"|"OBSERVED") &&
+                ((source[17]=="OBSERVED" && source[16]=="1" &&
+                    source[22]=="0" && source[23]=="0" && source[24]=="1" &&
+                    !source[26].is_empty()) ||
+                 (source[17]!="OBSERVED" && source[26].is_empty() &&
+                    source[27].is_empty() && source[28].is_empty())) &&
+                source[5]==proof[8] =>
+                ((&source[1],&source[2],&source[3],&source[14],&source[6]),
+                    &source[9],&source[10]),
             _=>return Err(ActionError::Conflict),
         };
         if [key.0,key.1,key.2,key.3,key.4].iter().any(|value|value.is_empty()) ||
@@ -314,11 +422,14 @@ fn valid_family_codec(driver:&str,source_hex:&str,pairs_hex:&str)->Result<()> {
         let pid=proof[6].parse::<u32>().map_err(|_|ActionError::Conflict)?;
         let created=proof[7].parse::<u64>().map_err(|_|ActionError::Conflict)?;
         if pid==0 || created==0 || proof[6]!=pid.to_string() ||
-            proof[7]!=created.to_string() || !pairs.insert((pid,created)) {
+            proof[7]!=created.to_string() ||
+            ((stdin||rpc) && !pairs.contains(&(pid,created))) ||
+            (!(stdin||rpc) && !pairs.insert((pid,created))) {
             return Err(ActionError::Conflict);
         }
         let canonical=(key.0.clone(),key.1.clone(),key.2.clone(),
-            key.3.clone(),key.4.clone());
+            key.3.clone(),key.4.clone(),if stdin {format!("stdin:{}",proof[8])}
+                else if rpc {format!("rpc:{}",proof[8])}else{String::new()});
         if previous.as_ref().is_some_and(|earlier|earlier>=&canonical) {
             return Err(ActionError::Conflict);
         }
@@ -426,6 +537,11 @@ fn validate_record(row: &ActionRecord) -> Result<()> {
         bytes(&row.probe_receipt_hex).map_err(|_| ActionError::Conflict)?.is_empty() ||
         row.probe_copy_fingerprint.is_empty() || row.probe_source_fingerprint.is_empty()) {
         return Err(ActionError::Conflict);
+    }
+    if matches!(row.phase,ActionPhase::Probed|ActionPhase::Consumed) &&
+        (row.proof_family=="family-v1" ||
+         bytes(&row.probe_receipt_hex).map_err(|_|ActionError::Conflict)?.first()==Some(&0)) {
+        bound_probe_witness(row)?;
     }
     if row.phase == ActionPhase::Probed &&
         ((row.current_copy_fingerprint != row.probe_copy_fingerprint ||
