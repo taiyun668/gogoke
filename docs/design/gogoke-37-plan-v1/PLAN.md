@@ -560,3 +560,19 @@ Owner 指定补充直接并入 PR94，改完重新交 Claude 复核合并，不�
 测试共用 installed-temporary-home-lifecycle.mjs 与 product-cdp.mjs，并接 provider/visible 案例：每个原创建尝试在 dispatch 前归属本例，部分失败/UNKNOWN也保留；finally 沿合法原停止路径取证，再仅按本例原 createRequestId 请求关闭，保持原业务错误和独立收尾错误。完成前用共用闭库读回确认原 HOME 集合 CLOSED、其它 HOME/认证对象和十三项保护不变；缺证明或缺生产者归属为 CASE_TEARDOWN_INCOMPLETE，不能以关窗、skip 或预期业务拒绝作通过。未迁移的创建路径不得开启新案例；私有历史脚本不改写为新成功。产品桥及新共用调用器需在本授权生效后施工并按实际加载版本验证，当前未运行 HOME 关闭或正向换版。
 
 不物理删除 HOME/alias/worktree、不改凭据或系统权限、不强杀、不伪造 StopFact、不新增 Owner 登录/重启/手工安装触点。相同 PR 内更新 scope_digest、回执、三处固定 blob 和实际 Git LF MANIFEST；旧回执仍直接 supersede 当前 main 生效值，不把未合并 PR93/旧 PR94 作为已生效授权。受影响新 head 云检和 Claude 复核须重新完成。
+
+## 2026-10-14 后续：Codex M1 legacy SOURCE 单实例迁移（待 Claude 复核与授权合并）
+
+Owner 已明确允许准备 PR94 之后的后续授权 PR 并交独立 Claude 复核；本次许可不委派 merge 或执行，审定前继续拒绝，后续生效仍需另获授权的 main merge 与精确读回。本提案只覆盖公开符号 `LEGACY_CODEX_M1`：原 ProductDatabase 中唯一一条未 tombstone、disabled、Codex、SOURCE 整行缺失的 legacy 实例。实际实例 ID、HOME/FileID 与账号观察留在私有证据，不进入公开仓库。原生必须独立枚举并证明这类候选恰好一条；零条、多条、enabled、换 target 或 caller 自选替身都拒绝。
+
+先对真实原 schema/raw、APPLIED operation/native receipt、HOME/pin 和既有 replay 前置条件做只读三态判定：ELIGIBLE 仅考虑原请求精确 replay，本迁移拒绝；PROVEN_INELIGIBLE 必须由完整原记录正向证明哪个实际前置条件不适用，并另有原 legacy 注册完整性证明；UNKNOWN 一律拒绝。现实现没有独立 SOURCE-bind journal，不能用其缺失、SOURCE 缺行、旧名字/版本、APPLIED 标签或试跑 replay 失败推断 legacy，也不得为试探资格派发注册或写 SOURCE。给定摘要未含完整原注册 raw/receipt，实际 M1 分类仍 UNKNOWN。批准目标的原注册/HOME 锚点必须与新请求和原生解出的 journal 精确相符；当前唯一候选不等于同一原目标，锚点变动不重新选人。
+
+迁移资格要求原 Root/DB/HOME 的精确身份与当前物理 HOME FileID/marker/SID、原注册请求和回执、编译内官方 Codex 同 pin catalog、当前 stage 的 archive/image/executable/version 完整来源链，以及所有会影响该实例或共享 current-stage 选择的 claim、owner-binding、session/generation、H/C custody、alias、temporary HOME、pending operation、managed version action 与行 revision 的完整静止快照。未结执行只能用原 StopFact/StopProof，或 PR94 已授权的、覆盖完整原执行身份集合的 fresh typed native 精确消失/直接内核重启事实资格化；超时、宽限期、年龄、关窗、空 caller 集合、PID 单值或 ACL-only 记录均不算。任一来源、对象族、身份、查询或 revision 不完整即拒绝并保留原错误。
+
+写入必须由一个新的显式认证 Owner-layer migration request 发起，使用独立 requestId/raw 和独立 F/K-INSTANCE durable journal；它不是原注册 replay，也不是后续版本 requestId。journal 至少绑定新请求、唯一 native-selected target、原注册 raw/receipt、Root/DB/HOME 身份、写前 SOURCE 缺行指纹、同 pin stage/包来源链、完整静止事实与所有 CAS revision、phase/result/receipt 及写后 SOURCE 指纹。相同 ID/bytes 只读回或对账原结果；换 bytes/target、新 ID 重试、未结或既有 APPLIED migration 一律拒绝；COMMIT unknown 只用同一 journal 与 SOURCE 原子结果对账。
+
+唯一允许的数据效果是在原 verified ProductDatabase/RootLock/OwnerIssuer 事务中，原子写独立 migration journal/receipt 和一条此前不存在的 `gogoke_v37_instance_program_sources`。SOURCE 仍写 MANAGED、当前官方 stage、原 instance 同 pin digest/version、原 home identity 和原 APPLIED registration request ID；独立 migration journal 才说明它是后来由新 Owner 意图创建，任何读回不得声称历史注册原本就是 MANAGED。不得更新或删除既有 SOURCE，不改 instance/profile enabled/tombstone/login、copy state、版本、HOME、credential、alias、H/C、claim、原 operation/receipt 或旧 UNKNOWN。
+
+现有受控施工源的 `program_source.rs::migrate_quiescent_legacy_instances` 和 `v37_managed_cli.rs::migrate_managed_cli` 只作规划来源，当前批量/直接写 SOURCE 的形状不满足独立 Owner request/journal 和唯一 disabled candidate 契约，不能因本提案合并就用于该案例。施工仍限 F 的 `store/instance/` 与已列共享 `v37_managed_cli.rs`；允许在既有 authenticated USER managed-cli schema/桥内新增一个精确字段的严格迁移 command arm，把独立 requestId/raw 与原目标锚点交给 F journal，旧四字段 migrate 帧不能隐式获得该效果。H 只提供既有受限 typed native facts；新顶层入口/transport、新 writer、未列 shared path、UI/权限或第三证据族均先返回 Controller。
+
+完整契约、验证负例和停止点见 [LEGACY_SOURCE_MIGRATION.md](LEGACY_SOURCE_MIGRATION.md)。本 PR 只改变授权范围，不实现或执行迁移；未跑 native/云端/真机均为 NOT_RUN。即使以后 SOURCE migration APPLIED，原 version begin/stage/probe/switch、SOURCE/CAS、COLD/Busy、credential、其它实例与历史阻断仍全部执行，不承诺 preparedReplacement 或 F.2 通过。
