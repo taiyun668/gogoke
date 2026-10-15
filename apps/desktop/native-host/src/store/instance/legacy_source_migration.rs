@@ -491,7 +491,7 @@ fn qualified_executions(db: &VerifiedDatabaseConnection<'_>, evidence: &mut Vec<
             let created = c[4].parse::<u64>().map_err(|error| fail("global original FILETIME", error))?;
             if pid == 0 || created == 0 || c[3] != pid.to_string() || c[4] != created.to_string()
                 || (c[10] == "UNKNOWN" && pairs.contains(&(pid, created))) { return Err(denied()); }
-            if c[10] == "UNKNOWN" { pairs.push((pid, created)); }
+            pairs.push((pid, created));
             for field in c { frame(&mut source, field.as_bytes()); }
         }
         frame(evidence, sha256_hex(&source).as_bytes());
