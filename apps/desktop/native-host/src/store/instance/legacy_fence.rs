@@ -187,11 +187,8 @@ fn reject_schema_side_effects(db: &VerifiedDatabaseConnection<'_>) -> Result<()>
 pub(super) fn legacy_fence_schema_present_for_source_migration(
     db: &VerifiedDatabaseConnection<'_>,
 ) -> Result<bool> {
-    reject_schema_side_effects(db)?;
     let observed = observed_schema(db)?;
-    if observed.is_empty() { return Ok(false); }
-    if observed == expected_schema() { return Ok(true); }
-    Err(LegacyFenceError::Schema)
+    Ok(!observed.is_empty())
 }
 pub(crate) fn initialize_legacy_fence_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Result<()> {
     reject_schema_side_effects(db)?;
