@@ -1205,15 +1205,16 @@ mod tests {
             let reserve_raw=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"admission-reserve","requestId":"reserveA","targetId":"sessionA","domainId":"global","expectedRevision":"0","payload":{}}"#;
             let preparation=sha256_hex(b"global\nreserveA");
             let preparation_id=format!("homeprep-{}",&preparation[..40]);
-            super::super::temporary::create_temporary_home(&mut db,root,&profile,
-                &super::super::temporary::CreateTemporaryHome {request_id:&preparation_id,
-                    request_bytes:reserve_raw,home_id:&home_id,instance_id:"oldA",
-                    domain_id:"global",kind:super::super::temporary::TemporaryKind::Session,
-                    owner_id:"sessionA",generation:"1"}).unwrap();
             db.execute("BEGIN IMMEDIATE").unwrap();
             crate::store::session_transport::bind_owner_in_transaction(&mut db,
                 &crate::store::session_transport::OwnerBinding {binding_id:&binding_id,
                     instance_id:"oldA",domain_id:"global",kind:"SESSION",
+                    owner_id:"sessionA",generation:"1"}).unwrap();
+            db.execute("COMMIT").unwrap();
+            super::super::temporary::create_temporary_home(&mut db,root,&profile,
+                &super::super::temporary::CreateTemporaryHome {request_id:&preparation_id,
+                    request_bytes:reserve_raw,home_id:&home_id,instance_id:"oldA",
+                    domain_id:"global",kind:super::super::temporary::TemporaryKind::Session,
                     owner_id:"sessionA",generation:"1"}).unwrap();
             let selection=crate::store::session_transport::session_binding::SessionBinding {
                 domain_id:"global".into(),session_id:"sessionA".into(),
@@ -1221,17 +1222,16 @@ mod tests {
                 seat_authorization_generation:1,selected_instance_id:"oldA".into(),
                 provenance:crate::store::session_transport::session_binding::Provenance::NativeV2,
             };
-            crate::store::session_transport::session_binding::select_native_in_transaction(
-                &db,&selection).unwrap();
-            crate::store::session_transport::session_binding::insert_native_in_transaction(
-                &db,&selection).unwrap();
-            db.execute("COMMIT").unwrap();
             let reserve=crate::store::session_transport::AdmissionRequest {domain_id:"global",
                 session_id:"sessionA",request_id:"reserveA",raw_bytes:reserve_raw,
                 instance_id:"oldA",home_id:&home_id,generation:"1",expected_revision:0};
             assert!(matches!(crate::store::session_transport::reserve_admission(&mut db,&reserve,
-                |_|Ok(crate::store::session_transport::TrustedLimits {
-                    project_parallel:4,instance_concurrency:4})).unwrap(),
+                |db|{
+                    crate::store::session_transport::session_binding::select_native_in_transaction(
+                        db,&selection).map_err(crate::store::session_transport::AdmissionError::Relationship)?;
+                    Ok(crate::store::session_transport::TrustedLimits {
+                        project_parallel:4,instance_concurrency:4})
+                }).unwrap(),
                 crate::store::session_transport::AdmissionResult::Applied(1)));
             let commit_raw=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"admission-commit","requestId":"commitA","targetId":"sessionA","domainId":"global","expectedRevision":"1","payload":{}}"#;
             let commit=crate::store::session_transport::AdmissionRequest {domain_id:"global",
@@ -1266,6 +1266,16 @@ mod tests {
                 &mut db,"global","sessionA",&operation).unwrap();
             crate::store::session_transport::record_initial(&db,"global","sessionA","openA",
                 &operation).unwrap();
+            crate::store::ledger::register_session(&mut db,
+                &crate::store::ledger::SessionRegistration {domain_id:"global".into(),
+                    seat_id:"seatA".into(),session_id:"sessionA".into(),
+                    purpose:crate::store::ledger::SessionPurpose::Secretary,side_id:None}).unwrap();
+            // The production LaunchEvidence guard owns this exact point. This
+            // fixture cannot construct that private witness, so it calls the
+            // same production writer only after its COMMITTED claim, PREPARED
+            // C/H episode, pending selection and A registration all exist.
+            crate::store::session_transport::session_binding::insert_native_in_transaction(
+                &db,&selection).unwrap();
             db.execute("COMMIT").unwrap();
             let open_rpc_id=crate::store::session_transport::codex_rpc::RpcId::client(17).unwrap();
             let open_rpc_command=crate::store::session_transport::codex_rpc::Command::ThreadStartSecretaryTools {
@@ -1285,8 +1295,10 @@ mod tests {
                 &operation,"open-epoch","1").unwrap();
             crate::store::session_transport::rpc_journal::complete_response(&mut db,&owner,
                 &open_step,&open_frame,&open_source.key).unwrap();
+            db.execute("BEGIN IMMEDIATE").unwrap();
             db.execute("UPDATE main.gogoke_v37_h_operation SET status='APPLIED',revision=3 WHERE domain_id='global' AND request_id='openA' AND status='UNKNOWN' AND previous_revision=2 AND revision=2").unwrap();
             crate::store::session_transport::mark_active(&db,&operation).unwrap();
+            db.execute("COMMIT").unwrap();
             let native_stop=custodian.stop(&prepared.ticket,crate::process::StopBudgets::production(),
                 ||Ok(())).unwrap();
             let native_stop_revision=crate::store::authority::mark_process_stopped(
@@ -1317,17 +1329,17 @@ mod tests {
                 &format!("Gogoke37.Session.{resume_suffix}")).unwrap();
             let resume_preparation=sha256_hex(b"global\nresumeB");
             let resume_home_request=format!("homeprep-{}",&resume_preparation[..40]);
-            super::super::temporary::create_temporary_home(&mut db,root,&resume_profile,
-                &super::super::temporary::CreateTemporaryHome {request_id:&resume_home_request,
-                    request_bytes:resume_raw,home_id:&resume_home,instance_id:"oldA",
-                    domain_id:"global",kind:super::super::temporary::TemporaryKind::Session,
-                    owner_id:"sessionA",generation:"2"}).unwrap();
             db.execute("BEGIN IMMEDIATE").unwrap();
             crate::store::session_transport::bind_owner_in_transaction(&mut db,
                 &crate::store::session_transport::OwnerBinding {binding_id:&resume_binding,
                     instance_id:"oldA",domain_id:"global",kind:"SESSION",
                     owner_id:"sessionA",generation:"2"}).unwrap();
             db.execute("COMMIT").unwrap();
+            super::super::temporary::create_temporary_home(&mut db,root,&resume_profile,
+                &super::super::temporary::CreateTemporaryHome {request_id:&resume_home_request,
+                    request_bytes:resume_raw,home_id:&resume_home,instance_id:"oldA",
+                    domain_id:"global",kind:super::super::temporary::TemporaryKind::Session,
+                    owner_id:"sessionA",generation:"2"}).unwrap();
             crate::store::session_transport::begin_resume(&db,"global","sessionA","resumeB",
                 resume_raw,"1","2",3,&resume_home,&resume_binding).unwrap();
             let response_file=root.canonical_root().canonical_path.join("resume-response.jsonl");
