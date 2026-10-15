@@ -24,6 +24,8 @@ pub(crate) struct LegacySourceRequest<'a> {
     pub(crate) original_fingerprint: &'a str,
     pub(crate) original_receipt_hex: &'a str,
     pub(crate) original_home_identity: &'a str,
+    pub(crate) expected_root_identity: &'a str,
+    pub(crate) expected_database_identity: &'a str,
 }
 
 pub(crate) struct LegacySourceResult {
@@ -110,7 +112,9 @@ fn valid_request(input: &LegacySourceRequest<'_>) -> Result<()> {
         input.original_fingerprint.is_empty() || input.original_fingerprint.len() % 2 != 0 ||
         !input.original_fingerprint.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) ||
         input.original_receipt_hex.len() > 1024 || unhex(input.original_receipt_hex).is_err() ||
-        input.original_home_identity.is_empty() || input.original_home_identity.len() > 256 {
+        input.original_home_identity.is_empty() || input.original_home_identity.len() > 256 ||
+        input.expected_root_identity.is_empty() || input.expected_root_identity.len() > 128 ||
+        input.expected_database_identity.is_empty() || input.expected_database_identity.len() > 128 {
         return Err(denied());
     }
     Ok(())
@@ -200,7 +204,18 @@ fn same_intent(db: &VerifiedDatabaseConnection<'_>, input: &LegacySourceRequest<
     journal.original_fingerprint == input.original_fingerprint &&
     journal.original_receipt_hex == input.original_receipt_hex &&
     journal.original_home == input.original_home_identity &&
+    journal.root == input.expected_root_identity &&
+    journal.database == input.expected_database_identity &&
     journal.root == db.root_identity().opaque() && journal.database == db.identity().opaque()
+}
+fn exact_physical_authority(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
+    input: &LegacySourceRequest<'_>) -> Result<()> {
+    if db.root_identity() != &root.canonical_root().identity ||
+        input.expected_root_identity != db.root_identity().opaque() ||
+        input.expected_database_identity != db.identity().opaque() {
+        return Err(denied());
+    }
+    Ok(())
 }
 fn applied_readback(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
     input: &LegacySourceRequest<'_>, journal: &Journal,
@@ -729,6 +744,7 @@ fn qualified_unfenced_legacy_family(
 fn qualify(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
     input: &LegacySourceRequest<'_>) -> Result<Qualification> {
     valid_request(input)?;
+    exact_physical_authority(db, root, input)?;
     let legacy_fence_schema_present =
         legacy_fence::legacy_fence_schema_present_for_source_migration(db)
             .map_err(|error| fail("legacy ACL schema", error))?;
@@ -917,6 +933,7 @@ pub(crate) fn migrate_legacy_codex_source(db: &mut VerifiedDatabaseConnection<'_
     root: &RootLock, owner: &OwnerIssuer, input: &LegacySourceRequest<'_>,
     applied_receipt: &[u8]) -> Result<LegacySourceResult> {
     valid_request(input)?;
+    exact_physical_authority(db, root, input)?;
     if let Some(prior) = read_journal(db, input.request_id)? {
         if !same_intent(db, input, &prior) { return Err(denied()); }
         return applied_readback(db, root, input, &prior, applied_receipt);
@@ -1182,10 +1199,14 @@ mod tests {
     fn preparing_is_durable_refusal_and_applied_without_source_is_not_a_receipt() {
         fixture(|root, mut db| {
             let owner = crate::store::authority::initialize_profile(&mut db, root).unwrap();
-            let raw = br#"{"schema":"gogoke.37.managed-cli.v1","command":"migrate-legacy-codex-source","driverId":"codex","requestId":"newA","targetId":"oldA","originalRequestId":"registerA","originalRequestFingerprint":"abcd","originalNativeReceiptHex":"686f6d65","originalHomeIdentity":"home"}"#;
+            let expected_root = db.root_identity().opaque();
+            let expected_database = db.identity().opaque();
+            let raw_frame = format!(r#"{{"schema":"gogoke.37.managed-cli.v1","command":"migrate-legacy-codex-source","driverId":"codex","requestId":"newA","targetId":"oldA","originalRequestId":"registerA","originalRequestFingerprint":"abcd","originalNativeReceiptHex":"686f6d65","originalHomeIdentity":"home","expectedRootIdentity":"{expected_root}","expectedDatabaseIdentity":"{expected_database}"}}"#);
+            let raw = raw_frame.as_bytes();
             let input = LegacySourceRequest { raw, request_id:"newA", target_id:"oldA",
                 original_request_id:"registerA", original_fingerprint:"abcd",
-                original_receipt_hex:"686f6d65", original_home_identity:"home" };
+                original_receipt_hex:"686f6d65", original_home_identity:"home",
+                expected_root_identity:&expected_root, expected_database_identity:&expected_database };
             let insert = Statement::prepare(db.as_ptr(),
                 "INSERT INTO main.gogoke_v37_instance_legacy_source_migrations(request_id,target_id,raw_hex,raw_sha256,original_request_id,original_fingerprint,original_receipt_hex,original_home_identity,root_identity,database_identity,qualification_digest,phase) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'digest','PREPARING')").unwrap();
             for (index, value) in [input.request_id,input.target_id,&hex(raw),&sha256_hex(raw),
@@ -1208,8 +1229,28 @@ mod tests {
                 target_id:input.target_id, original_request_id:input.original_request_id,
                 original_fingerprint:input.original_fingerprint,
                 original_receipt_hex:input.original_receipt_hex,
-                original_home_identity:input.original_home_identity };
+                original_home_identity:input.original_home_identity,
+                expected_root_identity:input.expected_root_identity,
+                expected_database_identity:input.expected_database_identity };
             assert!(!same_intent(&db, &changed, &prior));
+            let changed_frame = raw_frame.replace(
+                &format!("\"expectedDatabaseIdentity\":\"{expected_database}\""),
+                "\"expectedDatabaseIdentity\":\"wrong-database\"");
+            assert_ne!(changed_frame.as_bytes(), raw);
+            let changed_anchor = LegacySourceRequest { raw: changed_frame.as_bytes(),
+                request_id:input.request_id, target_id:input.target_id,
+                original_request_id:input.original_request_id,
+                original_fingerprint:input.original_fingerprint,
+                original_receipt_hex:input.original_receipt_hex,
+                original_home_identity:input.original_home_identity,
+                expected_root_identity:input.expected_root_identity,
+                expected_database_identity:"wrong-database" };
+            assert_ne!(prior.raw_hex, hex(changed_anchor.raw),
+                "the same request ID cannot reuse its original raw fingerprint after an anchor change");
+            assert!(!same_intent(&db, &changed_anchor, &prior),
+                "changing an expected anchor under the same ID changes the original raw intent");
+            assert!(migrate_legacy_codex_source(&mut db, root, &owner,
+                &changed_anchor, b"receipt").is_err());
             db.execute("UPDATE main.gogoke_v37_instance_legacy_source_migrations SET phase='APPLIED',source_fingerprint='fake',receipt_hex='7b7d' WHERE request_id='newA'").unwrap();
             let corrupted = read_journal(&db, "newA").unwrap().unwrap();
             assert!(applied_readback(&db, root, &input, &corrupted, b"{}").is_err());
@@ -1236,11 +1277,15 @@ mod tests {
         fixture(|root, mut db| {
             let home = super::super::home::prepare_persistent_home(root, "oldA").unwrap();
             let identity = home.identity.opaque();
-            let raw = b"exact OWNER frame";
+            let expected_root = db.root_identity().opaque();
+            let expected_database = db.identity().opaque();
+            let raw_frame = format!(r#"{{"schema":"gogoke.37.managed-cli.v1","command":"migrate-legacy-codex-source","driverId":"codex","requestId":"newA","targetId":"oldA","originalRequestId":"registerA","originalRequestFingerprint":"abcd","originalNativeReceiptHex":"686f6d65","originalHomeIdentity":"{identity}","expectedRootIdentity":"{expected_root}","expectedDatabaseIdentity":"{expected_database}"}}"#);
+            let raw = raw_frame.as_bytes();
             let receipt = b"exact original APPLIED receipt";
             let input = LegacySourceRequest { raw, request_id:"newA", target_id:"oldA",
                 original_request_id:"registerA", original_fingerprint:"abcd",
-                original_receipt_hex:"686f6d65", original_home_identity:&identity };
+                original_receipt_hex:"686f6d65", original_home_identity:&identity,
+                expected_root_identity:&expected_root, expected_database_identity:&expected_database };
             let instance = Statement::prepare(db.as_ptr(),
                 "INSERT INTO main.gogoke_v37_instances VALUES('oldA','codex','instance-home-oldA',?1,'sha256:current','2','INSTALLED','LOGGED_OUT',1)").unwrap();
             instance.bind_text(1, &identity).unwrap(); instance.step_done().unwrap(); drop(instance);

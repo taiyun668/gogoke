@@ -700,7 +700,7 @@ impl<'a> ProductDatabase<'a> {
         let command=field(&fields,"command")?;
         authority::read_product_identity(&mut self.connection,&self.owner)?;
         match command.as_str(){
-            "migrate-legacy-codex-source" if fields.len()==9=>{
+            "migrate-legacy-codex-source" if fields.len()==11=>{
                 let driver=field(&fields,"driverId")?;
                 if driver!="codex" {return Err(OrchestrationError::AccessDenied)}
                 let request=field(&fields,"requestId")?;
@@ -709,6 +709,8 @@ impl<'a> ProductDatabase<'a> {
                 let fingerprint=field(&fields,"originalRequestFingerprint")?;
                 let receipt=field(&fields,"originalNativeReceiptHex")?;
                 let home=field(&fields,"originalHomeIdentity")?;
+                let expected_root=field(&fields,"expectedRootIdentity")?;
+                let expected_database=field(&fields,"expectedDatabaseIdentity")?;
                 // This bridge owns every in-process execution source. Native
                 // F also rechecks the persisted H/C family in both immediate
                 // transactions before making its one SOURCE effect.
@@ -725,6 +727,8 @@ impl<'a> ProductDatabase<'a> {
                         raw:frame,request_id:&request,target_id:&target,
                         original_request_id:&original,original_fingerprint:&fingerprint,
                         original_receipt_hex:&receipt,original_home_identity:&home,
+                        expected_root_identity:&expected_root,
+                        expected_database_identity:&expected_database,
                     },&applied).map_err(|error|failure("strict legacy SOURCE",error))?;
                 Ok(outcome.receipt)
             },
@@ -1053,7 +1057,9 @@ mod tests {
         assert!(!original.step_row().unwrap());drop(original);
         let instance_before=table_rows(&product,
             "SELECT instance_id,program_digest,version,home_identity,revision FROM main.gogoke_v37_instances WHERE instance_id='legacyA'",5);
-        let frame=format!("{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"migrate-legacy-codex-source\",\"driverId\":\"codex\",\"requestId\":\"sourceMoveA\",\"targetId\":\"legacyA\",\"originalRequestId\":\"registerA\",\"originalRequestFingerprint\":\"{fingerprint}\",\"originalNativeReceiptHex\":\"{}\",\"originalHomeIdentity\":\"{home}\"}}",action_hex(home.as_bytes()));
+        let expected_root=product.connection.root_identity().opaque();
+        let expected_database=product.connection.identity().opaque();
+        let frame=format!("{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"migrate-legacy-codex-source\",\"driverId\":\"codex\",\"requestId\":\"sourceMoveA\",\"targetId\":\"legacyA\",\"originalRequestId\":\"registerA\",\"originalRequestFingerprint\":\"{fingerprint}\",\"originalNativeReceiptHex\":\"{}\",\"originalHomeIdentity\":\"{home}\",\"expectedRootIdentity\":\"{expected_root}\",\"expectedDatabaseIdentity\":\"{expected_database}\"}}",action_hex(home.as_bytes()));
         let home_path=root.canonical_root().canonical_path.join("v37-instances").join("legacyA");
         let home_identity=crate::root::inspect_root(&home_path).unwrap().identity;
         let auth_path=home_path.join("auth.json");
@@ -1396,6 +1402,23 @@ mod tests {
                 "SELECT instance_id FROM main.gogoke_v37_instance_program_sources WHERE instance_id='legacyA'",1).is_empty());
             product.connection.execute("DELETE FROM main.gogoke_v37_instance_legacy_source_migrations WHERE request_id='priorMigration'").unwrap();
         }
+        let root_field=format!("\"expectedRootIdentity\":\"{expected_root}\"");
+        let database_field=format!("\"expectedDatabaseIdentity\":\"{expected_database}\"");
+        for (field,replacement) in [
+            (&root_field,"\"expectedRootIdentity\":\"\""),
+            (&root_field,"\"expectedRootIdentity\":\"wrong-root\""),
+            (&database_field,"\"expectedDatabaseIdentity\":\"\""),
+            (&database_field,"\"expectedDatabaseIdentity\":\"wrong-database\""),
+        ] {
+            let changed=frame.replace(field,replacement);
+            assert_ne!(changed,frame);
+            assert!(product.dispatch_user_managed_cli(changed.as_bytes()).is_err(),
+                "an empty or wrong physical authority expectation must refuse");
+        }
+        assert!(table_rows(&product,
+            "SELECT request_id FROM main.gogoke_v37_instance_legacy_source_migrations",1).is_empty());
+        assert!(table_rows(&product,
+            "SELECT instance_id FROM main.gogoke_v37_instance_program_sources WHERE instance_id='legacyA'",1).is_empty());
         if let Some(commit_first) = first_commit_error_after {
             instance::test_first_admission_commit_error_after(commit_first);
             let error=product.dispatch_user_managed_cli(frame.as_bytes()).unwrap_err();
@@ -1442,6 +1465,31 @@ mod tests {
             fs::remove_dir_all(path).unwrap();
             return;
         }
+        if !registered && !legacy_family_present {
+            // Clone a complete, otherwise eligible physical database under the
+            // same RootLock. The old DB FileID must refuse; the clone's own
+            // retained FileID must pass the same native qualifications.
+            let copied_database=path.join("state-copy.sqlite");
+            let escaped=copied_database.to_string_lossy().replace('\'',"''");
+            product.connection.execute(&format!("VACUUM main INTO '{escaped}'")).unwrap();
+            let mut copied=ProductDatabase::open(&root,&copied_database).unwrap();
+            let copied_identity=copied.connection.identity().opaque();
+            assert_eq!(copied.connection.root_identity().opaque(),expected_root);
+            assert_ne!(copied_identity,expected_database);
+            assert!(copied.dispatch_user_managed_cli(frame.as_bytes()).is_err(),
+                "the old expected DB FileID must refuse a complete copied DB under the same root");
+            assert!(table_rows(&copied,
+                "SELECT request_id FROM main.gogoke_v37_instance_legacy_source_migrations",1).is_empty());
+            let copied_frame=frame.replace(&database_field,
+                &format!("\"expectedDatabaseIdentity\":\"{copied_identity}\""));
+            assert_ne!(copied_frame,frame);
+            assert!(String::from_utf8_lossy(&copied.dispatch_user_managed_cli(
+                copied_frame.as_bytes()).unwrap()).contains("\"status\":\"APPLIED\""),
+                "the copied DB must be otherwise eligible, not a false-negative fixture");
+            copied.close_checked().unwrap();
+            fs::remove_file(copied_database).unwrap();
+            fs::remove_file(path.join(".gogoke-state-copy.sqlite.custody-v1")).unwrap();
+        }
         let applied=product.dispatch_user_managed_cli(frame.as_bytes()).unwrap();
         assert!(String::from_utf8_lossy(&applied).contains("\"status\":\"APPLIED\""));
         assert_eq!(table_rows(&product,
@@ -1466,6 +1514,15 @@ mod tests {
             "exact replay must not alter any optional family row");
         assert!(product.dispatch_user_managed_cli(format!(" {frame}").as_bytes()).is_err());
         assert!(product.dispatch_user_managed_cli(frame.replace("sourceMoveA","sourceMoveB").as_bytes()).is_err());
+        for (field,replacement) in [
+            (&root_field,"\"expectedRootIdentity\":\"wrong-root\""),
+            (&database_field,"\"expectedDatabaseIdentity\":\"wrong-database\""),
+        ] {
+            let changed_anchor=frame.replace(field,replacement);
+            assert_ne!(changed_anchor.as_bytes(),frame.as_bytes(),
+                "same-ID anchor changes must change the exact original raw bytes");
+            assert!(product.dispatch_user_managed_cli(changed_anchor.as_bytes()).is_err());
+        }
         assert!(product.dispatch_user_managed_cli(frame.replacen("}",",\"extra\":\"x\"}",1).as_bytes()).is_err());
         assert_eq!(table_rows(&product,
             "SELECT request_id,phase FROM main.gogoke_v37_instance_legacy_source_migrations",2).len(),1);
