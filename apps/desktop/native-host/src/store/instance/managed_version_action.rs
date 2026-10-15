@@ -994,12 +994,12 @@ mod tests {
     fn native_proof_projection_uses_original_little_endian_preimage() {
         let fields = ["ticket", "nonce", concat!("sha256:",
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-            "managed-cli-codex", "global", "7", "123", "456", "C:/CLI/cli.exe",
+            "managed-cli-codex", "global", "7", "123", "456", "fixture/cli.exe",
             "true", "false", "0", "exited", "true", "true", "false", "false",
             "true", "0", "false"];
         let fields = fields.map(str::to_owned);
         assert_eq!(projection_hash(&fields),
-            "sha256:62a3253c7f9342f842b5e9427cd9973cfa27592d228e46c7e30c5d854573dda2");
+            "sha256:d740eb96cd78e2581f4d97e465ebac1831ce9a7c396c7a892fe266081706f28c");
     }
 
     #[test]
