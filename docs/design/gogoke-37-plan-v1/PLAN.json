@@ -2539,7 +2539,7 @@
   },
   {
    "path": "docs/design/gogoke-37-plan-v1/MANAGED_CLI_HISTORICAL_FAMILIES.md",
-   "sha256_git_lf": "c1098c875f6bbee717a4bcbd38c8c7be6d3ef9a45a1c5c49a735cc7ba63f76e7",
+   "sha256_git_lf": "0041f3b707f79e7e5717dd9f16e2e87b81cd8c313f5415f029c6f659c2ece402",
    "meaning": "Complete three-driver contract and reviewable observation inventory only; not a native proof, qualification or acceptance."
   },
   {
