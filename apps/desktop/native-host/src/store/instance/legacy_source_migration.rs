@@ -327,9 +327,7 @@ fn qualified_stopped_h(db: &VerifiedDatabaseConnection<'_>, operation: &str,
             // to previous and writes result=expected+2. Plain resume persists
             // no separate UNKNOWN marker, so these are the two exact final
             // equations accepted here.
-            if !qualified_plain_resume_revisions(request.expected_revision,before,after) {
-                return Err(denied());
-            }
+            if request.expected_revision!=before { return Err(denied()); }
         } else if request.expected_revision!=before { return Err(denied()); }
     } else {
         if !e[3].is_empty() || request.expected_revision!=before { return Err(denied()); }
