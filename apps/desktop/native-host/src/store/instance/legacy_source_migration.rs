@@ -222,6 +222,11 @@ fn applied_readback(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
     expected_receipt: &[u8]) -> Result<LegacySourceResult> {
     if !same_intent(db, input, journal) || journal.phase != "APPLIED" ||
         journal.qualification_digest.is_empty() { return Err(denied()); }
+    if registry::verified_legacy_registration_anchors(db, root, input.target_id,
+        input.original_request_id, input.original_fingerprint,
+        input.original_receipt_hex, input.original_home_identity)
+        .map_err(|error| fail("original registration replay anchors", error))?
+        .is_none() { return Err(denied()); }
     if any(db, "SELECT 1 FROM main.gogoke_v37_instance_operations WHERE request_id=?1 LIMIT 1",
         &[input.request_id])? || any(db,
         "SELECT 1 FROM main.gogoke_v37_instance_version_actions WHERE request_id=?1 LIMIT 1",
@@ -379,6 +384,21 @@ fn qualified_stopped_h(db: &VerifiedDatabaseConnection<'_>, operation: &str,
         .as_bytes()))
 }
 
+fn qualified_unknown_home_source(db: &VerifiedDatabaseConnection<'_>, home: &str,
+    instance: &str, domain: &str, session: &str, generation: &str,
+    episode_request_id: &str, episode_raw_hex: &str) -> Result<String> {
+    let raw=unhex(episode_raw_hex)?;
+    let request=crate::store::session_transport::decode_request(&raw)
+        .map_err(|error|fail("original UNKNOWN H raw",error))?;
+    if request.family!="K-SESSION" ||
+        !matches!(request.operation.as_str(),"open"|"resume"|"compact"|"renew-session") ||
+        request.request_id!=episode_request_id || request.target_id!=session ||
+        request.domain_id!=domain { return Err(denied()); }
+    temporary::validate_original_execution_home_source(db,home,instance,domain,
+        session,generation,episode_request_id,&request.operation)
+        .map_err(|error|fail("original UNKNOWN F HOME create source",error))
+}
+
 /// All affected original C rows are read. STOPPED requires its original proof;
 /// an unsettled H row needs H's unique original-source kernel fact; a global
 /// historical UNKNOWN needs the native whole-boot fact over every original
@@ -395,7 +415,7 @@ fn qualified_executions(db: &VerifiedDatabaseConnection<'_>, evidence: &mut Vec<
         let (operation, instance, domain, generation, state, stop) =
             (&c[0], &c[1], &c[2], &c[3], &c[4], &c[5]);
         let episode = rows(db,
-            "SELECT home_id,session_id,generation,binding_id,phase,COALESCE(stop_fact_id,'') FROM main.gogoke_v37_h_process_episode WHERE process_operation_id=?1 AND instance_id=?2 AND domain_id=?3", &[operation, instance, domain], 6)?;
+            "SELECT home_id,session_id,generation,binding_id,phase,COALESCE(stop_fact_id,''),request_id,raw_hex FROM main.gogoke_v37_h_process_episode WHERE process_operation_id=?1 AND instance_id=?2 AND domain_id=?3", &[operation, instance, domain], 8)?;
         if episode.len() > 1 { return Err(denied()); }
         if state == "STOPPED" && !stop.is_empty() {
             if let Some(h) = episode.first() {
@@ -420,6 +440,8 @@ fn qualified_executions(db: &VerifiedDatabaseConnection<'_>, evidence: &mut Vec<
             !matches!(episode[0][4].as_str(), "ACTIVE" | "UNKNOWN") || !episode[0][5].is_empty() {
             return Err(denied());
         }
+        let home_source=qualified_unknown_home_source(db,&episode[0][0],instance,domain,
+            &episode[0][1],generation,&episode[0][6],&episode[0][7])?;
         let (fact, source_digest, pairs) = crate::store::session_transport::observe_exact_home_gone(
             db, &episode[0][0], instance, domain, &episode[0][1], generation, &episode[0][3])
             .map_err(|error| fail("original H execution", error))?;
@@ -427,7 +449,7 @@ fn qualified_executions(db: &VerifiedDatabaseConnection<'_>, evidence: &mut Vec<
         seen_h.insert(operation.clone());
         qualified_bindings.insert(episode[0][3].clone());
         qualified_operations.insert(operation.clone());
-        for value in [source_digest.as_str(), &fact.boot_start().to_string()] {
+        for value in [home_source.as_str(),source_digest.as_str(), &fact.boot_start().to_string()] {
             frame(evidence, value.as_bytes());
         }
         for (pid, creation) in pairs { frame(evidence, &pid.to_be_bytes()); frame(evidence, &creation.to_be_bytes()); }
@@ -659,13 +681,15 @@ fn qualified_resources(db: &VerifiedDatabaseConnection<'_>,
         "SELECT h.home_id,h.instance_id,h.domain_id,h.owner_id,h.generation FROM main.gogoke_v37_instance_homes h JOIN main.gogoke_v37_instances i ON i.instance_id=h.instance_id WHERE i.driver_id='codex' AND h.state='ACTIVE'", &[], 5)?;
     for h in active_homes {
         let execution = rows(db,
-            "SELECT e.process_operation_id,c.state,COALESCE(c.stop_proof_hash,''),e.binding_id,e.phase,COALESCE(e.stop_fact_id,'') FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id AND c.profile_id=e.instance_id AND c.domain_id=e.domain_id AND c.generation=e.generation WHERE e.home_id=?1 AND e.instance_id=?2 AND e.domain_id=?3 AND e.session_id=?4 AND e.generation=?5", &[&h[0], &h[1], &h[2], &h[3], &h[4]], 6)?;
+            "SELECT e.process_operation_id,c.state,COALESCE(c.stop_proof_hash,''),e.binding_id,e.phase,COALESCE(e.stop_fact_id,''),e.request_id,e.raw_hex FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id AND c.profile_id=e.instance_id AND c.domain_id=e.domain_id AND c.generation=e.generation WHERE e.home_id=?1 AND e.instance_id=?2 AND e.domain_id=?3 AND e.session_id=?4 AND e.generation=?5", &[&h[0], &h[1], &h[2], &h[3], &h[4]], 8)?;
         if execution.len()>1 { return Err(denied()); }
         if let Some(e)=execution.first() {
             if e[1]=="STOPPED" && !e[2].is_empty() && e[4]=="STOPPED" && e[5]==e[2] {
                 qualified_stopped_h(db,&e[0],&h[1],&h[2],&h[4],&e[2])?;
             } else if e[1]=="UNKNOWN" && e[2].is_empty()
                 && matches!(e[4].as_str(),"ACTIVE"|"UNKNOWN") && e[5].is_empty() {
+                qualified_unknown_home_source(db,&h[0],&h[1],&h[2],&h[3],&h[4],
+                    &e[6],&e[7])?;
                 let (fact,_,pairs)=crate::store::session_transport::observe_exact_home_gone(
                     db,&h[0],&h[1],&h[2],&h[3],&h[4],&e[3])
                     .map_err(|error|fail("ACTIVE HOME original execution",error))?;
@@ -762,11 +786,16 @@ fn qualify(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
     let pin = managed_cli::read_fixed_official_cli("codex").ok_or_else(denied)?;
     let digest = format!("sha256:{}", pin.image_sha256);
     if candidates[0][2] != digest || candidates[0][3] != pin.version { return Err(denied()); }
-    let copy = managed_cli::read_managed_cli(db, root, "codex")
-        .map_err(|error| fail("READY copy", error))?.ok_or_else(denied)?;
-    let stage = copy.stage_name.ok_or_else(denied)?;
-    if copy.state != "READY" || copy.version.as_deref() != Some(pin.version) { return Err(denied()); }
-    let path = managed_cli::locate_ready_managed_program(db, root, "codex", &digest, pin.version)
+    let copy = rows(db,
+        "SELECT state,COALESCE(version,''),COALESCE(stage_name,''),COALESCE(raw_error,'') FROM main.gogoke_v37_instance_cli_copies WHERE driver_id='codex'", &[], 4)?;
+    if copy.len()!=1 { return Err(denied()); }
+    if copy[0][0]!="READY" {
+        return if copy[0][3].is_empty() { Err(denied()) }
+            else { Err(fail("READY copy original error", &copy[0][3])) };
+    }
+    if copy[0][1]!=pin.version || copy[0][2].is_empty() { return Err(denied()); }
+    let stage = copy[0][2].clone();
+    let path = managed_cli::locate_ready_managed_program_from_db(db, "codex", &digest, pin.version)
         .map_err(|error| fail("official stage", error))?.ok_or_else(denied)?;
     let observed = registry::ProgramObservation::observe(&path, pin.version)
         .map_err(|error| fail("official executable", error))?;
@@ -1273,7 +1302,7 @@ mod tests {
     }
 
     #[test]
-    fn applied_replay_reads_exact_source_and_original_receipt_only() {
+    fn applied_replay_without_original_registration_refuses() {
         fixture(|root, mut db| {
             let home = super::super::home::prepare_persistent_home(root, "oldA").unwrap();
             let identity = home.identity.opaque();
@@ -1303,8 +1332,6 @@ mod tests {
             }
             insert.step_done().unwrap(); drop(insert);
             let prior = read_journal(&db, "newA").unwrap().unwrap();
-            assert_eq!(applied_readback(&db, root, &input, &prior, receipt).unwrap().receipt, receipt);
-            db.execute("UPDATE main.gogoke_v37_instance_program_sources SET version='3' WHERE instance_id='oldA'").unwrap();
             assert!(applied_readback(&db, root, &input, &prior, receipt).is_err());
             std::fs::remove_file(home.path.join("gogoke-instance.marker")).unwrap();
             std::fs::remove_dir(home.path).unwrap();
@@ -1506,6 +1533,56 @@ mod tests {
             let raw=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"open","requestId":"openA","targetId":"sessionA","domainId":"global","expectedRevision":"2","payload":{}}"#;
             let operation=format!("h-open-{}",&sha256_hex(raw)[..40]);
             let original_hex=hex(raw);
+            let original_home_source=qualified_unknown_home_source(&db,&home_id,"oldA",
+                "global","sessionA","1","openA",&original_hex).unwrap();
+            db.execute("SAVEPOINT missing_original_f_home").unwrap();
+            let missing=Statement::prepare(db.as_ptr(),
+                "DELETE FROM main.gogoke_v37_instance_homes WHERE home_id=?1").unwrap();
+            missing.bind_text(1,&home_id).unwrap();missing.step_done().unwrap();drop(missing);
+            assert!(qualified_unknown_home_source(&db,&home_id,"oldA","global",
+                "sessionA","1","openA",&original_hex).is_err(),
+                "H raw cannot replace the missing original F HOME row");
+            db.execute("ROLLBACK TO missing_original_f_home").unwrap();
+            db.execute("RELEASE missing_original_f_home").unwrap();
+            db.execute("SAVEPOINT changed_original_f_create").unwrap();
+            let changed=Statement::prepare(db.as_ptr(),
+                "UPDATE main.gogoke_v37_instance_operations SET request_hex='00' WHERE request_id=?1").unwrap();
+            changed.bind_text(1,&preparation_id).unwrap();changed.step_done().unwrap();drop(changed);
+            assert!(qualified_unknown_home_source(&db,&home_id,"oldA","global",
+                "sessionA","1","openA",&original_hex).is_err(),
+                "H raw cannot replace a damaged APPLIED F create request");
+            db.execute("ROLLBACK TO changed_original_f_create").unwrap();
+            db.execute("RELEASE changed_original_f_create").unwrap();
+            db.execute("SAVEPOINT changed_original_f_receipt").unwrap();
+            let changed=Statement::prepare(db.as_ptr(),
+                "UPDATE main.gogoke_v37_instance_operations SET native_receipt_id='wrong-home' WHERE request_id=?1").unwrap();
+            changed.bind_text(1,&preparation_id).unwrap();changed.step_done().unwrap();drop(changed);
+            assert!(qualified_unknown_home_source(&db,&home_id,"oldA","global",
+                "sessionA","1","openA",&original_hex).is_err(),
+                "H raw cannot replace a changed original F native HOME receipt");
+            db.execute("ROLLBACK TO changed_original_f_receipt").unwrap();
+            db.execute("RELEASE changed_original_f_receipt").unwrap();
+            db.execute("SAVEPOINT missing_original_f_receipt").unwrap();
+            let missing=Statement::prepare(db.as_ptr(),
+                "UPDATE main.gogoke_v37_instance_operations SET native_receipt_id=NULL WHERE request_id=?1").unwrap();
+            missing.bind_text(1,&preparation_id).unwrap();missing.step_done().unwrap();drop(missing);
+            assert!(qualified_unknown_home_source(&db,&home_id,"oldA","global",
+                "sessionA","1","openA",&original_hex).is_err(),
+                "H raw cannot replace a missing original F native HOME receipt");
+            db.execute("ROLLBACK TO missing_original_f_receipt").unwrap();
+            db.execute("RELEASE missing_original_f_receipt").unwrap();
+            db.execute("SAVEPOINT changed_original_f_identity").unwrap();
+            let changed=Statement::prepare(db.as_ptr(),
+                "UPDATE main.gogoke_v37_instance_homes SET directory_identity='wrong-home' WHERE home_id=?1").unwrap();
+            changed.bind_text(1,&home_id).unwrap();changed.step_done().unwrap();drop(changed);
+            assert!(qualified_unknown_home_source(&db,&home_id,"oldA","global",
+                "sessionA","1","openA",&original_hex).is_err(),
+                "F HOME identity must still match its original native create receipt");
+            db.execute("ROLLBACK TO changed_original_f_identity").unwrap();
+            db.execute("RELEASE changed_original_f_identity").unwrap();
+            assert_eq!(qualified_unknown_home_source(&db,&home_id,"oldA","global",
+                "sessionA","1","openA",&original_hex).unwrap(),original_home_source,
+                "restored original F provenance must reproduce its exact digest");
             let h_operation=Statement::prepare(db.as_ptr(),
                 "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('global','openA',?1,'open','sessionA','UNKNOWN',2,2)").unwrap();
             h_operation.bind_text(1,&original_hex).unwrap();h_operation.step_done().unwrap();drop(h_operation);
@@ -1579,6 +1656,21 @@ mod tests {
             // Match the session-stop producer: release native custody only
             // after H committed the exact C StopProof.
             confirm_durable_stop(&mut custodian,&prepared,&native_stop,native_stop_revision);
+            db.execute("SAVEPOINT unknown_without_f_home").unwrap();
+            let changed=Statement::prepare(db.as_ptr(),
+                "UPDATE main.gogoke_coordination_process_custody SET state='UNKNOWN',stop_proof_hash=NULL WHERE operation_id=?1").unwrap();
+            changed.bind_text(1,&operation).unwrap();changed.step_done().unwrap();drop(changed);
+            let changed=Statement::prepare(db.as_ptr(),
+                "UPDATE main.gogoke_v37_h_process_episode SET phase='UNKNOWN',stop_fact_id=NULL WHERE process_operation_id=?1").unwrap();
+            changed.bind_text(1,&operation).unwrap();changed.step_done().unwrap();drop(changed);
+            let missing=Statement::prepare(db.as_ptr(),
+                "DELETE FROM main.gogoke_v37_instance_homes WHERE home_id=?1").unwrap();
+            missing.bind_text(1,&home_id).unwrap();missing.step_done().unwrap();drop(missing);
+            let error=qualified_executions(&db,&mut Vec::new()).unwrap_err();
+            assert!(format!("{error:?}").contains("original UNKNOWN F HOME create source"),
+                "UNKNOWN C/H must refuse on absent original F source before H-only observation: {error:?}");
+            db.execute("ROLLBACK TO unknown_without_f_home").unwrap();
+            db.execute("RELEASE unknown_without_f_home").unwrap();
             // Build A through the existing historical admission/F producers.
             // B above is a real STOPPED execution with the same instance,
             // domain and numeric generation, but a different session.

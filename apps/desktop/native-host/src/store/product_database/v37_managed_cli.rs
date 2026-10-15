@@ -1357,11 +1357,53 @@ mod tests {
         let legacy_rows_before=legacy_fence_family_rows(&product,legacy_family_present);
         assert!(product.dispatch_user_managed_cli(frame.replace(&fingerprint,"00").as_bytes()).is_err());
         assert!(product.dispatch_user_managed_cli(frame.replacen("}",",\"extra\":\"x\"}",1).as_bytes()).is_err());
-        product.connection.execute("UPDATE main.gogoke_v37_instance_cli_copies SET stage_name='missing-stage' WHERE driver_id='codex'").unwrap();
-        assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err());
+        let missing_stage=format!("codex-{}-missing",pin.version);
+        let changed_stage=Statement::prepare(product.connection.as_ptr(),
+            "UPDATE main.gogoke_v37_instance_cli_copies SET stage_name=?1 WHERE driver_id='codex'").unwrap();
+        changed_stage.bind_text(1,&missing_stage).unwrap();changed_stage.step_done().unwrap();drop(changed_stage);
+        let stage_error=instance::locate_ready_managed_program_from_db(&product.connection,
+            "codex",&observed_digest,pin.version).unwrap_err();
+        let original_code=match &stage_error {
+            instance::ManagedCliError::Io(error) => error.raw_os_error().unwrap(),
+            other => panic!("missing stage must yield its original IO error: {other:?}"),
+        };
+        let delivered=product.dispatch_user_managed_cli(frame.as_bytes()).unwrap_err();
+        let delivered_text=format!("{delivered:?}");
+        assert!(delivered_text.contains("official stage") &&
+            delivered_text.contains("NotFound") &&
+            delivered_text.contains(&format!("code: {original_code}")),
+            "migration must preserve the original read-only stage error: {delivered:?}");
+        assert!(!path.join("v37-managed-cli").join("staging").join(&missing_stage).exists());
+        assert!(table_rows(&product,
+            "SELECT request_id FROM main.gogoke_v37_instance_legacy_source_migrations",1).is_empty());
+        assert!(table_rows(&product,
+            "SELECT instance_id FROM main.gogoke_v37_instance_program_sources WHERE instance_id='legacyA'",1).is_empty());
         let restored=Statement::prepare(product.connection.as_ptr(),
             "UPDATE main.gogoke_v37_instance_cli_copies SET stage_name=?1 WHERE driver_id='codex'").unwrap();
         restored.bind_text(1,&stage).unwrap();restored.step_done().unwrap();drop(restored);
+        product.connection.execute("UPDATE main.gogoke_v37_instance_cli_copies SET state='BLOCKED',raw_error='original managed copy failure' WHERE driver_id='codex'").unwrap();
+        let delivered=product.dispatch_user_managed_cli(frame.as_bytes()).unwrap_err();
+        assert!(format!("{delivered:?}").contains("original managed copy failure"),
+            "persisted managed copy error must survive migration refusal");
+        product.connection.execute("UPDATE main.gogoke_v37_instance_cli_copies SET state='READY',raw_error=NULL WHERE driver_id='codex'").unwrap();
+        let managed=path.join("v37-managed-cli");
+        let staging=managed.join("staging");
+        for (original,held) in [
+            (managed.clone(),path.join("v37-managed-cli-held")),
+            (staging.clone(),managed.join("staging-held")),
+        ] {
+            fs::rename(&original,&held).unwrap();
+            assert!(!original.exists());
+            assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err(),
+                "missing managed/staging directory must refuse");
+            assert!(!original.exists(),
+                "SOURCE prequalification must not recreate a missing managed/staging directory");
+            fs::rename(&held,&original).unwrap();
+        }
+        assert!(table_rows(&product,
+            "SELECT request_id FROM main.gogoke_v37_instance_legacy_source_migrations",1).is_empty());
+        assert!(table_rows(&product,
+            "SELECT instance_id FROM main.gogoke_v37_instance_program_sources WHERE instance_id='legacyA'",1).is_empty());
         product.connection.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state) VALUES('unsettledA','ticketA','nonceA','4294967295','1','synthetic.exe','sha256:0000000000000000000000000000000000000000000000000000000000000000','legacyA','global','1','UNKNOWN')").unwrap();
         assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err());
         product.connection.execute("DELETE FROM main.gogoke_coordination_process_custody WHERE operation_id='unsettledA'").unwrap();
@@ -1511,6 +1553,45 @@ mod tests {
         assert_eq!(legacy_fence_family_rows(&product,legacy_family_present),legacy_rows_before,
             "legacy SOURCE migration must not alter any optional family row");
         assert_eq!(product.dispatch_user_managed_cli(frame.as_bytes()).unwrap(),applied);
+        let applied_source=table_rows(&product,
+            "SELECT source,stage_name,program_digest,version,home_identity,registration_request_id,revision FROM main.gogoke_v37_instance_program_sources WHERE instance_id='legacyA'",7);
+        let applied_journal=table_rows(&product,journal_rows,14);
+        assert_eq!(table_rows(&product,
+            "SELECT typeof(receipt_json) FROM main.gogoke_v37_instance_operations WHERE request_id='registerA'",1),
+            vec![vec!["null".to_owned()]],
+            "the original register producer's nullable receipt field must be known before restore");
+        product.connection.execute("DELETE FROM main.gogoke_v37_instance_operations WHERE request_id='registerA'").unwrap();
+        assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err(),
+            "APPLIED replay cannot use a missing original registration");
+        let restore=Statement::prepare(product.connection.as_ptr(),
+            "INSERT INTO main.gogoke_v37_instance_operations(request_id,request_hex,target_id,phase,native_receipt_id) VALUES('registerA',?1,'legacyA','APPLIED',?2)").unwrap();
+        restore.bind_text(1,&fingerprint).unwrap();restore.bind_text(2,&home).unwrap();
+        restore.step_done().unwrap();drop(restore);
+        product.connection.execute("UPDATE main.gogoke_v37_instance_operations SET request_hex='00' WHERE request_id='registerA'").unwrap();
+        assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err(),
+            "APPLIED replay cannot use changed original raw");
+        let restore=Statement::prepare(product.connection.as_ptr(),
+            "UPDATE main.gogoke_v37_instance_operations SET request_hex=?1 WHERE request_id='registerA'").unwrap();
+        restore.bind_text(1,&fingerprint).unwrap();restore.step_done().unwrap();drop(restore);
+        product.connection.execute("UPDATE main.gogoke_v37_instance_operations SET phase='UNKNOWN' WHERE request_id='registerA'").unwrap();
+        assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err(),
+            "APPLIED replay cannot use changed original phase");
+        product.connection.execute("UPDATE main.gogoke_v37_instance_operations SET phase='APPLIED' WHERE request_id='registerA'").unwrap();
+        product.connection.execute("UPDATE main.gogoke_v37_instance_operations SET native_receipt_id='wrong-home' WHERE request_id='registerA'").unwrap();
+        assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err(),
+            "APPLIED replay cannot use changed original native receipt");
+        let restore=Statement::prepare(product.connection.as_ptr(),
+            "UPDATE main.gogoke_v37_instance_operations SET native_receipt_id=?1 WHERE request_id='registerA'").unwrap();
+        restore.bind_text(1,&home).unwrap();restore.step_done().unwrap();drop(restore);
+        assert_eq!(table_rows(&product,journal_rows,14),applied_journal,
+            "all APPLIED readback refusals leave the migration journal unchanged");
+        assert_eq!(table_rows(&product,
+            "SELECT source,stage_name,program_digest,version,home_identity,registration_request_id,revision FROM main.gogoke_v37_instance_program_sources WHERE instance_id='legacyA'",7),applied_source,
+            "all APPLIED readback refusals leave SOURCE unchanged");
+        assert_eq!(table_rows(&product,
+            "SELECT request_id,request_hex,target_id,phase,COALESCE(native_receipt_id,'') FROM main.gogoke_v37_instance_operations ORDER BY request_id",5),original_before);
+        assert_eq!(product.dispatch_user_managed_cli(frame.as_bytes()).unwrap(),applied,
+            "restored original registration yields only the original migration receipt");
         assert_eq!(legacy_fence_schema_rows(&product),legacy_schema_before,
             "exact replay must not initialize or alter the optional family schema");
         assert_eq!(legacy_fence_family_rows(&product,legacy_family_present),legacy_rows_before,

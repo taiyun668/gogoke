@@ -601,17 +601,16 @@ pub(super) fn verified_creation_request(connection: &VerifiedDatabaseConnection<
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum LegacyReplayClass { Eligible, ProvenIneligible, Unknown }
 
-/// Classify the whole existing USER registration route without invoking either
-/// register_instance or the SOURCE writer. Caller anchors constrain the lookup;
-/// the verified original operation and physical HOME supply the facts.
-pub(super) fn classify_legacy_source_registration(
+/// Read the unchanged original registration anchors from their native producer.
+/// An APPLIED migration replay needs this same check without requalifying its
+/// historical execution set or repeating the SOURCE effect.
+pub(super) fn verified_legacy_registration_anchors(
     connection: &VerifiedDatabaseConnection<'_>, root: &RootLock, id: &str,
     approved_request: &str, approved_fingerprint: &str,
     approved_receipt_hex: &str, approved_home: &str,
-    current_program: &ProgramObservation,
-) -> Result<LegacyReplayClass, RegistryError> {
+) -> Result<Option<Vec<u8>>, RegistryError> {
     let original = verified_creation_request(connection, root, id)?;
-    if original != approved_request { return Ok(LegacyReplayClass::Unknown); }
+    if original != approved_request { return Ok(None); }
     let prior = operation(connection, &original)?.ok_or(RegistryError::Unknown)?;
     let fields = decode_framed_hex(&prior.0)?;
     if prior.1 != id || prior.2 != "APPLIED" || fields.len() != 5 ||
@@ -619,7 +618,7 @@ pub(super) fn classify_legacy_source_registration(
         encode_hex(prior.3.as_bytes()) != approved_receipt_hex ||
         prior.3 != approved_home ||
         observed_home(root, id)?.is_none_or(|home| home.opaque() != approved_home) {
-        return Ok(LegacyReplayClass::Unknown);
+        return Ok(None);
     }
     let request = crate::store::session_transport::decode_request(&fields[0])
         .map_err(|error| RegistryError::RepinFormat(format!("original registration raw: {error:?}")))?;
@@ -631,12 +630,29 @@ pub(super) fn classify_legacy_source_registration(
         request.target_id != id || request.domain_id != "global" ||
         request.expected_revision != 0 || request.payload.len() != 1 ||
         original_driver.as_deref() != Some("codex") {
-        return Ok(LegacyReplayClass::Unknown);
+        return Ok(None);
     }
-    let candidate = Registration { request_id: &original, request_bytes: &fields[0],
+    Ok(Some(fields[0].clone()))
+}
+
+/// Classify the whole existing USER registration route without invoking either
+/// register_instance or the SOURCE writer. Caller anchors constrain the lookup;
+/// the verified original operation and physical HOME supply the facts.
+pub(super) fn classify_legacy_source_registration(
+    connection: &VerifiedDatabaseConnection<'_>, root: &RootLock, id: &str,
+    approved_request: &str, approved_fingerprint: &str,
+    approved_receipt_hex: &str, approved_home: &str,
+    current_program: &ProgramObservation,
+) -> Result<LegacyReplayClass, RegistryError> {
+    let Some(original_raw) = verified_legacy_registration_anchors(connection, root, id,
+        approved_request, approved_fingerprint, approved_receipt_hex, approved_home)? else {
+        return Ok(LegacyReplayClass::Unknown);
+    };
+    let original = approved_request;
+    let candidate = Registration { request_id: original, request_bytes: &original_raw,
         instance_id: id, driver_id: "codex", program: current_program };
     let current_fingerprint = fingerprint(&candidate)?;
-    if current_fingerprint != prior.0 {
+    if current_fingerprint != approved_fingerprint {
         return Ok(LegacyReplayClass::ProvenIneligible);
     }
     // At equality the USER route would continue into SOURCE bind. Reproduce
@@ -652,12 +668,23 @@ pub(super) fn classify_legacy_source_registration(
         "SELECT 1 FROM main.gogoke_v37_instance_profiles WHERE instance_id=?1 AND tombstoned=1")?;
     retired.bind_text(1, id)?;
     if retired.step_row()? { return Ok(LegacyReplayClass::Unknown); }
-    let copy = super::managed_cli::read_managed_cli(connection, root, "codex")
-        .map_err(|error| RegistryError::RepinFormat(format!("SOURCE bind copy: {error:?}")))?;
-    let Some(copy) = copy else { return Ok(LegacyReplayClass::Unknown); };
-    let Some(stage) = copy.stage_name else { return Ok(LegacyReplayClass::Unknown); };
-    if copy.state != "READY" || copy.version.as_deref() != Some(version.as_str()) ||
-        super::managed_cli::locate_ready_managed_program(connection, root, "codex",
+    let copy = Statement::prepare(connection.as_ptr(),
+        "SELECT state,COALESCE(version,''),COALESCE(stage_name,''),COALESCE(raw_error,'') FROM main.gogoke_v37_instance_cli_copies WHERE driver_id='codex'")?;
+    if !copy.step_row()? { return Ok(LegacyReplayClass::Unknown); }
+    let state=copy.column_text(0)?;
+    let copy_version=copy.column_text(1)?;
+    let stage=copy.column_text(2)?;
+    let original_error=copy.column_text(3)?;
+    if copy.step_row()? { return Ok(LegacyReplayClass::Unknown); }
+    drop(copy);
+    if state != "READY" {
+        if !original_error.is_empty() {
+            return Err(RegistryError::RepinFormat(format!("SOURCE bind copy: {original_error}")));
+        }
+        return Ok(LegacyReplayClass::Unknown);
+    }
+    if stage.is_empty() || copy_version != version ||
+        super::managed_cli::locate_ready_managed_program_from_db(connection, "codex",
             &digest, &version)
             .map_err(|error| RegistryError::RepinFormat(format!("SOURCE bind stage: {error:?}")))?
             .is_none() { return Ok(LegacyReplayClass::Unknown); }

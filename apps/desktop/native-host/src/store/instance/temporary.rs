@@ -980,7 +980,7 @@ fn original_create_source(connection: &VerifiedDatabaseConnection<'_>, home_id: 
     let tag = b"temporary-create-detached";
     let prefix = format!("{:016x}{}", tag.len(), hex(tag));
     let query = Statement::prepare(connection.as_ptr(),
-        "SELECT request_id,request_hex,phase FROM main.gogoke_v37_instance_operations
+        "SELECT request_id,request_hex,phase,COALESCE(native_receipt_id,'') FROM main.gogoke_v37_instance_operations
           WHERE target_id=?1")?;
     query.bind_text(1, home_id)?;
     let mut source = None;
@@ -988,14 +988,15 @@ fn original_create_source(connection: &VerifiedDatabaseConnection<'_>, home_id: 
         let id = query.column_text(0)?;
         let fingerprint = query.column_text(1)?;
         let phase = query.column_text(2)?;
+        let native_receipt = query.column_text(3)?;
         if fingerprint.starts_with(&prefix) {
-            if source.replace((id, fingerprint, phase)).is_some() {
+            if source.replace((id, fingerprint, phase, native_receipt)).is_some() {
                 return Err(TemporaryHomeError::HomeConflict);
             }
         }
     }
-    let (operation_id, stored, phase) = source.ok_or(TemporaryHomeError::Unknown)?;
-    if phase != "APPLIED" { return Err(TemporaryHomeError::Unknown); }
+    let (operation_id, stored, phase, native_receipt) = source.ok_or(TemporaryHomeError::Unknown)?;
+    if phase != "APPLIED" || native_receipt != row.6 { return Err(TemporaryHomeError::Unknown); }
     let raw = create_request_from_fingerprint(&stored)?;
     let request = crate::store::session_transport::decode_request(&raw)
         .map_err(|_| TemporaryHomeError::Invalid("original create USER raw"))?;
@@ -1315,7 +1316,8 @@ pub(super) fn validate_original_execution_home_source(
         return Err(TemporaryHomeError::StopFactUnavailable);
     }
     Ok(sha256_hex(format!(
-        "original-execution-home-v1\n{home}\n{create_id}\n{create_request_id}\n{create_operation}\n{create_fingerprint}\n{create_raw_sha256}"
+        "original-execution-home-v1\n{home}\n{create_id}\n{create_request_id}\n{create_operation}\n{create_fingerprint}\n{create_raw_sha256}\n{}\n{}",
+        row.5,row.6
     ).as_bytes()))
 }
 
@@ -2323,6 +2325,18 @@ mod tests {
                 &UserTemporaryHomeSelector::OriginalCreateRequestId("nextA"), &sid).unwrap();
             assert_eq!((&source.0[..], &source.1[..], &source.2[..]),
                 (prepare_id.as_str(), "nextA", "compact"));
+            connection.execute("SAVEPOINT changed_create_receipt").unwrap();
+            let changed=Statement::prepare(connection.as_ptr(),
+                "UPDATE main.gogoke_v37_instance_operations SET native_receipt_id='wrong' WHERE request_id=?1").unwrap();
+            changed.bind_text(1,&prepare_id).unwrap();changed.step_done().unwrap();drop(changed);
+            assert!(matches!(original_create_source(connection, &home, &row,
+                &UserTemporaryHomeSelector::OriginalCreateRequestId("nextA"), &sid),
+                Err(TemporaryHomeError::Unknown)));
+            connection.execute("ROLLBACK TO changed_create_receipt").unwrap();
+            connection.execute("RELEASE changed_create_receipt").unwrap();
+            assert_eq!(original_create_source(connection, &home, &row,
+                &UserTemporaryHomeSelector::OriginalCreateRequestId("nextA"), &sid).unwrap().0,
+                prepare_id);
             connection.execute("UPDATE main.gogoke_v37_h_generation_change SET old_ticket='wrong' WHERE request_id='nextA'").unwrap();
             assert!(matches!(original_create_source(connection, &home, &row,
                 &UserTemporaryHomeSelector::OriginalCreateRequestId("nextA"), &sid),
