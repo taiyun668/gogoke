@@ -2238,36 +2238,36 @@ mod source_image_selection_tests {
         let database=path.join("state.sqlite");
         crate::store::product_database::ProductDatabase::open(&root,&database)
             .unwrap().close_checked().unwrap();
-        let db=crate::store::same_open::open_existing(&root,&database).unwrap();
+        let mut db=crate::store::same_open::open_existing(&root,&database).unwrap();
         let source=path.join("original-repository");
         let tree=path.join("original-worktree");
         std::fs::create_dir(&source).unwrap();std::fs::create_dir(&tree).unwrap();
         let source_identity=inspect_root(&source).unwrap().identity.opaque();
         let tree_identity=inspect_root(&tree).unwrap().identity.opaque();
-        let insert=|sql:&str,values:&[&str]| {
+        fn insert(db:&VerifiedDatabaseConnection<'_>,sql:&str,values:&[&str]) {
             let q=Statement::prepare(db.as_ptr(),sql).unwrap();
             for (index,value) in values.iter().enumerate(){q.bind_text(index as i32+1,value).unwrap();}
             q.step_done().unwrap();
-        };
+        }
         // These are explicit source-component seeds using the real DDL and
         // physical directory identities, not a USER worktree/OPEN execution.
-        insert("INSERT INTO main.gogoke_v37_worktree_sources(repository_id,source_path,source_identity,common_path,common_identity,remote_kind,baseline_commit,git_digest,git_version,revision) VALUES('repoA',?1,?2,?1,?2,'HTTPS','source-component-commit','source-component-digest','source-component-version',1)",
+        insert(&db,"INSERT INTO main.gogoke_v37_worktree_sources(repository_id,source_path,source_identity,common_path,common_identity,remote_kind,baseline_commit,git_digest,git_version,revision) VALUES('repoA',?1,?2,?1,?2,'HTTPS','source-component-commit','source-component-digest','source-component-version',1)",
             &[source.to_str().unwrap(),&source_identity]);
-        insert("INSERT INTO main.gogoke_v37_worktrees(worktree_id,path_id,repository_id,domain_id,seat_id,seat_incarnation,seat_generation,seat_revision,permission_tier,instance_id,source_revision,worktree_path,worktree_identity,git_pointer_hash,git_pointer_len,git_pointer_identity,common_identity,baseline_commit,state,revision) VALUES('treeA','tree-path','repoA','projectA','seatA','incA',1,1,'component','instanceA',1,?1,?2,'component-pointer',1,'component-pointer-identity',?3,'source-component-commit','REGISTERED',1)",
+        insert(&db,"INSERT INTO main.gogoke_v37_worktrees(worktree_id,path_id,repository_id,domain_id,seat_id,seat_incarnation,seat_generation,seat_revision,permission_tier,instance_id,source_revision,worktree_path,worktree_identity,git_pointer_hash,git_pointer_len,git_pointer_identity,common_identity,baseline_commit,state,revision) VALUES('treeA','tree-path','repoA','projectA','seatA','incA',1,1,'component','instanceA',1,?1,?2,'component-pointer',1,'component-pointer-identity',?3,'source-component-commit','REGISTERED',1)",
             &[tree.to_str().unwrap(),&tree_identity,&source_identity]);
         db.execute("INSERT INTO main.gogoke_v37_worktree_lifecycle(worktree_id,state,revision) VALUES('treeA','REGISTERED',1)").unwrap();
         let open=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"open","requestId":"openA","targetId":"sessionA","domainId":"projectA","expectedRevision":"1","payload":{"seatId":"seatA","generation":"1","repositoryId":"repoA","worktreeId":"treeA"}}"#;
         let open_hex=hex(open);
         let open_process=format!("h-open-{}",&sha256_hex(open)[..40]);
-        insert("INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA','openA',?1,'open','sessionA','APPLIED',1,2)",&[&open_hex]);
-        insert("INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,result_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase,stop_fact_id) VALUES('projectA','openA','sessionA','1',?1,1,2,?2,'instanceA','homeA','bindingA','seatA','incA','STOPPED','component-stop')",&[&open_hex,&open_process]);
+        insert(&db,"INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA','openA',?1,'open','sessionA','APPLIED',1,2)",&[&open_hex]);
+        insert(&db,"INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,result_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase,stop_fact_id) VALUES('projectA','openA','sessionA','1',?1,1,2,?2,'instanceA','homeA','bindingA','seatA','incA','STOPPED','component-stop')",&[&open_hex,&open_process]);
         let request=crate::store::session_transport::decode_request(open).unwrap();
         let original=verified_original_worktree(&db,&request,"instanceA","projectA","1","seatA","incA").unwrap();
         let resume=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"resume","requestId":"resumeA","targetId":"sessionA","domainId":"projectA","expectedRevision":"3","payload":{"generation":"1"}}"#;
         let resume_hex=hex(resume);
         let resume_process=format!("h-resume-{}",&sha256_hex(resume)[..40]);
-        insert("INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA','resumeA',?1,'resume','sessionA','APPLIED',3,4)",&[&resume_hex]);
-        insert("INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,old_generation,raw_hex,previous_revision,result_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase,stop_fact_id) VALUES('projectA','resumeA','sessionA','2','1',?1,3,4,?2,'instanceA','homeB','bindingB','seatA','incA','STOPPED','component-stop-B')",&[&resume_hex,&resume_process]);
+        insert(&db,"INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA','resumeA',?1,'resume','sessionA','APPLIED',3,4)",&[&resume_hex]);
+        insert(&db,"INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,old_generation,raw_hex,previous_revision,result_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase,stop_fact_id) VALUES('projectA','resumeA','sessionA','2','1',?1,3,4,?2,'instanceA','homeB','bindingB','seatA','incA','STOPPED','component-stop-B')",&[&resume_hex,&resume_process]);
         let request=crate::store::session_transport::decode_request(resume).unwrap();
         assert_eq!(request.payload.len(),1,"resume must not grow OPEN payload fields");
         assert!(verified_original_worktree(&db,&request,"instanceA","projectA","2","seatA","incA").is_err(),
