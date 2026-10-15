@@ -677,8 +677,6 @@ fn qualified_resources(db: &VerifiedDatabaseConnection<'_>,
             if c[3]!="RELEASED" || !c[5].is_empty() || any(db,
                 "SELECT 1 FROM main.gogoke_v37_h_process_episode WHERE domain_id=?1 AND session_id=?2 LIMIT 1",
                 &[&c[1],&c[2]])? { return Err(denied()); }
-            qualified_released_never_started(db,&c[0],&c[1],&c[2],&c[8],&c[7],&c[6],
-                qualified_operations)?;
             continue;
         }
         let custody = rows(db, "SELECT state,COALESCE(stop_proof_hash,''),generation FROM main.gogoke_coordination_process_custody WHERE operation_id=?1 AND profile_id=?2 AND domain_id=?3", &[&c[4], &c[0], &c[1]], 3)?;
