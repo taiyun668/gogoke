@@ -4,7 +4,7 @@
 //! the PROBED copy can be bound to every quiescent legacy instance and marked READY.
 
 use super::{legacy_fence,registry::{self,ProgramObservation}};
-use crate::process::NativeLegacyHoldersGone;
+use crate::process::{NativeLegacyHoldersGone,NativeStopProof};
 use crate::root::RootLock;
 use crate::store::atomic::Statement;
 use crate::store::authority::{check_owner_in_current_transaction, OwnerIssuer};
@@ -19,8 +19,10 @@ use std::path::{Path, PathBuf};
 #[path = "managed_cli_cold_version.rs"]
 mod cold_version;
 pub(crate) use cold_version::{observe_version_scope, revalidate_version_action,
-    revalidate_version_action_at_fingerprints,
-    no_unsettled_managed_version_change_for_action, QualifiedVersionAction};
+    revalidate_version_action_at_fingerprints,revalidate_version_action_with_probe,
+    revalidate_version_action_at_fingerprints_with_probe,
+    no_unsettled_managed_version_change_for_action,
+    no_unsettled_managed_version_change_for_action_with_probe,QualifiedVersionAction};
 
 const REPARSE_POINT: u32 = 0x400;
 const CONTAINER: &str = "v37-managed-cli";
@@ -231,7 +233,8 @@ fn verified_staging_from_db(db: &VerifiedDatabaseConnection<'_>)
     -> Result<PathBuf, ManagedCliError> {
     let root = db.path().parent().ok_or(ManagedCliError::IdentityChanged)?;
     plain_dir(root)?;
-    if crate::root::inspect_root(root).map_err(|_|ManagedCliError::IdentityChanged)?.identity
+    if crate::root::inspect_root(root).map_err(|error|
+        ManagedCliError::Observation(format!("managed staging root observation: {error:?}")))?.identity
         != *db.root_identity() { return Err(ManagedCliError::IdentityChanged); }
     let managed=root.join(CONTAINER);
     plain_dir(&managed)?;
@@ -292,9 +295,15 @@ fn require_open_action(action:&ActionRecord,driver:&str,phase:ActionPhase)
 }
 
 fn version_mutation_guard(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
-    driver:&str,action:Option<&ActionRecord>)->Result<(),ManagedCliError>{
+    driver:&str,action:Option<&ActionRecord>,proof:Option<&NativeStopProof>)
+    ->Result<(),ManagedCliError>{
     if let Some(action)=action {
-        no_unsettled_managed_version_change_for_action(db,root,driver,action)?;
+        if let Some(proof)=proof {
+            no_unsettled_managed_version_change_for_action_with_probe(db,root,driver,
+                action,proof)?;
+        } else {
+            no_unsettled_managed_version_change_for_action(db,root,driver,action)?;
+        }
     } else {
         no_open_version_action(db,driver)?;
         no_unsettled_managed_version_change(db,driver)?;
@@ -755,7 +764,7 @@ fn record_managed_cli_stage_in_current_transaction(
                     _=>return Err(ManagedCliError::Busy),
                 };
                 inspect_staged_official_cli_version(root,driver,&selected.0,&selected.2)?;
-                version_mutation_guard(db,root,driver,action)?;
+                version_mutation_guard(db,root,driver,action,None)?;
                 Some(selected)
             } else if no_previous {
                 require_default_first_copy(db,driver)?;
@@ -799,30 +808,35 @@ pub(crate) fn confirm_managed_cli_launch_for_version(db: &mut VerifiedDatabaseCo
         return Err(ManagedCliError::IdentityChanged);
     }
     transaction(db, |db| confirm_managed_cli_launch_in_current_transaction(
-        db,root,driver,version,stage_name,observed_digest,observed_version,None))
+        db,root,driver,version,stage_name,observed_digest,observed_version,None,None))
 }
 
 pub(crate) fn confirm_managed_cli_launch_for_version_action_in_current_transaction(
     db:&VerifiedDatabaseConnection<'_>,root:&RootLock,owner:&OwnerIssuer,
     driver:&str,version:&str,
     stage_name:&str,observed_digest:&str,observed_version:&str,
-    action:&ActionRecord)->Result<(),ManagedCliError>{
+    action:&ActionRecord,proof:&NativeStopProof)->Result<(),ManagedCliError>{
     require_open_action(action,driver,ActionPhase::Probing)?;
     check_owner_in_current_transaction(db,owner)?;
     confirm_managed_cli_launch_in_current_transaction(db,root,driver,version,stage_name,
-        observed_digest,observed_version,Some(action))
+        observed_digest,observed_version,Some(action),Some(proof))
 }
 
 fn confirm_managed_cli_launch_in_current_transaction(
     db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,version:&str,
     stage_name:&str,observed_digest:&str,observed_version:&str,
-    action:Option<&ActionRecord>)->Result<(),ManagedCliError>{
+    action:Option<&ActionRecord>,proof:Option<&NativeStopProof>)->Result<(),ManagedCliError>{
     let pin=read_official_cli_version(driver,version).ok_or(ManagedCliError::Unsupported)?;
     if observed_digest!=format!("sha256:{}",pin.image_sha256)||observed_version!=pin.version {
         return Err(ManagedCliError::IdentityChanged);
     }
         if let Some(action)=action {
-            no_unsettled_managed_version_change_for_action(db,root,driver,action)?;
+            if let Some(proof)=proof {
+                no_unsettled_managed_version_change_for_action_with_probe(db,root,driver,
+                    action,proof)?;
+            } else {
+                no_unsettled_managed_version_change_for_action(db,root,driver,action)?;
+            }
         } else {
             no_open_version_action(db,driver)?;
             no_unsettled_instance_use(db,driver)?;
@@ -831,7 +845,7 @@ fn confirm_managed_cli_launch_in_current_transaction(
         let previous = Statement::prepare(db.as_ptr(),
             "SELECT 1 FROM main.gogoke_v37_instance_cli_copies WHERE driver_id=?1 AND previous_version IS NOT NULL LIMIT 1")?;
         previous.bind_text(1,driver)?;
-        if previous.step_row()? { version_mutation_guard(db,root,driver,action)?; }
+        if previous.step_row()? { version_mutation_guard(db,root,driver,action,proof)?; }
         let write = Statement::prepare(db.as_ptr(), "UPDATE main.gogoke_v37_instance_cli_copies SET state='PROBED',raw_error=NULL,revision=revision+1 WHERE driver_id=?1 AND state='STAGED' AND stage_name=?2 AND image_sha256=?3 AND version=?4")?;
         write.bind_text(1, driver)?;
         write.bind_text(2, stage_name)?;
@@ -989,7 +1003,7 @@ fn record_managed_cli_progress_in_current_transaction(
             if matches!(old.as_str(),"READY"|"UPGRADING") ||
                 (!no_previous && matches!(old.as_str(),"BLOCKED"|"UPGRADE_FAILED")) {
                 if let Some(root)=root {
-                    version_mutation_guard(db,root,driver,action)?;
+                    version_mutation_guard(db,root,driver,action,None)?;
                 } else {
                     no_unsettled_managed_version_change(db,driver)?;
                 }

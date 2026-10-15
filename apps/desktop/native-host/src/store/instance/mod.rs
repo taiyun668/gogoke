@@ -55,7 +55,8 @@ pub(crate) use managed_cli::{read_official_cli_version,inspect_staged_official_c
 pub(crate) use managed_cli::{require_default_first_copy,read_prepared_managed_replacement};
 pub(crate) use managed_cli::{no_unsettled_instance_use,is_first_same_pin_copy};
 pub(crate) use managed_cli::{observe_version_scope,revalidate_version_action,
-    revalidate_version_action_at_fingerprints,
+    revalidate_version_action_at_fingerprints,revalidate_version_action_with_probe,
+    revalidate_version_action_at_fingerprints_with_probe,
     no_unsettled_managed_version_change_for_action,QualifiedVersionAction};
 pub(crate) use managed_cli::{record_managed_cli_progress_for_version_action_in_current_transaction,
     record_managed_cli_stage_for_version_action_in_current_transaction,

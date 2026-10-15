@@ -22,6 +22,78 @@ pub(crate) enum ActionError {
     Authority(String),
     Store(crate::store::atomic::AtomicError),
 }
+
+#[cfg(test)]
+mod family_codec_controls {
+    use super::*;
+
+    fn encode(parts:&[String])->String {
+        let mut framed=Vec::new();
+        for part in parts {
+            framed.extend_from_slice(&(part.len() as u64).to_be_bytes());
+            framed.extend_from_slice(part.as_bytes());
+        }
+        framed.iter().map(|byte|format!("{byte:02x}")).collect()
+    }
+
+    fn original_open_member()->(Vec<String>,Vec<String>) {
+        // These are the actual H OPEN/C column positions emitted by F's
+        // original source collector. This tests only journal decoding; a
+        // source-shaped string never substitutes for H or kernel evidence.
+        let mut source=vec![String::new();42];
+        source[0]="H_SESSION_OPEN-v1".into();
+        source[1]="instance-a".into();source[3]="global".into();
+        source[4]="session-a".into();source[5]="1".into();
+        source[6]="open-a".into();source[7]="h-open-a".into();
+        source[11]="6162".into();source[32]="6162".into();
+        source[16]="123".into();source[17]="456".into();
+        source[35]="no-alias".into();source[36]="0".into();
+        source[37]="1".into();source[38]="seat-a".into();
+        source[39]="incarnation-a".into();
+        source[40]="global-native-selection".into();
+        source[41]="a".repeat(64);
+        let proof=vec!["KERNEL_REBOOT".into(),"instance-a".into(),"global".into(),
+            "session-a".into(),"1".into(),"h-open-a".into(),
+            "123".into(),"456".into()];
+        (source,proof)
+    }
+
+    #[test]
+    fn family_codec_requires_one_canonical_source_for_each_original_member() {
+        let (source,proof)=original_open_member();
+        let make=|members:&[(Vec<String>,Vec<String>)]| {
+            let mut sources=vec!["managed-cli-family-source-v1".into(),"codex".into()];
+            let mut proofs=vec!["managed-cli-family-proof-v1".into(),"codex".into()];
+            for (source,proof) in members {
+                sources.push(encode(source));proofs.push(encode(proof));
+            }
+            (encode(&sources),encode(&proofs))
+        };
+        let positive=make(&[(source.clone(),proof.clone())]);
+        assert!(valid_family_codec("codex",&positive.0,&positive.1).is_ok());
+        for changed in [
+            (vec![(source.clone(),proof.clone()),(source.clone(),proof.clone())],"duplicate"),
+            (vec![],"empty"),
+        ] {
+            let bytes=make(&changed.0);
+            assert!(valid_family_codec("codex",&bytes.0,&bytes.1).is_err(),
+                "{} member must refuse",changed.1);
+        }
+        let mut changed=source.clone();changed[37]="0".into();
+        let bytes=make(&[(changed,proof.clone())]);
+        assert!(valid_family_codec("codex",&bytes.0,&bytes.1).is_err(),
+            "NULL and empty source states differ");
+        let mut changed=proof.clone();changed[0]="EXACT_GONE".into();
+        let bytes=make(&[(source.clone(),changed)]);
+        assert!(valid_family_codec("codex",&bytes.0,&bytes.1).is_err(),
+            "a reboot source cannot be relabeled exact gone");
+        let mut changed=proof.clone();changed[7]="457".into();
+        let bytes=make(&[(source.clone(),changed)]);
+        assert!(valid_family_codec("codex",&bytes.0,&bytes.1).is_err(),
+            "the exact C FILETIME is part of membership");
+        assert!(valid_family_codec("codex",&positive.0,&positive.1).is_ok());
+    }
+}
 impl From<crate::store::atomic::AtomicError> for ActionError {
     fn from(value: crate::store::atomic::AtomicError) -> Self { Self::Store(value) }
 }
@@ -148,6 +220,112 @@ fn bytes(value: &str) -> Result<Vec<u8>> {
 fn matching_digest(hex: &str, expected: &str) -> Result<bool> {
     Ok(expected == content_hash(&bytes(hex)?))
 }
+
+/// The journal records an identity binding, never a native proof. Decode it
+/// before accepting or replaying a family action so malformed, reordered and
+/// ambiguous members cannot acquire a different meaning on a later read.
+fn unframe(raw: &[u8]) -> Result<Vec<String>> {
+    if raw.len() > 8_388_608 { return Err(ActionError::Conflict); }
+    let mut parts=Vec::new();
+    let mut offset=0usize;
+    while offset<raw.len() {
+        let end=offset.checked_add(8).ok_or(ActionError::Conflict)?;
+        let size=u64::from_be_bytes(raw.get(offset..end).ok_or(ActionError::Conflict)?
+            .try_into().map_err(|_|ActionError::Conflict)?);
+        let size=usize::try_from(size).map_err(|_|ActionError::Conflict)?;
+        offset=end;
+        let end=offset.checked_add(size).ok_or(ActionError::Conflict)?;
+        let part=raw.get(offset..end).ok_or(ActionError::Conflict)?;
+        parts.push(std::str::from_utf8(part).map_err(|_|ActionError::Conflict)?.to_owned());
+        if parts.len()>4096 {return Err(ActionError::Conflict)}
+        offset=end;
+    }
+    Ok(parts)
+}
+
+fn valid_family_codec(driver:&str,source_hex:&str,pairs_hex:&str)->Result<()> {
+    let sources=unframe(&bytes(source_hex).map_err(|_|ActionError::Conflict)?)?;
+    let proofs=unframe(&bytes(pairs_hex).map_err(|_|ActionError::Conflict)?)?;
+    if sources.len()<3 || sources.len()!=proofs.len() ||
+        sources[0]!="managed-cli-family-source-v1" ||
+        proofs[0]!="managed-cli-family-proof-v1" ||
+        sources[1]!=driver || proofs[1]!=driver {return Err(ActionError::Conflict)}
+    let mut previous:Option<(String,String,String,String,String)>=None;
+    let mut pairs=std::collections::BTreeSet::new();
+    for (source,proof) in sources[2..].iter().zip(&proofs[2..]) {
+        let source=unframe(&bytes(source).map_err(|_|ActionError::Conflict)?)?;
+        let proof=unframe(&bytes(proof).map_err(|_|ActionError::Conflict)?)?;
+        if proof.len()!=8 {return Err(ActionError::Conflict)}
+        let (key,pid_field,created_field)=match source.first().map(String::as_str) {
+            Some("H_SESSION_OPEN-v1") if source.len()==42 &&
+                proof[0]=="KERNEL_REBOOT" && source[35]=="no-alias" &&
+                source[36]=="0" && source[37]=="1" && source[21].is_empty() &&
+                source[11]==source[32] && !source[38].is_empty() &&
+                !source[39].is_empty() &&
+                ((source[3]=="global" && source[40]=="global-native-selection") ||
+                 (source[3]!="global" && digest(&source[40]))) &&
+                digest(&source[41]) =>
+                ((&source[1],&source[3],&source[4],&source[5],&source[7]),
+                    &source[16],&source[17]),
+            Some("H_SESSION_STOP-v1") if source.len()==39 &&
+                proof[0]=="ORIGINAL_STOP" && source[15]=="STOPPED" &&
+                source[19]=="STOPPED" && source[14]==source[20] &&
+                source[32]=="1" && source[33]=="0" &&
+                source[34]=="0" && source[35]=="0" &&
+                digest(&source[36]) && digest(&source[37]) &&
+                ((source[2]=="global" && source[38]=="global-native-selection") ||
+                 (source[2]!="global" && digest(&source[38]))) =>
+                ((&source[1],&source[2],&source[3],&source[4],&source[6]),
+                    &source[23],&source[24]),
+            Some("GLOBAL_LOGIN_C-v1") if source.len()==17 &&
+                source[9]=="global" &&
+                ((source[11]=="UNKNOWN" && driver=="codex" &&
+                    proof[0]=="KERNEL_REBOOT" &&
+                    source[12].is_empty() && source[13]=="1") ||
+                 (source[11]=="STOPPED" && proof[0]=="ORIGINAL_STOP" &&
+                    source[13]=="0" && source[12].starts_with("sha256:") &&
+                    source[12].len()==71)) =>
+                ((&source[8],&source[9],&source[1],&source[10],&source[1]),
+                    &source[4],&source[5]),
+            Some("MANAGED_PROBE_C-v1") if source.len()==19 &&
+                proof[0]=="ORIGINAL_STOP" && proof[2]=="managed-probe" &&
+                source[8]==format!("managed-cli-{driver}") &&
+                source[9]=="global" && source[11]=="STOPPED" && source[13]=="0" &&
+                source[12].starts_with("sha256:") && source[12].len()==71 &&
+                !source[14].is_empty() && !source[15].is_empty() &&
+                !source[16].is_empty() && !source[17].is_empty() &&
+                !source[18].is_empty() && source[1].starts_with(&format!(
+                    "managed-probe-{driver}-{}-",
+                    &crate::store::digest::sha256_hex(source[14].as_bytes())[..40])) =>
+                ((&source[8],&proof[2],&source[1],&source[10],&source[1]),
+                    &source[4],&source[5]),
+            _=>return Err(ActionError::Conflict),
+        };
+        if [key.0,key.1,key.2,key.3,key.4].iter().any(|value|value.is_empty()) ||
+            proof[1].as_str()!=key.0.as_str() ||
+            proof[2].as_str()!=key.1.as_str() ||
+            proof[3].as_str()!=key.2.as_str() ||
+            proof[4].as_str()!=key.3.as_str() ||
+            proof[5].as_str()!=key.4.as_str() ||
+            proof[6].as_str()!=pid_field.as_str() ||
+            proof[7].as_str()!=created_field.as_str() {
+            return Err(ActionError::Conflict)
+        }
+        let pid=proof[6].parse::<u32>().map_err(|_|ActionError::Conflict)?;
+        let created=proof[7].parse::<u64>().map_err(|_|ActionError::Conflict)?;
+        if pid==0 || created==0 || proof[6]!=pid.to_string() ||
+            proof[7]!=created.to_string() || !pairs.insert((pid,created)) {
+            return Err(ActionError::Conflict);
+        }
+        let canonical=(key.0.clone(),key.1.clone(),key.2.clone(),
+            key.3.clone(),key.4.clone());
+        if previous.as_ref().is_some_and(|earlier|earlier>=&canonical) {
+            return Err(ActionError::Conflict);
+        }
+        previous=Some(canonical);
+    }
+    Ok(())
+}
 fn checked_identity(db: &VerifiedDatabaseConnection<'_>, root: &RootLock) -> Result<(String,String)> {
     let observed = inspect_root(&root.canonical_root().canonical_path)
         .map_err(|error| ActionError::Identity(format!("root observation: {error:?}")))?;
@@ -176,10 +354,14 @@ fn validate_record(row: &ActionRecord) -> Result<()> {
         if !row.proof_family.is_empty() || !row.source_hex.is_empty() || !row.source_digest.is_empty() ||
             !row.pairs_hex.is_empty() || !row.pairs_digest.is_empty() { return Err(ActionError::Conflict); }
     } else if row.mode == "COLD" {
-        if !matches!(row.proof_family.as_str(), "exact-gone" | "reboot") ||
+        if !matches!(row.proof_family.as_str(), "exact-gone" | "reboot" | "family-v1") ||
             !matching_digest(&row.source_hex, &row.source_digest).unwrap_or(false) ||
             !matching_digest(&row.pairs_hex, &row.pairs_digest).unwrap_or(false) ||
             row.source_hex.is_empty() || row.pairs_hex.is_empty() { return Err(ActionError::Conflict); }
+        if row.proof_family=="family-v1" &&
+            valid_family_codec(&row.driver,&row.source_hex,&row.pairs_hex).is_err() {
+            return Err(ActionError::Conflict);
+        }
     } else { return Err(ActionError::Conflict); }
     if row.initial_copy_fingerprint.is_empty() || row.initial_source_fingerprint.is_empty() ||
         row.current_copy_fingerprint.is_empty() || row.current_source_fingerprint.is_empty() {
@@ -321,12 +503,16 @@ pub(crate) fn begin_in_current_transaction(
         ActionMode::Strict if !begin.proof_family.is_empty() || !begin.source_hex.is_empty() ||
             !begin.source_digest.is_empty() || !begin.pairs_hex.is_empty() || !begin.pairs_digest.is_empty() =>
             return Err(ActionError::Invalid("strict proof fields")),
-        ActionMode::Cold if !matches!(begin.proof_family, "exact-gone" | "reboot") ||
+        ActionMode::Cold if !matches!(begin.proof_family, "exact-gone" | "reboot" | "family-v1") ||
             bytes(begin.source_hex)?.is_empty() || bytes(begin.pairs_hex)?.is_empty() ||
             !matching_digest(begin.source_hex, begin.source_digest)? ||
             !matching_digest(begin.pairs_hex, begin.pairs_digest)? =>
             return Err(ActionError::Invalid("cold proof snapshot")),
         _ => (),
+    }
+    if begin.mode==ActionMode::Cold && begin.proof_family=="family-v1" &&
+        valid_family_codec(begin.driver,begin.source_hex,begin.pairs_hex).is_err() {
+        return Err(ActionError::Invalid("family proof snapshot"));
     }
     if let Some(row) = read(db, root, begin.request_id)? {
         if row.driver != begin.driver || row.operation != begin.operation.as_str() ||

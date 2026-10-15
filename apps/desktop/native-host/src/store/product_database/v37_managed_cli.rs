@@ -145,6 +145,23 @@ impl<'a> ProductDatabase<'a> {
         self.check_managed_version_scope(driver,scope)
     }
 
+    fn managed_version_action_resources_with_probe(&self,driver:&str,
+        action:&instance::ActionRecord,proof:&crate::process::NativeStopProof)
+        ->Result<instance::QualifiedVersionAction> {
+        let scope=instance::revalidate_version_action_with_probe(&self.connection,self.root,
+            driver,action,proof).map_err(|error|failure("version action original probe",error))?;
+        self.check_managed_version_scope(driver,scope)
+    }
+
+    fn managed_version_action_resources_at_fingerprints_with_probe(&self,driver:&str,
+        action:&instance::ActionRecord,copy:&str,source:&str,
+        proof:&crate::process::NativeStopProof)->Result<instance::QualifiedVersionAction> {
+        let scope=instance::revalidate_version_action_at_fingerprints_with_probe(
+            &self.connection,self.root,driver,action,copy,source,proof)
+            .map_err(|error|failure("version action original probe post-write",error))?;
+        self.check_managed_version_scope(driver,scope)
+    }
+
     fn check_managed_version_scope(&self,driver:&str,scope:instance::QualifiedVersionAction)
         ->Result<instance::QualifiedVersionAction> {
         if !self.pending_native_launches.is_empty() || !self.pending_credential_preparations.is_empty() {
@@ -2583,13 +2600,16 @@ impl<'a> ProductDatabase<'a> {
                 return Err(failure_record(self,"PROBE_UNKNOWN",raw));
             },
         };
-        if let Err(error)=self.process_custodian.confirm_stop_durable(&DurableStopConfirmation{
+        let proof=match self.process_custodian.confirm_stop_durable(&DurableStopConfirmation{
             ticket:prepared.ticket.clone(),custodian_nonce:prepared.custodian_nonce.clone(),
             identity:prepared.identity.clone(),proof_hash:proof.proof_hash(),durable_revision:revision,
         }){
-            let raw=format!("probe durable stop confirmation: {error:?}; proof: {proof:?}; STDERR_TAIL: {stderr}");
-            return Err(failure_record(self,"PROBE_UNKNOWN",raw));
-        }
+            Ok(confirmed)=>confirmed,
+            Err(error)=>{
+                let raw=format!("probe durable stop confirmation: {error:?}; proof: {proof:?}; STDERR_TAIL: {stderr}");
+                return Err(failure_record(self,"PROBE_UNKNOWN",raw));
+            },
+        };
         if let Some(error)=stderr_drain {
             let raw=format!("version stderr drain: {error}; STDERR_TAIL: {stderr}");
             return Err(failure_record(self,"BLOCKED",raw));
@@ -2616,13 +2636,13 @@ impl<'a> ProductDatabase<'a> {
         }
         if let Some(action)=action {
             self.version_action_transaction(|this| {
-                this.managed_version_action_resources(driver,Some(action))?;
+                this.managed_version_action_resources_with_probe(driver,action,&proof)?;
                 instance::confirm_managed_cli_launch_for_version_action_in_current_transaction(&this.connection,this.root,
-                    &this.owner,driver,version,stage,&digest,pin.version,action)
+                    &this.owner,driver,version,stage,&digest,pin.version,action,&proof)
                     .map_err(|error|failure("bound PROBED confirmation",error))?;
                 let next=instance::managed_version_fingerprints(&this.connection,this.root,driver)
                     .map_err(|error|failure("probe post-effect fingerprints",error))?;
-                this.managed_version_action_resources_at_fingerprints(driver,action,&next.0,&next.1)?;
+                this.managed_version_action_resources_at_fingerprints_with_probe(driver,action,&next.0,&next.1,&proof)?;
                 let receipt=bound_step_response("probe",driver,version,request,&action.operation,"PROBED",Some(stage));
                 let receipt_hex=action_hex(&receipt);
                 instance::advance_version_action_in_current_transaction(&this.connection,this.root,&this.owner,
