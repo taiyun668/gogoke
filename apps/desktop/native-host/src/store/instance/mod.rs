@@ -18,6 +18,7 @@ mod grok_home_grants;
 mod legacy_fence;
 pub(crate) mod holder_disappearance;
 mod managed_version_action;
+mod legacy_source_migration;
 
 pub(crate) use managed_version_action::{begin_in_current_transaction as begin_version_action_in_current_transaction,
     record_begin_effect_in_current_transaction as record_begin_version_action_effect_in_current_transaction,
@@ -65,6 +66,8 @@ pub(crate) use program_source::{bind_managed_instance_program, migrate_quiescent
     activate_quiescent_managed_version_in_current_transaction,
     activate_managed_version_action_in_current_transaction,managed_version_fingerprints,
     ProgramSourceError};
+pub(crate) use legacy_source_migration::{migrate_legacy_codex_source, LegacySourceRequest,
+    LegacySourceResult};
 pub(crate) use registry::{preflight_register_request, reconcile_register_replay,
     register_instance, record_observation, repin_program, reconcile_program_repin,
     reconcile_managed_switch,valid_managed_switch_request_id,ManagedSwitchReceipt,
@@ -116,7 +119,7 @@ use super::atomic::Statement;
 use super::orchestration::OrchestrationError;
 use super::same_open::VerifiedDatabaseConnection;
 
-const SCHEMA: [(&str, &str); 11] = [
+const SCHEMA: [(&str, &str); 12] = [
     (
         "gogoke_v37_instances",
         "CREATE TABLE gogoke_v37_instances(instance_id TEXT PRIMARY KEY, driver_id TEXT NOT NULL, home_ref TEXT NOT NULL UNIQUE, home_identity TEXT NOT NULL UNIQUE, program_digest TEXT NOT NULL, version TEXT NOT NULL, install_state TEXT NOT NULL CHECK(install_state IN ('UNKNOWN','INSTALLED','MISSING')), login_state TEXT NOT NULL CHECK(login_state IN ('UNKNOWN','LOGGED_IN','LOGGED_OUT')), revision INTEGER NOT NULL CHECK(revision >= 1)) STRICT",
@@ -140,6 +143,7 @@ const SCHEMA: [(&str, &str); 11] = [
     ("gogoke_v37_instance_cli_copies", "CREATE TABLE gogoke_v37_instance_cli_copies(driver_id TEXT PRIMARY KEY,state TEXT NOT NULL CHECK(state IN ('NOT_INSTALLED','DOWNLOADING','INSTALLING','UPGRADING','STAGED','PROBED','READY','INSTALL_FAILED','BLOCKED','PROBE_UNKNOWN','UPGRADE_FAILED','UNINSTALLING')),version TEXT,archive_sha256 TEXT,image_sha256 TEXT,stage_name TEXT,previous_version TEXT,previous_image_sha256 TEXT,previous_stage_name TEXT,progress_bytes INTEGER NOT NULL DEFAULT 0,raw_error TEXT,checked_at TEXT,official_notice TEXT,revision INTEGER NOT NULL CHECK(revision>=1)) STRICT"),
     ("gogoke_v37_instance_program_sources", "CREATE TABLE gogoke_v37_instance_program_sources(instance_id TEXT PRIMARY KEY REFERENCES gogoke_v37_instances(instance_id),source TEXT NOT NULL CHECK(source='MANAGED'),stage_name TEXT NOT NULL,program_digest TEXT NOT NULL,version TEXT NOT NULL,home_identity TEXT NOT NULL,registration_request_id TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>=1)) STRICT"),
     ("gogoke_v37_instance_version_actions", managed_version_action::SCHEMA),
+    ("gogoke_v37_instance_legacy_source_migrations", legacy_source_migration::SCHEMA),
 ];
 
 fn observed_schema(
@@ -211,7 +215,8 @@ pub(crate) fn initialize_schema(
     if !observed.is_empty() && observed != previous_schema() && observed != pre_history_schema()
         && observed != sorted_schema_prefix(6) && observed != sorted_schema_prefix(7)
         && observed != sorted_schema_prefix(8) && observed != sorted_schema_prefix(9)
-        && observed != sorted_schema_prefix(10) {
+        && observed != sorted_schema_prefix(10)
+        && observed != sorted_schema_prefix(11) {
         return Err(OrchestrationError::AccessDenied);
     }
     connection
@@ -357,6 +362,26 @@ mod tests {
             initialize_schema(connection).unwrap();
             assert_eq!(observed_schema(connection).unwrap(), expected_schema());
             assert_eq!(snapshot(connection), before);
+        });
+    }
+
+    #[test]
+    fn exact_eleven_table_schema_adds_only_legacy_journal_and_preserves_old_rows() {
+        fixture(|connection| {
+            for (_, sql) in &SCHEMA[..11] { connection.execute(sql).unwrap(); }
+            connection.execute("INSERT INTO main.gogoke_v37_instances VALUES('instanceA','codex','homeA','identityA','sha256:test','1','UNKNOWN','UNKNOWN',7)").unwrap();
+            let before = observed_schema(connection).unwrap();
+            assert_eq!(before, sorted_schema_prefix(11));
+            initialize_schema(connection).unwrap();
+            assert_eq!(observed_schema(connection).unwrap(), expected_schema());
+            assert_eq!(observed_schema(connection).unwrap().into_iter()
+                .filter(|(name, _)| name != "gogoke_v37_instance_legacy_source_migrations")
+                .collect::<Vec<_>>(), before);
+            let row = Statement::prepare(connection.as_ptr(),
+                "SELECT revision FROM main.gogoke_v37_instances WHERE instance_id='instanceA'").unwrap();
+            assert!(row.step_row().unwrap());
+            assert_eq!(row.column_text(0).unwrap(), "7");
+            assert!(!row.step_row().unwrap());
         });
     }
 

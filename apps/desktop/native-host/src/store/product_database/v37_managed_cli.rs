@@ -700,6 +700,34 @@ impl<'a> ProductDatabase<'a> {
         let command=field(&fields,"command")?;
         authority::read_product_identity(&mut self.connection,&self.owner)?;
         match command.as_str(){
+            "migrate-legacy-codex-source" if fields.len()==9=>{
+                let driver=field(&fields,"driverId")?;
+                if driver!="codex" {return Err(OrchestrationError::AccessDenied)}
+                let request=field(&fields,"requestId")?;
+                let target=field(&fields,"targetId")?;
+                let original=field(&fields,"originalRequestId")?;
+                let fingerprint=field(&fields,"originalRequestFingerprint")?;
+                let receipt=field(&fields,"originalNativeReceiptHex")?;
+                let home=field(&fields,"originalHomeIdentity")?;
+                // This bridge owns every in-process execution source. Native
+                // F also rechecks the persisted H/C family in both immediate
+                // transactions before making its one SOURCE effect.
+                if self.owner_login.is_some() || !self.native_sessions.is_empty() ||
+                    !self.pending_native_launches.is_empty() ||
+                    !self.pending_credential_preparations.is_empty() {
+                    return Err(OrchestrationError::AccessDenied);
+                }
+                let applied=result("migrate-legacy-codex-source",[
+                    ("driverId",string("codex")),("requestId",string(&request)),
+                    ("targetId",string(&target)),("status",string("APPLIED"))]);
+                let outcome=instance::migrate_legacy_codex_source(&mut self.connection,self.root,
+                    &self.owner,&instance::LegacySourceRequest {
+                        raw:frame,request_id:&request,target_id:&target,
+                        original_request_id:&original,original_fingerprint:&fingerprint,
+                        original_receipt_hex:&receipt,original_home_identity:&home,
+                    },&applied).map_err(|error|failure("strict legacy SOURCE",error))?;
+                Ok(outcome.receipt)
+            },
             "status" if fields.len()==3=>{
                 let driver=field(&fields,"driverId")?;
                 let pending=self.pending_managed_version_action(&driver)?;
@@ -915,6 +943,85 @@ mod tests {
     use std::time::{SystemTime,UNIX_EPOCH};
 
     static PINNED_VERSION_ARCHIVES:OnceLock<Mutex<HashMap<(String,String),PathBuf>>>=OnceLock::new();
+
+    #[test]
+    fn strict_legacy_codex_arm_applies_once_and_replays_only_its_original_receipt() {
+        let _guard=route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("gogoke-legacy-source-arm-{}-{nonce}",std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let database=path.join("state.sqlite");
+        let mut product=ProductDatabase::open(&root,&database).unwrap();
+        let (stage,image)=super::super::managed_cli_test_setup::prepared_image(&root,"codex");
+        let pin=instance::read_fixed_official_cli("codex").unwrap();
+        let old_path=path.join("original-codex-image");
+        fs::write(&old_path,b"original synthetic Codex image").unwrap();
+        let original_program=instance::ProgramObservation::observe(&old_path,"0.149.0").unwrap();
+        let original_raw=br#"{"schema":"gogoke.37.operations.v1","family":"K-INSTANCE","operation":"register","requestId":"registerA","targetId":"legacyA","domainId":"global","expectedRevision":"0","payload":{"driverId":"codex"}}"#;
+        instance::register_instance(&mut product.connection,&root,&instance::Registration {
+            request_id:"registerA",request_bytes:original_raw,instance_id:"legacyA",
+            driver_id:"codex",program:&original_program,
+        }).unwrap();
+        let observed=instance::ProgramObservation::observe(&image,pin.version).unwrap();
+        let repin_raw=br#"{"schema":"gogoke.37.operations.v1","family":"K-INSTANCE","operation":"repin-after-manual-upgrade","requestId":"repinA","targetId":"legacyA","domainId":"global","expectedRevision":"1","payload":{}}"#;
+        instance::repin_program(&mut product.connection,&root,&product.owner,
+            &instance::ProgramRepin {request_id:"repinA",request_bytes:repin_raw,
+                instance_id:"legacyA",expected_revision:1},&observed).unwrap();
+        product.connection.execute("INSERT INTO main.gogoke_v37_instance_profiles(instance_id,display_name,enabled,tombstoned,revision) VALUES('legacyA','legacy fixture',0,0,1)").unwrap();
+        let copy=Statement::prepare(product.connection.as_ptr(),
+            "INSERT INTO main.gogoke_v37_instance_cli_copies(driver_id,state,version,archive_sha256,image_sha256,stage_name,revision) VALUES('codex','READY',?1,?2,?3,?4,1)").unwrap();
+        for (index,value) in [pin.version,pin.archive_sha256,pin.image_sha256,stage.as_str()]
+            .iter().enumerate(){copy.bind_text((index+1) as i32,value).unwrap();}
+        copy.step_done().unwrap();drop(copy);
+        let original=Statement::prepare(product.connection.as_ptr(),
+            "SELECT request_hex,native_receipt_id,phase FROM main.gogoke_v37_instance_operations WHERE request_id='registerA'").unwrap();
+        assert!(original.step_row().unwrap());
+        let fingerprint=original.column_text(0).unwrap();
+        let home=original.column_text(1).unwrap();
+        assert_eq!(original.column_text(2).unwrap(),"APPLIED");
+        assert!(!original.step_row().unwrap());drop(original);
+        let original_before=table_rows(&product,
+            "SELECT request_id,request_hex,target_id,phase,COALESCE(native_receipt_id,'') FROM main.gogoke_v37_instance_operations WHERE target_id='legacyA' ORDER BY request_id",5);
+        let instance_before=table_rows(&product,
+            "SELECT instance_id,program_digest,version,home_identity,revision FROM main.gogoke_v37_instances WHERE instance_id='legacyA'",5);
+        let frame=format!("{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"migrate-legacy-codex-source\",\"driverId\":\"codex\",\"requestId\":\"sourceMoveA\",\"targetId\":\"legacyA\",\"originalRequestId\":\"registerA\",\"originalRequestFingerprint\":\"{fingerprint}\",\"originalNativeReceiptHex\":\"{}\",\"originalHomeIdentity\":\"{home}\"}}",action_hex(home.as_bytes()));
+        assert!(product.dispatch_user_managed_cli(frame.replace(&fingerprint,"00").as_bytes()).is_err());
+        assert!(product.dispatch_user_managed_cli(frame.replacen("}",",\"extra\":\"x\"}",1).as_bytes()).is_err());
+        product.connection.execute("UPDATE main.gogoke_v37_instance_cli_copies SET stage_name='missing-stage' WHERE driver_id='codex'").unwrap();
+        assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err());
+        let restored=Statement::prepare(product.connection.as_ptr(),
+            "UPDATE main.gogoke_v37_instance_cli_copies SET stage_name=?1 WHERE driver_id='codex'").unwrap();
+        restored.bind_text(1,&stage).unwrap();restored.step_done().unwrap();drop(restored);
+        product.connection.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state) VALUES('unsettledA','ticketA','nonceA','4294967295','1','synthetic.exe','sha256:0000000000000000000000000000000000000000000000000000000000000000','legacyA','global','1','UNKNOWN')").unwrap();
+        assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err());
+        product.connection.execute("DELETE FROM main.gogoke_coordination_process_custody WHERE operation_id='unsettledA'").unwrap();
+        assert!(table_rows(&product,
+            "SELECT request_id FROM main.gogoke_v37_instance_legacy_source_migrations",1).is_empty());
+        let applied=product.dispatch_user_managed_cli(frame.as_bytes()).unwrap();
+        assert!(String::from_utf8_lossy(&applied).contains("\"status\":\"APPLIED\""));
+        assert_eq!(table_rows(&product,
+            "SELECT request_id,request_hex,target_id,phase,COALESCE(native_receipt_id,'') FROM main.gogoke_v37_instance_operations WHERE target_id='legacyA' ORDER BY request_id",5),original_before);
+        assert_eq!(table_rows(&product,
+            "SELECT instance_id,program_digest,version,home_identity,revision FROM main.gogoke_v37_instances WHERE instance_id='legacyA'",5),instance_before);
+        assert_eq!(table_rows(&product,
+            "SELECT source,stage_name,program_digest,version,home_identity,registration_request_id,revision FROM main.gogoke_v37_instance_program_sources WHERE instance_id='legacyA'",7),
+            vec![vec!["MANAGED".into(),stage.clone(),observed.digest.clone(),
+                pin.version.into(),home.clone(),"registerA".into(),"1".into()]]);
+        assert_eq!(table_rows(&product,
+            "SELECT request_id,phase FROM main.gogoke_v37_instance_legacy_source_migrations",2),
+            vec![vec!["sourceMoveA".into(),"APPLIED".into()]]);
+        assert_eq!(product.dispatch_user_managed_cli(frame.as_bytes()).unwrap(),applied);
+        assert!(product.dispatch_user_managed_cli(format!(" {frame}").as_bytes()).is_err());
+        assert!(product.dispatch_user_managed_cli(frame.replace("sourceMoveA","sourceMoveB").as_bytes()).is_err());
+        assert!(product.dispatch_user_managed_cli(frame.replacen("}",",\"extra\":\"x\"}",1).as_bytes()).is_err());
+        assert_eq!(table_rows(&product,
+            "SELECT request_id,phase FROM main.gogoke_v37_instance_legacy_source_migrations",2).len(),1);
+        product.close_checked().unwrap();drop(root);
+        fs::remove_file(database).unwrap();
+        fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).unwrap();
+        fs::remove_dir_all(path).unwrap();
+    }
 
     fn real_opencode_31_stage(root:&RootLock)->(String,PathBuf) {
         real_opencode_version_stage(root,"1.18.31")

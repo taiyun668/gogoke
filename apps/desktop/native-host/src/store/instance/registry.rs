@@ -598,6 +598,82 @@ pub(super) fn verified_creation_request(connection: &VerifiedDatabaseConnection<
     Ok(request_id)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LegacyReplayClass { Eligible, ProvenIneligible, Unknown }
+
+/// Classify the whole existing USER registration route without invoking either
+/// register_instance or the SOURCE writer. Caller anchors constrain the lookup;
+/// the verified original operation and physical HOME supply the facts.
+pub(super) fn classify_legacy_source_registration(
+    connection: &VerifiedDatabaseConnection<'_>, root: &RootLock, id: &str,
+    approved_request: &str, approved_fingerprint: &str,
+    approved_receipt_hex: &str, approved_home: &str,
+    current_program: &ProgramObservation,
+) -> Result<LegacyReplayClass, RegistryError> {
+    let original = verified_creation_request(connection, root, id)?;
+    if original != approved_request { return Ok(LegacyReplayClass::Unknown); }
+    let prior = operation(connection, &original)?.ok_or(RegistryError::Unknown)?;
+    let fields = decode_framed_hex(&prior.0)?;
+    if prior.1 != id || prior.2 != "APPLIED" || fields.len() != 5 ||
+        prior.0 != approved_fingerprint ||
+        encode_hex(prior.3.as_bytes()) != approved_receipt_hex ||
+        prior.3 != approved_home ||
+        observed_home(root, id)?.is_none_or(|home| home.opaque() != approved_home) {
+        return Ok(LegacyReplayClass::Unknown);
+    }
+    let request = crate::store::session_transport::decode_request(&fields[0])
+        .map_err(|error| RegistryError::RepinFormat(format!("original registration raw: {error:?}")))?;
+    let original_driver = match request.payload.get(&JsonString::from_str("driverId")) {
+        Some(Json::String(value)) => value.to_well_formed_string(), _ => None,
+    };
+    if request.family != "K-INSTANCE" ||
+        request.operation != "register" || request.request_id != original ||
+        request.target_id != id || request.domain_id != "global" ||
+        request.expected_revision != 0 || request.payload.len() != 1 ||
+        original_driver.as_deref() != Some("codex") {
+        return Ok(LegacyReplayClass::Unknown);
+    }
+    let candidate = Registration { request_id: &original, request_bytes: &fields[0],
+        instance_id: id, driver_id: "codex", program: current_program };
+    let current_fingerprint = fingerprint(&candidate)?;
+    if current_fingerprint != prior.0 {
+        return Ok(LegacyReplayClass::ProvenIneligible);
+    }
+    // At equality the USER route would continue into SOURCE bind. Reproduce
+    // its read-only gates, including the current copy and any prior SOURCE.
+    let Some((driver, _, home, digest, version, _, _)) = instance(connection, id)? else {
+        return Ok(LegacyReplayClass::Unknown);
+    };
+    if driver != "codex" || home != approved_home ||
+        digest != current_program.digest || version != current_program.version {
+        return Ok(LegacyReplayClass::Unknown);
+    }
+    let retired = Statement::prepare(connection.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_instance_profiles WHERE instance_id=?1 AND tombstoned=1")?;
+    retired.bind_text(1, id)?;
+    if retired.step_row()? { return Ok(LegacyReplayClass::Unknown); }
+    let copy = super::managed_cli::read_managed_cli(connection, root, "codex")
+        .map_err(|error| RegistryError::RepinFormat(format!("SOURCE bind copy: {error:?}")))?;
+    let Some(copy) = copy else { return Ok(LegacyReplayClass::Unknown); };
+    let Some(stage) = copy.stage_name else { return Ok(LegacyReplayClass::Unknown); };
+    if copy.state != "READY" || copy.version.as_deref() != Some(version.as_str()) ||
+        super::managed_cli::locate_ready_managed_program(connection, root, "codex",
+            &digest, &version)
+            .map_err(|error| RegistryError::RepinFormat(format!("SOURCE bind stage: {error:?}")))?
+            .is_none() { return Ok(LegacyReplayClass::Unknown); }
+    let source = Statement::prepare(connection.as_ptr(),
+        "SELECT source,stage_name,program_digest,version,home_identity,registration_request_id FROM main.gogoke_v37_instance_program_sources WHERE instance_id=?1")?;
+    source.bind_text(1, id)?;
+    if source.step_row()? {
+        let exact = source.column_text(0)? == "MANAGED" && source.column_text(1)? == stage &&
+            source.column_text(2)? == digest && source.column_text(3)? == version &&
+            source.column_text(4)? == home && source.column_text(5)? == original &&
+            !source.step_row()?;
+        if !exact { return Ok(LegacyReplayClass::Unknown); }
+    }
+    Ok(LegacyReplayClass::Eligible)
+}
+
 pub(crate) fn reconcile_program_repin(connection: &VerifiedDatabaseConnection<'_>, root: &RootLock,
     input: &ProgramRepin<'_>) -> Result<Option<ProgramRepinReceipt>, RegistryError> {
     valid_repin(input)?;
