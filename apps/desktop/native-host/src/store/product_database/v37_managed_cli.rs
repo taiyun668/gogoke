@@ -1038,9 +1038,26 @@ mod tests {
         if registered {
         let (file_identity,links)=crate::process::CredentialBinding::observe_source_metadata(
             &root,&auth_path,&home_identity).unwrap();
-        let custody=Statement::prepare(product.connection.as_ptr(),
-            "INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) VALUES('backendStopA','backendTicketA','backendNonceA','4294967295','1','synthetic.exe',?1,'legacyA','global','1','STOPPED','sha256:1111111111111111111111111111111111111111111111111111111111111111')").unwrap();
-        custody.bind_text(1,&observed_digest).unwrap();custody.step_done().unwrap();drop(custody);
+        let operation_digest=crate::store::digest::sha256_hex(b"legacyA\nbackendA\n0");
+        let backend_operation=format!("owner-login-{}",&operation_digest[..40]);
+        let mut backend_launch=crate::process::ProcessLaunch::new(image.clone());
+        backend_launch.arguments=vec!["--version".into()];
+        backend_launch.current_directory=Some(home_path.clone());
+        backend_launch.protocol_stdio=true;
+        let backend_custody=product.process_custodian.prepare(&crate::process::PrepareRequest {
+            launch:backend_launch,binding:crate::process::NativeBinding {
+                binary_digest_sha256:observed_digest.clone(),profile_id:"legacyA".into(),
+                domain_id:"global".into(),generation:"1".into(),
+            }}).unwrap();
+        crate::store::authority::record_prepared_process(&mut product.connection,
+            &backend_operation,&backend_custody).unwrap();
+        product.process_custodian.activate(&backend_custody).unwrap();
+        crate::store::authority::mark_process_active(&mut product.connection,
+            &backend_operation,&backend_custody).unwrap();
+        let backend_stop=product.process_custodian.stop(&backend_custody.ticket,
+            crate::process::StopBudgets::production(),||Ok(())).unwrap();
+        crate::store::authority::mark_process_stopped(&mut product.connection,
+            &backend_operation,&backend_stop).unwrap();
         // The backend journal is bound to the actual current program tuple
         // and original stopped C source, not just a copied FILE enum.
         instance::record_credential_backend(&mut product.connection,&instance::BackendSource {
@@ -1048,8 +1065,8 @@ mod tests {
             home_identity:home_identity.clone(),program_digest:observed_digest.clone(),
             version:pin.version.into(),backend:instance::CredentialBackend::File,
             startup_selector:instance::CredentialStartupSelector::FileBound,
-            operation_id:"backendStopA".into(),ticket:"backendTicketA".into(),
-            nonce:"backendNonceA".into(),generation:"1".into(),
+            operation_id:backend_operation,ticket:backend_custody.ticket.opaque().into(),
+            nonce:backend_custody.custodian_nonce.clone(),generation:"1".into(),
         }).unwrap();
         let root_identity=product.connection.root_identity().clone();
         instance::bind_credential_object(&mut product.connection,&instance::CredentialObjectInput {
@@ -1128,12 +1145,6 @@ mod tests {
             &crate::store::session_transport::OwnerBinding {binding_id:"releasedBindingA",
                 instance_id:"legacyA",domain_id:"unstartedProjectA",kind:"SESSION",
                 owner_id:"releasedSessionA",generation:&generation}).unwrap();
-        let seat_binding=Statement::prepare(product.connection.as_ptr(),
-            "INSERT INTO main.gogoke_v37_h_seat_binding(domain_id,session_id,seat_id,seat_incarnation,generation) VALUES('unstartedProjectA','releasedSessionA',?1,?2,?3)").unwrap();
-        for (index,value) in [&busy.seat_id,&busy.incarnation,&generation].iter().enumerate() {
-            seat_binding.bind_text((index+1) as i32,value).unwrap();
-        }
-        seat_binding.step_done().unwrap();drop(seat_binding);
         let selection=crate::store::session_transport::session_binding::SessionBinding {
             domain_id:"unstartedProjectA".into(),session_id:"releasedSessionA".into(),
             seat_id:busy.seat_id.clone(),seat_incarnation:busy.incarnation.clone(),
@@ -1141,8 +1152,6 @@ mod tests {
             provenance:crate::store::session_transport::session_binding::Provenance::NativeV2,
         };
         crate::store::session_transport::session_binding::select_native_in_transaction(
-            &product.connection,&selection).unwrap();
-        crate::store::session_transport::session_binding::insert_native_in_transaction(
             &product.connection,&selection).unwrap();
         product.connection.execute("COMMIT").unwrap();
         let reserve_raw=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"admission-reserve\",\"requestId\":\"releasedReserveA\",\"targetId\":\"releasedSessionA\",\"domainId\":\"unstartedProjectA\",\"expectedRevision\":\"0\",\"payload\":{{\"seatId\":\"{}\",\"generation\":\"{generation}\"}}}}",busy.seat_id);
@@ -1184,6 +1193,83 @@ mod tests {
         assert!(matches!(crate::store::session_transport::runtime::release_native(
             &mut product.connection,&crate::store::seat::NativeOrigin::user(&product.owner),&release).unwrap(),
             crate::store::session_transport::AdmissionResult::Applied(3)));
+        // The production release state machine also permits RESERVED to move
+        // directly to RELEASED. Keep this second original history beside the
+        // three-step case so migration qualification cannot invent a commit.
+        crate::store::seat::store_template(&mut product.connection,
+            crate::store::seat::NativeOrigin::user(&product.owner),
+            crate::store::seat::StoreTemplate {domain_id:"directProjectA",
+                template_id:"directTemplateA",settings_json:br#"{"instruction":"default"}"#}).unwrap();
+        let direct_created=crate::store::seat::create(&mut product.connection,
+            crate::store::seat::NativeOrigin::user(&product.owner),
+            crate::store::seat::CreateSeat {domain_id:"directProjectA",seat_id:"directSeatA",
+                template_id:"directTemplateA",instance_id:Some("legacyA"),
+                kind:crate::store::seat::Kind::Long,request_id:"directSeatCreateA",
+                request_bytes:b"create direct-release historical seat"}).unwrap().seat;
+        let direct_busy=crate::store::seat::set_dispatch_state(
+            &mut product.connection,&direct_created,true).unwrap();
+        let direct_generation=direct_busy.generation.to_string();
+        product.connection.execute("BEGIN IMMEDIATE").unwrap();
+        crate::store::session_transport::bind_owner_in_transaction(&mut product.connection,
+            &crate::store::session_transport::OwnerBinding {binding_id:"directBindingA",
+                instance_id:"legacyA",domain_id:"directProjectA",kind:"SESSION",
+                owner_id:"directSessionA",generation:&direct_generation}).unwrap();
+        let direct_selection=crate::store::session_transport::session_binding::SessionBinding {
+            domain_id:"directProjectA".into(),session_id:"directSessionA".into(),
+            seat_id:direct_busy.seat_id.clone(),seat_incarnation:direct_busy.incarnation.clone(),
+            seat_authorization_generation:direct_busy.generation,
+            selected_instance_id:"legacyA".into(),
+            provenance:crate::store::session_transport::session_binding::Provenance::NativeV2,
+        };
+        crate::store::session_transport::session_binding::select_native_in_transaction(
+            &product.connection,&direct_selection).unwrap();
+        product.connection.execute("COMMIT").unwrap();
+        let direct_reserve_raw=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"admission-reserve\",\"requestId\":\"directReserveA\",\"targetId\":\"directSessionA\",\"domainId\":\"directProjectA\",\"expectedRevision\":\"0\",\"payload\":{{\"seatId\":\"{}\",\"generation\":\"{direct_generation}\"}}}}",direct_busy.seat_id);
+        let direct_preparation=crate::store::digest::sha256_hex(b"directProjectA\ndirectReserveA");
+        let direct_home_request=format!("homeprep-{}",&direct_preparation[..40]);
+        let direct_profile=crate::process::AppContainerProfile::derive_for_revocation(
+            &format!("Gogoke37.Session.{}",&crate::store::digest::sha256_hex(
+                format!("{}\ndirectProjectA\ndirectSessionA\n{}\n{direct_generation}",
+                    root.canonical_root().identity.opaque(),direct_busy.incarnation).as_bytes())[..40])).unwrap();
+        instance::create_temporary_home(&mut product.connection,&root,&direct_profile,
+            &instance::CreateTemporaryHome {request_id:&direct_home_request,
+                request_bytes:direct_reserve_raw.as_bytes(),home_id:"directHomeA",
+                instance_id:"legacyA",domain_id:"directProjectA",
+                kind:instance::TemporaryKind::Session,owner_id:"directSessionA",
+                generation:&direct_generation}).unwrap();
+        let direct_reserve=crate::store::session_transport::AdmissionRequest {
+            domain_id:"directProjectA",session_id:"directSessionA",request_id:"directReserveA",
+            raw_bytes:direct_reserve_raw.as_bytes(),instance_id:"legacyA",home_id:"directHomeA",
+            generation:&direct_generation,expected_revision:0};
+        assert!(matches!(crate::store::session_transport::reserve_admission(
+            &mut product.connection,&direct_reserve,|_|Ok(
+                crate::store::session_transport::TrustedLimits {
+                    project_parallel:4,instance_concurrency:4})).unwrap(),
+            crate::store::session_transport::AdmissionResult::Applied(1)));
+        assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err(),
+            "a still-RESERVED original is not settled");
+        let direct_release_raw=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"admission-release\",\"requestId\":\"directReleaseA\",\"targetId\":\"directSessionA\",\"domainId\":\"directProjectA\",\"expectedRevision\":\"1\",\"payload\":{{\"seatId\":\"{}\",\"generation\":\"{direct_generation}\"}}}}",direct_busy.seat_id);
+        let direct_release=crate::store::session_transport::AdmissionRequest {
+            domain_id:"directProjectA",session_id:"directSessionA",request_id:"directReleaseA",
+            raw_bytes:direct_release_raw.as_bytes(),instance_id:"legacyA",home_id:"directHomeA",
+            generation:&direct_generation,expected_revision:1};
+        assert!(matches!(crate::store::session_transport::runtime::release_native(
+            &mut product.connection,&crate::store::seat::NativeOrigin::user(&product.owner),
+            &direct_release).unwrap(),crate::store::session_transport::AdmissionResult::Applied(2)));
+        product.connection.execute("DELETE FROM main.gogoke_v37_native_selection WHERE domain_id='directProjectA' AND session_id='directSessionA'").unwrap();
+        assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err(),
+            "a released claim cannot invent its missing original native selection");
+        product.connection.execute("BEGIN IMMEDIATE").unwrap();
+        crate::store::session_transport::session_binding::select_native_in_transaction(
+            &product.connection,&direct_selection).unwrap();
+        product.connection.execute("COMMIT").unwrap();
+        product.connection.execute("BEGIN IMMEDIATE").unwrap();
+        crate::store::session_transport::session_binding::insert_native_in_transaction(
+            &product.connection,&direct_selection).unwrap();
+        product.connection.execute("COMMIT").unwrap();
+        assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err(),
+            "a post-OPEN v2 relationship contradicts never-started classification");
+        product.connection.execute("DELETE FROM main.gogoke_v37_session_binding_v2 WHERE domain_id='directProjectA' AND session_id='directSessionA'").unwrap();
         let open=Statement::prepare(product.connection.as_ptr(),
             "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('unstartedProjectA','unstartedOpenIntentA',?1,'open','releasedSessionA','APPLIED',3,4)").unwrap();
         open.bind_text(1,&action_hex(b"synthetic open intent only")).unwrap();open.step_done().unwrap();drop(open);

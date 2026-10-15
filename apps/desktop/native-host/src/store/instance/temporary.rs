@@ -1275,6 +1275,71 @@ fn original_stop_request(connection: &VerifiedDatabaseConnection<'_>, home: &str
     Ok(sha256_hex(&raw))
 }
 
+/// Read-only bridge for callers that must authenticate the original F HOME
+/// creation without running the close/cleanup state machine. The SID is always
+/// derived from the original HOME id; no caller-supplied SID can weaken the F
+/// fingerprint comparison performed by `original_create_source`.
+pub(super) fn validate_original_execution_home_source(
+    connection: &VerifiedDatabaseConnection<'_>,
+    home: &str,
+    instance: &str,
+    domain: &str,
+    session: &str,
+    generation: &str,
+    episode_request_id: &str,
+    episode_operation: &str,
+) -> Result<String, TemporaryHomeError> {
+    let row = home_row(connection, home)?.ok_or(TemporaryHomeError::HomeConflict)?;
+    if row.0 != instance || row.1 != domain || row.2 != "SESSION"
+        || row.3 != session || row.4 != generation {
+        return Err(TemporaryHomeError::HomeConflict);
+    }
+    row_identity(&row, home)?;
+    let suffix = home.strip_prefix("home-").ok_or(TemporaryHomeError::HomeConflict)?;
+    if suffix.len() != 40
+        || !suffix.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()) {
+        return Err(TemporaryHomeError::HomeConflict);
+    }
+    let profile = AppContainerProfile::derive_for_revocation(
+        &format!("Gogoke37.Session.{suffix}"))?;
+    let sid = profile.sid_identity()?;
+    let (create_id, create_request_id, create_operation, create_fingerprint,
+        create_raw_sha256) = original_create_source(connection, home, &row,
+            &UserTemporaryHomeSelector::HistoricalHomeId(home), &sid)?;
+    if !matches!((create_operation.as_str(), episode_operation),
+        ("admission-reserve", "open") | ("open", "open")
+            | ("resume", "resume") | ("compact", "compact")
+            | ("renew-session", "renew-session"))
+        || (create_operation != "admission-reserve"
+            && create_request_id != episode_request_id) {
+        return Err(TemporaryHomeError::StopFactUnavailable);
+    }
+    Ok(sha256_hex(format!(
+        "original-execution-home-v1\n{home}\n{create_id}\n{create_request_id}\n{create_operation}\n{create_fingerprint}\n{create_raw_sha256}"
+    ).as_bytes()))
+}
+
+/// Read-only bridge for an explicit original USER stop. Compound paths and
+/// native StopProof paths with no stop request deliberately do not call this;
+/// their existing producer-specific validation remains authoritative.
+pub(super) fn validate_original_execution_stop_source(
+    connection: &VerifiedDatabaseConnection<'_>,
+    home: &str,
+    instance: &str,
+    domain: &str,
+    session: &str,
+    generation: &str,
+    stop_fact: &str,
+) -> Result<String, TemporaryHomeError> {
+    let row = home_row(connection, home)?.ok_or(TemporaryHomeError::HomeConflict)?;
+    if row.0 != instance || row.1 != domain || row.2 != "SESSION"
+        || row.3 != session || row.4 != generation {
+        return Err(TemporaryHomeError::HomeConflict);
+    }
+    row_identity(&row, home)?;
+    original_stop_request(connection, home, &row, stop_fact)
+}
+
 fn user_close_operation(connection: &VerifiedDatabaseConnection<'_>, request_id: &str)
     -> Result<Option<(String, String, String, String, String)>, TemporaryHomeError> {
     let source = Statement::prepare(connection.as_ptr(),
