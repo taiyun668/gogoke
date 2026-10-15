@@ -740,7 +740,7 @@ fn qualified_owner_bindings(db: &VerifiedDatabaseConnection<'_>,
         if b[5]!="ACTIVE" { continue; }
         let current=claims.iter().any(|c|c[0]==b[0] && c[1]==b[2] && c[2]==b[3]
             && c[3]==b[4] && c[4]==b[1]);
-        if !current && !historical.contains(&b[1]) { return Err(denied()); }
+        if !current { return Err(denied()); }
     }
     Ok(())
 }
