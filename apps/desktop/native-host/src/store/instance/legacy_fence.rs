@@ -184,6 +184,15 @@ fn reject_schema_side_effects(db: &VerifiedDatabaseConnection<'_>) -> Result<()>
     }
     Ok(())
 }
+pub(super) fn legacy_fence_schema_present_for_source_migration(
+    db: &VerifiedDatabaseConnection<'_>,
+) -> Result<bool> {
+    reject_schema_side_effects(db)?;
+    let observed = observed_schema(db)?;
+    if observed.is_empty() { return Ok(false); }
+    if observed == expected_schema() { return Ok(true); }
+    Err(LegacyFenceError::Schema)
+}
 pub(crate) fn initialize_legacy_fence_schema(db: &mut VerifiedDatabaseConnection<'_>) -> Result<()> {
     reject_schema_side_effects(db)?;
     let before = observed_schema(db)?;
@@ -238,6 +247,12 @@ fn captured_custody(db: &VerifiedDatabaseConnection<'_>, instance: &str) -> Resu
         });
     }
     Ok(rows)
+}
+pub(super) fn legacy_fence_custody_present_for_source_migration(
+    db: &VerifiedDatabaseConnection<'_>, instance: &str,
+) -> Result<bool> {
+    atom(instance)?;
+    Ok(!captured_custody(db, instance)?.is_empty())
 }
 fn check_custody(db: &VerifiedDatabaseConnection<'_>, fence: &LegacyFenceRecord) -> Result<()> {
     if custody_digest(&fence.custody) != fence.custody_digest { return Err(LegacyFenceError::Conflict); }

@@ -981,15 +981,23 @@ mod tests {
 
     #[test]
     fn strict_legacy_codex_unregistered_physical_acl_applies_and_replays() {
-        strict_legacy_codex_physical_acl_applies_and_replays(false,false);
+        strict_legacy_codex_physical_acl_applies_and_replays(false,false,false);
     }
 
     #[test]
     fn strict_legacy_codex_registered_physical_acl_applies_and_replays() {
-        strict_legacy_codex_physical_acl_applies_and_replays(true,true);
+        strict_legacy_codex_physical_acl_applies_and_replays(true,true,true);
     }
 
-    fn strict_legacy_codex_physical_acl_applies_and_replays(registered: bool,fenced: bool) {
+    #[test]
+    fn strict_legacy_codex_complete_fence_family_without_target_row_applies_and_replays() {
+        strict_legacy_codex_physical_acl_applies_and_replays(true,false,true);
+    }
+
+    fn strict_legacy_codex_physical_acl_applies_and_replays(
+        registered: bool,fenced: bool,legacy_family_present: bool,
+    ) {
+        assert!(!fenced || legacy_family_present);
         let _guard=route_b_test_guard();
         let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let path=std::env::temp_dir().join(format!("gogoke-legacy-source-arm-{}-{nonce}",std::process::id()));
@@ -1119,8 +1127,15 @@ mod tests {
         product.connection.execute(&format!(
             "INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state) VALUES('owner-login-1111111111111111111111111111111111111111','globalTicketA','globalNonceA','4294967295','2','synthetic.exe','{observed_digest}','legacyA','global','2','UNKNOWN')"
         )).unwrap();
-        assert!(instance::read_legacy_fence(&product.connection,"legacyA").unwrap().is_none(),
-            "global UNKNOWN fixture must use the real kernel producer without an ACL fence");
+        assert!(legacy_fence_schema_rows(&product).is_empty(),
+            "ProductDatabase::open must leave the lazy legacy ACL family wholly absent");
+        if legacy_family_present {
+            instance::initialize_legacy_fence_schema(&mut product.connection).unwrap();
+            assert_eq!(legacy_fence_schema_rows(&product).len(),3,
+                "fixture setup must create the exact complete legacy ACL family");
+            assert!(instance::read_legacy_fence(&product.connection,"legacyA").unwrap().is_none(),
+                "complete family setup must not fabricate a target fence");
+        }
         if fenced {
             let custody=table_rows(&product,
                 "SELECT operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,COALESCE(stop_proof_hash,'') FROM main.gogoke_coordination_process_custody WHERE profile_id='legacyA' ORDER BY operation_id",12)
@@ -1315,6 +1330,8 @@ mod tests {
         product.connection.execute("DELETE FROM main.gogoke_v37_h_operation WHERE domain_id='unstartedProjectA' AND request_id='unstartedOpenIntentA'").unwrap();
         let original_before=table_rows(&product,
             "SELECT request_id,request_hex,target_id,phase,COALESCE(native_receipt_id,'') FROM main.gogoke_v37_instance_operations ORDER BY request_id",5);
+        let legacy_schema_before=legacy_fence_schema_rows(&product);
+        let legacy_rows_before=legacy_fence_family_rows(&product,legacy_family_present);
         assert!(product.dispatch_user_managed_cli(frame.replace(&fingerprint,"00").as_bytes()).is_err());
         assert!(product.dispatch_user_managed_cli(frame.replacen("}",",\"extra\":\"x\"}",1).as_bytes()).is_err());
         product.connection.execute("UPDATE main.gogoke_v37_instance_cli_copies SET stage_name='missing-stage' WHERE driver_id='codex'").unwrap();
@@ -1351,7 +1368,15 @@ mod tests {
         assert_eq!(table_rows(&product,
             "SELECT request_id,phase FROM main.gogoke_v37_instance_legacy_source_migrations",2),
             vec![vec![String::from("sourceMoveA"),String::from("APPLIED")]]);
+        assert_eq!(legacy_fence_schema_rows(&product),legacy_schema_before,
+            "legacy SOURCE migration must not initialize or alter the optional family schema");
+        assert_eq!(legacy_fence_family_rows(&product,legacy_family_present),legacy_rows_before,
+            "legacy SOURCE migration must not alter any optional family row");
         assert_eq!(product.dispatch_user_managed_cli(frame.as_bytes()).unwrap(),applied);
+        assert_eq!(legacy_fence_schema_rows(&product),legacy_schema_before,
+            "exact replay must not initialize or alter the optional family schema");
+        assert_eq!(legacy_fence_family_rows(&product,legacy_family_present),legacy_rows_before,
+            "exact replay must not alter any optional family row");
         assert!(product.dispatch_user_managed_cli(format!(" {frame}").as_bytes()).is_err());
         assert!(product.dispatch_user_managed_cli(frame.replace("sourceMoveA","sourceMoveB").as_bytes()).is_err());
         assert!(product.dispatch_user_managed_cli(frame.replacen("}",",\"extra\":\"x\"}",1).as_bytes()).is_err());
@@ -1494,6 +1519,22 @@ mod tests {
             result.push((0..columns).map(|index|rows.column_text(index).unwrap()).collect());
         }
         result
+    }
+    fn legacy_fence_schema_rows(product:&ProductDatabase<'_>)->Vec<Vec<String>> {
+        table_rows(product,
+            "SELECT type,name,tbl_name,sql FROM main.sqlite_schema WHERE lower(substr(name,1,22))='gogoke_v37_legacy_acl_' ORDER BY name",4)
+    }
+    fn legacy_fence_family_rows(product:&ProductDatabase<'_>,present:bool)
+        ->Vec<Vec<Vec<String>>> {
+        if !present {return Vec::new()}
+        vec![
+            table_rows(product,
+                "SELECT instance_id,boot_identity,database_identity,root_identity,home_identity,source_identity,source_parent_identity,COALESCE(CAST(source_revision AS TEXT),''),custody_digest,home_acl_digest,source_acl_digest,acl_provenance_digest,native_snapshot,native_snapshot_digest,revision FROM main.gogoke_v37_legacy_acl_fences ORDER BY instance_id",15),
+            table_rows(product,
+                "SELECT instance_id,operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,COALESCE(stop_proof_hash,'') FROM main.gogoke_v37_legacy_acl_custody ORDER BY instance_id,operation_id",13),
+            table_rows(product,
+                "SELECT instance_id,step,phase,request_id,boot_identity,before_home_acl_digest,before_source_acl_digest,target_home_acl_digest,target_source_acl_digest,intent_revision,COALESCE(CAST(applied_revision AS TEXT),'') FROM main.gogoke_v37_legacy_acl_steps ORDER BY instance_id,step",11),
+        ]
     }
     fn managed_snapshot(product:&ProductDatabase<'_>)->ManagedSnapshot {
         ManagedSnapshot{

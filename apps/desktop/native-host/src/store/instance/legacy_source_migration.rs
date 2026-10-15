@@ -31,6 +31,7 @@ pub(crate) struct LegacySourceResult {
 #[cfg(all(test, windows))]
 impl LegacySourceResult {
     pub(crate) fn run_focused_history_fixtures() {
+        tests::optional_legacy_fence_family_classifier_matrix();
         tests::plain_resume_accepts_only_direct_or_original_unknown_promotion_equation();
         tests::stopped_h_requires_original_raw_home_binding_generation_and_c_proof();
     }
@@ -662,9 +663,26 @@ fn historical_profile_names(db: &VerifiedDatabaseConnection<'_>, root: &RootLock
     Ok(names)
 }
 
+fn qualified_unfenced_legacy_family(
+    db: &VerifiedDatabaseConnection<'_>, target: &str,
+) -> Result<()> {
+    if legacy_fence::read_legacy_step(db, target, legacy_fence::LegacyAclStep::Home)
+        .map_err(|error| fail("unbound HOME ACL step", error))?.is_some()
+        || legacy_fence::read_legacy_step(db, target, legacy_fence::LegacyAclStep::Baseline)
+            .map_err(|error| fail("unbound baseline step", error))?.is_some()
+        || legacy_fence::legacy_fence_custody_present_for_source_migration(db, target)
+            .map_err(|error| fail("unbound legacy ACL custody", error))? {
+        return Err(denied());
+    }
+    Ok(())
+}
+
 fn qualify(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
     input: &LegacySourceRequest<'_>) -> Result<Qualification> {
     valid_request(input)?;
+    let legacy_fence_schema_present =
+        legacy_fence::legacy_fence_schema_present_for_source_migration(db)
+            .map_err(|error| fail("legacy ACL schema", error))?;
     if any(db, "SELECT 1 FROM main.gogoke_v37_instance_operations WHERE request_id=?1 LIMIT 1",
         &[input.request_id])? || any(db,
         "SELECT 1 FROM main.gogoke_v37_instance_version_actions WHERE request_id=?1 LIMIT 1",
@@ -727,8 +745,10 @@ fn qualify(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
         &source_identity, &[]).map_err(|error| fail("held physical credential source", error))?;
     let names = historical_profile_names(db, root, input.target_id, &home.identity)?;
     let provenance = sha256_hex(names.join("\n").as_bytes());
-    let fence = legacy_fence::read_legacy_fence(db, input.target_id)
-        .map_err(|error| fail("prior legacy ACL fence", error))?;
+    let fence = if legacy_fence_schema_present {
+        legacy_fence::read_legacy_fence(db, input.target_id)
+            .map_err(|error| fail("prior legacy ACL fence", error))?
+    } else { None };
     let inventory = if let Some(record) = &fence {
         if record.database_identity != db.identity().opaque()
             || record.root_identity != db.root_identity().opaque()
@@ -759,10 +779,9 @@ fn qualify(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
         }
         inventory
     } else {
-        if legacy_fence::read_legacy_step(db, input.target_id, legacy_fence::LegacyAclStep::Home)
-            .map_err(|error| fail("unbound HOME ACL step", error))?.is_some()
-            || legacy_fence::read_legacy_step(db, input.target_id, legacy_fence::LegacyAclStep::Baseline)
-                .map_err(|error| fail("unbound baseline step", error))?.is_some() { return Err(denied()); }
+        if legacy_fence_schema_present {
+            qualified_unfenced_legacy_family(db, input.target_id)?;
+        }
         LegacyAclInventory::capture(root, &home.path, &home.identity,
             &binding, &names).map_err(|error| fail("fresh physical historical HOME ACL", error))?
     };
@@ -773,6 +792,10 @@ fn qualify(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
     for value in [inventory.original_digest(), inventory.home_original_digest(),
         inventory.source_original_digest(), provenance,
         source_identity.opaque()] { frame(&mut evidence, value.as_bytes()); }
+    let legacy_fence_schema_after =
+        legacy_fence::legacy_fence_schema_present_for_source_migration(db)
+            .map_err(|error| fail("legacy ACL schema recheck", error))?;
+    if legacy_fence_schema_after != legacy_fence_schema_present { return Err(denied()); }
     let after = database_snapshot(db)?;
     if after != before { return Err(denied()); }
     frame(&mut evidence, before.as_bytes());
@@ -915,6 +938,133 @@ mod tests {
         std::fs::remove_dir_all(path).unwrap();
     }
 
+    const LEGACY_FENCE_TABLES: [&str; 3] = [
+        "gogoke_v37_legacy_acl_fences",
+        "gogoke_v37_legacy_acl_custody",
+        "gogoke_v37_legacy_acl_steps",
+    ];
+
+    fn assert_legacy_schema_refused(db: &VerifiedDatabaseConnection<'_>) {
+        assert!(matches!(
+            legacy_fence::legacy_fence_schema_present_for_source_migration(db),
+            Err(legacy_fence::LegacyFenceError::Schema)
+        ));
+    }
+
+    #[test]
+    pub(super) fn optional_legacy_fence_family_classifier_matrix() {
+        fixture(|_, mut db| {
+            assert!(!legacy_fence::legacy_fence_schema_present_for_source_migration(&db).unwrap());
+            legacy_fence::initialize_legacy_fence_schema(&mut db).unwrap();
+            assert!(legacy_fence::legacy_fence_schema_present_for_source_migration(&db).unwrap());
+            assert!(!legacy_fence::legacy_fence_custody_present_for_source_migration(&db, "oldA").unwrap());
+            qualified_unfenced_legacy_family(&db, "oldA").unwrap();
+            db.close_checked().unwrap();
+        });
+
+        for step in ["HOME", "BASELINE"] {
+            fixture(|_, mut db| {
+                legacy_fence::initialize_legacy_fence_schema(&mut db).unwrap();
+                db.execute("PRAGMA foreign_keys=OFF").unwrap();
+                db.execute(&format!(
+                    "INSERT INTO main.gogoke_v37_legacy_acl_steps VALUES('oldA','{step}','APPLIED','requestA','bootA','a','b','c','d',2,3)"
+                )).unwrap();
+                assert!(qualified_unfenced_legacy_family(&db, "oldA").is_err(),
+                    "a complete family cannot hide an orphan {step} step");
+                db.close_checked().unwrap();
+            });
+        }
+        fixture(|_, mut db| {
+            legacy_fence::initialize_legacy_fence_schema(&mut db).unwrap();
+            db.execute("PRAGMA foreign_keys=OFF").unwrap();
+            db.execute("INSERT INTO main.gogoke_v37_legacy_acl_custody VALUES('oldA','operationA','ticketA','nonceA','1','1','imageA','digestA','oldA','global','1','UNKNOWN',NULL)").unwrap();
+            assert!(qualified_unfenced_legacy_family(&db, "oldA").is_err(),
+                "a complete family cannot hide orphan captured custody");
+            db.close_checked().unwrap();
+        });
+
+        for name in LEGACY_FENCE_TABLES {
+            fixture(|_, mut db| {
+                legacy_fence::initialize_legacy_fence_schema(&mut db).unwrap();
+                db.execute(&format!("DROP TABLE main.{name}")).unwrap();
+                assert_legacy_schema_refused(&db);
+                db.close_checked().unwrap();
+            });
+            fixture(|_, mut db| {
+                legacy_fence::initialize_legacy_fence_schema(&mut db).unwrap();
+                db.execute(&format!("DROP TABLE main.{name}")).unwrap();
+                db.execute(&format!("CREATE TABLE main.{name}(instance_id TEXT) STRICT")).unwrap();
+                assert_legacy_schema_refused(&db);
+                db.close_checked().unwrap();
+            });
+            fixture(|_, mut db| {
+                legacy_fence::initialize_legacy_fence_schema(&mut db).unwrap();
+                db.execute(&format!("DROP TABLE main.{name}")).unwrap();
+                db.execute(&format!("CREATE VIEW main.{name} AS SELECT 'oldA' AS instance_id")).unwrap();
+                assert_legacy_schema_refused(&db);
+                db.close_checked().unwrap();
+            });
+            fixture(|_, mut db| {
+                db.execute(&format!("CREATE TEMP TABLE {name}(instance_id TEXT)")).unwrap();
+                assert_legacy_schema_refused(&db);
+                db.close_checked().unwrap();
+            });
+            fixture(|_, mut db| {
+                db.execute(&format!("CREATE TEMP VIEW {name} AS SELECT 'oldA' AS instance_id")).unwrap();
+                assert_legacy_schema_refused(&db);
+                db.close_checked().unwrap();
+            });
+            fixture(|_, mut db| {
+                legacy_fence::initialize_legacy_fence_schema(&mut db).unwrap();
+                db.execute(&format!("CREATE TEMP TABLE {name}(instance_id TEXT)")).unwrap();
+                assert_legacy_schema_refused(&db);
+                db.close_checked().unwrap();
+            });
+            fixture(|_, mut db| {
+                legacy_fence::initialize_legacy_fence_schema(&mut db).unwrap();
+                db.execute(&format!("CREATE TEMP VIEW {name} AS SELECT 'oldA' AS instance_id")).unwrap();
+                assert_legacy_schema_refused(&db);
+                db.close_checked().unwrap();
+            });
+            fixture(|_, mut db| {
+                legacy_fence::initialize_legacy_fence_schema(&mut db).unwrap();
+                db.execute(&format!(
+                    "CREATE TRIGGER unexpected_{name} BEFORE UPDATE ON {name} BEGIN SELECT 1; END"
+                )).unwrap();
+                assert_legacy_schema_refused(&db);
+                db.close_checked().unwrap();
+            });
+            fixture(|_, mut db| {
+                legacy_fence::initialize_legacy_fence_schema(&mut db).unwrap();
+                db.execute(&format!(
+                    "CREATE TEMP TRIGGER temp_unexpected_{name} BEFORE UPDATE ON main.{name} BEGIN SELECT 1; END"
+                )).unwrap();
+                assert_legacy_schema_refused(&db);
+                db.close_checked().unwrap();
+            });
+            fixture(|_, mut db| {
+                legacy_fence::initialize_legacy_fence_schema(&mut db).unwrap();
+                db.execute(&format!("CREATE INDEX unexpected_{name} ON {name}(instance_id)")).unwrap();
+                assert_legacy_schema_refused(&db);
+                db.close_checked().unwrap();
+            });
+            fixture(|_, mut db| {
+                db.execute("CREATE TEMP TABLE unrelated_legacy_index_target(instance_id TEXT)").unwrap();
+                db.execute(&format!(
+                    "CREATE INDEX temp.gogoke_v37_legacy_acl_unexpected_{name} ON unrelated_legacy_index_target(instance_id)"
+                )).unwrap();
+                assert_legacy_schema_refused(&db);
+                db.close_checked().unwrap();
+            });
+        }
+
+        fixture(|_, mut db| {
+            db.execute("CREATE TABLE main.GOGOKE_V37_LEGACY_ACL_EXTRA(instance_id TEXT) STRICT").unwrap();
+            assert_legacy_schema_refused(&db);
+            db.close_checked().unwrap();
+        });
+    }
+
     #[test]
     pub(super) fn plain_resume_accepts_only_direct_or_original_unknown_promotion_equation() {
         assert!(qualified_plain_resume_revisions(3,3,4),
@@ -1020,10 +1170,17 @@ mod tests {
     #[test]
     pub(super) fn stopped_h_requires_original_raw_home_binding_generation_and_c_proof() {
         fixture(|root, mut db| {
+            // This fixture drives the real ProductDatabase H/C/ledger producers
+            // on a create_new connection. Reproduce their complete schema
+            // prerequisites with production initializers; no test DDL stands
+            // in for the product opener.
+            crate::store::orchestration::apply_orchestration_slice_schema(&mut db).unwrap();
             let owner=crate::store::authority::initialize_profile(&mut db,root).unwrap();
+            super::super::initialize_credential_schema(&mut db).unwrap();
             crate::store::authority::initialize_process_custody_schema(&mut db).unwrap();
             crate::store::seat::initialize_schema(&mut db).unwrap();
             crate::store::session_transport::initialize_admission_schema(&mut db).unwrap();
+            crate::store::session_transport::session_binding::initialize_schema(&mut db).unwrap();
             crate::store::ledger::initialize_schema(&mut db).unwrap();
             crate::store::session_transport::rpc_journal::initialize_schema(&mut db).unwrap();
             let command=std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
@@ -1132,12 +1289,14 @@ mod tests {
                 ||Ok(())).unwrap();
             let native_stop_revision=crate::store::authority::mark_process_stopped(
                 &mut db,&operation,&native_stop).unwrap();
-            confirm_durable_stop(&mut custodian,&prepared,&native_stop,native_stop_revision);
             db.execute("BEGIN IMMEDIATE").unwrap();
             let proof=crate::store::session_transport::record_session_stop_in_transaction(
                 &mut db,"global","sessionA",&operation).unwrap();
             db.execute("COMMIT").unwrap();
             assert_eq!(proof,native_stop.proof_hash());
+            // Match the session-stop producer: release native custody only
+            // after H committed the exact C StopProof.
+            confirm_durable_stop(&mut custodian,&prepared,&native_stop,native_stop_revision);
             let check=|db:&VerifiedDatabaseConnection<'_>| qualified_executions(db,&mut Vec::new());
             check(&db).unwrap();
 
@@ -1218,13 +1377,13 @@ mod tests {
                 crate::process::StopBudgets::production(),||Ok(())).unwrap();
             let resume_stop_revision=crate::store::authority::mark_process_stopped(
                 &mut db,&resume_operation,&resume_stop).unwrap();
-            confirm_durable_stop(&mut resume_custodian,&resume_prepared,&resume_stop,
-                resume_stop_revision);
             db.execute("BEGIN IMMEDIATE").unwrap();
             let resume_proof=crate::store::session_transport::record_session_stop_in_transaction(
                 &mut db,"global","sessionA",&resume_operation).unwrap();
             db.execute("COMMIT").unwrap();
             assert_eq!(resume_proof,resume_stop.proof_hash());
+            confirm_durable_stop(&mut resume_custodian,&resume_prepared,&resume_stop,
+                resume_stop_revision);
             let historical=check(&db).unwrap();
             qualified_owner_bindings(&db,&historical).unwrap();
             assert!(qualified_owner_bindings(&db,&BTreeSet::new()).is_err(),
