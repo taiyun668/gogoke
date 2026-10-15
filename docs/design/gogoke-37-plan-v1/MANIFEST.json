@@ -5,8 +5,8 @@
     "main": "5b638c73200c0fb691a74c5717e3bdbbba45357d"
   },
   "sha256": {
-    "PLAN.md": "4281e0337f7b227bba0872bd8734850f85dd7352551e2441ac6e5fa81580b95f",
-    "PLAN.json": "fbd80401cc99b66bfc2bf6c8edeb5aa1b6a58e150e04555ab4e8ce1480bc5b49",
+    "PLAN.md": "3290a6c68db45157606db9a638e0725cba1397129617a6e12085ad1ac0f88f6e",
+    "PLAN.json": "962d864dcbbc23866f2bab65d887f55250c72e73c6b297932ffe824cd15f2643",
     "verify_plan.py": "b6d8bde90e4dead4f169c7922bfba295513f91ae962d1cdc8cc0b1726d9176b5"
   },
   "excluded": [
@@ -14,7 +14,7 @@
     "VALIDATION.json"
   ],
   "exclusion_reason": "self-reference and generated diagnostic output; neither grants authority or product acceptance",
-  "scope_digest": "7579c629d65133e6cf17835670907b29a4723c8b342c5d8ff188f9f6d64b6786",
+  "scope_digest": "f58852954ea4c9e7ed3e94c393bf76d75b4aa7006c4a50569136e8ce3f212f67",
   "proposal_evidence": [
     {
       "path": "docs/design/gogoke-37-plan-v1/HISTORICAL_TEMP_HOME_PROOFS.json",
@@ -25,6 +25,11 @@
       "path": "docs/design/gogoke-37-plan-v1/TEST_CASE_HOME_TEARDOWN.md",
       "sha256_git_lf": "1b43619d78bed4cc4a49719a36bdb67aeeb74ce726904ccf2467279abd616df4",
       "meaning": "Reviewable snapshot/contract only; not a native fact or approval."
+    },
+    {
+      "path": "docs/design/gogoke-37-plan-v1/LEGACY_SOURCE_MIGRATION.md",
+      "sha256_git_lf": "1391983cb55a51bd8823730c96cbab64cc6ec611d4ac854d7f047b7cccd92bc8",
+      "meaning": "Reviewable one-instance migration contract only; not a native fact, implementation, execution permission or acceptance."
     }
   ]
 }
