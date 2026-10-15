@@ -908,7 +908,7 @@ impl<'a> ProductDatabase<'a> {
                 // A caller's error is never evidence that a committed probe
                 // intent did not launch. Only native probe observations may
                 // settle later phases; exact recorded FAILED replay remains.
-                if row.driver!=driver || !matches!(row.phase,instance::ActionPhase::Begun|instance::ActionPhase::Failed) {
+                if row.driver!=driver || !matches!(row.phase,instance::ActionPhase::Begun|instance::ActionPhase::Failed|instance::ActionPhase::Probing) {
                     return Err(OrchestrationError::AccessDenied);
                 }
                 if row.phase==instance::ActionPhase::Failed {
