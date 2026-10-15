@@ -28,6 +28,14 @@ pub(crate) struct LegacySourceResult {
     pub(crate) receipt: Vec<u8>,
 }
 
+#[cfg(all(test, windows))]
+impl LegacySourceResult {
+    pub(crate) fn run_focused_history_fixtures() {
+        tests::plain_resume_accepts_only_direct_or_original_unknown_promotion_equation();
+        tests::stopped_h_requires_original_raw_home_binding_generation_and_c_proof();
+    }
+}
+
 struct Qualification {
     stage: String, digest: String, version: String, home: String,
     source_fingerprint: String, qualification_digest: String,
@@ -860,6 +868,36 @@ mod tests {
     use crate::store::same_open::{create_new, open_existing, route_b_test_guard};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    fn confirm_durable_stop(custodian:&mut crate::process::ProcessCustodian,
+        prepared:&crate::process::PreparedCustody,proof:&crate::process::NativeStopProof,
+        revision:u64) {
+        assert!(custodian.active(&prepared.ticket).is_some(),
+            "native custody stays held until exact durable confirmation");
+        let mut wrong_proof=proof.proof_hash();
+        let replacement=if wrong_proof.as_bytes()[7]==b'0' {"1"} else {"0"};
+        wrong_proof.replace_range(7..8,replacement);
+        assert!(custodian.confirm_stop_durable(&crate::process::DurableStopConfirmation {
+            ticket:prepared.ticket.clone(),custodian_nonce:prepared.custodian_nonce.clone(),
+            identity:prepared.identity.clone(),proof_hash:wrong_proof,
+            durable_revision:revision,
+        }).is_err(),"changed proof cannot release retained native custody");
+        assert!(custodian.active(&prepared.ticket).is_some());
+        assert!(custodian.confirm_stop_durable(&crate::process::DurableStopConfirmation {
+            ticket:prepared.ticket.clone(),custodian_nonce:prepared.custodian_nonce.clone(),
+            identity:prepared.identity.clone(),proof_hash:proof.proof_hash(),
+            durable_revision:0,
+        }).is_err(),"zero is not a durable authority revision");
+        assert!(custodian.active(&prepared.ticket).is_some());
+        let confirmed=custodian.confirm_stop_durable(&crate::process::DurableStopConfirmation {
+            ticket:prepared.ticket.clone(),custodian_nonce:prepared.custodian_nonce.clone(),
+            identity:prepared.identity.clone(),proof_hash:proof.proof_hash(),
+            durable_revision:revision,
+        }).unwrap();
+        assert_eq!(confirmed.proof_hash(),proof.proof_hash());
+        assert!(custodian.active(&prepared.ticket).is_none(),
+            "durably confirmed stop releases the exact active ticket");
+    }
+
     fn fixture(run: impl for<'a> FnOnce(&'a RootLock, VerifiedDatabaseConnection<'a>)) {
         let _guard = route_b_test_guard();
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
@@ -878,7 +916,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_resume_accepts_only_direct_or_original_unknown_promotion_equation() {
+    pub(super) fn plain_resume_accepts_only_direct_or_original_unknown_promotion_equation() {
         assert!(qualified_plain_resume_revisions(3,3,4),
             "direct promote keeps original previous and writes expected+1");
         assert!(qualified_plain_resume_revisions(3,4,5),
@@ -980,7 +1018,7 @@ mod tests {
     }
 
     #[test]
-    fn stopped_h_requires_original_raw_home_binding_generation_and_c_proof() {
+    pub(super) fn stopped_h_requires_original_raw_home_binding_generation_and_c_proof() {
         fixture(|root, mut db| {
             let owner=crate::store::authority::initialize_profile(&mut db,root).unwrap();
             crate::store::authority::initialize_process_custody_schema(&mut db).unwrap();
@@ -1089,10 +1127,12 @@ mod tests {
             crate::store::session_transport::rpc_journal::complete_response(&mut db,&owner,
                 &open_step,&open_frame,&open_source.key).unwrap();
             db.execute("UPDATE main.gogoke_v37_h_operation SET status='APPLIED',revision=3 WHERE domain_id='global' AND request_id='openA' AND status='UNKNOWN' AND previous_revision=2 AND revision=2").unwrap();
-            crate::store::session_transport::mark_episode_active(&db,&operation).unwrap();
+            crate::store::session_transport::mark_active(&db,&operation).unwrap();
             let native_stop=custodian.stop(&prepared.ticket,crate::process::StopBudgets::production(),
                 ||Ok(())).unwrap();
-            crate::store::authority::mark_process_stopped(&mut db,&operation,&native_stop).unwrap();
+            let native_stop_revision=crate::store::authority::mark_process_stopped(
+                &mut db,&operation,&native_stop).unwrap();
+            confirm_durable_stop(&mut custodian,&prepared,&native_stop,native_stop_revision);
             db.execute("BEGIN IMMEDIATE").unwrap();
             let proof=crate::store::session_transport::record_session_stop_in_transaction(
                 &mut db,"global","sessionA",&operation).unwrap();
@@ -1176,7 +1216,10 @@ mod tests {
                 "resumeB",&resume_operation,4).unwrap(),5);
             let resume_stop=resume_custodian.stop(&resume_prepared.ticket,
                 crate::process::StopBudgets::production(),||Ok(())).unwrap();
-            crate::store::authority::mark_process_stopped(&mut db,&resume_operation,&resume_stop).unwrap();
+            let resume_stop_revision=crate::store::authority::mark_process_stopped(
+                &mut db,&resume_operation,&resume_stop).unwrap();
+            confirm_durable_stop(&mut resume_custodian,&resume_prepared,&resume_stop,
+                resume_stop_revision);
             db.execute("BEGIN IMMEDIATE").unwrap();
             let resume_proof=crate::store::session_transport::record_session_stop_in_transaction(
                 &mut db,"global","sessionA",&resume_operation).unwrap();

@@ -944,6 +944,41 @@ mod tests {
 
     static PINNED_VERSION_ARCHIVES:OnceLock<Mutex<HashMap<(String,String),PathBuf>>>=OnceLock::new();
 
+    fn confirm_durable_test_stop(product:&mut ProductDatabase<'_>,
+        prepared:&crate::process::PreparedCustody,proof:&crate::process::NativeStopProof,
+        revision:u64) {
+        assert!(product.process_custodian.active(&prepared.ticket).is_some(),
+            "native custody stays held until exact durable confirmation");
+        let mut wrong_proof=proof.proof_hash();
+        let replacement=if wrong_proof.as_bytes()[7]==b'0' {"1"} else {"0"};
+        wrong_proof.replace_range(7..8,replacement);
+        assert!(product.process_custodian.confirm_stop_durable(&DurableStopConfirmation {
+            ticket:prepared.ticket.clone(),custodian_nonce:prepared.custodian_nonce.clone(),
+            identity:prepared.identity.clone(),proof_hash:wrong_proof,
+            durable_revision:revision,
+        }).is_err(),"changed proof cannot release retained native custody");
+        assert!(product.process_custodian.active(&prepared.ticket).is_some());
+        assert!(product.process_custodian.confirm_stop_durable(&DurableStopConfirmation {
+            ticket:prepared.ticket.clone(),custodian_nonce:prepared.custodian_nonce.clone(),
+            identity:prepared.identity.clone(),proof_hash:proof.proof_hash(),
+            durable_revision:0,
+        }).is_err(),"zero is not a durable authority revision");
+        assert!(product.process_custodian.active(&prepared.ticket).is_some());
+        let confirmed=product.process_custodian.confirm_stop_durable(&DurableStopConfirmation {
+            ticket:prepared.ticket.clone(),custodian_nonce:prepared.custodian_nonce.clone(),
+            identity:prepared.identity.clone(),proof_hash:proof.proof_hash(),
+            durable_revision:revision,
+        }).unwrap();
+        assert_eq!(confirmed.proof_hash(),proof.proof_hash());
+        assert!(product.process_custodian.active(&prepared.ticket).is_none(),
+            "durably confirmed stop releases the exact active ticket");
+    }
+
+    #[test]
+    fn strict_legacy_source_history_route_fixtures() {
+        instance::LegacySourceResult::run_focused_history_fixtures();
+    }
+
     #[test]
     fn strict_legacy_codex_unregistered_physical_acl_applies_and_replays() {
         strict_legacy_codex_physical_acl_applies_and_replays(false,false);
@@ -1056,8 +1091,10 @@ mod tests {
             &backend_operation,&backend_custody).unwrap();
         let backend_stop=product.process_custodian.stop(&backend_custody.ticket,
             crate::process::StopBudgets::production(),||Ok(())).unwrap();
-        crate::store::authority::mark_process_stopped(&mut product.connection,
-            &backend_operation,&backend_stop).unwrap();
+        let backend_stop_revision=crate::store::authority::mark_process_stopped(
+            &mut product.connection,&backend_operation,&backend_stop).unwrap();
+        confirm_durable_test_stop(&mut product,&backend_custody,&backend_stop,
+            backend_stop_revision);
         // The backend journal is bound to the actual current program tuple
         // and original stopped C source, not just a copied FILE enum.
         instance::record_credential_backend(&mut product.connection,&instance::BackendSource {
