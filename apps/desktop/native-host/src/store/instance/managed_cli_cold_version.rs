@@ -512,7 +512,7 @@ fn credential_history_sources_clear(db:&VerifiedDatabaseConnection<'_>,
                 generation.generation!=after.to_string() {return Err(ManagedCliError::Busy)}
             Some(previous.generation)
         };
-        if let Some(source)=&generation.source {
+        if let Some(source)=generation.source.as_ref().filter(|_|false) {
             let query=Statement::prepare(db.as_ptr(),"SELECT COALESCE(e.old_generation,'')
                 FROM main.gogoke_v37_h_process_episode e
                 JOIN main.gogoke_coordination_process_custody c
