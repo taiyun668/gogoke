@@ -221,7 +221,7 @@ fn source(db: &VerifiedDatabaseConnection<'_>, home: &str, instance: &str,
             stop_field("seatId").as_deref() != Some(e[12].as_str()) ||
             stop.expected_revision.to_string() != stop_before ||
             stop_before.parse::<u64>().ok().and_then(|value| value.checked_add(1))
-                .map(|value| value.to_string()) != Some(stop_after) {
+                .map(|value| value.to_string()) != Some(stop_after.clone()) {
             return Err(ExactHomeGoneError::Missing("original H predecessor STOP raw/revision"));
         }
         ancestry_fields.extend([stop_id,stop_hex,stop_status,stop_before,stop_after]);
