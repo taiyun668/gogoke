@@ -1891,6 +1891,82 @@ mod tests {
         }
     }
 
+    // Modify the actual durable native-probe record, not a substitute proof.
+    // Round-trip the observed frame first; dispatch with no open SAVEPOINT so
+    // a transaction-nesting error cannot make a negative control look valid.
+    fn assert_probe_witness_damages_refuse(product:&mut ProductDatabase<'_>,
+        root:&RootLock,request:&str,frames:&[String]) {
+        let original=instance::read_version_action(&product.connection,root,request)
+            .unwrap().unwrap();
+        let raw=action_bytes(&original.probe_receipt_hex).unwrap();
+        let mut fields=Vec::new();
+        let mut offset=0;
+        while offset<raw.len() {
+            let length=u64::from_be_bytes(raw[offset..offset+8].try_into().unwrap()) as usize;
+            offset+=8;
+            fields.push(raw[offset..offset+length].to_vec());offset+=length;
+        }
+        assert_eq!(fields.len(),45);
+        assert_eq!(fields[0],b"managed-probe-witness-v2-full-stop-proof");
+        let encode=|parts:&[Vec<u8>]| {
+            let mut bytes=Vec::new();
+            for part in parts {bytes.extend_from_slice(&(part.len() as u64).to_be_bytes());
+                bytes.extend_from_slice(part);}
+            action_hex(&bytes)
+        };
+        assert_eq!(encode(&fields),original.probe_receipt_hex,
+            "the mutation reader must round-trip the original native record");
+        let wrong_public=bound_step_response("probe",&original.driver,&original.target_version,
+            "different-original-request",&original.operation,"PROBED",Some(&original.stage_name));
+        let revision=std::str::from_utf8(&fields[23]).unwrap().parse::<u64>().unwrap();
+        let mut changed=Vec::new();
+        for (name,index,value) in [
+            ("original parent exit",33,b"false".to_vec()),
+            ("original Job count",35,b"1".to_vec()),
+            ("original writer fence",41,b"false".to_vec()),
+            ("original deadline",43,b"true".to_vec()),
+            ("original hash",19,format!("sha256:{}","0".repeat(64)).into_bytes()),
+            ("confirmation revision",23,(revision+1).to_string().into_bytes()),
+            ("actual stdout",20,action_hex(b"0.0.0\n").into_bytes()),
+            ("original public request",21,action_hex(&wrong_public).into_bytes()),
+        ] {
+            let mut parts=fields.clone();parts[index]=value;
+            changed.push((name,encode(&parts)));
+        }
+        changed.push(("missing full proof",encode(&fields[..23])));
+        let snapshot=managed_snapshot(product);
+        for frame in &frames[..if original.phase==instance::ActionPhase::Probed {
+            frames.len()-1
+        } else {frames.len()}] {
+            managed_user(product,frame);
+        }
+        assert_eq!(managed_snapshot(product),snapshot);
+        for (name,modified) in changed {
+            let write=Statement::prepare(product.connection.as_ptr(),
+                "UPDATE main.gogoke_v37_instance_version_actions SET probe_receipt_hex=?1 WHERE request_id=?2").unwrap();
+            write.bind_text(1,&modified).unwrap();write.bind_text(2,request).unwrap();
+            write.step_done().unwrap();drop(write);
+            let action_before=table_rows(product,
+                "SELECT request_id,phase,revision,probe_receipt_hex,original_error_hex FROM main.gogoke_v37_instance_version_actions ORDER BY request_id",5);
+            for frame in frames {
+                assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err(),
+                    "{name} must reject {} at {:?}: {frame}",original.mode,original.phase);
+                assert_eq!(managed_snapshot(product),snapshot);
+                assert_eq!(table_rows(product,
+                    "SELECT request_id,phase,revision,probe_receipt_hex,original_error_hex FROM main.gogoke_v37_instance_version_actions ORDER BY request_id",5),action_before);
+            }
+            let restore=Statement::prepare(product.connection.as_ptr(),
+                "UPDATE main.gogoke_v37_instance_version_actions SET probe_receipt_hex=?1 WHERE request_id=?2").unwrap();
+            restore.bind_text(1,&original.probe_receipt_hex).unwrap();restore.bind_text(2,request).unwrap();
+            restore.step_done().unwrap();drop(restore);
+            assert_eq!(instance::read_version_action(&product.connection,root,request)
+                .unwrap().unwrap(),original);
+            managed_user(product,&frames[2]);
+            assert_eq!(managed_snapshot(product),snapshot,
+                "restoring {name} must restore the original native replay");
+        }
+    }
+
     #[test]
     fn default_begin_rejects_previous_nondefault_and_existing_source_without_effects() {
         let _guard=route_b_test_guard();
@@ -2088,8 +2164,9 @@ mod tests {
         let probe_prefix=format!("managed-probe-opencode-{}-*",
             &crate::store::digest::sha256_hex(b"bound-upgrade")[..40]);
         let backup=Statement::prepare(product.connection.as_ptr(),
-            "CREATE TEMP TABLE bound_probe_restore AS SELECT * FROM main.gogoke_coordination_process_custody WHERE operation_id GLOB ?1").unwrap();
+            "CREATE TEMP TABLE bound_probe_restore AS SELECT rowid AS original_c_rowid,* FROM main.gogoke_coordination_process_custody WHERE operation_id GLOB ?1").unwrap();
         backup.bind_text(1,&probe_prefix).unwrap();backup.step_done().unwrap();drop(backup);
+        let restore_probe="INSERT INTO main.gogoke_coordination_process_custody(rowid,operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) SELECT * FROM temp.bound_probe_restore";
         assert_eq!(table_rows(&product,"SELECT CAST(COUNT(*) AS TEXT) FROM temp.bound_probe_restore",1),
             vec![vec!["1".to_owned()]]);
         assert_eq!(managed_user(&mut product,&probe),probed_reply,
@@ -2114,7 +2191,7 @@ mod tests {
             let remove=Statement::prepare(product.connection.as_ptr(),
                 "DELETE FROM main.gogoke_coordination_process_custody WHERE operation_id GLOB ?1").unwrap();
             remove.bind_text(1,&probe_prefix).unwrap();remove.step_done().unwrap();drop(remove);
-            product.connection.execute("INSERT INTO main.gogoke_coordination_process_custody SELECT * FROM temp.bound_probe_restore").unwrap();
+            product.connection.execute(restore_probe).unwrap();
             assert_eq!(managed_user(&mut product,&probe),probed_reply,
                 "restoring the exact C must restore the positive native-probe replay");
         }
@@ -2127,6 +2204,9 @@ mod tests {
             "{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"{operation}\",\"driverId\":\"opencode\",\"targetVersion\":\"{target}\",\"requestId\":\"{id}\",\"expectedRevision\":\"{revision}\"}}");
         assert!(product.dispatch_user_managed_cli(final_frame("upgrade","other-id","1.18.33",copy.revision).as_bytes()).is_err());
         let up=final_frame("upgrade","bound-upgrade","1.18.33",copy.revision);
+        let replay_frames=vec![begin("bound-upgrade","1.18.33","upgrade"),
+            stage.clone(),probe.clone(),up.clone()];
+        assert_probe_witness_damages_refuse(&mut product,&root,"bound-upgrade",&replay_frames);
         let (status,receipts)=receipt_set(&managed_user(&mut product,&up));
         assert_eq!(status,"APPLIED");assert_eq!(receipts.len(),2);
         let upgraded=managed_snapshot(&product);
@@ -2137,7 +2217,7 @@ mod tests {
         assert!(product.dispatch_user_managed_cli(up.as_bytes()).is_err(),
             "a CONSUMED receipt must still bind the original successful probe C");
         assert_eq!(managed_snapshot(&product),missing_probe_snapshot);
-        product.connection.execute("INSERT INTO main.gogoke_coordination_process_custody SELECT * FROM temp.bound_probe_restore").unwrap();
+        product.connection.execute(restore_probe).unwrap();
         product.connection.execute("DROP TABLE temp.bound_probe_restore").unwrap();
         assert_eq!(managed_snapshot(&product),upgraded);
         let (status,replayed)=receipt_set(&managed_user(&mut product,&up));
@@ -2145,6 +2225,7 @@ mod tests {
         assert_eq!(managed_snapshot(&product),upgraded);
         assert_eq!(instance::read_version_action(&product.connection,&root,"bound-upgrade").unwrap().unwrap().phase,
             instance::ActionPhase::Consumed);
+        assert_probe_witness_damages_refuse(&mut product,&root,"bound-upgrade",&replay_frames);
         product.close_checked().unwrap();
         let mut product=ProductDatabase::open(&root,&database).unwrap();
         managed_user(&mut product,&begin("bound-rollback","1.18.32","rollback"));
@@ -2686,13 +2767,23 @@ mod tests {
         let (stage33,_)=real_opencode_version_stage(&root,"1.18.33");
         let begin=r#"{"schema":"gogoke.37.managed-cli.v1","command":"begin","driverId":"opencode","targetVersion":"1.18.33","requestId":"family-upgrade","operation":"upgrade"}"#;
         managed_user(&mut product,begin);
-        managed_user(&mut product,&version_frame("stage","1.18.33",Some(&stage33),Some("family-upgrade")));
-        managed_user(&mut product,&version_frame("probe","1.18.33",Some(&stage33),Some("family-upgrade")));
+        let stage_frame=version_frame("stage","1.18.33",Some(&stage33),Some("family-upgrade"));
+        let probe_frame=version_frame("probe","1.18.33",Some(&stage33),Some("family-upgrade"));
+        managed_user(&mut product,&stage_frame);
+        managed_user(&mut product,&probe_frame);
         let copy=instance::read_managed_cli(&product.connection,&root,"opencode").unwrap().unwrap();
         assert_eq!(copy.state,"PROBED","the target --version must be observed by the native probe");
-        let switch=format!("{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"upgrade\",\"driverId\":\"opencode\",\"targetVersion\":\"1.18.33\",\"requestId\":\"family-switch\",\"expectedRevision\":\"{}\"}}",copy.revision);
+        let wrong_switch=format!("{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"upgrade\",\"driverId\":\"opencode\",\"targetVersion\":\"1.18.33\",\"requestId\":\"family-switch\",\"expectedRevision\":\"{}\"}}",copy.revision);
+        let before_wrong=managed_snapshot(&product);
+        assert!(product.dispatch_user_managed_cli(wrong_switch.as_bytes()).is_err(),
+            "a different final request ID cannot consume the original family action");
+        assert_eq!(managed_snapshot(&product),before_wrong);
+        let switch=wrong_switch.replace("family-switch","family-upgrade");
+        let replay_frames=vec![begin.to_owned(),stage_frame,probe_frame,switch.clone()];
+        assert_probe_witness_damages_refuse(&mut product,&root,"family-upgrade",&replay_frames);
         let (status,receipts)=receipt_set(&managed_user(&mut product,&switch));
         assert_eq!(status,"APPLIED");assert_eq!(receipts.len(),1);
+        assert_probe_witness_damages_refuse(&mut product,&root,"family-upgrade",&replay_frames);
         assert_eq!(table_rows(&product,"SELECT session_id,phase,stop_request_id,stop_fact_id,raw_hex FROM main.gogoke_v37_h_process_episode ORDER BY session_id",5),original_h);
         assert_eq!(table_rows(&product,"SELECT session_id,request_id,raw_hex,status,revision FROM main.gogoke_v37_h_operation ORDER BY session_id,request_id",5),original_h_operations);
         assert_eq!(table_rows(&product,"SELECT request_id,request_hex,phase,ticket,custodian_nonce FROM main.gogoke_v37_h_stdin_journal ORDER BY request_id",5),original_stdin);
@@ -2770,10 +2861,14 @@ mod tests {
             &["APPLIED".to_owned(),"1".to_owned(),"1".to_owned()]);
         assert!(!product.managed_version_action_resources(driver,None).unwrap().is_cold(),
             "an already clear stopped observer keeps the original STRICT path");
-        let collect_cold=|product:&ProductDatabase<'_>|
-            instance::test_collect_cold_version_scope(&product.connection,&root,driver);
-        assert!(collect_cold(&product).unwrap().is_cold(),
-            "the existing cold collector must bind the original F writer and stopped C");
+        let original_source=instance::test_original_global_observation_source(
+            &product.connection,driver).expect("the actual F writer must bind the original C producer");
+        assert!(!original_source.is_empty());
+        assert!(matches!(instance::test_collect_cold_version_scope(
+            &product.connection,&root,driver),Err(instance::ManagedCliError::NativeGone(ref raw))
+            if raw.contains("complete old StopProof not retained") &&
+                raw.contains("HolderCreatedThisBoot")),
+            "a current-boot STOPPED/hash row is not complete old proof or a reboot fact");
         for (name,sql) in [
             ("missing F source",format!("DELETE FROM main.gogoke_v37_instance_operations WHERE request_id='{request_id}'")),
             ("changed F raw",format!("UPDATE main.gogoke_v37_instance_operations SET request_hex='00' WHERE request_id='{request_id}'")),
@@ -2783,12 +2878,14 @@ mod tests {
         ] {
             product.connection.execute("SAVEPOINT global_source_damage").unwrap();
             product.connection.execute(&sql).unwrap();
-            assert!(collect_cold(&product).is_err(),
-                "{name} must reject the same original family");
+            assert!(instance::test_original_global_observation_source(
+                &product.connection,driver).is_err(),
+                "{name} must reject the same original F source");
             product.connection.execute("ROLLBACK TO global_source_damage").unwrap();
             product.connection.execute("RELEASE global_source_damage").unwrap();
-            assert!(collect_cold(&product).unwrap().is_cold(),
-                "restoring {name} must restore qualification");
+            assert_eq!(instance::test_original_global_observation_source(
+                &product.connection,driver).unwrap(),original_source,
+                "restoring {name} must restore the exact original F source");
         }
         product.close_checked().unwrap();drop(root);
         fs::remove_file(database).unwrap();
@@ -3013,7 +3110,7 @@ impl<'a> ProductDatabase<'a> {
                 this.managed_version_action_resources_at_fingerprints_with_probe(driver,action,&next.0,&next.1,&proof)?;
                 let receipt=bound_step_response("probe",driver,version,request,&action.operation,"PROBED",Some(stage));
                 let receipt_hex=instance::encode_bound_probe_receipt(action,&operation_id,
-                    &proof,&stdout,&receipt)
+                    revision,&proof,&stdout,&receipt)
                     .map_err(|error|failure("probe original custody receipt",error))?;
                 instance::advance_version_action_in_current_transaction(&this.connection,this.root,&this.owner,
                     request,action.revision,&instance::ActionStep {

@@ -10,7 +10,9 @@ use crate::store::authority::{check_owner_in_current_transaction, OwnerIssuer};
 use crate::store::digest::content_hash;
 use crate::store::digest::sha256_hex;
 use crate::process::NativeStopProof;
+use crate::store::atomic::{Json, JsonString};
 use crate::store::same_open::VerifiedDatabaseConnection;
+use std::collections::BTreeMap;
 
 pub(super) const SCHEMA: &str = "CREATE TABLE gogoke_v37_instance_version_actions(request_id TEXT PRIMARY KEY,open_driver_id TEXT UNIQUE,root_identity TEXT NOT NULL,database_identity TEXT NOT NULL,driver_id TEXT NOT NULL,operation TEXT NOT NULL CHECK(operation IN ('upgrade','rollback')),target_version TEXT NOT NULL,target_archive_sha256 TEXT NOT NULL,target_image_sha256 TEXT NOT NULL,begin_hex TEXT NOT NULL,begin_hash TEXT NOT NULL,begin_receipt_hex TEXT NOT NULL,mode TEXT NOT NULL CHECK(mode IN ('STRICT','COLD')),proof_family TEXT NOT NULL,source_hex TEXT NOT NULL,source_digest TEXT NOT NULL,pairs_hex TEXT NOT NULL,pairs_digest TEXT NOT NULL,initial_copy_fingerprint TEXT NOT NULL,initial_source_fingerprint TEXT NOT NULL,current_copy_fingerprint TEXT NOT NULL,current_source_fingerprint TEXT NOT NULL,stage_copy_fingerprint TEXT NOT NULL DEFAULT '',stage_source_fingerprint TEXT NOT NULL DEFAULT '',stage_name TEXT NOT NULL DEFAULT '',stage_hex TEXT NOT NULL DEFAULT '',stage_receipt_hex TEXT NOT NULL DEFAULT '',probe_hex TEXT NOT NULL DEFAULT '',probe_receipt_hex TEXT NOT NULL DEFAULT '',probe_copy_fingerprint TEXT NOT NULL DEFAULT '',probe_source_fingerprint TEXT NOT NULL DEFAULT '',final_pre_copy_fingerprint TEXT NOT NULL DEFAULT '',final_pre_source_fingerprint TEXT NOT NULL DEFAULT '',final_hex TEXT NOT NULL DEFAULT '',final_hash TEXT NOT NULL DEFAULT '',final_receipt_set_digest TEXT NOT NULL DEFAULT '',original_error_hex TEXT NOT NULL DEFAULT '',begin_effect_copy_fingerprint TEXT NOT NULL DEFAULT '',begin_effect_source_fingerprint TEXT NOT NULL DEFAULT '',error_copy_fingerprint TEXT NOT NULL DEFAULT '',error_source_fingerprint TEXT NOT NULL DEFAULT '',phase TEXT NOT NULL CHECK(phase IN ('BEGUN','STAGED','PROBING','PROBED','CONSUMED','FAILED')),revision INTEGER NOT NULL CHECK(revision>=1),CHECK((phase IN ('BEGUN','STAGED','PROBING','PROBED') AND open_driver_id=driver_id) OR (phase IN ('CONSUMED','FAILED') AND open_driver_id IS NULL))) STRICT";
 
@@ -194,17 +196,80 @@ fn hex_bytes(raw:&[u8])->String{
 /// confirmed StopProof and exact stdout have been checked. Its fields are
 /// read back against the original C row; decoding never recreates a proof.
 pub(crate) struct ProbeWitness {
-    pub operation_id:String,pub ticket:String,pub nonce:String,
+    pub operation_id:String,pub durable_revision:u64,pub ticket:String,pub nonce:String,
     pub pid:String,pub creation:String,pub image:String,pub digest:String,
     pub profile:String,pub domain:String,pub generation:String,pub proof_hash:String,
     pub stdout:Vec<u8>,pub public_receipt:Vec<u8>,
 }
 
+const BOUND_PROBE_CODEC: &str = "managed-probe-witness-v2-full-stop-proof";
+const DURABLE_REVISION: usize = 23;
+const PROOF_START: usize = 24;
+const PROOF_FIELDS: usize = 20;
+const ERRORS_COUNT: usize = PROOF_START + PROOF_FIELDS;
+
+// NativeStopProof::proof_hash uses UTF-8 byte lengths in little-endian u64s.
+// Keep this data-only projection in precisely the producer's hash order.
+fn proof_projection(proof: &NativeStopProof) -> Vec<String> {
+    vec![proof.ticket.opaque().to_owned(), proof.custodian_nonce.clone(),
+        proof.binding.binary_digest_sha256.clone(), proof.binding.profile_id.clone(),
+        proof.binding.domain_id.clone(), proof.binding.generation.clone(),
+        proof.identity.pid.to_string(), proof.identity.creation_time_100ns.to_string(),
+        proof.identity.image_path.to_string_lossy().into_owned(),
+        proof.parent_exited.to_string(), proof.parent_grace_exited.to_string(),
+        proof.active_job_processes.map_or_else(|| "null".to_owned(), |value| value.to_string()),
+        proof.identity_status.clone(), proof.process_handle_present.to_string(),
+        proof.job_handle_present.to_string(), proof.kill_attempted.to_string(),
+        proof.kill_succeeded.to_string(), proof.writer_fence_verified.to_string(),
+        proof.exit_code.map_or_else(|| "null".to_owned(), |value| value.to_string()),
+        proof.deadline_exceeded.to_string()]
+}
+
+fn projection_hash(fields: &[String]) -> String {
+    let mut preimage = Vec::new();
+    for field in fields {
+        preimage.extend_from_slice(&(field.len() as u64).to_le_bytes());
+        preimage.extend_from_slice(field.as_bytes());
+    }
+    format!("sha256:{}", sha256_hex(&preimage))
+}
+
+fn canonical_u32(value: &str) -> Result<u32> {
+    let parsed = value.parse::<u32>().map_err(|_| ActionError::Conflict)?;
+    if value != parsed.to_string() { return Err(ActionError::Conflict); }
+    Ok(parsed)
+}
+fn canonical_u64(value: &str) -> Result<u64> {
+    let parsed = value.parse::<u64>().map_err(|_| ActionError::Conflict)?;
+    if value != parsed.to_string() { return Err(ActionError::Conflict); }
+    Ok(parsed)
+}
+fn proof_bool(value: &str) -> Result<bool> {
+    match value { "true" => Ok(true), "false" => Ok(false), _ => Err(ActionError::Conflict) }
+}
+
+// This is the same canonical eight-field response as the public bridge's
+// bound_step_response("probe", ..., "PROBED", Some(stage)). Return stored bytes.
+fn expected_public_probe_receipt(action: &ActionRecord) -> Vec<u8> {
+    let string = |value: &str| Json::String(JsonString::from_str(value));
+    Json::Object(BTreeMap::from([
+        (JsonString::from_str("schema"), string("gogoke.37.managed-cli.v1")),
+        (JsonString::from_str("command"), string("probe")),
+        (JsonString::from_str("driverId"), string(&action.driver)),
+        (JsonString::from_str("requestId"), string(&action.request_id)),
+        (JsonString::from_str("operation"), string(&action.operation)),
+        (JsonString::from_str("targetVersion"), string(&action.target_version)),
+        (JsonString::from_str("state"), string("PROBED")),
+        (JsonString::from_str("stageName"), string(&action.stage_name)),
+    ])).canonical().into_bytes()
+}
+
 pub(crate) fn encode_bound_probe_receipt(action:&ActionRecord,operation_id:&str,
+    durable_revision:u64,
     proof:&NativeStopProof,stdout:&[u8],public_receipt:&[u8])->Result<String>{
     if action.phase!=ActionPhase::Probing ||
-        !action.probe_receipt_hex.is_empty() || operation_id.is_empty() ||
-        public_receipt.is_empty() || proof.exit_code!=Some(0) ||
+        !action.probe_receipt_hex.is_empty() || operation_id.is_empty() || durable_revision==0 ||
+        public_receipt!=expected_public_probe_receipt(action) || proof.exit_code!=Some(0) ||
         !proof.parent_exited || !proof.writer_fence_verified ||
         proof.active_job_processes!=Some(0) || !proof.errors.is_empty() ||
         proof.deadline_exceeded || proof.binding.profile_id!=format!("managed-cli-{}",action.driver) ||
@@ -217,7 +282,11 @@ pub(crate) fn encode_bound_probe_receipt(action:&ActionRecord,operation_id:&str,
     let observed=std::str::from_utf8(stdout).map_err(|_|ActionError::Conflict)?;
     if observed.len()>256 || !observed.split(|ch:char|!ch.is_ascii_alphanumeric()&&ch!='.')
         .any(|token|token==action.target_version) {return Err(ActionError::Conflict)}
-    let parts=vec!["managed-probe-witness-v1".to_owned(),action.request_id.clone(),
+    let mut projection=proof_projection(proof);
+    projection.extend(proof.errors.iter().cloned());
+    let original_hash=proof.proof_hash();
+    if projection_hash(&projection)!=original_hash { return Err(ActionError::Conflict); }
+    let mut parts=vec![BOUND_PROBE_CODEC.to_owned(),action.request_id.clone(),
         action.root_identity.clone(),action.database_identity.clone(),action.driver.clone(),
         action.target_version.clone(),action.target_image_sha256.clone(),
         action.stage_name.clone(),action.probe_hex.clone(),operation_id.to_owned(),
@@ -225,8 +294,12 @@ pub(crate) fn encode_bound_probe_receipt(action:&ActionRecord,operation_id:&str,
         proof.identity.pid.to_string(),proof.identity.creation_time_100ns.to_string(),
         proof.identity.image_path.to_string_lossy().into_owned(),
         proof.binding.binary_digest_sha256.clone(),proof.binding.profile_id.clone(),
-        proof.binding.domain_id.clone(),proof.binding.generation.clone(),proof.proof_hash(),
+        proof.binding.domain_id.clone(),proof.binding.generation.clone(),original_hash,
         hex_bytes(stdout),hex_bytes(public_receipt),"0".to_owned()];
+    parts.push(durable_revision.to_string());
+    parts.extend(projection.drain(..PROOF_FIELDS));
+    parts.push(proof.errors.len().to_string());
+    parts.extend(projection);
     Ok(hex_bytes(&frame_strings(&parts)))
 }
 
@@ -235,7 +308,7 @@ pub(crate) fn bound_probe_witness(action:&ActionRecord)->Result<ProbeWitness>{
         return Err(ActionError::Conflict)
     }
     let fields=unframe(&bytes(&action.probe_receipt_hex).map_err(|_|ActionError::Conflict)?)?;
-    if fields.len()!=23 || fields[0]!="managed-probe-witness-v1" ||
+    if fields.len()<ERRORS_COUNT+1 || fields[0]!=BOUND_PROBE_CODEC ||
         fields[1]!=action.request_id || fields[2]!=action.root_identity ||
         fields[3]!=action.database_identity || fields[4]!=action.driver ||
         fields[5]!=action.target_version || fields[6]!=action.target_image_sha256 ||
@@ -265,8 +338,29 @@ pub(crate) fn bound_probe_witness(action:&ActionRecord)->Result<ProbeWitness>{
     if observed.len()>256 || !observed.split(|ch:char|!ch.is_ascii_alphanumeric()&&ch!='.')
         .any(|token|token==action.target_version) {return Err(ActionError::Conflict)}
     let public_receipt=bytes(&fields[21]).map_err(|_|ActionError::Conflict)?;
-    if public_receipt.is_empty(){return Err(ActionError::Conflict)}
-    Ok(ProbeWitness{operation_id:fields[9].clone(),ticket:fields[10].clone(),
+    if public_receipt!=expected_public_probe_receipt(action){return Err(ActionError::Conflict)}
+    let durable_revision=canonical_u64(&fields[DURABLE_REVISION])?;
+    if durable_revision==0 {return Err(ActionError::Conflict)}
+    let proof=&fields[PROOF_START..ERRORS_COUNT];
+    let error_count=canonical_u64(&fields[ERRORS_COUNT])?;
+    if error_count!=0 || fields.len()!=ERRORS_COUNT+1 ||
+        proof[0]!=fields[10] || proof[1]!=fields[11] ||
+        proof[2]!=fields[15] || proof[3]!=fields[16] ||
+        proof[4]!=fields[17] || proof[5]!=fields[18] ||
+        proof[6]!=fields[12] || proof[7]!=fields[13] ||
+        proof[8]!=fields[14] ||
+        canonical_u32(&proof[6])?==0 || canonical_u64(&proof[7])?==0 ||
+        canonical_u64(&proof[5])?==0 ||
+        !proof_bool(&proof[9])? ||
+        !proof_bool(&proof[17])? ||
+        canonical_u32(&proof[11])?!=0 ||
+        canonical_u32(&proof[18])?!=0 ||
+        proof_bool(&proof[19])? || proof[12].is_empty() ||
+        projection_hash(proof)!=fields[19] {
+        return Err(ActionError::Conflict)
+    }
+    for field in [10,13,14,15,16] { proof_bool(&proof[field])?; }
+    Ok(ProbeWitness{operation_id:fields[9].clone(),durable_revision,ticket:fields[10].clone(),
         nonce:fields[11].clone(),pid:fields[12].clone(),creation:fields[13].clone(),
         image:fields[14].clone(),digest:fields[15].clone(),profile:fields[16].clone(),
         domain:fields[17].clone(),generation:fields[18].clone(),
@@ -346,13 +440,12 @@ fn valid_family_codec(driver:&str,source_hex:&str,pairs_hex:&str)->Result<()> {
                     &source[20],&source[21]),
             Some("GLOBAL_LOGIN_C-v1") if source.len()==16 &&
                 source[9]=="global" &&
+                proof[0]=="KERNEL_REBOOT" &&
                 digest(&source[15]) &&
                 ((source[11]=="UNKNOWN" && driver=="codex" &&
-                    proof[0]=="KERNEL_REBOOT" &&
                     source[12].is_empty() && source[13]=="1") ||
-                 (source[11]=="STOPPED" && proof[0]=="ORIGINAL_STOP" &&
-                    source[13]=="0" && source[12].starts_with("sha256:") &&
-                    source[12].len()==71)) =>
+                 (source[11]=="STOPPED" && source[13]=="0" &&
+                    source[12].strip_prefix("sha256:").is_some_and(digest))) =>
                 ((&source[8],&source[9],&source[1],&source[10],&source[1]),
                     &source[4],&source[5]),
             Some("MANAGED_PROBE_C-v1") if source.len()==19 &&
@@ -896,6 +989,43 @@ mod tests {
     use crate::store::same_open::{create_new, route_b_test_guard};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn native_proof_projection_uses_original_little_endian_preimage() {
+        let fields = ["ticket", "nonce", concat!("sha256:",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            "managed-cli-codex", "global", "7", "123", "456", "C:/CLI/cli.exe",
+            "true", "false", "0", "exited", "true", "true", "false", "false",
+            "true", "0", "false"];
+        let fields = fields.map(str::to_owned);
+        assert_eq!(projection_hash(&fields),
+            "sha256:62a3253c7f9342f842b5e9427cd9973cfa27592d228e46c7e30c5d854573dda2");
+    }
+
+    #[test]
+    fn global_stopped_source_keeps_its_state_and_requires_kernel_proof_kind() {
+        let mut source=vec![String::new();16];
+        source[0]="GLOBAL_LOGIN_C-v1".into(); source[1]="operation-one".into();
+        source[4]="123".into(); source[5]="456".into();
+        source[8]="managed-cli-codex".into(); source[9]="global".into();
+        source[10]="7".into(); source[11]="STOPPED".into();
+        source[12]=format!("sha256:{}", "a".repeat(64)); source[13]="0".into();
+        source[15]="b".repeat(64);
+        let mut proof=vec!["KERNEL_REBOOT".to_owned(), source[8].clone(), source[9].clone(),
+            source[1].clone(), source[10].clone(), source[1].clone(),
+            source[4].clone(), source[5].clone()];
+        let family=|proof:&[String]| {
+            let sources=vec!["managed-cli-family-source-v1".to_owned(), "codex".to_owned(),
+                hex_bytes(&frame_strings(&source))];
+            let proofs=vec!["managed-cli-family-proof-v1".to_owned(), "codex".to_owned(),
+                hex_bytes(&frame_strings(proof))];
+            valid_family_codec("codex",&hex_bytes(&frame_strings(&sources)),
+                &hex_bytes(&frame_strings(&proofs)))
+        };
+        assert!(family(&proof).is_ok());
+        proof[0]="ORIGINAL_STOP".into();
+        assert!(matches!(family(&proof),Err(ActionError::Conflict)));
+    }
 
     fn fixture(run: impl FnOnce(&RootLock, &mut VerifiedDatabaseConnection<'_>, &OwnerIssuer)) {
         let _guard = route_b_test_guard();

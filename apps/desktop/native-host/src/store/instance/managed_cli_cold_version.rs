@@ -1026,13 +1026,7 @@ fn family_execution_source(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
     Ok((home_source,physical_source))
 }
 
-/// Global login/observer custody has no H episode by original design. It is
-/// enumerated independently; the existing applied ACL fence reader validates
-/// the complete old UNKNOWN C set and fresh kernel cutoff on every call.
-fn original_global_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str)
-    ->Result<(Vec<(Vec<String>,Vec<String>)>,Vec<String>,
-        Vec<(Vec<(u32,u64)>,NativeLegacyHoldersGone)>),ManagedCliError>{
-    let query="SELECT c.operation_id,c.ticket,c.custodian_nonce,c.pid,
+const ORIGINAL_GLOBAL_C_SQL:&str="SELECT c.operation_id,c.ticket,c.custodian_nonce,c.pid,
         c.creation_time_100ns,c.image_path,c.binary_digest_sha256,c.profile_id,
         c.domain_id,c.generation,c.state,COALESCE(c.stop_proof_hash,''),
         c.stop_proof_hash IS NULL,i.home_identity,i.program_digest,i.version
@@ -1042,7 +1036,13 @@ fn original_global_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,dri
             SELECT 1 FROM main.gogoke_v37_h_process_episode e
             WHERE e.process_operation_id=c.operation_id)
         ORDER BY c.operation_id";
-    let original=rows(db,query,driver,16)?;
+
+/// Global login/observer custody has no H episode by original design. It is
+/// enumerated independently; a source digest is not a native stop proof.
+fn original_global_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str)
+    ->Result<(Vec<(Vec<String>,Vec<String>)>,Vec<String>,
+        Vec<(Vec<(u32,u64)>,NativeLegacyHoldersGone)>),ManagedCliError>{
+    let original=rows(db,ORIGINAL_GLOBAL_C_SQL,driver,16)?;
     if original.is_empty(){return Ok((Vec::new(),Vec::new(),Vec::new()))}
     super::no_unsettled_global_cli_custody(db,driver)?;
     let mut members=Vec::new();
@@ -1063,35 +1063,47 @@ fn original_global_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,dri
             &row[14],&row[15])?;
         let original_pin=original_catalog_pin(driver,&row[6])?;
         super::sha256_file(std::path::Path::new(&row[5]),original_pin.image_sha256)?;
-        let kind=if row[10]=="UNKNOWN" {
+        if row[10]=="UNKNOWN" {
             if !row[11].is_empty() || row[12]!="1" || driver!="codex" {
                 return Err(ManagedCliError::Busy)
             }
-            let pairs=vec![(pid,created)];
-            let fact=NativeLegacyHoldersGone::observe(&pairs).map_err(|error|
-                ManagedCliError::NativeGone(format!("global original kernel cutoff: {error:?}")))?;
-            fact.validate(&pairs).map_err(|error|
-                ManagedCliError::NativeGone(format!("global original kernel recheck: {error:?}")))?;
-            native.push((pairs,fact));
-            "KERNEL_REBOOT"
         } else {
             if row[12]!="0" || !row[11].starts_with("sha256:") ||
                 row[11].len()!=71 || !row[11][7..].bytes().all(|b|
                     b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
                 return Err(ManagedCliError::Busy)
             }
-            "ORIGINAL_STOP"
-        };
+        }
+        // The old C writer retained only this hash, not its complete proof
+        // preimage or confirmation. Preserve the old state/hash as source;
+        // qualify T08 only from the existing fresh native reboot fact.
+        let pairs=vec![(pid,created)];
+        let fact=NativeLegacyHoldersGone::observe(&pairs).map_err(|error|
+            ManagedCliError::NativeGone(format!(
+                "global original kernel cutoff (complete old StopProof not retained): {error:?}")))?;
+        fact.validate(&pairs).map_err(|error|
+            ManagedCliError::NativeGone(format!("global original kernel recheck: {error:?}")))?;
+        native.push((pairs,fact));
         let mut source=std::iter::once("GLOBAL_LOGIN_C-v1".to_owned())
             .chain(row[..14].iter().cloned()).collect::<Vec<_>>();
         source.push(observation);
-        let proof=vec![kind.to_owned(),row[7].clone(),"global".to_owned(),
+        let proof=vec!["KERNEL_REBOOT".to_owned(),row[7].clone(),"global".to_owned(),
             row[0].clone(),row[9].clone(),row[0].clone(),
             pid.to_string(),created.to_string()];
         operations.push(row[0].clone());
         members.push((source,proof));
     }
     Ok((members,operations,native))
+}
+
+fn require_probe_confirmation_revision(db:&VerifiedDatabaseConnection<'_>,
+    operation:&str,revision:u64)->Result<(),ManagedCliError>{
+    let row=Statement::prepare(db.as_ptr(),
+        "SELECT CAST(rowid AS TEXT) FROM main.gogoke_coordination_process_custody WHERE operation_id=?1")?;
+    row.bind_text(1,operation)?;
+    if revision==0 || !row.step_row()? || row.column_text(0)?!=revision.to_string() ||
+        row.step_row()? {return Err(ManagedCliError::Busy)}
+    Ok(())
 }
 
 /// The managed --version probe is an action-owned C effect. Retained earlier
@@ -1187,6 +1199,7 @@ fn original_probe_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driv
                 let witness=managed_version_action::bound_probe_witness(owner)
                     .map_err(|error|ManagedCliError::Observation(format!(
                         "same-action original probe witness: {error:?}")))?;
+                require_probe_confirmation_revision(db,&row[0],witness.durable_revision)?;
                 if witness.operation_id!=row[0] || witness.ticket!=row[1] ||
                     witness.nonce!=row[2] || witness.pid!=row[3] ||
                     witness.creation!=row[4] || witness.image!=row[5] ||
@@ -1202,6 +1215,7 @@ fn original_probe_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driv
         let witness=managed_version_action::bound_probe_witness(owner)
             .map_err(|error|ManagedCliError::Observation(format!(
                 "historical original probe witness: {error:?}")))?;
+        require_probe_confirmation_revision(db,&row[0],witness.durable_revision)?;
         if witness.operation_id!=row[0] || witness.ticket!=row[1] ||
             witness.nonce!=row[2] || witness.pid!=row[3] ||
             witness.creation!=row[4] || witness.image!=row[5] ||
@@ -1750,6 +1764,7 @@ fn strict_own_probe(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&st
         let witness=managed_version_action::bound_probe_witness(action)
             .map_err(|error|ManagedCliError::Observation(format!(
                 "strict original own probe witness: {error:?}")))?;
+        require_probe_confirmation_revision(db,&row[0],witness.durable_revision)?;
         if witness.operation_id!=row[0] || witness.ticket!=row[1] ||
             witness.nonce!=row[2] || witness.pid!=row[3] ||
             witness.creation!=row[4] || witness.image!=row[5] ||
@@ -1795,6 +1810,14 @@ pub(crate) fn observe_version_scope(db:&VerifiedDatabaseConnection<'_>,root:&Roo
 pub(crate) fn test_collect_cold_version_scope(db:&VerifiedDatabaseConnection<'_>,
     root:&RootLock,driver:&str)->Result<QualifiedVersionAction,ManagedCliError>{
     cold(db,root,driver,None,None)
+}
+
+#[cfg(test)]
+pub(crate) fn test_original_global_observation_source(db:&VerifiedDatabaseConnection<'_>,
+    driver:&str)->Result<String,ManagedCliError>{
+    let original=rows(db,ORIGINAL_GLOBAL_C_SQL,driver,16)?;
+    assert_eq!(original.len(),1,"the F-source fixture must retain its one real C row");
+    original_global_observation(db,&original[0])
 }
 
 /// Rebuild from current producer rows. The caller separately checks the live
