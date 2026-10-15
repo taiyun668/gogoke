@@ -2094,7 +2094,6 @@ fn strict_scope(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     action:Option<&ActionRecord>,live:Option<&NativeStopProof>)
     ->Result<QualifiedVersionAction,ManagedCliError>{
     no_unsettled_managed_version_change(db,driver)?;
-    independent_f_targets_clear(db,driver)?;
     no_unattributed_managed_image_c(db,root,driver,&[],&[],&[],true)?;
     if let Some(action)=action {strict_own_probe(db,root,driver,action,live)?}
     let (source_hex,source_digest)=strict_history_source(db,root,driver,action)?;
@@ -2119,7 +2118,6 @@ pub(crate) fn observe_version_scope(db:&VerifiedDatabaseConnection<'_>,root:&Roo
     // source cannot be converted into a different qualification mode.
     let admission=(|| {
         no_unsettled_managed_version_change(db,driver)?;
-        independent_f_targets_clear(db,driver)?;
         no_unattributed_managed_image_c(db,root,driver,&[],&[],&[],true)
     })();
     match admission {
