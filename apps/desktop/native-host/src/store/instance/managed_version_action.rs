@@ -302,8 +302,7 @@ fn valid_family_codec(driver:&str,source_hex:&str,pairs_hex:&str)->Result<()> {
                 source[36]=="0" && source[37]=="1" && source[21].is_empty() &&
                 source[11]==source[32] && !source[38].is_empty() &&
                 !source[39].is_empty() &&
-                ((source[3]=="global" && source[40]=="global-native-selection") ||
-                 (source[3]!="global" && digest(&source[40]))) &&
+                digest(&source[40]) &&
                 digest(&source[41]) && digest(&source[42]) =>
                 ((&source[1],&source[3],&source[4],&source[5],&source[7]),
                     &source[16],&source[17]),
@@ -316,8 +315,7 @@ fn valid_family_codec(driver:&str,source_hex:&str,pairs_hex:&str)->Result<()> {
                   source[30]=="0")) && source[31]=="0" &&
                 source[32]=="0" && source[33]=="0" &&
                 digest(&source[34]) && digest(&source[35]) &&
-                ((source[2]=="global" && source[36]=="global-native-selection") ||
-                 (source[2]!="global" && digest(&source[36]))) &&
+                digest(&source[36]) &&
                 matches!(source[37].as_str(),"ACTIVE"|"CLOSED"|"CLEANED") &&
                 source[38].parse::<u64>().is_ok() &&
                 source[39]==format!("temp-home-{}",sha256_hex(source[7].as_bytes())) &&
