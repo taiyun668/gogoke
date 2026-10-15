@@ -2232,6 +2232,10 @@ mod source_image_selection_tests {
         let request=crate::store::session_transport::decode_request(open).unwrap();
         let original=verified_original_worktree(&db,&request,"instanceA","projectA","1","seatA","incA").unwrap();
         let resume=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"resume","requestId":"resumeA","targetId":"sessionA","domainId":"projectA","expectedRevision":"3","payload":{"generation":"1"}}"#;
+        let resume_hex=hex(resume);
+        let resume_process=format!("h-resume-{}",&sha256_hex(resume)[..40]);
+        insert("INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA','resumeA',?1,'resume','sessionA','APPLIED',3,4)",&[&resume_hex]);
+        insert("INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,old_generation,raw_hex,previous_revision,result_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase,stop_fact_id) VALUES('projectA','resumeA','sessionA','2','1',?1,3,4,?2,'instanceA','homeB','bindingB','seatA','incA','STOPPED','component-stop-B')",&[&resume_hex,&resume_process]);
         let request=crate::store::session_transport::decode_request(resume).unwrap();
         assert_eq!(request.payload.len(),1,"resume must not grow OPEN payload fields");
         assert!(verified_original_worktree(&db,&request,"instanceA","projectA","2","seatA","incA").is_err(),
