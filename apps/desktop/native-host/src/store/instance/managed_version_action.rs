@@ -202,11 +202,12 @@ pub(crate) struct ProbeWitness {
     pub stdout:Vec<u8>,pub public_receipt:Vec<u8>,
 }
 
-const BOUND_PROBE_CODEC: &str = "managed-probe-witness-v2-full-stop-proof";
+const BOUND_PROBE_CODEC: &str = "managed-probe-witness-v3-full-stop-proof-stdout-digest";
 const DURABLE_REVISION: usize = 23;
 const PROOF_START: usize = 24;
 const PROOF_FIELDS: usize = 20;
 const ERRORS_COUNT: usize = PROOF_START + PROOF_FIELDS;
+const STDOUT_DIGEST: usize = ERRORS_COUNT + 1;
 
 // NativeStopProof::proof_hash uses UTF-8 byte lengths in little-endian u64s.
 // Keep this data-only projection in precisely the producer's hash order.
@@ -246,6 +247,9 @@ fn canonical_u64(value: &str) -> Result<u64> {
 }
 fn proof_bool(value: &str) -> Result<bool> {
     match value { "true" => Ok(true), "false" => Ok(false), _ => Err(ActionError::Conflict) }
+}
+fn stdout_matches_digest(stdout: &[u8], expected: &str) -> bool {
+    digest(expected) && sha256_hex(stdout)==expected
 }
 
 // This is the same canonical eight-field response as the public bridge's
@@ -300,6 +304,7 @@ pub(crate) fn encode_bound_probe_receipt(action:&ActionRecord,operation_id:&str,
     parts.extend(projection.drain(..PROOF_FIELDS));
     parts.push(proof.errors.len().to_string());
     parts.extend(projection);
+    parts.push(sha256_hex(stdout));
     Ok(hex_bytes(&frame_strings(&parts)))
 }
 
@@ -308,7 +313,7 @@ pub(crate) fn bound_probe_witness(action:&ActionRecord)->Result<ProbeWitness>{
         return Err(ActionError::Conflict)
     }
     let fields=unframe(&bytes(&action.probe_receipt_hex).map_err(|_|ActionError::Conflict)?)?;
-    if fields.len()<ERRORS_COUNT+1 || fields[0]!=BOUND_PROBE_CODEC ||
+    if fields.len()!=STDOUT_DIGEST+1 || fields[0]!=BOUND_PROBE_CODEC ||
         fields[1]!=action.request_id || fields[2]!=action.root_identity ||
         fields[3]!=action.database_identity || fields[4]!=action.driver ||
         fields[5]!=action.target_version || fields[6]!=action.target_image_sha256 ||
@@ -334,6 +339,9 @@ pub(crate) fn bound_probe_witness(action:&ActionRecord)->Result<ProbeWitness>{
         return Err(ActionError::Conflict)
     }
     let stdout=bytes(&fields[20]).map_err(|_|ActionError::Conflict)?;
+    if !stdout_matches_digest(&stdout,&fields[STDOUT_DIGEST]) {
+        return Err(ActionError::Conflict)
+    }
     let observed=std::str::from_utf8(&stdout).map_err(|_|ActionError::Conflict)?;
     if observed.len()>256 || !observed.split(|ch:char|!ch.is_ascii_alphanumeric()&&ch!='.')
         .any(|token|token==action.target_version) {return Err(ActionError::Conflict)}
@@ -343,7 +351,7 @@ pub(crate) fn bound_probe_witness(action:&ActionRecord)->Result<ProbeWitness>{
     if durable_revision==0 {return Err(ActionError::Conflict)}
     let proof=&fields[PROOF_START..ERRORS_COUNT];
     let error_count=canonical_u64(&fields[ERRORS_COUNT])?;
-    if error_count!=0 || fields.len()!=ERRORS_COUNT+1 ||
+    if error_count!=0 ||
         proof[0]!=fields[10] || proof[1]!=fields[11] ||
         proof[2]!=fields[15] || proof[3]!=fields[16] ||
         proof[4]!=fields[17] || proof[5]!=fields[18] ||
@@ -528,6 +536,78 @@ fn valid_family_codec(driver:&str,source_hex:&str,pairs_hex:&str)->Result<()> {
     }
     Ok(())
 }
+
+// STRICT binds original history as data. These quoted values are never native
+// disappearance or StopProof evidence. The collector checks source relations;
+// this decoder only refuses an incomplete or ambiguous persisted shape.
+fn strict_sql_quote(value:&str)->bool {
+    if value=="NULL" {return true}
+    if value.parse::<i64>().is_ok_and(|number|number.to_string()==value) {return true}
+    let Some(inner)=value.strip_prefix('\'').and_then(|text|text.strip_suffix('\'')) else {
+        return false
+    };
+    let bytes=inner.as_bytes();
+    let mut index=0;
+    while index<bytes.len() {
+        if bytes[index]==0 {return false}
+        if bytes[index]==b'\'' {
+            if bytes.get(index+1)!=Some(&b'\'') {return false}
+            index+=2;
+        } else {index+=1}
+    }
+    true
+}
+
+fn strict_row_width(kind:&str)->Option<usize> {
+    Some(match kind {
+        "I"|"S"=>6, "C"=>14, "HB"|"HF"|"CO"|"CA"|"SBV"|"WTLO"=>9,
+        "HC"|"HM"|"HD"|"WTS"=>12, "HE"=>19,
+        "HG"|"HS"|"WTM"|"WSP"=>7,
+        "HO"|"FHG"=>10, "FO"|"NS"|"WTL"=>8, "HJ"=>17,
+        "RS"|"WT"=>22, "WTP"=>4, "WTO"=>16,
+        "HGC"=>24, "HA"=>30, "FH"=>18, "CP"=>11,
+        "LR"=>14, "VA"=>45,
+        _=>return None,
+    })
+}
+
+fn valid_strict_source_codec(driver:&str,source_hex:&str)->Result<()> {
+    let source=unframe(&bytes(source_hex).map_err(|_|ActionError::Conflict)?)?;
+    if source.len()<2 || source[0]!="managed-cli-strict-source-v1" ||
+        source[1]!=driver {return Err(ActionError::Conflict)}
+    let mut previous:Option<(String,String)>=None;
+    for raw in &source[2..] {
+        let row=unframe(&bytes(raw).map_err(|_|ActionError::Conflict)?)?;
+        if row.len()<3 || strict_row_width(&row[0])!=Some(row.len()) ||
+            !row[2..].iter().all(|value|strict_sql_quote(value)) {
+            return Err(ActionError::Conflict)
+        }
+        let key=unframe(&bytes(&row[1]).map_err(|_|ActionError::Conflict)?)?;
+        if key.is_empty() || key.len()>row.len()-2 ||
+            key.iter().any(|part|part=="NULL" || part=="''" || !strict_sql_quote(part)) ||
+            !row[2..].starts_with(&key) {
+            return Err(ActionError::Conflict)
+        }
+        let identity=(row[0].clone(),row[1].clone());
+        if previous.as_ref().is_some_and(|prior|prior>=&identity) {
+            return Err(ActionError::Conflict)
+        }
+        previous=Some(identity);
+    }
+    Ok(())
+}
+
+fn valid_strict_fields(driver:&str,proof_family:&str,source_hex:&str,
+    source_digest:&str,pairs_hex:&str,pairs_digest:&str)->Result<()> {
+    if !pairs_hex.is_empty() || !pairs_digest.is_empty() {return Err(ActionError::Conflict)}
+    if proof_family.is_empty() {
+        // Retain the old low-level encoding only under its original empty tag.
+        if source_hex.is_empty() && source_digest.is_empty() {return Ok(())}
+    } else if proof_family=="strict-source-v1" && !source_hex.is_empty() &&
+        matching_digest(source_hex,source_digest).unwrap_or(false) &&
+        valid_strict_source_codec(driver,source_hex).is_ok() {return Ok(())}
+    Err(ActionError::Conflict)
+}
 fn checked_identity(db: &VerifiedDatabaseConnection<'_>, root: &RootLock) -> Result<(String,String)> {
     let observed = inspect_root(&root.canonical_root().canonical_path)
         .map_err(|error| ActionError::Identity(format!("root observation: {error:?}")))?;
@@ -553,8 +633,8 @@ fn validate_record(row: &ActionRecord) -> Result<()> {
         return Err(ActionError::Conflict);
     }
     if row.mode == "STRICT" {
-        if !row.proof_family.is_empty() || !row.source_hex.is_empty() || !row.source_digest.is_empty() ||
-            !row.pairs_hex.is_empty() || !row.pairs_digest.is_empty() { return Err(ActionError::Conflict); }
+        valid_strict_fields(&row.driver,&row.proof_family,&row.source_hex,
+            &row.source_digest,&row.pairs_hex,&row.pairs_digest)?;
     } else if row.mode == "COLD" {
         if !matches!(row.proof_family.as_str(), "exact-gone" | "reboot" | "family-v1") ||
             !matching_digest(&row.source_hex, &row.source_digest).unwrap_or(false) ||
@@ -707,8 +787,8 @@ pub(crate) fn begin_in_current_transaction(
     if bytes(begin.begin_hex)?.is_empty() || bytes(begin.begin_receipt_hex)?.is_empty() { return Err(ActionError::Invalid("begin bytes")); }
     let begin_hash = content_hash(&bytes(begin.begin_hex)?);
     match begin.mode {
-        ActionMode::Strict if !begin.proof_family.is_empty() || !begin.source_hex.is_empty() ||
-            !begin.source_digest.is_empty() || !begin.pairs_hex.is_empty() || !begin.pairs_digest.is_empty() =>
+        ActionMode::Strict if valid_strict_fields(begin.driver,begin.proof_family,
+            begin.source_hex,begin.source_digest,begin.pairs_hex,begin.pairs_digest).is_err() =>
             return Err(ActionError::Invalid("strict proof fields")),
         ActionMode::Cold if !matches!(begin.proof_family, "exact-gone" | "reboot" | "family-v1") ||
             bytes(begin.source_hex)?.is_empty() || bytes(begin.pairs_hex)?.is_empty() ||
@@ -1000,6 +1080,65 @@ mod tests {
         let fields = fields.map(str::to_owned);
         assert_eq!(projection_hash(&fields),
             "sha256:d740eb96cd78e2581f4d97e465ebac1831ce9a7c396c7a892fe266081706f28c");
+    }
+
+    #[test]
+    fn stdout_digest_rejects_changed_bytes_with_same_version_token() {
+        let original=b"version 0.162.1\n";
+        let modified=b"version 0.162.1 \n";
+        let recorded="5a3dfb1e07df419191459016842254aa9d2ef6832badc98a92b5651604b42c57";
+        assert!(stdout_matches_digest(original,recorded));
+        assert!(!stdout_matches_digest(modified,recorded));
+        assert!(!stdout_matches_digest(original,&recorded.to_ascii_uppercase()));
+        assert!(!stdout_matches_digest(original,""));
+    }
+
+    #[test]
+    fn strict_source_codec_refuses_ambiguous_history_frames() {
+        for (kind,width) in [("RS",22),("NS",8),("SBV",9),("WT",22),
+            ("WTS",12),("WTL",8),("WTP",4),("WTO",16),
+            ("WTM",7),("WSP",7),("WTLO",9)] {
+            assert_eq!(strict_row_width(kind),Some(width));
+        }
+        let key=hex_bytes(&frame_strings(&["'instance-one'".to_owned()]));
+        let row=vec!["I".to_owned(),key,"'instance-one'".into(),
+            "'codex'".into(),"NULL".into(),"''".into()];
+        let member=hex_bytes(&frame_strings(&row));
+        let outer=|members:Vec<String>| {
+            let mut parts=vec!["managed-cli-strict-source-v1".to_owned(),"codex".to_owned()];
+            parts.extend(members);
+            hex_bytes(&frame_strings(&parts))
+        };
+        let source=outer(vec![member.clone()]);
+        let source_digest=content_hash(&bytes(&source).unwrap());
+        let empty=outer(Vec::new());
+        let empty_digest=content_hash(&bytes(&empty).unwrap());
+        assert!(valid_strict_fields("codex","strict-source-v1",&empty,
+            &empty_digest,"","").is_ok());
+        assert!(valid_strict_fields("codex","strict-source-v1",&source,
+            &source_digest,"","").is_ok());
+        assert!(valid_strict_fields("codex","","","","","").is_ok());
+        assert!(valid_strict_fields("codex","",&source,&source_digest,"","").is_err());
+        assert!(matches!(valid_strict_fields("codex","family-v1",&source,
+            &source_digest,"",""),Err(ActionError::Conflict)));
+        assert!(matches!(valid_strict_fields("codex","strict-source-v1",&source,
+            &source_digest,"00",""),Err(ActionError::Conflict)));
+        assert!(valid_strict_source_codec("codex",&outer(vec![member.clone(),member.clone()])).is_err());
+        let mut later=row.clone(); later[0]="S".into();
+        let later=hex_bytes(&frame_strings(&later));
+        assert!(valid_strict_source_codec("codex",&outer(vec![later,member.clone()])).is_err());
+        let mut unknown=row.clone(); unknown[0]="UNKNOWN".into();
+        assert!(valid_strict_source_codec("codex",&outer(vec![hex_bytes(&frame_strings(&unknown))])).is_err());
+        assert!(valid_strict_source_codec("codex","00").is_err());
+        let mut changed=row.clone(); changed[4]="''".into();
+        let changed_source=outer(vec![hex_bytes(&frame_strings(&changed))]);
+        assert!(valid_strict_source_codec("codex",&changed_source).is_ok());
+        assert!(valid_strict_fields("codex","strict-source-v1",&changed_source,
+            &source_digest,"","").is_err());
+        changed[2]="'different'".into();
+        assert!(valid_strict_source_codec("codex",&outer(vec![hex_bytes(&frame_strings(&changed))])).is_err());
+        changed=row; changed[3]="'bad'quote'".into();
+        assert!(valid_strict_source_codec("codex",&outer(vec![hex_bytes(&frame_strings(&changed))])).is_err());
     }
 
     #[test]

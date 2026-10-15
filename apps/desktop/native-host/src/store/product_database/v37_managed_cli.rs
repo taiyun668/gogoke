@@ -484,7 +484,6 @@ impl<'a> ProductDatabase<'a> {
                 .map_err(|error|failure("action original F source switch",error))?;
             let next=instance::managed_version_fingerprints(&this.connection,this.root,driver)
                 .map_err(|error|failure("action switch post-effect fingerprints",error))?;
-            this.managed_version_action_resources_at_fingerprints(driver,&row,&next.0,&next.1)?;
             let receipts=instance::reconcile_managed_switch(&this.connection,this.root,request,driver,target,
                 revision,frame).map_err(|error|failure("action effect receipts",error))?
                 .ok_or(OrchestrationError::AccessDenied)?;
@@ -492,6 +491,10 @@ impl<'a> ProductDatabase<'a> {
                 request,row.revision,&raw,&receipt_set_digest(&receipts)?,
                 &row.current_copy_fingerprint,&row.current_source_fingerprint,&next.0,&next.1)
                 .map_err(|error|failure("action atomic consume",error))?;
+            // The consumed row now carries the exact original final frame and
+            // receipt digest. Recheck the complete history after the switch in
+            // this same transaction, excluding only its authenticated own F
+            // witnesses; any failed recheck rolls back the switch and consume.
             this.managed_version_action_resources(driver,Some(&consumed))?;
             switch_response(command,driver,receipts,false)
         })
@@ -1906,8 +1909,8 @@ mod tests {
             offset+=8;
             fields.push(raw[offset..offset+length].to_vec());offset+=length;
         }
-        assert_eq!(fields.len(),45);
-        assert_eq!(fields[0],b"managed-probe-witness-v2-full-stop-proof");
+        assert_eq!(fields.len(),46);
+        assert_eq!(fields[0],b"managed-probe-witness-v3-full-stop-proof-stdout-digest");
         let encode=|parts:&[Vec<u8>]| {
             let mut bytes=Vec::new();
             for part in parts {bytes.extend_from_slice(&(part.len() as u64).to_be_bytes());
@@ -1919,6 +1922,13 @@ mod tests {
         let wrong_public=bound_step_response("probe",&original.driver,&original.target_version,
             "different-original-request",&original.operation,"PROBED",Some(&original.stage_name));
         let revision=std::str::from_utf8(&fields[23]).unwrap().parse::<u64>().unwrap();
+        let mut changed_stdout=action_bytes(std::str::from_utf8(&fields[20]).unwrap()).unwrap();
+        assert!(changed_stdout.len()<256);
+        changed_stdout.push(b' ');
+        assert!(std::str::from_utf8(&changed_stdout).unwrap()
+            .split(|ch:char|!ch.is_ascii_alphanumeric()&&ch!='.')
+            .any(|token|token==original.target_version),
+            "the output mutation must retain the exact target-version token");
         let mut changed=Vec::new();
         for (name,index,value) in [
             ("original parent exit",33,b"false".to_vec()),
@@ -1930,6 +1940,7 @@ mod tests {
             ("original hash",19,format!("sha256:{}","0".repeat(64)).into_bytes()),
             ("confirmation revision",23,(revision+1).to_string().into_bytes()),
             ("actual stdout",20,action_hex(b"0.0.0\n").into_bytes()),
+            ("same-target original stdout bytes",20,action_hex(&changed_stdout).into_bytes()),
             ("original public request",21,action_hex(&wrong_public).into_bytes()),
         ] {
             let mut parts=fields.clone();parts[index]=value;
@@ -1967,6 +1978,59 @@ mod tests {
             assert_eq!(managed_snapshot(product),snapshot,
                 "restoring {name} must restore the original native replay");
         }
+    }
+
+    fn assert_strict_history_damages_refuse(product:&mut ProductDatabase<'_>,
+        root:&RootLock,request:&str,frames:&[String]) {
+        let action=instance::read_version_action(&product.connection,root,request)
+            .unwrap().unwrap();
+        assert_eq!(action.mode,"STRICT");
+        assert_eq!(action.proof_family,"strict-source-v1");
+        assert!(!action.source_hex.is_empty());
+        let own_prefix=format!("managed-probe-opencode-{}-*",
+            &crate::store::digest::sha256_hex(request.as_bytes())[..40]);
+        let backup=Statement::prepare(product.connection.as_ptr(),
+            "CREATE TEMP TABLE strict_original_c_restore AS SELECT rowid AS original_c_rowid,* FROM main.gogoke_coordination_process_custody WHERE operation_id NOT GLOB ?1 ORDER BY operation_id LIMIT 1").unwrap();
+        backup.bind_text(1,&own_prefix).unwrap();backup.step_done().unwrap();drop(backup);
+        assert_eq!(table_rows(product,"SELECT CAST(COUNT(*) AS TEXT) FROM temp.strict_original_c_restore",1),
+            vec![vec!["1".to_owned()]],"the STRICT control must retain its real original first-copy C");
+        let original_c=table_rows(product,"SELECT operation_id,ticket,state,stop_proof_hash FROM temp.strict_original_c_restore",4);
+        assert_eq!(original_c[0][2],"STOPPED");
+        let restore="INSERT INTO main.gogoke_coordination_process_custody(rowid,operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) SELECT * FROM temp.strict_original_c_restore";
+        let original_replay=managed_user(product,&frames[2]);
+        for (name,sql) in [
+            ("changed settled C ticket","UPDATE main.gogoke_coordination_process_custody SET ticket=ticket||'-changed' WHERE operation_id=(SELECT operation_id FROM temp.strict_original_c_restore)"),
+            ("deleted settled C","DELETE FROM main.gogoke_coordination_process_custody WHERE operation_id=(SELECT operation_id FROM temp.strict_original_c_restore)"),
+            ("added settled C","INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) SELECT operation_id||'-extra',ticket||'-extra',custodian_nonce||'-extra',pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash FROM temp.strict_original_c_restore"),
+        ] {
+            product.connection.execute(sql).unwrap();
+            let before=managed_snapshot(product);
+            for raw in frames {
+                assert!(product.dispatch_user_managed_cli(raw.as_bytes()).is_err(),
+                    "{:?} {name} must reject original history drift at {raw}",action.phase);
+                assert_eq!(managed_snapshot(product),before,"history refusal must not mutate product state");
+                assert_eq!(instance::read_version_action(&product.connection,root,request).unwrap().unwrap(),action);
+            }
+            product.connection.execute("DELETE FROM main.gogoke_coordination_process_custody WHERE operation_id IN (SELECT operation_id FROM temp.strict_original_c_restore UNION ALL SELECT operation_id||'-extra' FROM temp.strict_original_c_restore)").unwrap();
+            product.connection.execute(restore).unwrap();
+            assert_eq!(managed_user(product,&frames[2]),original_replay,
+                "restoring {name} must restore exact original STRICT replay without demanding old output");
+        }
+        product.connection.execute("DROP TABLE temp.strict_original_c_restore").unwrap();
+        product.connection.execute("CREATE TEMP TABLE strict_original_f_restore AS SELECT request_id,request_hex,target_id,phase,receipt_json,native_receipt_id FROM main.gogoke_v37_instance_operations WHERE target_id='instanceA' AND phase='APPLIED' AND native_receipt_id IS NOT NULL").unwrap();
+        assert_eq!(table_rows(product,"SELECT CAST(COUNT(*) AS TEXT) FROM temp.strict_original_f_restore",1),
+            vec![vec!["1".to_owned()]],"the original registration producer must be present");
+        product.connection.execute("UPDATE main.gogoke_v37_instance_operations SET receipt_json=CASE WHEN receipt_json IS NULL THEN '' ELSE NULL END WHERE request_id IN (SELECT request_id FROM temp.strict_original_f_restore)").unwrap();
+        let before=managed_snapshot(product);
+        for raw in frames {
+            assert!(product.dispatch_user_managed_cli(raw.as_bytes()).is_err(),
+                "STRICT history must distinguish original F NULL from empty receipt bytes");
+            assert_eq!(managed_snapshot(product),before);
+            assert_eq!(instance::read_version_action(&product.connection,root,request).unwrap().unwrap(),action);
+        }
+        product.connection.execute("UPDATE main.gogoke_v37_instance_operations SET receipt_json=(SELECT receipt_json FROM temp.strict_original_f_restore r WHERE r.request_id=gogoke_v37_instance_operations.request_id) WHERE request_id IN (SELECT request_id FROM temp.strict_original_f_restore)").unwrap();
+        assert_eq!(managed_user(product,&frames[2]),original_replay);
+        product.connection.execute("DROP TABLE temp.strict_original_f_restore").unwrap();
     }
 
     #[test]
@@ -2101,6 +2165,27 @@ mod tests {
         let original_home=fs::read(&sentinel).unwrap();
         let original_profiles=managed_snapshot(&product).profiles;
         let (stage33,image33)=real_opencode_version_stage(&root,"1.18.33");
+        // These are independent F intents, not process occupancy. Model the
+        // first committed private-history transaction before directory work.
+        assert!(!product.managed_version_action_resources("opencode",None).unwrap().is_cold());
+        for (name,target,history) in [
+            ("private history intent","pending-history".to_owned(),true),
+            ("credential intent",format!("credential-instance-{}",
+                crate::store::digest::sha256_hex(b"instanceA")),false),
+            ("unattributed F intent","unattributed-target".to_owned(),false),
+        ] {
+            product.connection.execute("SAVEPOINT independent_f_intent").unwrap();
+            if history {
+                product.connection.execute("INSERT INTO main.gogoke_v37_instance_histories(history_id,instance_id,root_identity,parent_identity,home_identity,domain_id,session_id,seat_id,seat_incarnation,initial_binding_id,initial_generation,initial_request_id,directory_ref,state,revision) VALUES('pending-history','instanceA','root','parent','home','global','history-session','history-seat','history-incarnation','history-binding','1','history-request','history-pending','PREPARING',0)").unwrap();
+            }
+            family_insert(&product,"INSERT INTO main.gogoke_v37_instance_operations(request_id,request_hex,target_id,phase) VALUES('pending-independent-f','00',?1,'PREPARING')",&[&target]);
+            assert!(product.managed_version_action_resources("opencode",None).is_err(),
+                "STRICT must independently reject {name}");
+            product.connection.execute("ROLLBACK TO independent_f_intent").unwrap();
+            product.connection.execute("RELEASE independent_f_intent").unwrap();
+            assert!(!product.managed_version_action_resources("opencode",None).unwrap().is_cold(),
+                "restoring {name} must restore original STRICT qualification");
+        }
         let begin=|id:&str,version:&str,operation:&str|format!(
             "{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"begin\",\"driverId\":\"opencode\",\"targetVersion\":\"{version}\",\"requestId\":\"{id}\",\"operation\":\"{operation}\"}}");
         let external_failure=|id:&str,state:&str,raw:&str|format!(
@@ -2209,6 +2294,7 @@ mod tests {
         let replay_frames=vec![begin("bound-upgrade","1.18.33","upgrade"),
             stage.clone(),probe.clone(),up.clone()];
         assert_probe_witness_damages_refuse(&mut product,&root,"bound-upgrade",&replay_frames);
+        assert_strict_history_damages_refuse(&mut product,&root,"bound-upgrade",&replay_frames);
         let (status,receipts)=receipt_set(&managed_user(&mut product,&up));
         assert_eq!(status,"APPLIED");assert_eq!(receipts.len(),2);
         let upgraded=managed_snapshot(&product);
@@ -2228,6 +2314,7 @@ mod tests {
         assert_eq!(instance::read_version_action(&product.connection,&root,"bound-upgrade").unwrap().unwrap().phase,
             instance::ActionPhase::Consumed);
         assert_probe_witness_damages_refuse(&mut product,&root,"bound-upgrade",&replay_frames);
+        assert_strict_history_damages_refuse(&mut product,&root,"bound-upgrade",&replay_frames);
         product.close_checked().unwrap();
         let mut product=ProductDatabase::open(&root,&database).unwrap();
         managed_user(&mut product,&begin("bound-rollback","1.18.32","rollback"));
@@ -2748,14 +2835,24 @@ mod tests {
         let original_h=table_rows(&product,"SELECT session_id,phase,stop_request_id,stop_fact_id,raw_hex FROM main.gogoke_v37_h_process_episode ORDER BY session_id",5);
         let original_h_operations=table_rows(&product,"SELECT session_id,request_id,raw_hex,status,revision FROM main.gogoke_v37_h_operation ORDER BY session_id,request_id",5);
         let original_stdin=table_rows(&product,"SELECT request_id,request_hex,phase,ticket,custodian_nonce FROM main.gogoke_v37_h_stdin_journal ORDER BY request_id",5);
+        assert_eq!(original_stdin.len(),1);
+        let stdin_raw=String::from_utf8(action_bytes(&original_stdin[0][1]).unwrap()).unwrap();
+        let changed_stdin=stdin_raw.replacen("\"generation\":\"1\"","\"generation\":\"9\"",1);
+        assert_ne!(changed_stdin,stdin_raw,"the control must actually change the raw generation");
+        let changed_request=crate::store::session_transport::decode_request(changed_stdin.as_bytes()).unwrap();
+        assert!(matches!(changed_request.payload.get(&key("generation")),
+            Some(Json::String(value)) if value.to_well_formed_string().as_deref()==Some("9")));
+        let changed_stdin_hex=action_hex(changed_stdin.as_bytes());
         let original_c=table_rows(&product,"SELECT operation_id,state,stop_proof_hash FROM main.gogoke_coordination_process_custody WHERE profile_id='instanceA' ORDER BY operation_id",3);
         for (name,sql,values) in [
             ("F create receipt","UPDATE main.gogoke_v37_instance_operations SET native_receipt_id='changed' WHERE target_id=?1",vec![home_a.as_str()]),
             ("C stop proof","UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash=NULL WHERE operation_id=?1",vec![operation_a.as_str()]),
             ("stdin raw","UPDATE main.gogoke_v37_h_stdin_journal SET request_hex='00' WHERE request_id='sendA'",vec![]),
+            ("stdin raw generation","UPDATE main.gogoke_v37_h_stdin_journal SET request_hex=?1 WHERE request_id='sendA'",vec![changed_stdin_hex.as_str()]),
             ("stdin nonce","UPDATE main.gogoke_v37_h_stdin_journal SET custodian_nonce='changed' WHERE request_id='sendA'",vec![]),
             ("original native selection","UPDATE main.gogoke_v37_native_selection SET seat_authorization_generation=seat_authorization_generation+1 WHERE session_id='sessionA'",vec![]),
             ("unattributed official image C","INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) SELECT operation_id||'-unowned',ticket||'-unowned',custodian_nonce||'-unowned',pid,creation_time_100ns,image_path,binary_digest_sha256,'unregistered-family-profile',domain_id,generation,'UNKNOWN',NULL FROM main.gogoke_coordination_process_custody WHERE operation_id=?1",vec![operation_a.as_str()]),
+            ("unattributed official image C with foreign digest","INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash) SELECT operation_id||'-unowned',ticket||'-unowned',custodian_nonce||'-unowned',pid,creation_time_100ns,image_path,'sha256:0000000000000000000000000000000000000000000000000000000000000000','unregistered-family-profile',domain_id,generation,'UNKNOWN',NULL FROM main.gogoke_coordination_process_custody WHERE operation_id=?1",vec![operation_a.as_str()]),
         ] {
             product.connection.execute("SAVEPOINT family_damage").unwrap();
             family_insert(&product,sql,&values);

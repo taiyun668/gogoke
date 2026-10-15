@@ -23,6 +23,7 @@ struct QualifiedUnit {
 }
 
 pub(crate) struct QualifiedVersionAction {
+    cold: bool,
     source_hex: String,
     source_digest: String,
     pairs_hex: String,
@@ -34,9 +35,9 @@ pub(crate) struct QualifiedVersionAction {
 }
 
 impl QualifiedVersionAction {
-    pub(crate) fn is_cold(&self) -> bool { !self.source_hex.is_empty() }
+    pub(crate) fn is_cold(&self) -> bool { self.cold }
     pub(crate) fn proof_family(&self) -> &'static str {
-        if self.is_cold() { "family-v1" } else { "" }
+        if self.is_cold() { "family-v1" } else { "strict-source-v1" }
     }
     pub(crate) fn source_hex(&self) -> &str { &self.source_hex }
     pub(crate) fn source_digest(&self) -> &str { &self.source_digest }
@@ -111,6 +112,120 @@ fn frame(parts: &[String]) -> Vec<u8> {
     for part in parts { out.extend_from_slice(&(part.len() as u64).to_be_bytes());
         out.extend_from_slice(part.as_bytes()); }
     out
+}
+
+// Only these original, fixed-schema rows form the STRICT historical source.
+// Key columns lead each projection. The current copy/pin and the mutable
+// instance/SOURCE version fields are checked by the action CAS instead.
+struct StrictProjection {
+    kind: &'static str,
+    columns: &'static str,
+    from: &'static str,
+    key_columns: usize,
+    width: usize,
+}
+
+const STRICT_PROJECTIONS: &[StrictProjection] = &[
+    StrictProjection{kind:"I",columns:"i.instance_id,i.driver_id,i.home_ref,i.home_identity",
+        from:"FROM main.gogoke_v37_instances i WHERE i.driver_id=?1",key_columns:1,width:4},
+    StrictProjection{kind:"S",columns:"s.instance_id,s.source,s.home_identity,s.registration_request_id",
+        from:"FROM main.gogoke_v37_instance_program_sources s JOIN main.gogoke_v37_instances i ON i.instance_id=s.instance_id WHERE i.driver_id=?1",key_columns:1,width:4},
+    StrictProjection{kind:"C",columns:"c.operation_id,c.ticket,c.custodian_nonce,c.pid,c.creation_time_100ns,c.image_path,c.binary_digest_sha256,c.profile_id,c.domain_id,c.generation,c.state,c.stop_proof_hash",
+        from:"FROM main.gogoke_coordination_process_custody c WHERE c.profile_id IN (SELECT instance_id FROM main.gogoke_v37_instances WHERE driver_id=?1) OR c.profile_id='managed-cli-'||?1",key_columns:1,width:12},
+    StrictProjection{kind:"HB",columns:"b.binding_id,b.instance_id,b.domain_id,b.kind,b.owner_id,b.generation,b.state",
+        from:"FROM main.gogoke_v37_h_owner_binding b JOIN main.gogoke_v37_instances i ON i.instance_id=b.instance_id WHERE i.driver_id=?1",key_columns:1,width:7},
+    StrictProjection{kind:"HC",columns:"c.domain_id,c.session_id,c.instance_id,c.home_id,c.binding_id,c.generation,c.state,c.revision,c.process_operation_id,c.stop_fact_id",
+        from:"FROM main.gogoke_v37_h_claim c JOIN main.gogoke_v37_instances i ON i.instance_id=c.instance_id WHERE i.driver_id=?1",key_columns:2,width:10},
+    StrictProjection{kind:"HE",columns:"e.domain_id,e.request_id,e.session_id,e.generation,e.old_generation,e.raw_hex,e.previous_revision,e.result_revision,e.process_operation_id,e.instance_id,e.home_id,e.binding_id,e.seat_id,e.seat_incarnation,e.stop_request_id,e.phase,e.stop_fact_id",
+        from:"FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id WHERE i.driver_id=?1",key_columns:2,width:17},
+    StrictProjection{kind:"HG",columns:"g.domain_id,g.session_id,g.generation,g.request_id,g.process_operation_id",
+        from:"FROM main.gogoke_v37_h_generation g WHERE EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id WHERE i.driver_id=?1 AND e.domain_id=g.domain_id AND e.session_id=g.session_id) OR EXISTS(SELECT 1 FROM main.gogoke_v37_h_claim c JOIN main.gogoke_v37_instances i ON i.instance_id=c.instance_id WHERE i.driver_id=?1 AND c.domain_id=g.domain_id AND c.session_id=g.session_id)",key_columns:3,width:5},
+    StrictProjection{kind:"HO",columns:"o.domain_id,o.request_id,o.raw_hex,o.operation,o.session_id,o.status,o.previous_revision,o.revision",
+        from:"FROM main.gogoke_v37_h_operation o WHERE EXISTS(SELECT 1 FROM main.gogoke_v37_h_claim c JOIN main.gogoke_v37_instances i ON i.instance_id=c.instance_id WHERE i.driver_id=?1 AND c.domain_id=o.domain_id AND c.session_id=o.session_id) OR EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id WHERE i.driver_id=?1 AND e.domain_id=o.domain_id AND e.session_id=o.session_id)",key_columns:2,width:8},
+    StrictProjection{kind:"HF",columns:"f.home_id,f.instance_id,f.domain_id,f.kind,f.owner_id,f.generation,f.fence_id",
+        from:"FROM main.gogoke_v37_h_home_fence f JOIN main.gogoke_v37_instances i ON i.instance_id=f.instance_id WHERE i.driver_id=?1",key_columns:1,width:7},
+    StrictProjection{kind:"HS",columns:"s.domain_id,s.session_id,s.seat_id,s.seat_incarnation,s.generation",
+        from:"FROM main.gogoke_v37_h_seat_binding s WHERE EXISTS(SELECT 1 FROM main.gogoke_v37_h_claim c JOIN main.gogoke_v37_instances i ON i.instance_id=c.instance_id WHERE i.driver_id=?1 AND c.domain_id=s.domain_id AND c.session_id=s.session_id) OR EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id WHERE i.driver_id=?1 AND e.domain_id=s.domain_id AND e.session_id=s.session_id)",key_columns:2,width:5},
+    StrictProjection{kind:"HGC",columns:"g.domain_id,g.request_id,g.raw_hex,g.operation,g.session_id,g.old_generation,g.old_process_operation_id,g.old_ticket,g.old_nonce,g.thread_id,g.seat_id,g.previous_revision,g.source_watermark,g.stage,g.unknown_revision,g.ack_step_id,g.item_source_epoch,g.item_source_cursor,g.item_id,g.owner_stop_request_id,g.result_revision,g.original_error",
+        from:"FROM main.gogoke_v37_h_generation_change g WHERE EXISTS(SELECT 1 FROM main.gogoke_v37_h_claim c JOIN main.gogoke_v37_instances i ON i.instance_id=c.instance_id WHERE i.driver_id=?1 AND c.domain_id=g.domain_id AND c.session_id=g.session_id) OR EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id WHERE i.driver_id=?1 AND e.domain_id=g.domain_id AND e.session_id=g.session_id)",key_columns:2,width:22},
+    StrictProjection{kind:"HA",columns:"a.domain_id,a.session_id,a.generation,a.request_id,a.request_sha256,a.origin_kind,a.process_operation_id,a.instance_id,a.binary_digest_sha256,a.binding_id,a.worktree_id,a.namespace_id,a.alias_name,a.requested_target,a.observed_target,a.volume_serial,a.file_id,a.host_pid,a.host_creation_time_100ns,a.phase,a.child_operation_id,a.child_ticket,a.child_nonce,a.child_pid,a.child_creation_time_100ns,a.cleanup_status,a.cleanup_result,a.revision",
+        from:"FROM main.gogoke_v37_h_dos_alias a JOIN main.gogoke_v37_instances i ON i.instance_id=a.instance_id WHERE i.driver_id=?1",key_columns:3,width:28},
+    StrictProjection{kind:"HM",columns:"h.home_id,h.instance_id,h.domain_id,h.kind,h.owner_id,h.generation,h.directory_ref,h.directory_identity,h.state,h.revision",
+        from:"FROM main.gogoke_v37_instance_homes h JOIN main.gogoke_v37_instances i ON i.instance_id=h.instance_id WHERE i.driver_id=?1",key_columns:1,width:10},
+    StrictProjection{kind:"FO",columns:"o.request_id,o.request_hex,o.target_id,o.phase,o.receipt_json,o.native_receipt_id",
+        from:"FROM main.gogoke_v37_instance_operations o WHERE o.target_id IN (SELECT instance_id FROM main.gogoke_v37_instances WHERE driver_id=?1) OR o.target_id IN (SELECT h.home_id FROM main.gogoke_v37_instance_homes h JOIN main.gogoke_v37_instances i ON i.instance_id=h.instance_id WHERE i.driver_id=?1) OR o.target_id IN (SELECT h.history_id FROM main.gogoke_v37_instance_histories h JOIN main.gogoke_v37_instances i ON i.instance_id=h.instance_id WHERE i.driver_id=?1)",key_columns:1,width:6},
+    StrictProjection{kind:"HJ",columns:"j.domain_id,j.request_id,j.operation,j.ticket,j.process_operation_id,j.custodian_nonce,j.session_id,j.generation,j.request_hex,j.phase,j.receipt_hex,j.receipt_status,j.expected_revision,j.receipt_previous_revision,j.receipt_revision",
+        from:"FROM main.gogoke_v37_h_stdin_journal j WHERE EXISTS(SELECT 1 FROM main.gogoke_v37_h_claim c JOIN main.gogoke_v37_instances i ON i.instance_id=c.instance_id WHERE i.driver_id=?1 AND c.domain_id=j.domain_id AND c.session_id=j.session_id) OR EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id WHERE i.driver_id=?1 AND e.domain_id=j.domain_id AND e.session_id=j.session_id)",key_columns:2,width:15},
+    StrictProjection{kind:"RS",columns:"s.domain_id,s.session_id,s.step_id,s.open_request_id,s.process_operation_id,s.ticket,s.custodian_nonce,s.pid,s.creation_time,s.image_path,s.binary_digest,s.profile_id,s.generation,s.command_hex,s.requires_response,s.phase,s.source_epoch,s.source_cursor,s.original_error,s.permission_evidence",
+        from:"FROM main.gogoke_v37_rpc_steps s WHERE EXISTS(SELECT 1 FROM main.gogoke_v37_h_claim c JOIN main.gogoke_v37_instances i ON i.instance_id=c.instance_id WHERE i.driver_id=?1 AND c.domain_id=s.domain_id AND c.session_id=s.session_id) OR EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id WHERE i.driver_id=?1 AND e.domain_id=s.domain_id AND e.session_id=s.session_id)",key_columns:3,width:20},
+    StrictProjection{kind:"FH",columns:"h.history_id,h.instance_id,h.root_identity,h.parent_identity,h.home_identity,h.domain_id,h.session_id,h.seat_id,h.seat_incarnation,h.initial_binding_id,h.initial_generation,h.initial_request_id,h.directory_ref,h.directory_identity,h.state,h.revision",
+        from:"FROM main.gogoke_v37_instance_histories h JOIN main.gogoke_v37_instances i ON i.instance_id=h.instance_id WHERE i.driver_id=?1",key_columns:1,width:16},
+    StrictProjection{kind:"FHG",columns:"g.binding_id,g.history_id,g.generation,g.request_id,g.predecessor_binding_id,g.process_operation_id,g.ticket,g.custodian_nonce",
+        from:"FROM main.gogoke_v37_instance_history_generations g JOIN main.gogoke_v37_instance_histories h ON h.history_id=g.history_id JOIN main.gogoke_v37_instances i ON i.instance_id=h.instance_id WHERE i.driver_id=?1",key_columns:1,width:8},
+    StrictProjection{kind:"CO",columns:"c.instance_id,c.root_identity,c.home_identity,c.file_identity,c.source_parent_identity,c.phase,c.revision",
+        from:"FROM main.gogoke_v37_credential_objects c JOIN main.gogoke_v37_instances i ON i.instance_id=c.instance_id WHERE i.driver_id=?1",key_columns:1,width:7},
+    StrictProjection{kind:"CA",columns:"a.history_id,a.instance_id,a.directory_identity,a.source_file_identity,a.intent_request,a.state,a.revision",
+        from:"FROM main.gogoke_v37_credential_aliases a JOIN main.gogoke_v37_instances i ON i.instance_id=a.instance_id WHERE i.driver_id=?1",key_columns:1,width:7},
+    StrictProjection{kind:"CP",columns:"p.binding_id,p.instance_id,p.history_id,p.generation,p.profile_sid,p.source_file_identity,p.intent_request,p.state,p.revision",
+        from:"FROM main.gogoke_v37_credential_profiles p JOIN main.gogoke_v37_instances i ON i.instance_id=p.instance_id WHERE i.driver_id=?1",key_columns:1,width:9},
+    StrictProjection{kind:"HD",columns:"d.binding_id,d.instance_id,d.process_operation_id,d.request_id,d.pid,d.creation_time_100ns,d.snapshot_hex,d.snapshot_digest,d.phase,d.revision",
+        from:"FROM main.gogoke_v37_holder_disappearance d JOIN main.gogoke_v37_instances i ON i.instance_id=d.instance_id WHERE i.driver_id=?1",key_columns:1,width:10},
+    StrictProjection{kind:"LR",columns:"r.operation_id,r.source_epoch,r.source_cursor,r.process_ticket,r.custodian_nonce,r.domain_id,r.session_id,r.generation,lower(hex(r.raw_bytes)),r.state,r.resolved_event_id,r.no_event_reason",
+        from:"FROM main.v37_ledger_raw_source r WHERE EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id WHERE i.driver_id=?1 AND e.process_operation_id=r.operation_id)",key_columns:3,width:12},
+    StrictProjection{kind:"NS",columns:"n.domain_id,n.session_id,n.seat_id,n.seat_incarnation,n.seat_authorization_generation,n.selected_instance_id",
+        from:"FROM main.gogoke_v37_native_selection n WHERE n.selected_instance_id IN (SELECT instance_id FROM main.gogoke_v37_instances WHERE driver_id=?1) OR EXISTS(SELECT 1 FROM main.gogoke_v37_h_claim c JOIN main.gogoke_v37_instances i ON i.instance_id=c.instance_id WHERE i.driver_id=?1 AND c.domain_id=n.domain_id AND c.session_id=n.session_id)",key_columns:2,width:6},
+    StrictProjection{kind:"SBV",columns:"v.domain_id,v.session_id,v.seat_id,v.seat_incarnation,v.seat_authorization_generation,v.selected_instance_id,v.provenance",
+        from:"FROM main.gogoke_v37_session_binding_v2 v WHERE v.selected_instance_id IN (SELECT instance_id FROM main.gogoke_v37_instances WHERE driver_id=?1) OR EXISTS(SELECT 1 FROM main.gogoke_v37_h_claim c JOIN main.gogoke_v37_instances i ON i.instance_id=c.instance_id WHERE i.driver_id=?1 AND c.domain_id=v.domain_id AND c.session_id=v.session_id)",key_columns:2,width:7},
+    StrictProjection{kind:"WT",columns:"w.worktree_id,w.path_id,w.repository_id,w.domain_id,w.seat_id,w.seat_incarnation,w.seat_generation,w.seat_revision,w.permission_tier,w.instance_id,w.source_revision,w.worktree_path,w.worktree_identity,w.git_pointer_hash,w.git_pointer_len,w.git_pointer_identity,w.common_identity,w.baseline_commit,w.state,w.revision",
+        from:"FROM main.gogoke_v37_worktrees w JOIN main.gogoke_v37_instances i ON i.instance_id=w.instance_id WHERE i.driver_id=?1",key_columns:1,width:20},
+    StrictProjection{kind:"WTS",columns:"s.repository_id,s.source_path,s.source_identity,s.common_path,s.common_identity,s.remote_kind,s.baseline_commit,s.git_digest,s.git_version,s.revision",
+        from:"FROM main.gogoke_v37_worktree_sources s WHERE EXISTS(SELECT 1 FROM main.gogoke_v37_worktrees w JOIN main.gogoke_v37_instances i ON i.instance_id=w.instance_id WHERE i.driver_id=?1 AND w.repository_id=s.repository_id)",key_columns:1,width:10},
+    StrictProjection{kind:"WTL",columns:"l.worktree_id,l.state,l.revision,l.merge_reason,l.merge_target_commit,l.stop_fact_id",
+        from:"FROM main.gogoke_v37_worktree_lifecycle l WHERE EXISTS(SELECT 1 FROM main.gogoke_v37_worktrees w JOIN main.gogoke_v37_instances i ON i.instance_id=w.instance_id WHERE i.driver_id=?1 AND w.worktree_id=l.worktree_id)",key_columns:1,width:6},
+    StrictProjection{kind:"WTP",columns:"p.repository_id,p.git_path",
+        from:"FROM main.gogoke_v37_worktree_programs p WHERE EXISTS(SELECT 1 FROM main.gogoke_v37_worktrees w JOIN main.gogoke_v37_instances i ON i.instance_id=w.instance_id WHERE i.driver_id=?1 AND w.repository_id=p.repository_id)",key_columns:1,width:2},
+    StrictProjection{kind:"WTO",columns:"o.request_id,o.request_hash,o.repository_id,o.domain_id,o.seat_id,o.worktree_id,o.path_id,o.seat_incarnation,o.seat_generation,o.seat_revision,o.instance_id,o.permission_tier,o.phase,o.cause",
+        from:"FROM main.gogoke_v37_worktree_operations o JOIN main.gogoke_v37_instances i ON i.instance_id=o.instance_id WHERE i.driver_id=?1",key_columns:1,width:14},
+    StrictProjection{kind:"WTM",columns:"m.worktree_id,m.space_id,m.repository_id,m.domain_id,m.seat_id",
+        from:"FROM main.gogoke_v37_worktree_members m WHERE EXISTS(SELECT 1 FROM main.gogoke_v37_worktrees w JOIN main.gogoke_v37_instances i ON i.instance_id=w.instance_id WHERE i.driver_id=?1 AND w.worktree_id=m.worktree_id)",key_columns:1,width:5},
+    StrictProjection{kind:"WSP",columns:"s.space_id,s.path_id,s.classification,s.state,s.revision",
+        from:"FROM main.gogoke_v37_worktree_spaces s WHERE EXISTS(SELECT 1 FROM main.gogoke_v37_worktree_members m JOIN main.gogoke_v37_worktrees w ON w.worktree_id=m.worktree_id JOIN main.gogoke_v37_instances i ON i.instance_id=w.instance_id WHERE i.driver_id=?1 AND m.space_id=s.space_id)",key_columns:1,width:5},
+    StrictProjection{kind:"WTLO",columns:"o.request_id,o.request_hash,o.worktree_id,o.operation,o.phase,o.cause,o.result_commit",
+        from:"FROM main.gogoke_v37_worktree_lifecycle_ops o WHERE EXISTS(SELECT 1 FROM main.gogoke_v37_worktrees w JOIN main.gogoke_v37_instances i ON i.instance_id=w.instance_id WHERE i.driver_id=?1 AND w.worktree_id=o.worktree_id)",key_columns:1,width:7},
+    StrictProjection{kind:"VA",columns:"a.request_id,a.open_driver_id,a.root_identity,a.database_identity,a.driver_id,a.operation,a.target_version,a.target_archive_sha256,a.target_image_sha256,a.begin_hex,a.begin_hash,a.begin_receipt_hex,a.mode,a.proof_family,a.source_hex,a.source_digest,a.pairs_hex,a.pairs_digest,a.initial_copy_fingerprint,a.initial_source_fingerprint,a.current_copy_fingerprint,a.current_source_fingerprint,a.stage_copy_fingerprint,a.stage_source_fingerprint,a.stage_name,a.stage_hex,a.stage_receipt_hex,a.probe_hex,a.probe_receipt_hex,a.probe_copy_fingerprint,a.probe_source_fingerprint,a.final_pre_copy_fingerprint,a.final_pre_source_fingerprint,a.final_hex,a.final_hash,a.final_receipt_set_digest,a.original_error_hex,a.begin_effect_copy_fingerprint,a.begin_effect_source_fingerprint,a.error_copy_fingerprint,a.error_source_fingerprint,a.phase,a.revision",
+        from:"FROM main.gogoke_v37_instance_version_actions a WHERE a.driver_id=?1",key_columns:1,width:43},
+];
+
+const STRICT_DERIVED_F_OPERATION: StrictProjection = StrictProjection {
+    kind:"FO",columns:"o.request_id,o.request_hex,o.target_id,o.phase,o.receipt_json,o.native_receipt_id",
+    from:"FROM main.gogoke_v37_instance_operations o WHERE o.target_id=?1",
+    key_columns:1,width:6,
+};
+
+fn strict_project(db:&VerifiedDatabaseConnection<'_>,driver:&str,
+    spec:&StrictProjection,excluded:&std::collections::BTreeSet<String>,
+    members:&mut std::collections::BTreeMap<(String,String),Vec<String>>)
+    ->Result<(),ManagedCliError>{
+    let columns=spec.columns.split(',').map(|column|format!("quote({column})"))
+        .collect::<Vec<_>>().join(",");
+    let sql=format!("SELECT {columns} {}",spec.from);
+    let query=Statement::prepare(db.as_ptr(),&sql)?;
+    query.bind_text(1,driver)?;
+    while query.step_row()? {
+        let mut values=Vec::with_capacity(spec.width);
+        for index in 0..spec.width {values.push(query.column_text(index as i32)?);}
+        if values.iter().take(spec.key_columns).any(|value|value=="NULL" || value=="''") {
+            return Err(ManagedCliError::Busy)
+        }
+        if excluded.contains(&values[0]) {continue}
+        let key=hex(&frame(&values[..spec.key_columns]));
+        let row=std::iter::once(spec.kind.to_owned()).chain(std::iter::once(key.clone()))
+            .chain(values).collect::<Vec<_>>();
+        if members.insert((spec.kind.to_owned(),key),row).is_some() {
+            return Err(ManagedCliError::Busy)
+        }
+    }
+    Ok(())
 }
 fn rows(db: &VerifiedDatabaseConnection<'_>, sql: &str, driver: &str,
     width: i32) -> Result<Vec<Vec<String>>, ManagedCliError> {
@@ -532,8 +647,13 @@ fn original_stopped_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,dr
         }
         verified_source_images(db,root,driver,&row[0],&row[26],&row[27],&row[28],
             &row[24],&row[25])?;
-        let worktree_source=verified_original_worktree(db,&request,&row[0],&row[1],&row[3],
-            &row[29],&row[30])?;
+        let worktree_source=if resume {
+            verified_stopped_resume_worktree(db,&row[0],&row[1],&row[2],
+                &row[3],&row[11],&row[29],&row[30])?
+        } else {
+            verified_original_worktree(db,&request,&row[0],&row[1],&row[3],
+                &row[29],&row[30])?
+        };
         let home=Statement::prepare(db.as_ptr(),
             "SELECT state,CAST(revision AS TEXT),directory_ref,directory_identity FROM main.gogoke_v37_instance_homes WHERE home_id=?1 AND instance_id=?2 AND domain_id=?3 AND generation=?4 AND kind='SESSION' AND owner_id=?5")?;
         for (n,value) in [&row[6],&row[0],&row[1],&row[3],&row[2]].iter().enumerate(){
@@ -794,6 +914,64 @@ fn verified_original_worktree(db:&VerifiedDatabaseConnection<'_>,
         if observed.identity.opaque()!=*identity {return Err(ManagedCliError::IdentityChanged)}
     }
     Ok(sha256_hex(&frame(&values)))
+}
+
+/// A plain resume carries only its predecessor generation. Its project
+/// worktree remains the one named by the authenticated original OPEN.
+fn verified_stopped_resume_worktree(db:&VerifiedDatabaseConnection<'_>,
+    instance:&str,domain:&str,session:&str,generation:&str,old_generation:&str,
+    seat:&str,incarnation:&str)->Result<String,ManagedCliError>{
+    let mut child=generation.to_owned();
+    let mut predecessor=old_generation.to_owned();
+    loop {
+        let child_number=child.parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
+        let parent_number=predecessor.parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
+        if parent_number.checked_add(1)!=Some(child_number) ||
+            predecessor!=parent_number.to_string() {return Err(ManagedCliError::Busy)}
+        let q=Statement::prepare(db.as_ptr(),
+            "SELECT COALESCE(e.old_generation,''),e.raw_hex,e.request_id,
+             e.process_operation_id,COALESCE(e.seat_id,''),
+             COALESCE(e.seat_incarnation,''),e.phase
+             FROM main.gogoke_v37_h_process_episode e
+             WHERE e.instance_id=?1 AND e.domain_id=?2 AND e.session_id=?3
+               AND e.generation=?4")?;
+        for (n,value) in [instance,domain,session,predecessor.as_str()].iter().enumerate(){
+            q.bind_text(n as i32+1,value)?;
+        }
+        if !q.step_row()? {return Err(ManagedCliError::Busy)}
+        let parent=(0..7).map(|n|q.column_text(n))
+            .collect::<std::result::Result<Vec<_>,_>>()?;
+        if q.step_row()? || parent[4]!=seat || parent[5]!=incarnation ||
+            parent[6]!="STOPPED" {return Err(ManagedCliError::Busy)}
+        if !parent[0].is_empty() {
+            child=predecessor;
+            predecessor=parent[0].clone();
+            continue
+        }
+        let raw=decode_original_hex(&parent[1])?;
+        let request=crate::store::session_transport::decode_request(&raw)
+            .map_err(|error|ManagedCliError::Observation(format!(
+                "original parent H OPEN raw: {error:?}")))?;
+        if request.family!="K-SESSION" || request.operation!="open" ||
+            request.request_id!=parent[2] || request.domain_id!=domain ||
+            request.target_id!=session || parent[3]!=format!(
+                "h-open-{}",&sha256_hex(&raw)[..40]) {
+            return Err(ManagedCliError::Busy)
+        }
+        let operation=Statement::prepare(db.as_ptr(),
+            "SELECT raw_hex,status FROM main.gogoke_v37_h_operation
+             WHERE domain_id=?1 AND session_id=?2 AND request_id=?3
+               AND operation='open'")?;
+        for (n,value) in [domain,session,parent[2].as_str()].iter().enumerate(){
+            operation.bind_text(n as i32+1,value)?;
+        }
+        if !operation.step_row()? || operation.column_text(0)?!=parent[1] ||
+            operation.column_text(1)?!="APPLIED" || operation.step_row()? {
+            return Err(ManagedCliError::Busy)
+        }
+        return verified_original_worktree(db,&request,instance,domain,
+            &predecessor,seat,incarnation)
+    }
 }
 
 /// `mark_resume_unknown` intentionally leaves the old STOPPED claim in place
@@ -1342,6 +1520,8 @@ fn original_stdin_sources(db:&VerifiedDatabaseConnection<'_>,driver:&str,
             (request.operation=="append-without-turn" && driver!="codex") ||
             request.operation!=r[6] || request.request_id!=r[5] ||
             request.domain_id!=r[1] || request.target_id!=r[2] ||
+            !matches!(request.payload.get(&JsonString::from_str("generation")),
+                Some(Json::String(value)) if value.to_well_formed_string().as_deref()==Some(r[3].as_str())) ||
             request.expected_revision!=revision || r[13]!=revision.to_string() ||
             r[7].is_empty() || r[8].is_empty() || r[7]!=r[20] || r[8]!=r[21] ||
             !matches!(r[24].as_str(),"PREPARED"|"ACTIVE"|"UNKNOWN"|"STOPPED") ||
@@ -1499,14 +1679,33 @@ fn no_unattributed_managed_image_c(db:&VerifiedDatabaseConnection<'_>,root:&Root
     while all.step_row()? {
         let r=(0..6).map(|n|all.column_text(n))
             .collect::<std::result::Result<Vec<_>,_>>()?;
-        let pin=match original_catalog_pin(driver,&r[5]) {
-            Ok(pin)=>pin,Err(ManagedCliError::Busy)=>continue,Err(error)=>return Err(error),
+        let owner=Statement::prepare(db.as_ptr(),
+            "SELECT driver_id FROM main.gogoke_v37_instances WHERE instance_id=?1")?;
+        owner.bind_text(1,&r[1])?;
+        let known_driver=if owner.step_row()? {
+            let same=owner.column_text(0)?==driver;
+            if owner.step_row()? {return Err(ManagedCliError::Busy)}
+            same
+        } else {false};
+        let h=units.iter().any(|(u,_)|u.process==r[0] && u.instance==r[1] &&
+            u.domain==r[2] && u.generation==r[3]) ||
+            stopped.iter().any(|u|u.process==r[0] && u.instance==r[1] &&
+                u.domain==r[2] && u.generation==r[3]);
+        let global=globals.iter().any(|(source,_)|source[1]==r[0] &&
+            source[8]==r[1] && source[9]==r[2] && source[10]==r[3]);
+        let managed=r[1]==format!("managed-cli-{driver}");
+        let related=known_driver || h || global || managed;
+        let image=match std::fs::canonicalize(std::path::Path::new(&r[4])) {
+            Ok(image)=>image,Err(error)=>{
+                if related {return Err(ManagedCliError::Observation(format!(
+                    "original related C image: {error:?}")))}
+                continue
+            },
         };
-        let image=std::fs::canonicalize(std::path::Path::new(&r[4]))?;
         let staging=match std::fs::canonicalize(&staging) {
             Ok(value)=>value,
             Err(error)=>{
-                if image.starts_with(&root.canonical_root().canonical_path.join("v37-managed-cli")) {
+                if related || image.starts_with(&root.canonical_root().canonical_path.join("v37-managed-cli")) {
                     return Err(ManagedCliError::Observation(format!(
                         "managed staging root for original C: {error:?}")))
                 }
@@ -1514,28 +1713,24 @@ fn no_unattributed_managed_image_c(db:&VerifiedDatabaseConnection<'_>,root:&Root
             },
         };
         if !image.starts_with(&staging) {continue}
+        let relative=image.strip_prefix(&staging).map_err(|_|ManagedCliError::Busy)?;
+        let suffix=relative.components().skip(1).collect::<std::path::PathBuf>();
+        let own_image=OFFICIAL.iter().copied().any(|candidate|candidate.driver==driver &&
+            suffix==candidate.image_relative.split('/').fold(
+                std::path::PathBuf::from("content"),|path,part|path.join(part)));
+        if !own_image {
+            if related {return Err(ManagedCliError::Observation(
+                "original related C image is not this driver's managed image".into()))}
+            continue
+        }
+        let pin=original_catalog_pin(driver,&r[5])?;
         let stage=stage_name_from_original_image(&staging,&image,pin)?;
         let verified=inspect_staged_official_cli_version(root,driver,pin.version,&stage)?;
         if std::fs::canonicalize(&verified)?!=image {
             return Err(ManagedCliError::IdentityChanged)
         }
-        let h=units.iter().any(|(u,_)|u.process==r[0] && u.instance==r[1] &&
-            u.domain==r[2] && u.generation==r[3]) ||
-            stopped.iter().any(|u|u.process==r[0] && u.instance==r[1] &&
-                u.domain==r[2] && u.generation==r[3]);
-        let global=globals.iter().any(|(source,_)|source[1]==r[0] &&
-            source[8]==r[1] && source[9]==r[2] && source[10]==r[3]);
-        let managed=r[1]==format!("managed-cli-{driver}") && r[2]=="global";
-        let known_strict=if strict {
-            let q=Statement::prepare(db.as_ptr(),
-                "SELECT driver_id FROM main.gogoke_v37_instances WHERE instance_id=?1")?;
-            q.bind_text(1,&r[1])?;
-            if q.step_row()? {
-                let same=q.column_text(0)?==driver;
-                if q.step_row()? {return Err(ManagedCliError::Busy)}
-                same
-            } else {false}
-        } else {false};
+        let managed=managed && r[2]=="global";
+        let known_strict=strict && known_driver;
         if !h && !global && !managed && !known_strict {return Err(ManagedCliError::Observation(
             "original C managed image has no authenticated family producer".into()))}
     }
@@ -1685,7 +1880,7 @@ fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     }
     if members.is_empty() {
         no_unsettled_managed_version_change(db,driver)?;
-        return Ok(QualifiedVersionAction{source_hex:String::new(),source_digest:String::new(),
+        return Ok(QualifiedVersionAction{cold:true,source_hex:String::new(),source_digest:String::new(),
             pairs_hex:String::new(),pairs_digest:String::new(),units:Vec::new(),stdin:Vec::new(),
             global_operations:Vec::new(),global_native:Vec::new()});
     }
@@ -1699,7 +1894,7 @@ fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     }
     let source_bytes=frame(&source_parts);
     let pair_bytes=frame(&pair_parts);
-    Ok(QualifiedVersionAction{source_hex:hex(&source_bytes),source_digest:content_hash(&source_bytes),
+    Ok(QualifiedVersionAction{cold:true,source_hex:hex(&source_bytes),source_digest:content_hash(&source_bytes),
         pairs_hex:hex(&pair_bytes),pairs_digest:content_hash(&pair_bytes),
         units,stdin,global_operations,global_native})
 }
@@ -1775,13 +1970,103 @@ fn strict_own_probe(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&st
     Ok(())
 }
 
+fn strict_own_switch_keys(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
+    driver:&str,action:&ActionRecord)->Result<std::collections::BTreeSet<String>,ManagedCliError>{
+    if action.phase!=managed_version_action::ActionPhase::Consumed {
+        return Ok(std::collections::BTreeSet::new())
+    }
+    let raw=decode_original_hex(&action.final_hex)?;
+    let text=std::str::from_utf8(&raw).map_err(|_|ManagedCliError::Busy)?;
+    let crate::store::atomic::Json::Object(fields)=
+        crate::store::atomic::Parser::parse(text).map_err(|_|ManagedCliError::Busy)?
+        else {return Err(ManagedCliError::Busy)};
+    let revision=match fields.get(&JsonString::from_str("expectedRevision")) {
+        Some(Json::String(value))=>value.to_well_formed_string()
+            .and_then(|text|text.parse::<i64>().ok().filter(|number|*number>0)
+                .filter(|number|number.to_string()==text)),
+        _=>None,
+    }.ok_or(ManagedCliError::Busy)?;
+    let receipts=registry::reconcile_managed_switch(db,root,&action.request_id,
+        driver,&action.target_version,revision,&raw)
+        .map_err(|error|ManagedCliError::Observation(format!(
+            "original own F switch witness: {error:?}")))?.ok_or(ManagedCliError::Busy)?;
+    let parsed=receipts.iter().map(|receipt|
+        crate::store::atomic::Parser::parse(&receipt.receipt_json)
+            .map_err(|_|ManagedCliError::Busy)).collect::<Result<Vec<_>,_>>()?;
+    if sha256_hex(Json::Array(parsed).canonical().as_bytes())!=
+        action.final_receipt_set_digest {return Err(ManagedCliError::Busy)}
+    let mut keys=std::collections::BTreeSet::new();
+    for receipt in receipts {
+        let key=format!("managed-switch-{}",sha256_hex(format!(
+            "{}\0{}",action.request_id,receipt.instance_id).as_bytes()));
+        keys.insert(format!("'{key}'"));
+    }
+    Ok(keys)
+}
+
+/// A STRICT action retains its original admission rule. This source binds
+/// historical rows already written by C/H/F without asking an old settled C
+/// for a new StopProof, stdout, or a fresh kernel absence observation.
+fn strict_history_source(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
+    driver:&str,action:Option<&ActionRecord>)
+    ->Result<(String,String),ManagedCliError>{
+    let mut members=std::collections::BTreeMap::new();
+    let empty=std::collections::BTreeSet::new();
+    let mut own_c=std::collections::BTreeSet::new();
+    let mut own_f=std::collections::BTreeSet::new();
+    let mut own_action=std::collections::BTreeSet::new();
+    if let Some(action)=action {
+        own_action.insert(format!("'{}'",action.request_id));
+        let prefix=format!("managed-probe-{driver}-{}-",
+            &sha256_hex(action.request_id.as_bytes())[..40]);
+        let query=Statement::prepare(db.as_ptr(),
+            "SELECT operation_id FROM main.gogoke_coordination_process_custody WHERE operation_id GLOB ?1")?;
+        query.bind_text(1,&format!("{prefix}*"))?;
+        if query.step_row()? {
+            let operation=query.column_text(0)?;
+            if query.step_row()? {return Err(ManagedCliError::Busy)}
+            // strict_own_probe has already authenticated this exact row and
+            // its actual proof/confirmation for the current action phase.
+            own_c.insert(format!("'{operation}'"));
+        }
+        own_f=strict_own_switch_keys(db,root,driver,action)?;
+    }
+    for spec in STRICT_PROJECTIONS {
+        if spec.kind=="VA" {
+            let requests=rows(db,"SELECT request_id FROM main.gogoke_v37_instance_version_actions WHERE driver_id=?1",driver,1)?;
+            for request in requests {
+                if action.is_some_and(|own|own.request_id==request[0]) {continue}
+                managed_version_action::read(db,root,&request[0])
+                    .map_err(|error|ManagedCliError::Observation(format!(
+                        "original historical version action: {error:?}")))?
+                    .ok_or(ManagedCliError::Busy)?;
+            }
+        }
+        let excluded=match spec.kind {"C"=>&own_c,"FO"=>&own_f,"VA"=>&own_action,_=>&empty};
+        strict_project(db,driver,spec,excluded,&mut members)?;
+        if spec.kind=="FO" {
+            let instances=rows(db,"SELECT instance_id FROM main.gogoke_v37_instances WHERE driver_id=?1",driver,1)?;
+            for instance in instances {
+                let target=format!("credential-instance-{}",sha256_hex(instance[0].as_bytes()));
+                strict_project(db,&target,&STRICT_DERIVED_F_OPERATION,&own_f,&mut members)?;
+            }
+        }
+    }
+    let mut parts=vec!["managed-cli-strict-source-v1".to_owned(),driver.to_owned()];
+    for (_,member) in members {parts.push(hex(&frame(&member)));}
+    let source=frame(&parts);
+    Ok((hex(&source),content_hash(&source)))
+}
+
 fn strict_scope(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     action:Option<&ActionRecord>,live:Option<&NativeStopProof>)
     ->Result<QualifiedVersionAction,ManagedCliError>{
     no_unsettled_managed_version_change(db,driver)?;
+    independent_f_targets_clear(db,driver)?;
     no_unattributed_managed_image_c(db,root,driver,&[],&[],&[],true)?;
     if let Some(action)=action {strict_own_probe(db,root,driver,action,live)?}
-    Ok(QualifiedVersionAction{source_hex:String::new(),source_digest:String::new(),
+    let (source_hex,source_digest)=strict_history_source(db,root,driver,action)?;
+    Ok(QualifiedVersionAction{cold:false,source_hex,source_digest,
         pairs_hex:String::new(),pairs_digest:String::new(),units:Vec::new(),stdin:Vec::new(),
         global_operations:Vec::new(),global_native:Vec::new()})
 }
@@ -1798,8 +2083,16 @@ pub(super) fn require_saved_action(db:&VerifiedDatabaseConnection<'_>,root:&Root
 /// storing ActionBegin. A strictly clear driver remains strict.
 pub(crate) fn observe_version_scope(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
     driver:&str)->Result<QualifiedVersionAction,ManagedCliError>{
-    match strict_scope(db,root,driver,None,None) {
-        Ok(view)=>Ok(view),Err(ManagedCliError::Busy)=>cold(db,root,driver,None,None),
+    // Only a failed original STRICT admission can select COLD. A damaged
+    // source cannot be converted into a different qualification mode.
+    let admission=(|| {
+        no_unsettled_managed_version_change(db,driver)?;
+        independent_f_targets_clear(db,driver)?;
+        no_unattributed_managed_image_c(db,root,driver,&[],&[],&[],true)
+    })();
+    match admission {
+        Ok(())=>strict_scope(db,root,driver,None,None),
+        Err(ManagedCliError::Busy)=>cold(db,root,driver,None,None),
         Err(error)=>Err(error),
     }
 }
@@ -1902,6 +2195,63 @@ pub(crate) fn no_unsettled_managed_version_change_for_action_with_probe(
 mod source_image_selection_tests {
     use super::*;
     use std::time::{SystemTime,UNIX_EPOCH};
+
+    #[test]
+    fn stopped_project_resume_uses_original_open_worktree_source() {
+        let _guard=crate::store::same_open::route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("gogoke-resume-worktree-{}-{nonce}",std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let database=path.join("state.sqlite");
+        crate::store::product_database::ProductDatabase::open(&root,&database)
+            .unwrap().close_checked().unwrap();
+        let db=crate::store::same_open::open_existing(&root,&database).unwrap();
+        let source=path.join("original-repository");
+        let tree=path.join("original-worktree");
+        std::fs::create_dir(&source).unwrap();std::fs::create_dir(&tree).unwrap();
+        let source_identity=inspect_root(&source).unwrap().identity.opaque();
+        let tree_identity=inspect_root(&tree).unwrap().identity.opaque();
+        let insert=|sql:&str,values:&[&str]| {
+            let q=Statement::prepare(db.as_ptr(),sql).unwrap();
+            for (index,value) in values.iter().enumerate(){q.bind_text(index as i32+1,value).unwrap();}
+            q.step_done().unwrap();
+        };
+        // These are explicit source-component seeds using the real DDL and
+        // physical directory identities, not a USER worktree/OPEN execution.
+        insert("INSERT INTO main.gogoke_v37_worktree_sources(repository_id,source_path,source_identity,common_path,common_identity,remote_kind,baseline_commit,git_digest,git_version,revision) VALUES('repoA',?1,?2,?1,?2,'HTTPS','source-component-commit','source-component-digest','source-component-version',1)",
+            &[source.to_str().unwrap(),&source_identity]);
+        insert("INSERT INTO main.gogoke_v37_worktrees(worktree_id,path_id,repository_id,domain_id,seat_id,seat_incarnation,seat_generation,seat_revision,permission_tier,instance_id,source_revision,worktree_path,worktree_identity,git_pointer_hash,git_pointer_len,git_pointer_identity,common_identity,baseline_commit,state,revision) VALUES('treeA','tree-path','repoA','projectA','seatA','incA',1,1,'component','instanceA',1,?1,?2,'component-pointer',1,'component-pointer-identity',?3,'source-component-commit','REGISTERED',1)",
+            &[tree.to_str().unwrap(),&tree_identity,&source_identity]);
+        db.execute("INSERT INTO main.gogoke_v37_worktree_lifecycle(worktree_id,state,revision) VALUES('treeA','REGISTERED',1)").unwrap();
+        let open=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"open","requestId":"openA","targetId":"sessionA","domainId":"projectA","expectedRevision":"1","payload":{"seatId":"seatA","generation":"1","repositoryId":"repoA","worktreeId":"treeA"}}"#;
+        let open_hex=hex(open);
+        let open_process=format!("h-open-{}",&sha256_hex(open)[..40]);
+        insert("INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA','openA',?1,'open','sessionA','APPLIED',1,2)",&[&open_hex]);
+        insert("INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,result_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase,stop_fact_id) VALUES('projectA','openA','sessionA','1',?1,1,2,?2,'instanceA','homeA','bindingA','seatA','incA','STOPPED','component-stop')",&[&open_hex,&open_process]);
+        let request=crate::store::session_transport::decode_request(open).unwrap();
+        let original=verified_original_worktree(&db,&request,"instanceA","projectA","1","seatA","incA").unwrap();
+        let resume=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"resume","requestId":"resumeA","targetId":"sessionA","domainId":"projectA","expectedRevision":"3","payload":{"generation":"1"}}"#;
+        let request=crate::store::session_transport::decode_request(resume).unwrap();
+        assert_eq!(request.payload.len(),1,"resume must not grow OPEN payload fields");
+        assert!(verified_original_worktree(&db,&request,"instanceA","projectA","2","seatA","incA").is_err(),
+            "passing the resume frame to the OPEN worktree reader reproduces the old wrong-input failure");
+        assert_eq!(verified_stopped_resume_worktree(&db,"instanceA","projectA","sessionA","2","1","seatA","incA").unwrap(),original);
+        for sql in [
+            "DELETE FROM main.gogoke_v37_h_process_episode WHERE request_id='openA'",
+            "UPDATE main.gogoke_v37_h_process_episode SET raw_hex='00' WHERE request_id='openA'",
+            "UPDATE main.gogoke_v37_h_operation SET raw_hex='00' WHERE request_id='openA'",
+            "DELETE FROM main.gogoke_v37_worktree_lifecycle WHERE worktree_id='treeA'",
+            "UPDATE main.gogoke_v37_worktree_sources SET source_identity='changed-physical-source' WHERE repository_id='repoA'",
+        ] {
+            db.execute("SAVEPOINT project_resume_source").unwrap();db.execute(sql).unwrap();
+            assert!(verified_stopped_resume_worktree(&db,"instanceA","projectA","sessionA","2","1","seatA","incA").is_err(),
+                "the original project source must refuse independently after {sql}");
+            db.execute("ROLLBACK TO project_resume_source").unwrap();db.execute("RELEASE project_resume_source").unwrap();
+            assert_eq!(verified_stopped_resume_worktree(&db,"instanceA","projectA","sessionA","2","1","seatA","incA").unwrap(),original);
+        }
+        db.close_checked().unwrap();drop(root);std::fs::remove_dir_all(path).unwrap();
+    }
 
     #[test]
     fn original_open_equations_keep_pending_revision_and_bind_project_payload() {
