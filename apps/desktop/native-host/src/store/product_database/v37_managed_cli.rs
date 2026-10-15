@@ -2143,6 +2143,77 @@ mod tests {
         }
     }
 
+    fn assert_cold_complete_history_drift_refuses(product:&mut ProductDatabase<'_>,
+        root:&RootLock,request:&str,replay_frames:&[&str]) {
+        let action=instance::read_version_action(&product.connection,root,request)
+            .unwrap().unwrap();
+        assert_eq!(action.mode,"COLD");
+        let original=table_rows(product,"SELECT raw_hex,CAST(revision AS TEXT) FROM
+            main.gogoke_v37_h_operation WHERE domain_id='global' AND request_id='commitA'",2);
+        assert_eq!(original.len(),1,"the actual APPLIED commit writer must be present");
+        let stable=managed_snapshot(product);
+        let replay=replay_frames.iter().map(|frame|managed_user(product,frame))
+            .collect::<Vec<_>>();
+        assert_eq!(managed_snapshot(product),stable,
+            "each selected frame must already be a successful nonmutating replay");
+        for (name,sql) in [
+            ("APPLIED commit raw","UPDATE main.gogoke_v37_h_operation SET raw_hex=raw_hex||'20' WHERE domain_id='global' AND request_id='commitA'"),
+            ("APPLIED commit revision","UPDATE main.gogoke_v37_h_operation SET revision=revision+1 WHERE domain_id='global' AND request_id='commitA'"),
+        ] {
+            product.connection.execute(sql).unwrap();
+            assert!(product.managed_version_action_resources("opencode",Some(&action)).is_err(),
+                "{name} must change the complete original-data qualification at {:?}",action.phase);
+            let before=managed_snapshot(product);
+            for frame in replay_frames {
+                assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err(),
+                    "{name} must refuse actual valid replay at {:?}: {frame}",action.phase);
+                assert_eq!(managed_snapshot(product),before);
+            }
+            assert_eq!(instance::read_version_action(&product.connection,root,request)
+                .unwrap().unwrap(),action);
+            let restore=Statement::prepare(product.connection.as_ptr(),
+                "UPDATE main.gogoke_v37_h_operation SET raw_hex=?1,revision=?2
+                 WHERE domain_id='global' AND request_id='commitA'").unwrap();
+            restore.bind_text(1,&original[0][0]).unwrap();
+            restore.bind_text(2,&original[0][1]).unwrap();
+            restore.step_done().unwrap();drop(restore);
+            for (frame,original_reply) in replay_frames.iter().zip(&replay) {
+                assert_eq!(&managed_user(product,frame),original_reply,
+                    "restoring {name} must recover exact COLD replay: {frame}");
+            }
+        }
+        product.connection.execute("CREATE TEMP TABLE cold_old_action_restore AS
+            SELECT * FROM main.gogoke_v37_instance_version_actions
+            WHERE request_id='family-old-failure'").unwrap();
+        assert_eq!(table_rows(product,"SELECT CAST(COUNT(*) AS TEXT) FROM
+            temp.cold_old_action_restore",1),vec![vec!["1".to_owned()]]);
+        for (name,sql) in [
+            ("old FAILED action error","UPDATE main.gogoke_v37_instance_version_actions
+                SET original_error_hex='00' WHERE request_id='family-old-failure'"),
+            ("old FAILED action removed","DELETE FROM
+                main.gogoke_v37_instance_version_actions WHERE request_id='family-old-failure'"),
+        ] {
+            product.connection.execute(sql).unwrap();
+            assert!(product.managed_version_action_resources("opencode",Some(&action)).is_err(),
+                "{name} must change complete original-data qualification at {:?}",action.phase);
+            let before=managed_snapshot(product);
+            for frame in replay_frames {
+                assert!(product.dispatch_user_managed_cli(frame.as_bytes()).is_err(),
+                    "{name} must refuse actual valid replay at {:?}: {frame}",action.phase);
+                assert_eq!(managed_snapshot(product),before);
+            }
+            product.connection.execute("DELETE FROM main.gogoke_v37_instance_version_actions
+                WHERE request_id='family-old-failure'").unwrap();
+            product.connection.execute("INSERT INTO main.gogoke_v37_instance_version_actions
+                SELECT * FROM temp.cold_old_action_restore").unwrap();
+            for (frame,original_reply) in replay_frames.iter().zip(&replay) {
+                assert_eq!(&managed_user(product,frame),original_reply,
+                    "restoring {name} must recover exact COLD replay: {frame}");
+            }
+        }
+        product.connection.execute("DROP TABLE temp.cold_old_action_restore").unwrap();
+    }
+
     #[test]
     fn real_codex_credential_origin_and_physical_absence_bind_strict_action() {
         let _guard=route_b_test_guard();
@@ -2510,9 +2581,196 @@ mod tests {
         let cold=instance::test_collect_cold_version_scope(&product.connection,&root,"codex");
         let cold_error=cold.as_ref().err();
         assert!(matches!(cold_error,Some(instance::ManagedCliError::NativeGone(raw))
-            if raw.contains("original credential backend kernel cutoff")),
+            if raw.contains("original credential backend kernel cutoff: HolderCreatedThisBoot")),
             "same-boot backend C must reach and fail the native kernel cutoff: {cold_error:?}");
         product.close_checked().unwrap();drop(root);
+        fs::remove_file(database).unwrap();
+        fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).unwrap();
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn real_codex_credential_history_source_requires_original_h_and_c() {
+        let _guard=route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!(
+            "gogoke-codex-history-source-{}-{nonce}",std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let database=path.join("state.sqlite");
+        let mut product=ProductDatabase::open(&root,&database).unwrap();
+        let (stage,image)=super::super::managed_cli_test_setup::prepared_image(&root,"codex");
+        managed_user(&mut product,r#"{"schema":"gogoke.37.managed-cli.v1","command":"begin","driverId":"codex"}"#);
+        // Explicit fixed-pin first-copy seed; no H stdout is attributed to it.
+        instance::record_managed_cli_stage(&mut product.connection,&root,&product.owner,
+            "codex",&stage).unwrap();
+        let pin=instance::read_fixed_official_cli("codex").unwrap();
+        instance::confirm_managed_cli_launch(&mut product.connection,&root,"codex",
+            &stage,&format!("sha256:{}",pin.image_sha256),pin.version).unwrap();
+        let observed=instance::ProgramObservation::observe(&image,pin.version).unwrap();
+        instance::register_instance(&mut product.connection,&root,&instance::Registration{
+            request_id:"register-history-source",request_bytes:b"register-history-source",
+            instance_id:"instanceA",driver_id:"codex",program:&observed}).unwrap();
+        product.connection.execute("INSERT INTO main.gogoke_v37_instance_profiles(instance_id,display_name,enabled,revision) VALUES('instanceA','history source',1,1)").unwrap();
+        let migrate=format!("{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"migrate\",\"driverId\":\"codex\",\"stageName\":\"{stage}\"}}");
+        managed_user(&mut product,&migrate);
+        let home=instance::resolve_codex_instance_home(&product.connection,&root,"instanceA")
+            .unwrap();
+        let auth=home.path.join("auth.json");
+        fs::write(&auth,b"synthetic disposable metadata, not a credential").unwrap();
+        let (file_identity,links)=crate::process::CredentialBinding::observe_source_metadata(
+            &root,&auth,&home.identity).unwrap();
+        assert_eq!(links,1);
+        let mut launch=ProcessLaunch::new(image.clone());
+        launch.arguments=vec!["--version".into()];
+        launch.current_directory=Some(home.path.clone());
+        let private=home.path.to_string_lossy().into_owned();
+        launch.environment=Some(vec![
+            ("SystemRoot".into(),std::env::var("SystemRoot").unwrap()),
+            ("HOME".into(),private.clone()),("USERPROFILE".into(),private.clone()),
+            ("APPDATA".into(),private.clone()),("LOCALAPPDATA".into(),private.clone()),
+            ("CODEX_HOME".into(),private),
+        ]);
+        let backend_operation=format!("credential-source-{}",
+            &crate::store::digest::sha256_hex(b"instanceA/history-backend")[..40]);
+        let prepared=product.process_custodian.prepare(&PrepareRequest {launch,
+            binding:NativeBinding {binary_digest_sha256:format!("sha256:{}",pin.image_sha256),
+                profile_id:"instanceA".into(),domain_id:"global".into(),generation:"1".into()}}).unwrap();
+        authority::record_prepared_process(&mut product.connection,&backend_operation,&prepared).unwrap();
+        product.process_custodian.activate(&prepared).unwrap();
+        authority::mark_process_active(&mut product.connection,&backend_operation,&prepared).unwrap();
+        let proof=product.process_custodian.stop(&prepared.ticket,StopBudgets::production(),||Ok(())).unwrap();
+        let revision=authority::mark_process_stopped(&mut product.connection,&backend_operation,&proof).unwrap();
+        confirm_durable_test_stop(&mut product,&prepared,&proof,revision);
+        instance::record_credential_backend(&mut product.connection,&instance::BackendSource{
+            request_id:"history-backend-source".into(),instance_id:"instanceA".into(),
+            home_identity:home.identity.clone(),program_digest:format!("sha256:{}",pin.image_sha256),
+            version:pin.version.into(),backend:instance::CredentialBackend::File,
+            startup_selector:instance::CredentialStartupSelector::FileBound,
+            operation_id:backend_operation,ticket:prepared.ticket.opaque().into(),
+            nonce:prepared.custodian_nonce.clone(),generation:"1".into()}).unwrap();
+        let root_identity=product.connection.root_identity().clone();
+        instance::bind_credential_object(&mut product.connection,&instance::CredentialObjectInput{
+            request_id:"history-object-source".into(),instance_id:"instanceA".into(),
+            root_identity,home_identity:home.identity.clone(),file_identity:file_identity.clone(),
+            source_parent_identity:home.identity.clone(),observed_nlink:1,
+            expected_revision:0,rebind_from:None}).unwrap();
+
+        let suffix=crate::store::digest::sha256_hex(format!("{}\nglobal\nsessionA\nincA\n1",
+            root.canonical_root().identity.opaque()).as_bytes());
+        let binding_id=format!("binding-{}",&suffix[..40]);
+        let launch_input=instance::PrivateHistoryLaunch{instance_id:"instanceA",domain_id:"global",
+            session_id:"sessionA",seat_id:"seatA",seat_incarnation:"incA",
+            binding_id:&binding_id,generation:"1",request_id:"openA"};
+        let history=instance::create_initial_private_history(&mut product.connection,&root,
+            &launch_input).unwrap();
+        let alias_scope=crate::process::CredentialAliasScope{
+            root:history.directory.path.clone(),root_identity:history.directory.identity.clone()};
+        let alias_intent=instance::begin_credential_alias(&mut product.connection,
+            &instance::CredentialAliasIntent{request_id:"history-alias".into(),
+                instance_id:"instanceA".into(),history_id:history.generation.history_id.clone(),
+                directory_identity:history.directory.identity.clone(),
+                source_file_identity:file_identity.clone(),expected_revision:0,
+                action:instance::CredentialAliasAction::Create}).unwrap();
+        let binding=crate::process::CredentialBinding::open_registered(&root,&auth,
+            &home.identity,&file_identity,&[]).unwrap();
+        binding.create_alias(&root,alias_scope,&[]).unwrap();
+        let (_,links)=crate::process::CredentialBinding::observe_source_metadata(
+            &root,&auth,&home.identity).unwrap();
+        assert_eq!(links,2);
+        instance::complete_credential_alias(&mut product.connection,&alias_intent,
+            &instance::CredentialAliasPhysicalReceipt{
+                source_file_identity:file_identity.clone(),
+                directory_identity:history.directory.identity.clone(),observed_nlink:2,
+                result:instance::CredentialAliasResult::Active}).unwrap();
+        let profile=crate::process::AppContainerProfile::derive_for_revocation(
+            "Gogoke37.Session.HistorySourceControl").unwrap();
+        let profile_intent=instance::begin_credential_profile(&mut product.connection,
+            &instance::CredentialProfileIntent{request_id:"history-profile".into(),
+                instance_id:"instanceA".into(),history_id:history.generation.history_id.clone(),
+                binding_id:binding_id.clone(),generation:"1".into(),
+                profile_sid:profile.sid_identity().unwrap(),source_file_identity:file_identity,
+                expected_revision:0,action:instance::CredentialProfileAction::Grant}).unwrap();
+        instance::complete_credential_profile(&mut product.connection,&profile_intent,
+            instance::CredentialProfileResult::Active).unwrap();
+        assert!(history.generation.source.is_none(),"original prepared F generation has no C source");
+        assert!(!product.managed_version_action_resources("codex",None).unwrap().is_cold(),
+            "source=None prepared F history remains a valid STRICT data shape");
+
+        // The existing H metadata fixture supplies the exact H episode and
+        // actual native stopped C. It is not a full USER stdout/session run.
+        let (temporary_home,h_operation,_)=stopped_official_family_member(&mut product,&root,
+            "codex",&image,"A","1",false);
+        let c=Statement::prepare(product.connection.as_ptr(),"SELECT ticket,custodian_nonce
+            FROM main.gogoke_coordination_process_custody WHERE operation_id=?1").unwrap();
+        c.bind_text(1,&h_operation).unwrap();
+        assert!(c.step_row().unwrap());
+        let h_source=instance::PrivateHistorySource{process_operation_id:h_operation,
+            ticket:c.column_text(0).unwrap(),custodian_nonce:c.column_text(1).unwrap()};
+        assert!(!c.step_row().unwrap());drop(c);
+        product.connection.execute("BEGIN IMMEDIATE").unwrap();
+        instance::bind_private_history_continuation_in_transaction(&product.connection,
+            &history,&h_source).unwrap();
+        product.connection.execute("COMMIT").unwrap();
+        let h_profile=crate::process::AppContainerProfile::derive_for_revocation(
+            &format!("Gogoke37.Session.{}",&suffix[..40])).unwrap();
+        instance::close_temporary_home(&mut product.connection,&root,&h_profile,
+            &instance::TransitionTemporaryHome{request_id:"history-close",request_bytes:b"history-close",
+                home_id:&temporary_home,expected_revision:1}).unwrap();
+        assert!(!product.managed_version_action_resources("codex",None).unwrap().is_cold(),
+            "bound original FHG, H episode and C qualify before action begin");
+
+        let source=table_rows(&product,&format!("SELECT process_operation_id,ticket,custodian_nonce
+            FROM main.gogoke_v37_instance_history_generations WHERE binding_id='{binding_id}'"),3);
+        assert_eq!(source.len(),1);
+        for (name,column) in [("ticket","ticket"),("nonce","custodian_nonce"),
+            ("missing operation","process_operation_id")] {
+            let sql=format!("UPDATE main.gogoke_v37_instance_history_generations
+                SET {column}='missing-{column}' WHERE binding_id='{binding_id}'");
+            product.connection.execute(&sql).unwrap();
+            assert!(product.managed_version_action_resources("codex",None).is_err(),
+                "{name} must fail initial qualification while original H/C remain exact");
+            let restore=Statement::prepare(product.connection.as_ptr(),&format!(
+                "UPDATE main.gogoke_v37_instance_history_generations SET {column}=?1
+                 WHERE binding_id=?2")).unwrap();
+            let old=match column {"process_operation_id"=>&source[0][0],
+                "ticket"=>&source[0][1],_=>&source[0][2]};
+            restore.bind_text(1,old).unwrap();restore.bind_text(2,&binding_id).unwrap();
+            restore.step_done().unwrap();drop(restore);
+            assert!(!product.managed_version_action_resources("codex",None).unwrap().is_cold());
+        }
+        let begin=r#"{"schema":"gogoke.37.managed-cli.v1","command":"begin","driverId":"codex","targetVersion":"0.162.1","requestId":"history-upgrade","operation":"upgrade"}"#;
+        let replay=managed_user(&mut product,begin);
+        let action=instance::read_version_action(&product.connection,&root,"history-upgrade")
+            .unwrap().unwrap();
+        assert_eq!(action.mode,"STRICT");
+        for (name,column) in [("ticket","ticket"),("nonce","custodian_nonce"),
+            ("missing operation","process_operation_id")] {
+            product.connection.execute(&format!("UPDATE main.gogoke_v37_instance_history_generations
+                SET {column}='missing-{column}' WHERE binding_id='{binding_id}'")).unwrap();
+            assert!(product.managed_version_action_resources("codex",Some(&action)).is_err(),
+                "{name} must fail saved action qualification");
+            let before=managed_snapshot(&product);
+            assert!(product.dispatch_user_managed_cli(begin.as_bytes()).is_err(),
+                "{name} must reject public action replay");
+            assert_eq!(managed_snapshot(&product),before);
+            let restore=Statement::prepare(product.connection.as_ptr(),&format!(
+                "UPDATE main.gogoke_v37_instance_history_generations SET {column}=?1
+                 WHERE binding_id=?2")).unwrap();
+            let old=match column {"process_operation_id"=>&source[0][0],
+                "ticket"=>&source[0][1],_=>&source[0][2]};
+            restore.bind_text(1,old).unwrap();restore.bind_text(2,&binding_id).unwrap();
+            restore.step_done().unwrap();drop(restore);
+            assert_eq!(managed_user(&mut product,begin),replay);
+        }
+        product.connection.execute(&format!("UPDATE main.gogoke_v37_instance_histories
+            SET revision=revision+1 WHERE history_id='{}'",history.generation.history_id)).unwrap();
+        assert!(product.managed_version_action_resources("codex",Some(&action)).is_err(),
+            "the complete FH revision is immutable after begin");
+        product.connection.execute(&format!("UPDATE main.gogoke_v37_instance_histories
+            SET revision=revision-1 WHERE history_id='{}'",history.generation.history_id)).unwrap();
+        assert_eq!(managed_user(&mut product,begin),replay);
+        product.close_checked().unwrap();drop(binding);drop(history);drop(root);
         fs::remove_file(database).unwrap();
         fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).unwrap();
         fs::remove_dir_all(path).unwrap();
@@ -3238,7 +3496,8 @@ mod tests {
     }
 
     fn stopped_official_family_member(product:&mut ProductDatabase<'_>,root:&RootLock,
-        image:&std::path::Path,tag:&str,generation:&str,pending_stdin:bool)->(String,String,String) {
+        driver:&str,image:&std::path::Path,tag:&str,generation:&str,pending_stdin:bool)
+        ->(String,String,String) {
         use crate::store::session_transport as h;
         let session=format!("session{tag}");
         let seat="seatA".to_owned();
@@ -3300,10 +3559,23 @@ mod tests {
         let open_hex=action_hex(open_raw.as_bytes());
         family_insert(product,"INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('global',?1,?2,'open',?3,'UNKNOWN',2,2)",
             &[&open_id,&open_hex,&session]);
-        let pin=instance::read_fixed_official_cli("opencode").unwrap();
+        let pin=instance::read_fixed_official_cli(driver).unwrap();
         let mut launch=ProcessLaunch::new(image.to_path_buf());
         launch.arguments=vec!["--version".into()];
         launch.current_directory=Some(root.canonical_root().canonical_path.clone());
+        let private=if driver=="codex" {
+            instance::resolve_codex_instance_home(&product.connection,root,"instanceA")
+                .unwrap().path.to_string_lossy().into_owned()
+        } else {root.canonical_root().canonical_path.to_string_lossy().into_owned()};
+        let mut private_environment=vec![
+                ("SystemRoot".into(),std::env::var("SystemRoot").unwrap()),
+                ("HOME".into(),private.clone()),("USERPROFILE".into(),private.clone()),
+                ("APPDATA".into(),private.clone()),("LOCALAPPDATA".into(),private.clone()),
+        ];
+        if driver=="codex" {
+            private_environment.push(("CODEX_HOME".into(),private));
+        }
+        launch.environment=Some(private_environment);
         let prepared=product.process_custodian.prepare(&PrepareRequest {launch,binding:NativeBinding {
             binary_digest_sha256:format!("sha256:{}",pin.image_sha256),
             profile_id:"instanceA".into(),domain_id:"global".into(),generation:generation.into(),
@@ -3348,8 +3620,6 @@ mod tests {
 
     #[test]
     fn original_stopped_family_with_pending_stdin_reaches_bound_user_action() {
-        assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(),Ok("true"),
-            "official family and native stop controls are cloud-only");
         let _guard=route_b_test_guard();
         let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let path=std::env::temp_dir().join(format!("gogoke-family-stop-{}-{nonce}",std::process::id()));
@@ -3375,7 +3645,8 @@ mod tests {
         family_insert(&product,"INSERT INTO main.gogoke_v37_instance_profiles(instance_id,display_name,enabled,revision) VALUES('instanceA','instanceA',1,1)",&[]);
         let migrate=format!("{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"migrate\",\"driverId\":\"opencode\",\"stageName\":\"{source_stage}\"}}");
         managed_user(&mut product,&migrate);
-        let (home_a,operation_a,_)=stopped_official_family_member(&mut product,&root,&image,"A","1",true);
+        let (home_a,operation_a,_)=stopped_official_family_member(&mut product,&root,
+            "opencode",&image,"A","1",true);
         // A genuine Secretary cannot acquire a sibling until the earlier H
         // claim is RELEASED. Keep its original HOME, pending stdin and STOP.
         let release_raw=b"{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"admission-release\",\"requestId\":\"releaseA\",\"targetId\":\"sessionA\",\"domainId\":\"global\",\"expectedRevision\":\"4\",\"payload\":{}}";
@@ -3388,7 +3659,8 @@ mod tests {
         let seat=crate::store::seat::get(&product.connection,"global","seatA")
             .unwrap().unwrap();
         crate::store::seat::set_dispatch_state(&mut product.connection,&seat,true).unwrap();
-        let (_home_b,_operation_b,_)=stopped_official_family_member(&mut product,&root,&image,"B","3",false);
+        let (_home_b,_operation_b,_)=stopped_official_family_member(&mut product,&root,
+            "opencode",&image,"B","3",false);
         let qualified=product.managed_version_action_resources("opencode",None)
             .expect("both distinct sessions and the retained pending stdin must qualify together");
         assert!(qualified.is_cold(),"a complete stopped family must produce COLD, not strict empty scope");
@@ -3428,8 +3700,19 @@ mod tests {
                 "restoring {name} must restore the same original family");
         }
         let (stage33,_)=real_opencode_version_stage(&root,"1.18.33");
+        let old_begin=r#"{"schema":"gogoke.37.managed-cli.v1","command":"begin","driverId":"opencode","targetVersion":"1.18.33","requestId":"family-old-failure","operation":"upgrade"}"#;
+        managed_user(&mut product,old_begin);
+        let old_failure=r#"{"schema":"gogoke.37.managed-cli.v1","command":"failure","driverId":"opencode","requestId":"family-old-failure","state":"UPGRADE_FAILED","raw":"original failure before any C"}"#;
+        managed_user(&mut product,old_failure);
+        let old_action=instance::read_version_action(&product.connection,&root,"family-old-failure")
+            .unwrap().unwrap();
+        assert_eq!(old_action.phase,instance::ActionPhase::Failed);
+        assert_eq!(table_rows(&product,"SELECT CAST(COUNT(*) AS TEXT) FROM
+            main.gogoke_coordination_process_custody WHERE operation_id GLOB 'managed-probe-opencode-*'",1),
+            vec![vec!["0".to_owned()]],"the old FAILED action has no own probe C");
         let begin=r#"{"schema":"gogoke.37.managed-cli.v1","command":"begin","driverId":"opencode","targetVersion":"1.18.33","requestId":"family-upgrade","operation":"upgrade"}"#;
         managed_user(&mut product,begin);
+        assert_cold_complete_history_drift_refuses(&mut product,&root,"family-upgrade",&[begin]);
         let stage_frame=version_frame("stage","1.18.33",Some(&stage33),Some("family-upgrade"));
         let probe_frame=version_frame("probe","1.18.33",Some(&stage33),Some("family-upgrade"));
         managed_user(&mut product,&stage_frame);
@@ -3443,10 +3726,14 @@ mod tests {
         assert_eq!(managed_snapshot(&product),before_wrong);
         let switch=wrong_switch.replace("family-switch","family-upgrade");
         let replay_frames=vec![begin.to_owned(),stage_frame,probe_frame,switch.clone()];
+        assert_cold_complete_history_drift_refuses(&mut product,&root,
+            "family-upgrade",&[&replay_frames[0],&replay_frames[1],&replay_frames[2]]);
         assert_stopped_claim_source_drift_refuses(&mut product,&root,"family-upgrade",&replay_frames);
         assert_probe_witness_damages_refuse(&mut product,&root,"family-upgrade",&replay_frames);
         let (status,receipts)=receipt_set(&managed_user(&mut product,&switch));
         assert_eq!(status,"APPLIED");assert_eq!(receipts.len(),1);
+        assert_cold_complete_history_drift_refuses(&mut product,&root,"family-upgrade",
+            &[&replay_frames[0],&replay_frames[1],&replay_frames[2],&replay_frames[3]]);
         assert_stopped_claim_source_drift_refuses(&mut product,&root,"family-upgrade",&replay_frames);
         assert_probe_witness_damages_refuse(&mut product,&root,"family-upgrade",&replay_frames);
         assert_eq!(table_rows(&product,"SELECT session_id,phase,stop_request_id,stop_fact_id,raw_hex FROM main.gogoke_v37_h_process_episode ORDER BY session_id",5),original_h);

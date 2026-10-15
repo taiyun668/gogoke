@@ -415,6 +415,86 @@ fn credential_original_backend_c(db:&VerifiedDatabaseConnection<'_>,root:&RootLo
 /// Bind the original credential writer, the physical fixed source, and its
 /// complete known registry shape without comparing an old backend pin to the
 /// current instance version. No credential stream is read.
+// F's generation source is written only after the original H/C association.
+// The private-history reader checks NULL shape but deliberately does not make
+// this reverse association; qualify every retained generation before either
+// action mode snapshots its credential data. A source-less prepared generation
+// remains source-less here and is never interpreted as a NoLaunch fact.
+fn credential_history_sources_clear(db:&VerifiedDatabaseConnection<'_>,instance:&str)
+    ->Result<(),ManagedCliError>{
+    let generations=rows(db,"SELECT g.binding_id,g.generation FROM
+        main.gogoke_v37_instance_history_generations g JOIN main.gogoke_v37_instance_histories h
+        ON h.history_id=g.history_id WHERE h.instance_id=?1 ORDER BY g.binding_id",instance,2)?;
+    for key in generations {
+        let generation=super::super::private_history::read_private_history_generation(
+            db,&key[0],&key[1]).map_err(|error|ManagedCliError::Observation(format!(
+                "original private-history generation: {error:?}")))?.ok_or(ManagedCliError::Busy)?;
+        if generation.instance_id!=instance || generation.binding_id!=key[0] ||
+            generation.generation!=key[1] {return Err(ManagedCliError::Busy)}
+        let history=rows(db,"SELECT initial_binding_id,initial_generation,initial_request_id
+            FROM main.gogoke_v37_instance_histories WHERE history_id=?1",
+            &generation.history_id,3)?;
+        if history.len()!=1 {return Err(ManagedCliError::Busy)}
+        let initial=&history[0];
+        let predecessor=if generation.binding_id==initial[0] {
+            if generation.generation!=initial[1] || generation.request_id!=initial[2] ||
+                generation.predecessor_binding_id.is_some() {return Err(ManagedCliError::Busy)}
+            None
+        } else {
+            let previous_key=generation.predecessor_binding_id.as_ref()
+                .ok_or(ManagedCliError::Busy)?;
+            let previous_rows=rows(db,"SELECT generation FROM
+                main.gogoke_v37_instance_history_generations WHERE binding_id=?1",
+                previous_key,1)?;
+            if previous_rows.len()!=1 {return Err(ManagedCliError::Busy)}
+            let previous=super::super::private_history::read_private_history_generation(
+                db,previous_key,&previous_rows[0][0]).map_err(|error|
+                ManagedCliError::Observation(format!(
+                    "original private-history predecessor: {error:?}")))?
+                .ok_or(ManagedCliError::Busy)?;
+            let before=previous.generation.parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
+            let after=generation.generation.parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
+            if previous.instance_id!=generation.instance_id ||
+                previous.history_id!=generation.history_id ||
+                previous.domain_id!=generation.domain_id ||
+                previous.session_id!=generation.session_id ||
+                previous.seat_id!=generation.seat_id ||
+                previous.seat_incarnation!=generation.seat_incarnation ||
+                previous.source.is_none() || previous.request_id==generation.request_id ||
+                before>=after || previous.generation!=before.to_string() ||
+                generation.generation!=after.to_string() {return Err(ManagedCliError::Busy)}
+            Some(previous.generation)
+        };
+        if let Some(source)=&generation.source {
+            let query=Statement::prepare(db.as_ptr(),"SELECT COALESCE(e.old_generation,'')
+                FROM main.gogoke_v37_h_process_episode e
+                JOIN main.gogoke_coordination_process_custody c
+                  ON c.operation_id=e.process_operation_id
+                 AND c.profile_id=e.instance_id AND c.domain_id=e.domain_id
+                 AND c.generation=e.generation
+                WHERE e.domain_id=?1 AND e.session_id=?2 AND e.instance_id=?3
+                  AND e.binding_id=?4 AND e.generation=?5 AND e.request_id=?6
+                  AND e.seat_id=?7 AND e.seat_incarnation=?8
+                  AND e.process_operation_id=?9 AND c.ticket=?10
+                  AND c.custodian_nonce=?11")?;
+            for (index,value) in [generation.domain_id.as_str(),generation.session_id.as_str(),
+                generation.instance_id.as_str(),generation.binding_id.as_str(),
+                generation.generation.as_str(),generation.request_id.as_str(),
+                generation.seat_id.as_str(),generation.seat_incarnation.as_str(),
+                source.process_operation_id.as_str(),source.ticket.as_str(),
+                source.custodian_nonce.as_str()].iter().enumerate(){
+                query.bind_text(index as i32+1,value)?;
+            }
+            if !query.step_row()? {return Err(ManagedCliError::Busy)}
+            let old=query.column_text(0)?;
+            if old!=predecessor.unwrap_or_default() || query.step_row()? {
+                return Err(ManagedCliError::Busy)
+            }
+        }
+    }
+    Ok(())
+}
+
 fn credential_source(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str)
     ->Result<CredentialEvidence,ManagedCliError>{
     for table in ["gogoke_v37_credential_backend_evidence",
@@ -474,6 +554,7 @@ fn credential_source(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&s
             .map_err(|error|ManagedCliError::Observation(format!(
                 "original credential registered HOME: {error:?}")))?;
         if home.identity.opaque()!=instance[1] {return Err(ManagedCliError::IdentityChanged)}
+        credential_history_sources_clear(db,id)?;
         let source=home.path.join("auth.json");
         let observed=match CredentialBinding::observe_source_metadata(
             root,&source,&home.identity) {
@@ -2316,6 +2397,14 @@ fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     let (mut global,mut global_operations,mut global_native)=original_global_sources(
         db,root,driver,&credentials.backend_operations)?;
     let probes=original_probe_sources(db,root,driver,action,live_probe)?;
+    // The COLD proof members below still own all absence decisions. Reuse the
+    // complete original-history projection only as immutable data, after the
+    // original probe reader has authenticated this action's exact C. Its own
+    // C/F/VA exclusions are the same narrow reconciled action effects.
+    let (_,original_data_digest)=strict_history_source(db,root,driver,action,&credentials)?;
+    let complete_data_digest=sha256_hex(&frame(&[
+        "managed-cli-complete-original-data-v1".to_owned(),
+        original_data_digest,credentials.digest.clone()]));
     for source in &credentials.backend_c {
         let covered=original.iter().any(|(unit,_)|unit.process==source[1]) ||
             stopped_units.iter().any(|unit|unit.process==source[1]) ||
@@ -2413,7 +2502,7 @@ fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
         return Err(ManagedCliError::Busy)
     }
     for (_,mut source,proof) in members {
-        source.push(credentials.digest.clone());
+        source.push(complete_data_digest.clone());
         source_parts.push(hex(&frame(&source)));
         pair_parts.push(hex(&frame(&proof)));
     }
@@ -2558,8 +2647,8 @@ fn strict_history_source(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
         if query.step_row()? {
             let operation=query.column_text(0)?;
             if query.step_row()? {return Err(ManagedCliError::Busy)}
-            // strict_own_probe has already authenticated this exact row and
-            // its actual proof/confirmation for the current action phase.
+            // The caller's own-probe reader (STRICT or COLD) has already
+            // authenticated this exact row and phase-specific confirmation.
             own_c.insert(format!("'{operation}'"));
         }
         own_f=strict_own_switch_keys(db,root,driver,action)?;

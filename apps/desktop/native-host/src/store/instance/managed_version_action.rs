@@ -393,8 +393,8 @@ fn valid_family_codec(driver:&str,source_hex:&str,pairs_hex:&str)->Result<()> {
     let mut pairs=std::collections::BTreeSet::new();
     for (source,proof) in sources[2..].iter().zip(&proofs[2..]) {
         let mut source=unframe(&bytes(source).map_err(|_|ActionError::Conflict)?)?;
-        let credential_digest=source.pop().ok_or(ActionError::Conflict)?;
-        if !digest(&credential_digest) {return Err(ActionError::Conflict)}
+        let complete_original_data_digest=source.pop().ok_or(ActionError::Conflict)?;
+        if !digest(&complete_original_data_digest) {return Err(ActionError::Conflict)}
         let proof=unframe(&bytes(proof).map_err(|_|ActionError::Conflict)?)?;
         let stdin=source.first().is_some_and(|kind|matches!(kind.as_str(),
             "H_STDIN_PENDING-v1"|"H_STDIN_RECEIPTED-v1"));
