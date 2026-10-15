@@ -1678,10 +1678,20 @@ fn original_rpc_sources(db:&VerifiedDatabaseConnection<'_>,driver:&str,
 /// merely because its profile no longer resolves to an F instance.
 fn original_c_image_has_owned_ancestor(image:&std::path::Path,staging:&std::path::Path)
     ->Result<bool,ManagedCliError>{
-    let mut parent=image.parent();
+    let original_parent=image.parent().ok_or_else(||ManagedCliError::Observation(
+        "original C image has no parent".into()))?;
+    let mut parent=Some(original_parent);
     while let Some(path)=parent {
         match std::fs::canonicalize(path) {
-            Ok(observed)=>return Ok(observed.starts_with(staging)),
+            Ok(observed)=>{
+                let remaining=original_parent.strip_prefix(path)
+                    .map_err(|_|ManagedCliError::Busy)?;
+                if remaining.components().any(|part|!matches!(part,
+                    std::path::Component::Normal(_)|std::path::Component::CurDir)) {
+                    return Err(ManagedCliError::Busy)
+                }
+                return Ok(observed.join(remaining).starts_with(staging))
+            },
             Err(error) if error.kind()==std::io::ErrorKind::NotFound=>parent=path.parent(),
             Err(error)=>return Err(ManagedCliError::Observation(format!(
                 "original C image ancestor: {error:?}"))),
@@ -2333,6 +2343,26 @@ mod source_image_selection_tests {
             Err(ManagedCliError::Busy)));
         assert!(matches!(stage_name_from_original_image(&staging,&outside,pin),
             Err(ManagedCliError::Busy)));
+        let canonical_staging=std::fs::canonicalize(&staging).unwrap();
+        let missing=expected.with_file_name("missing.exe");
+        assert!(original_c_image_has_owned_ancestor(&missing,&canonical_staging).unwrap());
+        let missing_stage=staging.join("missing-stage").join("content").join("missing.exe");
+        assert!(original_c_image_has_owned_ancestor(&missing_stage,&canonical_staging).unwrap());
+        let staging_sibling=base.join("v37-managed-cli").join("staging-sibling");
+        std::fs::create_dir(&staging_sibling).unwrap();
+        assert!(!original_c_image_has_owned_ancestor(&staging_sibling.join("missing.exe"),&canonical_staging).unwrap(),
+            "a similarly named sibling is outside the owned staging components");
+        let retained=base.join("retained-staging");
+        std::fs::rename(&staging,&retained).unwrap();
+        assert!(original_c_image_has_owned_ancestor(&missing,&canonical_staging).unwrap(),
+            "deleting the staging directory cannot erase its original C source");
+        std::fs::rename(&retained,&staging).unwrap();
+        let managed=base.join("v37-managed-cli");
+        let retained=base.join("retained-managed");
+        std::fs::rename(&managed,&retained).unwrap();
+        assert!(original_c_image_has_owned_ancestor(&missing,&canonical_staging).unwrap(),
+            "deleting the managed parent cannot turn a related source into unrelated history");
+        std::fs::rename(&retained,&managed).unwrap();
         std::fs::remove_dir_all(base).unwrap();
     }
 
