@@ -1,0 +1,16 @@
+{
+  "schema": "gogoke.37.checkpoint.v1",
+  "change": "Added a two-phase original H/Codex Git boundary entry and immutable readback on the exclusive V11 test line. Probe asks builtin exec_command for Git version, stops/releases H, and requires normal-close A raw item exitCode plus exact registered F program pin. The vendor worktree command is dispatched only after that prior reader reports fixedGitReachable. The attempted target is a new sibling of the private testbed source.",
+  "result": "Source preparation only. No installed candidate, model turn, Git command, vendor worktree effect, or Win11 result ran in this branch. The final reader preserves original ToolReceipt, thread/turn/item identity, status, exit/error/output, physical source hash and target state. A nonzero exit with no physical effect remains cause unattributed and is not a V11 permission acceptance.",
+  "reason": "H's live normalized commandExecution update does not include exitCode. A model message or output text cannot safely gate the second command. Closing and reading the original A commandExecution item is required before issuing a vendor-native worktree attempt.",
+  "next": "Root supplies the actual F-pinned Git absolute path and private registered testbed tree, runs probe, normally closes and reads it, then runs the second phase only if fixedGitReachable is true. Normally close and read the final phase. Preserve unexpected target or source changes without cleanup or retry. Run only affected cloud checks for these tool files; no full native suite at this intermediate point.",
+  "references": [
+    "tools/e2e/m2-v11-git-boundary.mjs",
+    "tools/e2e/m2-v11-git-readback.py",
+    "tools/e2e/m2-v11-win11.md",
+    "apps/desktop/native-host/src/store/session_transport/codex_output.rs commandExecution normalization",
+    "apps/desktop/native-host/src/store/worktree/mod.rs F GitProgramPin and registered program table",
+    "artifacts/gogoke-37/checkpoints/M2-V11-SHELL-PRIMITIVE.json"
+  ],
+  "acceptance": false
+}

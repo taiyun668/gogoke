@@ -1,0 +1,61 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "checkpoint": "L0-M1-REPLAY-9b35de87",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "source_head_before_checkpoint": "9b35de87d2717e378036dd643646b3e6e32595b6",
+  "state": "L0_M1_IN_PROGRESS_NOT_ACCEPTED",
+  "authorization": {
+    "owner_merged_pr": 53,
+    "authorized_origin_main": "e2f0c57853b1fca6bc4d6dcbca0185b57baf452f",
+    "manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d",
+    "scope": "L0 through G and M1 through M3; continue after checkpoints; only Owner-only actions, out-of-scope work, possible formal-data loss or overwrite, or a genuine design conflict require stopping"
+  },
+  "direct_evidence": {
+    "run_36572683209": {
+      "head": "07837031",
+      "server": "PASS",
+      "native_release": "PASS",
+      "native_lib": "455_PASS_1_FAIL_0_SKIP",
+      "finding": "The copied LPAC helper did not start; the missing optional client diagnostic file was not a pipe error. A shared service error also dropped a reply body with Windows 233."
+    },
+    "run_36573534547": {
+      "head": "4e4c6833",
+      "server": "PASS",
+      "native_release": "PASS",
+      "host_typed_ops": "1_PASS_1_FAIL",
+      "native_lib": "455_PASS_1_FAIL_0_SKIP",
+      "finding": "The desktop shared-service test passed after keeping denial replies connected. The legacy final Shutdown reply still lost its body on immediate pipe disconnect; the LPAC helper still did not execute."
+    },
+    "run_36574954495": {
+      "head": "affe6633",
+      "server": "635_PASS_0_FAIL_0_SKIP",
+      "native_release": "PASS",
+      "host_typed_ops": "2_PASS_0_FAIL_0_SKIP",
+      "focused_native_probes": "PASS",
+      "native_lib": "463_PASS_1_FAIL_0_SKIP",
+      "lpac_direct_result": "The LPAC parent read the helper file successfully; CreateProcess for the descendant returned Windows error 5 before helper code or seat pipe access. File execute access and loader/policy distinction remains under measurement."
+    },
+    "run_36576029492": {
+      "head": "9b35de87",
+      "state_at_checkpoint": "IN_PROGRESS",
+      "purpose": "Measure FILE_READ_DATA|FILE_EXECUTE|READ_CONTROL open on the helper in the same LPAC parent immediately before its CreateProcess."
+    }
+  },
+  "implementation": {
+    "native_user_service": "One native authority thread serves process-object-verified User and reconnectable service pipes. A fresh service request before User registration did not mutate the target in the real host test.",
+    "instance_registration": "Only driverId crosses the v37 register wire. Native catalog resolves pinned Codex 0.149.0 from the Windows known folder, validates both package manifests, and observes executable bytes. A prior raw request is reconciled against its durable journal, registered row and physical home before replay; changed bytes conflict before catalog lookup. The new preflight commit has not yet completed exact-head cloud testing.",
+    "session_transport": "Native H transition, current-owner and current-instance-pin guards are compiled in cloud. Lead and runnable permission tiers remain explicitly denied until their actual native evidence is wired; a passing guard test is not a runnable Codex session.",
+    "product_entry": "Tauri-retained host and Node connectExisting production composition is under construction. Existing tests of lower seams do not verify the installed product entry. A changed resource generation must never reuse the old pinned host; update lifecycle compatibility remains open before candidate acceptance.",
+    "inbox": "C.1 identity and delivery proof wiring is under construction; no H completion is inferred from a callback string.",
+    "b1": "Codex 0.149 adapter state machine passed earlier focused tests; real process transport and memory-off proof are under construction."
+  },
+  "verification": {
+    "real_codex_seat": "NOT_RUN",
+    "ot4_login": "NOT_REQUESTED",
+    "m1": "NOT_COMPLETE",
+    "m2": "NOT_RUN",
+    "m3": "NOT_RUN"
+  },
+  "next": "Read run 36576029492's exact LPAC API result, repair the root cause without weakening AppContainer or process identity, finish production Tauri/Node composition and H/C/F real paths, and run exact-head cloud gates. This checkpoint records progress and does not end construction."
+}

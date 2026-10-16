@@ -1,0 +1,34 @@
+{
+  "schema": "gogoke.37.light-checkpoint.v1",
+  "stage": "M2_IN_PROGRESS",
+  "acceptance": false,
+  "changes": [
+    "Owner set Claude, OpenCode and Grok test-instance concurrency caps to 4. Their actual User configuration was read back; future new test instances default to 4 under this instruction, while real-use caps remain Owner instance-page choices.",
+    "Retain the exact preparation stage in physical-directory rejection errors without changing the isolation predicate, CLI or grants.",
+    "The independent Host child-seal finding batch is implemented on its exclusive branch, including complete MIXED writer roots, actual episode-instance provenance, UNKNOWN projection and product-entry historical readback before Git resolution. Cloud mechanism verification and independent focused review are pending.",
+    "Adapt the original M2 driver to seat file writes and native Host seal instead of requesting model Git commits. This separate fixture branch is not yet integrated or an actual passing run.",
+    "Implement the existing User admission-release route for a strictly proven unstarted COMMITTED claim, reusing the existing host cleanup predicate. No STOPPED or stop fact is synthesized."
+  ],
+  "result": [
+    "Actual installed candidate Claude open failed before any model send. Its original stop returned UNKNOWN without a stop fact; all original records were retained. Product normal caption close exited 0. Five formal protection groups, candidate memory fields and ledger identity compared unchanged after close.",
+    "A fresh selected OpenCode/Grok case reached actual OpenCode open and failed at the same prelaunch physical-directory predicate before any model send. Grok remains NOT_RUN in that case; the original failure is preserved and normal closure is in progress.",
+    "No additional authentication, CLI changes, model Git permissions or public release.",
+    "The runtime refused a new audit agent at its thread limit. Reuse an independent Sol seat under model-routing's capacity rule; record that this is a reused seat, not a newly created context. Do not claim a fresh final audit or acceptance.",
+    "A read-only metadata measurement used the reserved PowerShell HOME variable and consequently traversed the wrong directory. Its process was terminated, the affected results were invalidated, and no file content or writes from that traversal are used as evidence."
+  ],
+  "next": "Finish cloud and independent review, integrate the bounded H/F and original driver fixes, then at a stable point install their exact candidate bytes to obtain original stage-specific errors and rerun actual provider and M2 flows. Preserve old UNKNOWN claims until the new product proves the existing unstarted-release preconditions; do not replay their opens.",
+  "reference": {
+    "checked": [
+      "Current main AGENTS.md, model-routing.md, PR 67 plan detail and unchanged receipt v2 scope",
+      "gogo-party packages/room/src/server.ts commitForSeat and current native F merge custody",
+      "Production H finish_native_preparation, open intent ordering, dispatch_native_stop and release_native",
+      "Existing admission release_unstarted_host_commit transaction and current Owner/seat checks",
+      "Original installed-product provider journal, native User receipts and normal-close observers"
+    ],
+    "adopted": "Host commits stopped seat files; exact physical binding and original native proofs remain authoritative. User releases only a claim proven never to have reached a launch intent or custody, using the same existing atomic guard.",
+    "difference": "Complete a missing Host child-seal step and expose an already implemented unstarted settlement through the existing Owner route. Keep model LPAC grants, fixed CLI, credentials and operation families unchanged."
+  },
+  "original_failure": "native session launch: DirectoryNotPhysical; uncreated credential settlement: Ok(())",
+  "original_stop_result": "UNKNOWN_WITHOUT_STOP_FACT",
+  "publicRelease": false
+}

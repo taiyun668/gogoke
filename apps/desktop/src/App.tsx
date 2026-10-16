@@ -41,6 +41,7 @@ import "./styles/compact-phone.css";
 import "./styles/compact-tablet.css";
 import { useWindowLabel } from "@/features/layout/hooks/useWindowLabel";
 import MainApp from "@app/components/MainApp";
+import { Design37OwnerNoticeHost } from "@/features/seats/Design37OwnerNoticeHost";
 
 const AboutView = lazy(() =>
   import("@/features/about/components/AboutView").then((module) => ({
@@ -49,7 +50,7 @@ const AboutView = lazy(() =>
 );
 
 export default function App() {
-  const windowLabel = useWindowLabel();
+  const windowLabel = useWindowLabel("");
 
   if (windowLabel === "about") {
     return (
@@ -59,5 +60,8 @@ export default function App() {
     );
   }
 
-  return <MainApp />;
+  return <>
+    <MainApp />
+    {windowLabel === "main" && <Design37OwnerNoticeHost />}
+  </>;
 }

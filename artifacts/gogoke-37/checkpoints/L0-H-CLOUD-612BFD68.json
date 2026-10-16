@@ -1,0 +1,102 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "source_sha": "612bfd683f1a4bfb2d01cd723a8a71fe20b7ee86",
+  "state": "CONTINUING_PRODUCT_REPAIR",
+  "normal_cloud": {
+    "run_id": 36650711747,
+    "native_artifact_id": 11070639029,
+    "release_build": "PASS",
+    "required_process_axes": {
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "library": {
+      "discovered": 513,
+      "passed": 511,
+      "failed": 2,
+      "skipped": 0
+    },
+    "focused": {
+      "passed": 14,
+      "failed": 2,
+      "skipped": 0
+    },
+    "compatibility_same_source_tests": {
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    },
+    "module_custody_test": "PASS",
+    "server_tests": "PASS",
+    "evidence_scope": "WINDOWS_SERVER_REAL_RUN_NOT_WINDOWS_11_DESKTOP"
+  },
+  "direct_product_result": {
+    "confirmed": "Actual pinned CLI now reaches its SQLite state initialization. Its former CODEX_HOME canonicalization error no longer appears in either focused case. Both credential-file create/replacement CLI actions complete before the synthetic test fails during its subsequent account/read.",
+    "failure": "The CLI reports failed to initialize sqlite state runtime under the isolated CODEX_HOME, followed by failed to initialize state runtime at that same home. CLI startup formatting omits the deeper error chain.",
+    "not_claimed": "Neither underlying SQLite file access, delete, mapping nor locking cause is yet established. No directory ACL or token change has been made based on this message.",
+    "private_logs": "%LOCALAPPDATA%/gogoke-audit/native-612bfd68-36650711747/",
+    "log_sha256": {
+      "focused-pinned-codex-account-read.log": "a5f73c353cf545cd079b1fe5bb9a0bc94791ae51111573a676949d858c396603",
+      "focused-pinned-codex-credential-files.log": "22eec8094523852538bfdf81b40d86edbdee0226f49e009e9d75ad0f12dd0b86",
+      "machine-result.json": "dc14193adf92c6f324fb4943e27f8b2e56ff55347b78e345bdf1ea5b79062962"
+    }
+  },
+  "same_byte_direct_capture": {
+    "run_id": 36652399284,
+    "source_sha": "612bfd683f1a4bfb2d01cd723a8a71fe20b7ee86",
+    "instrument": "Existing cloud SDK debugger attaches to the exact prepared CLI PID; existing NT file-entry/access/return and Win32 API trace is reused unchanged.",
+    "state": "FAIL_INSTRUMENT_RETURN_BREAKPOINT_RACE_BEFORE_SQLITE",
+    "limitation": "Caller-return software breakpoints produced an unhandled INT3 before SQLite initialization; no SQLite cause established by this run."
+  },
+  "desktop_and_hygiene": {
+    "hygiene_run": 36650715090,
+    "hygiene": "PASS",
+    "local_public_scan": {
+      "files": 24807,
+      "leaks": 0,
+      "explained": 2357,
+      "positive_control": "PASS"
+    },
+    "desktop_run": 36650715100,
+    "browser": "PASS",
+    "dependency_notices": "PASS",
+    "frozen_repro_build_and_byte_compare": "PASS"
+  },
+  "independent_review": {
+    "first_risk": "R1-R7 complete static sweep; no further confirmed static blocker after full batch fixes",
+    "fresh_sol_focus": "Four known repairs independently reread at exact612; no confirmed regression",
+    "native_behavior_final_and_mutation": "PENDING",
+    "win11_sac": "NOT_RUN",
+    "acceptance": false
+  },
+  "parallel_f_prerequisite": {
+    "authorization": "Bound Design37 F2 is authorized; M1 requires its native worktree/source identity seam",
+    "decision": "Host-owned standard worktree directory separate from persistent F home; finite native handle-derived compatibility mappings, each independent of ACL authority. Do not grant the entire F home recursive session write permission.",
+    "worker_scope": "apps/desktop/native-host/src/store/worktree/ only",
+    "root_scope": "Shared wiring, schema initialization, custody integration and native H open",
+    "state": "CLOUD_READY_NOT_VALIDATED",
+    "testbed": "taiyun668/gogoke-seat-testbed confirmed private; no formal repository or product data modified",
+    "implementation": "Native Git byte pin, Source/common/commit facts, intent before linked-worktree creation, durable process custody/stop, physical worktree and held .git pointer, exact readback and UNKNOWN fencing; logical target_id separate opaque path_id.",
+    "tests": "Actual custodied Git on an owned offline synthetic repository, explicitly not private testbed acceptance. Partial stdout without LF is InvalidData; only empty terminal stdout is EOF.",
+    "known_fixes_review": "Independent focused reuse in progress; native compile/tests NOT_RUN for this WIP. First all-axis static audit completed before known batch fixes."
+  },
+  "custody": {
+    "detours_download_residue": "159 untracked files retained after automatic recursive-cleanup rejection; not retried, not bypassed, not included in committed candidate",
+    "native_local_build_or_run": "NOT_RUN_BY_RULE",
+    "owner_ot4": "NOT_REQUESTED",
+    "m1_complete": false
+  },
+  "roundtrip_review": "Recover direct omitted native operations before changing permissions. Independent F construction and its Git cloud fixture proceed while actual CLI NT error capture runs; no local native builds or formal data access.",
+  "next": "Read same-byte NT evidence, repair the established cause, then rerun affected cloud checks while continuing independent F core. This checkpoint is not a stop.",
+  "direct_nt_capture": {
+    "run_id": 36655382948,
+    "source_sha": "11a49266",
+    "state": "COMPLETE_DIRECT_METADATA_CAPTURE_PRODUCT_FAILED",
+    "confirmed": "Actual pinned CLI opens state_5.sqlite and its journal read/write successfully; journal attribute queries then succeed 11 times. No captured section creation or mapping failure. No unhandled return-breakpoint INT3.",
+    "inference": "SQLite 3.51.3 winDelete retries attributes then DeleteFileW; this pattern is consistent with failed journal deletion but does not establish its cause.",
+    "missing_direct_operation": "NtOpenFile/NtDeleteFile returns, retained in diagnostic source61b8465b run36656953688; no permission changes pending direct result.",
+    "instrument_repair": "Persistent validated NT syscall return sites; short command-file lines instead of CDB truncated -c command. Earlier00af run36654449856 is FAIL_INSTRUMENT, not product evidence.",
+    "scope": "Actual pinned CLI on Windows cloud; not Win11/SAC or acceptance"
+  }
+}

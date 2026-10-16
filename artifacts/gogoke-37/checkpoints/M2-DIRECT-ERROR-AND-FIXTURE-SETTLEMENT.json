@@ -1,0 +1,22 @@
+{
+  "schema": "gogoke.37.checkpoint.v1",
+  "stage": "M2_DIRECT_MERGE_DIAGNOSTIC_CLOUD_IN_PROGRESS",
+  "acceptance": false,
+  "changed": "真实主控已完成接管、派生、子任务、停止和跨界面重启恢复；合并返回裸 Denied，补产品首个失败阶段及原错误，同时保持原状态分类与意图后 UNKNOWN。",
+  "results": [
+    "最初重开后宿主未初始化是脚本顺序错误；已补原实例页初始化并实测通过重开和原 H resume。",
+    "真实原生合并请求返回 DENIED，工作树仍 REGISTERED，无持久 MERGE_INTENT。按原 Git pin 只读观察，注册源清洁，子目录只有本次未跟踪标记；不据事后状态推断瞬时原因。",
+    "原主控取得真实 H stop，原子席位 IDLE，候选实际正常退出 0；正式版五组保护项未变。保留原请求、失败和记录，不重发合并。",
+    "两条旧未创建 claim 与本次子席位的完整身份不匹配，按原守卫跳过，不能归因为合并拒绝。",
+    "规则第二席位准入被裸 Denied 拒绝；尚无模型任务或规则副作用，第一席位已真实 stop、释放，两席位 IDLE并正常退出。STOPPED 未释放仍占容量，失败原因需核实际计数，未扩上限。",
+    "独立全轴复核提出入口阶段和旧断言遗漏，聚焦复核确认均已修正，无新增静态阻断；新源码云测仍在执行，未宣称安装实测通过。"
+  ],
+  "failureOriginal": "native worktree: Denied；native admission: Denied。",
+  "measurement": "Provider 子集启动第一次缺复制原准备回执，在产品启动前失败；已按哈希复制同一既有准备原件，保留失败任务，未重复创建或登录。只读合并元数据脚本执行后被工人改了脚本文件；原输出未变，未宣称已封存执行脚本哈希，后续绑定核对使用单独原件。",
+  "reference": [
+    "既有 worktree Multiple 原错误保全模式、F.2 MERGE_INTENT 边界、真实 H stop 和原注册 Git pin。",
+    "既有 admission 的真实状态计数与 Owner cap 表；闭合态元数据只读，缺因果证据不补推测。",
+    "原 installed-product/CDP 入口和真实 fixture 准备回执，固定 CLI 与隔离边界不变。"
+  ],
+  "next": "合并 Provider 缓存修复与直接错误诊断为下一候选，完成云端、可信签名与同字节安装链，再对同一原实例及原失败工作树读直接阶段并按根因处理；其他可运行的 M2 流程继续。"
+}

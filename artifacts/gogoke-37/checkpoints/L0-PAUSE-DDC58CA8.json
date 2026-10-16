@@ -1,0 +1,43 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "checkpoint": "L0-PAUSE-DDC58CA8",
+  "recorded_utc": "2026-09-29T18:31:17Z",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "source_head_before_checkpoint": "ddc58ca813300b2c98bb99123c0fa780d3989038",
+  "state": "PAUSED_AT_OWNER_REQUEST_M1_NOT_COMPLETE",
+  "authorization": {
+    "owner_merged_pr": 53,
+    "authorized_origin_main": "e2f0c57853b1fca6bc4d6dcbca0185b57baf452f",
+    "manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d",
+    "plan_revision": "PR #55 remains open at 856480935cd999c9658b02993c166fbd3c29acc4. Focused audit comment https://github.com/taiyun668/gogoke/pull/55#issuecomment-5894355857 found two items requiring Claude revision. No new authorization PR or Owner merge has occurred."
+  },
+  "h_lpac": {
+    "run_36611028979": {
+      "source_sha": "eb97561fcc82c46938ee6b3ca0b9c2c5e0a3c1e6",
+      "scope": "Cloud Windows Server win25-vs2026, test-only registryRead and pipe namespace differential; not Win11 product proof",
+      "native_library": "490 passed, 1 failed, 0 skipped; baseline LOCAL path still fails",
+      "registryRead_fresh_directory": "PASS",
+      "registryRead_LOCAL_seat_pipe": "FAIL",
+      "registryRead_unqualified_seat_pipe": "PASS with test-only path override; exact test executed and exit 0",
+      "procmon": "First and only helper CreateFile, WriteFile and ReadFile succeeded; exact diagnostic test exit 0",
+      "machine_result_sha256": "217d89c74c883690f25147f3c1ce2fd808b4e713a029755d207d0403c95bd5ee",
+      "procmon_summary_sha256": "9ca064742b2aba66cdbeb03f7cad52a6d29c5c7862d2880926ef1b3c1d5cc7a5",
+      "cdb_summary_sha256": "de7da23ea670c7de0b66d90304c0737558807b4dc1f38c0e833748dc4c34c59d"
+    },
+    "fixture_fix": "eb97561f skips the duplicate raw helper after the first spawn succeeds. ddc58ca8 additionally records the first helper's wait result and requires successful exit; this later commit has not been cloud-tested.",
+    "independent_audit": "A read-only risk auditor confirmed the first unqualified helper completed the protocol and the second helper had caused an earlier false failure. Production namespace adjustment is within H implementation if existing boundaries remain. The auditor withdrew an overbroad claim that GA on the pipe package ACE itself blocks H; no cross-seat or Owner-boundary effect was established. Production Job/current-generation authority consumer is not yet wired, so the test is not product acceptance.",
+    "production_release_behavior": "unchanged: LOCAL path and no registryRead capability"
+  },
+  "verification": {
+    "public_source_scan": "PASS at eb97561f: 24761 files, leaks 0; ddc58ca8 changed only a test fixture and has not been rescanned",
+    "real_codex_seat": "NOT_RUN",
+    "ot4_login": "NOT_REQUESTED",
+    "m1": "NOT_COMPLETE",
+    "m2": "NOT_RUN",
+    "m3": "NOT_RUN",
+    "formal_data_touched": false,
+    "self_acceptance": false
+  },
+  "resume": "First read the current origin/main, PR #55 head, branch HEAD/status and inbox. If Claude revised PR #55, re-audit focused changes and comment; Owner merges plan. Then create new authorization PR bound to the new main MANIFEST blob; Owner merges and Controller reads it back exactly before continuing L0 production work. Cloud-run ddc58ca8 exact LPAC fixture and inspect direct results; do not infer product pass from test-only differential. OT3 values are project parallel cap 4 and Codex test instance cap 4, to persist after revised authorization. No new cloud run was dispatched for ddc58ca8 before this pause."
+}

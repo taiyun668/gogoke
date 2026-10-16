@@ -11,6 +11,7 @@ import { useGitLog } from "../../git/hooks/useGitLog";
 import { useGitCommitDiffs } from "../../git/hooks/useGitCommitDiffs";
 import type { GitDiffSource, GitPanelMode } from "../../git/types";
 import { buildPerFileThreadDiffs } from "../../git/utils/perFileThreadDiffs";
+import type { PanelTabId } from "../../layout/components/PanelTabs";
 
 export function useGitPanelController({
   activeWorkspace,
@@ -49,9 +50,7 @@ export function useGitPanelController({
   const [gitDiffViewStyle, setGitDiffViewStyle] = useState<
     "split" | "unified"
   >("split");
-  const [filePanelMode, setFilePanelMode] = useState<
-    "git" | "files" | "prompts"
-  >("git");
+  const [filePanelMode, setFilePanelMode] = useState<PanelTabId>("git");
   const [selectedPullRequest, setSelectedPullRequest] =
     useState<GitHubPullRequest | null>(null);
   const [selectedCommitSha, setSelectedCommitSha] = useState<string | null>(

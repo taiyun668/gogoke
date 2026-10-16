@@ -1,0 +1,20 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "recordedDate": "2026-10-02",
+  "state": "OWNER_MERGED_V2_AUTHORIZATION_EXACT_READBACK_PASS_CONTINUE_M1",
+  "changes": "Integrated Owner-merged PR61 governance, scope receipt and signing chain into the execution branch. Product trees apps/ and third_party/ unchanged from 72cf22d0. Kept the existing two ExpectedSmokeCommit arguments required by the execution branch's smoke scripts, with main's exact source/dispatch equality and trusted-main preflight.",
+  "results": {
+    "main": "5896e6d5581f42a7f59af52140a0b2a840775342",
+    "OwnerMerge": "PR61 merged_by taiyun668, main first-parent merge of 30f5d9eb and reviewed 4ae0d5a6",
+    "receiptBlob": "a1d4fb9d352da575a84129b8b22bad52577b6a5d",
+    "mainVerifierBlob": "b022b689ccac966fc1f9984e1ef26a01fd3755f0",
+    "mainScopeDigest": "274dd8499160a4cdd5c0887cf6819632b0c0efbd22efd3eaaeba6f016edaa656",
+    "receiptAndExecutionScope": "Exact match to main verifier output",
+    "mainChecks": "--self-test --manifest --sources-ref HEAD PASS, errors and missed mutations empty",
+    "realM1": "NOT_RUN: installation-fact fix still awaits the stable-point complete chain; original authenticated instance home preserved"
+  },
+  "next": "Finish the M1 implementation-to-check mapping and affected cloud checks without signing or installation. Iterate G0 in the signed-Node browser preview. At the M1 stable point, freeze one source descended from this receipt merge, sign once, run same-byte cloud installation smoke and the original-home ordinary Win11 M1 product tests with protected snapshots; fix actual bugs within existing scope. No self acceptance.",
+  "reference": "参照：Owner-merged PR61 actual main tree, existing S1-R4 receipt lineage and candidate chain. Used main's committed verifier, not a candidate copy, to compute the scope digest. Merge conflict resolved to main's trusted verifier and exact smoke identity checks; existing mandatory smokeCommit parameters retained to avoid an instrument argument failure. No product or CLI byte change in this merge.",
+  "publicRelease": false,
+  "acceptance": false
+}

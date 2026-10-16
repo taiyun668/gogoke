@@ -1,0 +1,80 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "state": "IMPLEMENTED_PENDING_CLOUD_AND_INDEPENDENT_REVIEW",
+  "baseline_source": "bcb154f4f2e1ff09347ebe979abeeada75c7573b",
+  "authorization": {
+    "main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
+    "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
+    "receipt_blob": "8020812e3abf35887829f50c78ec9f513272bf70",
+    "exact_readback": "MATCH",
+    "scope": "L0 and H native launch implementation; no change to permissions, public contracts, CLI disk bytes, or formal product data"
+  },
+  "direct_cause": {
+    "run_id": 36647192081,
+    "artifact_id": 11068848667,
+    "actual_cli_sha256": "14b7e6b2356e82d1d9275579eaa588757b4e0a501b65dcc19fccdf77bd83dc00",
+    "observed": "Each real CLI trace contains five same-thread GetFinalPathNameByHandleW flags=0 failures: nested MountPointManager NtCreateFile returns c0000022, original Win32 API returns 0 and error 5. Actual F-home metadata opens succeed.",
+    "not_claimed": "The trace does not distinguish endpoint DACL, namespace or token check; no query completion or Win11 acceptance is claimed.",
+    "trace_sha256": [
+      "8f9d304063591d0a9bb8d146b66789843d082fa6ebd0d38551bb340c3599857b",
+      "4a7ef616b6c32c4d20d3c8ea07d8c61250a89c752923b574bacffe5a019a278d"
+    ],
+    "prior_measurement_failure": "Run 36644459042 stopped at an unhandled actual loader breakpoint; it was not product root-cause proof. Runs 36645527943 and 36647192081 captured actual API and NT-object returns after correcting the instrument."
+  },
+  "threat_model": {
+    "principal": "Untrusted LPAC seat can write its admitted instance home, including CLI startup configuration.",
+    "boundary": "A full-User login/account helper consuming that home would cross LPAC to User. Both helpers retain the same verified LPAC identity; the compatibility module supplies no new filesystem, system-object, token or network permission.",
+    "conclusion": "Fix path spelling within existing H authorization; do not widen shared NT-object ACLs or run the helper as unrestricted User."
+  },
+  "implementation": {
+    "module": "apps/desktop/native-host/src/process/session/compat/",
+    "vendor_commit": "e4bfd6b03e50de46b47abfbd1e46b384f0c5f833",
+    "vendor_license": "MIT; existing packageNotices recursively includes crate and vendor license texts in installed native-host-notices.html",
+    "vendor_manifest_sha256": "ff5cf70c47ace5cf45966648f1dab9bd24b50cc7d6853f46ab5575893c43881f",
+    "custody": "Embedded fixed DLL bytes materialized outside F home, verified by hash and physical identity, exact LPAC RX grant, held no-share-write/delete file and no-delete ancestor handles. Prepared, active and unconfirmed launch cleanup retain module custody.",
+    "launch": "Same-bitness suspended verified CLI image and LPAC token in existing Job; import update never resumes. Existing durable PREPARED then activation ordering remains.",
+    "mapping": "Same held physical F-home handle supplies NT and canonical DOS roots through explicit host environment. Only main-image IAT GetFinalPathNameByHandleW flags=0 returning 0/error5 can map a same-handle exact-root or component-boundary descendant; other results and errors pass through.",
+    "sac": "New fixed DLL needs actual installed Win11 SAC evidence. No security setting change or alternate loading bypass is authorized."
+  },
+  "integrator_change_request": {
+    "requesting_line": "H",
+    "files": ["tools/check-public-source.py", "tools/tests/test_check_public_source.py"],
+    "reason": "Unmodified upstream trace string %p followed by colon and escaped newline was misread as a drive path. Explain only that exact pointer-format occurrence; retain real path and credential detection.",
+    "contract_affected": "Public hygiene measurement only; no product or authorization contract change",
+    "dependent_lines_notified": ["L0 integration", "fresh H risk audit"],
+    "validation": "12 scanner tests pass, no failure or skip; genuine drive-path negative control remains rejected. No vendor subtree exemption added."
+  },
+  "audit": {
+    "first_fresh_all_axes": "R1-R7 static sweep complete; confirmed stable-Rust link-count, checkout-byte preservation and UTF8-ACP conversion findings repaired and independently reread. Intended source has zero leaks and all14 vendor hashes match. Cloud and focused/final independent review pending; not acceptance.",
+    "native_local_build_or_test": "NOT_RUN_BY_RULE",
+    "cloud_native": "PENDING",
+    "cloud_desktop_byte_checks": "PENDING",
+    "ordinary_win11": "NOT_RUN",
+    "acceptance": false
+  },
+  "candidate_chain": {
+    "pr": 57,
+    "head": "19be2793a41c18a0898198d7789d48a0e822fcbc",
+    "ci": "ALL_SIX_SUCCESS",
+    "review": "Fresh final all-axis review returned no confirmed defect; PR ready",
+    "main_activation": "OWNER_MERGE_PENDING",
+    "real_signer_and_installed_candidate": "NOT_RUN"
+  },
+  "retained_custody": [
+    {
+      "paths": ["apps/desktop/native-host/src/process/session/compat/detours-extract/", "apps/desktop/native-host/src/process/session/compat/detours-source.zip"],
+      "counts": {"extracted_files": 158, "archives": 1},
+      "reason": "Automatic approval review rejected worker recursive cleanup before execution; retained without retry or bypass. Explicit staging excludes these downloaded residues.",
+      "public_deliverable": false
+    },
+    {"path": "%LOCALAPPDATA%/gogoke-audit/native-bcb154f4-36647192081", "reason": "Direct actual-process root-cause evidence; private paths and raw logs are not committed"},
+    {"path": ".controller-worktrees/candidate-chain/", "reason": "Exclusive PR57 worktree retained for pending main activation"}
+  ],
+  "m1": {
+    "complete": false,
+    "remaining": ["cloud actual CLI and compatibility gates", "native K-SESSION open and actual permission witness", "actual SeatIo and A/B1/C composition", "candidate installed Win11/SAC and caps4", "Owner OT4 isolated CLI login"],
+    "ot4": "NOT_REQUESTED; prepare actual installed login first"
+  },
+  "roundtrip_review": "The first debugger capture missed the real loader stop and API-only capture did not identify the denied object. Keep the actual-process direct evidence, batch stable compiler/dependency/checkout issues with same-source semantic and original CLI tests, then continue H construction after the checkpoint.",
+  "next": "Push coherent compatibility implementation and run normal cloud native full suite plus affected desktop byte checks. Repair authorized product or measurement failures autonomously; checkpoint is not a stop."
+}

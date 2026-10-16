@@ -1,0 +1,42 @@
+{
+  "schema": "gogoke.37.light-checkpoint.v1",
+  "recordedUtc": "2026-10-05T23:34:17.823351+00:00",
+  "stage": "M1_REPAIR_CLOUD_AND_M2_PREPARATION",
+  "acceptance": false,
+  "productSourceCommit": "300ddf7099599de8e8ebf2ea3eb4d0c900dd390f",
+  "candidateVersion": "0.1.31",
+  "changed": [
+    "同一宿主持有的已恢复物理认证对象，只对确切原换代请求的 OLD_STOPPED 放行；旧 episode/custody 必须为真实 STOPPED 且证明一致。",
+    "完成的 APPLIED 先核冻结 capture、真实 F 撤权及 H 独立释放回执，再排除历史 PID 的重复 OS 查询。未完成成员保持原真实消失证明；不把拒绝访问转成消失。",
+    "真实换代回归和混合恢复的坏 H 回执负例；更新既有 nested mutation 的唯一匹配参数。集中冻结为下一候选，不为两个修复分别装机。"
+  ],
+  "result": [
+    "固定 66 的剩余安全补测运行 37383626914 已完成；F.1、legacy、installation/forced-stop 原件独立复核通过，workflow 19b 与受测源 66 分别记录。",
+    "同一 codexTestM2Ready 的两条旧资源已真实恢复；原旧 StopFact 仍空、另三条 UNKNOWN 保留。真实 GPT-6.1-Sol/high 单轮完成，真实 H stop/release 后正常退出，无新登录。",
+    "0.1.30 完整 M1 在 compact continuation 失败；已用原 H stop/release 收尾，CANCELLED 保留原请求及错误。尚未执行的新代 episode 没有进程或 StopFact。",
+    "再次冷开首次实例页请求因旧 PID 重用而失败，零 H/model 操作，正常关闭；直接普通视图进程元数据证明当前创建时间不同。",
+    "300ddf70 源码聚焦复核未发现扩大回收范围或未完成成员绕过证明。新字节运行效果待云端与 Win11；完整 M1/M2 未通过。",
+    "普通视图闭合过渡基线：五条保留 custody 精确匹配已审原件，正式版五组保护项均未变化。"
+  ],
+  "cloud": {
+    "nativeRun": 37388984154,
+    "desktopRun": 37389482984,
+    "hygieneRun": 37388990925,
+    "state": "NEW_SOURCE_GATES_IN_PROGRESS_NOT_OVERALL_PASS",
+    "hygieneState": "PASS_EXACT_300DDF70"
+  },
+  "originalFailures": [
+    "original continuation: Invalid(\"holder recovery retains a generation change\")",
+    "disappeared credential holder: OpenProcess { win32_error: Some(5) }；历史 PID 当前属于不同创建时间的进程。"
+  ],
+  "reference": [
+    "核对 gogo-party accounts.ts、仓库 reuse-blueprint/upstream-reference-map；沿用 gogoke 既有 metadata Arc custody、原 H generation change/StopFact 与独立 F/H 完成回执，不复制凭据或改变固定 CLI。",
+    "NativeCredentialAclRecoveryStep 的 capture/restore/apply_or_readback/readback_target/adopt：新 capture 只允许未完成成员的 SID；恢复快照要求当前 DACL 精确 before 或 target，最终核 protected baseline。独立审计核 callee 后撤销未读实现提出的条件观察。",
+    "tools/e2e 既有原请求持久记录、真实 H stop/release、正常关闭和 immutable 只读账本；普通视图直接系统进程元数据用于证伪 PID 身份猜测。"
+  ],
+  "next": "完成 300ddf70 云端门禁，走一次精确冻结字节的候选链，再以同一已登录实例跑完整 M1 和 M2；不请求新登录、不自行验收。",
+  "measurementCorrections": [
+    "候选签名链固定施工分支。临时快照分支上的构建不符合这项来源要求，保留原运行并取消，未签名；改在同源施工分支重新构建，不放宽签名链。",
+    "过渡夹具误用恢复前 ACTIVE 基线。当前五条记录与已独立审计的恢复后原件完全一致，只有已知两条 ACTIVE→UNKNOWN；保留失败原件，仅以该已审原件重新绑定测量基线。"
+  ]
+}

@@ -1,0 +1,9 @@
+# B2.1 references
+
+Existing implementation: `gogo-party/packages/room/src/accounts.ts` (`PROVIDER_LOGIN`, `loginEnv`, `AccountStore.startLogin/probe`), `packages/seat-runtime/src/claude-seat.ts`, and `packages/room/public/index.html`. NaveHQ Claude isolation notes and LoomOS Claude Code pattern notes were read as history only; neither provided runnable adapter code.
+
+Repository research: `docs/research/2026-09-26-effect-decomposition-and-coverage.md`, `2026-09-26-execution-layer-capability-table.md`, `reuse-blueprint.md`, `source-audit/06-runtime-protocol-and-adapter-sources.md`, and `adapter-spike/01-capability-evidence.md` / `02-mvp-adapter-decision.md`. Paseo, Claudexor and Omnigent code was not copied because the documented behaviors do not supply real Claude CLI wire evidence and their session types are runtime-coupled.
+
+Official sources: [CLI reference](https://code.claude.com/docs/en/cli-reference), [headless/Agent SDK CLI](https://code.claude.com/docs/en/headless), [authentication](https://code.claude.com/docs/en/authentication), [memory](https://code.claude.com/docs/en/memory), [settings](https://code.claude.com/docs/en/settings), and [SDK permissions](https://code.claude.com/docs/en/agent-sdk/permissions). Controller aligned the runtime pin to the actual installed 2.1.196 manifest and PE version. The guide's 2.1.286 bare-mode fix was the first package's source reference, not an authorization to replace the test object. Official auth docs describe browser login, `/login`, `/status`, and config-directory separation; `auth login/status` command spellings come from the prior `PROVIDER_LOGIN` implementation and remain unverified on the fixed CLI.
+
+Implementation details and integration limits are recorded in the adapter's `REFERENCES.md` and `SHARED_INTEGRATION.md`.

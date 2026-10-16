@@ -1,0 +1,48 @@
+{
+  "schema": "gogoke.37.light-checkpoint.v1",
+  "changed": [
+    "Prepared the next blocking Win11 candidate with the existing fixed-CLI Grok grant fix, host merge identity fix and direct cache-entry error context."
+  ],
+  "result": {
+    "installedSource": "b4f37c2c20acd18cf13dddde189e64eea29c8f9c",
+    "claudeModelOpen": "NOT_CREATED_grant-model-home_DirectoryNotPhysical",
+    "originalUncreatedClaimRelease": "APPLIED_AND_SEAT_IDLE",
+    "genuineStatusRefresh": "CLI_EXIT_ZERO_CACHE_CLEANUP_OS_ERROR_32",
+    "productExit": "ZERO",
+    "currentMetadata": "ONLY_Content.IE5_MOUNT_POINT_FOUND_NO_CONTENT_READS_NOT_PREOPEN_PROOF",
+    "measurementCorrection": "DirEntry.stat zero inode/link fields were not valid hardlink evidence; a separate os.stat no-follow readback replaced that inference. Original output retained.",
+    "grokCandidateCloud": {
+      "source": "c3f1c03bf336ed25bca8dfe616cb46c8aed1325b",
+      "run": 37423435445,
+      "libraryPassed": 728,
+      "lpacShimPassed": 2,
+      "otherAxes": "SKIPPED",
+      "win11": "NOT_RUN"
+    },
+    "fixedMergeCloud": {
+      "source": "f0815822",
+      "run": 37428314111,
+      "state": "IN_PROGRESS_NOT_QUALIFIED"
+    },
+    "nextCandidate": "0.1.33_NOT_YET_BUILT_OR_INSTALLED",
+    "acceptance": false
+  },
+  "next": "Read the original failing cache component from the next installed candidate, fix the actual holder relationship without retries or relaxed sharing, and continue real Claude/Grok and fresh merge paths. Preserve original UNKNOWN and all instance records.",
+  "reference": {
+    "checked": [
+      "Original cache no-follow cleanup",
+      "Windows sharing-rule and existing competing-DELETE guard test",
+      "ProcessCustodian confirm_stop_durable ownership chain",
+      "Cold native-session initialization and normal Hstop evidence retirement",
+      "Original F HOME metadata with corrected no-follow instrument"
+    ],
+    "adopted": "Keep the exact existing Root/Home binding and directory-sharing rules; attach the missing relative entry at the producer.",
+    "difference": "The stopped status process and old cross-process STOPPED DB rows are not live directory holders; the actual conflict component remains unproved until the direct error names it."
+  },
+  "boundaries": [
+    "No credentials read, copied or hashed",
+    "No CLI change or login",
+    "No reparse target opened or changed",
+    "No system-security, global Git, main or public-release change"
+  ]
+}

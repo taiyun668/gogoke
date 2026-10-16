@@ -1,0 +1,29 @@
+{
+  "schema": "gogoke.37.checkpoint.v1",
+  "state": "M1_TOOL_FAILURE_UNDER_INVESTIGATION_M2_INTEGRATION_PENDING",
+  "changes": "Ran the installed frozen 0.1.21 through real WebView, fixed CLI and native host; dispatched all seven M2 lines in separate branches/worktrees. No new product bytes, CLI changes, LPAC capabilities or release in this checkpoint.",
+  "results": {
+    "M1": "FAIL as a complete flow: the second session completed its response but failed to create the required tool file. First session passed native question/answer, same-turn steer consumption, two tool-written files, compaction, generation renewal, normal restart and same-thread resume.",
+    "originalReadback": "481 incoming frames and 46 outbound records retained. Source cursors continuous; all newly tested episodes have native StopFacts. Original failed session stopped and released through its host, then the product exited normally. Old unrelated UNKNOWN custody remains preserved.",
+    "protectedData": "All five formal snapshot fields unchanged; instance memory comparison unchanged. Readback preserved original database bytes. A completed CLI response is not a successful tool test.",
+    "directError": "Windows PowerShell terminated with the following error: The type initializer for 'System.Management.Automation.Tracing.PSEtwLog' threw an exception.",
+    "mechanism": "The host supplies no PATH. Fixed CLI 0.160.0 therefore discovers Windows PowerShell 5.1 on this machine. A signed PowerShell 7 exists outside its fallback location; its actual LPAC behavior has not yet been established. No capability conclusion follows from the outer exception.",
+    "PR62": "Fresh independent review found no blocker; exact head cf16722b400b41b0bfef9491c28086579868f500 has six passing CI checks. Review posted to PR comment 5969598415. Actual main merge/readback remains pending Owner.",
+    "M2": {
+      "B2": "bab1f30b78677fb651cd14c639fbdfd43bc14703",
+      "B3": "71d4fdc9610d80463e46fbee9b8e6b92bf29ac56",
+      "B4": "663082b39cd1b0220b521423b656f0d285b3558c",
+      "B5": "2071632bf4db1eb786b3204f27d2bc03be0365ab",
+      "D": "6e84c09cfa6166ca90c3758910a86dfb8b2c9f1c",
+      "E2": "43f57077bef4fc437b681b9dd14e3908a1b61e94",
+      "F2": "ccd6b2aa2f705ae67a54d81146284d7534238544",
+      "qualification": "Independent focused static review found the E2/F2/D known repairs in place. Revised adapter review and affected cloud runs pending. Native D is not exported/compiled yet. Shared H/A wiring, real provider goldens and Owner product E2E remain NOT_RUN."
+    },
+    "shellDiagnostic": "Same fixed CLI reported CMD file-not-found for the attempted PowerShell 7 command (exit 1), so PowerShell 7 initialization was not observed. Read back 193 original frames and 9 commands; original database bytes unchanged, native stop/release and normal product exit recorded. Command construction and asset accessibility remain under investigation; no new capability inference."
+  },
+  "measurement": "Private Node ESM URL, host-initialization, output-field and PowerShell observer issues were separated from product results; original failed outputs retained and mutations not resent. Vendored t3code prepare twice attached its hook to the enclosing repository; Controller restored that local registration. B5 used a hook-disable environment before the correction message arrived, after executing the actual formatter in its own directory; this is a recorded process deviation. Policy-refused B2 dependency and B4 private probe residues remain untracked and retained, never committed or removed by another route.",
+  "next": "Finish direct same-CLI/same-LPAC shell measurement, repair the actual environment and rerun the real flow; integrate reviewed M2 packages and run affected cloud checks. After Owner merges PR62, read actual main receipt and recompute its scope with main's verifier. No Owner login requested now.",
+  "references": "Reused the existing installed-product CDP/custody/StopFact path, gogo-party provider/runtime history and repository research. Checked fixed Codex 0.160.0 shell detection, official configuration and Microsoft PowerShell tracing source. An absolute tool shell path selects a shell type rather than pinning that file; PowerShell 7 success is not inferred from its version. Existing protocol and host readbacks are used; no replacement CLI or permissive execution fallback.",
+  "acceptance": false,
+  "failureRepair": "F2 original native cloud result: 598 executed, 597 passed, one SchemaDrift failure, zero skipped. Repair recognizes only the exact seven-table earlier family and adds the empty pin table; original sources and receipts retained. Exact revised-byte native result still pending."
+}

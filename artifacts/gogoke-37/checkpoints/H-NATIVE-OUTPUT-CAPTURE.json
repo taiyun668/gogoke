@@ -1,0 +1,79 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "state": "ACTIVE_CONTINUING_CLOUD_VALIDATION_AND_NATIVE_COMPOSITION",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "source_before_batch": "f93c1e1acd9947197d06c75bcda796a4c6e69b7a",
+  "authorization_main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
+  "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
+  "receipt_blob": "8020812e3abf35887829f50c78ec9f513272bf70",
+  "inbox_observed": "b4f7e866029b8c5a9a1211100effadf01a03ffbc",
+  "authority": "Owner continued the previously frozen run. PR #56 covers L0 through G and M1-M3; no new composition-scope approval is required. Owner alone merges PR #54/#57 and makes the planned acceptance decisions.",
+  "last_fixed_source_evidence": {
+    "source": "f93c1e1acd9947197d06c75bcda796a4c6e69b7a",
+    "native_run": 36674877743,
+    "release_build": "PASS",
+    "server": "PASS",
+    "required_axes": { "passed": 3, "failed": 0, "skipped": 0 },
+    "focused": { "executed": 20, "passed": 18, "failed": 2, "skipped": 0 },
+    "library": "CANCELLED_AT_EXISTING_30_MINUTE_JOB_TIMEOUT_NO_COMPLETE_COUNTS",
+    "native_artifact": 11080830034,
+    "server_artifact": 11079606699,
+    "desktop_run": 36674882442,
+    "desktop": "PASS_ALL_FIVE_JOBS_INCLUDING_INDEPENDENT_EXECUTABLE_BYTE_COMPARISON",
+    "hygiene_run": 36674882486,
+    "hygiene": "PASS"
+  },
+  "direct_failure_resolution": [
+    {
+      "case": "app_container_child_writes_only_granted_fresh_directory",
+      "trace_run": 36674884036,
+      "trace_artifact": 11079328867,
+      "cause": "The actual cmd del stack enters eDelete/DelWork/DelPatterns/BuildFSFromPatterns/IsFATDrive/GetVolumeInformationW and its volume-root SYNCHRONIZE open returns STATUS_ACCESS_DENIED before any leaf deletion. Three original calls have the same stack.",
+      "conclusion": "cmd del cannot be used to prove either leaf deletion ACL negative control in this restricted profile. Retain this measured cmd limitation; do not broaden parent/root ACLs.",
+      "change": "The cloud native test image now executes the actual std::fs create/rename/delete/write leaf calls under the same LPAC and original ACLs. It checks own deletion and the exact Win32 5 errors for denied leaves.",
+      "validation": "NEW_SOURCE_CLOUD_NOT_RUN"
+    },
+    {
+      "case": "native_input_close_delivers_eof_and_preserves_graceful_stop_proof",
+      "premise_and_logic": "The original EOF frame and pre-kill parent wait were successful, but one Job member required cleanup. kill_attempted describes Job cleanup and does not disprove parent graceful exit.",
+      "change": "Persist and hash parent_grace_exited as a first-class NativeStopProof fact. Assert EOF, that pre-kill parent fact, exit0, Job0, writer fence and no errors. Production budgets, permission and cleanup rules are unchanged.",
+      "validation": "NEW_SOURCE_CLOUD_NOT_RUN"
+    },
+    {
+      "case": "actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_call",
+      "direct_error": "The last real CLI open failed at the string-only thread cwd mismatch; old error discarded both path values.",
+      "change": "Preserve expected/observed cwd and original native errors; restrict inspection to known spellings of the already-bound local path, then compare its physical directory identity against F custody.",
+      "validation": "NEW_SOURCE_CLOUD_NOT_RUN"
+    }
+  ],
+  "native_output_batch": [
+    "Fixed 0.149 provider frames from the same persistent ProcessCustodian reader enter A as original bytes before conversion. Output-stream uses the existing H generation/revision and shared request-ID conflict checks, returns A events/cursors and explicit unresolved raw count, and records same-byte read receipts.",
+    "NativeRawCapture retains the original owned frame and ordinal on failed A INSERT, blocks another pipe read, and captures the same bytes on recovery. Legitimate stop reaches the actual Job even if capture still fails; it retains the original frame, native stop proof and guards, and cannot publish durable STOPPED or release custody before capture succeeds. SQL capture failure does not falsely label still-known native process custody UNKNOWN; the original open/send outcome remains UNKNOWN and RPC journal prevents another write.",
+    "A terminal reader error remains explicit as sourceError; it does not prevent previously captured output from being normalized and read. Read-receipt currentness includes both highwaters and that source error. An APPLIED read is not a successful provider operation or a healthy-child claim.",
+    "RPC OBSERVED and its A CODEX_RPC_RESPONSE NO_EVENT now commit in one transaction. Old OBSERVED/PENDING gaps recover using the exact original step/raw-source binding and current Owner authority. Unassociated response bytes remain unresolved rather than being decoded as notifications or manufacturing an event.",
+    "Added actual owned-child capture/EOF controls and a same-store SQL NO_EVENT failure/rollback/recovery control. These do not claim provider model delivery or Owner authentication.",
+    "Work thread/start now persists its thread history instead of forcing ephemeral mode. Official fixed Codex source shows ephemeral disables history and prevents cold resume. All three vendor memory-off settings remain unchanged; persistence is not memory enablement. Actual cold resume and cross-project memory isolation remain NOT_RUN.",
+    "The full native library command now streams its original output to its artifact log during execution, preserving partial evidence on the existing job timeout. No timeout increase or extra wait is introduced."
+  ],
+  "current_validation": {
+    "rustfmt_parser_only": "PASS_NO_NATIVE_COMPILE_OR_LOCAL_TEST",
+    "diff_check": "PASS",
+    "hygiene_positive_control": "PASS",
+    "hygiene_scanner_unit_tests": { "passed": 12, "failed": 0, "skipped": 0 },
+    "new_source_native_and_desktop": "NOT_RUN_BEFORE_FIXED_COMMIT"
+  },
+  "review_limits": "Reused independent seats checked the original causes and narrow source mutations; NON_FRESH_NOT_ACCEPTANCE. No M1 acceptance is inferred.",
+  "remaining": [
+    "Read the next fixed-SHA cloud native/full-library results and repair direct failures.",
+    "Finish native C question persistence/answers, B1 service transport, cold-resume and remaining real M1 flows.",
+    "PR #57 trusted-main candidate signer activation remains Owner-merge pending; no merge authority inferred.",
+    "Ordinary-view Win11 candidate and OT4 login are not yet ready."
+  ],
+  "custody": "Previously rejected 159 Detours cleanup objects, cli-state-trace worktree and private diagnostic evidence remain preserved; no retry or approval workaround.",
+  "formal_product_data": "NOT_ACCESSED_OR_CHANGED_BY_THIS_CLOUD_ONLY_SEGMENT",
+  "ot4": "NOT_REQUESTED",
+  "m1_complete": false,
+  "acceptance": false,
+  "roundtrip_review": "Batch the original failures, A output composition and the confirmed source-loss fixes before one full native dispatch. Preserve original full-library output rather than increasing budgets. While cloud runs, finish the disjoint C composition; checkpoint is a record, not a stop."
+}

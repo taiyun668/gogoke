@@ -7,6 +7,7 @@ use crate::store::atomic::Statement;
 use crate::store::context::{commit_context_version, PromotionEvidence};
 use crate::store::digest::content_hash;
 use crate::store::same_open::{create_new, route_b_test_guard};
+use crate::store::session_transport::decode_receipt;
 use std::io::Cursor;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -69,13 +70,163 @@ fn fixture(run: impl FnOnce(&RootLock, &mut ProductDatabase<'_>)) {
     product.close_checked().unwrap(); drop(root);
     std::fs::remove_file(database).unwrap();
     std::fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).unwrap();
-    if let Err(error) = std::fs::remove_dir(&path) { eprintln!("owned fixture retained: {error}"); }
+    if let Err(error) = std::fs::remove_dir_all(&path) { eprintln!("owned fixture retained: {error}"); }
 }
 fn scalar(product: &ProductDatabase<'_>, sql: &str) -> String {
     let statement = Statement::prepare(product.connection.as_ptr(), sql).unwrap();
     assert!(statement.step_row().unwrap()); let result = statement.column_text(0).unwrap();
     assert!(!statement.step_row().unwrap()); result
 }
+
+fn instance_request(
+    operation: &str,
+    request_id: &str,
+    instance_id: &str,
+    expected_revision: &str,
+) -> V37Request {
+    let raw = format!(
+        "{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-INSTANCE\",\"operation\":\"{operation}\",\"requestId\":\"{request_id}\",\"targetId\":\"{instance_id}\",\"domainId\":\"global\",\"expectedRevision\":\"{expected_revision}\",\"payload\":{{}}}}",
+    );
+    decode_request(raw.as_bytes()).unwrap()
+}
+
+fn register_request() -> V37Request {
+    decode_request(
+        br#"{"schema":"gogoke.37.operations.v1","family":"K-INSTANCE","operation":"register","requestId":"registerReadA","targetId":"instanceA","domainId":"global","expectedRevision":"0","payload":{"driverId":"codex"}}"#,
+    )
+    .unwrap()
+}
+
+fn remove_instance_home(root: &RootLock) {
+    let path = root.canonical_root().canonical_path.join("v37-instances");
+    if path.exists() {
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[test]
+fn user_manual_global_repin_refuses_observation_and_preserves_original_instance() {
+    fixture(|root, product| {
+        let old_path = root.canonical_root().canonical_path.join("old-cli.fixture");
+        std::fs::write(&old_path, b"synthetic old registered program").unwrap();
+        let old = instance::ProgramObservation::observe(&old_path, "0.149.0").unwrap();
+        let registration = register_request();
+        instance::register_instance(&mut product.connection, root, &instance::Registration {
+            request_id: &registration.request_id, request_bytes: &registration.raw_bytes,
+            instance_id: "instanceA", driver_id: "codex", program: &old,
+        }).unwrap();
+        instance::record_observation(&mut product.connection, root, &instance::ObservationRequest {
+            request_id: "old-login", request_bytes: b"synthetic original login observation",
+            instance_id: "instanceA", expected_revision: 1, observation: instance::InstanceObservation::LoggedIn,
+        }).unwrap();
+        instance::record_observation(&mut product.connection, root, &instance::ObservationRequest {
+            request_id: "old-install", request_bytes: b"synthetic original install observation",
+            instance_id: "instanceA", expected_revision: 2, observation: instance::InstanceObservation::InstallUnknown,
+        }).unwrap();
+        let source = product.registration_source("instanceA", "codex").unwrap().unwrap();
+        assert!(product.registered_home_is_current(&source, "instanceA").unwrap());
+        let identity = scalar(product, "SELECT home_identity FROM main.gogoke_v37_instances WHERE instance_id='instanceA'");
+        let creation = scalar(product, "SELECT request_hex FROM main.gogoke_v37_instance_operations WHERE request_id='registerReadA'");
+        let original_digest = scalar(product, "SELECT program_digest FROM main.gogoke_v37_instances WHERE instance_id='instanceA'");
+        let original_version = scalar(product, "SELECT version FROM main.gogoke_v37_instances WHERE instance_id='instanceA'");
+        let original_install = scalar(product, "SELECT install_state FROM main.gogoke_v37_instances WHERE instance_id='instanceA'");
+        let original_login = scalar(product, "SELECT login_state FROM main.gogoke_v37_instances WHERE instance_id='instanceA'");
+        let original_login_observation = scalar(product, "SELECT request_hex FROM main.gogoke_v37_instance_operations WHERE request_id='old-login'");
+        let original_install_observation = scalar(product, "SELECT request_hex FROM main.gogoke_v37_instance_operations WHERE request_id='old-install'");
+        let home = root.canonical_root().canonical_path.join("v37-instances").join("instanceA");
+        let sentinel = home.join("repin-preserved.fixture");
+        std::fs::write(&sentinel, b"synthetic preserved instance bytes").unwrap();
+        let input = instance_request("repin-after-manual-upgrade", "repinA", "instanceA", "3");
+        let raw = product.dispatch_user_request(&input).unwrap();
+        let refused = decode_receipt(&raw).unwrap();
+        assert_eq!((refused.status, refused.previous_revision, refused.revision),
+            (V37Status::Failed, 3, 3), "original refusal receipt: {}", String::from_utf8_lossy(&raw));
+        assert!(String::from_utf8_lossy(&raw).contains("GlobalCliObservationForbidden"),
+            "manual global observation must fail at the catalog boundary: {}", String::from_utf8_lossy(&raw));
+        assert_eq!(scalar(product, "SELECT program_digest FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), original_digest);
+        assert_eq!(scalar(product, "SELECT version FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), original_version);
+        assert_eq!(scalar(product, "SELECT install_state FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), original_install);
+        assert_eq!(scalar(product, "SELECT login_state FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), original_login);
+        assert_eq!(scalar(product, "SELECT request_hex FROM main.gogoke_v37_instance_operations WHERE request_id='old-login'"), original_login_observation);
+        assert_eq!(scalar(product, "SELECT request_hex FROM main.gogoke_v37_instance_operations WHERE request_id='old-install'"), original_install_observation);
+        assert_eq!(scalar(product, "SELECT count(*) FROM main.gogoke_v37_instance_operations WHERE request_id='repinA'"), "0");
+        assert_eq!(scalar(product, "SELECT home_identity FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), identity);
+        assert_eq!(scalar(product, "SELECT request_hex FROM main.gogoke_v37_instance_operations WHERE request_id='registerReadA'"), creation);
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"synthetic preserved instance bytes");
+        assert!(product.registered_home_is_current(&source, "instanceA").unwrap());
+        let version_raw = product.dispatch_user_request(
+            &instance_request("version-and-new-version", "versionA", "instanceA", "3")).unwrap();
+        assert_eq!(decode_receipt(&version_raw).unwrap().status, V37Status::Applied);
+        let version = String::from_utf8(version_raw).unwrap();
+        assert!(version.contains(&original_digest) && version.contains(&original_version), "{version}");
+        let repeated = decode_receipt(&product.dispatch_user_request(&input).unwrap()).unwrap();
+        assert_eq!((repeated.status, repeated.previous_revision, repeated.revision),
+            (V37Status::Failed, 3, 3), "the forbidden global observation cannot become a repin replay");
+        assert_eq!(scalar(product, "SELECT revision FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), "3");
+        std::fs::remove_file(old_path).unwrap(); remove_instance_home(root);
+    });
+}
+
+#[test]
+fn historical_applied_manual_repin_replays_before_global_discovery_and_rejects_changed_bytes() {
+    fixture(|root, product| {
+        // Build a historical APPLIED row through the existing registry writer.
+        // These two owned files are synthetic program pins, not a new global
+        // discovery path or a managed-upgrade success claim.
+        let old_path = root.canonical_root().canonical_path.join("old-cli.fixture");
+        let new_path = root.canonical_root().canonical_path.join("new-cli.fixture");
+        std::fs::write(&old_path, b"synthetic old registered program").unwrap();
+        std::fs::write(&new_path, b"synthetic historical repinned program").unwrap();
+        let old = instance::ProgramObservation::observe(&old_path, "0.149.0").unwrap();
+        let new = instance::ProgramObservation::observe(&new_path, "0.160.0").unwrap();
+        let registration = register_request();
+        instance::register_instance(&mut product.connection, root, &instance::Registration {
+            request_id: &registration.request_id, request_bytes: &registration.raw_bytes,
+            instance_id: "instanceA", driver_id: "codex", program: &old,
+        }).unwrap();
+        let request = instance_request("repin-after-manual-upgrade", "historicalRepin", "instanceA", "1");
+        let applied = instance::repin_program(&mut product.connection, root, &product.owner,
+            &instance::ProgramRepin { request_id: &request.request_id,
+                request_bytes: &request.raw_bytes, instance_id: "instanceA", expected_revision: 1 },
+            &new).unwrap();
+        assert!(matches!(applied.disposition, instance::RegistrationDisposition::Applied));
+        assert_eq!(applied.revision, 2);
+        let home = root.canonical_root().canonical_path.join("v37-instances").join("instanceA");
+        let sentinel = home.join("historical-replay-preserved.fixture");
+        std::fs::write(&sentinel, b"synthetic original home bytes").unwrap();
+        let revision = scalar(product, "SELECT revision FROM main.gogoke_v37_instances WHERE instance_id='instanceA'");
+        let digest = scalar(product, "SELECT program_digest FROM main.gogoke_v37_instances WHERE instance_id='instanceA'");
+        let version = scalar(product, "SELECT version FROM main.gogoke_v37_instances WHERE instance_id='instanceA'");
+        let home_identity = scalar(product, "SELECT home_identity FROM main.gogoke_v37_instances WHERE instance_id='instanceA'");
+        let historical_request = scalar(product, "SELECT request_hex FROM main.gogoke_v37_instance_operations WHERE request_id='historicalRepin'");
+        let historical_receipt = scalar(product, "SELECT receipt_json FROM main.gogoke_v37_instance_operations WHERE request_id='historicalRepin'");
+        assert_eq!(scalar(product, "SELECT phase FROM main.gogoke_v37_instance_operations WHERE request_id='historicalRepin'"), "APPLIED");
+        let replay_raw = product.dispatch_user_request(&request).unwrap();
+        let replay = decode_receipt(&replay_raw).unwrap();
+        assert_eq!((replay.status, replay.previous_revision, replay.revision),
+            (V37Status::Replayed, 1, 2), "original historical replay: {}", String::from_utf8_lossy(&replay_raw));
+        let replay_text = String::from_utf8(replay_raw).unwrap();
+        assert!(replay_text.contains(&digest) && replay_text.contains(&version), "{replay_text}");
+        let mut changed_raw = request.raw_bytes.clone();
+        changed_raw.push(b'\n');
+        let changed = decode_request(&changed_raw).unwrap();
+        let conflict_raw = product.dispatch_user_request(&changed).unwrap();
+        let conflict = decode_receipt(&conflict_raw).unwrap();
+        assert_eq!((conflict.status, conflict.previous_revision, conflict.revision),
+            (V37Status::Conflict, 2, 2), "changed original request: {}", String::from_utf8_lossy(&conflict_raw));
+        assert_eq!(scalar(product, "SELECT revision FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), revision);
+        assert_eq!(scalar(product, "SELECT program_digest FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), digest);
+        assert_eq!(scalar(product, "SELECT version FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), version);
+        assert_eq!(scalar(product, "SELECT home_identity FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), home_identity);
+        assert_eq!(scalar(product, "SELECT request_hex FROM main.gogoke_v37_instance_operations WHERE request_id='historicalRepin'"), historical_request);
+        assert_eq!(scalar(product, "SELECT receipt_json FROM main.gogoke_v37_instance_operations WHERE request_id='historicalRepin'"), historical_receipt);
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"synthetic original home bytes");
+        std::fs::remove_file(old_path).unwrap();
+        std::fs::remove_file(new_path).unwrap();
+        remove_instance_home(root);
+    });
+}
+
 fn spec(product: &ProductDatabase<'_>, permission: &str, depth: u8) -> GrantSpec {
     GrantSpec { principal_id: product.owner.principal_id().into(), seat_id: product.owner.seat_id().into(),
         permission: permission.into(), promotion_kind: "GLOBAL_LESSON".into(),
@@ -721,5 +872,239 @@ fn controlled_vertical_midstage_failure_rolls_back_without_an_action_half_row() 
             ),
             "0",
         );
+    });
+}
+
+#[test]
+fn user_instance_reads_native_install_and_keeps_registration_login_unknown() {
+    fixture(|root, product| {
+        managed_cli_test_setup::ready(product, root, "codex");
+        let registration = register_request();
+        let registered = product.register_user_instance(&registration).unwrap();
+        let registered = String::from_utf8(registered).unwrap();
+        assert!(registered.contains("\"status\":\"APPLIED\""), "{registered}");
+
+        let login = product.dispatch_user_request(
+            &instance_request("login-state", "loginReadA", "instanceA", "1"),
+        ).unwrap();
+        let login = String::from_utf8(login).unwrap();
+        assert!(login.contains("\"status\":\"APPLIED\""), "{login}");
+        assert!(login.contains("\"state\":\"UNKNOWN\""), "{login}");
+        assert!(login.contains("\"previousRevision\":\"1\""), "{login}");
+        assert!(login.contains("\"revision\":\"1\""), "{login}");
+
+        let install = product.dispatch_user_request(
+            &instance_request("install-state", "installReadA", "instanceA", "1"),
+        ).unwrap();
+        let install = String::from_utf8(install).unwrap();
+        assert!(install.contains("\"status\":\"APPLIED\""), "{install}");
+        assert!(install.contains("\"installed\":true"), "{install}");
+        assert_eq!(scalar(product,
+            "SELECT revision FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), "1");
+        assert_eq!(scalar(product,
+            "SELECT login_state FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), "UNKNOWN");
+        remove_instance_home(root);
+    });
+}
+
+#[test]
+fn user_instance_install_read_rejects_a_changed_registered_digest_without_revision_change() {
+    fixture(|root, product| {
+        managed_cli_test_setup::ready(product, root, "codex");
+        let registration = register_request();
+        assert!(String::from_utf8(product.register_user_instance(&registration).unwrap())
+            .unwrap().contains("\"status\":\"APPLIED\""));
+        let changed = format!("sha256:{}", "0".repeat(64));
+        let update = Statement::prepare(product.connection.as_ptr(),
+            "UPDATE main.gogoke_v37_instances SET program_digest=?1 WHERE instance_id='instanceA'")
+            .unwrap();
+        update.bind_text(1, &changed).unwrap();
+        update.step_done().unwrap();
+
+        let install = product.dispatch_user_request(
+            &instance_request("install-state", "installChangedA", "instanceA", "1"),
+        ).unwrap();
+        let install = String::from_utf8(install).unwrap();
+        assert!(install.contains("\"status\":\"UNKNOWN\""), "{install}");
+        assert!(install.contains("\"installed\":false"), "{install}");
+        assert_eq!(scalar(product,
+            "SELECT revision FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), "1");
+        remove_instance_home(root);
+    });
+}
+
+#[test]
+fn managed_first_install_keeps_disabled_legacy_and_binds_every_other_instance() {
+    use crate::store::seat::{self,CreateSeat,Kind,NativeOrigin,StoreTemplate};
+    fixture(|root, product| {
+        let (stage,image)=managed_cli_test_setup::prepared_image(root,"codex");
+        let program=instance::ProgramObservation::observe(&image,"0.160.0").unwrap();
+        let pin=instance::read_fixed_official_cli("codex").unwrap();
+        let digest=format!("sha256:{}",pin.image_sha256);
+        assert!(program.matches_pin(&digest,pin.version));
+        for id in ["legacyFrozen","legacyReady","legacyFresh"] {
+            let frame=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-INSTANCE\",\"operation\":\"register\",\"requestId\":\"register{id}\",\"targetId\":\"{id}\",\"domainId\":\"global\",\"expectedRevision\":\"0\",\"payload\":{{\"driverId\":\"codex\"}}}}");
+            let request=decode_request(frame.as_bytes()).unwrap();
+            instance::register_instance(&mut product.connection,root,&instance::Registration {
+                request_id:&request.request_id,request_bytes:&request.raw_bytes,
+                instance_id:id,driver_id:"codex",program:&program,
+            }).unwrap();
+            if id!="legacyFresh" {
+                instance::set_instance_profile(&mut product.connection,&product.owner,id,id,true,None,None).unwrap();
+            }
+        }
+        // This trusted F observation models the already logged-in old M1
+        // instance. A synthetic UNKNOWN login would be rejected before H ever
+        // resolves the intentionally unbound managed program source.
+        instance::record_observation(&mut product.connection,root,&instance::ObservationRequest {
+            request_id:"frozenOriginalLogin",request_bytes:b"original native login observation",
+            instance_id:"legacyFrozen",expected_revision:1,
+            observation:instance::InstanceObservation::LoggedIn,
+        }).unwrap();
+        instance::set_instance_concurrency_cap(&mut product.connection,&product.owner,
+            "legacyFrozen",2).unwrap();
+        seat::set_project_parallel_cap(&mut product.connection,&product.owner,"newProject",2).unwrap();
+        seat::store_template(&mut product.connection,NativeOrigin::user(&product.owner),
+            StoreTemplate {domain_id:"newProject",template_id:"templateA",settings_json:b"{}"}).unwrap();
+        seat::create(&mut product.connection,NativeOrigin::user(&product.owner),CreateSeat {
+            domain_id:"newProject",seat_id:"frozenSeat",template_id:"templateA",
+            instance_id:Some("legacyFrozen"),kind:Kind::Long,request_id:"createFrozenSeat",
+            request_bytes:b"create frozen seat",
+        }).unwrap();
+        product.connection.execute("INSERT INTO main.gogoke_v37_h_owner_binding(binding_id,instance_id,domain_id,kind,owner_id,generation,state) VALUES('frozenBinding','legacyFrozen','oldProject','SESSION','oldSession','1','ACTIVE')").unwrap();
+        product.connection.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision) VALUES('oldProject','oldSession','legacyFrozen','oldHome','frozenBinding','1','COMMITTED',1)").unwrap();
+        managed_cli_test_setup::staged_probe(product,"codex",&stage);
+        let migrate=format!("{{\"schema\":\"gogoke.37.managed-cli.v1\",\"command\":\"migrate\",\"driverId\":\"codex\",\"stageName\":\"{stage}\"}}");
+        assert!(product.dispatch_user_managed_cli(migrate.as_bytes()).is_err(),
+            "an enabled committed reservation cannot be silently skipped");
+        assert_eq!(scalar(product,"SELECT state FROM main.gogoke_v37_instance_cli_copies WHERE driver_id='codex'"),"PROBED");
+        assert_eq!(scalar(product,"SELECT count(*) FROM main.gogoke_v37_instance_program_sources"),"0");
+
+        instance::set_instance_profile(&mut product.connection,&product.owner,
+            "legacyFrozen","legacyFrozen",false,None,Some(1)).unwrap();
+        product.connection.execute(&format!("UPDATE main.gogoke_v37_instances SET program_digest='sha256:{}' WHERE instance_id='legacyFrozen'","0".repeat(64))).unwrap();
+        assert!(product.dispatch_user_managed_cli(migrate.as_bytes()).is_err(),
+            "disabled original with changed pin cannot qualify as same-byte copy");
+        assert_eq!(scalar(product,"SELECT state FROM main.gogoke_v37_instance_cli_copies WHERE driver_id='codex'"),"PROBED");
+        assert_eq!(scalar(product,"SELECT count(*) FROM main.gogoke_v37_instance_program_sources"),"0");
+        product.connection.execute(&format!("UPDATE main.gogoke_v37_instances SET program_digest='{digest}' WHERE instance_id='legacyFrozen'")).unwrap();
+        let reply=String::from_utf8(product.dispatch_user_managed_cli(migrate.as_bytes()).unwrap()).unwrap();
+        assert!(reply.contains("\"migrated\":2"),"{reply}");
+        assert_eq!(scalar(product,"SELECT state FROM main.gogoke_v37_instance_cli_copies WHERE driver_id='codex'"),"READY");
+        assert_eq!(scalar(product,"SELECT count(*) FROM main.gogoke_v37_instance_program_sources WHERE instance_id IN ('legacyReady','legacyFresh')"),"2");
+        assert_eq!(scalar(product,"SELECT count(*) FROM main.gogoke_v37_instance_program_sources WHERE instance_id='legacyFrozen'"),"0");
+        assert_eq!(scalar(product,"SELECT state FROM main.gogoke_v37_h_claim WHERE instance_id='legacyFrozen'"),"COMMITTED");
+        assert!(matches!(instance::locate_bound_instance_program(&product.connection,
+            "legacyFrozen","codex",&digest,pin.version),Err(instance::ProgramSourceError::Conflict)));
+        assert!(instance::locate_bound_instance_program(&product.connection,
+            "legacyReady","codex",&digest,pin.version).is_ok());
+        assert!(instance::locate_bound_instance_program(&product.connection,
+            "legacyFresh","codex",&digest,pin.version).is_ok());
+        let read=product.dispatch_user_request(&instance_request(
+            "install-state","readFrozen","legacyFrozen","2")).unwrap();
+        let read=String::from_utf8(read).unwrap();
+        assert!(read.contains("\"status\":\"UNKNOWN\"") &&
+            read.contains("no qualified managed program source"),"{read}");
+        let seat=seat::get(&product.connection,"newProject","frozenSeat").unwrap().unwrap();
+        let request=format!("{{\"schema\":\"gogoke.37.operations.v1\",\"family\":\"K-SESSION\",\"operation\":\"admission-reserve\",\"requestId\":\"frozenReserve\",\"targetId\":\"frozenSession\",\"domainId\":\"newProject\",\"expectedRevision\":\"0\",\"payload\":{{\"seatId\":\"frozenSeat\",\"generation\":\"{}\"}}}}",seat.generation+1);
+        let request=decode_request(request.as_bytes()).unwrap();
+        let receipt=String::from_utf8(product.dispatch_user_request(&request).unwrap()).unwrap();
+        assert!(receipt.contains("\"status\":\"CONFLICT\"") &&
+            receipt.contains("no qualified managed program source"),"{receipt}");
+        assert_eq!(scalar(product,"SELECT count(*) FROM main.gogoke_v37_h_claim WHERE session_id='frozenSession'"),"0");
+        remove_instance_home(root);
+    });
+}
+
+#[test]
+fn managed_begin_without_copy_row_retains_version_change_barrier() {
+    fixture(|root,product| {
+        let old_path=root.canonical_root().canonical_path.join("old-cli.fixture");
+        std::fs::write(&old_path,b"original different CLI bytes").unwrap();
+        let old=instance::ProgramObservation::observe(&old_path,"0.149.0").unwrap();
+        let registration=register_request();
+        instance::register_instance(&mut product.connection,root,&instance::Registration {
+            request_id:&registration.request_id,request_bytes:&registration.raw_bytes,
+            instance_id:"instanceA",driver_id:"codex",program:&old,
+        }).unwrap();
+        product.connection.execute("INSERT INTO main.gogoke_v37_h_owner_binding(binding_id,instance_id,domain_id,kind,owner_id,generation,state) VALUES('oldBinding','instanceA','oldProject','SESSION','oldSession','1','ACTIVE')").unwrap();
+        product.connection.execute("INSERT INTO main.gogoke_v37_h_claim(domain_id,session_id,instance_id,home_id,binding_id,generation,state,revision) VALUES('oldProject','oldSession','instanceA','oldHome','oldBinding','1','COMMITTED',1)").unwrap();
+        assert!(instance::record_managed_cli_progress(&mut product.connection,&product.owner,
+            "codex","DOWNLOADING",0).is_err(),"old pin plus unsettled reservation is a version change");
+        assert_eq!(scalar(product,"SELECT count(*) FROM main.gogoke_v37_instance_cli_copies WHERE driver_id='codex'"),"0");
+        assert_eq!(scalar(product,"SELECT state FROM main.gogoke_v37_h_claim WHERE instance_id='instanceA'"),"COMMITTED");
+        std::fs::remove_file(old_path).unwrap();remove_instance_home(root);
+    });
+}
+
+#[test]
+fn user_instance_login_read_replays_a_durable_login_observation() {
+    fixture(|root, product| {
+        managed_cli_test_setup::ready(product, root, "codex");
+        let registration = register_request();
+        assert!(String::from_utf8(product.register_user_instance(&registration).unwrap())
+            .unwrap().contains("\"status\":\"APPLIED\""));
+        // These synthetic bytes exercise the trusted observation persistence
+        // contract; they do not claim to perform a provider account read.
+        assert_eq!(instance::record_observation(&mut product.connection, root,
+            &instance::ObservationRequest {
+                request_id: "login-observationA",
+                request_bytes: b"native same-instance account read",
+                instance_id: "instanceA",
+                expected_revision: 1,
+                observation: instance::InstanceObservation::LoggedIn,
+            }).unwrap(), RegistrationDisposition::Applied);
+
+        let login = product.dispatch_user_request(
+            &instance_request("login-state", "loginObservedA", "instanceA", "2"),
+        ).unwrap();
+        let login = String::from_utf8(login).unwrap();
+        assert!(login.contains("\"status\":\"APPLIED\""), "{login}");
+        assert!(login.contains("\"state\":\"LOGGED_IN\""), "{login}");
+        assert!(login.contains("\"previousRevision\":\"2\""), "{login}");
+        assert_eq!(scalar(product,
+            "SELECT revision FROM main.gogoke_v37_instances WHERE instance_id='instanceA'"), "2");
+
+        // A later non-login observation makes the prior login fact stale even
+        // though the durable row still contains LOGGED_IN.
+        assert_eq!(instance::record_observation(&mut product.connection, root,
+            &instance::ObservationRequest {
+                request_id: "install-observationA",
+                request_bytes: b"native install observation",
+                instance_id: "instanceA",
+                expected_revision: 2,
+                observation: instance::InstanceObservation::InstallUnknown,
+            }).unwrap(), RegistrationDisposition::Applied);
+        let stale = product.dispatch_user_request(
+            &instance_request("login-state", "loginStaleA", "instanceA", "3"),
+        ).unwrap();
+        let stale = String::from_utf8(stale).unwrap();
+        assert!(stale.contains("\"status\":\"UNKNOWN\""), "{stale}");
+        assert!(stale.contains("\"state\":\"UNKNOWN\""), "{stale}");
+        remove_instance_home(root);
+    });
+}
+
+#[test]
+fn user_instance_login_read_does_not_promote_a_durable_login_without_current_observation() {
+    fixture(|root, product| {
+        managed_cli_test_setup::ready(product, root, "codex");
+        let registration = register_request();
+        assert!(String::from_utf8(product.register_user_instance(&registration).unwrap())
+            .unwrap().contains("\"status\":\"APPLIED\""));
+        let update = Statement::prepare(product.connection.as_ptr(),
+            "UPDATE main.gogoke_v37_instances SET login_state='LOGGED_IN' WHERE instance_id='instanceA'")
+            .unwrap();
+        update.step_done().unwrap();
+
+        let login = product.dispatch_user_request(
+            &instance_request("login-state", "loginForgedA", "instanceA", "1"),
+        ).unwrap();
+        let login = String::from_utf8(login).unwrap();
+        assert!(login.contains("\"status\":\"UNKNOWN\""), "{login}");
+        assert!(login.contains("\"state\":\"UNKNOWN\""), "{login}");
+        assert!(login.contains("\"previousRevision\":\"1\""), "{login}");
+        assert!(login.contains("\"revision\":\"1\""), "{login}");
+        remove_instance_home(root);
     });
 }

@@ -1,0 +1,49 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "checkpoint": "L0-H-FIRST-HELPER-C78902BD",
+  "recorded_utc": "2026-09-29T18:55:24Z",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "state": "L0_M1_IN_PROGRESS_NOT_ACCEPTED",
+  "authorization": {
+    "owner_merged_pr": 53,
+    "authorized_origin_main": "e2f0c57853b1fca6bc4d6dcbca0185b57baf452f",
+    "manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d",
+    "plan_revision": "PR #55 remains open at 856480935cd999c9658b02993c166fbd3c29acc4; focused audit comment https://github.com/taiyun668/gogoke/pull/55#issuecomment-5894355857 still needs Claude's two corrections. Revised authorization PR not started."
+  },
+  "cloud_run": {
+    "run_id": 36613280943,
+    "source_sha": "c78902bdb0f76f6089bb341088ce26690fec782a",
+    "source_equivalence": "Native code and native workflow bytes are identical to ddc58ca813300b2c98bb99123c0fa780d3989038; c78902bd added only the pause checkpoint.",
+    "runner": "Windows win25-vs2026, not Owner Win11 product proof",
+    "release_build": "PASS",
+    "native_library": "490 passed, 1 failed, 0 skipped; baseline LOCAL path still fails",
+    "test_only_registryRead_directory": "PASS",
+    "test_only_registryRead_LOCAL_pipe": "FAIL, helper pipe open Win32 2",
+    "test_only_registryRead_unqualified_pipe": "FAIL; first helper exit 101 was captured by the new assertion, whereas a separate ProcMon replay of the same test exited 0. This is not a stable pass and the exact child stderr was not captured in this run.",
+    "machine_result_sha256": "a80e64768ccfdb7b4d27b2ad999085dd651e0f1a52bb10dac62d4670f3842363",
+    "procmon_summary_sha256": "0019e96bab56ff97581b79f286126c649e170f7af00ccaa17249402142cd393e",
+    "cdb_summary_sha256": "e74c5521a849ee1523533cd31603683cc72531be34bef87a2e2d3a78c7d55c50"
+  },
+  "next_direct_evidence": {
+    "source_sha": "a651d075",
+    "cloud_run_id": 36615461693,
+    "change": "Capture the first helper's stderr on its same launch and include it in the failing assertion; no production release behavior changed.",
+    "state": "RUNNING_OR_QUEUED_AT_CHECKPOINT"
+  },
+  "inbox": {
+    "branch": "control/gogoke-s1-r4-inbox",
+    "head": "b4f7e866029b8c5a9a1211100effadf01a03ffbc",
+    "result": "unchanged at natural checkpoint boundary"
+  },
+  "verification": {
+    "real_codex_seat": "NOT_RUN",
+    "ot4_login": "NOT_REQUESTED",
+    "m1": "NOT_COMPLETE",
+    "m2": "NOT_RUN",
+    "m3": "NOT_RUN",
+    "formal_data_touched": false,
+    "self_acceptance": false
+  },
+  "next": "Read cloud run 36615461693 and its direct child stderr. Recheck a new PR #55 head only after Claude revision; Owner merges plan, then Controller creates a separate new MANIFEST-bound authorization PR, Owner merges, and Controller reads it back before L0 product changes. OT3 cap values remain 4 and 4 for later persistence. This checkpoint is not a stop."
+}

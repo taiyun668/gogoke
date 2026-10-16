@@ -33,6 +33,11 @@ export function SettingsNav({
   return (
     <aside className="settings-sidebar">
       <PanelNavList className="settings-nav-list">
+        <PanelNavItem className="settings-nav" icon={<Layers aria-hidden />}
+          active={activeSection === "instances"} showDisclosure={showDisclosure}
+          onClick={() => onSelectSection("instances")}>
+          {label("instances")}
+        </PanelNavItem>
         <PanelNavItem
           className="settings-nav"
           icon={<LayoutGrid aria-hidden />}

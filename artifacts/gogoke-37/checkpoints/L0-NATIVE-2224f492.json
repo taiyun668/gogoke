@@ -1,0 +1,42 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "checkpoint": "L0-NATIVE-2224f492",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "source_head_before_checkpoint": "2224f4924de88a27d93a87620616b05659fb429a",
+  "state": "L0_REAL_NATIVE_SLICES_PARTIAL_M1_NOT_RUN",
+  "authorization": {
+    "owner_merged_pr": 53,
+    "authorized_origin_main": "e2f0c57853b1fca6bc4d6dcbca0185b57baf452f",
+    "receipt_blob": "90361681cb25cd8f7c5071ebe775a6ea11a41e24",
+    "manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d"
+  },
+  "current_pr": { "number": 54, "state": "DRAFT", "remote_head_before_push": "b86cc9b7a64d7f4c26e3cb94f1a65e4363949b96" },
+  "completed_this_segment": [
+    "Native-only closed v37 request/receipt parser retains exact received request bytes; old same-user Node service pipe still refuses v37 operations.",
+    "F global instance schema is initialized after Owner issuer verification and rejects partial, changed, TEMP-shadowed or side-effect schema objects.",
+    "F native persistent-home preparation and global registration journal were added with exact request replay checks, physical marker reconciliation and revision-bound observations; no live caller is wired.",
+    "H process launcher now accepts a complete explicit child environment without changing legacy default behavior.",
+    "H AppContainer/LPAC process attribute and suspended-token package-SID verification primitive is committed but has no admitted v37 product caller or directory ACL grant yet.",
+    "New native instance and wire paths preserve original error causes on commit uncertainty, root inspection and parsing."
+  ],
+  "cloud_evidence": {
+    "8d8840aa_native_server": { "run": 36556544981, "conclusion": "SUCCESS" },
+    "0d6e58a8_native_server": {
+      "run": 36557124184,
+      "server": "SUCCESS",
+      "native": "FAILURE_IN_ONE_EXISTING_FOCUSED_PROBE",
+      "direct_failure": "The legacy descendant-Job probe reached its 5-second marker deadline while the process had not exited and the Job reported two active processes; the PowerShell entry marker was absent. The complete native library suite still passed. This is a test timing observation, not proof of a product regression."
+    },
+    "b86cc9b7_native_server": { "run": 36558500002, "conclusion": "SUCCESS", "native_library_tests": "421 passed, 0 failed, 0 ignored", "focused_failure_probes": "PASS" },
+    "f65fa252_and_2224f492_native_server": "PENDING_PUSH_AND_CLOUD"
+  },
+  "verification": {
+    "real_native_v37_dispatch": "NOT_IMPLEMENTED",
+    "real_permission_grants_and_denial": "NOT_RUN",
+    "real_codex_instance": "NOT_PREPARED",
+    "ot4_login": "NOT_REQUESTED",
+    "m1_acceptance": "NOT_RUN"
+  },
+  "next": "Continue H native origin binding, measured AppContainer filesystem grants, F temporary-home lifecycle, B1 real Codex app-server transport, and A/C/E M1 lines. Run exact-head cloud checks on the new native source before any product claim. Prepare the real Codex instance and request OT4 only when its foreground login can be identified. Do not merge PR 54 or self-accept."
+}

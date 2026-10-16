@@ -1,0 +1,51 @@
+{
+  "schema": "gogoke.37.stable-checkpoint.v1",
+  "stage": "M1_ACTUAL_COMPLETE_M2_PROVIDER_CACHE_FIX_IN_PROGRESS",
+  "acceptance": false,
+  "source": {
+    "product": "300ddf7099599de8e8ebf2ea3eb4d0c900dd390f",
+    "qualifiedTests": "250f6950b0388668e93a8a30fa3ddb1e0ac1cdc1",
+    "installedVersion": "0.1.31",
+    "cliVersion": "0.160.0"
+  },
+  "changed": "已安装冻结候选完成同一原 Codex 实例真实端到端；用原始协议实际 home 与 SQLite 路径补齐记忆观测，未改固定 CLI、权限边界或验收门。",
+  "results": [
+    "两个逻辑会话、三次真实工具新文件；原生提问与回答、同轮插话消费、compact、renew、正常关闭重开 resume 均已独立核原件。",
+    "五代真实 STOPPED，两次准入释放，两次正常退出；原五条 UNKNOWN/空 StopFact 逐列保留。独立从任务实际退出 0 核旧记录保全断言完成。",
+    "333 入站、46 出站、208 normalized 与原订阅机械对应；compact 同一原请求有 25 UNKNOWN 和 1 REPLAYED，仅一次 vendor compact，未发第二个补偿命令。",
+    "两个真实 CODEX_HOME 在实例目录内均无记忆存储；五个实例目录外临时 SQLite 库的记忆任务与产出均为 0。固定 CLI 无条件初始化 SQLite/DDL，与记忆生成不是同一对象；五代原配置开关全 false。",
+    "正式版五组保护项未变；记忆只读计数过程中原 DB/WAL/SHM 字节未变。无凭据内容读取，无新登录。",
+    "M2 三家原已登录实例的席位/工作树准备通过；Claude model open 在创建进程前被严格 home 树检查拒绝。原产品实际释放未启动 claim 后正常退出 0，不伪造 STOPPED。"
+  ],
+  "cloud": {
+    "desktop": 37396930954,
+    "nativeQualifiedTestSource": 37391740228,
+    "candidateSigning": 37401351341,
+    "sameByteInstalledSmoke": 37401537201,
+    "frozenArtifact": 11383689807,
+    "signedArtifact": 11385317433,
+    "hygiene": 37404341198
+  },
+  "evidenceSha256": {
+    "m1-full-actual-e2e.json": "fd48ff0bfe018c02857600ee0cbac1e90074fa4b6cea9aa0e5c53308839e9f60",
+    "m1-full-direct-readback.json": "20b6b64572c4f0581de1bd805e84af6587250a5b3f61b6083e148e89db838171",
+    "m1-stable31-independent-actual-review.json": "5545aeaffeaa715e33d52012ad252e114de1d0a98b3eb6ca8f7060859ec0538b",
+    "m1-memory-focused-review.json": "664cbe3cc06bf8f76435e5976e53de3ba950e939ee0617bc19d570751c157586",
+    "actual-effective-memory-stores-summary.json": "16f022e1541df201e450ec3b85348056e159f0c0edbe649af60107da051f3db7",
+    "codex-protocol-golden31.json": "8fd4c48a861656ac52f995db142a942fee348fe72ea3c72a0cd206e91c9bab2a",
+    "empty-directory-audit.json": "b75a567acbbabd6a951033d08e4c0efa9d1d965a537e11f774c3fbfce44654a4",
+    "empty-directory-cleanup-result.json": "c99b27c87e65fae271873cbab57e155dfba5a84a07dbde62ed98e3ea3cf72efd"
+  },
+  "nonclaims": [
+    "Controller 技术结算不等于 Owner 验收或公开发布。",
+    "记忆没有补造运行前实际路径快照；源哈希不变只证明只读观测期间。临时库的初始化存在不改写成从未创建。",
+    "V04b/V10 与其余 M2/M3 未结算；B5 保留 UNSUPPORTED/NOT_RUN。"
+  ],
+  "failureOriginal": "M2 Claude: native session launch [grant-model-home]: DirectoryNotPhysical; uncreated credential settlement: Ok(()). 实际 Windows 句柄元数据仅一个生成缓存 junction 不符合 strict tree。第一次 DirEntry links=0 是仪器字段未提供真实链接数，已用原 Win32 handle NumberOfLinks 验仪器并保留初稿；不把误判当产品问题。",
+  "reference": [
+    "沿用 m1-win11/product-cdp、原 H stop/准入释放、封存账本和协议黄金样本。",
+    "固定 upstream commit a956835d020762cb2b570053af06f643a11c0ecc 的 StateRuntime 初始化与 MemoryTool 关闭分支，独立核官方原件。",
+    "Provider 修复复用既有 v37_login_cache 的精确生成 junction、no-follow 句柄、原 home 身份和删除后回读，保持通用严格树检查。"
+  ],
+  "next": "独占分支补 Provider login/status 的 durable stop 后缓存入口清理，独立复核并云测；稳定点用完整链继续真实三家模型、旁聊、规则、工作树与跨项目边界。无需新登录，不自行验收。"
+}

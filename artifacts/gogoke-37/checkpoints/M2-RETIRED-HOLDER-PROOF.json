@@ -1,0 +1,33 @@
+{
+  "schema": "gogoke.37.stage-checkpoint.v1",
+  "state": "ONE_ROUND_ORIGINAL_RECOVERY_FAILED_OLD_ROUTE_STOPPED",
+  "changed": "PR66 independently reviewed and Controller-merged under Owner's same-scope detail authorization. Native class3 BootTime and exact original PID/creation-time disappearance replace BCD-entry GUID inequality. Each ACL begin/prewrite/finish binds a sealed native proof to the original captured pairs and reobserves it. Existing capture fields, UNKNOWN/null proofs and COMMITTED reservation are retained; no STOPPED is manufactured.",
+  "plan_main": "82ede44aad5f59499138444e973dd5bf5360b97a",
+  "scope_digest": "e77f7348b84e6b30c27976383c80ab8163c915174d29d22c5274087d3be0fbe0",
+  "receipt": "v2 unchanged",
+  "frozen_source": "32b1420c685d7241795d59c13f12e636956dbe03",
+  "qualification_source": "208bd00525b5806158e2e400550d834f72f36cf7",
+  "result": "Cloud frozen/repro build, hygiene, trusted candidate signature and same-byte installed smoke passed. Native qualification: 689 library tests and 2 LPAC shim tests passed, no skips; focused/security mutation/server checks were NOT_RUN in the full_library_only qualification. Ordinary Win11 actual 0.1.25 installer exited 0, exact installed hashes and original root/home/instance identity passed. The exact original retained open was sent once. HOME and BASELINE ACL journal steps are APPLIED using boot-start:01dd547c1c1810c0, but subsequent account-scope preparation still refused before any model process. This is recovery FAIL, not E2E PASS. Normal caption close exited 0. Immutable readback preserved all original fence capture fields and all 35 exact custody rows, including 2 UNKNOWN/null stop proofs; original claim remains COMMITTED generation 3 with no process episode. Journal CAS revision advanced from 1 to 5; captured boot GUID and snapshot were not rewritten. Root/home/instance metadata and all five formal protection groups remain unchanged.",
+  "cloud_runs": {
+    "native_qualification": 37263981908,
+    "desktop_frozen": 37263679228,
+    "hygiene": 37263984476,
+    "trusted_candidate_sign": 37271536579,
+    "same_byte_installed_smoke": 37271715323
+  },
+  "original_error": "GOGOKE_DESIGN37_NATIVE_USER_OPERATION_FAILED:ERR V37StoreFailure(\"login isolation preparation: Invalid(\\\"legacy account scope requires original stopped observer custody\\\"); cleanup: Ok(())\")",
+  "cause": "The original installed open reaches migrate_owner_account_scope after the two legacy ACL steps. Its separate query still rejects any global custody row without STOPPED and a stop proof. The preserved UNKNOWN rows satisfy that rejection. The holder-disappearance proof fixed baseline recovery but did not replace this separate account-scope prerequisite. No second repair round is attempted under Owner's explicit one-round decision.",
+  "private_evidence_sha256": {
+    "actual_e2e_failure_and_normal_exit": "e176c1f2a2ed86ef331592302903589cf6a943dc8579a43b514a7b5280ca7331",
+    "normal_caption_close": "d6ec7d54b7062afc2838af1fdb31e652136d308dd10b2370549224aebc5e30ab",
+    "immutable_original_fence_custody_claim_readback": "f016b42f2f19b82cfcdf3f570e62551b9cc75c6714a0ba5b8999c895562408a5",
+    "original_identity_and_formal_preservation": "d4d096060f823c5315b7d37bd32c1d637065b92d617bc472aa9ba14573e30a3a"
+  },
+  "cleanup": "Fresh independent exact-object audit approved 1114 empty candidate directories, zero files. Ordinary Limited cleanup rechecked each physical identity and emptiness and read back every directory ABSENT. Actual old candidate retirement and replacement preserved original data. Task-owned native/plan worktrees were removed after clean-state checks; their committed branches and reviews remain. Private evidence and original instance remain retained for the failed-route handoff.",
+  "preserved_failure": "Initial focused test compilation at32b1420c failed E0599: test fixture called nonexistent RootLock.identity(). Fixed only cfg(test) to obtain root identity from the verified connection. Independent review confirms exact production-prefix equality and no other apps/third_party changes. This does not claim equal PE bytes across commit headers. Earlier integration desktop run and old full-library run were cancelled when their ref/fixture could not satisfy the original signing or qualification path; no candidate signature/installation was replayed.",
+  "next": "Report this actual one-round failure first. Stop the old-instance recovery route and preserve its instance, credentials, fence, custody, claim and private raw evidence. After the report, prepare a new instance whose Codex login joins existing OT4b in the same Owner login touchpoint. New instance preparation has NOT_STARTED; no additional restart or login requested now. Other provider and remaining M2 E2E cases are NOT_RUN, not accepted.",
+  "references": "Existing process/windows.rs process creation identity and held-handle lifetime, instance legacy two-step journal and native ACL reconciler; gogo-party/NaveHQ/LoomOS and repository research checked for reuse. Pinned phnt/System Informer class3 BootTime declaration/use and Microsoft OpenProcess/GetProcessTimes/WaitForSingleObject documentation. Reused actual candidate sign/preflight, ordinary Interactive/Limited and original retained-request E2E. New native proof is only the Owner-authorized exact-holder disappearance criterion, not a general stop or cleanup authority.",
+  "route_reflection": "The real installed open exposed a separate account-scope gate that the focused baseline fixture and source audit did not cover. Source-level baseline PASS cannot establish end-to-end recovery. Follow Owner's bounded route rather than another repair/build/install loop. A read-only preservation observer initially assumed a step column named state and failed KeyError; the actual schema uses phase. That measurement was corrected to emit original rows verbatim and rerun without resending any product request. Signing retained one frozen production source; the compile-fixture correction remained cfg(test) only.",
+  "acceptance": false,
+  "public_release": false
+}

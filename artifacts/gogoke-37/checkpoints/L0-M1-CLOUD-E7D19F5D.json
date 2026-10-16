@@ -1,0 +1,43 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "checkpoint": "L0-M1-CLOUD-E7D19F5D",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "state": "L0_M1_IN_PROGRESS_NOT_ACCEPTED",
+  "authorization": {
+    "owner_merged_pr": 53,
+    "authorized_origin_main": "e2f0c57853b1fca6bc4d6dcbca0185b57baf452f",
+    "manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d"
+  },
+  "cloud_run": {
+    "run_id": 36589249733,
+    "source_head": "e7d19f5df810cf1e8ae5d97b8d69e215b9150149",
+    "server_job": "PASS",
+    "native_release_build": "PASS",
+    "native_axes": "PASS",
+    "native_lib_tests": "480 passed, 2 failed, 0 skipped, 482 executed",
+    "failures": [
+      "process::windows::tests::real_app_container_descendant_reaches_native_seat_pipe",
+      "store::seat::tests::legacy_bound_seat_migrates_without_losing_identity_or_binding"
+    ],
+    "lpac_direct_result": "Exact LPAC parent read and execute-open both helper and signed system image; SEC_IMAGE mapping succeeded for both. Command and direct CreateProcessW returned Win32 error 5 for both, while process child policy flags were zero. The child did not reach the native seat pipe.",
+    "procmon_result": "Valid Microsoft ProcMon 4.11 captured the exact test. Its parent trace records Process Create SUCCESS for the attempted images before the API returns error 5. The selected denied registry and root-directory reads do not by themselves establish the failing stage. The full private trace was not uploaded; the sanitized summary is in the native evidence artifact.",
+    "measurement": "ProcMon diagnostic step exited successfully after its validated summary. A follow-up change extracts created child PID events from the same trace to determine whether process initialization failed after kernel creation; this is not yet cloud tested.",
+    "seat_failure": "The migration test held a live SQLite statement at close_checked, yielding CloseLedgerMissing. The seat-owned fixture now explicitly drops that statement; the repair is not yet cloud tested."
+  },
+  "implementation": {
+    "ledger": "The raw and normalized cursors are separate; NO_EVENT resolution and raw replay tests passed in this cloud run. Production protocol capture and M1 ledger composition remain unwired.",
+    "seat": "Owner current-profile same-transaction check, bind/change separation and revision CAS are under independent review and require exact-head cloud verification.",
+    "session": "A same-verified-DB durable stdin journal is in construction. Product launch and authentic live Codex session remain unwired."
+  },
+  "verification": {
+    "real_codex_seat": "NOT_RUN",
+    "ot4_login": "NOT_REQUESTED",
+    "m1": "NOT_COMPLETE",
+    "m2": "NOT_RUN",
+    "m3": "NOT_RUN",
+    "formal_data_touched": false
+  },
+  "route_reflection": "The SEC_IMAGE and ProcMon event results rule out an image-open failure but do not identify the later denial. Use the already-captured process-create sequence and child PID events before changing ACL, token, or permissions. Keep the seat fixture failure separate from the LPAC product path.",
+  "next": "Complete independent seat review; read child process outcomes from the exact cloud trace; fix the established cause without broadening the security boundary; compose the native M1 product route and verify its exact bytes in cloud and ordinary Win11 view. Continue after this checkpoint."
+}

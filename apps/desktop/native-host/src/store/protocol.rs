@@ -85,6 +85,7 @@ pub enum ProtocolError {
     Oversize,
     NonCanonical,
     DuplicateKey,
+    V37Unwired,
     UnknownOperation(String),
     ForbiddenField(&'static str),
     MissingOperation,
@@ -135,6 +136,12 @@ pub fn decode_operation_frame(bytes: &[u8]) -> Result<DecodedOperation, Protocol
             let key = parser.parse_string()?;
             if !seen.insert(key.clone()) {
                 return Err(ProtocolError::DuplicateKey);
+            }
+            // The shared Node pipe carries no native-origin seat identity. Do
+            // not let a v37 envelope, even with an unknown schema or a legacy
+            // operation name, fall through to the R2 dispatcher.
+            if matches!(key.as_str(), "schema" | "requestId" | "targetId" | "expectedRevision") {
+                return Err(ProtocolError::V37Unwired);
             }
             if let Some(field) = forbidden_field(&key) {
                 return Err(ProtocolError::ForbiddenField(field));
@@ -511,5 +518,35 @@ mod tests {
             decode_operation_frame(br#"{"operation":"GetReceipt","operation":"GetReceipt"}"#),
             Err(ProtocolError::DuplicateKey) | Err(ProtocolError::NonCanonical)
         ));
+    }
+
+    #[test]
+    fn v37_markers_never_enter_the_legacy_operation_table() {
+        let frames: &[&[u8]] = &[
+            br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"open","requestId":"r","targetId":"s","domainId":"d","expectedRevision":"0","payload":{}}"#,
+            br#"{"operation":"Shutdown","schema":"gogoke.37.operations.v2"}"#,
+            br#"{"operation":"GetReceipt","requestId":"r"}"#,
+            br#"{"schema":false,"operation":"Shutdown"}"#,
+            br#"{"schema":"gogoke.37.operations.v1","operation":"Shutdown","payload":}"#,
+        ];
+        for frame in frames {
+            assert_eq!(decode_operation_frame(frame), Err(ProtocolError::V37Unwired));
+        }
+        assert_eq!(
+            decode_operation_frame(br#"{"operation":"Shutdown"}"#).unwrap().name,
+            "Shutdown"
+        );
+        assert_eq!(
+            decode_operation_frame(br#"{"operation":"GetReceipt"}"#).unwrap().name,
+            "GetReceipt"
+        );
+        assert_eq!(
+            decode_operation_frame(br#"{"family":"legacy","operation":"GetReceipt"}"#).unwrap().name,
+            "GetReceipt"
+        );
+        assert_eq!(
+            decode_operation_frame(br#"{"family":"K-SESSION","operation":"GetReceipt"}"#).unwrap().name,
+            "GetReceipt"
+        );
     }
 }

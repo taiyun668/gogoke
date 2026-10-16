@@ -76,11 +76,26 @@ pub(crate) fn mark_stopped(
     }
     let hash = proof.proof_hash();
     transaction::run(connection, |tx| {
-        tx.write("UPDATE gogoke_coordination_process_custody SET state='STOPPED', stop_proof_hash=? WHERE operation_id=? AND ticket=? AND custodian_nonce=? AND state='ACTIVE'",
+        let prior = tx.query("SELECT pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,COALESCE(stop_proof_hash,'') FROM gogoke_coordination_process_custody WHERE operation_id=? AND ticket=? AND custodian_nonce=?",
+            &[operation_id, proof.ticket.opaque(), &proof.custodian_nonce], 9)?;
+        let expected = [proof.identity.pid.to_string(), proof.identity.creation_time_100ns.to_string(),
+            proof.identity.image_path.to_string_lossy().into_owned(), proof.binding.binary_digest_sha256.clone(),
+            proof.binding.profile_id.clone(), proof.binding.domain_id.clone(), proof.binding.generation.clone()];
+        if prior.len() != 1 || prior[0][..7] != expected {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        if prior[0][7] == "STOPPED" {
+            if prior[0][8] != hash { return Err(OrchestrationError::OperationConflict); }
+        } else {
+        // UNKNOWN conveys uncertain lifecycle, not a lost native handle. An
+        // exact same-custodian stop proof can settle it; a restarted host with
+        // a new nonce cannot use this transition to invent a stop fact.
+        tx.write("UPDATE gogoke_coordination_process_custody SET state='STOPPED', stop_proof_hash=? WHERE operation_id=? AND ticket=? AND custodian_nonce=? AND state IN ('ACTIVE','UNKNOWN')",
             &[&hash, operation_id, proof.ticket.opaque(), &proof.custodian_nonce])?;
         let rows = tx.query("SELECT changes()", &[], 1)?;
         if rows.len() != 1 || rows[0][0] != "1" {
             return Err(OrchestrationError::OperationConflict);
+        }
         }
         let revision = tx.query("SELECT rowid FROM gogoke_coordination_process_custody WHERE operation_id=? AND stop_proof_hash=?",
             &[operation_id, &hash], 1)?;

@@ -1,0 +1,661 @@
+// Independent installed-product entry for M2 V08 rules cases.
+// V12 remains NOT_RUN until its original closed F readback is available.
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { ActualProduct, readJson, sha256, id } from './product-cdp.mjs';
+import { captureProtection, compareProtection as compareSharedProtection, protectionSources } from './installed-protection-observation.mjs';
+import { readManagedCodexSource, observeManagedCodexInstance, checkManagedCodexSeat,
+  checkManagedCodexCapability } from './m2-extra-managed-source.mjs';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const configPath = process.argv[2];
+if (!configPath) throw Error('Private M2 extra config path is required');
+const config = readJson(configPath);
+const atom = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
+const unique = values => new Set(values).size === values.length;
+const inside = (child, parent) => child === parent || child.startsWith(parent + path.sep);
+const formalFields = ['formal', 'registeredFormal', 'formalData', 'formalRegistry', 'shortcuts'];
+
+if (process.platform !== 'win32' || !/^\d+\.\d+\.\d+$/.test(config.version ?? '') ||
+    config.repositoryId !== 'gogokeSeatTestbed' ||
+    !/^[a-f0-9]{40}$/.test(config.sourceCommit ?? '') ||
+    !atom(config.domainId) || !atom(config.instanceId) ||
+    typeof config.installedSha256 !== 'object' || config.installedSha256 === null ||
+    !['installed', 'version', 'installedSha256', 'registryKey', 'pwsh', 'python',
+      'evidenceDirectory', 'result', 'stateRoot', 'testbedSource', 'domainId', 'instanceId',
+      'observers', 'rules'].every(key => config[key] !== undefined) ||
+    config.policyInitialization !== undefined ||
+    !Array.isArray(config.observers) || !['formal', 'memory', 'ledger'].every(name =>
+      config.observers.some(observer => observer.name === name)) ||
+    !formalFields.every(field => config.observers.find(observer => observer.name === 'formal')
+      .equalFields?.includes(field)) ||
+    fs.existsSync(config.result) || !fs.existsSync(config.evidenceDirectory) ||
+    !inside(path.resolve(config.result), path.resolve(config.evidenceDirectory)) ||
+    [config.installed, config.stateRoot, config.testbedSource, path.resolve(here, '..', '..')]
+      .some(root => inside(path.resolve(config.evidenceDirectory), path.resolve(root))) ||
+    path.resolve(config.stateRoot) === path.resolve(config.testbedSource)) {
+  throw Error('Fresh private V08 run with exact installed candidate, testbed, observers, and an existing policy head is required');
+}
+
+const rules = config.rules;
+const crossProjectOnly = rules.selection === 'CROSS_PROJECT_ONLY';
+const hostOnly = rules.selection === 'HOST_BUSY_TO_IDLE_ONLY';
+const recipientReuse = rules.host?.reusePreparedRecipients;
+if (recipientReuse !== undefined && (!hostOnly || !recipientReuse ||
+    Object.keys(recipientReuse).sort().join(',') !== 'originalJournal,originalJournalSha256' ||
+    !path.isAbsolute(recipientReuse.originalJournal ?? '') ||
+    !/^[a-f0-9]{64}$/.test(recipientReuse.originalJournalSha256 ?? '') ||
+    !fs.existsSync(recipientReuse.originalJournal) ||
+    sha256(recipientReuse.originalJournal) !== recipientReuse.originalJournalSha256)) {
+  throw Error('Host recipient reuse requires the exact original preparation journal before launch');
+}
+if (rules.selection !== undefined && !crossProjectOnly && !hostOnly) {
+  throw Error('Unsupported V08 one-axis selection');
+}
+if (hostOnly && (rules.foreignProject !== undefined || rules.host?.busyToIdleOnly !== true ||
+    rules.userPermissionTier !== 'NETWORKED_WRITE' || rules.userMaxConcurrent !== 4 ||
+    rules.projectParallelCap !== 4 || !atom(rules.capReferenceDomainId) ||
+    rules.capReferenceDomainId === config.domainId ||
+    !rules.priorCore13 || !['journal','journalSha256','finalReadback','finalSha256'].every(key =>
+      typeof rules.priorCore13[key] === 'string') ||
+    !/^[a-f0-9]{64}$/.test(rules.priorCore13.journalSha256) ||
+    !/^[a-f0-9]{64}$/.test(rules.priorCore13.finalSha256))) {
+  throw Error('Host-only requires real A cap 4, one busy-to-idle case, and immutable core13 references');
+}
+if (rules.foreignProject !== undefined && (
+    !atom(rules.foreignProject?.domainId) || !atom(rules.foreignProject?.gateId) ||
+    rules.foreignProject.domainId === config.domainId ||
+    typeof rules.foreignProject.ownerGate?.rawFrame !== 'string' ||
+    typeof rules.foreignProject.ownerGate?.rawReceipt !== 'string' ||
+    (crossProjectOnly ? typeof rules.foreignProject.ownerHead?.rawFrame !== 'string' ||
+      typeof rules.foreignProject.ownerHead?.rawReceipt !== 'string' ||
+      Object.keys(rules.foreignProject).sort().join(',') !== 'domainId,gateId,ownerGate,ownerHead' ||
+      Object.keys(rules.foreignProject.ownerHead).sort().join(',') !== 'rawFrame,rawReceipt' :
+      Object.keys(rules.foreignProject).length !== 3) ||
+    Object.keys(rules.foreignProject.ownerGate).length !== 2)) {
+  throw Error('Foreign fixture requires a distinct real domain/gate and original NativeUser Owner bytes');
+}
+if (crossProjectOnly && (rules.foreignProject === undefined || rules.host !== undefined)) {
+  throw Error('CROSS_PROJECT_ONLY requires the original B head/gate bytes and excludes Host cases');
+}
+if (crossProjectOnly && (rules.userPermissionTier !== 'NETWORKED_WRITE' || rules.userMaxConcurrent !== 4 ||
+    rules.projectParallelCap !== 4 || !atom(rules.capReferenceDomainId) ||
+    [config.domainId, rules.foreignProject?.domainId].includes(rules.capReferenceDomainId))) {
+  throw Error('CROSS_PROJECT_ONLY requires USER tier/cap and an exact distinct capacity-reference domain before launch');
+}
+if (crossProjectOnly) {
+  const foreign = rules.foreignProject;
+  const head = JSON.parse(foreign.ownerHead.rawFrame);
+  const headReceipt = JSON.parse(foreign.ownerHead.rawReceipt);
+  const gate = JSON.parse(foreign.ownerGate.rawFrame);
+  const gateReceipt = JSON.parse(foreign.ownerGate.rawReceipt);
+  const exactKeys = (value, names) => value && typeof value === 'object' &&
+    Object.keys(value).sort().join(',') === [...names].sort().join(',');
+  if (!exactKeys(head, ['schema','command','domainId','requestId','stage','expectedRevision']) ||
+      head.schema !== 'gogoke.37.owner-configuration.v1' || head.command !== 'policy-initialize' ||
+      head.domainId !== foreign.domainId || !atom(head.requestId) || !atom(head.stage) || head.expectedRevision !== '0' ||
+      !exactKeys(headReceipt, ['schema','command','requestId','status','revision']) ||
+      headReceipt.schema !== head.schema || headReceipt.command !== head.command ||
+      headReceipt.requestId !== head.requestId || headReceipt.status !== 'APPLIED' || headReceipt.revision !== '1' ||
+      !exactKeys(gate, ['schema','command','domainId','requestId','gateId','submitterSeatId','reviewerSeatId',
+        'fromStage','toStage','rejectCap','expectedRevision']) ||
+      gate.schema !== head.schema || gate.command !== 'policy-gate' || gate.domainId !== foreign.domainId ||
+      gate.gateId !== foreign.gateId || !atom(gate.requestId) || !atom(gate.submitterSeatId) ||
+      !atom(gate.reviewerSeatId) || gate.submitterSeatId === gate.reviewerSeatId || !atom(gate.fromStage) ||
+      !atom(gate.toStage) || gate.fromStage !== head.stage || gate.fromStage === gate.toStage ||
+      !Number.isInteger(gate.rejectCap) || gate.rejectCap < 1 ||
+      gate.expectedRevision !== headReceipt.revision ||
+      !exactKeys(gateReceipt, ['schema','command','requestId','status','revision']) ||
+      gateReceipt.schema !== gate.schema || gateReceipt.command !== gate.command ||
+      gateReceipt.requestId !== gate.requestId || gateReceipt.status !== 'APPLIED' || gateReceipt.revision !== '2') {
+    throw Error('CROSS_PROJECT_ONLY requires complete original NativeUser B initialize/gate frames and APPLIED receipts before launch');
+  }
+  const local = rules.sameScopePolicy;
+  if (!exactKeys(local, ['ownerHead','ownerGate','ownerGrant']) ||
+      !['ownerHead','ownerGate','ownerGrant'].every(name => exactKeys(local[name], ['rawFrame','rawReceipt']) &&
+        typeof local[name].rawFrame === 'string' && typeof local[name].rawReceipt === 'string')) {
+    throw Error('CROSS_PROJECT_ONLY requires the original A NativeUser initialize/gate/REVIEW-grant frames and receipts before launch');
+  }
+  const aHead = JSON.parse(local.ownerHead.rawFrame), aHeadReceipt = JSON.parse(local.ownerHead.rawReceipt);
+  const aGate = JSON.parse(local.ownerGate.rawFrame), aGateReceipt = JSON.parse(local.ownerGate.rawReceipt);
+  const aGrant = JSON.parse(local.ownerGrant.rawFrame), aGrantReceipt = JSON.parse(local.ownerGrant.rawReceipt);
+  if (!exactKeys(aHead, ['schema','command','domainId','requestId','stage','expectedRevision']) ||
+      aHead.schema !== 'gogoke.37.owner-configuration.v1' || aHead.command !== 'policy-initialize' ||
+      aHead.domainId !== config.domainId || !atom(aHead.requestId) || !atom(aHead.stage) || aHead.expectedRevision !== '0' ||
+      !exactKeys(aHeadReceipt, ['schema','command','requestId','status','revision']) ||
+      aHeadReceipt.schema !== aHead.schema || aHeadReceipt.command !== aHead.command ||
+      aHeadReceipt.requestId !== aHead.requestId || aHeadReceipt.status !== 'APPLIED' || aHeadReceipt.revision !== '1' ||
+      !exactKeys(aGate, ['schema','command','domainId','requestId','gateId','submitterSeatId','reviewerSeatId',
+        'fromStage','toStage','rejectCap','expectedRevision']) ||
+      aGate.schema !== aHead.schema || aGate.command !== 'policy-gate' || aGate.domainId !== config.domainId ||
+      !atom(aGate.requestId) || !atom(aGate.gateId) || !atom(aGate.submitterSeatId) || !atom(aGate.reviewerSeatId) ||
+      aGate.submitterSeatId !== rules.submitter.seatId || aGate.reviewerSeatId !== rules.reviewer.seatId ||
+      aGate.fromStage !== aHead.stage || !atom(aGate.toStage) || aGate.toStage === aGate.fromStage ||
+      !Number.isInteger(aGate.rejectCap) || aGate.rejectCap < 1 || aGate.expectedRevision !== aHeadReceipt.revision ||
+      !exactKeys(aGateReceipt, ['schema','command','requestId','status','revision']) ||
+      aGateReceipt.schema !== aGate.schema || aGateReceipt.command !== aGate.command ||
+      aGateReceipt.requestId !== aGate.requestId || aGateReceipt.status !== 'APPLIED' || aGateReceipt.revision !== '2' ||
+      !exactKeys(aGrant, ['schema','command','domainId','requestId','callerSeatId','targetId','action','expiresAtMs','expectedRevision']) ||
+      aGrant.schema !== aHead.schema || aGrant.command !== 'policy-call-grant' || aGrant.domainId !== config.domainId ||
+      !atom(aGrant.requestId) ||
+      aGrant.callerSeatId !== rules.submitter.seatId || aGrant.targetId !== rules.reviewer.seatId ||
+      aGrant.action !== 'REVIEW' || aGrant.expiresAtMs !== null || aGrant.expectedRevision !== aGateReceipt.revision ||
+      !exactKeys(aGrantReceipt, ['schema','command','requestId','status','revision']) ||
+      aGrantReceipt.schema !== aGrant.schema || aGrantReceipt.command !== aGrant.command ||
+      aGrantReceipt.requestId !== aGrant.requestId || aGrantReceipt.status !== 'APPLIED' || aGrantReceipt.revision !== '3') {
+    throw Error('CROSS_PROJECT_ONLY requires exact original A NativeUser policy receipts for the selected caller/reviewer and a permanent REVIEW grant');
+  }
+}
+if (rules.lifecycleOwnership !== 'EXCLUSIVE_V08_SUBMITTER_AND_REVIEWER' ||
+    rules.policyOwnership !== 'EXCLUSIVE_V08_POLICY_DOMAIN') {
+  throw Error('V08 requires the two explicit exclusive ownership values');
+}
+const selections = [rules.submitter, rules.reviewer, rules.host?.destination,
+  rules.host?.alternateDestination].filter(Boolean);
+if (selections.length !== (rules.host ? 4 : 2) ||
+    selections.some(row => !['seatId', 'instanceId', 'worktreeId'].every(key => atom(row[key]))) ||
+    !unique(selections.map(row => row.seatId)) || !unique(selections.map(row => row.worktreeId))) {
+  throw Error('V08 needs two or four distinct precreated Codex seats and fresh worktree IDs');
+}
+if (rules.host && (rules.host.lifecycleOwnership !== 'EXCLUSIVE_V08_HOST_RECIPIENTS' ||
+    !atom(rules.host.busyQuestion?.questionId) ||
+    typeof rules.host.busyQuestion?.optionLabel !== 'string' ||
+    !rules.host.busyQuestion.optionLabel.trim())) {
+  throw Error('V08 Host recipients require their exact ownership marker and nonsecret busy-question fields');
+}
+let closedCore13 = null;
+if (hostOnly) {
+  const ref = rules.priorCore13;
+  for (const [name, key] of [['journal', 'journalSha256'], ['finalReadback', 'finalSha256']]) {
+    if (!fs.existsSync(ref[name]) || sha256(ref[name]) !== ref[key]) {
+      throw Error('Original closed core13 reference is absent or changed');
+    }
+  }
+  const original = readJson(ref.journal), final = readJson(ref.finalReadback);
+  const sources = original.rulesCases?.[0]?.initialSessions;
+  const releases = original.operations?.filter(row => row.request?.family === 'K-SESSION' &&
+    row.request.operation === 'admission-release' && row.receipt?.status === 'APPLIED') ?? [];
+  if (original.rulesCases?.length !== 1 ||
+      original.v08 !== 'IMPLEMENTED_CASES_HAVE_DIRECT_EVIDENCE_V08_INCOMPLETE' ||
+      final.state !== original.v08 || final.directCaseEvidence !== true ||
+      final.acceptance !== false || final.caseId !== original.caseId ||
+      original.domainId !== config.domainId || final.domainId !== config.domainId ||
+      final.sourceCommit !== original.sourceCommit || sources?.length !== 2 ||
+      ![rules.submitter, rules.reviewer].every((selection, index) =>
+        ['seatId', 'instanceId', 'worktreeId'].every(key => sources[index][key] === selection[key])) ||
+      !sources.every(source => releases.some(row => row.request.targetId === source.id))) {
+    throw Error('Host-only requires the two original released A source identities and closed core13 readback');
+  }
+  closedCore13 = { journal: original, final };
+}
+if (config.sideChat) {
+  const side = config.sideChat;
+  const sideSeats = [side.sourceSeatId, side.sideSeatId];
+  const sideTrees = [side.sourceWorktreeId, side.sideWorktreeId];
+  if (side.lifecycleOwnership !== 'EXCLUSIVE_V12_SOURCE_AND_SIDE' ||
+      [...sideSeats, side.sourceInstanceId, side.sideInstanceId, ...sideTrees].some(value => !atom(value)) ||
+      !unique(sideSeats) || !unique(sideTrees) ||
+      sideSeats.some(value => selections.some(row => row.seatId === value)) ||
+      sideTrees.some(value => selections.some(row => row.worktreeId === value))) {
+    throw Error('Deferred V12 selections must remain valid and disjoint from V08');
+  }
+}
+
+const resultPath = path.resolve(config.result);
+const evidencePath = path.resolve(config.evidenceDirectory);
+config.result = resultPath;
+config.evidenceDirectory = evidencePath;
+const journal = {
+  schema: 'gogoke.37.m2-win11-e2e.v1',
+  caseId: id('m2Extra'),
+  sourceCommit: config.sourceCommit,
+  domainId: config.domainId,
+  repositoryId: config.repositoryId,
+  testbedSource: config.testbedSource,
+  state: 'RUNNING',
+  acceptance: false,
+  authenticationActions: false,
+  modelPermissionByUser: false,
+  launches: [],
+  closes: [],
+  operations: [],
+  sessions: [],
+  snapshots: {},
+  extraSnapshots: {},
+  readbacks: [],
+  assertions: [],
+  providerCases: [],
+  providerWorktreePlan: [],
+  sideChatCases: [],
+  rulesCases: [],
+  foreignProject: rules.foreignProject ?? null,
+  rulesSelection: crossProjectOnly ? 'CROSS_PROJECT_ONLY' : hostOnly ? 'HOST_BUSY_TO_IDLE_ONLY' : 'ALL',
+  ...(recipientReuse === undefined ? {} : { hostRecipientReuse: { ...recipientReuse } }),
+  ...((crossProjectOnly || hostOnly) ? { rulesSourceSelection: { ...rules.submitter },
+    rulesUserPermissionTier: rules.userPermissionTier, rulesUserMaxConcurrent: rules.userMaxConcurrent,
+    rulesProjectParallelCap: rules.projectParallelCap,
+    rulesCapacityReferenceDomainId: rules.capReferenceDomainId,
+    ...(crossProjectOnly ? { sameScopePolicy: rules.sameScopePolicy } :
+      { priorCore13: rules.priorCore13 }) } : {}),
+  v12: 'NOT_RUN_ORIGINAL_M2_SIDE_WORKTREE_READBACK_REQUIRED',
+  v08: 'RUNNING',
+};
+if (config.sideChat) {
+  journal.sideChatDeferred = {
+    lifecycleOwnership: config.sideChat.lifecycleOwnership,
+    sourceSeatId: config.sideChat.sourceSeatId,
+    sourceInstanceId: config.sideChat.sourceInstanceId,
+    sourceWorktreeId: config.sideChat.sourceWorktreeId,
+    sideSeatId: config.sideChat.sideSeatId,
+    sideInstanceId: config.sideChat.sideInstanceId,
+    sideWorktreeId: config.sideChat.sideWorktreeId,
+    reason: 'Existing m2-readback side-worktrees reader requires the original M2 child dispatch/merge chain; this entry does not substitute or replay it.',
+  };
+}
+
+const product = new ActualProduct(config, journal);
+journal.protectionInstrument = protectionSources();
+journal.driverBytes['installed-protection-observation.mjs'] = journal.protectionInstrument.module.sha256;
+journal.driverBytes['installed-protection-fields.json'] = journal.protectionInstrument.fieldMap.sha256;
+let managedSource;
+const originalOperation = product.operation.bind(product);
+product.operation = async (...args) => {
+  const receipt = await originalOperation(...args);
+  if (managedSource && args[0] === 'K-SESSION' && args[1] === 'capability-probe') {
+    const session = journal.sessions.find(row => row.id === args[2]);
+    checkManagedCodexCapability(session, receipt);
+  }
+  return receipt;
+};
+delete journal.driverBytes['m1-win11.mjs'];
+delete journal.driverBytes['m1-readback.py'];
+journal.driverBytes['m2-extra-win11.mjs'] = sha256(fileURLToPath(import.meta.url));
+journal.driverBytes['m2-extra-managed-source.mjs'] = sha256(path.join(here, 'm2-extra-managed-source.mjs'));
+journal.driverBytes['m2-rules.mjs'] = sha256(path.join(here, 'm2-rules.mjs'));
+journal.driverBytes['m2-rules-readback.py'] = sha256(path.join(here, 'm2-rules-readback.py'));
+product.save();
+
+const check = (condition, message) => {
+  if (!condition) throw Error(message);
+  if (!journal.assertions.includes(message)) {
+    journal.assertions.push(message);
+    product.save();
+  }
+};
+
+function admittedCodexInstance(page, instanceId, phase) {
+  if (!managedSource) return page.instances.some(row => row.instanceId === instanceId &&
+    row.driverId === 'codex' && row.state === 'LOGGED_IN');
+  const observation = observeManagedCodexInstance(managedSource, page, instanceId);
+  journal.managedSourceRead.uiObservations.push({ phase, ...observation });
+  product.save();
+  return true;
+}
+
+async function snapshot(phase, names = null) {
+  await captureProtection(config.observers, names,
+    name => path.join(evidencePath, `m2-extra-${name}-${phase}-${id('snapshot')}.json`),
+    (name, reference) => { journal.extraSnapshots[`${name}-${phase}`] = reference; product.save(); });
+}
+function snapshotValue(name, phase) {
+  const reference = journal.extraSnapshots[`${name}-${phase}`];
+  check(reference && path.basename(reference.file) === reference.file, `${name}-${phase}: private snapshot reference`);
+  const file = path.join(evidencePath, reference.file);
+  check(sha256(file) === reference.sha256, `${name}-${phase}: original snapshot hash`);
+  return readJson(file);
+}
+
+async function compareSnapshots() {
+  journal.protectionComparison = compareSharedProtection(config.observers, snapshotValue);
+  check(journal.protectionComparison.allEqual, 'Original thirteen protection fields changed');
+  const memory = snapshotValue('memory', 'after');
+  check(memory.memoryDataUnchangedByRead && memory.stage1OutputCount === 0 && memory.memoryJobCount === 0,
+    'Actual memory store unchanged by measurement and without memory jobs');
+}
+
+async function rulesReadback(phase) {
+  const file = `m2-extra-rules-${phase}-${id('snapshot')}.json`;
+  const output = path.join(evidencePath, file);
+  if (fs.existsSync(output)) throw Error(`Original V08 ${phase} readback exists`);
+  await new Promise((resolve, reject) => {
+    const child = spawn(config.python, [path.join(here, 'm2-rules-readback.py'),
+      config.stateRoot, output, resultPath, phase], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-8192); });
+    child.once('error', reject);
+    child.once('exit', code => code === 0 ? resolve() :
+      reject(Error(`Original V08 ${phase} readback exit=${code}: ${stderr}`)));
+  });
+  const value = readJson(output);
+  check(value.measurementPreservedDatabaseBytes === true && value.databaseWrites === false &&
+    value.credentialReads === false, `V08 ${phase}: immutable original measurement`);
+  check(phase !== 'final' || value.directCaseEvidence === true,
+    'V08 final readback requires direct case evidence');
+  const reference = { file, sha256: sha256(output) };
+  journal.readbacks.push({ phase: `rules-${phase}`, ...reference });
+  product.save();
+  return reference;
+}
+
+async function seatCard(seatId) {
+  let reply = await product.operation('K-SEAT', 'state-card', seatId, {}, '0', ['APPLIED', 'STALE']);
+  if (reply.status === 'STALE') {
+    reply = await product.operation('K-SEAT', 'state-card', seatId, {}, reply.revision);
+  }
+  return reply;
+}
+
+async function sessionOp(session, operation, payload = {}, allowed = ['APPLIED']) {
+  const reply = await product.operation('K-SESSION', operation, session.id,
+    { generation: session.generation, ...payload }, session.revision, allowed);
+  session.revision = reply.revision;
+  if (reply.result?.newGeneration) session.generation = reply.result.newGeneration;
+  product.save();
+  return reply;
+}
+
+async function openUserSession(seatId, instanceId, worktreeId, label) {
+  const card = await seatCard(seatId);
+  if (managedSource) {
+    journal.managedSourceRead.requestSettings.push({ seatId, requestId: card.requestId,
+      ...checkManagedCodexSeat(card) });
+    product.save();
+  }
+  check(card.result.state === 'IDLE' && card.result.instanceId === instanceId,
+    `${label}: actual original User E seat is IDLE and bound`);
+  const session = { id: id('m2ExtraSession'), seatId, instanceId, worktreeId,
+    generation: (BigInt(card.result.generation) + 1n).toString(), revision: '0', cursor: '0',
+    events: [], turns: [] };
+  journal.sessions.push(session);
+  product.save();
+  await sessionOp(session, 'admission-reserve', { seatId });
+  await sessionOp(session, 'admission-commit', { seatId });
+  const opened = await sessionOp(session, 'open', { seatId, repositoryId: config.repositoryId, worktreeId });
+  session.threadId = opened.result.threadId;
+  product.save();
+  return session;
+}
+
+async function stopUser(session, release) {
+  const stopped = await sessionOp(session, 'stop', { seatId: session.seatId });
+  check(typeof stopped.result.stopFact === 'string' && stopped.result.stopFact.length > 0,
+    `${session.id}: durable actual process stop fact`);
+  if (release) await sessionOp(session, 'admission-release', { seatId: session.seatId });
+  return stopped;
+}
+
+async function prepareRulesWorktree(selection, label) {
+  const card = await seatCard(selection.seatId);
+  check(card.result.state === 'IDLE' && card.result.instanceId === selection.instanceId,
+    `${label}: precreated original User E seat IDLE and instance-bound`);
+  const created = await product.operation('K-WORKTREE', 'create', selection.worktreeId,
+    { repositoryId: config.repositoryId, seatId: selection.seatId, layout: 'single' }, '0');
+  check(created.result.worktreeId === selection.worktreeId && created.result.state === 'CREATED' &&
+    created.result.classification === 'SINGLE', `${label}: original F create receipt`);
+  const registered = await product.operation('K-WORKTREE', 'register', selection.worktreeId, {}, '1');
+  check(registered.result.worktreeId === selection.worktreeId, `${label}: original F register receipt`);
+}
+
+async function reuseRulesWorktree(selection) {
+  const card = await seatCard(selection.seatId);
+  const cardRequestId = journal.operations.at(-1).request.requestId;
+  check(card.result.state === 'IDLE' && card.result.instanceId === selection.instanceId,
+    'Host-only source E must be the original idle, bound USER seat');
+  let tree = await product.operation('K-WORKTREE', 'graph-query', selection.worktreeId,
+    {}, '0', ['APPLIED', 'STALE']);
+  if (tree.status === 'STALE') tree = await product.operation('K-WORKTREE', 'graph-query',
+    selection.worktreeId, {}, tree.revision);
+  check(tree.result.state === 'REGISTERED' && tree.result.members?.some(member =>
+    member.domainId === config.domainId && member.repositoryId === config.repositoryId &&
+    member.seatId === selection.seatId && member.instanceId === selection.instanceId &&
+    member.worktreeId === selection.worktreeId),
+  'Host-only source F must be the existing registered original A worktree');
+  journal.hostSourceReadbacks ??= [];
+  journal.hostSourceReadbacks.push({ selection, cardRequestId,
+    treeRequestId: journal.operations.at(-1).request.requestId });
+  product.save();
+  return card;
+}
+
+async function reusePreparedHostSeat(selection, sourceCard) {
+  const card = await seatCard(selection.seatId);
+  const cardRequestId = journal.operations.at(-1).request.requestId;
+  const fields = ['effort', 'instruction', 'model', 'permissionTier'];
+  check(card.status === 'APPLIED' && card.revision === '2' &&
+    card.result.generation === '2' && card.result.layer === 'USER' &&
+    card.result.kind === 'LONG' && card.result.state === 'IDLE' &&
+    card.result.instanceId === selection.instanceId &&
+    card.result.templateId === sourceCard.result.templateId &&
+    card.result.settings && Object.keys(card.result.settings).sort().join(',') === fields.join(',') &&
+    fields.every(key => card.result.settings[key] === sourceCard.result.settings?.[key]),
+  'Reused Host E must preserve its prepared USER identity and four immutable template fields');
+  let tree = await product.operation('K-WORKTREE', 'graph-query', selection.worktreeId,
+    {}, '0', ['APPLIED', 'STALE']);
+  if (tree.status === 'STALE') tree = await product.operation('K-WORKTREE', 'graph-query',
+    selection.worktreeId, {}, tree.revision);
+  check(tree.status === 'APPLIED' && tree.result.classification === 'SINGLE' &&
+    tree.result.spaceId === selection.worktreeId && tree.result.state === 'REGISTERED' &&
+    tree.result.members?.length === 1 && tree.result.members.every(member =>
+      member.domainId === config.domainId && member.repositoryId === config.repositoryId &&
+      member.seatId === selection.seatId && member.instanceId === selection.instanceId &&
+      member.worktreeId === selection.worktreeId),
+  'Reused Host F must be the exact existing SINGLE registered worktree');
+  journal.hostUserPreparations ??= [];
+  journal.hostUserPreparations.push({ mode: 'REUSE_PREPARED', selection,
+    templateId: card.result.templateId, cardRequestId,
+    treeRequestId: journal.operations.at(-1).request.requestId });
+  product.save();
+}
+
+async function prepareNewHostSeat(selection, sourceCard) {
+  const templateId = sourceCard.result.templateId;
+  const observedSourceSettings = sourceCard.result.settings;
+  check(atom(templateId) && observedSourceSettings && typeof observedSourceSettings === 'object' &&
+    typeof observedSourceSettings.model === 'string' && typeof observedSourceSettings.effort === 'string' &&
+    observedSourceSettings.permissionTier === 'NETWORKED_WRITE' &&
+    selection.instanceId === rules.submitter.instanceId,
+  'Host recipient needs the original USER template identity/source model facts and admitted Codex instance');
+  const created = await product.operation('K-SEAT', 'create-from-template', selection.seatId,
+    { layer: 'USER', templateId }, '0');
+  const createRequestId = journal.operations.at(-1).request.requestId;
+  check(created.status === 'APPLIED' && created.result.layer === 'USER' &&
+    created.result.kind === 'LONG' && created.result.state === 'IDLE' &&
+    created.result.instanceId === null && created.result.templateId === templateId &&
+    created.result.settings?.model === observedSourceSettings.model &&
+    created.result.settings?.effort === observedSourceSettings.effort &&
+    created.result.settings?.permissionTier === observedSourceSettings.permissionTier,
+  'New Host E receipt must preserve the observed original model/effort/tier; full template is checked from immutable metadata');
+  const bound = await product.operation('K-SEAT', 'bind-instance', selection.seatId,
+    { instanceId: selection.instanceId }, created.revision);
+  const bindRequestId = journal.operations.at(-1).request.requestId;
+  check(bound.status === 'APPLIED' && bound.result.instanceId === selection.instanceId &&
+    bound.result.state === 'IDLE' && bound.result.settings?.permissionTier === 'NETWORKED_WRITE',
+  'New Host E must have an original USER bind receipt');
+  await prepareRulesWorktree(selection, 'V08 Host recipient');
+  journal.hostUserPreparations ??= [];
+  journal.hostUserPreparations.push({ selection, templateId, createRequestId, bindRequestId,
+    createWorktreeRequestId: journal.operations.at(-2).request.requestId,
+    registerWorktreeRequestId: journal.operations.at(-1).request.requestId });
+  product.save();
+}
+
+function verifyHostTemplateReadback(baseline) {
+  const sourceReads = journal.hostSourceReadbacks ?? [];
+  const preparations = journal.hostUserPreparations ?? [];
+  const templateRows = baseline.hostTemplateSettings ?? [];
+  const operations = new Map(journal.operations.map(row => [row.request?.requestId, row]));
+  check(sourceReads.length === 2 && preparations.length === 2 && templateRows.length === 1 &&
+    sourceReads[0].selection.seatId === rules.submitter.seatId &&
+    sourceReads[1].selection.seatId === rules.reviewer.seatId &&
+    sourceReads.every(row => typeof row.cardRequestId === 'string'),
+  'Host-only requires two original source USER reads and one immutable template row');
+  const sourceCards = sourceReads.map(row => operations.get(row.cardRequestId));
+  const template = templateRows[0];
+  const settings = template.settings;
+  check(sourceCards.every(row => row?.receipt?.status === 'APPLIED') &&
+    sourceCards.every(row => row.receipt.result.templateId === template.templateId) &&
+    preparations.every(row => row.templateId === template.templateId) &&
+    settings && typeof settings === 'object' &&
+    !Object.hasOwn(settings, 'orchestrationScope') &&
+    settings.permissionTier === 'NETWORKED_WRITE' &&
+    sourceCards.every(row => row.receipt.result.settings?.model === settings.model &&
+      row.receipt.result.settings?.effort === settings.effort &&
+      row.receipt.result.settings?.permissionTier === settings.permissionTier),
+  'Immutable original USER template must bind source model/effort/tier without inheriting current orchestration scope');
+  for (const item of preparations) {
+    if (recipientReuse !== undefined) {
+      const card = operations.get(item.cardRequestId);
+      check(item.mode === 'REUSE_PREPARED' && card?.receipt?.status === 'APPLIED' &&
+        card.request.family === 'K-SEAT' && card.request.operation === 'state-card' &&
+        card.request.targetId === item.selection.seatId &&
+        card.receipt.result.templateId === template.templateId &&
+        JSON.stringify(card.receipt.result.settings) === JSON.stringify(settings) &&
+        baseline.hostRecipientReuse?.state === 'PREPARED_REUSE_CONFIRMED',
+      'Reused Host recipient requires fresh USER read and independently verified original E/F preparation');
+      continue;
+    }
+    const create = operations.get(item.createRequestId);
+    check(create?.receipt?.status === 'APPLIED' &&
+      create.receipt.result.templateId === template.templateId &&
+      JSON.stringify(create.receipt.result.settings) === JSON.stringify(settings),
+    'New Host USER create receipt must exactly copy the immutable original template row');
+  }
+}
+
+async function runRules() {
+  const instancePage = await product.instances();
+  for (const selection of selections) {
+    check(admittedCodexInstance(instancePage, selection.instanceId, 'rules-source'),
+    'V08 uses an already admitted logged-in Codex instance');
+  }
+  journal.v08 = 'RUNNING';
+  journal.driverBytes['m2-rules.mjs'] = sha256(path.join(here, 'm2-rules.mjs'));
+  journal.driverBytes['m2-rules-readback.py'] = sha256(path.join(here, 'm2-rules-readback.py'));
+  product.save();
+
+  let baselineReadback = null;
+  if (crossProjectOnly) {
+    await product.closeNormally();
+    baselineReadback = await rulesReadback('before');
+    const baseline = readJson(path.join(evidencePath, baselineReadback.file));
+    journal.crossProjectQualification = baseline.sameScopeQualification ?? null;
+    if (baseline.sameScopeQualification?.state !== 'QUALIFIED_SAME_SCOPE_GATE_SUBMIT') {
+      journal.v08 = 'NOT_RUN_CROSS_PROJECT_SAME_SCOPE_AUTHORIZATION_MISSING';
+      journal.state = 'V08_NOT_RUN_CROSS_PROJECT_CALLER_NOT_QUALIFIED_IN_A';
+      journal.crossProjectQualificationStatus = baseline.sameScopeQualification?.state ?? 'UNKNOWN';
+      product.save();
+      return;
+    }
+    await product.launch();
+    await product.instances();
+  }
+  if (hostOnly) {
+    const sourceCards = [];
+    for (const selection of [rules.submitter, rules.reviewer]) {
+      sourceCards.push(await reuseRulesWorktree(selection));
+    }
+    check(sourceCards[0].result.templateId === sourceCards[1].result.templateId &&
+      JSON.stringify(sourceCards[0].result.settings) ===
+        JSON.stringify(sourceCards[1].result.settings),
+    'The two original A source seats must share the proven USER template settings');
+    for (const selection of [rules.host.destination, rules.host.alternateDestination]) {
+      if (recipientReuse !== undefined) await reusePreparedHostSeat(selection, sourceCards[0]);
+      else await prepareNewHostSeat(selection, sourceCards[0]);
+    }
+  } else {
+    for (const selection of selections) await prepareRulesWorktree(selection, 'V08');
+  }
+  if (!baselineReadback) await product.closeNormally();
+  if (!baselineReadback) baselineReadback = await rulesReadback('before');
+  if (hostOnly) {
+    const baseline = readJson(path.join(evidencePath, baselineReadback.file));
+    verifyHostTemplateReadback(baseline);
+  }
+  if (!crossProjectOnly) {
+    await product.launch();
+    await product.instances();
+  }
+  const submitterSession = await openUserSession(...['seatId', 'instanceId', 'worktreeId']
+    .map(name => rules.submitter[name]), 'V08 submitter');
+  const reviewerSession = await openUserSession(...['seatId', 'instanceId', 'worktreeId']
+    .map(name => rules.reviewer[name]), 'V08 reviewer');
+  const { runRulesCase } = await import('./m2-rules.mjs');
+  const record = await runRulesCase(product, { ...config, rules: { ...rules,
+    baselineReadback, submitterSession, reviewerSession,
+    priorCore13Snapshot: closedCore13?.final,
+    hostCheckpoint: async () => {
+      await product.closeNormally();
+      const reference = await rulesReadback('checkpoint');
+      await product.launch();
+      await product.instances();
+      return reference;
+    },
+    openHostSession: row => openUserSession(row.seatId, row.instanceId, row.worktreeId, 'V08 Host recipient'),
+    resumeRulesSession: async session => {
+      const originalThread = session.threadId;
+      const receipt = await sessionOp(session, 'resume');
+      check(receipt.result.state === 'RUNNING' && receipt.result.newGeneration &&
+        (!receipt.result.threadId || receipt.result.threadId === originalThread),
+      'V08 resume preserves the original native logical thread');
+      session.cursor = '0';
+      product.save();
+    },
+    stopRulesSession: session => stopUser(session, false),
+    releaseStoppedRulesSession: session => sessionOp(session, 'admission-release', { seatId: session.seatId }),
+  } }, journal);
+  check(record.state === 'FLOW_COMPLETE_DIRECT_LEDGER_READBACK_REQUIRED',
+    'V08 original flow completed and requires independent readback review');
+  await stopUser(submitterSession, true);
+  await stopUser(reviewerSession, true);
+  await product.closeNormally();
+  await snapshot('after');
+  await compareSnapshots();
+  await rulesReadback('final');
+  journal.v08 = 'IMPLEMENTED_CASES_HAVE_DIRECT_EVIDENCE_V08_INCOMPLETE';
+  journal.state = 'RULES_FLOW_COMPLETE_DIRECT_READBACK_REVIEW_REQUIRED';
+  product.save();
+}
+
+try {
+  await snapshot('before');
+  // Check the current closed DB before the first launch can change its bytes.
+  managedSource = readManagedCodexSource(config);
+  if (managedSource) {
+    journal.managedSourceRead = { ...managedSource, uiObservations: [], requestSettings: [] };
+    product.save();
+  }
+  await product.launch();
+  const instances = await product.instances();
+  check(admittedCodexInstance(instances, config.instanceId, 'initial'),
+  'Original admitted Codex instance is logged in');
+  check(journal.v12 === 'NOT_RUN_ORIGINAL_M2_SIDE_WORKTREE_READBACK_REQUIRED',
+    'V12 remains NOT_RUN until its original M2 F readback exists');
+  await runRules();
+} catch (error) {
+  journal.state = 'FAIL_ORIGINAL_REQUESTS_RETAINED';
+  journal.error = String(error?.stack ?? error);
+  if (journal.v08 === 'RUNNING') journal.v08 = 'FAIL_ORIGINAL_CASE_RETAINED';
+  journal.currentEndpoint = product.endpoint ?? null;
+  product.save();
+  process.exitCode = 1;
+  try { await product.preserveFailure(); }
+  catch (preserveError) {
+    journal.preserveError = String(preserveError?.stack ?? preserveError);
+    product.save();
+  }
+  // Formal objects are outside the active candidate. Observe them even when
+  // the original model/stop failed; never close or replay that request here.
+  try {
+    await snapshot('failure-after', ['formal']);
+    const before = snapshotValue('formal', 'before'), after = snapshotValue('formal', 'failure-after');
+    for (const field of formalFields) check(Object.hasOwn(before, field) && Object.hasOwn(after, field) &&
+      JSON.stringify(before[field]) === JSON.stringify(after[field]), `failure: formal unchanged ${field}`);
+    journal.failureFormalProtection = 'FIVE_GROUPS_UNCHANGED';
+  } catch (observerError) {
+    journal.failureFormalProtection = 'FAILED_OR_UNAVAILABLE';
+    journal.failureFormalObservationError = String(observerError?.stack ?? observerError);
+  }
+  product.save();
+}

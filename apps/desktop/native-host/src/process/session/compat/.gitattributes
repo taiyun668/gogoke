@@ -1,0 +1,4 @@
+# Preserve the exact upstream source and hash-manifest bytes on all checkouts.
+* text eol=lf
+vendor/** -text
+VENDOR_SHA256SUMS -text

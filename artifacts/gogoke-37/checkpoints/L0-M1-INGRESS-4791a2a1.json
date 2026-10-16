@@ -1,0 +1,38 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "checkpoint": "L0-M1-INGRESS-4791a2a1",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "source_head_before_checkpoint": "4791a2a1aaa798f22471ca4e4ce88d9c3ca4b50d",
+  "state": "L0_NATIVE_SLICES_PARTIAL_M1_NOT_RUN",
+  "authorization": {
+    "owner_merged_pr": 53,
+    "authorized_origin_main": "e2f0c57853b1fca6bc4d6dcbca0185b57baf452f",
+    "receipt_blob": "90361681cb25cd8f7c5071ebe775a6ea11a41e24",
+    "manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d"
+  },
+  "current_pr": { "number": 54, "state": "DRAFT", "remote_head": "4791a2a1aaa798f22471ca4e4ce88d9c3ca4b50d" },
+  "completed_source_slices": [
+    "F persistent instance registry and SID-bound temporary home CREATE state machine are committed; CLOSE and CLEANUP are still in construction",
+    "H explicit AppContainer identity, network capability, fresh-directory grant, durable admission state machine and stop/fence primitives are committed",
+    "A native single-ledger schema, B1 pinned Codex adapter and C inbox/question-card state modules are committed but product dispatch is not wired",
+    "L0 initializes F/A/H/C schemas after the verified Owner profile on the same product connection",
+    "A separate seat named-pipe primitive checks current user and exact AppContainer package SID; production does not yet listen on it",
+    "The server cloud test harness now selects the discovered test-file set instead of a stale fixed count"
+  ],
+  "cloud_evidence": {
+    "a196204d": { "run": 36562032810, "native": "SUCCESS", "server": "FAIL_INSTRUMENT_FIXED_FILE_COUNT", "server_assertions": "617_PASS_0_FAIL_0_SKIP" },
+    "cdfd0910": { "run": 36563016154, "server": "SUCCESS", "native": "LIB_COMPILE_FAILURE_TEST_CLOSURE_LIFETIME", "direct_failure": "12 FnOnce not general enough errors in H admission state-machine test callback; corrected in 4791a2a1" },
+    "4791a2a1": { "run": 36563597440, "state_at_checkpoint": "IN_PROGRESS" }
+  },
+  "verification": {
+    "real_v37_native_seat_dispatch": "NOT_IMPLEMENTED",
+    "real_codex_app_server_and_mcp_bridge": "NOT_IMPLEMENTED",
+    "real_codex_instance": "NOT_PREPARED",
+    "ot4_login": "NOT_REQUESTED",
+    "m1_acceptance": "NOT_RUN"
+  },
+  "logical_boundary": "Child stdout is output provenance only. Seat operations need a separate native-owned origin channel; a Node-selected caller, pipe path, service capability or ticket cannot establish seat authority. Exact package SID is one origin fact and must be joined to current seat/generation/process custody and grant for every operation.",
+  "work_in_progress_at_checkpoint": "F owns an uncommitted follow-up in store/instance/temporary.rs for CLOSE and CLEANUP; no uncommitted bytes are included in this source-head claim.",
+  "next": "Read exact-head cloud result, repair product or test failures, finish F stop/fence cleanup and native seat ingress with same-connection serialization, then build a real Codex 0.149.0 app-server plus stdio MCP bridge and prepare OT4 only when the actual foreground login page can be proven. Continue through checkpoints under Owner's PR 53 authorization; keep PR 54 draft and do not self-accept."
+}

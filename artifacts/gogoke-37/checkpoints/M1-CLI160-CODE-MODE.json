@@ -1,0 +1,41 @@
+{
+  "schema": "gogoke.37.checkpoint.v1",
+  "state": "REAL_WIN11_E2E_PRIMARY_FIXED_COMPONENT_SAFETY_CLOUD_PENDING",
+  "changed": [
+    "普通 Interactive/Limited 视图已安装冻结 0.1.19，手动安装官方 CLI 0.160.0，以原实例原 home 完成 User 入口重新绑定；凭据不迁移、不读取。",
+    "真实 LPAC 模型工具执行发现官方 code-mode-host 缺少本会话 SID 的文件执行许可；H 使用已有精确单文件 RX、无继承机制补齐固定官方成员，保留只读防写/防删除共享句柄并纳入既有 launch/live/resume 核验。",
+    "增加固定成员 hash、物理对象与替换拒绝测试，以及真实官方辅助程序在同一 LPAC token/Job 内的无账号协议测试；云端撤销真实 grant 后须编译通过且行为失败，精确恢复后须通过。未改 CLI、目录许可或 capability。",
+    "第一轮夹具漏掉固定上游Connection::spawn的CREATE_NO_WINDOW，并未完全对齐三路私有管道；已按上游修正两种对照的共用spawn及stderr转发。新增现有工作流的定向fixture选项，默认全套门禁保留，定向运行明确全库/其他mutation/server为NOT_RUN。",
+    "按Owner即刻测试裁决：真实Win11 CDP端到端与真实CLI黄金样本为主体。删除非等价Rust父进程的helper协议夹具，保留实际DACL/对象/权限安全测试；撤生产grant的compiled mutation改跑该未改安全测试。准备0.1.20阶段阻塞候选，尚未签名或装机。"
+  ],
+  "results": {
+    "frozen_delivery": "沿用 M1-CLI160-MANUAL-REPIN.json 的冻结 source4b66a43e / 0.1.19 云端构建、签名及同字节装机烟测；本次已实际安装，不是公开发布或验收。",
+    "ordinary_preservation": "旧候选退出与卸载成功；独立审计的1114个普通空目录逐项删除并回读ABSENT。新候选安装、CLI手动升级、会话正常停止后，正式版五类保护对象快照均无变化，原 root/home 身份保全。",
+    "manual_repin": "原 codexTestM1 revision3→4 APPLIED，官方 codex.exe SHA256 fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d；原实例自动 account/read 为 LOGGED_IN，无新交互登录。GPT-6.1-Sol/high 保持原值。",
+    "actual_question": "generation9真实 request_user_input 原卡片出现，User入口选择JSON后取得NATIVE_EXACT_WRITE_RECEIPT；后续真实工具调用选择JSON。单独写入ACK不作为vendor消费证明。",
+    "actual_inbox": "同revision edit/cancel两种顺序均实测；旧revision操作STALE。native同轮steer取得DELIVERED且实际模型最终输出带该追加marker。",
+    "actual_tool_failure": "CLI原rollout custom_tool_call_output：failed to spawn code-mode host [official npm member]: Access is denied. (os error 5)。第一轮未创建结果文件，不计成功会话。该实文件SHA256 1d448bfde19e7a280d600d8d0bcddf77afbe9feaec1e804905becc5f39bc9db6与已核官方archive成员相同，DACL缺该LPAC SID；未观察到对应CodeIntegrity事件，不能称SAC通过或拦截。",
+    "custody": "generation9正常stop revision4→5 APPLIED并取得durable stopFact，admission-release5→6，seat IDLE generation10；通过原窗口标题栏正常关闭，无强制结束。",
+    "scope": "受信 main5896e6d5的verify_plan.py重算scope摘要仍为274dd8499160a4cdd5c0887cf6819632b0c0efbd22efd3eaaeba6f016edaa656，与回执v2一致。",
+    "independent_review": "fresh风险席位六轴静态初查完成：固定成员、精确ACL、生命周期、真实夹具/token/Job、协议、错误保留；最终component暂存blob81d0469bb2942e1c85c9feb79dfe4b5421a9c6f3无进入云端的新阻塞，行为门禁与Win11仍未执行。",
+    "first_cloud_attempt": "a35631e7 / controlled dispatch37106016332 attempt1：release/process实际通过；server645/645、fail0/skip0，artifact11267629233 SHA2568245ad96ed69ef5b68104aa06549e01738928d38efe201a3e733c684bda6b77f。focused32PASS/1FAIL/0skip，artifact11268520332 SHA2564f0b95136bcbc146313ae8082d9cb0c7cb4c0b625143fece2390a5958b60f035；唯一real-lpac夹具positive spawn报原Windows5，未进入hello。binding和real product open通过不能替代helper启动。full-lib与新grant mutation步骤失败，其他独立轴继续；不能把这个已有失败baseline上的mutation计为有效通过。desktop PR37106018790五job通过，hygiene PR37106018839通过。",
+    "fixture_review": "独立核上游NO_WINDOW和三路piped，原夹具不等价，positive Windows5不能用于否定或确认正式CLI精确grant方案。a1f0fe13定向dispatch37108471357实际binding通过，但real-helper在negative清理断言失败，尚未到grant/positive；撤grant及restore也在同一negative处失败，均不是有效mutation证明。negative有意制造启动失败，既有契约允许确认的whole-Job强制清理，禁止kill的旧断言没有依据。只修negative为parent退出、job0、writer fence、无deadline/错误且kill若尝试则成功；positive仍要求真实协议、helper自身exit0及无kill。独立审计确认该逻辑与既有契约一致；产品grant/lifecycle实现不变，修正行为尚待云端。",
+    "g4": "独立审计本phase27份task custody，25个已结束定义精确符合action/hash/SID/Interactive/Limited/Ready及无未来运行，另2项已ABSENT。Controller逐项删除25个并各回读ABSENT，脚本/结果/失败原文/产物保留；清理证据SHA256 6b1542f6d0f6e5ed868d2c1a3aeba4595b96893f568be570f911a31a89263676。",
+    "measurement": "第一次memory观察脚本使用PowerShell保留变量HOME，模型发送前即失败；保留原脚本并改用实例专用变量后得到真实baseline。活跃数据库外部只读打开失败，正常停止产品后同一普通路径只读成功；未改数据库。完整原工具错误改从CLI自己写下的rollout读取。",
+    "third_cloud_attempt": "827c917c / 定向dispatch37109728713：negative清理越过，实际hash/grant/verify越过；positive仍在官方helper spawn原Windows5失败，未到hello。fixture父进程无生产path_compat且Rust环境不同，不能把其结果当实际CLI。Owner已要求优先简化夹具；删除该非等价夹具，不放宽产品或宣称真实helper通过。",
+    "test_priority": "Owner新决定立即执行，不等待M1后计划修订。阶段内不再为普通改动补单元/变异；隔离、权限、凭据、签名链保留。实际helper运行仍为NOT_RUN，必须用实际安装的固定CLI和codexTestM1端到端裁决。"
+  },
+  "threat_model_and_decision": "不受信CLI及工具仍受同一LPAC token、Job和三棵既有私有目录边界约束。辅助程序是已授权固定CLI包的既有依赖，只对固定hash和物理文件授予同一SID的无继承RX，不开放父目录、相邻文件、正式数据、其他实例、额外网络/identity能力或普通用户模型执行。因此属于H.1实现缺口，由Controller修复；不能仅凭多一个PE对象推导必须新增Owner授权。若正式候选实测出现对应SAC拦截，再按CT3交Owner。",
+  "参照": [
+    "按顺序查gogo-party process-supervisor/winapi.py及w3-supervisor-bakeoff-readiness的suspended/Job做法，NaveHQ/LoomOS未找到LPAC helper grant先例；仓库parts-source-teardown该节仅为静态形态，不能当Windows运行证据。",
+    "采用本仓isolation.rs grant_bound_program和CompatModule现成的精确成员读/执行、身份与句柄保管机制。不同处是上游CLI自己按固定npm布局启动辅助程序，故原位核成员而不拷贝或改写CLI。",
+    "固定上游rust-v0.160.0 commit a956835d020762cb2b570053af06f643a11c0ecc的code-mode-host及code-mode-protocol stdio案例：u32LE长度前缀、hello、session/open、无工具跨cell存取、shutdown与EOF。thread/start仅检查is_file，不能当辅助程序启动通过。"
+  ],
+  "next": [
+    "先跑删减后实际安全binding及撤grant/restore，再跑精确源云端构建检查；当前阶段被真实工具执行阻塞，在稳定点走一次候选链到Win11。",
+    "固化现有CDP真实User入口、提问/插话/工具/正常重启恢复脚本；原始请求落私有journal，UNKNOWN不隐式重发，登录只读状态、不重置凭据。",
+    "正常关闭后从现有RPC journal/raw ledger提取真实CLI协议，私有原文与脱敏黄金分层；成功流程未录齐前不称黄金baseline或M1完成。"
+  ],
+  "走法反思": "裸Rust父进程不是固定CLI：继续修仪器不能裁决真实产品，故按Owner重心删除其完整helper协议演练。实际Windows DACL和对象绑定安全验证保留，工具可运行性由真实Win11端到端取得；避免为夹具完美重复整个构建链。",
+  "acceptance": false
+}

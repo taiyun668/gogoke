@@ -1,0 +1,733 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "state": "M1_OT4_ATTEMPT_PRODUCT_DIAGNOSTIC_GAP_REPAIR_CLOUD_PENDING",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "last_pushed_source": "b989cd53f8d850fc27df50f9ed02fa7b0521bd82",
+  "authorization_main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
+  "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
+  "receipt_blob": "8020812e3abf35887829f50c78ec9f513272bf70",
+  "owner_basis": "PR #56 covers L0-G and M1-M3. Owner continued the authorized run. A checkpoint records custody and continues construction; it does not request another stage authorization.",
+  "fixed_source_cloud": {
+    "source": "fa30b3afcb8ae29139b696ecc2a3c6ad9ac583bd",
+    "native_run": 36695555319,
+    "native_artifact": 11087414022,
+    "release_build": "PASS",
+    "required_axes": {
+      "executed": 3,
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "focused": {
+      "executed": 20,
+      "passed": 19,
+      "failed": 1,
+      "skipped": 0
+    },
+    "library": {
+      "executed": 547,
+      "passed": 546,
+      "failed": 1,
+      "skipped": 0,
+      "elapsed_seconds": 380.7,
+      "state": "FAIL_COMPLETE_FINAL_SUMMARY"
+    },
+    "lpac_path_shim": {
+      "executed": 2,
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    },
+    "server": "PASS",
+    "hygiene_run": 36695562600,
+    "hygiene": "PASS",
+    "desktop_run": 36695562615,
+    "desktop_readback": "PASS_ALL_FIVE_JOBS_INCLUDING_INDEPENDENT_EXECUTABLE_BYTE_COMPARISON",
+    "evidence_scope": "CLOUD_WINDOWS_SERVER_NOT_OWNER_WIN11_OR_M1_ACCEPTANCE",
+    "original_private_evidence_sha256": {
+      "machine-result.json": "887f671f7d4c719cb597208ee1f9bbd177dc3ee2d1f6479cc90d3f063ac9699e",
+      "focused-native-codex-session-open.log": "6392bd96811b33a746bbaeeb256c49520d5c9528e5e9a56b77ceb5d8ed60d95c",
+      "lib-tests.log": "22e9f76e6747c27058c9052601058ea70f0aac815c27a3b545434571424dbde4"
+    }
+  },
+  "direct_failures_and_repairs": [
+    "604b8b1e failed cloud compilation because JsonString was not imported by the new exact C proof factory. fa30b3af repairs only this import; release compilation and server tests then passed.",
+    "fa30b3af's sole library and focused failure is the actual original stop readback after the injected H commit failure. Native custody STOPPED had committed while H claim COMMITTED remained after rollback; A recovery denied that original proof window. The same original stop must finish without another OS stop. H WIP now recognizes this narrowly from the original episode and exact persisted custody stop proof; native verification remains pending.",
+    "The old invalid Job query and stop hash instrument failures both passed on fa30b3af. The full library now reaches its final summary inside the unchanged 30-minute job budget. No single old hanging-test or runner-load cause is claimed.",
+    "Frozen write/revision semantics exposed open success without a corresponding H revision increment. Root WIP now advances the claim and original open receipt together and tests that the earlier revision is stale; this change has not run in cloud yet."
+  ],
+  "parallel_composition": {
+    "controller": "ProductDatabase family integration, User A query/subscription adapter, C historical card readback, checkpoint and source/candidate gate decisions",
+    "h_sol_high": "Durable original process attempts and successful generations; actual thread/resume; current-generation rollover after the trusted response; original A/H history and stop recovery; native steer/append helpers preserved",
+    "c_sol_high": "Native K-INBOX CAS and exact first-send permission, actual H/native steer and append, typed original vendor response proof; UNKNOWN never acquires another writer",
+    "b1_codec": "Completed source-only protocol package for fixed 0.149 thread/inject_items and thread/compact/start. Empty responses prove submission only; compaction completion requires its original later native event.",
+    "subordinate_recursion": false,
+    "concurrent_subordinate_limit": 3
+  },
+  "user_a_source_review": {
+    "first": "Fresh Astra source-only review confirmed three logic-checked defects: full-page continuation cursor jumped to global high-water, business denials escaped as ERR rather than contract receipts, and a maximum APPLIED frame could not fit its REPLAYED form.",
+    "root_repairs": "Separate page continuation from source high-water, return typed DENIED/STALE/CONFLICT for known valid-envelope state differences, preserve internal/commit errors, check both actual first and replay frame lengths before durable commit and all outgoing branches at the transport boundary.",
+    "controls": "SQL authority and marker fixtures explicitly synthetic; real ProductDatabase dispatch, original request collision, current scoped read replay, original subscription receipt after database reopen, more than 32 visible markers, business state receipts, and actual serialized maximum-frame replay.",
+    "fresh_sol_mutation": "SOURCE_FIXES_LOGIC_CLOSED_NOT_ACCEPTANCE; test coverage gap corrected to compare every original marker",
+    "native_new_source": "NOT_RUN"
+  },
+  "remaining": [
+    "Owner main activation PR57, then exact trusted-main signing and same-byte cloud installed smoke.",
+    "Ordinary Win11 signed candidate installation and formal snapshots; actual F instance registration and cap configuration to4, then the single OT4 login request.",
+    "Authenticated model/native question/compact and remaining real M1 evidence; M1 not complete, no acceptance or publication."
+  ],
+  "custody": "Private original logs and downloaded artifacts retained; prior rejected Detours cleanup objects and old diagnostic worktree preserved without retry or bypass. In-flight named source files have explicit H/C/Controller ownership. No public checkpoint includes local identity, paths, secrets or account snapshots.",
+  "formal_product_data": "NOT_ACCESSED_OR_CHANGED_IN_THIS_CLOUD_ONLY_SEGMENT",
+  "candidate_published": false,
+  "ot4": "NOT_REQUESTED",
+  "m1_complete": false,
+  "acceptance": false,
+  "native_capability_read": {
+    "basis": "Actual loaded thread experimentalFeature/list through the process-owned H RPC and A original raw response; required memories=false, multi_agent_v2=false, default_mode_request_user_input=true",
+    "fixed_official_ref": "758ef40f50c1a458425c7cfbf1eb12cbc07af0b0",
+    "private_source_files": 18,
+    "private_source_manifest_sha256": "02de82142d606569727b8327c6865dfea1c4008148466ebfd1ba91f2a04ef5a1",
+    "model_behaviour": "NOT_RUN",
+    "native_this_source": "NOT_RUN"
+  },
+  "c_focused_repairs": {
+    "batch": "Seven source defects repaired with direct original-source proof and ProductDatabase synthetic-source controls; native compile/behaviour remains NOT_RUN",
+    "fresh_sol_review": "NOT_RUN_BUILT_IN_THREAD_LIMIT_REJECTED_NO_SIDE_CHANNEL_CREATED",
+    "retained_seam": "The frozen enqueue turnId is required. No fabricated turn for a session which has never had a real turn; valid past-turn idle append is supported."
+  },
+  "h_fixed_candidate": "Per-process stop request fence; original stop proof commit window; real thread/resume; same-ID UNKNOWN H WRITTEN plus A PENDING reconciliation without a second input; historical first-generation proof and loaded-thread flags controls. Native evidence pending.",
+  "integration_cloud": {
+    "source": "03bcfbbe210ea19934e62bfee67f1cb57b2cd3e3",
+    "native_run": 36705147156,
+    "native_artifact": 11091722263,
+    "server": "PASS",
+    "release": "PASS",
+    "required_axes_passed": 3,
+    "lpac_path_shim_passed": 2,
+    "focused_and_library": "NOT_EXECUTED_TEST_COMPILATION_FAILED",
+    "root_cause": "Existing has_unresolved test calls omitted the new original process operation parameter; new runtime assertions compared Json which intentionally has neither PartialEq nor Debug. Production release compilation succeeded. Root corrects only calls and uses native bool pattern or canonical-value comparisons.",
+    "hygiene_run": 36705331824,
+    "hygiene": "PASS",
+    "desktop_run": 36705327668,
+    "desktop": "RUNNING_NOT_READ_BACK",
+    "machine_sha256": "5dcce6e0074655a008a5f035e97df62c3dc04ea26fec8f3a189a4e0adf494680",
+    "lib_log_sha256": "767783a4d7c9a65da17905e09d03d76779d7e92681dd6bd96e4aa02e7cd9ee69"
+  },
+  "next_native_input_batch": "K-SESSION append-without-turn uses the existing exact original H stdin journal and actual thread/inject_items; only original ACK completes createdTurn=false. Preflight codec before intent, same-ID recovery without resend after injected final receipt failure, raw collision, stopped/released historical replay; actual cloud execution pending. Historical original STOPPED steer abort uses exact episode seat snapshot and custody stop proof plus A terminal and absence of any original H step; no write permission added.",
+  "next_source_repairs": {
+    "append_review": "Reused Sol NON_FRESH source review, not acceptance. Confirmed original observed provider errors blocked native stop; fixed only that stop path while retaining A/RPC source and UNKNOWN. STALE native input receipt now reports observed claim revision. Receipt identifier binds original user bytes, command, process operation and nonce.",
+    "a_projection": "Original turn/started now drives current-turn state after A commit; original contextCompaction item/completed normalizes with exact thread, turn, item and timestamp fields. ACK alone never completes compaction.",
+    "instrument_limit": "createdTurn=false is a generated receipt and cached turn state is not independent evidence that the actual vendor created no turn. Native model/history proof remains NOT_RUN.",
+    "current_native_run": 36706277216,
+    "current_native_source": "233a47be76a5c5cc99b179221c580668a736561c",
+    "current_native_state": "SERVER_PASS_RELEASE_PASS_REQUIRED_AXES_PASS_FOCUSED_FAILED_LIBRARY_RUNNING_DIRECT_FAILURE_READBACK_PENDING",
+    "hygiene_run": 36706399282,
+    "hygiene": "PASS",
+    "desktop_run": 36706828819,
+    "desktop": "RUNNING_NOT_READ_BACK",
+    "native_this_followup_source": "NOT_RUN"
+  },
+  "next_compound_generation": "Existing M1 H.1/B1.1 requires product compact/renew and generation switch. Sol H package authorized internally under PR56: original compact completion source, confirmed internal stop, same original request continuation and new process promotion; original UNKNOWN never repeats input; Owner stop remains permitted in GENERATION_UNKNOWN, including candidate-specific stop proof; release requires all actual processes confirmed stopped. Frozen wire and Owner touchpoints unchanged.",
+  "native_233a_complete": {
+    "source": "233a47be76a5c5cc99b179221c580668a736561c",
+    "run": 36706277216,
+    "artifact": 11092698061,
+    "release": "PASS",
+    "server": "PASS",
+    "axes_passed": 3,
+    "shim_passed": 2,
+    "focused": {
+      "executed": 20,
+      "passed": 19,
+      "failed": 1,
+      "skipped": 0
+    },
+    "library": {
+      "executed": 558,
+      "passed": 553,
+      "failed": 5,
+      "skipped": 0,
+      "elapsed_seconds": 650.1
+    },
+    "direct_failures": [
+      "Three F temporary-home fixtures report Admission(Denied) or an earlier denial; source review must distinguish stale fixtures from production scope.",
+      "RPC no-event fixture omitted the new immutable process episode table; production schema is not relaxed.",
+      "Actual loaded-thread feature read returns UNKNOWN; the test printed only its status and discarded the already returned error detail. Restore that direct error result before choosing a product fix."
+    ],
+    "machine_sha256": "0f4f9219f0f678ec982c5916587e1ef0760b7427f0cb960b75537c76c7d103ec",
+    "lib_log_sha256": "d06f93deef2f78ea04219792140a0f2556cd4ba2e3b89edbea508044f5654fed",
+    "focused_log_sha256": "726ed6dac11af44e45849c13077b07078de13a8edeca4ee11bb57502831ff1b5",
+    "claims": "Complete FAIL; no inference of Owner Win11, authenticated models, M1 acceptance or release."
+  },
+  "native_d163_complete": {
+    "source": "d163a8aa7c109cba7b36a12897cd943c795c138d",
+    "run": 36708880984,
+    "artifact": 11094325595,
+    "release": "PASS",
+    "server": "PASS",
+    "axes_passed": 3,
+    "shim_passed": 2,
+    "focused": {
+      "executed": 20,
+      "passed": 19,
+      "failed": 1,
+      "skipped": 0
+    },
+    "library": {
+      "executed": 559,
+      "passed": 553,
+      "failed": 6,
+      "skipped": 0,
+      "elapsed_seconds": 238.6
+    },
+    "actual_config": "The original loaded-thread response reports memories=false and multi_agent_v2=false but default_mode_request_user_input=false, contrary to the configured launch true.",
+    "cause": "Fixed 0.149 ConfigManager appends request config to the CLI override list. Our thread/start and thread/resume config supplied a whole features table containing only memories=false. The vendor override builder replaces that table and loses other startup feature leaves.",
+    "repair": "Use the existing three memory-off dotted leaves instead of whole tables; retain exact decoding of only the old canonical encoding for historical source records, never offer a legacy writer. Native loaded-thread readback on new source remains pending.",
+    "instrument": "The synthetic original-refusal test incorrectly tried to prepare a fresh write after database reopen had correctly made custody UNKNOWN. H replaces that fixture action with an explicit past UNKNOWN intent, preserving the production denial.",
+    "machine_sha256": "2dfdc209af4766e0af793845266d12af6fb820fb61315a5d020601acd5278b79",
+    "focused_log_sha256": "f6ede0232e8f04c43e1d5fb7695ea86724e76acc125c7838df3862ea86e2174c"
+  },
+  "temporary_home_history": {
+    "source_sha256": "60eb32834096a8610d364b5c48bdff2c655072331c0280201c3dec08c54de6f1",
+    "cause": "Three old fixtures omitted immutable original H episodes and successful generation mappings. A separate production close guard depended only on the mutable current claim and lost stopped old homes after actual resume.",
+    "repair": "Use the original registered home, episode, generation, custody stop proof and successful ancestry; retain same-generation contradiction denial, directory identity/marker and actual home occupancy fence. Synthetic SQL controls declared as such; native tests NOT_RUN.",
+    "formal_home_cleanup": "NOT_EXECUTED"
+  },
+  "direct_evidence_retention": "Existing focused logs are uploaded as native-host-focused source/run/attempt before the full library job continues. They are partial evidence only and cannot satisfy a full gate or candidate signer. All existing test commands, counts, limits and full final artifact remain.",
+  "fixed_source_provenance": {
+    "annotated_tag": "rust-v0.149.0",
+    "tag_object": "a4e15bf371341b067c8278d3b70b1a8c7b3d793e",
+    "dereferenced_commit": "758ef40f50c1a458425c7cfbf1eb12cbc07af0b0",
+    "private_cached_files": 21,
+    "hash_mismatches": 0,
+    "private_manifest_sha256": "f5194a3c44567b142545058d5ff531334bcf5b94376491b13046ecca84cca40d"
+  },
+  "native_b172_complete": {
+    "source": "b172425097f623820d66e276ea6297d0e16c0a80",
+    "run": 36711412443,
+    "artifact": 11095235900,
+    "focused_artifact": 11094765777,
+    "release": "PASS",
+    "server": "PASS",
+    "axes_passed": 3,
+    "shim_passed": 2,
+    "focused": {
+      "executed": 20,
+      "passed": 19,
+      "failed": 1,
+      "skipped": 0
+    },
+    "library": {
+      "executed": 561,
+      "passed": 556,
+      "failed": 5,
+      "skipped": 0
+    },
+    "actual_loaded_flags": "PASS: the real initial thread read now observes all three required feature values after leaf overrides. No model/native question acceptance inferred.",
+    "temporary_home_controls": "PASS on this source, including original three close/cleanup controls and explicit synthetic cross-generation ancestry controls; no formal home was touched.",
+    "remaining_failures": [
+      "Actual open test now passes initial features and actual same-ID stop rollback recovery but its later lost-H-commit fixture reset the claim without resetting the episode changed in that same transaction. H corrects the fixture to ACTIVE/NULL while preserving actual native STOPPED proof and original stop intent.",
+      "Two old codec tests still check or mutate the old nested use_memories field. Root updates only their actual dotted field and asserts that the negative control really changed bytes.",
+      "Original RPC fixture missing immutable episode and synthetic refusal fixture attempting a new write after custody became UNKNOWN remain pending H source fixes already in flight."
+    ],
+    "machine_sha256": "6e3389c6333b9e9f1f150a6b4c760862dba7d48ecca67788b060841cb1c4174d",
+    "focused_log_sha256": "270a39464db73492ba8959f5414ef3fa4e035c6f1a1ba65daa73b4189812a926"
+  },
+  "desktop_233a_complete": {
+    "source": "233a47be76a5c5cc99b179221c580668a736561c",
+    "run": 36706828819,
+    "state": "PASS_ALL_FIVE_JOBS_INCLUDING_INDEPENDENT_EXECUTABLE_BYTE_COMPARISON",
+    "newer_source": "NOT_RUN_PENDING_FIXED_H_COMPOUND_SOURCE"
+  },
+  "pause": {
+    "owner_instruction": "å…ˆæ”¶ä¸€ä¸‹",
+    "scope": "Stop construction and subordinate activity; preserve the named implementation and checkpoint without native build, publication, merge or acceptance.",
+    "base_source": "c2718a2763d0c3970473414624e890d11ae50670",
+    "files_sha256": {
+      "apps/desktop/native-host/src/store/session_transport/generation_change.rs": "2bf1a2ec49ed5ad1701073ef09f4597e2d5ddce4685158399304a6b86fb7d866",
+      "apps/desktop/native-host/src/store/session_transport/episodes.rs": "0e3fd87b89cad57f5ec8747edefec04bef6841607c153f96a26d4790d6525fc6",
+      "apps/desktop/native-host/src/store/session_transport/admission.rs": "825adbc7ba10510a12586425d6cc0a809828f9b4c13f730a1e947edb29ebe6b9",
+      "apps/desktop/native-host/src/store/session_transport/launch.rs": "f35c422305e7c675dc52b1e4bf00683d06dd3975c9979723028c2ad1d3f3e778",
+      "apps/desktop/native-host/src/store/session_transport/rpc_journal.rs": "799824661d7a25adacc8b5239cef59f82cc4f4c5e1bb38ebf554ba6bf822f41a",
+      "apps/desktop/native-host/src/store/session_transport/journal.rs": "63149db42cddfe175d229832f046868143aa700fb6571ffe5fd100356a2f8116",
+      "apps/desktop/native-host/src/store/session_transport/mod.rs": "7aeab5ec6ce0a0034fc95c7d4d81efac982e9ddd278e52139124233d0ac49995",
+      "apps/desktop/native-host/src/store/product_database/v37_runtime.rs": "a4722a7d277dd310b38ffb18e0b72ee1cc7e283e272348eff12b99e507552c8b",
+      "apps/desktop/native-host/src/store/product_database/v37_session.rs": "7e2460b4c48354f5a9304c765cb0c4a7958c43be09d1ed5dac999f46f89c304c",
+      "apps/desktop/native-host/src/store/product_database/v37_runtime_tests.rs": "8fe7e27ae385f8d0df868d3b88d13b38883dee1bbc35e66dd66f864a821f37ea",
+      "apps/desktop/native-host/src/store/product_database/v37_inbox.rs": "b332e4ded3da4f4638a8fb51b1a034e1a31bf5a8b34cee8ea92c0e9e1f213630",
+      "apps/desktop/native-host/src/store/product_database/v37_qcard.rs": "0bad3c26b9ee2f8807614774d51da16cce166f04e2da3bec6f1aa44a9b9739b8",
+      "apps/desktop/native-host/src/store/product_database/v37_qcard_user.rs": "868fe77ff0927d4e3a58bac57c7b45afd041c2b8dfa404d338319fb1136a6195",
+      "apps/desktop/native-host/src/store/product_database/v37_output.rs": "84380cc95317d7b526966791da002f8b7e6caa0538978730eb553a80c67f0b71",
+      "apps/desktop/native-host/src/store/product_database/v37_capability.rs": "93ad846ddd738fef648f134f3c6d19ccbb51b28b4e88b25c2d248a77f0796712"
+    },
+    "static": "15 source files parser-only and public-source hygiene PASS; git diff --check PASS. No local native compilation or execution.",
+    "h_package": "H compound compact/renew/reconnect lifecycle, original generation source and candidate stop/promotion fences; prestart old stopped custody digest compared with current pinned driver. Returned implementation remains uncompiled WIP.",
+    "controller_package": "C inbox and new question answer are fenced during pending generation change; retained capture remains permitted. Output and capability read require actual custody generation as well as mutable claim generation. Native behavior NOT_RUN.",
+    "existing_cloud": {
+      "hygiene_run": 36713893706,
+      "source": "c2718a2763d0c3970473414624e890d11ae50670",
+      "hygiene": "PASS",
+      "desktop_run": 36713893329,
+      "desktop": "CANCELLATION_REQUESTED_NOT_PASS",
+      "candidate_smoke": 36713884998,
+      "candidate_smoke_state": "SKIPPED_NOT_PASS"
+    },
+    "next": "Resume by verifying this source hash inventory; add meaningful integration controls for Controller generation fences, then fixed-source cloud native/desktop/hygiene evidence. Prepare candidate chain before OT4; PR57 main signer activation remains Owner-only.",
+    "route_reflection": "Repeated cloud round trips included stale fixtures and hidden direct failure fields. Use the already available original focused artifact to fix direct diagnostics and batch source/fixture corrections before the next fixed-source run; avoid speculative probes and repeated context rebuilding.",
+    "preserved_exclusions": "Previously auto-rejected Detours leftovers and retained old diagnostic worktree are unchanged and excluded from staging.",
+    "m1_complete": false,
+    "acceptance": false,
+    "ot4": "NOT_REQUESTED"
+  },
+  "resume": {
+    "owner_instruction": "继续推进",
+    "main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
+    "manifest_unchanged": true,
+    "receipt_unchanged": true,
+    "inbox_head": "b4f7e866029b8c5a9a1211100effadf01a03ffbc",
+    "pause_superseded": true
+  },
+  "native_410d_complete": {
+    "source": "410dc333a06639180951a91de6823459a6e23f2d",
+    "run": 36716584044,
+    "artifact": 11097032581,
+    "focused_artifact": 11096977270,
+    "release": "PASS",
+    "server": "PASS",
+    "axes": {
+      "executed": 3,
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "library": {
+      "executed": 562,
+      "passed": 561,
+      "failed": 1,
+      "skipped": 0,
+      "elapsed_seconds": 226.51
+    },
+    "focused": {
+      "executed": 20,
+      "passed": 19,
+      "failed": 1,
+      "skipped": 0
+    },
+    "hygiene_run": 36716589792,
+    "hygiene": "PASS",
+    "desktop_run": 36716595201,
+    "desktop": "RUNNING_NOT_FINAL_READBACK",
+    "failure": "Actual same-thread resume returns UNKNOWN at original runtime test line 212. Original reason is present in returned receipt but status-only assertion omitted it. New assertions print original receipt; no root cause guessed.",
+    "sha256": {
+      "machine-result.json": "9e813cf2ac4c88ed275ac72991d53a963fe4eb03f8d9e7b9fb6e7e40da1af196",
+      "lib-tests.log": "b18f3eb38c1a0bc6b9edfc850c9dc187e6145c3dae2b39cfe19f8d07d5fc5d11",
+      "focused-native-codex-session-open.log": "f7e1c172ca30e34a6c06016a7748474deba1f2733dd521fd83828cbaf4e81a03"
+    },
+    "scope": "CLOUD_WINDOWS_SERVER_NOT_OWNER_WIN11_OR_AUTHENTICATED_MODEL"
+  },
+  "h_compound_source_review": {
+    "identity": "fresh Sol/high fixed410dc333 independent read-only review",
+    "finding": "One confirmed defect: original compact -32601 is already OBSERVED but native_rpc error returns early to UNKNOWN, preventing UNSUPPORTED. Root now reads the original ACK/error before classification; all other failures retain original send error plus source result.",
+    "other_axes": "No second source-confirmed finding across original stop proof, same-ID start/recovery, reconnect, Owner cancellation, revisions, C fences, prestart pin and 8-to-9 migration.",
+    "limits": "Source material only. Not native behavior, valid mutation or acceptance. Followup reused same seat NON_FRESH."
+  },
+  "next_source_controls": {
+    "c": "Explicit synthetic compound intent on actual opened session: original captured question remains readable but unavailable for new answer; no C answer intent is created; enqueue denied; pending message deliver conflicted with unchanged revision/state; exact synthetic intent removed gives positive availability control.",
+    "physical_read": "Explicit instrument-only contradictory custody generation requires output/capability conflict, then original generation restored.",
+    "instrument_correction": "Reviewer identified empty deliver payload as invalid before generation fence. Corrected to exact required generation field before cloud run; invalid measurement not counted as product bug.",
+    "native": "NOT_RUN_ON_THIS_FOLLOWUP_SOURCE",
+    "diagnostic": "18 named status assertions retain original receipt instead of losing its reason."
+  },
+  "native_f265_complete": {
+    "source": "f265a28e3ae690a70cee57b4dfa1003211da97b5",
+    "run": 36717949109,
+    "artifact": 11097193622,
+    "focused_artifact": 11096778671,
+    "release": "PASS",
+    "server": "PASS",
+    "axes": {
+      "executed": 3,
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "focused": {
+      "executed": 20,
+      "passed": 19,
+      "failed": 1,
+      "skipped": 0
+    },
+    "library": {
+      "executed": 562,
+      "passed": 561,
+      "failed": 1,
+      "skipped": 0,
+      "elapsed_seconds": 319.17
+    },
+    "hygiene_run": 36717951564,
+    "hygiene": "PASS",
+    "direct_error": "Native thread/resume -32600: no rollout found for thread id. Original provider frame retained in A/RPC and returned UNKNOWN receipt.",
+    "cause": "No-model fixture stopped an empty new thread before actual provider history was materialized. Fixed vendor recorder creates history lazily; invalid test precondition is not proof durable-thread product resume is broken.",
+    "correction": "Arrange durable history using existing bound native append RPC; fixed vendor inject_response_items flushes its recorded items. Obtain original ACK before actual stop. No provider files are fabricated or copied; no model behavior claimed.",
+    "c_controls": "Synthetic C and physical-generation read controls reached later resume without failure, not authenticated vendor observations.",
+    "sha256": {
+      "machine-result.json": "4af1fec7a6ad465948b2af03374728265ee9b9c4aa653cd9ef14658909b1efbb",
+      "lib-tests.log": "2b93fe8311e009dce799b2a9a2129d44c7e4393053a9a6725185de8c6d1cc77d",
+      "focused-native-codex-session-open.log": "a5d97e8df86b49bea2a7370f3f5f036540fa07d7258c8a5f729d290cad4c3ee4"
+    }
+  },
+  "history_materialization_source": {
+    "fixed_commit": "758ef40f50c1a458425c7cfbf1eb12cbc07af0b0",
+    "basis": "Original codex_thread inject_response_items calls flush_rollout after injection; recorder deferred_creation flush with nonempty pending_items writes original history. CODEX_HOME is same registered instance across generation resume.",
+    "private_files_sha256": {
+      "codex-thread.rs": "9fe7ba5821938131db14dcba5e6249dd9303fae19fc01eaee4298f93a8ca5946",
+      "session-inject.rs": "f9b6501880979e81048cc05e1964d8dec3e4bc94b38e0ace6759c09aa5ecabfe",
+      "rollout-recorder.rs": "cefead4fe8df0346988a6ecf84f2fc83546ea0263eeb7a1600e126f13c5bf80a",
+      "session.rs": "0ee2fc88548ec33ec1c4e4e632081827c0c7d41e830c22fc8ace463dad326620"
+    },
+    "new_source": "f69f9dcf8eb60e6d714ae982ef92602adf1ce01f",
+    "native_run": 36719528205,
+    "native": "RUNNING_NOT_PASS"
+  },
+  "checkpoint_writer_instrument": "First followup checkpoint update used implicit Windows text encoding and failed before write. Source commit remained preserved; rewritten with explicit UTF-8. No product change attributed to this measurement failure.",
+  "native_f69_complete": {
+    "source": "f69f9dcf8eb60e6d714ae982ef92602adf1ce01f",
+    "run": 36719528205,
+    "artifact": 11099191435,
+    "focused_artifact": 11097314414,
+    "release": "PASS",
+    "server": "PASS",
+    "axes": {
+      "executed": 3,
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "library": {
+      "executed": 562,
+      "passed": 562,
+      "failed": 0,
+      "skipped": 0,
+      "elapsed_seconds": 359.05
+    },
+    "focused": {
+      "executed": 20,
+      "passed": 19,
+      "failed": 1,
+      "skipped": 0
+    },
+    "lpac_shim": {
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    },
+    "hygiene_run": 36719531453,
+    "hygiene": "PASS",
+    "desktop_run": 36719690564,
+    "desktop": "RUNNING_NOT_FINAL_READBACK",
+    "actual_native_session": "PASS: original same-thread resume; actual no-model renew with exact revisions; internal stop SQL UNKNOWN and original ID recovery; competing ID denial; reconnect no added process; Owner stop cancellation; original append historical replay. No authenticated model/native question/compact/Win11 claim.",
+    "focused_failure": "prepared_process_identity_is_durable_before_activation: stop proof incomplete. Original proof object was omitted by the test assertion. The same original test passed in full library; no root cause or fix of the stop behavior is claimed. Test now prints the existing complete NativeStopProof if durable confirmation rejects it. Stop budgets and proof gate remain unchanged.",
+    "overall": "FAIL_COMPLETE_FOCUSED_FAILURE_NOT_RELABELED",
+    "sha256": {
+      "machine-result.json": "d3a6fbbf12b543eb46860e25bed88ea5208c4eb156897e0436cde67e95e2121b",
+      "lib-tests.log": "1da2812fb7ec7d20ae97922f127052b8ff61ddc5680ee6564e914f7e5474b19a",
+      "focused-native-codex-session-open.log": "fdd29d9ad2abfc43aa10c147f5f82c0bbdf648cd7a2b26cb796c5bea7f2daa1d",
+      "focused-process-coordination.log": "beefc5bcf00e7a6c2b4a77643d0193d9e8ec6b739d71f6d936b1ea1dcaec3467"
+    }
+  },
+  "h_source_review_followup": "Reused NON_FRESH source review confirms injected history premise against fixed official sources; confirms C controls as synthetic database fences, not proof of production reachability for manual active-turn plus compound combination. No native mutation or acceptance claim.",
+  "installed_m1_entry_source": {
+    "source": "a65b27026f79de33b8773b5cbfcffab3725f3464",
+    "read_only_explorer": "Source lookup only; no installed invocation, native test or acceptance.",
+    "actual_entry": "Tauri gogoke_design37_user_operation({frame:string}) forwards exact bytes through verified retained native User pipe. ProductDatabase dispatch_user_frame verifies User origin before owner-configuration and owner-login parsing.",
+    "registration": "Codex settings Design37InstanceSection calls gogoke_design37_register_codex_instance; registration starts retained native host and install-state yields expected revision.",
+    "project_cap": {
+      "schema": "gogoke.37.owner-configuration.v1",
+      "command": "project-parallel-cap",
+      "domainId": "ACTUAL_TEST_PROJECT_DOMAIN",
+      "value": 4
+    },
+    "instance_cap": {
+      "schema": "gogoke.37.owner-configuration.v1",
+      "command": "instance-concurrency-cap",
+      "instanceId": "ACTUAL_REGISTERED_TEST_INSTANCE",
+      "value": 4
+    },
+    "owner_cap_basis": "Owner OT3 specifies both caps as 4; positive values persist on native Owner plane; no invented native default. Exact logical identities are resolved from installed test registration, not hardcoded as production identities.",
+    "login": "Codex settings begins owner-login.v1 with action begin, registered instance ID, original request ID and actual positive expectedRevision; native isolated CLI emits login instructions. Owner credentials are not read by host.",
+    "ui_limit": "Dedicated cap controls absent; cap User API is source-reachable. Installed setting invocation and actual login readiness remain NOT_RUN.",
+    "candidate_pr57": "OPEN_MAIN_ACTIVATION_PENDING_NO_MERGE_BY_CONTROLLER"
+  },
+  "native_a65_complete": {
+    "source": "a65b27026f79de33b8773b5cbfcffab3725f3464",
+    "run": 36721496556,
+    "artifact": 11102091830,
+    "focused_artifact": 11101515854,
+    "release": "PASS",
+    "server": "PASS",
+    "axes": {
+      "executed": 3,
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "library": {
+      "executed": 562.0,
+      "passed": 562.0,
+      "failed": 0.0,
+      "skipped": 0.0
+    },
+    "focused": {
+      "executed": 20,
+      "passed": 20,
+      "failed": 0,
+      "skipped": 0
+    },
+    "lpac_shim": {
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    },
+    "hygiene_run": 36721500245,
+    "hygiene": "PASS",
+    "stop_observation": "Prior focused incomplete native stop proof did not recur; exact same proof requirement and stop budgets retained. No cause or stop-behavior repair claimed. New diagnostic remains available if it recurs.",
+    "scope": "CLOUD_WINDOWS_SERVER_NO_AUTHENTICATED_MODEL_OR_WIN11_ACCEPTANCE",
+    "sha256": {
+      "machine-result.json": "213efe66134a65e8f717500c1498804970702675a568b16af1a714c0c4780d6b",
+      "lib-tests.log": "a435ce898c8536a0d3e9d11bb113b076f157197c0c1b0e510afc3db3db5e8012",
+      "focused-native-codex-session-open.log": "e42e1af57ad73abb6a32dce886b77447e55f2729330074d02fb1ab20ac76df7d",
+      "focused-process-coordination.log": "645552aa24334a36eadd648175efd2c777ceebfebfab5b67454ec1a49c2d395b"
+    }
+  },
+  "desktop_a65_fixture_failure": {
+    "run": 36721500235,
+    "state": "FAIL_COMPLETE_NOT_PRODUCT_BROWSER_ASSERTION_FAILURE",
+    "browser_tests": {
+      "files": 146,
+      "passed": 1044,
+      "failed": 0
+    },
+    "failed_cloud_fixture": "Embedded uninstall finalizer fixture: WinError32 on lifecycle lock reuse, then tempfile cleanup share violation.",
+    "direct_cause": "Fixture treats terminal receipt as all handles released. Real script writes DELETED/FAILED before finally disposes resources; inherited lifecycle lock remains owned until finalizer releases it. The next fixture iteration or cleanup runs too early.",
+    "correction": "Use original existing terminal-receipt completion loop and unchanged deadline to additionally observe actual exclusive lifecycle lock release. One no-write OPEN_EXISTING query returns pending only for WinError32; other instrument errors fail explicitly. No new sleep, retry budget, product finalizer code, assertions or security settings changed.",
+    "new_fixture": "AST parse and public hygiene PASS; only cloud execution remains.",
+    "original_log_sha256": "1d7b89db7ca6692539d1aea2094dd95f2009cd9581e960cebf58e9bd19a1e2c7"
+  },
+  "desktop_b989_in_progress": {
+    "source": "b989cd53f8d850fc27df50f9ed02fa7b0521bd82",
+    "run": 36724062942,
+    "attempt": 1,
+    "event": "workflow_dispatch",
+    "browser": "PASS",
+    "browser_original_log_sha256": "35e1f519b8ff73b35c57bf76853fc0d0e83adf3624585d628b60a54bef8dfb05",
+    "cloud_finalizer_controls": {
+      "executed": 3,
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    "license_notices": "PASS",
+    "hygiene_run": 36724070827,
+    "hygiene": "PASS",
+    "frozen_and_repro": "IN_PROGRESS_NOT_PASS",
+    "byte_comparison": "NOT_RUN_YET",
+    "task_custody": {
+      "frozen": "PASS",
+      "repro": "PASS"
+    },
+    "native_component_evidence": "a65b2702..b989cd53 diff is zero in apps/desktop/native-host and native workflow. Native 20/20 focused and 562/562 full evidence remains bound to original a65 source; only desktop fixture and checkpoint changed.",
+    "superseded_runs": "Prior desktop runs replaced/cancelled; not claimed all-green. Duplicate same-source automatic run cancelled; manual dispatch is retained for candidate signing.",
+    "local_cli_metadata": "0.149.0 package metadata only. Actual executable identity/digest/version and isolated F registration remain NOT_RUN."
+  },
+  "desktop_b989_complete": {
+    "source": "b989cd53f8d850fc27df50f9ed02fa7b0521bd82",
+    "run": 36724062942,
+    "attempt": 1,
+    "event": "workflow_dispatch",
+    "state": "PASS_ALL_FIVE_JOBS",
+    "hygiene_run": 36724070827,
+    "hygiene": "PASS",
+    "frozen_artifact": 11103858479,
+    "repro_artifact": 11103503636,
+    "comparison_artifact": 11105035657,
+    "members_verified_each": 8,
+    "hash_mismatches": 0,
+    "raw_comparisons": {
+      "gogoke-portable.exe": {
+        "length": 26921984,
+        "sha256": "96d1a9de5f74d30f8555fe021defa7c9c1e3fd5fa202808d3bd4dc28e1c87d14"
+      },
+      "gogoke-installed-shell.nsis.exe": {
+        "length": 26921984,
+        "sha256": "16972cc281d836014e14377c5ae6e37608001ca6ed39473169e6223af8c0ad4a"
+      },
+      "gogoke-native-host.exe": {
+        "length": 7139840,
+        "sha256": "5436aa34bd50d0286fbecb9c4c261fa0ce41a4fcc8bf58fef195bf182ec924a0"
+      },
+      "node.exe": {
+        "length": 91406496,
+        "sha256": "e3be0545990c90995d7bf3a7af5d64af1f2e0fc1bbd9b79c27f7abc1e9676e50"
+      },
+      "gogoke-resources.windows.zip": {
+        "length": 49980652,
+        "sha256": "4a1635b2f797a02cea12636dc70a0fc2eff08e596d2aade445bd08e0354954f0"
+      },
+      "resource-index.json": {
+        "length": 2898334,
+        "sha256": "c13ca7728fb7a4ba9be8e96fca5098ed2d65995a00cd5baa57ab69120b764466"
+      }
+    },
+    "scope": "CLOUD_NOT_WINDOWS_11_OR_M1_ACCEPTANCE"
+  },
+  "next_signing_input": "artifacts/gogoke-37/release-inputs/M1-CANDIDATE-SIGNING-INPUT.json",
+  "owner_dependency": {
+    "action": "Controller restores missing direct login evidence and fixes actual cause before next Owner authentication step",
+    "reason": "Owner attempted OT4 but product returned LOGGED_OUT without original failure evidence; no extra Owner decision required for product bug repair.",
+    "loginAuthenticated": false
+  },
+  "route_reflection": "Separate frozen artifact and actual smoke-code identities without rebuilding product. Keep direct Windows error123 and correct the single Git path before continuing. Preserve live installed process custody between preparation and OT4; continue after the immutable-template creation point instead of replaying successful configuration. Both cloud and real Win11 evidence now bound to the same frozen bytes; authenticate only via genuine Owner OT4.",
+  "next_signing_and_win11": {
+    "signing": {
+      "state": "PASS",
+      "runId": 36790723873,
+      "runAttempt": 1,
+      "mainCommit": "e8ffe3205d79a7fa7b29b03ca96c79aaad35cd30",
+      "artifactId": 11131322459,
+      "archiveDigest": "sha256:d322d388356170738d495be1656c38a1fb4bb23609a30b6ed971dd5d5bb14a27",
+      "localMemberReadback": {
+        "verified": 7,
+        "mismatches": 0
+      },
+      "localPurposeBoundP256Verification": "PASS",
+      "manifestSha256": "1717403264aa116cada3b469a54e641f9f6942d3be4e66609080eb4fb31a9d27",
+      "signatureSha256": "116f0f519ce5c0d950c7579282d0cf35ae1585d689ed0423d98a88a6221de8a7"
+    },
+    "cloudInstalledSmoke": {
+      "state": "FAIL_BEFORE_INSTALL_INSTRUMENT_IDENTITY_ASSERTION",
+      "runId": 36790842113,
+      "reason": "Smoke dispatch checkout f0c7b6ed was incorrectly required to equal frozen source b989cd53; checkpoint-only commits advanced the branch. Separate exact workflow checkout and frozen source identities; require authorized source ancestry and all original signed build and member checks. Product bytes are unchanged; no resign or rebuild."
+    },
+    "ordinaryWin11": {
+      "state": "FRESH_ORDINARY_PATH_AND_BASELINE_PASS_INSTALL_NOT_RUN",
+      "actualLocalAndRoamingPathsVerified": true,
+      "baselineTask": "Interactive/Limited",
+      "lastTaskResult": 0,
+      "packageStatus": 15700,
+      "session": 1,
+      "sacState": 1,
+      "gogokeProcessesBeforeBaseline": 0,
+      "formalFileCount": 12989,
+      "formalTreeSha256": "1eeed52ee69720002af6482c36871d6574c6f31995a2f6841dd9f3dc83e8d4c1",
+      "formalDataFileCount": 4,
+      "formalDataTreeSha256": "c4725cac68d0472fdb17ec8f0262970f7b9bbc74b4fbac49f342cf8822c5fc1d",
+      "privateBaselineSha256": "2db49816274c4dda520dbc84f07ab563baba3b86378c60b45a5c595be0f4e3e3",
+      "completedOwnedTaskRemoved": true,
+      "baselinePrivate": true
+    },
+    "fixScope": [
+      ".github/workflows/gogoke-candidate-sign.yml",
+      "tools/ci/gogoke-candidate-installed-preflight.ps1",
+      "tools/ci/gogoke-r2-06-candidate-installed-smoke.ps1",
+      "tools/ci/gogoke-r206a-installer-negative.ps1"
+    ],
+    "frozenProductChanged": false,
+    "acceptance": false,
+    "publication": false,
+    "focusedReview": {
+      "seat": "fresh Sol/high m1_smoke_identity_review then same-seat focused readback",
+      "initialFinding": "Two downstream smoke instruments retained the same incorrect frozen-source/workflow-SHA equality. Logic and exact callsites confirmed before repair.",
+      "result": "SOURCE_ONLY_NO_REMAINING_FINDING_AFTER_FOUR_CI_FILE_REPAIR",
+      "cloudOrWin11Acceptance": false
+    },
+    "cloudInstalledSmokeRetry": {
+      "runId": 36791836753,
+      "attempt": 1,
+      "state": "PASS",
+      "smokeArtifactId": 11133131768,
+      "negativeArtifactId": 11133041773,
+      "smokeJsonSha256": "ee3fdb3358e47f406789ae7abff872ce97a529d2b57308c863fbcce10fc3a851",
+      "negativeJsonSha256": "aedcf2f9f718eeb716148e8ec977558d0f09ac88c979e2efb12e3639cb87bead",
+      "actualInstalledProductPositiveAndNegative": "PASS",
+      "installedReadiness": "PASS",
+      "uninstall": "PASS",
+      "negativeAxesPassed": 5,
+      "negativeAxesFailed": 0,
+      "sourceAndSmokeIdentitiesSeparated": true,
+      "hygieneRunId": 36791840046,
+      "hygiene": "PASS"
+    },
+    "ordinaryInstall": {
+      "version": "0.1.13",
+      "installationRoot": "%LOCALAPPDATA%/gogoke37-m1-b989cd53",
+      "installerExitCode": 0,
+      "installedShellNativeHostNodeAndIndexHashes": "PASS_EXACT_FROZEN_INPUT",
+      "actualBootstrap": {
+        "generationId": "4a1635b2f797a02cea12636dc70a0fc2eff08e596d2aade445bd08e0354954f0",
+        "setId": "c13ca7728fb7a4ba9be8e96fca5098ed2d65995a00cd5baa57ab69120b764466",
+        "version": "0.1.13"
+      },
+      "actualNativeInstanceRegistration": "APPLIED",
+      "actualFInstallState": {
+        "status": "APPLIED",
+        "installed": true
+      },
+      "instanceId": "codexTestM1",
+      "domainId": "gogokeSeatTestbedM1",
+      "instanceCapWrite": "APPLIED_VALUE_4",
+      "instanceCapacityReadback": "4",
+      "projectCapWrite": "APPLIED_VALUE_4",
+      "templateId": "codexSolHighM1",
+      "seatId": "codexSeatM1",
+      "seatLayer": "USER",
+      "permissionTier": "ISOLATED_WRITE",
+      "model": "gpt-6-sol",
+      "effort": "high",
+      "worktreeSourceRegistration": "APPLIED",
+      "seatCreationAndInstanceBinding": "APPLIED",
+      "hostCreatedWorktree": {
+        "baselineCommit": "3ed431cc8af5d1f9de4a17dc866a8fb04d0e9d1d",
+        "classification": "SINGLE",
+        "repositoryId": "gogokeSeatTestbed",
+        "seatId": "codexSeatM1",
+        "worktreeId": "codexWorktreeM1"
+      },
+      "worktreeCreateStatus": "APPLIED",
+      "formalBeforeAfter": {
+        "files": "UNCHANGED",
+        "data": "UNCHANGED",
+        "HKCURegistration": "UNCHANGED",
+        "shortcuts": "UNCHANGED",
+        "changedItems": 0,
+        "baselineRephotographedAfterActualOrdinaryPathVerification": true,
+        "activeCandidateFilesExcludedFromFormalSnapshot": true
+      },
+      "loginStarted": false,
+      "authenticatedModelQuestionCompact": "NOT_RUN"
+    },
+    "privatePreparation": {
+      "privateDirectory": "%USERPROFILE%/AppData/Local/Packages/OpenAI.Codex_2p2nqsd0c76g0/LocalCache/Local/gogoke-agent-tmp/gogoke37-m1-candidate-b989cd53",
+      "heldTaskNameFile": "held-task-name.txt",
+      "productEndpointFile": "installed-product-endpoint.json",
+      "heldTask": "Interactive/Limited; remains running to retain the exact installed product for OT4; four-hour task limit",
+      "completedOwnedTasksRemoved": true,
+      "retainedPrivateInstallationInstanceHomeWorktreeSourceAndEvidence": "Required for OT4 and subsequent M1; no credentials read or login invoked"
+    },
+    "readinessReceipt": "artifacts/gogoke-37/win11/M1-OT4-READINESS.json"
+  },
+  "fetch_measurement_correction": "Repository fetch config tracks the historical execution branch only. Fetching bare main did not update origin/main. Explicit refs/heads/main:refs/remotes/origin/main and inbox refspecs corrected remote-tracking readback before any dispatch.",
+  "open_next": [
+    "OT4 independent instance login",
+    "Actual authenticated model/native question/append/compact and remaining M1 integration readbacks"
+  ],
+  "public_hygiene_final": {
+    "state": "PASS",
+    "committedTreeFilesScanned": 24832,
+    "leaks": 0,
+    "nativeProductByteChange": false
+  },
+  "current_login_repair": "artifacts/gogoke-37/checkpoints/M1-OT4-LOGIN-EVIDENCE-REPAIR.json",
+  "current_runtime_source": "1b14a7e0b12c9f4c01f3a193db386acaf41fb634",
+  "current_owner_touchpoint": "OWNER_WINDOWS_IDENTITY_SERVICE_SCOPE_DECISION; same-identity curl single lpacIdentityServices restores TLS, fixed CLI unchanged, ordinary control reaches device guidance; M1 not complete"
+}

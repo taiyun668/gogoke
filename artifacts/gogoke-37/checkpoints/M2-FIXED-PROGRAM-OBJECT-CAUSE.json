@@ -1,0 +1,35 @@
+{
+  "schema": "gogoke.37.light-checkpoint.v1",
+  "stage": "M2_IN_PROGRESS",
+  "acceptance": false,
+  "changes": [
+    "Confirm the two original provider prelaunch failures from the fixed catalog program objects: ordinary non-reparse files, two hard links, and unchanged registered program hashes. The native catalog path source matches the ordinary-view measurement.",
+    "Assign a dedicated catalog-program capture/grant/verification path. Keep the generic single-link data checks and the Code Mode, compatibility-module and credential-alias guards unchanged.",
+    "Integrate the original M2 Host-seal E2E driver and initialize the existing User host after each V08 product relaunch."
+  ],
+  "result": [
+    "Fresh independent all-axis risk review supports the bounded program RX compatibility change. No repair bytes or Win11 repair result exist yet.",
+    "Claude and OpenCode original prelaunch claims remain retained. Both normal product closes exited 0; the five formal protection groups, candidate memory fields and ledger identity compared unchanged.",
+    "The original two-seat V08 run has observed native submit, rejection with reason, resubmit and cap-state receipts, plus denied bypass, cap-blocked submit and expired-grant calls. It is still running; closed native readback and final protection comparison are pending.",
+    "H unstarted settlement and F Host-seal library checks are running in cloud. A fresh focused reviewer is examining their exact sources; skipped suites are not credited."
+  ],
+  "decision": "Use a catalog-program-only compatibility path because the rejected objects have only an existing bound READ|EXEC purpose. Do not relax a writable data predicate, change a CLI, increase a capability, synthesize STOPPED, or replay the retained failed opens.",
+  "threat_model": "Owner already has full write rights as the same ordinary user; that condition is existing legacy. The LPAC model is an untrusted principal and must retain only exact, non-inherited program READ|EXEC. It receives no program WRITE, DELETE, WRITE_DAC or WRITE_OWNER. A second name for the same physical program is not another data grant.",
+  "limits": "The existing process preparation checks actual image digest, suspended token, Job and PID/creation time. It does not assert actual process-image FileID equality or a long-lived no-write program handle. New metadata is not retroactively credited to failed historical H capture.",
+  "reference": {
+    "checked": [
+      "Current main AGENTS.md and model-routing.md",
+      "gogo-party seat-runtime spawn and protocol permission mapping",
+      "Existing purpose-specific CredentialBinding and Code Mode object checks",
+      "Native catalog, LaunchEvidence and isolation program capture/grant/verification chain",
+      "Ordinary-view exact program metadata, registered digest and native known-folder path readbacks",
+      "Microsoft hard-link and file identity API documentation",
+      "Existing cloud fixed-Claude fixture uses a copied single-link program"
+    ],
+    "adopted": "Reuse purpose-specific physical-object binding and exact no-inheritance RX ACL verification.",
+    "difference": "The ordinary read-only executable object accepts its existing hard-link layout. Writable data and separately constrained components keep their original single-link rules; the cloud regression must use real hard links."
+  },
+  "next": "Complete the dedicated program fix and its cloud boundary checks, finish original V08 readback, integrate independently reviewed H/F changes, and cut one exact candidate at the stable point for actual provider and M2 verification.",
+  "original_failure": "native session launch: DirectoryNotPhysical; uncreated credential settlement: Ok(())",
+  "publicRelease": false
+}
