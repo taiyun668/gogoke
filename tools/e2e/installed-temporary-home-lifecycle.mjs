@@ -4,13 +4,31 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { createStartupHomeLifecycle } from './installed-startup-home-lifecycle.mjs';
+import { requireRecordedNormalClose } from './causal-close/causal-close.mjs';
 
 const digest = value => createHash('sha256').update(value, 'utf8').digest('hex');
 const fileDigest = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const nonempty = value => typeof value === 'string' && value.length > 0;
 const createHomeFor = request => request?.family === 'K-SESSION' &&
   ['admission-reserve', 'resume'].includes(request.operation);
+
+export function exactAdmissionResubmissionReply(record) {
+  const q = record?.request, r = record?.receipt;
+  const applied = ['APPLIED', 'REPLAYED'].includes(r?.status);
+  return q?.schema === 'gogoke.37.operations.v1' && q.family === 'K-SESSION' &&
+    q.operation === 'admission-reserve' && q.expectedRevision === '0' &&
+    typeof q.payload?.generation === 'string' && /^(0|[1-9][0-9]*)$/.test(q.payload.generation) &&
+    record.rawFrame === JSON.stringify(q) && r?.schema === q.schema &&
+    r.requestId === q.requestId && r.targetId === q.targetId &&
+    r.family === q.family && r.operation === q.operation &&
+    ['APPLIED', 'REPLAYED', 'DENIED', 'UNKNOWN', 'CONFLICT', 'STALE'].includes(r.status) &&
+    r.previousRevision === q.expectedRevision && r.revision === (applied ? '1' : '0') &&
+    r.result !== null && typeof r.result === 'object' && !Array.isArray(r.result) &&
+    (applied ? r.result.generation === q.payload.generation && Object.keys(r.result).join('|') === 'generation'
+      : r.result.generation === undefined || r.result.generation === q.payload.generation);
+}
 
 export function assertSupportedTemporaryHomeOperation(request) {
   if (request?.family === 'K-SESSION' && ['compact', 'renew-session'].includes(request.operation)) {
@@ -27,7 +45,8 @@ function persist(manifestPath, manifest) {
 function stopProof(record) {
   const request = record?.request;
   const receipt = record?.receipt;
-  const exactReply = request && record.rawFrame === JSON.stringify(request) &&
+  const exactReply = request?.schema === 'gogoke.37.operations.v1' && receipt?.schema === request.schema &&
+    record.rawFrame === JSON.stringify(request) &&
     receipt?.requestId === request.requestId && receipt?.targetId === request.targetId &&
     receipt?.family === request.family && receipt?.operation === request.operation;
   return exactReply && request.family === 'K-SESSION' && request.operation === 'stop' &&
@@ -39,7 +58,8 @@ function stopProof(record) {
 function matchesRequestReply(record, family, operation, allowed) {
   const request = record?.request;
   const receipt = record?.receipt;
-  return request?.family === family && request?.operation === operation &&
+  return request?.schema === 'gogoke.37.operations.v1' && receipt?.schema === request.schema &&
+    request.family === family && request.operation === operation &&
     record.rawFrame === JSON.stringify(request) && receipt?.requestId === request.requestId &&
     receipt?.targetId === request.targetId && receipt?.family === family &&
     receipt?.operation === operation && allowed.includes(receipt.status);
@@ -48,16 +68,38 @@ function matchesRequestReply(record, family, operation, allowed) {
 function closeReceipt(record, requestId, targetId) {
   const receipt = record?.receipt;
   const result = receipt?.result;
-  return receipt?.requestId === requestId && receipt?.targetId === targetId &&
+  return receipt?.schema === 'gogoke.37.operations.v1' &&
+    receipt.requestId === requestId && receipt?.targetId === targetId &&
     receipt?.family === 'K-INSTANCE' && receipt?.operation === 'temporary-home-close' &&
     ['APPLIED', 'REPLAYED'].includes(receipt.status) &&
-    String(receipt.previousRevision) === '1' && String(receipt.revision) === '2' &&
+    receipt.previousRevision === '1' && receipt.revision === '2' &&
     nonempty(result?.homeId) && nonempty(result?.nativeReceiptId) &&
     nonempty(result?.proofKind) && nonempty(result?.sourceFingerprint) &&
     result?.state === 'CLOSED';
 }
 
-export function createTemporaryHomeLifecycle(product, manifestPath) {
+function releaseReceipt(record, attempt, producer, stopRecord) {
+  const request = record?.request;
+  const receipt = record?.receipt;
+  const stopRevision = stopRecord?.receipt?.revision;
+  return request?.schema === 'gogoke.37.operations.v1' && receipt?.schema === request.schema &&
+    request.family === 'K-SESSION' && request.operation === 'admission-release' &&
+    request.domainId === attempt.domainId && request.targetId === attempt.sessionId &&
+    typeof stopRevision === 'string' && /^(0|[1-9][0-9]*)$/.test(stopRevision) &&
+    request.expectedRevision === stopRevision &&
+    request.payload?.generation === String(attempt.generation) &&
+    request.payload?.seatId === producer.seatId &&
+    Object.keys(request.payload ?? {}).sort().join('|') === 'generation|seatId' &&
+    record.rawFrame === JSON.stringify(request) &&
+    receipt?.requestId === request.requestId && receipt?.targetId === request.targetId &&
+    receipt?.family === request.family && receipt?.operation === request.operation &&
+    ['APPLIED', 'REPLAYED'].includes(receipt.status) &&
+    receipt.result?.generation === String(attempt.generation) &&
+    receipt.previousRevision === request.expectedRevision &&
+    receipt.revision === String(BigInt(stopRevision) + 1n);
+}
+
+export function createTemporaryHomeLifecycle(product, manifestPath, restore = null) {
   if (!path.isAbsolute(manifestPath) || fs.existsSync(manifestPath) || fs.existsSync(`${manifestPath}.tmp`)) {
     throw Error('Fresh private temporary-HOME attempt manifest path required');
   }
@@ -65,8 +107,63 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
   const domainId = product.config.domainId;
   const config = product.config;
   const readbackConfig = config.temporaryHomeReadback;
+  const restored = restore !== null;
+  const originalManifestOrigin = restore?.originalManifestOrigin ?? manifestPath;
+  const readbackDirectory = restored
+    ? path.dirname(path.resolve(originalManifestOrigin)) : config.evidenceDirectory;
+  if (restored) {
+    const configuredPins = config.temporaryHomeReadback;
+    const originalPins = restore.readbackSourcePins;
+    if (!path.isAbsolute(originalManifestOrigin) || !fs.existsSync(originalManifestOrigin) ||
+        !/^[a-f0-9]{64}$/.test(restore.originalManifestSha256 ?? '') ||
+        fileDigest(originalManifestOrigin) !== restore.originalManifestSha256 ||
+        path.resolve(originalManifestOrigin) === path.resolve(manifestPath) ||
+        path.dirname(path.resolve(originalManifestOrigin)) !== path.dirname(path.resolve(manifestPath)) ||
+        !restore.manifest || restore.manifest.schema !== 'gogoke.37.temporary-home-attempts.v1' ||
+        restore.manifest.caseId !== journal.caseId || restore.manifest.domainId !== domainId ||
+        !Array.isArray(restore.manifest.cases) || !Array.isArray(restore.manifest.producers) ||
+        !Array.isArray(restore.manifest.attempts) || !Array.isArray(restore.manifest.authorizedRepairs) ||
+        !restore.baselineReference?.path || !/^[a-f0-9]{64}$/.test(restore.baselineReference.sha256) ||
+        !fs.existsSync(restore.baselineReference.path) ||
+        fileDigest(restore.baselineReference.path) !== restore.baselineReference.sha256 ||
+        (restore.readbackDirectory && (!path.isAbsolute(restore.readbackDirectory) ||
+          path.resolve(restore.readbackDirectory) !== readbackDirectory)) ||
+        !originalPins || !configuredPins ||
+        configuredPins.path !== originalPins.path || configuredPins.sha256 !== originalPins.sha256 ||
+        configuredPins.corePath !== originalPins.corePath || configuredPins.coreSha256 !== originalPins.coreSha256 ||
+        !path.isAbsolute(originalPins.path ?? '') || !path.isAbsolute(originalPins.corePath ?? '') ||
+        !/^[a-f0-9]{64}$/.test(originalPins.sha256 ?? '') ||
+        !/^[a-f0-9]{64}$/.test(originalPins.coreSha256 ?? '') ||
+        fileDigest(originalPins.path) !== originalPins.sha256 ||
+        fileDigest(originalPins.corePath) !== originalPins.coreSha256) {
+      throw Error('Restored temporary-HOME manifest/origin/baseline binding is incomplete');
+    }
+    if (!isDeepStrictEqual(JSON.parse(fs.readFileSync(originalManifestOrigin, 'utf8')),
+      restore.manifest)) throw Error('Restored manifest differs from pinned original content');
+    const baseline = JSON.parse(fs.readFileSync(restore.baselineReference.path, 'utf8'));
+    const baselineInputPath = path.join(readbackDirectory, 'temporary-home-readback-baseline-input.json');
+    if (baseline.schema !== 'gogoke.37.temporary-home-readback.v1' || baseline.mode !== 'baseline' ||
+        baseline.state !== 'BASELINE_MEASURED' || baseline.caseId !== journal.caseId ||
+        baseline.domainId !== domainId || baseline.source?.manifestOrigin !== originalManifestOrigin ||
+        !isDeepStrictEqual(baseline.source.reader, { path: originalPins.path, sha256: originalPins.sha256 }) ||
+        !isDeepStrictEqual(baseline.source.core, { path: originalPins.corePath, sha256: originalPins.coreSha256 }) ||
+        !fs.existsSync(baselineInputPath) || fileDigest(baselineInputPath) !== baseline.source.inputSha256 ||
+        JSON.parse(fs.readFileSync(baselineInputPath, 'utf8')).stateRoot !== config.stateRoot ||
+        !baseline.source.manifest?.path ||
+        fileDigest(baseline.source.manifest.path) !== baseline.source.manifest.sha256) {
+      throw Error('Restored baseline original case/root/reader/source chain differs');
+    }
+    for (const row of [...restore.manifest.startupAttempts, ...restore.manifest.noStartupHomes]) {
+      const source = row.launchSource;
+      if (!source?.path || !/^[a-f0-9]{64}$/.test(source.sha256) ||
+          !path.isAbsolute(source.path) || !fs.existsSync(source.path) ||
+          fileDigest(source.path) !== source.sha256) {
+        throw Error('Restored startup source binding is incomplete');
+      }
+    }
+  }
   let activeCaseId = null;
-  const manifest = {
+  const manifest = restored ? structuredClone(restore.manifest) : {
     schema: 'gogoke.37.temporary-home-attempts.v1',
     caseId: journal.caseId,
     domainId,
@@ -76,10 +173,15 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
     attempts: [],
     notAcceptance: true,
   };
+  if (restored) {
+    manifest.originalCaseState = restore.manifest.state;
+    manifest.restoreOrigin = { path: originalManifestOrigin, sha256: restore.originalManifestSha256 };
+    manifest.state = 'RESTORED_CASE_RUNNING';
+  }
   persist(manifestPath, manifest);
 
   const save = () => persist(manifestPath, manifest);
-  let baselineReference = null;
+  let baselineReference = restored ? { ...restore.baselineReference } : null;
   const producerFor = request => manifest.producers.find(row =>
     row.domainId === request.domainId && row.sessionId === request.targetId);
   const attemptFor = requestId => manifest.attempts.find(row => row.originalCreateRequestId === requestId);
@@ -98,9 +200,9 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
   const runReadback = async (mode, baseline = null, phase = mode) => {
     const pins = requireReadbackPins();
     if (!/^(baseline|verify|startup-\d+)$/.test(phase)) throw Error('Invalid shared readback phase');
-    const inputPath = path.join(config.evidenceDirectory, `temporary-home-readback-${phase}-input.json`);
-    const outputPath = path.join(config.evidenceDirectory, `temporary-home-readback-${phase}.json`);
-    const snapshotPath = path.join(config.evidenceDirectory, `temporary-home-readback-${phase}-manifest.json`);
+    const inputPath = path.join(readbackDirectory, `temporary-home-readback-${phase}-input.json`);
+    const outputPath = path.join(readbackDirectory, `temporary-home-readback-${phase}.json`);
+    const snapshotPath = path.join(readbackDirectory, `temporary-home-readback-${phase}-manifest.json`);
     if (fs.existsSync(inputPath) || fs.existsSync(outputPath) || fs.existsSync(snapshotPath)) {
       throw Error(`Temporary-HOME ${phase} readback evidence already exists; no overwrite`);
     }
@@ -113,7 +215,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
       readerSha256: pins.sha256,
       core: { path: pins.corePath, sha256: pins.coreSha256 },
       manifest: { path: snapshotPath, sha256: fileDigest(snapshotPath) },
-      manifestOrigin: manifestPath,
+      manifestOrigin: originalManifestOrigin,
       authorizedRepairs: mode === 'baseline' ? (readbackConfig.authorizedRepairs ?? []) : [],
       baseline,
     };
@@ -154,12 +256,20 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
     row.request.operation === operation &&
     (generation === undefined || String(row.request.payload?.generation ?? '') === String(generation)));
 
-  const startup = createStartupHomeLifecycle(product, manifest, save, runReadback, () => baselineReference);
+  const startupRestore = restored ? (restore.startupState ?? {
+    current: manifest.startupAttempts.length ? manifest.startupAttempts.at(-1) : null,
+    expectedNoCreate: manifest.noStartupHomes.length ? manifest.noStartupHomes.at(-1) : null,
+    launches: manifest.startupAttempts.length,
+  }) : null;
+  const startup = createStartupHomeLifecycle(product, manifest, save, runReadback, () => baselineReference,
+    restored ? { ...startupRestore, originalManifestOrigin,
+      originalManifestSha256: restore.originalManifestSha256 } : null);
   save();
   const lifecycle = {
     manifestPath,
     manifest,
     async captureBaseline() {
+      if (restored) throw Error('Restored temporary-HOME lifecycle cannot recapture the original baseline');
       if (manifest.attempts.length !== 0) throw Error('Temporary-HOME baseline must precede every create attempt');
       const { report, reference } = await runReadback('baseline', null);
       baselineReference = { path: path.join(config.evidenceDirectory, reference.file),
@@ -169,7 +279,13 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
     },
     beforeProductLaunch: () => startup.beforeLaunch(),
     afterProductLaunch: () => startup.afterLaunch(),
+    observeRetainedNoStartup() {
+      if (!restored || activeCaseId !== journal.caseId)
+        throw Error('Retained startup metadata read requires the restored original case');
+      return startup.observeRetainedNoStartup();
+    },
     beginCase(caseId) {
+      if (restored) throw Error('Restored temporary-HOME lifecycle requires restoreCase; beginCase would create a new anchor');
       if (!nonempty(caseId) || activeCaseId !== null || manifest.cases.some(row => row.caseId === caseId)) {
         throw Error('Unique temporary-HOME case anchor required');
       }
@@ -177,7 +293,92 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
       activeCaseId = caseId;
       save();
     },
+    restoreCase(caseId) {
+      if (!restored || !nonempty(caseId) || activeCaseId !== null) {
+        throw Error('Restored temporary-HOME case anchor is not available');
+      }
+      const rows = manifest.cases.filter(row => row.caseId === caseId);
+      if (rows.length !== 1 || activeCaseId !== null) throw Error('Restored temporary-HOME case is not unique');
+      activeCaseId = caseId;
+      rows[0].originalState = rows[0].originalState ?? rows[0].state;
+      rows[0].state = 'RUNNING';
+      save();
+      return rows[0];
+    },
+    restoreProducer(session, instanceId, caseId = journal.caseId) {
+      if (!restored || !session || !nonempty(session.id) || !nonempty(instanceId) ||
+          !Array.isArray(journal.sessions) || !journal.sessions.includes(session) ||
+          caseId !== activeCaseId) {
+        throw Error('Restored temporary-HOME producer requires the exact existing session');
+      }
+      const rows = manifest.producers.filter(row => row.sessionId === session.id &&
+        row.domainId === domainId && row.instanceId === instanceId && row.caseId === caseId);
+      if (rows.length !== 1) throw Error('Restored temporary-HOME producer is not unique');
+      return rows[0];
+    },
+    beforeAdmissionResubmission(originalRecord, record, continuation = {}) {
+      if (!restored) throw Error('Denied admission resubmission requires a restored lifecycle');
+      const request = originalRecord?.request;
+      const attempt = attemptFor(request?.requestId);
+      const producer = request && producerFor(request);
+      if (!attempt || !producer || activeCaseId !== attempt.caseId ||
+          !manifest.cases.some(row => row.caseId === attempt.caseId) ||
+          producer.caseId !== attempt.caseId || producer.instanceId !== attempt.instanceId ||
+          request.domainId !== attempt.domainId || request.targetId !== attempt.sessionId ||
+          request.payload?.seatId !== producer.seatId ||
+          String(request.payload?.generation) !== String(attempt.producerGeneration) ||
+          String(attempt.generation) !== String(attempt.producerGeneration) ||
+          !journal.operations.includes(originalRecord) ||
+          originalRecord.rawFrame !== attempt.originalCreateRawFrame ||
+          digest(originalRecord.rawFrame) !== attempt.originalCreateRawSha256 ||
+          !isDeepStrictEqual(originalRecord.receipt, attempt.receipt) ||
+          !matchesRequestReply(originalRecord, 'K-SESSION', 'admission-reserve', ['DENIED']) ||
+          attempt.closeDispatchState !== 'NOT_DISPATCHED' || attempt.resubmissions?.length) {
+        throw Error('Denied admission resubmission is not the exact first owned attempt');
+      }
+      attempt.originalReceipt = structuredClone(attempt.receipt);
+      attempt.resubmissions = [{ requestId: request.requestId,
+        rawFrame: record.rawFrame, rawSha256: record.originalRawSha256,
+        dispatchState: 'PERSISTED_BEFORE_DISPATCH', continuation }];
+      record.temporaryHomeResubmissionRequestId = request.requestId;
+      save();
+    },
+    afterAdmissionResubmission(record) {
+      const attempt = attemptFor(record.resubmissionOf);
+      if (!attempt?.resubmissions || attempt.resubmissions.length !== 1) {
+        throw Error('Denied admission resubmission tracking is missing');
+      }
+      if (!exactAdmissionResubmissionReply(record) ||
+          record.rawFrame !== attempt.originalCreateRawFrame ||
+          record.request.requestId !== attempt.originalCreateRequestId) {
+        throw Error('Denied admission resubmission receipt does not match the original request');
+      }
+      const observation = attempt.resubmissions[0];
+      observation.receipt = record.receipt;
+      observation.dispatchState = 'RECEIPT_RECORDED';
+      observation.status = record.receipt?.status ?? 'UNKNOWN';
+      if (record.receipt?.status === 'APPLIED') {
+        attempt.resubmissionReceipt = record.receipt;
+        attempt.resubmissionState = 'APPLIED';
+        attempt.receipt = record.receipt;
+        attempt.dispatchState = 'RESUBMITTED_APPLIED';
+      } else {
+        attempt.resubmissionState = `REJECTED_${record.receipt?.status ?? 'UNKNOWN'}`;
+      }
+      save();
+    },
+    afterAdmissionResubmissionError(record, error) {
+      const attempt = attemptFor(record.resubmissionOf);
+      if (!attempt?.resubmissions || attempt.resubmissions.length !== 1) return;
+      attempt.resubmissions[0].dispatchState = 'DISPATCH_RESULT_UNKNOWN';
+      attempt.resubmissions[0].rawReceipt = record.rawReceipt ?? null;
+      attempt.resubmissions[0].unqualifiedReceipt = record.receipt ?? null;
+      attempt.resubmissions[0].error = String(error?.stack ?? error);
+      attempt.resubmissionState = 'UNKNOWN';
+      save();
+    },
     registerProducer(session, instanceId, caseId = journal.caseId) {
+      if (restored) throw Error('Restored lifecycle cannot register another producer');
       if (!session || !nonempty(session.id) || !nonempty(instanceId) ||
           !nonempty(session.seatId) || !nonempty(caseId) || caseId !== activeCaseId ||
           !Array.isArray(journal.sessions) ||
@@ -200,6 +401,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
       const request = record.request;
       assertSupportedTemporaryHomeOperation(request);
       if (createHomeFor(request)) {
+        if (restored) throw Error('Restored lifecycle requires explicit original admission resubmission; no new create');
         const producer = producerFor(request);
         if (!producer || producer.caseId !== activeCaseId || request.domainId !== domainId ||
             request.targetId !== producer.sessionId ||
@@ -223,6 +425,12 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
           closeRequestId: null,
           closeRawFrame: null,
           closeReceipt: null,
+          releaseDispatchState: 'NOT_DISPATCHED',
+          releaseRequestId: null,
+          releaseRawFrame: null,
+          releaseRawSha256: null,
+          releaseReceipt: null,
+          releaseError: null,
           teardownState: 'PENDING',
         };
         manifest.attempts.push(attempt);
@@ -306,6 +514,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
       save();
     },
     beforeReconciliation(originalRecord) {
+      if (restored) throw Error('Restored lifecycle permits only the explicit original DENIED admission resubmission');
       const request = originalRecord?.request;
       assertSupportedTemporaryHomeOperation(request);
       const attempt = attemptFor(request?.requestId);
@@ -400,6 +609,97 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
           rawSha256: digest(stops[0].rawFrame),
           stopFact: stopProof(stops[0]),
         };
+        attempt.releaseDispatchState ??= 'NOT_DISPATCHED';
+        const releases = journal.operations.filter(row =>
+          row.request?.family === 'K-SESSION' && row.request.operation === 'admission-release' &&
+          row.request.domainId === attempt.domainId && row.request.targetId === attempt.sessionId &&
+          String(row.request.payload?.generation ?? '') === String(attempt.generation) &&
+          row.request.payload?.seatId === producer.seatId);
+        if (attempt.releaseDispatchState !== 'NOT_DISPATCHED' && releases.length === 0) {
+          attempt.releaseDispatchState = attempt.releaseDispatchState === 'RECEIPT_RECORDED'
+            ? 'RECEIPT_MISSING_OR_AMBIGUOUS' : attempt.releaseDispatchState;
+          attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_RELEASE_PROVENANCE_MISSING';
+          errors.push(`${attempt.originalCreateRequestId}: release history is incomplete; no replay`);
+          save();
+          continue;
+        }
+        if (releases.length > 1) {
+          attempt.releaseDispatchState = 'DUPLICATE_OR_AMBIGUOUS';
+          attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_RELEASE_DUPLICATE';
+          errors.push(`${attempt.originalCreateRequestId}: more than one matching H release; no replay`);
+          save();
+          continue;
+        }
+        const existingRelease = releases[0];
+        if (existingRelease) {
+          attempt.releaseRequestId = existingRelease.request?.requestId ?? null;
+          attempt.releaseRawFrame = existingRelease.rawFrame ?? null;
+          attempt.releaseRawSha256 = typeof existingRelease.rawFrame === 'string'
+            ? digest(existingRelease.rawFrame) : null;
+          attempt.releaseReceipt = existingRelease.receipt ?? null;
+          if (!releaseReceipt(existingRelease, attempt, producer, stops[0])) {
+            attempt.releaseDispatchState = existingRelease.receipt ? 'RECEIPT_RECORDED' : 'DISPATCH_RESULT_UNKNOWN';
+            attempt.releaseError = existingRelease.originalError ??
+              `Existing H release status=${existingRelease.receipt?.status ?? 'UNKNOWN'}`;
+            attempt.teardownState = `CASE_TEARDOWN_INCOMPLETE_RELEASE_${existingRelease.receipt?.status ?? 'UNKNOWN'}`;
+            errors.push(`${attempt.originalCreateRequestId}: existing H release is not an applied exact receipt; no replay`);
+            save();
+            continue;
+          }
+          attempt.releaseDispatchState = 'RECEIPT_RECORDED';
+          attempt.hReleaseSource = {
+            requestId: existingRelease.request.requestId,
+            rawFrame: existingRelease.rawFrame,
+            rawSha256: digest(existingRelease.rawFrame),
+            receipt: existingRelease.receipt,
+          };
+          save();
+        } else {
+          try {
+            const released = await product.operation('K-SESSION', 'admission-release', attempt.sessionId,
+              { generation: String(attempt.generation), seatId: producer.seatId },
+              stops[0].receipt.revision, ['APPLIED', 'REPLAYED']);
+            const release = journal.operations.at(-1);
+            if (!releaseReceipt(release, attempt, producer, stops[0]) || release.receipt !== released) {
+              throw Error('New H release receipt did not prove the exact stopped claim was released');
+            }
+            attempt.releaseDispatchState = 'RECEIPT_RECORDED';
+            attempt.releaseRequestId = release.request.requestId;
+            attempt.releaseRawFrame = release.rawFrame;
+            attempt.releaseRawSha256 = digest(release.rawFrame);
+            attempt.releaseReceipt = release.receipt;
+            attempt.hReleaseSource = {
+              requestId: release.request.requestId,
+              rawFrame: release.rawFrame,
+              rawSha256: digest(release.rawFrame),
+              receipt: release.receipt,
+            };
+            save();
+          } catch (error) {
+            const release = journal.operations.at(-1);
+            const sameRelease = release?.request?.family === 'K-SESSION' &&
+              release.request.operation === 'admission-release' &&
+              release.request.domainId === attempt.domainId &&
+              release.request.targetId === attempt.sessionId &&
+              String(release.request.payload?.generation ?? '') === String(attempt.generation) &&
+              release.request.payload?.seatId === producer.seatId;
+            if (sameRelease) {
+              attempt.releaseDispatchState = release.receipt ? 'RECEIPT_RECORDED' : 'DISPATCH_RESULT_UNKNOWN';
+              attempt.releaseRequestId = release.request.requestId;
+              attempt.releaseRawFrame = release.rawFrame;
+              attempt.releaseRawSha256 = digest(release.rawFrame);
+              attempt.releaseReceipt = release.receipt ?? null;
+              attempt.releaseError = String(error?.stack ?? error);
+            } else {
+              attempt.releaseDispatchState = 'DISPATCH_RESULT_UNKNOWN';
+              attempt.releaseError = String(error?.stack ?? error);
+            }
+            attempt.teardownState = `CASE_TEARDOWN_INCOMPLETE_RELEASE_${release?.receipt?.status ?? 'UNKNOWN'}`;
+            errors.push(`${attempt.originalCreateRequestId}: H release failed or unknown; no F close`);
+            save();
+            continue;
+          }
+        }
         save();
         if (attempt.closeDispatchState !== 'NOT_DISPATCHED') {
           if (!closeReceipt({ receipt: attempt.closeReceipt }, attempt.closeRequestId, attempt.instanceId)) {
@@ -513,16 +813,27 @@ export function createTemporaryHomeLifecycle(product, manifestPath) {
       return valid;
     },
     async verifyClosedReadback() {
-      const latestClose = journal.closes?.at(-1);
-      const actualClose = latestClose && product.endpoint && product.child &&
-        latestClose.pid === product.endpoint.pid && latestClose.forceKill === false &&
-        latestClose.exitCode === product.child.exitCode && product.child.exitCode !== null;
+      let actualClose = null;
+      let normalCloseError = null;
+      if (restored) {
+        try { actualClose = requireRecordedNormalClose(journal, product.endpoint, undefined, config); }
+        catch (error) { normalCloseError = String(error?.stack ?? error); actualClose = null; }
+      } else {
+        // Preserve the existing fresh-case producer contract. Its normal close
+        // records a real NodeChild and nativeCloseObservations, not a causal attempt.
+        const latestClose = journal.closes?.at(-1);
+        actualClose = latestClose && product.endpoint && product.child &&
+          latestClose.pid === product.endpoint.pid && latestClose.forceKill === false &&
+          latestClose.exitCode === product.child.exitCode && product.child.exitCode !== null;
+      }
       if (!baselineReference || !actualClose || manifest.cases.some(row => row.state === 'RUNNING')) {
         manifest.state = 'CASE_TEARDOWN_INCOMPLETE';
         manifest.sharedReadback = 'NOT_RUN_BASELINE_OR_NORMAL_CAPTION_CLOSE_MISSING';
+        manifest.sharedReadbackError = normalCloseError;
         save();
         journal.temporaryHomeLifecycle = { manifest: path.basename(manifestPath),
-          state: manifest.state, independentSharedReadback: manifest.sharedReadback };
+          state: manifest.state, independentSharedReadback: manifest.sharedReadback,
+          error: normalCloseError };
         product.save();
         return false;
       }

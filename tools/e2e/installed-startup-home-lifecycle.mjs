@@ -4,6 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 const digest = value => createHash('sha256').update(value, 'utf8').digest('hex');
 const loadedPath = fileURLToPath(import.meta.url);
 const sourceHash = () => createHash('sha256').update(fs.readFileSync(loadedPath)).digest('hex');
@@ -13,11 +14,13 @@ export function startupLifecycleSource() {
   return { path: loadedPath, sha256: loadedHash };
 }
 const nonempty = value => typeof value === 'string' && value.length > 0;
-const exactReply = row => row?.rawFrame === JSON.stringify(row.request) &&
+const exactReply = row => row?.request?.schema === 'gogoke.37.operations.v1' &&
+  row.receipt?.schema === row.request.schema && row.rawFrame === JSON.stringify(row.request) &&
   row.receipt?.requestId === row.request.requestId &&
   row.receipt?.targetId === row.request.targetId &&
   row.receipt?.family === row.request.family && row.receipt?.operation === row.request.operation;
-const closed = row => ['APPLIED', 'REPLAYED'].includes(row?.closeReceipt?.status) &&
+const closed = row => row?.closeReceipt?.schema === 'gogoke.37.operations.v1' &&
+  ['APPLIED', 'REPLAYED'].includes(row.closeReceipt.status) &&
   row.closeReceipt.result?.state === 'CLOSED' &&
   row.closeReceipt.previousRevision === '1' && row.closeReceipt.revision === '2';
 const refused = row => {
@@ -38,15 +41,30 @@ const refused = row => {
 };
 const check = (ok, reason) => { if (!ok) throw Error(reason); };
 
-export function createStartupHomeLifecycle(product, manifest, save, runReadback, baseline) {
+export function createStartupHomeLifecycle(product, manifest, save, runReadback, baseline, restore = null) {
   startupLifecycleSource();
   const journal = product.journal;
-  manifest.startupAttempts = [];
-  manifest.noStartupHomes = [];
-  manifest.authorizedRepairs = [];
-  let current = null;
-  let expectedNoCreate = null;
-  let launches = 0;
+  const restored = restore !== null;
+  if (!restored) {
+    manifest.startupAttempts = [];
+    manifest.noStartupHomes = [];
+    manifest.authorizedRepairs = [];
+  } else {
+    check(Array.isArray(manifest.startupAttempts) && Array.isArray(manifest.noStartupHomes) &&
+      Array.isArray(manifest.authorizedRepairs) && restore.startupAttempts === undefined,
+    'Restored startup arrays must come from the bound manifest exactly once');
+  }
+  const restoredRow = (value, rows) => {
+    if (value == null) return null;
+    const matches = rows.filter(row => isDeepStrictEqual(row, value));
+    check(matches.length === 1, 'Restored startup current row differs from the bound manifest');
+    return matches[0];
+  };
+  let current = restoredRow(restore?.current, manifest.startupAttempts);
+  let expectedNoCreate = restoredRow(restore?.expectedNoCreate, manifest.noStartupHomes);
+  if (restored) check(!manifest.startupAttempts.some(row => !closed(row) && row !== current),
+    'Restored startup state omits an unfinished HOME');
+  let launches = Number.isSafeInteger(restore?.launches) ? restore.launches : 0;
   const all = () => [...manifest.startupAttempts, ...manifest.authorizedRepairs];
   const caseFor = row => manifest.cases.find(value => value.caseId === row.caseId);
   const select = request => {
@@ -105,6 +123,9 @@ export function createStartupHomeLifecycle(product, manifest, save, runReadback,
     'Closed predecessor lacks its exact original native prewrite CONFLICT');
     return receipt;
   };
+  const sameEndpoint = (left, right) => left && right &&
+    ['pid', 'port', 'setId', 'generationId', 'readyPath', 'stderrPath', 'url']
+      .every(key => left[key] === right[key]);
   const closeRow = async row => {
     if (closed(row) || refused(row)) return;
     check(row.closeDispatchState === 'NOT_DISPATCHED',
@@ -120,6 +141,7 @@ export function createStartupHomeLifecycle(product, manifest, save, runReadback,
   };
   return {
     initializeRepairs(report) {
+      if (restored) throw Error('Restored startup lifecycle cannot initialize new repairs');
       for (const intent of report.authorizedRepairs ?? []) {
         check(intent.beforeHome && intent.beforeHome.state === 'ACTIVE' &&
           String(intent.beforeHome.revision) === '1', 'Original explicit repair baseline missing');
@@ -131,6 +153,7 @@ export function createStartupHomeLifecycle(product, manifest, save, runReadback,
       save();
     },
     async beforeLaunch() {
+      if (restored) throw Error('Restored startup lifecycle cannot launch a new product');
       startupLifecycleSource();
       check(baseline(), 'Closed original HOME baseline required before product launch');
       check(!current || closed(current), 'Previous startup HOME is not closed; no successor launch');
@@ -162,6 +185,7 @@ export function createStartupHomeLifecycle(product, manifest, save, runReadback,
       save(); product.save();
     },
     async afterLaunch() {
+      if (restored) throw Error('Restored startup lifecycle cannot observe a new launch');
       startupLifecycleSource();
       const metadata = await readSecretary();
       if (expectedNoCreate) {
@@ -184,6 +208,58 @@ export function createStartupHomeLifecycle(product, manifest, save, runReadback,
       current.bootstrap = metadata;
       current.revision = String(conversation.revision);
       save(); product.save();
+    },
+    async observeRetainedNoStartup() {
+      if (!restored || !expectedNoCreate || manifest.startupAttempts.length !== 0 ||
+          manifest.noStartupHomes.length !== 1 || expectedNoCreate.sourceKind !== 'NATIVE_STARTUP_NO_CREATE' ||
+          expectedNoCreate.state !== 'CLOSED_PREDECESSOR' ||
+          caseFor(expectedNoCreate)?.sourceKind !== 'NATIVE_STARTUP_NO_CREATE' ||
+          Object.hasOwn(expectedNoCreate, 'bootstrap') ||
+          Object.hasOwn(expectedNoCreate, 'retainedMetadataObservation') ||
+          !nonempty(restore.originalManifestOrigin) ||
+          !/^[a-f0-9]{64}$/.test(restore.originalManifestSha256 ?? '') ||
+          !Array.isArray(journal.launches) || journal.launches.length !== 1 ||
+          !Array.isArray(journal.operations) || journal.operations.length !== 0 ||
+          (journal.startupHomeReads?.length ?? 0) !== 0 ||
+          !String(journal.error ?? '').includes('ERR_MODULE_NOT_FOUND') ||
+          !String(journal.error ?? '').includes("@e2e-dev/web") ||
+          !product.socket || product.socket.readyState !== WebSocket.OPEN || product.child || product.tester ||
+          journal.retainedAttachment?.observationMode !== 'ATTACHED_RETAINED_PRODUCT' ||
+          journal.retainedAttachment.ui?.url !== journal.launches[0].url ||
+          journal.retainedAttachment.ui?.home !== true || journal.retainedAttachment.ui?.tauri !== true ||
+          !sameEndpoint(journal.launches[0], product.endpoint) ||
+          !sameEndpoint(journal.launches[0], journal.currentEndpoint) ||
+          !sameEndpoint(journal.launches[0], journal.retainedAttachment.endpoint) ||
+          journal.launches[0].sourceCommit !== product.config.sourceCommit ||
+          journal.launches[0].bootstrap?.setId !== journal.launches[0].setId ||
+          journal.launches[0].bootstrap?.generationId !== journal.launches[0].generationId ||
+          journal.launches[0].ui?.url !== journal.launches[0].url ||
+          journal.launches[0].ui?.home !== true || journal.launches[0].ui?.tauri !== true) {
+        throw Error('Retained no-startup metadata read requires the exact failed original launch and absent bootstrap');
+      }
+      startupLifecycleSource();
+      const observation = { source: 'CURRENT_RETAINED_USER_CONFIGURATION_READ',
+        originalBootstrapMissing: true,
+        originalManifest: { path: restore.originalManifestOrigin, sha256: restore.originalManifestSha256 },
+        originalLaunch: structuredClone(journal.launches[0]),
+        state: 'PERSISTED_BEFORE_READ', startedAt: new Date().toISOString() };
+      expectedNoCreate.retainedMetadataObservation = observation;
+      save();
+      try {
+        const metadata = await readSecretary();
+        noStartupCreated(expectedNoCreate, metadata);
+        expectedNoCreate.bootstrap = metadata;
+        observation.state = 'QUALIFIED_CURRENT_READ';
+        observation.finishedAt = new Date().toISOString();
+        caseFor(expectedNoCreate).state = 'CASE_NO_STARTUP_HOME_PENDING_CLOSED_READBACK';
+        save(); product.save();
+        return metadata;
+      } catch (error) {
+        observation.state = 'UNQUALIFIED_CURRENT_READ';
+        observation.error = String(error?.stack ?? error);
+        save(); product.save();
+        throw error;
+      }
     },
     beforeDispatch(record) {
       startupLifecycleSource();

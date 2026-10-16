@@ -63,10 +63,14 @@ function fixture(name) {
         domainId: 'projectA', targetId, expectedRevision, payload };
       const record = { request, rawFrame: JSON.stringify(request), receipt: null };
       lifecycle.beforeDispatch(record); journal.operations.push(record);
-      record.receipt = { schema: request.schema, family, operation, requestId: request.requestId, targetId,
-        status: 'APPLIED', previousRevision: '1', revision: '2', result: { homeId: 'homeA', state: 'CLOSED',
-          directoryRef: 'temp-home-control', nativeReceiptId: 'f-home-close-v2-control',
-          proofKind: 'ORIGINAL_STOP', sourceFingerprint: 'f'.repeat(64) } };
+      record.receipt = operation === 'admission-release'
+        ? { schema: request.schema, family, operation, requestId: request.requestId, targetId,
+          status: 'APPLIED', previousRevision: String(expectedRevision), revision: String(Number(expectedRevision) + 1),
+          result: { generation: payload.generation } }
+        : { schema: request.schema, family, operation, requestId: request.requestId, targetId,
+          status: 'APPLIED', previousRevision: '1', revision: '2', result: { homeId: 'homeA', state: 'CLOSED',
+            directoryRef: 'temp-home-control', nativeReceiptId: 'f-home-close-v2-control',
+            proofKind: 'ORIGINAL_STOP', sourceFingerprint: 'f'.repeat(64) } };
       lifecycle.afterReceipt(record); return record.receipt;
     } };
   lifecycle = createTemporaryHomeLifecycle(product, path.join(dir, 'own-manifest.json'));
@@ -107,8 +111,8 @@ test('own proven close is dispatched once and another case cannot adopt it', asy
   f.journal.operations.push(f.record('stop', 'ownStop', '1', 'APPLIED', { stopFact: `sha256:${'a'.repeat(64)}` }));
   assert.equal((await f.lifecycle.finishCase('oneClose')).complete, true);
   assert.equal((await f.lifecycle.beforeCaptionClose()).complete, true);
-  assert.equal(f.calls.length, 1);
-  assert.deepEqual(f.calls[0].payload, { sessionId: 'sessionA', originalCreateRequestId: 'createA' });
+  assert.deepEqual(f.calls.map(row => row.operation), ['admission-release', 'temporary-home-close']);
+  assert.deepEqual(f.calls[1].payload, { sessionId: 'sessionA', originalCreateRequestId: 'createA' });
   f.lifecycle.beginCase('differentCase');
   const request = { schema: 'gogoke.37.operations.v1', family: 'K-INSTANCE', operation: 'temporary-home-close',
     requestId: 'otherClose', targetId: 'instanceA', domainId: 'projectA', expectedRevision: '1',

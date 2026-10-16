@@ -3,14 +3,20 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import { id, delay } from './product-cdp.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const decimal = value => typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value);
 const requireFact = (condition, message) => { if (!condition) throw Error(message); };
+const currentHostContinuation = {
+  historicalCore13: '0aacd901483e12de4a4de022acc748f6f8a693075d82d5d5fdf753c11e363adb',
+  closedBaseline: '574ec77d1ed9b12535f32d198a274d660cda179edf8162e3f12b5d0110caad2f',
+  producerJournal: '76069651c7bda35b6535c74e0f3af69da3ae5f6c1be15bb80dbcbba905c3cfbd',
+};
 const binding = ({ id, seatId, instanceId, worktreeId, generation, threadId }) =>
   ({ id, seatId, instanceId, worktreeId, generation, threadId });
-const hostSessionLocator = (domain, cause, policyRevision) => {
+export const hostSessionLocator = (domain, cause, policyRevision) => {
   const parts = ['host-reject-cap', domain, cause, ''].map(value => Buffer.from(value));
   const framed = Buffer.concat(parts.flatMap(part => {
     const size = Buffer.alloc(8); size.writeBigUInt64BE(BigInt(part.length)); return [size, part];
@@ -20,8 +26,184 @@ const hostSessionLocator = (domain, cause, policyRevision) => {
   const trigger = `host-reject-cap-${suffix}`;
   const escalation = `host-escalate-${suffix}`;
   const digest = hash(Buffer.from(`${domain}\n${escalation}\n${trigger}\n${cause}\n${policyRevision}`));
-  return { sessionId: `hostsession-${digest}`, messageId: `hostmsg-${digest}` };
+  return { sessionId: `hostsession-${digest}`, messageId: `hostmsg-${digest}`,
+    trigger, escalation };
 };
+
+export function qualifyHistoricalHostBaseline(before, prior, domainId) {
+  requireFact(prior?.directCaseEvidence === true &&
+    prior.state === 'IMPLEMENTED_CASES_HAVE_DIRECT_EVIDENCE_V08_INCOMPLETE' &&
+    prior.domainId === domainId &&
+    ['head', 'grants', 'gates', 'routes', 'events'].every(name =>
+      JSON.stringify(before.policy[name]) === JSON.stringify(prior.policy[name])) &&
+    before.capacityQualification?.state === 'CAPACITY_4_WITHIN_REFERENCE_OWNER_AND_HOST',
+  'Host-only baseline must continue the closed A policy and actual four-slot capacity');
+}
+
+export function qualifyHostPolicyContinuationReferences(priorCore13, continuation) {
+  requireFact(continuation && Object.keys(continuation).sort().join('|') ===
+    'closedBaseline|producerJournal' &&
+    priorCore13?.finalSha256 === currentHostContinuation.historicalCore13 &&
+    continuation.closedBaseline?.sha256 === currentHostContinuation.closedBaseline &&
+    continuation.producerJournal?.sha256 === currentHostContinuation.producerJournal,
+  'Host policy continuation is limited to the three original sealed sources');
+}
+
+// A later Host attempt can start after an earlier, failed Host delivery wrote
+// real policy facts. Keep the historical core13 proof separate from this exact
+// closed current-policy source; this qualifies only the business fixture.
+export function qualifyHostPolicyContinuation(before, prior, sealed, producer, scope) {
+  const same = isDeepStrictEqual;
+  const domain = scope.domainId;
+  requireFact(prior?.directCaseEvidence === true &&
+    prior.state === 'IMPLEMENTED_CASES_HAVE_DIRECT_EVIDENCE_V08_INCOMPLETE' &&
+    prior.domainId === domain && sealed?.state === 'BASELINE_ONLY_NOT_A_V08_RESULT' &&
+    sealed.directCaseEvidence === false && sealed.schema === before.schema &&
+    sealed.phase === 'before' && sealed.domainId === domain &&
+    sealed.sourceCommit === scope.sourceCommit && sealed.readerSha256 === before.readerSha256 &&
+    sealed.measurementPreservedDatabaseBytes === true && sealed.databaseWrites === false &&
+    sealed.credentialReads === false && sealed.normalClose?.exitCode === 0 &&
+    sealed.normalClose.forceKill === false &&
+    same(prior.rootIdentity, sealed.rootIdentity) && same(sealed.rootIdentity, before.rootIdentity) &&
+    prior.databasePath === sealed.databasePath && sealed.databasePath === before.databasePath &&
+    same(sealed.policy, before.policy) && same(sealed.inbox, before.inbox),
+  'Host current policy differs from the sealed same-Root closed baseline');
+  const capacity = before.capacityQualification;
+  requireFact(capacity?.state === 'CAPACITY_4_WITHIN_REFERENCE_OWNER_AND_HOST' &&
+    capacity.referenceDomainId === scope.capReferenceDomainId &&
+    capacity.referenceOwnerCap >= 4 && capacity.hostMachineLimit >= 4 &&
+    capacity.testDomainId === domain && capacity.testDomainOwnerCap === 4 &&
+    capacity.effectiveTestDomainCap === 4 && same(capacity, sealed.capacityQualification),
+  'Host current four-slot capacity differs');
+  requireFact(producer?.state === 'FAIL_ORIGINAL_REQUESTS_RETAINED' &&
+    producer.domainId === domain && producer.rulesCases?.length === 1 &&
+    producer.rulesCases[0].selection === 'HOST_BUSY_TO_IDLE_ONLY' &&
+    producer.rulesCases[0].state === 'FAILED_OR_NOT_RUN_PRESERVE_ORIGINAL' &&
+    producer.closes?.length === 2 && producer.closes.every(row => row.exitCode === 0 &&
+      row.forceKill === false) && producer.protectionComparison?.allEqual === true,
+  'Original Host producer is not the sealed failed-but-closed case');
+  const owners = producer.operations.filter(row => row.kind === 'V08_OWNER_CONFIGURATION');
+  const actions = producer.rulesCases[0].actions;
+  const hostCases = producer.rulesCases[0].hostCases;
+  requireFact(owners.length === 2 && actions?.length === 2 && hostCases?.length === 1,
+    'Original Host producer has unexpected policy actions');
+  const raw = (value, parsed) => {
+    try { return same(JSON.parse(value), parsed) && value === JSON.stringify(parsed); }
+    catch { return false; }
+  };
+  const [route, gate] = owners;
+  const owner = (row, command, previous, next) => row.request?.schema ===
+      'gogoke.37.owner-configuration.v1' && row.request.command === command &&
+      row.request.domainId === domain && row.request.expectedRevision === previous &&
+      row.receipt?.schema === row.request.schema && row.receipt.command === command &&
+      row.receipt.requestId === row.request.requestId && row.receipt.status === 'APPLIED' &&
+      row.receipt.revision === next && Object.keys(row.receipt).length === 5 &&
+      raw(row.rawFrame, row.request) && raw(row.rawReceipt, row.receipt);
+  const oldHead = prior.policy?.head?.[0], currentHead = sealed.policy?.head?.[0];
+  requireFact(prior.policy.head.length === 1 && sealed.policy.head.length === 1 &&
+    oldHead.domain_id === domain && currentHead.domain_id === domain &&
+    currentHead.current_stage === oldHead.current_stage &&
+    owner(route, 'policy-escalation-route', String(oldHead.revision),
+      (BigInt(oldHead.revision) + 1n).toString()) &&
+    owner(gate, 'policy-gate', route.receipt.revision,
+      (BigInt(route.receipt.revision) + 1n).toString()) &&
+    currentHead.revision === Number(gate.receipt.revision) &&
+    route.request.fromSeatId === scope.submitter.seatId &&
+    route.request.reason === 'REJECT_CAP' &&
+    gate.request.submitterSeatId === scope.submitter.seatId &&
+    gate.request.reviewerSeatId === scope.reviewer.seatId &&
+    gate.request.fromStage === oldHead.current_stage && gate.request.rejectCap === 1,
+  'Original Owner route/gate CAS is not the exact two-revision policy change');
+  const [submit, decide] = actions;
+  const model = (action, operation, previous, next, state, seatId) => {
+    const receipt = action.receipt;
+    return action.binding?.seatId === seatId && action.cliToolStatus === 'completed' &&
+      action.state === 'OBSERVED_NATIVE_RECEIPT_READBACK_REQUIRED' &&
+      action.arguments?.operation === operation &&
+      action.arguments.targetId === gate.request.gateId &&
+      action.arguments.expectedRevision === previous &&
+      receipt?.schema === 'gogoke.37.operations.v1' && receipt.family === 'K-POLICY' &&
+      receipt.operation === operation && receipt.targetId === gate.request.gateId &&
+      receipt.status === 'APPLIED' && receipt.previousRevision === previous &&
+      receipt.revision === next && receipt.result?.policyRevision === gate.receipt.revision &&
+      receipt.result.state === state && raw(action.rawToolReceipt, receipt);
+  };
+  requireFact(model(submit, 'gate-submit', '1', '2', 'SUBMITTED', scope.submitter.seatId) &&
+    model(decide, 'gate-decide', '2', '3', 'ESCALATION_REQUIRED', scope.reviewer.seatId) &&
+    decide.arguments.payload?.decision === 'REJECT' &&
+    decide.arguments.payload.reason === decide.receipt.result.reason &&
+    submit.receipt.result.reason === '',
+  'Original model policy receipts are not the exact submit/reject pair');
+  const host = hostCases[0], locator = hostSessionLocator(domain,
+    decide.receipt.requestId, gate.receipt.revision);
+  requireFact(host.kind === 'BUSY_TO_IDLE_DELIVERY' && host.state === 'ORIGINAL_CAP_OBSERVED' &&
+    host.gateId === gate.request.gateId && host.toStage === gate.request.toStage &&
+    host.sourceSeatId === scope.submitter.seatId && host.causeEventId === decide.receipt.requestId &&
+    host.policyRevision === gate.receipt.revision && host.routeRevision === route.receipt.revision &&
+    host.messageId === locator.messageId && host.queuedRevision === '1' &&
+    host.destination?.seatId === route.request.toSeatId,
+  'Original Host queue identity differs from the policy producer');
+  const old = prior.policy, now = sealed.policy;
+  const oldRows = (name, extra) => Array.isArray(old[name]) && Array.isArray(now[name]) &&
+    now[name].length === old[name].length + extra &&
+    old[name].every((row, index) => same(row, now[name][index]));
+  const expectedRoute = { domain_id: domain, from_seat_id: route.request.fromSeatId,
+    reason: route.request.reason, to_seat_id: route.request.toSeatId,
+    revision: Number(route.receipt.revision) };
+  const routeKey = row => JSON.stringify([row.from_seat_id, row.reason]);
+  const oldRoute = old.routes.find(row => routeKey(row) === routeKey(expectedRoute));
+  const expectedRoutes = old.routes.filter(row => routeKey(row) !== routeKey(expectedRoute));
+  expectedRoutes.push(expectedRoute);
+  requireFact(same(old.grants, now.grants) && same(old.triggers, now.triggers) &&
+    oldRows('gates', 1) && oldRows('escalations', 1) && oldRows('events', 5) &&
+    now.routes.length === old.routes.length + (oldRoute ? 0 : 1) &&
+    expectedRoutes.every(row => now.routes.filter(value => routeKey(value) === routeKey(row) &&
+      same(value, row)).length === 1),
+  'Host policy changed beyond the original Owner and native event rows');
+  const expectedGate = { domain_id: domain, gate_id: gate.request.gateId,
+    submitter_seat_id: gate.request.submitterSeatId, reviewer_seat_id: gate.request.reviewerSeatId,
+    from_stage: gate.request.fromStage, to_stage: gate.request.toStage,
+    reject_cap: gate.request.rejectCap, reject_count: 1, state: 'ESCALATION_REQUIRED',
+    reason: decide.receipt.result.reason, revision: 3 };
+  const expectedEscalation = { domain_id: domain, trigger_id: locator.trigger,
+    request_id: locator.escalation, from_seat_id: scope.submitter.seatId,
+    to_seat_id: route.request.toSeatId, reason: 'REJECT_CAP', state: 'INTENT',
+    delivery_receipt_id: null, revision: 1 };
+  requireFact(same(now.gates.at(-1), expectedGate) &&
+    same(now.escalations.at(-1), expectedEscalation),
+  'Original Host gate or escalation row differs');
+  const eventSources = [
+    [route.request.requestId, 'policy-escalation-route', domain,  Number(route.receipt.revision), 'APPLIED', ''],
+    [gate.request.requestId, 'policy-gate', domain, Number(gate.receipt.revision), 'APPLIED', ''],
+    [submit.receipt.requestId, 'gate-submit', gate.request.gateId, Number(gate.receipt.revision), 'SUBMITTED', ''],
+    [decide.receipt.requestId, 'gate-decide', gate.request.gateId, Number(gate.receipt.revision),
+      'ESCALATION_REQUIRED', decide.receipt.result.reason],
+    [locator.escalation, 'escalate', locator.trigger, Number(gate.receipt.revision),
+      'INTENT', decide.receipt.requestId],
+  ];
+  requireFact(now.events.slice(-5).every((event, index) => {
+    const [id, operation, target, revision, state, detail] = eventSources[index];
+    return Object.keys(event).length === 8 && event.domain_id === domain && event.event_id === id &&
+      event.operation === operation && event.target_id === target && event.policy_revision === revision &&
+      event.state === state && event.detail === detail && /^sha256:[a-f0-9]{64}$/.test(event.fingerprint);
+  }), 'Original Host event suffix differs');
+  requireFact(Array.isArray(prior.inbox?.messages) && Array.isArray(sealed.inbox?.messages) &&
+    sealed.inbox.messages.length === prior.inbox.messages.length + 1 &&
+    prior.inbox.messages.every((row, index) => same(row, sealed.inbox.messages[index])) &&
+    sealed.inbox.messages.at(-1)?.message_id === host.messageId &&
+    sealed.inbox.messages.at(-1)?.state === 'PENDING' &&
+    sealed.inbox.messages.at(-1)?.revision === '1' &&
+    sealed.inbox.messages.at(-1)?.seat_id === route.request.toSeatId &&
+    sealed.inbox.messages.at(-1)?.sender_seat_id === 'HOST_RULE' &&
+    sealed.inbox.operations?.length === prior.inbox.operations.length + 1 &&
+    prior.inbox.operations.every((row, index) => same(row, sealed.inbox.operations[index])) &&
+    sealed.inbox.operations.at(-1)?.message_id === host.messageId &&
+    sealed.inbox.operations.at(-1)?.result_state === 'PENDING' &&
+    sealed.inbox.operations.at(-1)?.phase === 'APPLIED',
+  'Original pending Host message or native inbox operation differs');
+  return { state: 'EXACT_CLOSED_CURRENT_POLICY_BASELINE',
+    originalHostMessageId: host.messageId, policyRevision: gate.receipt.revision };
+}
 
 export async function runRulesCase(product, config, journal) {
   const c = config.rules;
@@ -119,13 +301,27 @@ export async function runRulesCase(product, config, journal) {
     }
     if (hostOnly) {
       const prior = c.priorCore13Snapshot;
-      requireFact(prior?.directCaseEvidence === true &&
-        prior.state === 'IMPLEMENTED_CASES_HAVE_DIRECT_EVIDENCE_V08_INCOMPLETE' &&
-        prior.domainId === config.domainId &&
-        ['head', 'grants', 'gates', 'routes', 'events'].every(name =>
-          JSON.stringify(before.policy[name]) === JSON.stringify(prior.policy[name])) &&
-        before.capacityQualification?.state === 'CAPACITY_4_WITHIN_REFERENCE_OWNER_AND_HOST',
-      'Host-only baseline must continue the closed A policy and actual four-slot capacity');
+      if (c.policyContinuation === undefined) {
+        qualifyHistoricalHostBaseline(before, prior, config.domainId);
+      } else {
+        const continuation = c.policyContinuation;
+        qualifyHostPolicyContinuationReferences(c.priorCore13, continuation);
+        const pinned = ref => {
+          requireFact(ref && Object.keys(ref).sort().join('|') === 'path|sha256' &&
+            path.isAbsolute(ref.path) && /^[a-f0-9]{64}$/.test(ref.sha256),
+          'Host policy continuation source reference is incomplete');
+          const bytes = fs.readFileSync(ref.path);
+          requireFact(hash(bytes) === ref.sha256, 'Host policy continuation source bytes changed');
+          return JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/, ''));
+        };
+        const sealed = pinned(continuation.closedBaseline);
+        const producer = pinned(continuation.producerJournal);
+        record.policyContinuation = { references: continuation,
+          qualification: qualifyHostPolicyContinuation(before, prior, sealed, producer, {
+            domainId: config.domainId, sourceCommit: config.sourceCommit,
+            submitter: c.submitter, reviewer: c.reviewer,
+            capReferenceDomainId: c.capReferenceDomainId }) };
+      }
       record.priorCore13 = c.priorCore13;
       if (reusedRecipients) {
         requireFact(before.hostRecipientReuse?.state === 'PREPARED_REUSE_CONFIRMED' &&

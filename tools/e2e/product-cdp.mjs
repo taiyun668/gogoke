@@ -7,11 +7,12 @@ import { createServer } from 'node:net';
 import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { observeInstalledReadiness, closeInstalledNormally, recordLateReadyAfterFailure, lifecycleSource } from './installed-lifecycle-observation.mjs';
-import { isTemporaryHomeCreateRequest, assertSupportedTemporaryHomeOperation } from './installed-temporary-home-lifecycle.mjs';
+import { isTemporaryHomeCreateRequest, assertSupportedTemporaryHomeOperation, exactAdmissionResubmissionReply } from './installed-temporary-home-lifecycle.mjs';
 import { startupLifecycleSource } from './installed-startup-home-lifecycle.mjs';
 
 export const readJson = file => JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
 export const sha256 = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+const textSha256 = value => createHash('sha256').update(value, 'utf8').digest('hex');
 export const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 export const id = prefix => `${prefix}_${randomUUID().replaceAll('-', '')}`;
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -23,7 +24,8 @@ export class ActualProduct {
       'product-cdp.mjs', 'candidate-close-events.ps1', 'e2e-webview.mjs', 'm1-win11.mjs', 'candidate-custody.ps1',
       'm1-readback.py', 'package-lock.json', 'installed-lifecycle-observation.mjs',
       'installed-temporary-home-lifecycle.mjs',
-      'installed-startup-home-lifecycle.mjs',
+      'installed-startup-home-lifecycle.mjs', 'causal-close/causal-close.mjs',
+      'causal-close/candidate-close-events.ps1',
     ].map(relative => [relative, sha256(path.join(here, relative))]));
     journal.driverBytes['installed-lifecycle-observation.mjs'] = lifecycleSource().sha256;
     journal.driverBytes['installed-startup-home-lifecycle.mjs'] = startupLifecycleSource().sha256;
@@ -144,6 +146,77 @@ export class ActualProduct {
       this.socket.addEventListener('error', () => { clearTimeout(timer); reject(Error('Diagnostic connection failed')); }, { once: true });
     });
   }
+  async attachRetained(binding = {}) {
+    if (this.child || this.tester || this.socket) throw Error('Retained attach requires an unlaunched product object');
+    const endpoint = binding.endpoint ?? this.endpoint ?? this.config.currentEndpoint;
+    if (!endpoint || !Number.isSafeInteger(endpoint.pid) || !Number.isSafeInteger(endpoint.port) ||
+        !path.isAbsolute(endpoint.readyPath) || !path.isAbsolute(endpoint.stderrPath) ||
+        typeof endpoint.url !== 'string' || !endpoint.url) {
+      throw Error('Retained attach endpoint binding is incomplete');
+    }
+    if (binding.provenance) {
+      for (const [name, reference] of Object.entries(binding.provenance)) {
+        if (!path.isAbsolute(reference?.path ?? '') || !/^[a-f0-9]{64}$/.test(reference.sha256) ||
+            sha256(reference.path) !== reference.sha256) {
+          throw Error(`Retained provenance changed: ${name}`);
+        }
+      }
+    }
+    if (binding.sourcePins) {
+      for (const [name, reference] of Object.entries(binding.sourcePins)) {
+        if (!path.isAbsolute(reference?.path ?? '') || !/^[a-f0-9]{64}$/.test(reference.sha256) ||
+            sha256(reference.path) !== reference.sha256) {
+          throw Error(`Retained source pin changed: ${name}`);
+        }
+      }
+    }
+    this.endpoint = endpoint;
+    this.stderrFile = endpoint.stderrPath;
+    this.verifyBytes();
+    const resourceIndexPath = path.join(this.config.installed, 'resource-index.json');
+    const resourceIndex = readJson(resourceIndexPath);
+    const resourceSetId = sha256(resourceIndexPath);
+    if (endpoint.setId !== resourceSetId || endpoint.generationId !== resourceIndex.generationId ||
+        endpoint.sourceCommit && endpoint.sourceCommit !== this.config.sourceCommit) {
+      throw Error('Retained endpoint byte identity differs from the installed product');
+    }
+    if (!fs.existsSync(endpoint.readyPath)) throw Error('Retained readiness receipt is absent');
+    const ready = readJson(endpoint.readyPath);
+    if (ready.version !== this.config.version || ready.setId !== endpoint.setId ||
+        ready.generationId !== endpoint.generationId ||
+        (binding.readySha256 && (!/^[a-f0-9]{64}$/.test(binding.readySha256) ||
+          sha256(endpoint.readyPath) !== binding.readySha256))) {
+      throw Error('Retained readiness receipt changed');
+    }
+    const resourceUrl = new URL(endpoint.url);
+    if (!['http:', 'https:', 'gogoke-resource:'].includes(resourceUrl.protocol) ||
+        !['gogoke-resource.localhost', 'localhost'].includes(resourceUrl.hostname) ||
+        resourceUrl.pathname !== `/${endpoint.setId}/index.html`) {
+      throw Error('Retained resource URL identity differs');
+    }
+    await this.custody();
+    const response = await fetch(`http://127.0.0.1:${endpoint.port}/json/list`);
+    if (!response.ok) throw Error('Retained diagnostic target list unavailable');
+    const targets = (await response.json()).filter(row => row.type === 'page' && row.url === endpoint.url);
+    if (targets.length !== 1) throw Error('Retained resource URL is not unique');
+    const target = targets[0];
+    await this.connectDiagnostic(target);
+    this.socket.send(JSON.stringify({ id: ++this.sequence, method: 'Runtime.enable' }));
+    const ui = await this.evaluate('({url:location.href,home:!!document.querySelector(".home-product-entry"),tauri:!!window.__TAURI_INTERNALS__})');
+    if (ui.url !== endpoint.url || ui.home !== true || ui.tauri !== true) {
+      throw Error('Retained Home/Tauri page identity differs');
+    }
+    this.journal.currentEndpoint = endpoint;
+    this.journal.retainedAttachment = {
+      observationMode: 'ATTACHED_RETAINED_PRODUCT', endpoint,
+      resourceUrl: target.url, diagnosticType: target.type, ui,
+      parentChildObservation: 'NOT_AVAILABLE_TO_CURRENT_OBSERVER',
+      provenance: binding.provenance ?? null,
+      sourcePins: binding.sourcePins ?? null,
+    };
+    this.save();
+    return { endpoint, target, ui };
+  }
   evaluate(expression) {
     if (this.tester) {
       if (this.tester.page.url() !== this.endpoint.url) throw Error('Actual e2e page identity changed; no operation dispatched');
@@ -202,7 +275,8 @@ export class ActualProduct {
       throw error;
     }
     record.receipt = JSON.parse(raw); record.finishedAt = new Date().toISOString(); this.save();
-    if (record.receipt?.requestId !== request.requestId || record.receipt?.targetId !== targetId ||
+    if (record.receipt?.schema !== request.schema ||
+        record.receipt?.requestId !== request.requestId || record.receipt?.targetId !== targetId ||
         record.receipt?.family !== family || record.receipt?.operation !== operation ||
         typeof record.receipt?.status !== 'string') {
       const error = Error(`Original ${family}/${operation} result=${record.receipt?.status}; inspect durable request, no replay`);
@@ -219,6 +293,61 @@ export class ActualProduct {
     this.temporaryHomeLifecycle?.afterReceipt(record);
     this.save();
     return record.receipt;
+  }
+  async resubmitDeniedAdmission(originalRecord, continuation = {}) {
+    const request = originalRecord?.request;
+    if (!this.temporaryHomeLifecycle?.beforeAdmissionResubmission ||
+        !this.temporaryHomeLifecycle?.afterAdmissionResubmission ||
+        !this.temporaryHomeLifecycle?.afterAdmissionResubmissionError) {
+      throw Error('Explicit denied admission resubmission lifecycle hook is missing');
+    }
+    if (!this.journal.operations?.includes(originalRecord) ||
+        request?.family !== 'K-SESSION' || request.operation !== 'admission-reserve' ||
+        originalRecord.rawFrame !== JSON.stringify(request) ||
+        originalRecord.receipt?.status !== 'DENIED') {
+      throw Error('Resubmission requires this exact original DENIED admission record');
+    }
+    if (continuation.rawSha256 && textSha256(originalRecord.rawFrame) !== continuation.rawSha256) {
+      throw Error('Resubmission raw-frame binding differs');
+    }
+    if (this.journal.operations.some(row => row.resubmissionOf === request.requestId)) {
+      throw Error('Original DENIED admission already has a resubmission; no third dispatch');
+    }
+    const record = {
+      kind: 'DENIED_ADMISSION_RESUBMISSION', resubmissionOf: request.requestId,
+      request, rawFrame: originalRecord.rawFrame,
+      originalRawSha256: textSha256(originalRecord.rawFrame),
+      continuation, startedAt: new Date().toISOString(), receipt: null,
+    };
+    this.temporaryHomeLifecycle.beforeAdmissionResubmission(originalRecord, record, continuation);
+    this.journal.operations.push(record); this.save();
+    let receiptHooked = false;
+    try {
+      const raw = await this.evaluate(
+        `window.__TAURI_INTERNALS__.invoke('gogoke_design37_user_operation',{frame:${JSON.stringify(record.rawFrame)}})`);
+      record.rawReceipt = raw;
+      record.receipt = JSON.parse(raw);
+      record.finishedAt = new Date().toISOString();
+      if (!exactAdmissionResubmissionReply(record)) {
+        record.status = 'RECEIPT_INVALID';
+        this.save();
+        throw Error(`Denied admission resubmission identity differs: ${record.receipt?.status ?? 'UNKNOWN'}`);
+      }
+      record.status = record.receipt.status;
+      this.temporaryHomeLifecycle.afterAdmissionResubmission(record);
+      receiptHooked = true;
+      this.save();
+      if (record.receipt.status !== 'APPLIED') {
+        throw Error(`Denied admission resubmission result=${record.receipt.status}; no replay`);
+      }
+      return record.receipt;
+    } catch (error) {
+      if (!record.finishedAt) record.finishedAt = new Date().toISOString();
+      record.originalError = String(error?.stack ?? error);
+      if (!receiptHooked) this.temporaryHomeLifecycle.afterAdmissionResubmissionError(record, error);
+      this.save();
+      throw error;
+    }
   }
   async reconcile(record) {
     assertSupportedTemporaryHomeOperation(record?.request);

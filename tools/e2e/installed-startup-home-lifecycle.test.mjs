@@ -41,7 +41,8 @@ function decodeInvocation(expression) {
 
 function fixture(name, { startup = plan, repair = false, stopStatus = 'APPLIED',
     startupCloseStatus = 'APPLIED', repairCloseStatus = 'APPLIED', closedResumeStatus = 'CONFLICT',
-    closedSeatState = 'BUSY', closedExtraReceiptField = false } = {}) {
+    closedSeatState = 'BUSY', closedExtraReceiptField = false,
+    closedRequestId = null, closedGeneration = null } = {}) {
   const dir = path.join(fixtureRoot, name); fs.mkdirSync(dir);
   const journal = { caseId: name, operations: [] };
   const manifest = { schema: 'gogoke.37.temporary-home-attempts.v1', caseId: name,
@@ -56,10 +57,10 @@ function fixture(name, { startup = plan, repair = false, stopStatus = 'APPLIED',
         if(startup.state==='CLOSED_PREDECESSOR') return JSON.stringify({
           schema:'gogoke.37.secretary-configuration.v1',state:'DESIGNATED',seatState:closedSeatState,seatId:startup.seatId,
           incarnation:startup.seatIncarnation,instanceId:startup.instanceId,
-          conversation:{state:'FOUND',sessionId:startup.sessionId,generation:startup.oldGeneration,
+          conversation:{state:'FOUND',sessionId:startup.sessionId,generation:closedGeneration ?? startup.oldGeneration,
             revision:startup.oldRevision,claimState:'STOPPED',runtimeAvailable:false,stoppedFact:true},
           startupReason:'Original Secretary resume result: '+JSON.stringify({schema:'gogoke.37.operations.v1',
-            family:'K-SESSION',operation:'resume',requestId:startup.expectedCreateRequestId,targetId:startup.sessionId,
+            family:'K-SESSION',operation:'resume',requestId:closedRequestId ?? startup.expectedCreateRequestId,targetId:startup.sessionId,
             status:closedResumeStatus,previousRevision:startup.oldRevision,revision:startup.oldRevision,result:{},
             ...(closedExtraReceiptField?{contradictory:'unqualified'}:{})})});
         return JSON.stringify(startup.state === 'NONE'
@@ -151,6 +152,80 @@ test('a closed predecessor is an observed native no-create, never a CLOSED new H
       generation:row.oldGeneration,revision:row.oldRevision,status:'CONFLICT'}]};
   assert.equal(f.lifecycle.applyFacts(facts),true);
   facts.noStartupHomes[0].state='CLOSED';assert.equal(f.lifecycle.applyFacts(facts),false);
+});
+
+async function retainedNoCreate(name, options = {}) {
+  const source = { ...plan, state: 'CLOSED_PREDECESSOR', baselineHomeId: 'closedHome',
+    oldGeneration: '25', oldRevision: '12', expectedGeneration: '26',
+    expectedCreateRequestId: 'native-refused-resume' };
+  const f = fixture(name, { startup: source, ...options });
+  await f.lifecycle.beforeLaunch();
+  const originalManifest = structuredClone(f.manifest);
+  const endpoint = { pid: 100, port: 200, setId: 'set', generationId: 'generation',
+    readyPath: path.join(f.product.config.evidenceDirectory, 'ready'),
+    stderrPath: path.join(f.product.config.evidenceDirectory, 'stderr'),
+    url: 'http://gogoke-resource.localhost/set/index.html' };
+  f.product.config.sourceCommit = 'candidate-source';
+  f.product.endpoint = endpoint;
+  f.product.socket = { readyState: WebSocket.OPEN };
+  f.journal.launches = [{ ...endpoint, sourceCommit: 'candidate-source',
+    bootstrap: { setId: 'set', generationId: 'generation', version: '0.1' },
+    ui: { url: endpoint.url, home: true, tauri: true } }];
+  f.journal.currentEndpoint = endpoint;
+  f.journal.retainedAttachment = { observationMode: 'ATTACHED_RETAINED_PRODUCT',
+    endpoint, ui: { url: endpoint.url, home: true, tauri: true } };
+  f.journal.error = "Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@e2e-dev/web'";
+  const lifecycle = createStartupHomeLifecycle(f.product, f.manifest,
+    () => f.saved.push(structuredClone(f.manifest)), async () => { throw Error('No startup readback rerun'); },
+    () => ({ file: 'baseline.json' }), { current: null,
+      expectedNoCreate: originalManifest.noStartupHomes[0], launches: 0,
+      originalManifestOrigin: path.join(f.product.config.evidenceDirectory, 'original-manifest.json'),
+      originalManifestSha256: 'a'.repeat(64) });
+  return { ...f, lifecycle, originalManifest };
+}
+
+test('retained exact no-create read qualifies current metadata once without rewriting original bootstrap', async () => {
+  const f = await retainedNoCreate('retained-exact');
+  assert.equal(f.originalManifest.noStartupHomes[0].bootstrap, undefined);
+  await assert.rejects(() => f.lifecycle.afterLaunch(), /cannot observe a new launch/);
+  await f.lifecycle.observeRetainedNoStartup();
+  const row = f.manifest.noStartupHomes[0];
+  assert.equal(row.retainedMetadataObservation.state, 'QUALIFIED_CURRENT_READ');
+  assert.equal(row.retainedMetadataObservation.originalBootstrapMissing, true);
+  assert.equal(row.bootstrap, f.journal.startupHomeReads[0]);
+  assert.equal(f.saved.some(snapshot => snapshot.noStartupHomes?.[0]?.retainedMetadataObservation?.state ===
+    'PERSISTED_BEFORE_READ' && snapshot.noStartupHomes[0].bootstrap === undefined), true);
+  assert.equal((await f.lifecycle.settle()).complete, true);
+  assert.equal(f.calls.filter(row => row.kind === 'operation').length, 0);
+  await assert.rejects(() => f.lifecycle.observeRetainedNoStartup(), /absent bootstrap/);
+  assert.equal(f.calls.filter(row => row.kind === 'configuration').length, 1);
+  assert.equal(f.originalManifest.noStartupHomes[0].bootstrap, undefined);
+});
+
+test('retained metadata rejects wrong launch, no attach, and an already observed original bootstrap', async () => {
+  for (const variant of ['wrong-endpoint', 'no-attach', 'old-bootstrap', 'wrong-failure']) {
+    const f = await retainedNoCreate('retained-' + variant);
+    if (variant === 'wrong-endpoint') f.product.endpoint = { ...f.product.endpoint, port: 201 };
+    if (variant === 'no-attach') f.product.socket = null;
+    if (variant === 'old-bootstrap') f.manifest.noStartupHomes[0].bootstrap = { recorded: true };
+    if (variant === 'wrong-failure') f.journal.error = 'different failure';
+    await assert.rejects(() => f.lifecycle.observeRetainedNoStartup(), /exact failed original launch/);
+    assert.equal(f.journal.startupHomeReads, undefined);
+    assert.equal(f.manifest.noStartupHomes[0].retainedMetadataObservation, undefined);
+  }
+});
+
+test('retained wrong native request or generation is marked unqualified and never reread', async () => {
+  for (const [name, option] of [['request', { closedRequestId: 'wrong-original-request' }],
+    ['generation', { closedGeneration: '24' }]]) {
+    const f = await retainedNoCreate('retained-wrong-' + name, option);
+    await assert.rejects(() => f.lifecycle.observeRetainedNoStartup(), /identity\/refusal|prewrite CONFLICT/);
+    assert.equal(f.manifest.noStartupHomes[0].bootstrap, undefined);
+    assert.equal(f.manifest.noStartupHomes[0].retainedMetadataObservation.state, 'UNQUALIFIED_CURRENT_READ');
+    await assert.rejects(() => f.lifecycle.observeRetainedNoStartup(), /absent bootstrap/);
+    assert.equal(f.calls.filter(row => row.kind === 'configuration').length, 1);
+    assert.equal((await f.lifecycle.settle()).complete, false);
+  }
 });
 
 test('an unknown resume cannot pass the closed-predecessor no-create branch or close caption',async()=>{
