@@ -235,6 +235,8 @@ pub(crate) enum IsolationError {
     DirectoryNotPhysical,
     Acl(io::Error),
     AclObject { object: PathBuf, operation: &'static str, error: io::Error },
+    ProcessObservation { operation: &'static str,
+        error: crate::process::NativeLegacyHoldersGoneError },
     AclWitnessMismatch,
     AclWitnessDetail { object: PathBuf, sid: String, expected: String,
         observed: Vec<(u32, u32, u32)> },
@@ -255,6 +257,8 @@ impl fmt::Display for IsolationError {
             Self::Acl(error) => write!(f, "AppContainer ACL: {error}"),
             Self::AclObject { object, operation, error } =>
                 write!(f, "AppContainer ACL {operation} for {object:?}: {error}"),
+            Self::ProcessObservation { operation, error } =>
+                write!(f, "process observation {operation}: {error}"),
             Self::AclWitnessMismatch => write!(f, "AppContainer ACL witness does not match exact SID, rights, inheritance or object identity"),
             Self::AclWitnessDetail { object, sid, expected, observed } => {
                 write!(f, "AppContainer ACL witness for {:?}, package SID {sid}: expected {expected}; observed", object)?;

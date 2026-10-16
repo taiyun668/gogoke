@@ -387,7 +387,8 @@ impl ClaudeAclRetirement {
         proof: &NativeProcessHoldersGone,
         pairs: &[(u32, u64)],
     ) -> Result<(), IsolationError> {
-        proof.validate(pairs).map_err(|_| mismatch())?;
+        proof.validate(pairs).map_err(|error| IsolationError::ProcessObservation {
+            operation: "before completed ACL readback", error })?;
         Self::verify_inventory(roots, objects)?;
         let target=profile.package_sid_string()?;
         if !known_sids.contains(&target) || later_stopped.iter().any(|peer|peer.0==target.as_str()) {
@@ -446,7 +447,8 @@ impl ClaudeAclRetirement {
             }
             require_bound_path(root,identity,true)?;
         }
-        proof.validate(pairs).map_err(|_| mismatch())
+        proof.validate(pairs).map_err(|error| IsolationError::ProcessObservation {
+            operation: "after completed ACL readback", error })
     }
     pub(crate) fn verify_inventory(
         roots: &[(PathBuf, RootIdentity, bool)],
@@ -794,6 +796,22 @@ mod tests {
             profile.grant_bound_tree(path, identity, *writable).unwrap();
         }
         (base, roots, profile)
+    }
+
+    #[test]
+    fn claude_holder_completed_readback_keeps_original_native_validation_error() {
+        let profile = AppContainerProfile::derive_for_revocation(
+            "Gogoke37.ClaudeHolderReadbackError").unwrap();
+        // This controls the production validation/error seam, not a kernel
+        // absence or preboot positive. Changed original pairs must retain
+        // their native cause before any ACL inventory is read.
+        let proof = NativeProcessHoldersGone::for_test(&[(42, 1)]);
+        let error = ClaudeAclRetirement::readback_completed_target(
+            &profile, &[], &[], &[], &[], &[], &proof, &[(43, 1)]).unwrap_err();
+        assert!(matches!(error, IsolationError::ProcessObservation {
+            operation: "before completed ACL readback",
+            error: crate::process::NativeLegacyHoldersGoneError::OriginalPairsChanged,
+        }), "original native process validation error was replaced: {error:?}");
     }
 
     #[test]
