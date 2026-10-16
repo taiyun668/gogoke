@@ -323,7 +323,7 @@ pub(crate) fn activate_quiescent_managed_version_in_current_transaction(
     request_id:&str, request_bytes:&[u8],
 ) -> Result<usize,ProgramSourceError> {
     activate_managed_version_in_current_transaction(db,root,owner,driver,target_version,
-        target_stage,expected_copy_revision,request_id,request_bytes,None)
+        target_stage,expected_copy_revision,request_id,request_bytes,None,None)
 }
 
 /// A bound action shares the original F switch writer and its receipts. The
@@ -332,6 +332,7 @@ pub(crate) fn activate_managed_version_action_in_current_transaction(
     db:&VerifiedDatabaseConnection<'_>, root:&RootLock, owner:&OwnerIssuer,
     driver:&str, target_version:&str, target_stage:&str, expected_copy_revision:i64,
     request_id:&str, request_bytes:&[u8], action:&super::ActionRecord,
+    releases:&dyn managed_cli::ClaudeReleaseVerifier,
 ) -> Result<usize,ProgramSourceError> {
     if action.request_id!=request_id || action.driver!=driver ||
         action.target_version!=target_version || action.stage_name!=target_stage ||
@@ -339,13 +340,14 @@ pub(crate) fn activate_managed_version_action_in_current_transaction(
         return Err(ProgramSourceError::Conflict);
     }
     activate_managed_version_in_current_transaction(db,root,owner,driver,target_version,
-        target_stage,expected_copy_revision,request_id,request_bytes,Some(action))
+        target_stage,expected_copy_revision,request_id,request_bytes,Some(action),Some(releases))
 }
 
 fn activate_managed_version_in_current_transaction(
     db:&VerifiedDatabaseConnection<'_>, root:&RootLock, owner:&OwnerIssuer,
     driver:&str, target_version:&str, target_stage:&str, expected_copy_revision:i64,
     request_id:&str, request_bytes:&[u8], action:Option<&super::ActionRecord>,
+    releases:Option<&dyn managed_cli::ClaudeReleaseVerifier>,
 ) -> Result<usize,ProgramSourceError> {
     if expected_copy_revision<1 || target_stage.is_empty() {
         return Err(ProgramSourceError::Invalid);
@@ -361,7 +363,12 @@ fn activate_managed_version_in_current_transaction(
         check_owner_in_current_transaction(db,owner)?;
         registry::managed_request_command(&request)?;
         if let Some(action)=action {
-            managed_cli::no_unsettled_managed_version_change_for_action(db,root,driver,action)?;
+            if let Some(releases)=releases {
+                managed_cli::no_unsettled_managed_version_change_for_action_with_releases(
+                    db,root,driver,action,releases)?;
+            } else {
+                managed_cli::no_unsettled_managed_version_change_for_action(db,root,driver,action)?;
+            }
         } else {
             let pending=Statement::prepare(db.as_ptr(),
                 "SELECT 1 FROM main.gogoke_v37_instance_version_actions WHERE open_driver_id=?1 LIMIT 1")?;

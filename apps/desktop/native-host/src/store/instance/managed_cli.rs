@@ -25,6 +25,15 @@ pub(crate) use cold_version::{observe_version_scope, revalidate_version_action,
     revalidate_version_action_at_fingerprints_with_probe,
     no_unsettled_managed_version_change_for_action,
     no_unsettled_managed_version_change_for_action_with_probe,QualifiedVersionAction};
+pub(crate) use cold_version::{ClaudeReleaseVerifier,observe_version_scope_with_releases,
+    revalidate_version_action_with_releases,
+    revalidate_version_action_at_fingerprints_with_releases,
+    revalidate_version_action_with_probe_and_releases,
+    revalidate_version_action_at_fingerprints_with_probe_and_releases,
+    no_unsettled_managed_version_change_for_action_with_releases,
+    no_unsettled_managed_version_change_for_action_with_probe_and_releases};
+#[cfg(test)]
+pub(crate) use cold_version::test_original_claude_release_members;
 
 const REPARSE_POINT: u32 = 0x400;
 const CONTAINER: &str = "v37-managed-cli";
@@ -297,14 +306,18 @@ fn require_open_action(action:&ActionRecord,driver:&str,phase:ActionPhase)
 }
 
 fn version_mutation_guard(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
-    driver:&str,action:Option<&ActionRecord>,proof:Option<&NativeStopProof>)
+    driver:&str,action:Option<&ActionRecord>,proof:Option<&NativeStopProof>,
+    releases:Option<&dyn ClaudeReleaseVerifier>)
     ->Result<(),ManagedCliError>{
     if let Some(action)=action {
-        if let Some(proof)=proof {
-            no_unsettled_managed_version_change_for_action_with_probe(db,root,driver,
-                action,proof)?;
-        } else {
-            no_unsettled_managed_version_change_for_action(db,root,driver,action)?;
+        match (proof,releases) {
+            (Some(proof),Some(releases))=>{no_unsettled_managed_version_change_for_action_with_probe_and_releases(
+                db,root,driver,action,proof,releases)?;},
+            (Some(proof),None)=>{no_unsettled_managed_version_change_for_action_with_probe(
+                db,root,driver,action,proof)?;},
+            (None,Some(releases))=>{no_unsettled_managed_version_change_for_action_with_releases(
+                db,root,driver,action,releases)?;},
+            (None,None)=>{no_unsettled_managed_version_change_for_action(db,root,driver,action)?;},
         }
     } else {
         no_open_version_action(db,driver)?;
@@ -702,12 +715,13 @@ fn record_managed_cli_stage_inner(db: &mut VerifiedDatabaseConnection<'_>,
     let progress_bytes=i64::try_from(fs::symlink_metadata(&downloaded)?.len())
         .map_err(|_|ManagedCliError::Invalid)?;
     transaction(db, |db| record_managed_cli_stage_in_current_transaction(
-        db,root,owner,driver,version,stage_name,default_first_copy,progress_bytes,None))
+        db,root,owner,driver,version,stage_name,default_first_copy,progress_bytes,None,None))
 }
 
 pub(crate) fn record_managed_cli_stage_for_version_action_in_current_transaction(
     db:&VerifiedDatabaseConnection<'_>,root:&RootLock,owner:&OwnerIssuer,
     driver:&str,version:&str,stage_name:&str,action:&ActionRecord,
+    releases:&dyn ClaudeReleaseVerifier,
 )->Result<(),ManagedCliError>{
     require_open_action(action,driver,ActionPhase::Begun)?;
     let pin=read_official_cli_version(driver,version).ok_or(ManagedCliError::Unsupported)?;
@@ -718,19 +732,20 @@ pub(crate) fn record_managed_cli_stage_for_version_action_in_current_transaction
     let bytes=i64::try_from(fs::symlink_metadata(&downloaded)?.len())
         .map_err(|_|ManagedCliError::Invalid)?;
     record_managed_cli_stage_in_current_transaction(db,root,owner,driver,version,stage_name,
-        false,bytes,Some(action))
+        false,bytes,Some(action),Some(releases))
 }
 
 fn record_managed_cli_stage_in_current_transaction(
     db:&VerifiedDatabaseConnection<'_>,root:&RootLock,owner:&OwnerIssuer,
     driver:&str,version:&str,stage_name:&str,default_first_copy:bool,
     progress_bytes:i64,action:Option<&ActionRecord>,
+    releases:Option<&dyn ClaudeReleaseVerifier>,
 )->Result<(),ManagedCliError>{
     let pin=read_official_cli_version(driver,version).ok_or(ManagedCliError::Unsupported)?;
         check_owner_in_current_transaction(db, owner)?;
         if default_first_copy {require_default_first_copy(db,driver)?;}
         if let Some(action)=action {
-            no_unsettled_managed_version_change_for_action(db,root,driver,action)?;
+            version_mutation_guard(db,root,driver,Some(action),None,releases)?;
         } else {
             no_open_version_action(db,driver)?;
             no_unsettled_instance_use(db,driver)?;
@@ -766,7 +781,7 @@ fn record_managed_cli_stage_in_current_transaction(
                     _=>return Err(ManagedCliError::Busy),
                 };
                 inspect_staged_official_cli_version(root,driver,&selected.0,&selected.2)?;
-                version_mutation_guard(db,root,driver,action,None)?;
+                version_mutation_guard(db,root,driver,action,None,releases)?;
                 Some(selected)
             } else if no_previous {
                 require_default_first_copy(db,driver)?;
@@ -810,35 +825,32 @@ pub(crate) fn confirm_managed_cli_launch_for_version(db: &mut VerifiedDatabaseCo
         return Err(ManagedCliError::IdentityChanged);
     }
     transaction(db, |db| confirm_managed_cli_launch_in_current_transaction(
-        db,root,driver,version,stage_name,observed_digest,observed_version,None,None))
+        db,root,driver,version,stage_name,observed_digest,observed_version,None,None,None))
 }
 
 pub(crate) fn confirm_managed_cli_launch_for_version_action_in_current_transaction(
     db:&VerifiedDatabaseConnection<'_>,root:&RootLock,owner:&OwnerIssuer,
     driver:&str,version:&str,
     stage_name:&str,observed_digest:&str,observed_version:&str,
-    action:&ActionRecord,proof:&NativeStopProof)->Result<(),ManagedCliError>{
+    action:&ActionRecord,proof:&NativeStopProof,releases:&dyn ClaudeReleaseVerifier)
+    ->Result<(),ManagedCliError>{
     require_open_action(action,driver,ActionPhase::Probing)?;
     check_owner_in_current_transaction(db,owner)?;
     confirm_managed_cli_launch_in_current_transaction(db,root,driver,version,stage_name,
-        observed_digest,observed_version,Some(action),Some(proof))
+        observed_digest,observed_version,Some(action),Some(proof),Some(releases))
 }
 
 fn confirm_managed_cli_launch_in_current_transaction(
     db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,version:&str,
     stage_name:&str,observed_digest:&str,observed_version:&str,
-    action:Option<&ActionRecord>,proof:Option<&NativeStopProof>)->Result<(),ManagedCliError>{
+    action:Option<&ActionRecord>,proof:Option<&NativeStopProof>,
+    releases:Option<&dyn ClaudeReleaseVerifier>)->Result<(),ManagedCliError>{
     let pin=read_official_cli_version(driver,version).ok_or(ManagedCliError::Unsupported)?;
     if observed_digest!=format!("sha256:{}",pin.image_sha256)||observed_version!=pin.version {
         return Err(ManagedCliError::IdentityChanged);
     }
         if let Some(action)=action {
-            if let Some(proof)=proof {
-                no_unsettled_managed_version_change_for_action_with_probe(db,root,driver,
-                    action,proof)?;
-            } else {
-                no_unsettled_managed_version_change_for_action(db,root,driver,action)?;
-            }
+            version_mutation_guard(db,root,driver,Some(action),proof,releases)?;
         } else {
             no_open_version_action(db,driver)?;
             no_unsettled_instance_use(db,driver)?;
@@ -847,7 +859,7 @@ fn confirm_managed_cli_launch_in_current_transaction(
         let previous = Statement::prepare(db.as_ptr(),
             "SELECT 1 FROM main.gogoke_v37_instance_cli_copies WHERE driver_id=?1 AND previous_version IS NOT NULL LIMIT 1")?;
         previous.bind_text(1,driver)?;
-        if previous.step_row()? { version_mutation_guard(db,root,driver,action,proof)?; }
+        if previous.step_row()? { version_mutation_guard(db,root,driver,action,proof,releases)?; }
         let write = Statement::prepare(db.as_ptr(), "UPDATE main.gogoke_v37_instance_cli_copies SET state='PROBED',raw_error=NULL,revision=revision+1 WHERE driver_id=?1 AND state='STAGED' AND stage_name=?2 AND image_sha256=?3 AND version=?4")?;
         write.bind_text(1, driver)?;
         write.bind_text(2, stage_name)?;
@@ -930,10 +942,11 @@ pub(crate) fn record_managed_cli_progress_for_version(db: &mut VerifiedDatabaseC
 pub(crate) fn record_managed_cli_progress_for_version_action_in_current_transaction(
     db:&VerifiedDatabaseConnection<'_>,root:&RootLock,owner:&OwnerIssuer,
     driver:&str,version:&str,state:&str,bytes:i64,action:&ActionRecord,
+    releases:&dyn ClaudeReleaseVerifier,
 )->Result<(),ManagedCliError>{
     require_open_action(action,driver,ActionPhase::Begun)?;
     record_managed_cli_progress_in_current_transaction(db,Some(root),owner,driver,version,
-        state,bytes,false,Some(action))
+        state,bytes,false,Some(action),Some(releases))
 }
 
 fn record_managed_cli_progress_inner(db:&mut VerifiedDatabaseConnection<'_>,
@@ -945,13 +958,13 @@ fn record_managed_cli_progress_inner(db:&mut VerifiedDatabaseConnection<'_>,
         return Err(ManagedCliError::Invalid);
     }
     transaction(db, |db| record_managed_cli_progress_in_current_transaction(
-        db,None,owner,driver,version,state,bytes,default_first_copy,None))
+        db,None,owner,driver,version,state,bytes,default_first_copy,None,None))
 }
 
 fn record_managed_cli_progress_in_current_transaction(
     db:&VerifiedDatabaseConnection<'_>,root:Option<&RootLock>,owner:&OwnerIssuer,
     driver:&str,version:&str,state:&str,bytes:i64,default_first_copy:bool,
-    action:Option<&ActionRecord>,
+    action:Option<&ActionRecord>,releases:Option<&dyn ClaudeReleaseVerifier>,
 )->Result<(),ManagedCliError>{
     let pin=read_official_cli_version(driver,version).ok_or(ManagedCliError::Unsupported)?;
     if bytes<0 || !matches!(state,"DOWNLOADING"|"INSTALLING"|"UPGRADING") {
@@ -961,7 +974,7 @@ fn record_managed_cli_progress_in_current_transaction(
         if default_first_copy {require_default_first_copy(db,driver)?;}
         if let Some(action)=action {
             let root=root.ok_or(ManagedCliError::Busy)?;
-            no_unsettled_managed_version_change_for_action(db,root,driver,action)?;
+            version_mutation_guard(db,root,driver,Some(action),None,releases)?;
         } else {
             no_open_version_action(db,driver)?;
             no_unsettled_instance_use(db,driver)?;
@@ -1005,7 +1018,7 @@ fn record_managed_cli_progress_in_current_transaction(
             if matches!(old.as_str(),"READY"|"UPGRADING") ||
                 (!no_previous && matches!(old.as_str(),"BLOCKED"|"UPGRADE_FAILED")) {
                 if let Some(root)=root {
-                    version_mutation_guard(db,root,driver,action,None)?;
+                    version_mutation_guard(db,root,driver,action,None,releases)?;
                 } else {
                     no_unsettled_managed_version_change(db,driver)?;
                 }

@@ -9,6 +9,20 @@ use std::os::windows::fs::MetadataExt;
 use std::time::Duration;
 
 const SCHEMA: &str = "gogoke.37.managed-cli.v1";
+impl instance::ClaudeReleaseVerifier for ProductDatabase<'_> {
+    fn completed_release(&self, db:&VerifiedDatabaseConnection<'_>, root:&RootLock,
+        instance_id:&str, domain:&str, session:&str, operation:&str)
+        ->std::result::Result<bool,instance::ManagedCliError> {
+        if self.connection.identity()!=db.identity() ||
+            self.connection.root_identity()!=db.root_identity() ||
+            self.root.canonical_root().identity!=root.canonical_root().identity {
+            return Err(instance::ManagedCliError::IdentityChanged)
+        }
+        self.completed_claude_holder_release(instance_id,domain,session,operation)
+            .map_err(|error|instance::ManagedCliError::Observation(format!(
+                "original completed Claude release: {error:?}")))
+    }
+}
 fn key(name:&str)->JsonString {JsonString::from_str(name)}
 fn field(fields:&BTreeMap<JsonString,Json>,name:&'static str)->Result<String>{
     match fields.get(&key(name)) {
@@ -139,33 +153,36 @@ impl<'a> ProductDatabase<'a> {
             return Err(OrchestrationError::AccessDenied);
         }
         let scope=if let Some(action)=action {
-            instance::revalidate_version_action(&self.connection,self.root,driver,action)
+            instance::revalidate_version_action_with_releases(&self.connection,self.root,
+                driver,action,self)
         } else {
-            instance::observe_version_scope(&self.connection,self.root,driver)
+            instance::observe_version_scope_with_releases(&self.connection,self.root,driver,self)
         }.map_err(|error|failure("version action qualification",error))?;
         self.check_managed_version_scope(driver,scope)
     }
 
     fn managed_version_action_resources_at_fingerprints(&self,driver:&str,action:&instance::ActionRecord,
         copy:&str,source:&str)->Result<instance::QualifiedVersionAction> {
-        let scope=instance::revalidate_version_action_at_fingerprints(&self.connection,self.root,driver,
-            action,copy,source).map_err(|error|failure("version action post-write qualification",error))?;
+        let scope=instance::revalidate_version_action_at_fingerprints_with_releases(
+            &self.connection,self.root,driver,action,copy,source,self)
+            .map_err(|error|failure("version action post-write qualification",error))?;
         self.check_managed_version_scope(driver,scope)
     }
 
     fn managed_version_action_resources_with_probe(&self,driver:&str,
         action:&instance::ActionRecord,proof:&crate::process::NativeStopProof)
         ->Result<instance::QualifiedVersionAction> {
-        let scope=instance::revalidate_version_action_with_probe(&self.connection,self.root,
-            driver,action,proof).map_err(|error|failure("version action original probe",error))?;
+        let scope=instance::revalidate_version_action_with_probe_and_releases(
+            &self.connection,self.root,driver,action,proof,self)
+            .map_err(|error|failure("version action original probe",error))?;
         self.check_managed_version_scope(driver,scope)
     }
 
     fn managed_version_action_resources_at_fingerprints_with_probe(&self,driver:&str,
         action:&instance::ActionRecord,copy:&str,source:&str,
         proof:&crate::process::NativeStopProof)->Result<instance::QualifiedVersionAction> {
-        let scope=instance::revalidate_version_action_at_fingerprints_with_probe(
-            &self.connection,self.root,driver,action,copy,source,proof)
+        let scope=instance::revalidate_version_action_at_fingerprints_with_probe_and_releases(
+            &self.connection,self.root,driver,action,copy,source,proof,self)
             .map_err(|error|failure("version action original probe post-write",error))?;
         self.check_managed_version_scope(driver,scope)
     }
@@ -288,7 +305,7 @@ impl<'a> ProductDatabase<'a> {
                 instance::BeginOutcome::Replayed(_)=>return Err(OrchestrationError::AccessDenied),
             };
             instance::record_managed_cli_progress_for_version_action_in_current_transaction(
-                &this.connection,this.root,&this.owner,driver,target,"UPGRADING",0,&row)
+                &this.connection,this.root,&this.owner,driver,target,"UPGRADING",0,&row,this)
                 .map_err(|error|failure("bound begin progress",error))?;
             let after=instance::managed_version_fingerprints(&this.connection,this.root,driver)
                 .map_err(|error|failure("begin post-effect fingerprint",error))?;
@@ -312,7 +329,7 @@ impl<'a> ProductDatabase<'a> {
             }
             if row.phase!=instance::ActionPhase::Begun {return Err(OrchestrationError::AccessDenied);}
             instance::record_managed_cli_stage_for_version_action_in_current_transaction(
-                &this.connection,this.root,&this.owner,driver,target,stage,&row)
+                &this.connection,this.root,&this.owner,driver,target,stage,&row,this)
                 .map_err(|error|failure("bound version stage",error))?;
             let next=instance::managed_version_fingerprints(&this.connection,this.root,driver)
                 .map_err(|error|failure("stage post-effect fingerprint",error))?;
@@ -480,7 +497,7 @@ impl<'a> ProductDatabase<'a> {
             let stage=copy.stage_name.ok_or(OrchestrationError::AccessDenied)?;
             if copy.revision!=revision || stage!=row.stage_name {return Err(OrchestrationError::AccessDenied);}
             instance::activate_managed_version_action_in_current_transaction(&this.connection,this.root,&this.owner,
-                driver,target,&stage,revision,request,frame,&row)
+                driver,target,&stage,revision,request,frame,&row,this)
                 .map_err(|error|failure("action original F source switch",error))?;
             let next=instance::managed_version_fingerprints(&this.connection,this.root,driver)
                 .map_err(|error|failure("action switch post-effect fingerprints",error))?;
@@ -3999,6 +4016,8 @@ mod tests {
         let _guard=route_b_test_guard();
         login_observe_original_source_case();
     }
+
+
 }
 impl<'a> ProductDatabase<'a> {
     fn managed_cli_failure(&mut self, driver: &str, state: &str, raw: String) -> OrchestrationError {
@@ -4204,7 +4223,7 @@ impl<'a> ProductDatabase<'a> {
             self.version_action_transaction(|this| {
                 this.managed_version_action_resources_with_probe(driver,action,&proof)?;
                 instance::confirm_managed_cli_launch_for_version_action_in_current_transaction(&this.connection,this.root,
-                    &this.owner,driver,version,stage,&digest,pin.version,action,&proof)
+                    &this.owner,driver,version,stage,&digest,pin.version,action,&proof,this)
                     .map_err(|error|failure("bound PROBED confirmation",error))?;
                 let next=instance::managed_version_fingerprints(&this.connection,this.root,driver)
                     .map_err(|error|failure("probe post-effect fingerprints",error))?;

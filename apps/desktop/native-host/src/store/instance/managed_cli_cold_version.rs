@@ -6,7 +6,7 @@ use super::{inspect_staged_official_cli_version, no_unsettled_managed_version_ch
     read_official_cli_version, read_prepared_managed_replacement, ManagedCliError, OFFICIAL};
 use super::super::{managed_version_action::{self,ActionRecord}, program_source, registry};
 use crate::process::{CredentialAliasScope,CredentialBinding,CredentialError,
-    NativeLegacyHoldersGone,NativeStopProof};
+    NativeLegacyHoldersGone,NativeProcessHoldersGone,NativeStopProof};
 use crate::root::{inspect_root, RootLock};
 use crate::store::atomic::Statement;
 use crate::store::digest::{content_hash, sha256_hex};
@@ -16,7 +16,9 @@ use std::os::windows::fs::MetadataExt;
 
 /// Kept private to F. The sealed H observation cannot be reconstructed from
 /// persisted action bytes or a caller-supplied `gone` value.
-enum NativeVersionAbsence { Reboot(NativeLegacyHoldersGone) }
+enum NativeVersionAbsence {
+    Reboot(NativeLegacyHoldersGone), Exact(NativeProcessHoldersGone),
+}
 
 struct QualifiedUnit {
     source: Unit,
@@ -43,6 +45,15 @@ struct CredentialEvidence {
     bindings: Vec<(std::sync::Arc<CredentialBinding>,Vec<CredentialAliasScope>)>,
     backend_operations: std::collections::BTreeSet<String>,
     backend_c: Vec<Vec<String>>,
+}
+
+/// Implemented only by the live ProductDatabase view. A RELEASED H label is
+/// never a caller-supplied proof: the original completed Claude capture and
+/// release receipt are re-read on this same verified Root/DB at every step.
+pub(crate) trait ClaudeReleaseVerifier {
+    fn completed_release(&self, db:&VerifiedDatabaseConnection<'_>, root:&RootLock,
+        instance:&str, domain:&str, session:&str, operation:&str)
+        ->Result<bool,ManagedCliError>;
 }
 
 impl QualifiedVersionAction {
@@ -94,6 +105,9 @@ impl QualifiedVersionAction {
                 NativeVersionAbsence::Reboot(fact) => fact.validate(&member.source.pairs)
                     .map_err(|error|ManagedCliError::NativeGone(format!(
                         "cold version reboot recheck: {error:?}")))?,
+                NativeVersionAbsence::Exact(fact) => fact.validate(&member.source.pairs)
+                    .map_err(|error|ManagedCliError::NativeGone(format!(
+                        "completed Claude exact-pair recheck: {error:?}")))?,
             }
         }
         for (pairs,fact) in &self.global_native {
@@ -943,7 +957,8 @@ fn verified_source_images(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driv
 /// F program/copy revisions are intentionally absent: a legitimate stage or
 /// final switch changes those and the action journal tracks their CAS chain.
 fn original_units(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
-    driver: &str) -> Result<Vec<(Unit,Vec<String>)>, ManagedCliError> {
+    driver: &str, releases:Option<&dyn ClaudeReleaseVerifier>)
+    -> Result<Vec<(Unit,Vec<String>)>, ManagedCliError> {
     let root_seen = inspect_root(&root.canonical_root().canonical_path)
         .map_err(|error| ManagedCliError::Observation(format!("cold root: {error:?}")))?;
     if root_seen.identity != root.canonical_root().identity ||
@@ -991,7 +1006,7 @@ fn original_units(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
         WHERE i.driver_id=?1 AND e.old_generation IS NULL
           AND e.phase IN ('PREPARED','ACTIVE','UNKNOWN')
           AND c.state IN ('PREPARED','ACTIVE','UNKNOWN')
-          AND a.state IN ('COMMITTED','UNKNOWN')
+          AND a.state IN ('COMMITTED','UNKNOWN','RELEASED')
           AND b.state='ACTIVE' AND b.kind='SESSION' AND b.owner_id=e.session_id
           AND h.kind='SESSION' AND h.owner_id=e.session_id
           AND h.state IN ('ACTIVE','CLOSE_UNKNOWN','UNKNOWN')
@@ -1008,6 +1023,12 @@ fn original_units(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
     }
     let mut units=Vec::with_capacity(candidates.len());
     for raw in &candidates {
+    if raw[21]=="RELEASED" {
+        if driver!="claude" || !releases.ok_or(ManagedCliError::Busy)?
+            .completed_release(db,root,&raw[0],&raw[2],&raw[3],&raw[6])? {
+            return Err(ManagedCliError::Busy)
+        }
+    }
     if raw[18].is_empty() || raw[17].is_empty() || raw[13].is_empty() || raw[14].is_empty() ||
         !raw[20].is_empty() || raw[31] != raw[10] || raw[36]!="0" || raw[37]!="1" {
         return Err(ManagedCliError::Busy);
@@ -1064,7 +1085,9 @@ fn original_units(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
     source.push("no-alias".into());
     source.extend(raw[36..40].iter().cloned());
     source.push(worktree_source);
-    source.insert(0,"H_SESSION_OPEN-v1".into());
+    source.insert(0,if raw[21]=="RELEASED" {
+        "H_SESSION_OPEN_CLAUDE_COMPLETED_RELEASE-v1"
+    } else {"H_SESSION_OPEN-v1"}.into());
     units.push((unit,source));
     }
     units.sort_by(|left,right| {
@@ -2522,11 +2545,12 @@ fn all_blockers_are_family(db:&VerifiedDatabaseConnection<'_>,driver:&str,
 }
 
 fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
-    action:Option<&ActionRecord>,live_probe:Option<&NativeStopProof>)
+    action:Option<&ActionRecord>,live_probe:Option<&NativeStopProof>,
+    releases:Option<&dyn ClaudeReleaseVerifier>)
     ->Result<QualifiedVersionAction,ManagedCliError>{
     let credentials=credential_source(db,root,driver)?;
     let stopped=original_stopped_sources(db,root,driver)?;
-    let mut original=original_units(db,root,driver)?;
+    let mut original=original_units(db,root,driver,releases)?;
     let (resumes,before_promotion)=original_resume_units(db,root,driver,&stopped)?;
     original.extend(resumes);
     original.sort_by(|a,b|(&a.0.instance,&a.0.domain,&a.0.session,&a.0.generation,&a.0.process)
@@ -2588,23 +2612,35 @@ fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     let mut units=Vec::with_capacity(original.len());
     let mut members=Vec::new();
     for (unit,mut source) in original {
+        let open=matches!(source[0].as_str(),"H_SESSION_OPEN-v1"|
+            "H_SESSION_OPEN_CLAUDE_COMPLETED_RELEASE-v1");
         let (home_source,h_source)=if let Some(source)=before_promotion.get(&unit.process) {
             (String::new(),source.clone())
         } else {
-            let operation=if source[0]=="H_SESSION_OPEN-v1"{"open"}else{"resume"};
+            let operation=if open{"open"}else{"resume"};
             let expected_identity=if operation=="open"{&source[29]}else{&source[36]};
             family_execution_source(db,root,&unit,operation,expected_identity)?
         };
-        let fact=NativeLegacyHoldersGone::observe(&unit.pairs).map_err(|error|
-            ManagedCliError::NativeGone(format!("original family kernel cutoff: {error:?}")))?;
-        fact.validate(&unit.pairs).map_err(|error|
-            ManagedCliError::NativeGone(format!("original family kernel recheck: {error:?}")))?;
-        if source[0]=="H_SESSION_OPEN-v1" {source.push(home_source)}
+        let released=source[0]=="H_SESSION_OPEN_CLAUDE_COMPLETED_RELEASE-v1";
+        let (absence,proof_kind)=if released {
+            let fact=NativeProcessHoldersGone::observe(&unit.pairs).map_err(|error|
+                ManagedCliError::NativeGone(format!("completed Claude exact pairs: {error:?}")))?;
+            fact.validate(&unit.pairs).map_err(|error|
+                ManagedCliError::NativeGone(format!("completed Claude exact recheck: {error:?}")))?;
+            (NativeVersionAbsence::Exact(fact),"EXACT_GONE")
+        } else {
+            let fact=NativeLegacyHoldersGone::observe(&unit.pairs).map_err(|error|
+                ManagedCliError::NativeGone(format!("original family kernel cutoff: {error:?}")))?;
+            fact.validate(&unit.pairs).map_err(|error|
+                ManagedCliError::NativeGone(format!("original family kernel recheck: {error:?}")))?;
+            (NativeVersionAbsence::Reboot(fact),"KERNEL_REBOOT")
+        };
+        if open {source.push(home_source)}
         else if !home_source.is_empty() && source[42]!=home_source {
             return Err(ManagedCliError::Busy)
         }
         source.push(h_source);
-        let mut proof=vec!["KERNEL_REBOOT".to_owned(),unit.instance.clone(),
+        let mut proof=vec![proof_kind.to_owned(),unit.instance.clone(),
             unit.domain.clone(),unit.session.clone(),unit.generation.clone(),
             unit.process.clone()];
         proof.extend(unit.pairs.iter().flat_map(|(pid,time)|
@@ -2612,7 +2648,7 @@ fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
         let key=(unit.instance.clone(),unit.domain.clone(),unit.session.clone(),
             unit.generation.clone(),unit.process.clone(),String::new());
         members.push((key,source,proof));
-        units.push(QualifiedUnit{source:unit,absence:NativeVersionAbsence::Reboot(fact)});
+        units.push(QualifiedUnit{source:unit,absence});
     }
     for (source,proof) in stopped {
         let key=(proof[1].clone(),proof[2].clone(),proof[3].clone(),
@@ -2864,6 +2900,17 @@ pub(super) fn require_saved_action(db:&VerifiedDatabaseConnection<'_>,root:&Root
 /// storing ActionBegin. A strictly clear driver remains strict.
 pub(crate) fn observe_version_scope(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
     driver:&str)->Result<QualifiedVersionAction,ManagedCliError>{
+    observe_version_scope_inner(db,root,driver,None)
+}
+
+pub(crate) fn observe_version_scope_with_releases(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
+    driver:&str,releases:&dyn ClaudeReleaseVerifier)->Result<QualifiedVersionAction,ManagedCliError>{
+    observe_version_scope_inner(db,root,driver,Some(releases))
+}
+
+fn observe_version_scope_inner(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
+    driver:&str,releases:Option<&dyn ClaudeReleaseVerifier>)
+    ->Result<QualifiedVersionAction,ManagedCliError>{
     // Only a failed original STRICT admission can select COLD. A damaged
     // source cannot be converted into a different qualification mode.
     let admission=(|| {
@@ -2875,7 +2922,7 @@ pub(crate) fn observe_version_scope(db:&VerifiedDatabaseConnection<'_>,root:&Roo
     })();
     match admission {
         Ok(())=>strict_scope(db,root,driver,None,None),
-        Err(ManagedCliError::Busy)=>cold(db,root,driver,None,None),
+        Err(ManagedCliError::Busy)=>cold(db,root,driver,None,None,releases),
         Err(error)=>Err(error),
     }
 }
@@ -2885,7 +2932,15 @@ pub(crate) fn observe_version_scope(db:&VerifiedDatabaseConnection<'_>,root:&Roo
 #[cfg(test)]
 pub(crate) fn test_collect_cold_version_scope(db:&VerifiedDatabaseConnection<'_>,
     root:&RootLock,driver:&str)->Result<QualifiedVersionAction,ManagedCliError>{
-    cold(db,root,driver,None,None)
+    cold(db,root,driver,None,None,None)
+}
+
+#[cfg(test)]
+pub(crate) fn test_original_claude_release_members(db:&VerifiedDatabaseConnection<'_>,
+    root:&RootLock,releases:&dyn ClaudeReleaseVerifier)
+    ->Result<Vec<(Vec<String>,Vec<(u32,u64)>)>,ManagedCliError>{
+    original_units(db,root,"claude",Some(releases)).map(|units|units.into_iter()
+        .map(|(unit,source)|(source,unit.pairs)).collect())
 }
 
 #[cfg(test)]
@@ -2904,6 +2959,13 @@ pub(crate) fn revalidate_version_action(db:&VerifiedDatabaseConnection<'_>,root:
         &action.current_copy_fingerprint,&action.current_source_fingerprint)
 }
 
+pub(crate) fn revalidate_version_action_with_releases(db:&VerifiedDatabaseConnection<'_>,
+    root:&RootLock,driver:&str,action:&ActionRecord,releases:&dyn ClaudeReleaseVerifier)
+    ->Result<QualifiedVersionAction,ManagedCliError>{
+    revalidate_version_action_at_fingerprints_inner(db,root,driver,action,
+        &action.current_copy_fingerprint,&action.current_source_fingerprint,None,Some(releases))
+}
+
 /// The expected pair is the journal's next CAS pair after the caller has
 /// applied its own copy/source write in the same immediate transaction. This
 /// does not authorize an arbitrary external drift: the caller must derive the
@@ -2913,7 +2975,16 @@ pub(crate) fn revalidate_version_action_at_fingerprints(
     action:&ActionRecord,expected_copy:&str,expected_source:&str,
 )->Result<QualifiedVersionAction,ManagedCliError>{
     revalidate_version_action_at_fingerprints_inner(db,root,driver,action,
-        expected_copy,expected_source,None)
+        expected_copy,expected_source,None,None)
+}
+
+pub(crate) fn revalidate_version_action_at_fingerprints_with_releases(
+    db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
+    action:&ActionRecord,expected_copy:&str,expected_source:&str,
+    releases:&dyn ClaudeReleaseVerifier,
+)->Result<QualifiedVersionAction,ManagedCliError>{
+    revalidate_version_action_at_fingerprints_inner(db,root,driver,action,
+        expected_copy,expected_source,None,Some(releases))
 }
 
 pub(crate) fn revalidate_version_action_with_probe(
@@ -2921,7 +2992,16 @@ pub(crate) fn revalidate_version_action_with_probe(
     action:&ActionRecord,proof:&NativeStopProof,
 )->Result<QualifiedVersionAction,ManagedCliError>{
     revalidate_version_action_at_fingerprints_inner(db,root,driver,action,
-        &action.current_copy_fingerprint,&action.current_source_fingerprint,Some(proof))
+        &action.current_copy_fingerprint,&action.current_source_fingerprint,Some(proof),None)
+}
+
+pub(crate) fn revalidate_version_action_with_probe_and_releases(
+    db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
+    action:&ActionRecord,proof:&NativeStopProof,releases:&dyn ClaudeReleaseVerifier,
+)->Result<QualifiedVersionAction,ManagedCliError>{
+    revalidate_version_action_at_fingerprints_inner(db,root,driver,action,
+        &action.current_copy_fingerprint,&action.current_source_fingerprint,
+        Some(proof),Some(releases))
 }
 
 pub(crate) fn revalidate_version_action_at_fingerprints_with_probe(
@@ -2929,13 +3009,22 @@ pub(crate) fn revalidate_version_action_at_fingerprints_with_probe(
     action:&ActionRecord,expected_copy:&str,expected_source:&str,proof:&NativeStopProof,
 )->Result<QualifiedVersionAction,ManagedCliError>{
     revalidate_version_action_at_fingerprints_inner(db,root,driver,action,
-        expected_copy,expected_source,Some(proof))
+        expected_copy,expected_source,Some(proof),None)
+}
+
+pub(crate) fn revalidate_version_action_at_fingerprints_with_probe_and_releases(
+    db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
+    action:&ActionRecord,expected_copy:&str,expected_source:&str,
+    proof:&NativeStopProof,releases:&dyn ClaudeReleaseVerifier,
+)->Result<QualifiedVersionAction,ManagedCliError>{
+    revalidate_version_action_at_fingerprints_inner(db,root,driver,action,
+        expected_copy,expected_source,Some(proof),Some(releases))
 }
 
 fn revalidate_version_action_at_fingerprints_inner(
     db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     action:&ActionRecord,expected_copy:&str,expected_source:&str,
-    live_probe:Option<&NativeStopProof>,
+    live_probe:Option<&NativeStopProof>,releases:Option<&dyn ClaudeReleaseVerifier>,
 )->Result<QualifiedVersionAction,ManagedCliError>{
     if action.driver!=driver || action.root_identity!=root.canonical_root().identity.opaque()
         || action.database_identity!=db.identity().opaque() {
@@ -2950,7 +3039,7 @@ fn revalidate_version_action_at_fingerprints_inner(
     let view=match action.mode.as_str(){
         "STRICT"=>strict_scope(db,root,driver,Some(action),live_probe)?,
         "COLD" if action.proof_family=="family-v1"=>
-            cold(db,root,driver,Some(action),live_probe)?,
+            cold(db,root,driver,Some(action),live_probe,releases)?,
         _=>return Err(ManagedCliError::Busy),
     };
     if view.proof_family()!=action.proof_family || view.source_hex!=action.source_hex ||
@@ -2967,11 +3056,25 @@ pub(crate) fn no_unsettled_managed_version_change_for_action(
     revalidate_version_action(db,root,driver,action)
 }
 
+pub(crate) fn no_unsettled_managed_version_change_for_action_with_releases(
+    db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
+    action:&ActionRecord,releases:&dyn ClaudeReleaseVerifier)
+    ->Result<QualifiedVersionAction,ManagedCliError>{
+    revalidate_version_action_with_releases(db,root,driver,action,releases)
+}
+
 pub(crate) fn no_unsettled_managed_version_change_for_action_with_probe(
     db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     action:&ActionRecord,proof:&NativeStopProof,
 )->Result<QualifiedVersionAction,ManagedCliError>{
     revalidate_version_action_with_probe(db,root,driver,action,proof)
+}
+
+pub(crate) fn no_unsettled_managed_version_change_for_action_with_probe_and_releases(
+    db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
+    action:&ActionRecord,proof:&NativeStopProof,releases:&dyn ClaudeReleaseVerifier,
+)->Result<QualifiedVersionAction,ManagedCliError>{
+    revalidate_version_action_with_probe_and_releases(db,root,driver,action,proof,releases)
 }
 
 #[cfg(test)]
