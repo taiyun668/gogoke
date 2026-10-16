@@ -148,7 +148,7 @@ pub(crate) fn valid_original_c_writer_shape(operation:&str,ticket:&str,nonce:&st
     !operation.is_empty() && operation.len()<=128 && operation.bytes().all(|byte|
         byte.is_ascii_alphanumeric() || byte==b'-' || byte==b'_') &&
     ticket.strip_prefix("pct1_").is_some_and(digest) &&
-    nonce.strip_prefix("pcn1_").is_some_and(digest)
+    !nonce.is_empty()
 }
 fn bytes(value: &str) -> Result<Vec<u8>> {
     if value.len() % 2 != 0 || !value.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
