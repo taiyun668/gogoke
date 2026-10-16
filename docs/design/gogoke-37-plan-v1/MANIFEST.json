@@ -5,8 +5,8 @@
     "main": "5b638c73200c0fb691a74c5717e3bdbbba45357d"
   },
   "sha256": {
-    "PLAN.md": "1724e35eeeabf4ba272bb36b41eb4750bc3266dea8a6c41586428cb44b97fffb",
-    "PLAN.json": "113d3f1b3b7105347339c24dd9432c27116a28db26f75b2447f2d279b70c2393",
+    "PLAN.md": "e2f0ceaa4490bf185d8cf9ecc104cbcd88e5474119ca92fcb0ea96bf1abec82b",
+    "PLAN.json": "d8ae4afa5cd7ed1d982769b213f70f9685828a0bc8298bbd74bbcde8105ca8de",
     "verify_plan.py": "b6d8bde90e4dead4f169c7922bfba295513f91ae962d1cdc8cc0b1726d9176b5"
   },
   "excluded": [
@@ -14,7 +14,7 @@
     "VALIDATION.json"
   ],
   "exclusion_reason": "self-reference and generated diagnostic output; neither grants authority or product acceptance",
-  "scope_digest": "9194d46d59dd4cf3023122eef589c5fe55e594bb6cf3500ae1efb54d75a45650",
+  "scope_digest": "6d56ffb46e01763a69bd7d2e20f57d5b62e17264ab9740dc9e9061f5146f3fd5",
   "proposal_evidence": [
     {
       "path": "docs/design/gogoke-37-plan-v1/HISTORICAL_TEMP_HOME_PROOFS.json",
@@ -33,7 +33,7 @@
     },
     {
       "path": "docs/design/gogoke-37-plan-v1/MANAGED_CLI_HISTORICAL_FAMILIES.md",
-      "sha256_git_lf": "0e6dfef7d19de84e7b20460c708bc97ffaf58f6af4f58da5e171be8609412376",
+      "sha256_git_lf": "0041f3b707f79e7e5717dd9f16e2e87b81cd8c313f5415f029c6f659c2ece402",
       "meaning": "Complete three-driver contract and reviewable observation inventory only; not a native proof, qualification or acceptance."
     },
     {

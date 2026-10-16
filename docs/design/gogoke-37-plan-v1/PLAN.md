@@ -591,3 +591,13 @@ Owner 要求一次查全 Claude、Codex、OpenCode 当前库所有阻挡类型�
 ### D-NOLAUNCH 的原单一 M1 SOURCE 静止消费者
 
 同一待裁决项还精确列入 legacy_source_migration.rs：仅原 PR95 单一 M1 的 processless claim 及精确关联 ACTIVE 临时 HOME 的 H 执行资源静止检查可消费同一 H sealed 原未跨启动边界事实。不得把 COMMITTED/HOME 改称 RELEASED/CLOSED，不改原行；原注册、物理 Root/DB/HOME、官方来源、全局 C/H/F/凭据效果与 CAS 均独立，PR96 首次持久意图状态表不变。缺该历史实际 producer/原证明或任何其它独立条件，继续拒绝；不是新增 SOURCE 目标或写方，不是实际迁移授权。
+
+### T07 旧 probe 占用与新版输出的限定修订草案
+
+Owner 已批准独立审查后的限定 B 资源边界：在原 USER、RootLock、同一 verified Root/DB 内，完整读取原 C 十二列及 NULL 语义，保留 STOPPED/hash 为原存储数据；对无任何保留 action 关联的原 C，仅以其同 Root 的精确官方物理 stage/catalog/archive、原 F/SOURCE/注册直接关系和已有 sealed KERNEL_REBOOT 对原 PID/完整 creation 的真实 preboot 确认，重评该旧进程占用。原 operation/hash 不能反推旧 request、StopProof preimage、确认、stdout、命令类别或版本成功；无保留关联不证明历史非 action。可关联 action 或残留效应指向缺失 action 禁止降级；其它/恢复后未决 PROBING Busy，当前 action 正常原子 PROBING→PROBED 和完整 CONSUMED/独立 rollback 仍走原规则。原完整集合及字段绑定新 journal，在 begin 重放、stage、probe、pre/post-effect、final、回执重放逐步重新枚举和 native 验证；缺原来源、同 boot、空集、查询错误或漂移 Busy，保留原错误。其余 HOME/SOURCE/凭据/FHG/ACL/child/namespace、D-NOLAUNCH、UNKNOWN/PREPARED 等拒绝独立有效。旧 stdout 仍 `NOT_RETAINED`，不补旧命令/证明/结果。新版 STRICT/COLD action 的实际 confirmed StopProof、唯一 C、stdout/exit、原公开 receipt bytes 仍在 PROBING→PROBED 持久化并在 PROBED/CONSUMED 重验；不加 schema、OS producer、公开字段或写者。B01–B18 和真实跨启动正例须实际验证；未闭合前继续 Busy，完整规格与反例见同份 MANAGED_CLI_HISTORICAL_FAMILIES.md。
+
+这是同一三家合同的限定修订准备；Claude 独立复核、授权 main 合并与精确 scope/receipt 读回前不实施旧 probe 例外或新版动作，不新增 Owner 触点。
+
+### 原生 managed-version mutation 的唯一 CI 时限例外
+
+Owner 已批准把 `.github/workflows/gogoke-native-host.yml` 中**已有** `native-managed-version-mutations` job 的 `timeout-minutes` 仅由 35 改为 90；这是与九个原生产品实现文件分开的 CI-only INTEGRATOR 写域。当前合同 PR 工作流没有该 job，不搬入整份产品 workflow、不新建 job/pipeline；合同经新 HEAD 独立及 Claude 复核、授权 main 合并并精确读回 scope/receipt 后，才由 Integrator 在已有产品 stage 的对应 job 应用这一行。测试断言、mutation 矩阵、job 身份与输入、证据语义以及产品执行/停止/ready 时限均不变。原 c773 run `38782384785` / job `116585636283` 的 35 分钟超时仅有 baseline PASS、compiled mutant 命中原行为断言，恢复后测试已启动但在超时取消前未完成；结果 JSON 的 NOT_RUN 只是未更新的初始化标签，完整 mutation 证据未闭合，不能计 PASS。后续新 run 须自行完成原链并读原件；CI 预算不证明 T07 B01–B18 或真实跨启动正例，未闭合前继续 Busy。
