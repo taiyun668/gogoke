@@ -94,15 +94,19 @@ fn claude_holder_completed_releases_qualify_only_the_exact_retired_version_famil
             Err(instance::ManagedCliError::IdentityChanged)),
             "a completed receipt from this DB cannot be used under another Root");
         drop(foreign_root);
-        let native = crate::process::NativeProcessHoldersGone::observe(&cold.pairs).unwrap();
-        native.validate(&cold.pairs).unwrap();
+        let kernel_error=match crate::process::NativeLegacyHoldersGone::observe(&cold.pairs) {
+            Err(error)=>format!("{error:?}"),
+            Ok(_)=>panic!("the real fixture pairs must still belong to this boot"),
+        };
+        assert!(kernel_error.contains("HolderCreatedThisBoot"),"{kernel_error}");
         let members=instance::test_original_claude_release_members(
             &product.connection,root,&product).unwrap();
         assert_eq!(members.len(),2);
-        assert!(members.iter().all(|(source,pairs)|
+        assert!(members.iter().all(|(source,pairs,proof_kind)|
             source.first().map(String::as_str)==Some("H_SESSION_OPEN_CLAUDE_COMPLETED_RELEASE-v1") &&
-            source.len()==41 && pairs.len()==1));
-        let mut exact_pairs=members.iter().flat_map(|(_,pairs)|pairs.iter().copied())
+            source.len()==41 && pairs.len()==1 && proof_kind=="EXACT_GONE"),
+            "the real production selector must observe exact absence for each completed member");
+        let mut exact_pairs=members.iter().flat_map(|(_,pairs,_)|pairs.iter().copied())
             .collect::<Vec<_>>();
         exact_pairs.sort();
         let mut captured_pairs=cold.pairs.clone();captured_pairs.sort();

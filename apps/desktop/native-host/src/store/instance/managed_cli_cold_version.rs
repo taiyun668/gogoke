@@ -2544,6 +2544,23 @@ fn all_blockers_are_family(db:&VerifiedDatabaseConnection<'_>,driver:&str,
     if blocked {Err(ManagedCliError::Busy)} else {Ok(())}
 }
 
+fn observe_original_unit_absence(unit:&Unit,source_kind:&str)
+    ->Result<(NativeVersionAbsence,&'static str),ManagedCliError>{
+    if source_kind=="H_SESSION_OPEN_CLAUDE_COMPLETED_RELEASE-v1" {
+        let fact=NativeProcessHoldersGone::observe(&unit.pairs).map_err(|error|
+            ManagedCliError::NativeGone(format!("completed Claude exact pairs: {error:?}")))?;
+        fact.validate(&unit.pairs).map_err(|error|
+            ManagedCliError::NativeGone(format!("completed Claude exact recheck: {error:?}")))?;
+        Ok((NativeVersionAbsence::Exact(fact),"EXACT_GONE"))
+    } else {
+        let fact=NativeLegacyHoldersGone::observe(&unit.pairs).map_err(|error|
+            ManagedCliError::NativeGone(format!("original family kernel cutoff: {error:?}")))?;
+        fact.validate(&unit.pairs).map_err(|error|
+            ManagedCliError::NativeGone(format!("original family kernel recheck: {error:?}")))?;
+        Ok((NativeVersionAbsence::Reboot(fact),"KERNEL_REBOOT"))
+    }
+}
+
 fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     action:Option<&ActionRecord>,live_probe:Option<&NativeStopProof>,
     releases:Option<&dyn ClaudeReleaseVerifier>)
@@ -2621,20 +2638,7 @@ fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
             let expected_identity=if operation=="open"{&source[29]}else{&source[36]};
             family_execution_source(db,root,&unit,operation,expected_identity)?
         };
-        let released=source[0]=="H_SESSION_OPEN_CLAUDE_COMPLETED_RELEASE-v1";
-        let (absence,proof_kind)=if released {
-            let fact=NativeProcessHoldersGone::observe(&unit.pairs).map_err(|error|
-                ManagedCliError::NativeGone(format!("completed Claude exact pairs: {error:?}")))?;
-            fact.validate(&unit.pairs).map_err(|error|
-                ManagedCliError::NativeGone(format!("completed Claude exact recheck: {error:?}")))?;
-            (NativeVersionAbsence::Exact(fact),"EXACT_GONE")
-        } else {
-            let fact=NativeLegacyHoldersGone::observe(&unit.pairs).map_err(|error|
-                ManagedCliError::NativeGone(format!("original family kernel cutoff: {error:?}")))?;
-            fact.validate(&unit.pairs).map_err(|error|
-                ManagedCliError::NativeGone(format!("original family kernel recheck: {error:?}")))?;
-            (NativeVersionAbsence::Reboot(fact),"KERNEL_REBOOT")
-        };
+        let (absence,proof_kind)=observe_original_unit_absence(&unit,&source[0])?;
         if open {source.push(home_source)}
         else if !home_source.is_empty() && source[42]!=home_source {
             return Err(ManagedCliError::Busy)
@@ -2938,9 +2942,12 @@ pub(crate) fn test_collect_cold_version_scope(db:&VerifiedDatabaseConnection<'_>
 #[cfg(test)]
 pub(crate) fn test_original_claude_release_members(db:&VerifiedDatabaseConnection<'_>,
     root:&RootLock,releases:&dyn ClaudeReleaseVerifier)
-    ->Result<Vec<(Vec<String>,Vec<(u32,u64)>)>,ManagedCliError>{
-    original_units(db,root,"claude",Some(releases)).map(|units|units.into_iter()
-        .map(|(unit,source)|(source,unit.pairs)).collect())
+    ->Result<Vec<(Vec<String>,Vec<(u32,u64)>,String)>,ManagedCliError>{
+    original_units(db,root,"claude",Some(releases))?.into_iter()
+        .map(|(unit,source)|{
+            let (_,kind)=observe_original_unit_absence(&unit,&source[0])?;
+            Ok((source,unit.pairs,kind.to_owned()))
+        }).collect()
 }
 
 #[cfg(test)]
