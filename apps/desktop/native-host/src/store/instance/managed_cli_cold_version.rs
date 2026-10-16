@@ -206,6 +206,8 @@ const STRICT_PROJECTIONS: &[StrictProjection] = &[
         from:"FROM main.gogoke_v37_credential_profiles p JOIN main.gogoke_v37_instances i ON i.instance_id=p.instance_id WHERE i.driver_id=?1",key_columns:1,width:9},
     StrictProjection{kind:"HD",columns:"d.binding_id,d.instance_id,d.process_operation_id,d.request_id,d.pid,d.creation_time_100ns,d.snapshot_hex,d.snapshot_digest,d.phase,d.revision",
         from:"FROM main.gogoke_v37_holder_disappearance d JOIN main.gogoke_v37_instances i ON i.instance_id=d.instance_id WHERE i.driver_id=?1",key_columns:1,width:10},
+    StrictProjection{kind:"CHR",columns:"r.process_operation_id,r.instance_id,r.domain_id,r.session_id,r.request_id,r.snapshot_hex,r.snapshot_digest,r.phase,COALESCE(r.original_error,''),r.revision",
+        from:"FROM main.gogoke_v37_claude_holder_recovery r JOIN main.gogoke_v37_instances i ON i.instance_id=r.instance_id WHERE i.driver_id=?1",key_columns:1,width:10},
     StrictProjection{kind:"LR",columns:"r.operation_id,r.source_epoch,r.source_cursor,r.process_ticket,r.custodian_nonce,r.domain_id,r.session_id,r.generation,lower(hex(r.raw_bytes)),r.state,r.resolved_event_id,r.no_event_reason",
         from:"FROM main.v37_ledger_raw_source r WHERE EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id WHERE i.driver_id=?1 AND e.process_operation_id=r.operation_id)",key_columns:3,width:12},
     StrictProjection{kind:"NS",columns:"n.domain_id,n.session_id,n.seat_id,n.seat_incarnation,n.seat_authorization_generation,n.selected_instance_id",
@@ -1023,6 +1025,8 @@ fn original_units(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
     }
     let mut units=Vec::with_capacity(candidates.len());
     for raw in &candidates {
+    verified_source_images(db,root,driver,&raw[0],&raw[1],&raw[34],&raw[35],
+        &raw[17],&raw[18])?;
     if raw[21]=="RELEASED" {
         if driver!="claude" || !releases.ok_or(ManagedCliError::Busy)?
             .completed_release(db,root,&raw[0],&raw[2],&raw[3],&raw[6])? {
@@ -1056,8 +1060,6 @@ fn original_units(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
     }
     let worktree_source=verified_original_worktree(db,&request,&raw[0],&raw[2],&raw[4],
         &raw[38],&raw[39])?;
-    verified_source_images(db,root,driver,&raw[0],&raw[1],&raw[34],&raw[35],
-        &raw[17],&raw[18])?;
     let pid = raw[15].parse::<u32>().map_err(|_|ManagedCliError::Busy)?;
     let creation = raw[16].parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
     if pid==0 || creation==0 { return Err(ManagedCliError::Busy); }
@@ -2196,6 +2198,7 @@ fn no_unowned_original_h_rows(db:&VerifiedDatabaseConnection<'_>)
         "SELECT 1 FROM main.gogoke_v37_rpc_steps s WHERE NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e WHERE e.domain_id=s.domain_id AND e.session_id=s.session_id AND e.generation=s.generation AND e.process_operation_id=s.process_operation_id AND e.request_id=s.open_request_id) LIMIT 1",
         "SELECT 1 FROM main.gogoke_v37_h_generation_change g WHERE NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e WHERE e.domain_id=g.domain_id AND e.session_id=g.session_id AND e.process_operation_id=g.old_process_operation_id) LIMIT 1",
         "SELECT 1 FROM main.gogoke_v37_h_dos_alias a WHERE NOT EXISTS(SELECT 1 FROM main.gogoke_v37_instances i WHERE i.instance_id=a.instance_id) LIMIT 1",
+        "SELECT 1 FROM main.gogoke_v37_claude_holder_recovery r WHERE NOT EXISTS(SELECT 1 FROM main.gogoke_v37_instances i WHERE i.instance_id=r.instance_id) OR NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e WHERE e.process_operation_id=r.process_operation_id AND e.instance_id=r.instance_id AND e.domain_id=r.domain_id AND e.session_id=r.session_id AND e.old_generation IS NULL) OR NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_claim c WHERE c.process_operation_id=r.process_operation_id AND c.instance_id=r.instance_id AND c.domain_id=r.domain_id AND c.session_id=r.session_id) LIMIT 1",
     ] {
         let row=Statement::prepare(db.as_ptr(),sql)?;
         if row.step_row()? {return Err(ManagedCliError::Busy)}
@@ -2496,6 +2499,13 @@ fn all_blockers_are_family(db:&VerifiedDatabaseConnection<'_>,driver:&str,
     };
     let mut blocked=false;
     collect_blocker(&mut blocked,no_unowned_original_h_rows(db))?;
+    let recovery=rows(db,"SELECT r.process_operation_id,r.instance_id,r.domain_id,r.session_id,r.phase FROM main.gogoke_v37_claude_holder_recovery r JOIN main.gogoke_v37_instances i ON i.instance_id=r.instance_id WHERE i.driver_id=?1",driver,5)?;
+    for row in recovery {
+        if row[4]!="APPLIED" || !member(&|unit|unit.process==row[0] && unit.instance==row[1]
+            && unit.domain==row[2] && unit.session==row[3]) {
+            blocked=true;
+        }
+    }
     collect_blocker(&mut blocked,independent_f_targets_clear(db,driver))?;
     // These reverse checks run before predicates that join through a claim.
     // A missing claim, generation or producer must not make an H row vanish.
@@ -2546,19 +2556,12 @@ fn all_blockers_are_family(db:&VerifiedDatabaseConnection<'_>,driver:&str,
 
 fn observe_original_unit_absence(unit:&Unit,source_kind:&str)
     ->Result<(NativeVersionAbsence,&'static str),ManagedCliError>{
-    if source_kind=="H_SESSION_OPEN_CLAUDE_COMPLETED_RELEASE-v1" {
-        let fact=NativeProcessHoldersGone::observe(&unit.pairs).map_err(|error|
-            ManagedCliError::NativeGone(format!("completed Claude exact pairs: {error:?}")))?;
-        fact.validate(&unit.pairs).map_err(|error|
-            ManagedCliError::NativeGone(format!("completed Claude exact recheck: {error:?}")))?;
-        Ok((NativeVersionAbsence::Exact(fact),"EXACT_GONE"))
-    } else {
-        let fact=NativeLegacyHoldersGone::observe(&unit.pairs).map_err(|error|
-            ManagedCliError::NativeGone(format!("original family kernel cutoff: {error:?}")))?;
-        fact.validate(&unit.pairs).map_err(|error|
-            ManagedCliError::NativeGone(format!("original family kernel recheck: {error:?}")))?;
-        Ok((NativeVersionAbsence::Reboot(fact),"KERNEL_REBOOT"))
-    }
+    let _ = source_kind;
+    let fact=NativeLegacyHoldersGone::observe(&unit.pairs).map_err(|error|
+        ManagedCliError::NativeGone(format!("original family kernel cutoff: {error:?}")))?;
+    fact.validate(&unit.pairs).map_err(|error|
+        ManagedCliError::NativeGone(format!("original family kernel recheck: {error:?}")))?;
+    Ok((NativeVersionAbsence::Reboot(fact),"KERNEL_REBOOT"))
 }
 
 fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,

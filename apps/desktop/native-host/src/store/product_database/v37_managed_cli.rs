@@ -18,7 +18,7 @@ impl instance::ClaudeReleaseVerifier for ProductDatabase<'_> {
             self.root.canonical_root().identity!=root.canonical_root().identity {
             return Err(instance::ManagedCliError::IdentityChanged)
         }
-        self.completed_claude_holder_release(instance_id,domain,session,operation)
+        self.completed_claude_holder_release_for_version(instance_id,domain,session,operation)
             .map_err(|error|instance::ManagedCliError::Observation(format!(
                 "original completed Claude release: {error:?}")))
     }

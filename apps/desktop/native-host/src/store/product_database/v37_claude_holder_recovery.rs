@@ -187,6 +187,13 @@ impl<'root> ProductDatabase<'root> {
     }
 
     fn claude_originals(&self, instance: &str) -> Result<Vec<Original>> {
+        self.claude_originals_with_current_pin(instance, true)
+    }
+
+    // The version action verifies the historical C image and today's managed
+    // SOURCE separately before calling its completed-release reader. Other
+    // recovery callers continue to require the historical C to be current.
+    fn claude_originals_with_current_pin(&self, instance: &str, require_current_pin: bool) -> Result<Vec<Original>> {
         let registered = self
             .read_registered_instance(instance)?
             .ok_or_else(|| denied("Claude original registered instance absent"))?;
@@ -228,7 +235,7 @@ impl<'root> ProductDatabase<'root> {
                 || r[16] != instance
                 || r[17] != r[2]
                 || r[18] != r[7]
-                || r[25] != registered.program_digest
+                || (require_current_pin && r[25] != registered.program_digest)
             {
                 return Err(denied("Claude original H episode/custody changed"));
             }
@@ -397,7 +404,9 @@ impl<'root> ProductDatabase<'root> {
         let child = resource_only(original);
         let relationship_generation = if child { fact(f, "parentGeneration")? }
             else { fact(f, "generation")? };
-        if (!child && seat.state != seat::State::Busy)
+        if (!child && seat.state != if original.claim_state=="RELEASED" {
+            seat::State::Idle
+        } else {seat::State::Busy})
             || seat.state == seat::State::Reclaimed
             || seat.instance_id != fact(f, "instance")?
             || seat.incarnation != fact(f, "incarnation")?
@@ -583,13 +592,12 @@ impl<'root> ProductDatabase<'root> {
             if original.claim_state != "RELEASED" || original.claim_revision != expected_revision {
                 return Err(denied("Claude H release receipt changed"));
             }
-            return Ok(Vec::new());
         }
-        if original.claim_state != fact(saved, "claimState")?
+        if !released && (original.claim_state != fact(saved, "claimState")?
             || original.claim_revision
                 != fact(saved, "claimRevision")?
                     .parse::<i64>()
-                    .map_err(|_| denied("Claude captured revision"))?
+                    .map_err(|_| denied("Claude captured revision"))?)
         {
             return Err(denied("Claude original H claim changed"));
         }
@@ -810,6 +818,19 @@ impl<'root> ProductDatabase<'root> {
         session: &str,
         operation: &str,
     ) -> Result<bool> {
+        self.completed_claude_holder_release_reader(instance, domain, session, operation, true)
+    }
+
+    pub(super) fn completed_claude_holder_release_for_version(
+        &self, instance: &str, domain: &str, session: &str, operation: &str,
+    ) -> Result<bool> {
+        self.completed_claude_holder_release_reader(instance, domain, session, operation, false)
+    }
+
+    fn completed_claude_holder_release_reader(
+        &self, instance: &str, domain: &str, session: &str, operation: &str,
+        require_current_pin: bool,
+    ) -> Result<bool> {
         let Some(record) = journal::read(&self.connection, operation)? else {
             return Ok(false);
         };
@@ -822,7 +843,7 @@ impl<'root> ProductDatabase<'root> {
         {
             return Ok(false);
         }
-        let original = self.claude_originals(instance)?.into_iter().find(|item| {
+        let original = self.claude_originals_with_current_pin(instance, require_current_pin)?.into_iter().find(|item| {
             item.facts
                 .get("operation")
                 .is_some_and(|value| value == operation)
@@ -832,11 +853,16 @@ impl<'root> ProductDatabase<'root> {
         };
         let known = fact(&record.capture.facts, "knownSids")?;
         let known: Vec<String> = known.split(',').map(str::to_owned).collect();
-        if self
-            .claude_validate_capture(&original, &record, &known, true)
-            .is_err()
-        {
-            return Ok(false);
+        let roots = match self.claude_validate_capture(&original, &record, &known, true) {
+            Ok(roots) => roots,
+            Err(_) => return Ok(false),
+        };
+        let profile = evidence(AppContainerProfile::derive_for_revocation(&original.profile_name))?;
+        let proof = evidence(NativeProcessHoldersGone::observe(&[original.pair]))?;
+        for object in &record.capture.objects {
+            evidence(ClaudeAclRetirement::readback_target(
+                &profile, &roots, object, &known, &proof, &[original.pair],
+            ))?;
         }
         let receipt=rows(&self.connection,
             "SELECT raw_hex,status,previous_revision,revision,session_id FROM main.gogoke_v37_h_operation

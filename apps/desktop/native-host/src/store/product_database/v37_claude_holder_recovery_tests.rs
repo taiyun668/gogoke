@@ -55,11 +55,21 @@ fn original_opens(product: &ProductDatabase<'_>) -> Vec<Vec<String>> {
 fn claude_holder_completed_releases_qualify_only_the_exact_retired_version_family() {
     cold_two_claude(|mut product, root, cold| {
         product.connection.execute(
-            "UPDATE main.gogoke_v37_h_operation SET status='UNKNOWN'
+            "UPDATE main.gogoke_v37_h_operation SET status='UNKNOWN',previous_revision=2,revision=2
              WHERE operation='open' AND domain_id IN ('projectA','projectB');
-             UPDATE main.gogoke_v37_h_process_episode SET phase='PREPARED'
+             UPDATE main.gogoke_v37_h_process_episode SET phase='PREPARED',previous_revision=2,result_revision=2
              WHERE instance_id='instanceA' AND domain_id IN ('projectA','projectB')",
         ).unwrap();
+        let pending_revisions=rows(&product,
+            "SELECT o.status,CAST(o.previous_revision AS TEXT),CAST(o.revision AS TEXT),
+                    e.phase,CAST(e.previous_revision AS TEXT),CAST(e.result_revision AS TEXT)
+             FROM main.gogoke_v37_h_operation o JOIN main.gogoke_v37_h_process_episode e
+               ON e.domain_id=o.domain_id AND e.request_id=o.request_id
+             WHERE o.operation='open' AND o.domain_id IN ('projectA','projectB')",&[],6);
+        assert_eq!(pending_revisions.len(),2);
+        assert!(pending_revisions.iter().all(|r|r.iter().map(String::as_str).eq(
+            ["UNKNOWN","2","2","PREPARED","2","2"])),
+            "synthetic pending shape must preserve the observed 2-to-2 revisions");
         let opens_before = original_opens(&product);
         let original_custody = custody(&product);
         let original_episodes = episodes(&product);
@@ -99,19 +109,9 @@ fn claude_holder_completed_releases_qualify_only_the_exact_retired_version_famil
             Ok(_)=>panic!("the real fixture pairs must still belong to this boot"),
         };
         assert!(kernel_error.contains("HolderCreatedThisBoot"),"{kernel_error}");
-        let members=instance::test_original_claude_release_members(
-            &product.connection,root,&product).unwrap();
-        assert_eq!(members.len(),2);
-        assert!(members.iter().all(|(source,pairs,proof_kind)|
-            source.first().map(String::as_str)==Some("H_SESSION_OPEN_CLAUDE_COMPLETED_RELEASE-v1") &&
-            source.len()==41 && pairs.len()==1 && proof_kind=="EXACT_GONE"),
-            "the real production selector must observe exact absence for each completed member");
-        let mut exact_pairs=members.iter().flat_map(|(_,pairs,_)|pairs.iter().copied())
-            .collect::<Vec<_>>();
-        exact_pairs.sort();
-        let mut captured_pairs=cold.pairs.clone();captured_pairs.sort();
-        assert_eq!(exact_pairs,captured_pairs,
-            "the retired member collector must retain the full captured holder set");
+        let same_boot=instance::test_original_claude_release_members(
+            &product.connection,root,&product).unwrap_err();
+        assert!(format!("{same_boot:?}").contains("HolderCreatedThisBoot"),"{same_boot:?}");
 
         product.connection.execute(
             "UPDATE main.gogoke_v37_claude_holder_recovery SET phase='UNKNOWN'
@@ -129,8 +129,8 @@ fn claude_holder_completed_releases_qualify_only_the_exact_retired_version_famil
              WHERE instance_id='instanceA' AND domain_id='projectA'",
         ).unwrap();
 
-        assert_eq!(instance::test_original_claude_release_members(
-            &product.connection,root,&product).unwrap(),members);
+        assert!(instance::test_original_claude_release_members(
+            &product.connection,root,&product).is_err());
         assert!(product.dispatch_user_managed_cli(before).is_err(),
             "the independent same-boot first-copy probe still requires KERNEL_REBOOT");
         assert!(rows(&product,"SELECT request_id FROM main.gogoke_v37_instance_version_actions
@@ -139,30 +139,30 @@ fn claude_holder_completed_releases_qualify_only_the_exact_retired_version_famil
             "UPDATE main.gogoke_v37_h_operation SET raw_hex=raw_hex||'00'
              WHERE domain_id='projectA' AND operation='claude-holder-gone-release'",
         ).unwrap();
-        assert!(instance::test_original_claude_release_members(
-            &product.connection,root,&product).is_err(),
+        assert!(!product.completed_claude_holder_release(
+            INSTANCE,&first[2],&first[3],&first[0]).unwrap(),
             "changed original release raw must refuse even same-ID replay");
         let restore_release=Statement::prepare(product.connection.as_ptr(),
             "UPDATE main.gogoke_v37_h_operation SET raw_hex=?1
              WHERE domain_id='projectA' AND operation='claude-holder-gone-release'").unwrap();
         restore_release.bind_text(1,&completed.iter().find(|row|row[2]=="projectA").unwrap()[5]).unwrap();
         restore_release.step_done().unwrap();drop(restore_release);
-        assert_eq!(instance::test_original_claude_release_members(
-            &product.connection,root,&product).unwrap(),members);
+        assert!(instance::test_original_claude_release_members(
+            &product.connection,root,&product).is_err());
         product.connection.execute(
             "UPDATE main.gogoke_coordination_process_custody SET custodian_nonce=custodian_nonce||'0'
              WHERE profile_id='instanceA' AND domain_id='projectA'",
         ).unwrap();
-        assert!(instance::test_original_claude_release_members(
-            &product.connection,root,&product).is_err(),
+        assert!(!product.completed_claude_holder_release(
+            INSTANCE,&first[2],&first[3],&first[0]).unwrap(),
             "changed original C identity must refuse even same-ID replay");
         let restore_nonce=Statement::prepare(product.connection.as_ptr(),
             "UPDATE main.gogoke_coordination_process_custody SET custodian_nonce=?1
              WHERE profile_id='instanceA' AND domain_id='projectA'").unwrap();
         restore_nonce.bind_text(1,&original_custody.iter().find(|row|row[8]=="projectA").unwrap()[2]).unwrap();
         restore_nonce.step_done().unwrap();drop(restore_nonce);
-        assert_eq!(instance::test_original_claude_release_members(
-            &product.connection,root,&product).unwrap(),members);
+        assert!(product.completed_claude_holder_release(
+            INSTANCE,&first[2],&first[3],&first[0]).unwrap());
         product.close_checked().unwrap();
     });
 }
