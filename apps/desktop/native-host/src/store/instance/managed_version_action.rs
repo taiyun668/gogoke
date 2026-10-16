@@ -145,8 +145,7 @@ fn digest(value: &str) -> bool {
 /// Only the directly observable original custody writer grammar. This says
 /// nothing about the old command, its result, or a StopProof preimage.
 pub(crate) fn valid_original_c_writer_shape(operation:&str,ticket:&str,nonce:&str)->bool {
-    !operation.is_empty() && operation.len()<=128 && operation.bytes().all(|byte|
-        byte.is_ascii_alphanumeric() || byte==b'-' || byte==b'_') &&
+    !operation.is_empty() &&
     ticket.strip_prefix("pct1_").is_some_and(digest) &&
     nonce.strip_prefix("pcn1_").is_some_and(digest)
 }
