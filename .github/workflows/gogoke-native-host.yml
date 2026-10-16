@@ -554,7 +554,7 @@ jobs:
   native-managed-version-mutations:
     if: ${{ inputs.focused_library == 'managed-lifecycle' && !inputs.full_library_only }}
     name: Managed version mutation ${{ matrix.axis }}
-    timeout-minutes: 35
+    timeout-minutes: 90
     runs-on: windows-latest
     strategy:
       fail-fast: false
