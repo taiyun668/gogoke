@@ -306,7 +306,7 @@ impl<'root> ProductDatabase<'root> {
                 Some(chain)
             },
         };
-        fold_idle(&frames, &thread, None)
+        fold_idle(&frames, &thread, initialization)
     }
 
     /// All phases matter: an unacknowledged write has no A cursor. Never infer
