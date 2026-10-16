@@ -120,6 +120,63 @@ test('own proven close is dispatched once and another case cannot adopt it', asy
   assert.throws(() => f.lifecycle.beforeDispatch({ request, rawFrame: JSON.stringify(request) }), /this case/);
 });
 
+test('a recorded original CLOSED receipt remains settled after the host closes', async () => {
+  const f = fixture('closedAfterHost');
+  f.create(f.record('admission-reserve', 'createA', '1'));
+  f.journal.operations.push(f.record('stop', 'ownStop', '1', 'APPLIED', { stopFact: `sha256:${'a'.repeat(64)}` }));
+  assert.equal((await f.lifecycle.finishCase('closedAfterHost')).complete, true);
+  f.product.socket = null;
+  f.lifecycle.manifest.attempts[0].teardownState = 'CASE_TEARDOWN_INCOMPLETE_HOST_OR_PRODUCER_UNAVAILABLE';
+  assert.equal((await f.lifecycle.finishCase('closedAfterHost')).complete, true);
+  assert.equal(f.journal.temporaryHomeLifecycle.closedReceipts, 1);
+  assert.deepEqual(f.calls.map(row => row.operation), ['admission-release', 'temporary-home-close']);
+  f.lifecycle.manifest.attempts[0].closeReceipt = { ...f.lifecycle.manifest.attempts[0].closeReceipt, requestId: 'foreign' };
+  assert.equal((await f.lifecycle.finishCase('closedAfterHost')).complete, false);
+  assert.equal(f.calls.length, 2);
+});
+
+test('an intermediate checkpoint keeps original stopped owners until case finish', async () => {
+  const f = fixture('stopOnlyCheckpoint');
+  f.create(f.record('admission-reserve', 'createA', '1'));
+  f.journal.operations.push(f.record('stop', 'ownStop', '1', 'APPLIED', { stopFact: `sha256:${'a'.repeat(64)}` }));
+  f.session.revision = '4';
+  const before = JSON.stringify(f.lifecycle.manifest);
+  assert.equal(f.lifecycle.beforeCheckpointClose('stopOnlyCheckpoint').state, 'STOP_ONLY_CHECKPOINT_READBACK_REQUIRED');
+  assert.equal(JSON.stringify(f.lifecycle.manifest), before);
+  assert.deepEqual(f.calls, []);
+  assert.throws(() => f.lifecycle.beforeCheckpointClose('anotherCase'), /active exclusive/);
+  f.journal.operations.at(-1).receipt.status = 'UNKNOWN';
+  assert.throws(() => f.lifecycle.beforeCheckpointClose('stopOnlyCheckpoint'), /stop-only/);
+  f.journal.operations.at(-1).receipt.status = 'APPLIED';
+  assert.equal((await f.lifecycle.finishCase('stopOnlyCheckpoint')).complete, true);
+  assert.throws(() => f.lifecycle.beforeCheckpointClose('stopOnlyCheckpoint'), /active exclusive|stop-only/);
+  assert.deepEqual(f.calls.map(row => row.operation), ['admission-release', 'temporary-home-close']);
+});
+
+test('an existing close with mismatched canonical provenance is incomplete without replay', async () => {
+  for (const connected of [false, true]) {
+    for (const field of ['family', 'targetId', 'rawFrame', 'expectedRevision', 'payload', 'duplicate', 'digest']) {
+      const name = `badClosed-${connected}-${field}`;
+      const f = fixture(name);
+      f.create(f.record('admission-reserve', 'createA', '1'));
+      f.journal.operations.push(f.record('stop', 'ownStop', '1', 'APPLIED', { stopFact: `sha256:${'a'.repeat(64)}` }));
+      assert.equal((await f.lifecycle.finishCase(name)).complete, true);
+      const close = f.journal.operations.at(-1);
+      if (field === 'family') close.request.family = 'K-SESSION';
+      if (field === 'targetId') close.request.targetId = 'foreign-instance';
+      if (field === 'rawFrame') close.rawFrame = '{}';
+      if (field === 'expectedRevision') close.request.expectedRevision = '2';
+      if (field === 'payload') close.request.payload.foreign = true;
+      if (field === 'duplicate') f.journal.operations.push(structuredClone(close));
+      if (field === 'digest') f.lifecycle.manifest.attempts[0].closeRawSha256 = '0'.repeat(64);
+      if (!connected) f.product.socket = null;
+      assert.equal((await f.lifecycle.finishCase(name)).complete, false, name);
+      assert.equal(f.journal.temporaryHomeLifecycle.closedReceipts, 0, name);
+      assert.equal(f.calls.length, 2, name);
+    }
+  }
+});
+
 test('no-create does not pass a missing or changed inventory', () => {
   const f = fixture('noCreate');
   assert.equal(f.lifecycle.applySharedClosedReadback(null), false);
