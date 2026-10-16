@@ -207,8 +207,75 @@ fn actual_codex_sqlite_home(product:&ProductDatabase<'_>,operation:&str,step:&st
 fn actual_pinned_codex_empty_thread_archive_metadata_cold_resume_without_model_call() {
     health_control_product_fixture("codex",true,|product| {
         let key=("projectA".to_owned(),"sessionA".to_owned());
-        assert!(product.host_rule_recipient_idle(&key).unwrap(),
-            "the production idle consumer must understand its real initial empty-thread sequence");
+        let initial_idle=product.host_rule_recipient_idle(&key).unwrap();
+        let failure_context=if initial_idle {String::new()} else {
+            fn field<'a>(value:&'a Json,name:&str)->Option<&'a Json> {
+                if let Json::Object(fields)=value {fields.get(&JsonString::from_str(name))}
+                else {None}
+            }
+            fn text(value:Option<&Json>)->Option<String> {
+                if let Some(Json::String(value))=value {value.to_well_formed_string()}
+                else {None}
+            }
+            let run=product.native_sessions.get(&key);
+            let run_flags=run.map(|run| (run.evidence.driver_id()=="codex",
+                run.stop_proof.is_none(),!run.raw_capture.has_pending(),
+                !run.raw_capture.source_failed(),run.thread_id.is_some(),run.turn_id.is_none()));
+            let purpose=ledger::read_registered_session(&product.connection,"sessionA")
+                .ok().map(|row|row.is_some_and(|row|row.domain_id=="projectA" &&
+                    row.seat_id=="seatA" && row.purpose==ledger::SessionPurpose::Work));
+            let claim=health_control_rows(product,"SELECT c.state,e.phase FROM main.gogoke_v37_h_claim c LEFT JOIN main.gogoke_v37_h_process_episode e ON e.domain_id=c.domain_id AND e.session_id=c.session_id AND e.generation=c.generation AND e.process_operation_id=c.process_operation_id WHERE c.domain_id='projectA' AND c.session_id='sessionA'");
+            let custody=health_control_rows(product,"SELECT p.state,CAST(p.stop_proof_hash IS NULL AS TEXT) FROM main.gogoke_v37_h_claim c JOIN main.gogoke_coordination_process_custody p ON p.operation_id=c.process_operation_id AND p.domain_id=c.domain_id AND p.generation=c.generation WHERE c.domain_id='projectA' AND c.session_id='sessionA'");
+            let blockers=health_control_rows(product,"SELECT (SELECT COUNT(*) FROM main.gogoke_v37_h_generation_change WHERE domain_id='projectA' AND session_id='sessionA' AND stage NOT IN ('APPLIED','CANCELLED','UNSUPPORTED')), (SELECT COUNT(*) FROM main.gogoke_v37_qcard_native WHERE domain_id='projectA' AND seat_id='seatA' AND state IN ('OPEN','ANSWER_UNKNOWN'))");
+            let rpc=health_control_rows(product,"SELECT s.step_id,s.phase||':'||COALESCE(s.source_cursor,'NULL')||':'||CASE WHEN r.source_cursor IS NULL THEN 'NO_A' ELSE 'A' END FROM main.gogoke_v37_rpc_steps s LEFT JOIN main.v37_ledger_raw_source r ON r.domain_id=s.domain_id AND r.session_id=s.session_id AND r.generation=s.generation AND r.operation_id=s.process_operation_id AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor WHERE s.domain_id='projectA' AND s.session_id='sessionA' AND s.step_id IN ('thread-start','thread-persist-archive','thread-persist-unarchive','thread-persist-resume') ORDER BY s.step_id");
+            let original=health_control_rows(product,"SELECT s.step_id,s.command_hex||':'||lower(hex(r.raw_bytes)) FROM main.gogoke_v37_rpc_steps s JOIN main.v37_ledger_raw_source r ON r.domain_id=s.domain_id AND r.session_id=s.session_id AND r.generation=s.generation AND r.operation_id=s.process_operation_id AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor WHERE s.domain_id='projectA' AND s.session_id='sessionA' AND s.phase='OBSERVED' AND r.state='NO_EVENT' AND r.no_event_reason='CODEX_RPC_RESPONSE' AND s.step_id IN ('thread-start','thread-persist-archive','thread-persist-unarchive','thread-persist-resume') ORDER BY s.step_id");
+            let thread=run.and_then(|run|run.thread_id.as_deref());
+            let expected_cwd=run.map(|run|run.evidence.protocol_cwd().to_string_lossy().into_owned());
+            let mut shapes=Vec::new();let mut paths=Vec::new();
+            for row in original {
+                let Some((command_hex,response_hex))=row[1].split_once(':') else {continue};
+                let (Ok(command),Ok(response))=(unhex(command_hex),unhex(response_hex)) else {continue};
+                let parsed_command=std::str::from_utf8(&command).ok()
+                    .and_then(|raw|Parser::parse(raw.trim()).ok());
+                let parsed_response=std::str::from_utf8(&response).ok()
+                    .and_then(|raw|Parser::parse(raw.trim()).ok());
+                let command_cwd=parsed_command.as_ref().and_then(|v|field(v,"params"))
+                    .and_then(|v|text(field(v,"cwd")));
+                let observed=parsed_response.as_ref().and_then(|v|field(v,"result"))
+                    .and_then(|v|field(v,"thread"));
+                let reply_cwd=observed.and_then(|v|text(field(v,"cwd")));
+                let status=observed.and_then(|v|field(v,"status"))
+                    .and_then(|v|text(field(v,"type")));
+                let status=match status.as_deref() {Some("idle")=>"idle",Some("active")=>"active",
+                    Some("notLoaded")=>"notLoaded",Some(_)=>"other",None=>"absent"};
+                let turns=observed.and_then(|v|field(v,"turns")).and_then(|v|
+                    if let Json::Array(turns)=v {Some(turns.len())} else {None});
+                let typed=thread.is_some_and(|thread| match row[0].as_str() {
+                    "thread-start"=>codex_rpc::decode_stored_thread_start(&command,&response).ok().as_deref()==Some(thread),
+                    "thread-persist-archive"=>codex_rpc::decode_stored_thread_archive(&command,&response).ok().as_deref()==Some(thread),
+                    "thread-persist-unarchive"=>codex_rpc::decode_stored_thread_unarchive(&command,&response).ok().as_deref()==Some(thread),
+                    "thread-persist-resume"=>codex_rpc::decode_stored_thread_resume(&command,&response).ok().as_deref()==Some(thread),
+                    _=>false,
+                });
+                if row[0]!="thread-persist-archive" {
+                    if let Some(thread)=thread {
+                        if let Ok(path)=codex_rpc::persistent_paginated_thread_path(&response,thread) {
+                            paths.push(path);
+                        }
+                    }
+                }
+                shapes.push((row[0].clone(),typed,status,turns,
+                    command_cwd.as_ref().zip(reply_cwd.as_ref()).map(|(a,b)|a==b),
+                    command_cwd.as_ref().zip(expected_cwd.as_ref()).map(|(a,b)|a==b),
+                    run.zip(reply_cwd.as_ref()).map(|(run,cwd)|
+                        run.evidence.verify_observed_cwd(cwd).is_ok())));
+            }
+            let paths_equal=if paths.len()==3 {Some(paths[0]==paths[1] && paths[1]==paths[2])}
+                else {None};
+            format!("run(codex,unstopped,no_capture_pending,no_source_failure,has_thread,no_turn)={run_flags:?} purpose={purpose:?} claim_h={claim:?} custody(state,no_stop_hash)={custody:?} blockers(generation,qcard)={blockers:?} rpc_phase_cursor_a={rpc:?} controls(step,typed,status,turns,command_reply_cwd_equal,command_bound_cwd_equal,physical_cwd_valid)={shapes:?} three_paths_equal={paths_equal:?}")
+        };
+        assert!(initial_idle,
+            "the production idle consumer must understand its real initial empty-thread sequence: {failure_context}");
         let initial=runtime::observe_claim_bound(&product.connection,"projectA","seatA","sessionA").unwrap().unwrap();
         let capability=operation("K-SESSION","capability-probe","idle-after-capability-read","sessionA",initial.revision as u64,
             &format!(r#"{{"generation":"{}"}}"#,initial.generation));
