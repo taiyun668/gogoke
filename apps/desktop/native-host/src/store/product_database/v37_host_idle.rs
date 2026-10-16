@@ -82,7 +82,8 @@ fn original_rpc<T>(reply: std::result::Result<T, codex_rpc::RpcError>) -> Result
 
 /// This is the existing producer's one empty-thread materialization sequence,
 /// not a general resume/history interpreter. Metadata never replaces turns.
-fn empty_initialization(frames: &[IdleFrame], thread: &str, cwd: &str, model: &str)
+fn empty_initialization(frames: &[IdleFrame], thread: &str, cwd: &str, model: &str,
+    verify_cwd: impl Fn(&str) -> Result<()>)
     -> Result<Initialization> {
     let mut opening = None;
     for (index, frame) in frames.iter().enumerate() {
@@ -153,8 +154,13 @@ fn empty_initialization(frames: &[IdleFrame], thread: &str, cwd: &str, model: &s
             .and_then(|result| value(result, "thread")).and_then(object) else {
             return Ok(Initialization::Incomplete);
         };
-        if string(value(observed, "cwd")).as_deref() != Some(cwd)
-            || original_rpc(codex_rpc::persistent_paginated_thread_path(&frame.raw, thread))? != path {
+        let Some(observed_cwd) = string(value(observed, "cwd")) else {
+            return Ok(Initialization::Incomplete);
+        };
+        // H already verifies these original replies against the bound physical
+        // directory. Recheck that same authority, not its DOS/verbatim spelling.
+        verify_cwd(&observed_cwd)?;
+        if original_rpc(codex_rpc::persistent_paginated_thread_path(&frame.raw, thread))? != path {
             return Ok(Initialization::Incomplete);
         }
         // Nonempty metadata conflicts with the original no-input sequence;
@@ -285,7 +291,9 @@ impl<'root> ProductDatabase<'root> {
                 pending:source.state == ledger::RawSourceState::Pending, raw:source.raw_bytes});
         }
         let initialization = empty_initialization(&frames, &thread,
-            &run.evidence.protocol_cwd().to_string_lossy(), &run.model)?;
+            &run.evidence.protocol_cwd().to_string_lossy(), &run.model, |observed|
+                run.evidence.verify_observed_cwd(observed).map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!("original Host idle cwd: {error}"))))?;
         let initialization = match &initialization {
             Initialization::Incomplete => return Ok(false),
             Initialization::Unused => None,
@@ -509,11 +517,15 @@ mod tests {
             control(5,4,Command::ThreadResumeMetadata {thread_id:"threadA".into(),cwd:"fixture-cwd".into(),model:"modelA".into()},reply(4,"idle")),
         ]
     }
+    fn fixture_cwd(observed:&str)->Result<()> {
+        if observed=="fixture-cwd" {Ok(())}
+        else {Err(OrchestrationError::Invalid("protocol fixture cwd"))}
+    }
     fn observed(frames:&[IdleFrame])->Initialization {
-        empty_initialization(frames,"threadA","fixture-cwd","modelA").unwrap()
+        empty_initialization(frames,"threadA","fixture-cwd","modelA",fixture_cwd).unwrap()
     }
     fn rejects(frames:&[IdleFrame]) {
-        assert!(!matches!(empty_initialization(frames,"threadA","fixture-cwd","modelA"),
+        assert!(!matches!(empty_initialization(frames,"threadA","fixture-cwd","modelA",fixture_cwd),
             Ok(Initialization::Complete(_))),"damaged initialization must not qualify");
     }
     #[test]
