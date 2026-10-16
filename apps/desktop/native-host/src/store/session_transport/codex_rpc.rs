@@ -866,6 +866,60 @@ pub(crate) fn decode_stored_thread_resume(
     }
 }
 
+/// Bind an archive ACK to the exact canonical command kept by H. The empty
+/// result is checked by the existing response decoder.
+pub(crate) fn decode_stored_thread_archive(
+    command_frame: &[u8],
+    response_frame: &[u8],
+) -> Result<String, RpcError> {
+    let Json::Object(fields) = Parser::parse(std::str::from_utf8(frame_body(command_frame)?)?)? else {
+        return Err(RpcError::Invalid("stored archive command"));
+    };
+    if fields.len() != 3 || string(field(&fields, "method")?, "method")? != "thread/archive" {
+        return Err(RpcError::Invalid("stored archive method"));
+    }
+    let id = parse_id(field(&fields, "id")?)?;
+    let params = object(field(&fields, "params")?, "archive params")?;
+    if params.len() != 1 { return Err(RpcError::Invalid("stored archive params")); }
+    let thread_id = string(field(params, "threadId")?, "thread id")?;
+    let command = Command::ThreadArchive { thread_id: thread_id.clone() };
+    if command.encode(Some(&id))? != command_frame {
+        return Err(RpcError::Invalid("stored archive command mismatch"));
+    }
+    match decode(response_frame, Some((&id, &command)))? {
+        Reply::Ack { .. } => Ok(thread_id),
+        Reply::RemoteError { raw_frame, .. } => Err(RpcError::RemoteResponse(raw_frame)),
+        _ => Err(RpcError::Invalid("stored archive response")),
+    }
+}
+
+/// Bind an unarchive ACK to the exact canonical command kept by H. The
+/// existing decoder verifies matching thread ID and persistent path shape.
+pub(crate) fn decode_stored_thread_unarchive(
+    command_frame: &[u8],
+    response_frame: &[u8],
+) -> Result<String, RpcError> {
+    let Json::Object(fields) = Parser::parse(std::str::from_utf8(frame_body(command_frame)?)?)? else {
+        return Err(RpcError::Invalid("stored unarchive command"));
+    };
+    if fields.len() != 3 || string(field(&fields, "method")?, "method")? != "thread/unarchive" {
+        return Err(RpcError::Invalid("stored unarchive method"));
+    }
+    let id = parse_id(field(&fields, "id")?)?;
+    let params = object(field(&fields, "params")?, "unarchive params")?;
+    if params.len() != 1 { return Err(RpcError::Invalid("stored unarchive params")); }
+    let thread_id = string(field(params, "threadId")?, "thread id")?;
+    let command = Command::ThreadUnarchive { thread_id: thread_id.clone() };
+    if command.encode(Some(&id))? != command_frame {
+        return Err(RpcError::Invalid("stored unarchive command mismatch"));
+    }
+    match decode(response_frame, Some((&id, &command)))? {
+        Reply::Thread { thread_id: found, .. } if found == thread_id => Ok(thread_id),
+        Reply::RemoteError { raw_frame, .. } => Err(RpcError::RemoteResponse(raw_frame)),
+        _ => Err(RpcError::Invalid("stored unarchive response")),
+    }
+}
+
 /// Select a physical path only from the original, strictly decoded metadata
 /// command/ACK pair. Old canonical resumes are not rewritten as this protocol.
 pub(crate) fn decode_stored_metadata_resume_path(command_frame:&[u8],response_frame:&[u8])
@@ -1331,22 +1385,51 @@ mod tests {
     fn empty_archive_and_metadata_resume_bind_original_ack_without_asserting_empty_history() {
         let id=RpcId::Number(4);
         let archive=Command::ThreadArchive {thread_id:"original-thread".into()};
-        assert_eq!(std::str::from_utf8(&archive.encode(Some(&id)).unwrap()).unwrap(),
+        let archive_request=archive.encode(Some(&id)).unwrap();
+        assert_eq!(std::str::from_utf8(&archive_request).unwrap(),
             "{\"id\":4,\"method\":\"thread/archive\",\"params\":{\"threadId\":\"original-thread\"}}\n");
-        assert!(matches!(decode(b"{\"id\":4,\"result\":{}}\n",Some((&id,&archive))).unwrap(),Reply::Ack {..}));
-        assert!(decode(b"{\"id\":4,\"result\":{\"invented\":true}}\n",Some((&id,&archive))).is_err());
+        let archive_ack=b"{\"id\":4,\"result\":{}}\n";
+        assert_eq!(decode_stored_thread_archive(&archive_request,archive_ack).unwrap(),"original-thread");
+        for invalid in [
+            std::str::from_utf8(&archive_request).unwrap().replace("\"id\":4","\"id\":5"),
+            std::str::from_utf8(&archive_request).unwrap().replace("original-thread",""),
+            std::str::from_utf8(&archive_request).unwrap().replace("thread/archive","thread/unarchive"),
+            std::str::from_utf8(&archive_request).unwrap().replace("\"threadId\":\"original-thread\"",
+                "\"threadId\":\"original-thread\",\"input\":[]"),
+            std::str::from_utf8(&archive_request).unwrap().replace("\"params\":",
+                "\"extra\":true,\"params\":"),
+            std::str::from_utf8(&archive_request).unwrap().replace("\"id\":4,","\"id\":4, "),
+        ] {
+            assert!(decode_stored_thread_archive(invalid.as_bytes(),archive_ack).is_err());
+        }
+        for invalid in [&b"{\"id\":5,\"result\":{}}\n"[..],
+            &b"{\"id\":4,\"result\":{\"invented\":true}}\n"[..]] {
+            assert!(decode_stored_thread_archive(&archive_request,invalid).is_err());
+        }
         let command=Command::ThreadUnarchive {thread_id:"original-thread".into()};
         let encoded=command.encode(Some(&id)).unwrap();
         assert_eq!(std::str::from_utf8(&encoded).unwrap(),
             "{\"id\":4,\"method\":\"thread/unarchive\",\"params\":{\"threadId\":\"original-thread\"}}\n");
         let original="{\"id\":4,\"result\":{\"thread\":{\"id\":\"original-thread\",\"cwd\":\"D:/sealed-tree\",\"path\":\"D:/private-history/sessions/2026/10/11/original.jsonl\",\"historyMode\":\"paginated\",\"ephemeral\":false,\"turns\":[]}}}\n";
-        assert!(matches!(decode(original.as_bytes(),Some((&id,&command))).unwrap(),
-            Reply::Thread {thread_id,..} if thread_id=="original-thread"));
+        assert_eq!(decode_stored_thread_unarchive(&encoded,original.as_bytes()).unwrap(),
+            "original-thread");
         for invalid in [original.replace("original-thread","other-thread"),
             original.replace("paginated","legacy"),original.replace("false","true"),
             original.replace("\"path\":\"D:/private-history/sessions/2026/10/11/original.jsonl\"","\"path\":null"),
             original.replace("\"id\":4","\"id\":5")] {
-            assert!(decode(invalid.as_bytes(),Some((&id,&command))).is_err());
+            assert!(decode_stored_thread_unarchive(&encoded,invalid.as_bytes()).is_err());
+        }
+        for invalid in [
+            std::str::from_utf8(&encoded).unwrap().replace("\"id\":4","\"id\":5"),
+            std::str::from_utf8(&encoded).unwrap().replace("original-thread","other-thread"),
+            std::str::from_utf8(&encoded).unwrap().replace("thread/unarchive","thread/archive"),
+            std::str::from_utf8(&encoded).unwrap().replace("\"threadId\":\"original-thread\"",
+                "\"threadId\":\"original-thread\",\"path\":\"D:/selected\""),
+            std::str::from_utf8(&encoded).unwrap().replace("\"params\":",
+                "\"extra\":true,\"params\":"),
+            std::str::from_utf8(&encoded).unwrap().replace("\"id\":4,","\"id\":4, "),
+        ] {
+            assert!(decode_stored_thread_unarchive(invalid.as_bytes(),original.as_bytes()).is_err());
         }
         let resume=Command::ThreadResumeMetadata {thread_id:"original-thread".into(),
             cwd:"D:/sealed-tree".into(),model:"m".into()};
@@ -1366,8 +1449,10 @@ mod tests {
             "\"excludeTurns\":true,\"path\":\"D:/private-history/sessions/2026/10/11/original.jsonl\"");
         assert!(decode_stored_thread_resume(selected_path.as_bytes(),original.as_bytes()).is_err());
         let remote=b"{\"id\":4,\"error\":{\"code\":-32600,\"message\":\"original persist failure\"}}\n";
-        assert!(matches!(decode(remote,Some((&id,&command))).unwrap(),
-            Reply::RemoteError {raw_frame,..} if raw_frame==remote));
+        assert!(matches!(decode_stored_thread_archive(&archive_request,remote),
+            Err(RpcError::RemoteResponse(raw_frame)) if raw_frame==remote));
+        assert!(matches!(decode_stored_thread_unarchive(&encoded,remote),
+            Err(RpcError::RemoteResponse(raw_frame)) if raw_frame==remote));
         // Historic start observations need not expose this new mode contract.
         let start=Command::ThreadStart {cwd:"D:/sealed-tree".into(),model:"m".into()};
         let historical=b"{\"id\":4,\"result\":{\"thread\":{\"id\":\"original-thread\",\"cwd\":\"D:/sealed-tree\"}}}\n";

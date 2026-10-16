@@ -207,6 +207,72 @@ fn actual_codex_sqlite_home(product:&ProductDatabase<'_>,operation:&str,step:&st
 fn actual_pinned_codex_empty_thread_archive_metadata_cold_resume_without_model_call() {
     health_control_product_fixture("codex",true,|product| {
         let key=("projectA".to_owned(),"sessionA".to_owned());
+        assert!(product.host_rule_recipient_idle(&key).unwrap(),
+            "the production idle consumer must understand its real initial empty-thread sequence");
+        let initial=runtime::observe_claim_bound(&product.connection,"projectA","seatA","sessionA").unwrap().unwrap();
+        let capability=operation("K-SESSION","capability-probe","idle-after-capability-read","sessionA",initial.revision as u64,
+            &format!(r#"{{"generation":"{}"}}"#,initial.generation));
+        let capability=h::decode_receipt(&product.dispatch_user_request(&capability).unwrap()).unwrap();
+        assert_eq!(capability.status,V37Status::Applied,"the original loaded-thread capability read succeeds");
+        assert!(product.host_rule_recipient_idle(&key).unwrap(),
+            "an actual loaded-thread feature read is not a new work input");
+        let run=product.native_sessions.get(&key).unwrap();
+        let custody=run.custody.clone();
+        let command=codex_rpc::Command::TurnStart {thread_id:run.thread_id.clone().unwrap(),
+            cwd:run.evidence.protocol_cwd().to_string_lossy().into_owned(),model:run.model.clone(),
+            effort:run.effort.clone(),text:"synthetic boundary; never written to provider".into(),
+            network_access:Some(run.evidence.network_access())};
+        let command=command.encode(Some(&codex_rpc::RpcId::client(90001).unwrap())).unwrap();
+        let command=command.iter().map(|byte|format!("{byte:02x}")).collect::<String>();
+        for phase in ["INTENT","WRITTEN","UNKNOWN"] {
+            // Only a private read predicate runs inside this savepoint. No
+            // USER dispatch or H prepare (which owns its transaction) is used.
+            product.connection.execute("SAVEPOINT idle_input_boundary").unwrap();
+            let insert=Statement::prepare(product.connection.as_ptr(),
+                "INSERT INTO main.gogoke_v37_rpc_steps
+                 (domain_id,session_id,open_request_id,step_id,process_operation_id,ticket,
+                  custodian_nonce,pid,creation_time,image_path,binary_digest,profile_id,
+                  generation,command_hex,requires_response,phase,source_epoch,source_cursor,
+                  original_error,permission_evidence)
+                 SELECT domain_id,session_id,open_request_id,'idle-unacknowledged-input',
+                  process_operation_id,ticket,custodian_nonce,pid,creation_time,image_path,
+                  binary_digest,profile_id,generation,?1,1,?2,NULL,NULL,
+                  CASE WHEN ?2='UNKNOWN' THEN 'synthetic unacknowledged input' ELSE NULL END,
+                  permission_evidence FROM main.gogoke_v37_rpc_steps
+                 WHERE session_id='sessionA' AND step_id='thread-persist-archive'").unwrap();
+            insert.bind_text(1,&command).unwrap();insert.bind_text(2,phase).unwrap();
+            insert.step_done().unwrap();drop(insert);
+            let count=Statement::prepare(product.connection.as_ptr(),
+                "SELECT COUNT(*) FROM main.gogoke_v37_rpc_steps WHERE step_id='idle-unacknowledged-input'").unwrap();
+            assert!(count.step_row().unwrap());assert_eq!(count.column_text(0).unwrap(),"1");drop(count);
+            assert!(!product.host_rule_recipient_idle(&key).unwrap(),
+                "an input with no A cursor cannot be assumed to follow initialization: {phase}");
+            product.connection.execute("ROLLBACK TO idle_input_boundary").unwrap();
+            product.connection.execute("RELEASE idle_input_boundary").unwrap();
+            assert!(product.host_rule_recipient_idle(&key).unwrap());
+        }
+        for phase in ["PREPARED","UNKNOWN"] {
+            product.connection.execute("SAVEPOINT idle_stdin_boundary").unwrap();
+            let insert=Statement::prepare(product.connection.as_ptr(),
+                "INSERT INTO main.gogoke_v37_h_stdin_journal
+                 (domain_id,request_id,operation,ticket,process_operation_id,custodian_nonce,
+                  session_id,generation,request_hex,phase,expected_revision)
+                 SELECT domain_id,'idle-unacknowledged-stdin','send',ticket,process_operation_id,
+                  custodian_nonce,session_id,generation,'00',?1,'3'
+                   FROM main.gogoke_v37_rpc_steps
+                  WHERE session_id='sessionA' AND step_id='thread-persist-archive'").unwrap();
+            insert.bind_text(1,phase).unwrap();insert.step_done().unwrap();drop(insert);
+            let count=Statement::prepare(product.connection.as_ptr(),
+                "SELECT COUNT(*) FROM main.gogoke_v37_h_stdin_journal WHERE request_id='idle-unacknowledged-stdin'").unwrap();
+            assert!(count.step_row().unwrap());assert_eq!(count.column_text(0).unwrap(),"1");drop(count);
+            assert!(!product.host_rule_recipient_idle(&key).unwrap(),
+                "unresolved original H stdin must retain its refusal: {phase}");
+            product.connection.execute("ROLLBACK TO idle_stdin_boundary").unwrap();
+            product.connection.execute("RELEASE idle_stdin_boundary").unwrap();
+            assert!(product.host_rule_recipient_idle(&key).unwrap());
+        }
+        assert_eq!(product.native_sessions.get(&key).unwrap().custody,custody,
+            "readiness boundary controls must not replace the real custody");
         let original_seat=seat::get(&product.connection,"projectA","seatA").unwrap().unwrap();
         let old=runtime::observe_claim_bound(&product.connection,"projectA","seatA","sessionA").unwrap().unwrap();
         let run=product.native_sessions.get(&key).unwrap();
