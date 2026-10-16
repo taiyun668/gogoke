@@ -2392,8 +2392,9 @@ mod tests {
             "the exact original backend F/C and physical FileID qualify STRICT");
         let cold=instance::test_collect_cold_version_scope(&product.connection,&root,"codex");
         let cold_error=cold.as_ref().err();
-        assert!(matches!(cold_error,Some(instance::ManagedCliError::Busy)),
-            "the full COLD family refuses the existing real first-copy probe shape: {cold_error:?}");
+        assert!(matches!(cold_error,Some(instance::ManagedCliError::NativeGone(raw))
+            if raw.starts_with("independent managed C kernel cutoff: HolderCreatedThisBoot")),
+            "the full COLD family must retain the original same-boot native refusal: {cold_error:?}");
         let begin=r#"{"schema":"gogoke.37.managed-cli.v1","command":"begin","driverId":"codex","targetVersion":"0.162.1","requestId":"credential-upgrade","operation":"upgrade"}"#;
         let first=managed_user(&mut product,begin);
         let action=instance::read_version_action(&product.connection,&root,"credential-upgrade")
