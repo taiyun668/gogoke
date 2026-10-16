@@ -108,7 +108,7 @@ fn claude_holder_completed_releases_qualify_only_the_exact_retired_version_famil
         let projection=instance::test_original_claude_recovery_projection(&product.connection)
             .expect("production strict projection must prepare and enumerate both releases");
         assert_eq!(projection.len(),2);
-        assert!(projection.iter().all(|row|row.len()==10 && row[8]=="NULL"));
+        assert!(projection.iter().all(|row|row.len()==12 && row[10]=="NULL"));
         instance::test_original_claude_recovery_reverse(&product.connection).unwrap();
         product.connection.execute("SAVEPOINT recovery_source_mutation").unwrap();
         product.connection.execute(
@@ -117,7 +117,7 @@ fn claude_holder_completed_releases_qualify_only_the_exact_retired_version_famil
         let empty_error=instance::test_original_claude_recovery_projection(&product.connection)
             .unwrap();
         assert_ne!(empty_error,projection,"NULL and empty original error are different source bytes");
-        assert!(empty_error.iter().any(|row|row[8]=="''"));
+        assert!(empty_error.iter().any(|row|row[10]=="''"));
         product.connection.execute("ROLLBACK TO recovery_source_mutation").unwrap();
         product.connection.execute("RELEASE recovery_source_mutation").unwrap();
         product.connection.execute("SAVEPOINT recovery_reverse_mutation").unwrap();
