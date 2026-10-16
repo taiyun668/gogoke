@@ -147,7 +147,7 @@ fn digest(value: &str) -> bool {
 pub(crate) fn valid_original_c_writer_shape(operation:&str,ticket:&str,nonce:&str)->bool {
     !operation.is_empty() && operation.len()<=128 && operation.bytes().all(|byte|
         byte.is_ascii_alphanumeric() || byte==b'-' || byte==b'_') &&
-    ticket.strip_prefix("pct1_").is_some_and(digest) &&
+    !ticket.is_empty() &&
     nonce.strip_prefix("pcn1_").is_some_and(digest)
 }
 fn bytes(value: &str) -> Result<Vec<u8>> {
