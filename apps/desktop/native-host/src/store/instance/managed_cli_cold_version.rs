@@ -1884,6 +1884,21 @@ fn require_probe_confirmation_revision(db:&VerifiedDatabaseConnection<'_>,
     Ok(())
 }
 
+fn original_probe_witness_matches_row(witness:&managed_version_action::ProbeWitness,
+    row:&[String])->bool {
+    row.len()==13 && witness.operation_id==row[0] && witness.ticket==row[1] &&
+    witness.nonce==row[2] && witness.pid==row[3] &&
+    witness.creation==row[4] && witness.image==row[5] &&
+    witness.digest==row[6] && witness.profile==row[7] &&
+    witness.domain==row[8] && witness.generation==row[9] &&
+    row[10]=="STOPPED" && row[12]=="0" && witness.proof_hash==row[11]
+}
+
+fn unique_original_probe_witness_row(rows:&[Vec<String>],
+    witness:&managed_version_action::ProbeWitness)->bool {
+    rows.iter().filter(|row|original_probe_witness_matches_row(witness,row)).count()==1
+}
+
 /// Read the entire managed profile independently of instance joins. A C with
 /// no durable action relation can settle only its future execution occupancy;
 /// its old command, output and StopProof preimage remain unknown.
@@ -1914,6 +1929,27 @@ fn original_probe_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driv
         !matches!(action.phase,managed_version_action::ActionPhase::Consumed |
             managed_version_action::ActionPhase::Failed)) {
         return Err(ManagedCliError::Busy)
+    }
+    // The row set must satisfy the reverse side of every durable completed
+    // probe relation before any unmatched C is considered for the B route.
+    // PROBING has only its live StopProof and retains its original path below.
+    for action in &actions {
+        if !matches!(action.phase,managed_version_action::ActionPhase::Probed |
+            managed_version_action::ActionPhase::Consumed) {continue}
+        let witness=managed_version_action::bound_probe_witness(action)
+            .map_err(|error|ManagedCliError::Observation(format!(
+                "reverse original probe witness: {error:?}")))?;
+        let prefix=format!("managed-probe-{driver}-{}-",
+            &sha256_hex(action.request_id.as_bytes())[..40]);
+        let Some(suffix)=witness.operation_id.strip_prefix(&prefix) else {
+            return Err(ManagedCliError::Busy)
+        };
+        let attempt=suffix.parse::<usize>().map_err(|_|ManagedCliError::Busy)?;
+        if attempt==0 || suffix!=attempt.to_string() ||
+            !unique_original_probe_witness_row(&custody_rows,&witness) {
+            return Err(ManagedCliError::Busy)
+        }
+        require_probe_confirmation_revision(db,&witness.operation_id,witness.durable_revision)?;
     }
     // A final-switch F effect has a durable request-derived key. Do not turn
     // a deleted action with a remaining switch receipt into an independent C.
@@ -1952,7 +1988,8 @@ fn original_probe_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driv
         let generation=row[9].parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
         if pid==0 || created==0 || generation==0 || row[3]!=pid.to_string() ||
             row[4]!=created.to_string() || row[9]!=generation.to_string() ||
-            row[1].is_empty() || row[2].is_empty() || row[5].is_empty() ||
+            !managed_version_action::valid_original_c_writer_shape(&row[0],&row[1],&row[2]) ||
+            row[5].is_empty() ||
             row[7]!=profile || row[8]!="global" || row[10]!="STOPPED" ||
             row[12]!="0" || !row[11].starts_with("sha256:") || row[11].len()!=71 ||
             !row[11][7..].bytes().all(|b|b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
@@ -2047,12 +2084,9 @@ fn original_probe_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driv
                     .map_err(|error|ManagedCliError::Observation(format!(
                         "same-action original probe witness: {error:?}")))?;
                 require_probe_confirmation_revision(db,&row[0],witness.durable_revision)?;
-                if witness.operation_id!=row[0] || witness.ticket!=row[1] ||
-                    witness.nonce!=row[2] || witness.pid!=row[3] ||
-                    witness.creation!=row[4] || witness.image!=row[5] ||
-                    witness.digest!=row[6] || witness.profile!=row[7] ||
-                    witness.domain!=row[8] || witness.generation!=row[9] ||
-                    witness.proof_hash!=row[11] {return Err(ManagedCliError::Busy)}
+                if !original_probe_witness_matches_row(&witness,row) {
+                    return Err(ManagedCliError::Busy)
+                }
             }
             continue;
         }
@@ -2063,12 +2097,9 @@ fn original_probe_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driv
             .map_err(|error|ManagedCliError::Observation(format!(
                 "historical original probe witness: {error:?}")))?;
         require_probe_confirmation_revision(db,&row[0],witness.durable_revision)?;
-        if witness.operation_id!=row[0] || witness.ticket!=row[1] ||
-            witness.nonce!=row[2] || witness.pid!=row[3] ||
-            witness.creation!=row[4] || witness.image!=row[5] ||
-            witness.digest!=row[6] || witness.profile!=row[7] ||
-            witness.domain!=row[8] || witness.generation!=row[9] ||
-            witness.proof_hash!=row[11] {return Err(ManagedCliError::Busy)}
+        if !original_probe_witness_matches_row(&witness,row) {
+            return Err(ManagedCliError::Busy)
+        }
         let mut source=vec!["MANAGED_PROBE_C-v1".to_owned()];
         source.extend(row.iter().cloned());
         source.extend([owner.request_id.clone(),owner.probe_hex.clone(),
@@ -2947,6 +2978,34 @@ pub(crate) fn no_unsettled_managed_version_change_for_action_with_probe(
 mod source_image_selection_tests {
     use super::*;
     use std::time::{SystemTime,UNIX_EPOCH};
+
+    #[test]
+    fn completed_probe_witness_requires_one_exact_original_c_in_both_directions() {
+        let row=vec!["managed-probe-codex-action-2".into(),
+            format!("pct1_{}","a".repeat(64)),format!("pcn1_{}","b".repeat(64)),
+            "123".into(),"456".into(),"official-image".into(),
+            format!("sha256:{}","c".repeat(64)),"managed-cli-codex".into(),
+            "global".into(),"7".into(),"STOPPED".into(),
+            format!("sha256:{}","d".repeat(64)),"0".into()];
+        let witness=managed_version_action::ProbeWitness {
+            operation_id:row[0].clone(),durable_revision:9,ticket:row[1].clone(),
+            nonce:row[2].clone(),pid:row[3].clone(),creation:row[4].clone(),
+            image:row[5].clone(),digest:row[6].clone(),profile:row[7].clone(),
+            domain:row[8].clone(),generation:row[9].clone(),proof_hash:row[11].clone(),
+            stdout:Vec::new(),public_receipt:Vec::new(),
+        };
+        assert!(unique_original_probe_witness_row(&[row.clone()],&witness));
+        assert!(!unique_original_probe_witness_row(&[],&witness));
+        assert!(!unique_original_probe_witness_row(&[row.clone(),row.clone()],&witness));
+        for (field,value) in [(0,"other-operation"),(1,"other-ticket"),
+            (2,"other-nonce"),(3,"124"),(4,"457"),(5,"other-image"),
+            (6,"other-digest"),(7,"other-profile"),(8,"other-domain"),
+            (9,"8"),(10,"UNKNOWN"),(11,"other-proof"),(12,"1")] {
+            let mut changed=row.clone();changed[field]=value.into();
+            assert!(!unique_original_probe_witness_row(&[changed],&witness),
+                "retained action witness cannot lose original C field {field}");
+        }
+    }
 
     #[test]
     fn stopped_project_resume_uses_original_open_worktree_source() {

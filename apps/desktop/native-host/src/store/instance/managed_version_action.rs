@@ -141,6 +141,15 @@ fn bounded_id(value: &str) -> bool {
 fn digest(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
+
+/// Only the directly observable original custody writer grammar. This says
+/// nothing about the old command, its result, or a StopProof preimage.
+pub(crate) fn valid_original_c_writer_shape(operation:&str,ticket:&str,nonce:&str)->bool {
+    !operation.is_empty() && operation.len()<=128 && operation.bytes().all(|byte|
+        byte.is_ascii_alphanumeric() || byte==b'-' || byte==b'_') &&
+    ticket.strip_prefix("pct1_").is_some_and(digest) &&
+    nonce.strip_prefix("pcn1_").is_some_and(digest)
+}
 fn bytes(value: &str) -> Result<Vec<u8>> {
     if value.len() % 2 != 0 || !value.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
         return Err(ActionError::Invalid("hex"));
@@ -491,8 +500,8 @@ fn valid_family_codec(driver:&str,source_hex:&str,pairs_hex:&str)->Result<()> {
                     &source[4],&source[5]),
             Some("LEGACY_MANAGED_C-v1") if source.len()==17 &&
                 proof[0]=="KERNEL_REBOOT" && proof[2]=="legacy-managed-c" &&
-                !source[1].is_empty() && !source[2].is_empty() &&
-                !source[3].is_empty() && !source[6].is_empty() &&
+                valid_original_c_writer_shape(&source[1],&source[2],&source[3]) &&
+                !source[6].is_empty() &&
                 source[7].strip_prefix("sha256:").is_some_and(digest) &&
                 source[8]==format!("managed-cli-{driver}") &&
                 source[9]=="global" && source[11]=="STOPPED" &&
@@ -1270,7 +1279,8 @@ mod tests {
         let mut source=vec![String::new();18];
         source[0]="LEGACY_MANAGED_C-v1".into();
         source[1]="opaque-original-operation".into();
-        source[2]="original-ticket".into();source[3]="original-nonce".into();
+        source[2]=format!("pct1_{}","e".repeat(64));
+        source[3]=format!("pcn1_{}","f".repeat(64));
         source[4]="123".into();source[5]="456".into();
         source[6]="original-official-image".into();
         source[7]=format!("sha256:{}","a".repeat(64));
@@ -1302,6 +1312,18 @@ mod tests {
             "old action-owned kind cannot inherit independent kernel semantics");
         changed=source.clone();changed[15].clear();
         assert!(family(&changed,&proof).is_err());
+        for (field,value) in [(1,"bad operation"),(2,"x"),(3,"x"),
+            (2,"pct1_ABCDEF"),(3,"pcn1_ABCDEF")] {
+            let mut changed=source.clone();changed[field]=value.into();
+            let mut matching_proof=proof.clone();
+            if field==1 {matching_proof[3]=value.into();matching_proof[5]=value.into();}
+            assert!(family(&changed,&matching_proof).is_err(),
+                "original C writer field {field} must retain its actual shape");
+        }
+        let mut changed=source.clone();changed[1]="x".repeat(129);
+        let mut matching_proof=proof.clone();
+        matching_proof[3]=changed[1].clone();matching_proof[5]=changed[1].clone();
+        assert!(family(&changed,&matching_proof).is_err());
     }
 
     fn fixture(run: impl FnOnce(&RootLock, &mut VerifiedDatabaseConnection<'_>, &OwnerIssuer)) {

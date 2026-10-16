@@ -1848,6 +1848,9 @@ mod tests {
             "the real sealed observer refuses the exact same-boot C pair");
         for change in [
             "UPDATE main.gogoke_coordination_process_custody SET ticket='' WHERE profile_id='managed-cli-opencode'",
+            "UPDATE main.gogoke_coordination_process_custody SET ticket='x' WHERE profile_id='managed-cli-opencode'",
+            "UPDATE main.gogoke_coordination_process_custody SET custodian_nonce='x' WHERE profile_id='managed-cli-opencode'",
+            "UPDATE main.gogoke_coordination_process_custody SET operation_id='invalid operation' WHERE profile_id='managed-cli-opencode'",
             "UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash=NULL WHERE profile_id='managed-cli-opencode'",
             "UPDATE main.gogoke_coordination_process_custody SET binary_digest_sha256='sha256:0000000000000000000000000000000000000000000000000000000000000000' WHERE profile_id='managed-cli-opencode'",
         ] {
@@ -3858,6 +3861,29 @@ mod tests {
             &[&replay_frames[0],&replay_frames[1],&replay_frames[2],&replay_frames[3]]);
         assert_stopped_claim_source_drift_refuses(&mut product,&root,"family-upgrade",&replay_frames);
         assert_probe_witness_damages_refuse(&mut product,&root,"family-upgrade",&replay_frames);
+        // USER owns its own transaction. Preserve the complete C (including
+        // NULLs and confirmation rowid), then damage it in autocommit mode.
+        product.connection.execute("CREATE TEMP TABLE family_probe_reverse_restore AS
+            SELECT rowid AS original_rowid,* FROM main.gogoke_coordination_process_custody
+            WHERE profile_id='managed-cli-opencode'").unwrap();
+        let family_probe_rows=table_rows(&product,"SELECT operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash FROM main.gogoke_coordination_process_custody WHERE profile_id='managed-cli-opencode'",12);
+        assert_eq!(family_probe_rows.len(),1,"the retained CONSUMED action owns one original C");
+        product.connection.execute("DELETE FROM main.gogoke_coordination_process_custody
+            WHERE profile_id='managed-cli-opencode'").unwrap();
+        let missing_original_c=managed_snapshot(&product);
+        let next_begin=r#"{"schema":"gogoke.37.managed-cli.v1","command":"begin","driverId":"opencode","targetVersion":"1.18.32","requestId":"family-reverse-c-rollback","operation":"rollback"}"#;
+        assert!(matches!(product.dispatch_user_managed_cli(next_begin.as_bytes()),
+            Err(OrchestrationError::V37StoreFailure(ref raw))
+                if raw.contains("qualification") && raw.contains("Busy")),
+            "a retained CONSUMED action with missing original C must refuse before a new action");
+        assert_eq!(managed_snapshot(&product),missing_original_c);
+        product.connection.execute("INSERT INTO main.gogoke_coordination_process_custody
+            (rowid,operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash)
+            SELECT * FROM temp.family_probe_reverse_restore").unwrap();
+        product.connection.execute("DROP TABLE temp.family_probe_reverse_restore").unwrap();
+        assert_eq!(table_rows(&product,"SELECT operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash FROM main.gogoke_coordination_process_custody WHERE profile_id='managed-cli-opencode'",12),family_probe_rows);
+        assert_eq!(receipt_set(&managed_user(&mut product,&switch)).0,"REPLAYED",
+            "restoring the exact original C restores its positive USER receipt replay");
         assert_eq!(table_rows(&product,"SELECT session_id,phase,stop_request_id,stop_fact_id,raw_hex FROM main.gogoke_v37_h_process_episode ORDER BY session_id",5),original_h);
         assert_eq!(table_rows(&product,"SELECT session_id,request_id,raw_hex,status,revision FROM main.gogoke_v37_h_operation ORDER BY session_id,request_id",5),original_h_operations);
         assert_eq!(table_rows(&product,"SELECT request_id,request_hex,phase,ticket,custodian_nonce FROM main.gogoke_v37_h_stdin_journal ORDER BY request_id",5),original_stdin);
