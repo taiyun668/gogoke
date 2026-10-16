@@ -1011,7 +1011,7 @@ fn original_units(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
           AND a.state IN ('COMMITTED','UNKNOWN','RELEASED')
           AND b.state='ACTIVE' AND b.kind='SESSION' AND b.owner_id=e.session_id
           AND h.kind='SESSION' AND h.owner_id=e.session_id
-          AND h.state IN ('ACTIVE','CLOSE_UNKNOWN','UNKNOWN')
+          AND h.state IN ('ACTIVE','CLOSE_UNKNOWN','UNKNOWN','CLOSED')
           AND o.status IN ('APPLIED','UNKNOWN')";
     let candidates = rows(db,sql,driver,40)?;
     // The current namespace observer proves a mapping in this namespace. It
@@ -1078,6 +1078,13 @@ fn original_units(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
     let temp_identity = inspect_root(&temp)
         .map_err(|error|ManagedCliError::Observation(format!("original temporary home: {error:?}")))?;
     if temp_identity.identity.opaque()!=raw[28] { return Err(ManagedCliError::IdentityChanged); }
+    if raw[26]=="CLOSED" {
+        if driver!="claude" || raw[21]!="RELEASED" {return Err(ManagedCliError::Busy)}
+        super::super::verify_completed_uncertain_user_home_close(db,root,
+            &raw[0],&raw[2],&raw[3],&raw[4],&raw[8],&raw[7],&raw[5],&raw[39])
+            .map_err(|error|ManagedCliError::Observation(format!(
+                "original completed Claude F CLOSED: {error:?}")))?;
+    }
     let pairs=vec![(pid,creation)];
     let unit = Unit {instance:raw[0].clone(), domain:raw[2].clone(), session:raw[3].clone(),
         generation:raw[4].clone(), open_request:raw[5].clone(), process:raw[6].clone(),
@@ -2186,6 +2193,9 @@ fn independent_f_targets_clear(db:&VerifiedDatabaseConnection<'_>,driver:&str)
 
 fn no_unowned_original_h_rows(db:&VerifiedDatabaseConnection<'_>)
     ->Result<(),ManagedCliError>{
+    // Global CHR ownership recognizes both original OPEN retirement and the
+    // stopped-parent failed-resume child. This does not make a child a version
+    // family member: the selected driver's complete blocker check still runs.
     for sql in [
         "SELECT 1 FROM main.gogoke_v37_h_generation g WHERE NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e WHERE e.domain_id=g.domain_id AND e.session_id=g.session_id AND e.generation=g.generation AND e.request_id=g.request_id AND e.process_operation_id=g.process_operation_id) LIMIT 1",
         "SELECT 1 FROM main.gogoke_v37_h_process_episode e WHERE NOT EXISTS(SELECT 1 FROM main.gogoke_v37_instances i WHERE i.instance_id=e.instance_id) LIMIT 1",
@@ -2198,7 +2208,47 @@ fn no_unowned_original_h_rows(db:&VerifiedDatabaseConnection<'_>)
         "SELECT 1 FROM main.gogoke_v37_rpc_steps s WHERE NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e WHERE e.domain_id=s.domain_id AND e.session_id=s.session_id AND e.generation=s.generation AND e.process_operation_id=s.process_operation_id AND e.request_id=s.open_request_id) LIMIT 1",
         "SELECT 1 FROM main.gogoke_v37_h_generation_change g WHERE NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e WHERE e.domain_id=g.domain_id AND e.session_id=g.session_id AND e.process_operation_id=g.old_process_operation_id) LIMIT 1",
         "SELECT 1 FROM main.gogoke_v37_h_dos_alias a WHERE NOT EXISTS(SELECT 1 FROM main.gogoke_v37_instances i WHERE i.instance_id=a.instance_id) LIMIT 1",
-        "SELECT 1 FROM main.gogoke_v37_claude_holder_recovery r WHERE NOT EXISTS(SELECT 1 FROM main.gogoke_v37_instances i WHERE i.instance_id=r.instance_id) OR NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e WHERE e.process_operation_id=r.process_operation_id AND e.instance_id=r.instance_id AND e.domain_id=r.domain_id AND e.session_id=r.session_id AND e.old_generation IS NULL) OR NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_claim c WHERE c.process_operation_id=r.process_operation_id AND c.instance_id=r.instance_id AND c.domain_id=r.domain_id AND c.session_id=r.session_id) LIMIT 1",
+        "SELECT 1 FROM main.gogoke_v37_claude_holder_recovery r
+          WHERE NOT EXISTS(SELECT 1 FROM main.gogoke_v37_instances i WHERE i.instance_id=r.instance_id AND i.driver_id='claude')
+             OR NOT EXISTS(
+               SELECT 1 FROM main.gogoke_v37_h_process_episode e
+               JOIN main.gogoke_coordination_process_custody child ON child.operation_id=e.process_operation_id
+                 AND child.profile_id=e.instance_id AND child.domain_id=e.domain_id AND child.generation=e.generation
+               WHERE e.process_operation_id=r.process_operation_id AND e.instance_id=r.instance_id
+                 AND e.domain_id=r.domain_id AND e.session_id=r.session_id
+                 AND ((e.old_generation IS NULL AND EXISTS(
+                   SELECT 1 FROM main.gogoke_v37_h_claim a WHERE a.process_operation_id=e.process_operation_id
+                     AND a.instance_id=e.instance_id AND a.domain_id=e.domain_id AND a.session_id=e.session_id
+                     AND a.generation=e.generation AND a.home_id=e.home_id AND a.binding_id=e.binding_id))
+                 OR (e.old_generation IS NOT NULL AND e.phase='UNKNOWN' AND e.stop_fact_id IS NULL
+                   AND child.state='UNKNOWN' AND child.stop_proof_hash IS NULL
+                   AND NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_generation g WHERE g.process_operation_id=e.process_operation_id
+                     OR (g.domain_id=e.domain_id AND g.session_id=e.session_id AND g.generation=e.generation))
+                   AND NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_generation_change gc
+                     WHERE gc.domain_id=e.domain_id AND gc.request_id=e.request_id)
+                   AND EXISTS(SELECT 1 FROM main.gogoke_v37_h_claim a
+                     JOIN main.gogoke_v37_h_process_episode parent ON parent.process_operation_id=a.process_operation_id
+                       AND parent.instance_id=a.instance_id AND parent.domain_id=a.domain_id
+                       AND parent.session_id=a.session_id AND parent.generation=a.generation
+                       AND parent.home_id=a.home_id AND parent.binding_id=a.binding_id
+                     JOIN main.gogoke_coordination_process_custody old ON old.operation_id=parent.process_operation_id
+                       AND old.profile_id=parent.instance_id AND old.domain_id=parent.domain_id
+                       AND old.generation=parent.generation
+                     WHERE a.instance_id=e.instance_id AND a.domain_id=e.domain_id AND a.session_id=e.session_id
+                       AND a.generation=e.old_generation AND a.state='STOPPED'
+                       AND a.stop_fact_id IS NOT NULL AND a.stop_fact_id!=''
+                       AND parent.old_generation IS NULL AND parent.phase='STOPPED'
+                       AND parent.stop_fact_id=a.stop_fact_id AND parent.seat_id=e.seat_id
+                       AND parent.seat_incarnation=e.seat_incarnation
+                       AND old.state='STOPPED' AND old.stop_proof_hash=a.stop_fact_id
+                       AND (r.phase!='APPLIED' OR EXISTS(
+                         SELECT 1 FROM main.gogoke_v37_h_operation receipt
+                         WHERE receipt.domain_id=r.domain_id AND receipt.session_id=r.session_id
+                           AND receipt.request_id=r.request_id
+                           AND receipt.operation='claude-failed-resume-resource-release'
+                           AND receipt.status='APPLIED' AND receipt.raw_hex=r.snapshot_hex
+                           AND receipt.previous_revision=a.revision AND receipt.revision=a.revision))))))
+          LIMIT 1",
     ] {
         let row=Statement::prepare(db.as_ptr(),sql)?;
         if row.step_row()? {return Err(ManagedCliError::Busy)}

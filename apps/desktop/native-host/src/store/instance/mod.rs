@@ -101,6 +101,7 @@ pub(crate) use temporary::{create_temporary_home, close_temporary_home, cleanup_
     CreateTemporaryHome, TemporaryHomeError, TemporaryHomeReceipt, TemporaryKind,
     TransitionTemporaryHome, close_user_temporary_home, UserTemporaryHomeCloseInput,
     UserTemporaryHomeCloseReceipt, UserTemporaryHomeSelector};
+pub(crate) use temporary::verify_completed_uncertain_user_home_close;
 pub(crate) use private_history::{create_initial_private_history, resume_private_history,
     resolve_private_history_directory,
     read_private_history_generation, bind_private_history_continuation_in_transaction,

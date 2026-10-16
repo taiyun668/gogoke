@@ -138,6 +138,16 @@ fn claude_holder_completed_releases_qualify_only_the_exact_retired_version_famil
             Err(instance::ManagedCliError::IdentityChanged)),
             "a completed receipt from this DB cannot be used under another Root");
         drop(foreign_root);
+        let (roots,_)=product.test_claude_original_acl_source(INSTANCE,&first[0]).unwrap();
+        let extra=roots[1].0.join("unrecorded-physical-child");
+        std::fs::write(&extra,b"inventory drift").unwrap();
+        let inventory_error=product.completed_claude_holder_release(
+            INSTANCE,&first[2],&first[3],&first[0]).unwrap_err();
+        assert!(format!("{inventory_error:?}").contains("AclWitnessMismatch"),
+            "physical inventory cause must survive the completed reader: {inventory_error:?}");
+        std::fs::remove_file(&extra).unwrap();
+        assert!(product.completed_claude_holder_release(
+            INSTANCE,&first[2],&first[3],&first[0]).unwrap());
         let kernel_error=match crate::process::NativeLegacyHoldersGone::observe(&cold.pairs) {
             Err(error)=>format!("{error:?}"),
             Ok(_)=>panic!("the real fixture pairs must still belong to this boot"),
@@ -146,6 +156,20 @@ fn claude_holder_completed_releases_qualify_only_the_exact_retired_version_famil
         let same_boot=instance::test_original_claude_release_members(
             &product.connection,root,&product).unwrap_err();
         assert!(format!("{same_boot:?}").contains("HolderCreatedThisBoot"),"{same_boot:?}");
+        product.connection.execute("SAVEPOINT unproved_closed_home").unwrap();
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_instance_homes SET state='CLOSED',revision=2
+             WHERE instance_id='instanceA' AND domain_id='projectA' AND kind='SESSION'").unwrap();
+        let missing_close=instance::test_original_claude_release_members(
+            &product.connection,root,&product).unwrap_err();
+        assert!(format!("{missing_close:?}").contains("original completed Claude F CLOSED"),
+            "a CLOSED label without the original USER F close is insufficient: {missing_close:?}");
+        product.connection.execute("ROLLBACK TO unproved_closed_home").unwrap();
+        product.connection.execute("RELEASE unproved_closed_home").unwrap();
+        let still_same_boot=instance::test_original_claude_release_members(
+            &product.connection,root,&product).unwrap_err();
+        assert!(format!("{still_same_boot:?}").contains("HolderCreatedThisBoot"),
+            "restored original member must reach the native kernel refusal: {still_same_boot:?}");
 
         product.connection.execute(
             "UPDATE main.gogoke_v37_claude_holder_recovery SET phase='UNKNOWN'
@@ -188,9 +212,10 @@ fn claude_holder_completed_releases_qualify_only_the_exact_retired_version_famil
             "UPDATE main.gogoke_coordination_process_custody SET custodian_nonce=custodian_nonce||'0'
              WHERE profile_id='instanceA' AND domain_id='projectA'",
         ).unwrap();
-        assert!(!product.completed_claude_holder_release(
-            INSTANCE,&first[2],&first[3],&first[0]).unwrap(),
-            "changed original C identity must refuse even same-ID replay");
+        let changed_c=product.completed_claude_holder_release(
+            INSTANCE,&first[2],&first[3],&first[0]).unwrap_err();
+        assert!(format!("{changed_c:?}").contains("Claude original H tuple changed"),
+            "changed original C identity must retain its precise refusal: {changed_c:?}");
         let restore_nonce=Statement::prepare(product.connection.as_ptr(),
             "UPDATE main.gogoke_coordination_process_custody SET custodian_nonce=?1
              WHERE profile_id='instanceA' AND domain_id='projectA'").unwrap();

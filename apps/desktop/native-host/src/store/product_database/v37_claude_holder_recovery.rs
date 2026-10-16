@@ -857,9 +857,7 @@ impl<'root> ProductDatabase<'root> {
                 record.capture.objects.is_empty() {return Ok(false)}
             let known=fact(&record.capture.facts,"knownSids")?
                 .split(',').map(str::to_owned).collect::<Vec<_>>();
-            let roots=match self.claude_validate_capture(&original,&record,&known,true) {
-                Ok(roots)=>roots,Err(_)=>return Ok(false),
-            };
+            let roots=self.claude_validate_capture(&original,&record,&known,true)?;
             let receipt=rows(&self.connection,
                 "SELECT raw_hex,status,previous_revision,revision,session_id FROM main.gogoke_v37_h_operation
                   WHERE domain_id=?1 AND request_id=?2 AND operation='claude-holder-gone-release'",

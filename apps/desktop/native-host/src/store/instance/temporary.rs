@@ -1403,6 +1403,204 @@ fn kernel_replay_boot(receipt: Option<&str>, current_boot: u64,
     Ok(sealed_boot)
 }
 
+struct UserCloseSource {
+    request_hex: String,
+    receipt_id: String,
+    stored_receipt: String,
+    proof_kind: &'static str,
+    source_fingerprint: String,
+    physical: RootIdentity,
+    prior: Option<(String,String,String,String,String)>,
+    kernel_source: Option<(crate::process::NativeLegacyHoldersGone,String,Vec<(u32,u64)>)>,
+}
+
+fn user_close_source(connection:&VerifiedDatabaseConnection<'_>,root:&RootLock,
+    input:&UserTemporaryHomeCloseInput<'_>,home_id:&str,row:&HomeRow,sid:&str,binding:&str,
+    episode_request_id:&str,episode_operation:&str,
+    original_stop:Result<String,TemporaryHomeError>)->Result<UserCloseSource,TemporaryHomeError>{
+    let (create_id,original_create_request_id,create_operation,create_fingerprint,
+        create_raw_sha256)=original_create_source(connection,home_id,row,&input.selector,sid)?;
+    if !matches!((create_operation.as_str(),episode_operation),
+        ("admission-reserve","open")|("open","open")|("resume","resume")
+        |("compact","compact")|("renew-session","renew-session")) ||
+        (create_operation!="admission-reserve" && original_create_request_id!=episode_request_id){
+        return Err(TemporaryHomeError::StopFactUnavailable);
+    }
+    let physical=match transition_stage(connection,root,home_id,row,sid)? {
+        Some(DirectoryStage::Marked(identity,_)) if identity.opaque()==row.6=>identity,
+        _=>return Err(TemporaryHomeError::IdentityChanged),
+    };
+    let request=TransitionTemporaryHome{request_id:input.request_id,
+        request_bytes:input.request_bytes,home_id,expected_revision:input.expected_revision};
+    let request_hex=transition_fingerprint("temporary-home-close-v2",&request,sid);
+    let prior=user_close_operation(connection,input.request_id)?;
+    if prior.as_ref().is_some_and(|(stored,target,_,_,_)|
+        stored!=&request_hex || target!=home_id){return Err(TemporaryHomeError::RequestConflict);}
+    let (proof_kind,stop_fingerprint,kernel_source)=match original_stop {
+        Ok(stop)=>{
+            let stop_request_sha256=original_stop_request(connection,home_id,row,&stop)?;
+            ("ORIGINAL_STOP",sha256_hex(format!(
+                "home-stop-v1\n{home_id}\n{create_id}\n{create_raw_sha256}\n{stop_request_sha256}\n{stop}"
+            ).as_bytes()),None)
+        },
+        Err(TemporaryHomeError::StopFactUnavailable)
+        |Err(TemporaryHomeError::Admission(AdmissionError::Denied
+            |AdmissionError::Unknown|AdmissionError::Conflict|AdmissionError::Stale))=>{
+            if prior_stop_marker(connection,home_id,row)? {
+                return Err(TemporaryHomeError::StopFactUnavailable);
+            }
+            let (fact,source,pairs)=crate::store::session_transport::observe_exact_home_gone(
+                connection,home_id,&row.0,&row.1,&row.3,&row.4,binding)?;
+            ("KERNEL_BOOT_CUTOFF",String::new(),Some((fact,source,pairs)))
+        },
+        Err(error)=>return Err(error),
+    };
+    let (proof_fingerprint,kernel_witness)=if let Some((fact,source,pairs))=kernel_source.as_ref(){
+        let pair_digest=original_pairs_digest(pairs);
+        let sealed_boot=kernel_replay_boot(prior.as_ref().map(|(_,_,_,receipt,_)|receipt.as_str()),
+            fact.boot_start(),source,pairs)?;
+        (sha256_hex(format!("temporary-home-kernel-cutoff-v1\n{source}\n{sealed_boot}").as_bytes()),
+            Some((sealed_boot,source.clone(),pair_digest)))
+    } else {(stop_fingerprint,None)};
+    let source_fingerprint=sha256_hex(format!(
+        "temporary-home-close-v2\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        root.canonical_root().identity.opaque(),connection.identity().opaque(),
+        home_id,row.0,row.1,row.3,row.4,row.6,sid,
+        create_fingerprint,create_raw_sha256,proof_kind,proof_fingerprint
+    ).as_bytes());
+    let receipt_id=format!("f-home-close-v2-{}",sha256_hex(format!(
+        "f-home-close-receipt-v2\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n1\n2",
+        input.request_id,sha256_hex(input.request_bytes),source_fingerprint,
+        home_id,input.instance_id,input.domain_id,input.session_id,
+    ).as_bytes()));
+    let stored_receipt=if let Some((boot,source,pairs))=kernel_witness.as_ref(){
+        format!("{{\"schema\":\"gogoke.37.temporary-home-close.kernel.v1\",\"receiptId\":\"{receipt_id}\",\"proofKind\":\"{proof_kind}\",\"sourceFingerprint\":\"{source_fingerprint}\",\"homeId\":\"{home_id}\",\"originalCreateRequestId\":\"{original_create_request_id}\",\"fCreateOperationId\":\"{create_id}\",\"kernelBootStart\":\"{boot}\",\"originalSourceDigest\":\"{source}\",\"originalPairsDigest\":\"{pairs}\",\"beforeRevision\":1,\"afterRevision\":2}}")
+    } else {
+        format!("{{\"schema\":\"gogoke.37.temporary-home-close.v2\",\"receiptId\":\"{receipt_id}\",\"proofKind\":\"{proof_kind}\",\"sourceFingerprint\":\"{source_fingerprint}\",\"homeId\":\"{home_id}\",\"originalCreateRequestId\":\"{original_create_request_id}\",\"fCreateOperationId\":\"{create_id}\",\"beforeRevision\":1,\"afterRevision\":2}}")
+    };
+    Ok(UserCloseSource{request_hex,receipt_id,stored_receipt,proof_kind,
+        source_fingerprint,physical,prior,kernel_source})
+}
+
+fn recheck_user_close_kernel(connection:&VerifiedDatabaseConnection<'_>,root:&RootLock,
+    home_id:&str,row:&HomeRow,binding:&str,source:&UserCloseSource)
+    ->Result<(),TemporaryHomeError>{
+    if let Some((original,old_source,old_pairs))=source.kernel_source.as_ref(){
+        let suffix=home_id.strip_prefix("home-").ok_or(TemporaryHomeError::HomeConflict)?;
+        let sid=AppContainerProfile::derive_for_revocation(
+            &format!("Gogoke37.Session.{suffix}"))?.sid_identity()?;
+        match transition_stage(connection,root,home_id,row,&sid)? {
+            Some(DirectoryStage::Marked(identity,_)) if identity.opaque()==row.6=>(),
+            _=>return Err(TemporaryHomeError::IdentityChanged),
+        }
+        let (current,new_source,new_pairs)=crate::store::session_transport::observe_exact_home_gone(
+            connection,home_id,&row.0,&row.1,&row.3,&row.4,binding)?;
+        if current.boot_start()!=original.boot_start() ||
+            new_source.as_str()!=old_source.as_str() ||
+            new_pairs.as_slice()!=old_pairs.as_slice() {
+            return Err(TemporaryHomeError::IdentityChanged);
+        }
+    }
+    Ok(())
+}
+
+fn close_request_from_fingerprint(value:&str)->Result<Option<Vec<u8>>,TemporaryHomeError>{
+    let tag=b"temporary-home-close-v2";
+    let prefix=format!("{:016x}{}",tag.len(),hex(tag));
+    if !value.starts_with(&prefix){return Ok(None)}
+    let bytes=decode_lower_hex(value)?;
+    let mut offset=0usize;
+    let mut parts=Vec::new();
+    for _ in 0..5 {
+        let end=offset.checked_add(8).ok_or(TemporaryHomeError::Unknown)?;
+        let length=u64::from_be_bytes(bytes.get(offset..end)
+            .ok_or(TemporaryHomeError::Unknown)?.try_into()
+            .map_err(|_|TemporaryHomeError::Unknown)?);
+        let length=usize::try_from(length).map_err(|_|TemporaryHomeError::Unknown)?;
+        offset=end;
+        let end=offset.checked_add(length).ok_or(TemporaryHomeError::Unknown)?;
+        parts.push(bytes.get(offset..end).ok_or(TemporaryHomeError::Unknown)?);
+        offset=end;
+    }
+    if offset!=bytes.len() || parts[0]!=tag || parts[1].is_empty() ||
+        parts[1].len()>65_536 {return Err(TemporaryHomeError::Unknown)}
+    Ok(Some(parts[1].to_vec()))
+}
+
+/// Read the exact original USER close source for one already qualified H/C
+/// member. The F row retains the original frame in its transition fingerprint.
+/// This does not replay the writer or change the HOME/claim/episode.
+pub(crate) fn verify_completed_uncertain_user_home_close(
+    connection:&VerifiedDatabaseConnection<'_>,root:&RootLock,
+    instance:&str,domain:&str,session:&str,generation:&str,home_id:&str,
+    binding:&str,episode_request_id:&str,seat_incarnation:&str,
+)->Result<(),TemporaryHomeError>{
+    use crate::store::atomic::{Json,JsonString};
+    if connection.root_identity()!=&root.canonical_root().identity {
+        return Err(TemporaryHomeError::IdentityChanged);
+    }
+    let row=home_row(connection,home_id)?.ok_or(TemporaryHomeError::Unknown)?;
+    if row.0!=instance || row.1!=domain || row.2!="SESSION" || row.3!=session ||
+        row.4!=generation || row.7!="CLOSED" || row.8!="2" {
+        return Err(TemporaryHomeError::HomeConflict);
+    }
+    row_identity(&row,home_id)?;
+    let suffix=home_id.strip_prefix("home-").ok_or(TemporaryHomeError::HomeConflict)?;
+    if suffix.len()!=40 || !suffix.bytes().all(|byte|
+        byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()) ||
+        binding!=format!("binding-{suffix}") {return Err(TemporaryHomeError::HomeConflict)}
+    let expected_suffix=sha256_hex(format!("{}\n{}\n{}\n{}\n{}",
+        root.canonical_root().identity.opaque(),domain,session,seat_incarnation,generation).as_bytes());
+    if suffix!=&expected_suffix[..40] {return Err(TemporaryHomeError::HomeConflict)}
+    let profile=AppContainerProfile::derive_for_revocation(&format!("Gogoke37.Session.{suffix}"))?;
+    let sid=profile.sid_identity()?;
+    let operations=Statement::prepare(connection.as_ptr(),
+        "SELECT request_id,request_hex FROM main.gogoke_v37_instance_operations WHERE target_id=?1")?;
+    operations.bind_text(1,home_id)?;
+    let mut found=None;
+    while operations.step_row()? {
+        let id=operations.column_text(0)?;
+        let fingerprint=operations.column_text(1)?;
+        if let Some(raw)=close_request_from_fingerprint(&fingerprint)? {
+            if found.replace((id,raw)).is_some(){return Err(TemporaryHomeError::RequestConflict)}
+        }
+    }
+    let (request_id,raw)=found.ok_or(TemporaryHomeError::Unknown)?;
+    let request=crate::store::session_transport::decode_request(&raw)
+        .map_err(|_|TemporaryHomeError::RequestConflict)?;
+    let value=|name:&str|->Option<String>{
+        match request.payload.get(&JsonString::from_str(name)) {
+            Some(Json::String(text))=>text.to_well_formed_string(),_=>None,
+        }
+    };
+    let create=value("originalCreateRequestId");
+    let historical=value("historicalHomeId");
+    let selector=match (&create,&historical) {
+        (Some(id),None)=>UserTemporaryHomeSelector::OriginalCreateRequestId(id),
+        (None,Some(id))=>UserTemporaryHomeSelector::HistoricalHomeId(id),
+        _=>return Err(TemporaryHomeError::RequestConflict),
+    };
+    let input=UserTemporaryHomeCloseInput{request_id:&request_id,request_bytes:&raw,
+        instance_id:instance,domain_id:domain,session_id:session,
+        expected_revision:1,selector};
+    selected_user_request(&input)?;
+    if selected_home(connection,&input)?!=home_id {return Err(TemporaryHomeError::HomeConflict)}
+    // The caller has already verified this exact original OPEN/C row. A
+    // released uncertain child has no StopFact; the original F route therefore
+    // must reobserve its saved kernel cutoff and unchanged H/C source.
+    let source=user_close_source(connection,root,&input,home_id,&row,&sid,binding,
+        episode_request_id,"open",Err(TemporaryHomeError::StopFactUnavailable))?;
+    let Some((stored,target,phase,receipt,native))=source.prior.as_ref() else {
+        return Err(TemporaryHomeError::Unknown);
+    };
+    if stored!=&source.request_hex || target.as_str()!=home_id || phase.as_str()!="APPLIED" ||
+        receipt!=&source.stored_receipt || native!=&source.receipt_id ||
+        source.proof_kind!="KERNEL_BOOT_CUTOFF" || source.physical.opaque()!=row.6 {
+        return Err(TemporaryHomeError::Unknown);
+    }
+    recheck_user_close_kernel(connection,root,home_id,&row,binding,&source)
+}
+
 /// Independently journaled F USER action. This leaves both the original H/C
 /// uncertainty and the physical HOME directory/marker untouched.
 pub(crate) fn close_user_temporary_home(connection: &mut VerifiedDatabaseConnection<'_>,
@@ -1497,90 +1695,17 @@ pub(crate) fn close_user_temporary_home(connection: &mut VerifiedDatabaseConnect
             root.canonical_root().identity.opaque(), row.1, row.3, incarnation, row.4).as_bytes());
         if suffix != &expected_suffix[..40] { return Err(TemporaryHomeError::HomeConflict); }
         drop(original_seat);
-        let (create_id, original_create_request_id, create_operation, create_fingerprint,
-            create_raw_sha256) =
-            original_create_source(connection, &home_id, &row, &input.selector, &sid)?;
-        if !matches!((create_operation.as_str(), episode_request.operation.as_str()),
-            ("admission-reserve", "open") | ("open", "open") | ("resume", "resume")
-                | ("compact", "compact") | ("renew-session", "renew-session"))
-            || (create_operation != "admission-reserve"
-                && original_create_request_id != episode_request_id) {
-            return Err(TemporaryHomeError::StopFactUnavailable);
-        }
-        let physical = match transition_stage(connection, root, &home_id, &row, &sid)? {
-            Some(DirectoryStage::Marked(identity, _)) if identity.opaque() == row.6 => identity,
-            _ => return Err(TemporaryHomeError::IdentityChanged),
-        };
-        let request = TransitionTemporaryHome { request_id: input.request_id,
-            request_bytes: input.request_bytes, home_id: &home_id,
-            expected_revision: input.expected_revision };
-        let request_hex = transition_fingerprint("temporary-home-close-v2", &request, &sid);
-        let prior_operation = user_close_operation(connection, input.request_id)?;
-        if prior_operation.as_ref().is_some_and(|(stored, target, _, _, _)|
-            stored != &request_hex || target != &home_id) {
-            return Err(TemporaryHomeError::RequestConflict);
-        }
-        let (proof_kind, stop_fingerprint, kernel_source) = match exact_stopped_home(connection, &home_id, &row) {
-            Ok(stop) => {
-                let stop_request_sha256 = original_stop_request(connection, &home_id, &row, &stop)?;
-                ("ORIGINAL_STOP", sha256_hex(format!(
-                    "home-stop-v1\n{home_id}\n{create_id}\n{create_raw_sha256}\n{stop_request_sha256}\n{stop}"
-                ).as_bytes()), None)
-            },
-            Err(TemporaryHomeError::StopFactUnavailable)
-            | Err(TemporaryHomeError::Admission(AdmissionError::Denied
-                | AdmissionError::Unknown | AdmissionError::Conflict | AdmissionError::Stale)) => {
-                // A damaged or contradictory StopFact never falls back to an
-                // absence proof. The original facts remain unchanged.
-                if prior_stop_marker(connection, &home_id, &row)? {
-                    return Err(TemporaryHomeError::StopFactUnavailable);
-                }
-                let (fact, source, pairs) = crate::store::session_transport::observe_exact_home_gone(
-                    connection, &home_id, &row.0, &row.1, &row.3, &row.4, &binding)?;
-                ("KERNEL_BOOT_CUTOFF", String::new(), Some((fact, source, pairs)))
-            },
-            Err(error) => return Err(error),
-        };
-        let (proof_fingerprint, kernel_witness) = if let Some((fact, source, pairs)) = kernel_source.as_ref() {
-            let pair_digest = original_pairs_digest(pairs);
-            let sealed_boot = kernel_replay_boot(prior_operation.as_ref()
-                .map(|(_, _, _, receipt, _)| receipt.as_str()), fact.boot_start(), source, pairs)?;
-            (sha256_hex(format!("temporary-home-kernel-cutoff-v1\n{source}\n{sealed_boot}").as_bytes()),
-                Some((sealed_boot, source.clone(), pair_digest)))
-        } else { (stop_fingerprint, None) };
-        let recheck_kernel = |connection: &VerifiedDatabaseConnection<'_>| -> Result<(), TemporaryHomeError> {
-            if let Some((original, _, _)) = kernel_source.as_ref() {
-                match transition_stage(connection, root, &home_id, &row, &sid)? {
-                    Some(DirectoryStage::Marked(identity, _)) if identity.opaque() == row.6 => (),
-                    _ => return Err(TemporaryHomeError::IdentityChanged),
-                }
-                let (current, source, pairs) = crate::store::session_transport::observe_exact_home_gone(
-                    connection, &home_id, &row.0, &row.1, &row.3, &row.4, &binding)?;
-                if current.boot_start() != original.boot_start() ||
-                    source.as_str() != kernel_source.as_ref().unwrap().1.as_str() ||
-                    pairs.as_slice() != kernel_source.as_ref().unwrap().2.as_slice() {
-                    return Err(TemporaryHomeError::IdentityChanged);
-                }
-            }
-            Ok(())
-        };
-        let source_fingerprint = sha256_hex(format!(
-            "temporary-home-close-v2\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
-            root.canonical_root().identity.opaque(), connection.identity().opaque(),
-            home_id, row.0, row.1, row.3, row.4, row.6, sid,
-            create_fingerprint, create_raw_sha256, proof_kind, proof_fingerprint
-        ).as_bytes());
-        let receipt_id = format!("f-home-close-v2-{}", sha256_hex(format!(
-            "f-home-close-receipt-v2\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n1\n2",
-            input.request_id, sha256_hex(input.request_bytes), source_fingerprint,
-            home_id, input.instance_id, input.domain_id, input.session_id,
-        ).as_bytes()));
-        let stored_receipt = if let Some((boot, source, pairs)) = kernel_witness.as_ref() {
-            format!("{{\"schema\":\"gogoke.37.temporary-home-close.kernel.v1\",\"receiptId\":\"{receipt_id}\",\"proofKind\":\"{proof_kind}\",\"sourceFingerprint\":\"{source_fingerprint}\",\"homeId\":\"{home_id}\",\"originalCreateRequestId\":\"{original_create_request_id}\",\"fCreateOperationId\":\"{create_id}\",\"kernelBootStart\":\"{boot}\",\"originalSourceDigest\":\"{source}\",\"originalPairsDigest\":\"{pairs}\",\"beforeRevision\":1,\"afterRevision\":2}}")
-        } else {
-            format!("{{\"schema\":\"gogoke.37.temporary-home-close.v2\",\"receiptId\":\"{receipt_id}\",\"proofKind\":\"{proof_kind}\",\"sourceFingerprint\":\"{source_fingerprint}\",\"homeId\":\"{home_id}\",\"originalCreateRequestId\":\"{original_create_request_id}\",\"fCreateOperationId\":\"{create_id}\",\"beforeRevision\":1,\"afterRevision\":2}}")
-        };
-        recheck_kernel(connection)?;
+        let original_stop=exact_stopped_home(connection,&home_id,&row);
+        let source=user_close_source(connection,root,input,&home_id,&row,&sid,&binding,
+            &episode_request_id,&episode_request.operation,original_stop)?;
+        recheck_user_close_kernel(connection,root,&home_id,&row,&binding,&source)?;
+        let request_hex=source.request_hex.clone();
+        let receipt_id=source.receipt_id.clone();
+        let stored_receipt=source.stored_receipt.clone();
+        let proof_kind=source.proof_kind;
+        let source_fingerprint=source.source_fingerprint.clone();
+        let physical=&source.physical;
+        let prior_operation=source.prior.clone();
         if let Some((stored, target, phase, receipt_json, original_receipt_id)) =
             prior_operation {
             if stored != request_hex || target != home_id {
@@ -1619,7 +1744,7 @@ pub(crate) fn close_user_temporary_home(connection: &mut VerifiedDatabaseConnect
         if !changed.step_row()? || changed.column_text(0)? != "1" {
             return Err(TemporaryHomeError::StaleRevision);
         }
-        recheck_kernel(connection)?;
+        recheck_user_close_kernel(connection,root,&home_id,&row,&binding,&source)?;
         Ok(UserTemporaryHomeCloseReceipt {
             disposition: "APPLIED", home_id, directory_ref: row.5,
             native_receipt_id: receipt_id, proof_kind, source_fingerprint,
@@ -2144,6 +2269,8 @@ mod tests {
             assert_ne!(applied.native_receipt_id, home_row(connection, &home_id).unwrap().unwrap().6);
             assert!(applied.native_receipt_id.starts_with("f-home-close-v2-"));
             let saved = user_close_operation(connection, "closeUserA").unwrap().unwrap();
+            assert_eq!(close_request_from_fingerprint(&saved.0).unwrap().unwrap().as_slice(),close_raw,
+                "the original F fingerprint retains the exact USER close frame");
             assert_eq!(saved.4, applied.native_receipt_id);
             assert!(saved.3.contains(&format!("\"receiptId\":\"{}\"", applied.native_receipt_id)));
             assert_eq!(close_user_temporary_home(connection, root, &owner, &close).unwrap().disposition,
