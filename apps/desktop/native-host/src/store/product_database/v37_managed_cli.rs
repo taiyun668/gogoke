@@ -1826,6 +1826,56 @@ mod tests {
         (stage,sentinel)
     }
 
+    #[test]
+    fn original_first_copy_c_cold_collector_refuses_same_boot_and_residual_effect() {
+        assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(),Ok("true"),
+            "original native C source control is cloud-only");
+        let _guard=route_b_test_guard();
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("gogoke-original-first-c-{}-{nonce}",std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let database=path.join("state.sqlite");
+        let mut product=ProductDatabase::open(&root,&database).unwrap();
+        let _=ready_two_opencode_sources(&mut product,&root);
+        let c_sql="SELECT operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state,stop_proof_hash FROM main.gogoke_coordination_process_custody WHERE profile_id='managed-cli-opencode'";
+        let original=table_rows(&product,c_sql,12);
+        assert_eq!(original.len(),1,"the original first-copy producer retained one C");
+        let same_boot=|product:&ProductDatabase<'_>|instance::test_collect_cold_version_scope(
+            &product.connection,&root,"opencode");
+        assert!(matches!(same_boot(&product),Err(instance::ManagedCliError::NativeGone(ref raw))
+            if raw.contains("HolderCreatedThisBoot")),
+            "the real sealed observer refuses the exact same-boot C pair");
+        for change in [
+            "UPDATE main.gogoke_coordination_process_custody SET ticket='' WHERE profile_id='managed-cli-opencode'",
+            "UPDATE main.gogoke_coordination_process_custody SET stop_proof_hash=NULL WHERE profile_id='managed-cli-opencode'",
+            "UPDATE main.gogoke_coordination_process_custody SET binary_digest_sha256='sha256:0000000000000000000000000000000000000000000000000000000000000000' WHERE profile_id='managed-cli-opencode'",
+        ] {
+            product.connection.execute("SAVEPOINT original_c_damage").unwrap();
+            product.connection.execute(change).unwrap();
+            assert!(matches!(same_boot(&product),Err(instance::ManagedCliError::Busy)),
+                "incomplete or nonofficial original C refuses before the kernel fact");
+            product.connection.execute("ROLLBACK TO original_c_damage").unwrap();
+            product.connection.execute("RELEASE original_c_damage").unwrap();
+            assert_eq!(table_rows(&product,c_sql,12),original);
+        }
+        product.connection.execute("SAVEPOINT residual_switch_without_action").unwrap();
+        product.connection.execute("INSERT INTO main.gogoke_v37_instance_operations(request_id,request_hex,target_id,phase) VALUES('managed-switch-orphan','00','instanceA','APPLIED')").unwrap();
+        assert!(matches!(same_boot(&product),Err(instance::ManagedCliError::Busy)),
+            "a residual switch F row cannot fall back to an independent C");
+        product.connection.execute("ROLLBACK TO residual_switch_without_action").unwrap();
+        product.connection.execute("RELEASE residual_switch_without_action").unwrap();
+        assert_eq!(table_rows(&product,c_sql,12),original,
+            "the refusal path never rewrites original C columns");
+        assert!(matches!(same_boot(&product),Err(instance::ManagedCliError::NativeGone(ref raw))
+            if raw.contains("HolderCreatedThisBoot")),
+            "exact restoration returns to the same-boot refusal");
+        product.close_checked().unwrap();drop(root);
+        fs::remove_file(database).unwrap();
+        fs::remove_file(path.join(".gogoke-state.sqlite.custody-v1")).unwrap();
+        fs::remove_dir_all(path).unwrap();
+    }
+
     fn managed_user(product:&mut ProductDatabase<'_>,raw:&str)->Vec<u8> {
         product.dispatch_user_managed_cli(raw.as_bytes())
             .unwrap_or_else(|error|panic!("original managed USER frame {raw}: {error:?}"))
@@ -3125,6 +3175,10 @@ mod tests {
         let probe=version_frame("probe","1.18.33",Some(&stage33),Some("bound-upgrade"));
         let probed_reply=managed_user(&mut product,&probe);
         let custody=table_rows(&product,"SELECT operation_id,state,COALESCE(stop_proof_hash,'') FROM main.gogoke_coordination_process_custody ORDER BY operation_id",3);
+        assert_eq!(custody.len(),2,"the original first-copy C remains beside the new action C");
+        assert!(custody.iter().any(|row|row[0]==format!("managed-probe-opencode-{}-2",
+            &crate::store::digest::sha256_hex(b"bound-upgrade")[..40])),
+            "the original writer numbers the new C from the total profile count");
         let after_probe=managed_snapshot(&product);
         assert_eq!(managed_user(&mut product,&probe),probed_reply);
         assert_eq!(managed_snapshot(&product),after_probe);

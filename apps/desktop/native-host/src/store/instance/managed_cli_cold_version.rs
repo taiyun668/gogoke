@@ -33,6 +33,7 @@ pub(crate) struct QualifiedVersionAction {
     stdin: Vec<StdinMember>,
     global_operations: Vec<String>,
     global_native: Vec<(Vec<(u32,u64)>,NativeLegacyHoldersGone)>,
+    legacy_probe_native: Vec<(Vec<(u32,u64)>,NativeLegacyHoldersGone)>,
     credential_bindings: Vec<(std::sync::Arc<CredentialBinding>,Vec<CredentialAliasScope>)>,
 }
 
@@ -98,6 +99,10 @@ impl QualifiedVersionAction {
         for (pairs,fact) in &self.global_native {
             fact.validate(pairs).map_err(|error|ManagedCliError::NativeGone(format!(
                 "global original kernel recheck: {error:?}")))?;
+        }
+        for (pairs,fact) in &self.legacy_probe_native {
+            fact.validate(pairs).map_err(|error|ManagedCliError::NativeGone(format!(
+                "independent managed C kernel recheck: {error:?}")))?;
         }
         Ok(())
     }
@@ -1879,12 +1884,12 @@ fn require_probe_confirmation_revision(db:&VerifiedDatabaseConnection<'_>,
     Ok(())
 }
 
-/// The managed --version probe is an action-owned C effect. Retained earlier
-/// probes are part of the original family. The one new row is omitted from
-/// that immutable source only after its exact action producer is verified.
+/// Read the entire managed profile independently of instance joins. A C with
+/// no durable action relation can settle only its future execution occupancy;
+/// its old command, output and StopProof preimage remain unknown.
 fn original_probe_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     current:Option<&ActionRecord>,live:Option<&NativeStopProof>)
-    ->Result<Vec<(Vec<String>,Vec<String>)>,ManagedCliError>{
+    ->Result<(Vec<(Vec<String>,Vec<String>)>,Vec<(Vec<(u32,u64)>,NativeLegacyHoldersGone)>),ManagedCliError>{
     let profile=format!("managed-cli-{driver}");
     let misplaced=Statement::prepare(db.as_ptr(),
         "SELECT 1 FROM main.gogoke_coordination_process_custody WHERE
@@ -1905,8 +1910,41 @@ fn original_probe_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driv
                 "original probe action: {error:?}")))?.ok_or(ManagedCliError::Busy)?;
         actions.push(action);
     }
+    if actions.iter().any(|action|current.is_none_or(|own|own.request_id!=action.request_id) &&
+        !matches!(action.phase,managed_version_action::ActionPhase::Consumed |
+            managed_version_action::ActionPhase::Failed)) {
+        return Err(ManagedCliError::Busy)
+    }
+    // A final-switch F effect has a durable request-derived key. Do not turn
+    // a deleted action with a remaining switch receipt into an independent C.
+    let mut owned_switch_keys=std::collections::BTreeSet::new();
+    for action in &actions {
+        owned_switch_keys.extend(strict_own_switch_keys(db,root,driver,action)?);
+    }
+    let switches=Statement::prepare(db.as_ptr(),
+        "SELECT request_id,target_id,request_hex FROM main.gogoke_v37_instance_operations")?;
+    while switches.step_row()? {
+        let key=switches.column_text(0)?;
+        let target=switches.column_text(1)?;
+        let raw=switches.column_text(2)?;
+        let switch_key=key.starts_with("managed-switch-");
+        let switch_source=decode_original_frames(&raw).ok().is_some_and(|fields|
+            fields.first().map(Vec::as_slice)==Some(&b"managed-cli-version-switch-v1"[..]));
+        if !switch_key && !switch_source {continue}
+        let owner=Statement::prepare(db.as_ptr(),
+            "SELECT driver_id FROM main.gogoke_v37_instances WHERE instance_id=?1")?;
+        owner.bind_text(1,&target)?;
+        if !owner.step_row()? {return Err(ManagedCliError::Busy)}
+        let related=owner.column_text(0)?==driver;
+        if owner.step_row()? || (related && (!switch_key || !switch_source ||
+            !owned_switch_keys.contains(&format!("'{key}'")))) {
+            return Err(ManagedCliError::Busy)
+        }
+    }
     let mut original=Vec::new();
-    let mut attempts=std::collections::BTreeSet::new();
+    let mut legacy_native=Vec::new();
+    let mut action_attempts=std::collections::BTreeSet::new();
+    let mut probe_pairs=std::collections::BTreeSet::new();
     let mut own_count=0;
     for row in &custody_rows {
         let pid=row[3].parse::<u32>().map_err(|_|ManagedCliError::Busy)?;
@@ -1920,6 +1958,7 @@ fn original_probe_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driv
             !row[11][7..].bytes().all(|b|b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
             return Err(ManagedCliError::Busy)
         }
+        if !probe_pairs.insert((pid,created)) {return Err(ManagedCliError::Busy)}
         let mut matched=None;
         for action in &actions {
             let prefix=format!("managed-probe-{driver}-{}-",
@@ -1932,8 +1971,43 @@ fn original_probe_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driv
                 matched=Some((action,attempt));
             }
         }
-        let (owner,attempt)=matched.ok_or(ManagedCliError::Busy)?;
-        if !attempts.insert(attempt) || attempt>custody_rows.len() {return Err(ManagedCliError::Busy)}
+        let Some((owner,attempt))=matched else {
+            let old=original_catalog_pin(driver,&row[6])?;
+            let staging=root.canonical_root().canonical_path.join("v37-managed-cli").join("staging");
+            let stage=stage_name_from_original_image(&staging,
+                std::path::Path::new(&row[5]),old)?;
+            let official=inspect_staged_official_cli_version(root,driver,old.version,&stage)?;
+            if std::fs::canonicalize(&official)?!=
+                std::fs::canonicalize(std::path::Path::new(&row[5]))? {
+                return Err(ManagedCliError::IdentityChanged)
+            }
+            let instances=rows(db,"SELECT instance_id,home_identity,program_digest,version
+                FROM main.gogoke_v37_instances WHERE driver_id=?1 ORDER BY instance_id",driver,4)?;
+            if instances.is_empty() {return Err(ManagedCliError::Busy)}
+            for instance in &instances {
+                verified_source_images(db,root,driver,&instance[0],&instance[1],
+                    &instance[2],&instance[3],&row[5],&row[6])?;
+            }
+            let pairs=vec![(pid,created)];
+            let fact=NativeLegacyHoldersGone::observe(&pairs).map_err(|error|
+                ManagedCliError::NativeGone(format!(
+                    "independent managed C kernel cutoff: {error:?}")))?;
+            fact.validate(&pairs).map_err(|error|
+                ManagedCliError::NativeGone(format!(
+                    "independent managed C kernel recheck: {error:?}")))?;
+            let mut source=vec!["LEGACY_MANAGED_C-v1".to_owned()];
+            source.extend(row.iter().cloned());
+            source.extend([old.version.to_owned(),old.archive_sha256.to_owned(),stage]);
+            let proof=vec!["KERNEL_REBOOT".to_owned(),profile.clone(),
+                "legacy-managed-c".to_owned(),row[0].clone(),row[9].clone(),
+                row[0].clone(),row[3].clone(),row[4].clone()];
+            original.push((source,proof));
+            legacy_native.push((pairs,fact));
+            continue;
+        };
+        if !action_attempts.insert(attempt) || attempt>custody_rows.len() {
+            return Err(ManagedCliError::Busy)
+        }
         let pin=read_official_cli_version(driver,&owner.target_version)
             .ok_or(ManagedCliError::Busy)?;
         if row[6]!=format!("sha256:{}",pin.image_sha256) ||
@@ -2005,8 +2079,7 @@ fn original_probe_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driv
             row[0].clone(),row[3].clone(),row[4].clone()];
         original.push((source,proof));
     }
-    if attempts.len()!=custody_rows.len() ||
-        (1..=custody_rows.len()).any(|attempt|!attempts.contains(&attempt)) || own_count>1 {
+    if own_count>1 {
         return Err(ManagedCliError::Busy)
     }
     if live.is_some() && (current.is_none_or(|action|
@@ -2018,7 +2091,7 @@ fn original_probe_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driv
         managed_version_action::ActionPhase::Consumed)) && own_count!=1 {
         return Err(ManagedCliError::Busy)
     }
-    Ok(original)
+    Ok((original,legacy_native))
 }
 
 fn independent_f_targets_clear(db:&VerifiedDatabaseConnection<'_>,driver:&str)
@@ -2443,7 +2516,7 @@ fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     let rpc=original_rpc_sources(db,driver,&original,&stopped_units)?;
     let (mut global,mut global_operations,mut global_native)=original_global_sources(
         db,root,driver,&credentials.backend_operations)?;
-    let probes=original_probe_sources(db,root,driver,action,live_probe)?;
+    let (probes,legacy_probe_native)=original_probe_sources(db,root,driver,action,live_probe)?;
     // The COLD proof members below still own all absence decisions. Reuse the
     // complete original-history projection only as immutable data, after the
     // original probe reader has authenticated this action's exact C. Its own
@@ -2542,6 +2615,7 @@ fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
         return Ok(QualifiedVersionAction{cold:true,source_hex:String::new(),source_digest:String::new(),
             pairs_hex:String::new(),pairs_digest:String::new(),units:Vec::new(),stdin:Vec::new(),
             global_operations:Vec::new(),global_native:Vec::new(),
+            legacy_probe_native:Vec::new(),
             credential_bindings:credentials.bindings});
     }
     members.sort_by(|a,b|a.0.cmp(&b.0));
@@ -2558,6 +2632,7 @@ fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     Ok(QualifiedVersionAction{cold:true,source_hex:hex(&source_bytes),source_digest:content_hash(&source_bytes),
         pairs_hex:hex(&pair_bytes),pairs_digest:content_hash(&pair_bytes),
         units,stdin,global_operations,global_native,
+        legacy_probe_native,
         credential_bindings:credentials.bindings})
 }
 
@@ -2742,6 +2817,7 @@ fn strict_scope(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     Ok(QualifiedVersionAction{cold:false,source_hex,source_digest,
         pairs_hex:String::new(),pairs_digest:String::new(),units:Vec::new(),stdin:Vec::new(),
         global_operations:Vec::new(),global_native:Vec::new(),
+        legacy_probe_native:Vec::new(),
         credential_bindings:credentials.bindings})
 }
 

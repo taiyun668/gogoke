@@ -489,6 +489,20 @@ fn valid_family_codec(driver:&str,source_hex:&str,pairs_hex:&str)->Result<()> {
                     &crate::store::digest::sha256_hex(source[14].as_bytes())[..40])) =>
                 ((&source[8],&proof[2],&source[1],&source[10],&source[1]),
                     &source[4],&source[5]),
+            Some("LEGACY_MANAGED_C-v1") if source.len()==17 &&
+                proof[0]=="KERNEL_REBOOT" && proof[2]=="legacy-managed-c" &&
+                !source[1].is_empty() && !source[2].is_empty() &&
+                !source[3].is_empty() && !source[6].is_empty() &&
+                source[7].strip_prefix("sha256:").is_some_and(digest) &&
+                source[8]==format!("managed-cli-{driver}") &&
+                source[9]=="global" && source[11]=="STOPPED" &&
+                source[12].strip_prefix("sha256:").is_some_and(digest) &&
+                source[13]=="0" && !source[14].is_empty() &&
+                digest(&source[15]) && !source[16].is_empty() &&
+                source[10].parse::<u64>().ok().filter(|n|*n>0)
+                    .is_some_and(|n|source[10]==n.to_string()) =>
+                ((&source[8],&proof[2],&source[1],&source[10],&source[1]),
+                    &source[4],&source[5]),
             Some("H_STDIN_PENDING-v1"|"H_STDIN_RECEIPTED-v1") if source.len()==27 &&
                 ((source[0]=="H_STDIN_PENDING-v1" &&
                   proof[0]=="ORIGINAL_STDIN_OCCUPANCY") ||
@@ -1249,6 +1263,45 @@ mod tests {
         assert!(family(&source,&proof,true).is_err());
         proof[0]="KERNEL_REBOOT".into();source[13]="1".into();
         assert!(family(&source,&proof,true).is_err());
+    }
+
+    #[test]
+    fn independent_managed_c_has_separate_family_kind_and_no_old_result() {
+        let mut source=vec![String::new();18];
+        source[0]="LEGACY_MANAGED_C-v1".into();
+        source[1]="opaque-original-operation".into();
+        source[2]="original-ticket".into();source[3]="original-nonce".into();
+        source[4]="123".into();source[5]="456".into();
+        source[6]="original-official-image".into();
+        source[7]=format!("sha256:{}","a".repeat(64));
+        source[8]="managed-cli-codex".into();source[9]="global".into();
+        source[10]="1".into();source[11]="STOPPED".into();
+        source[12]=format!("sha256:{}","b".repeat(64));source[13]="0".into();
+        source[14]="0.160.0".into();source[15]="c".repeat(64);
+        source[16]="original-stage".into();source[17]="d".repeat(64);
+        let proof=vec!["KERNEL_REBOOT".to_owned(),source[8].clone(),
+            "legacy-managed-c".into(),source[1].clone(),source[10].clone(),
+            source[1].clone(),source[4].clone(),source[5].clone()];
+        let family=|source:&[String],proof:&[String]| {
+            let sources=vec!["managed-cli-family-source-v1".to_owned(),"codex".to_owned(),
+                hex_bytes(&frame_strings(source))];
+            let proofs=vec!["managed-cli-family-proof-v1".to_owned(),"codex".to_owned(),
+                hex_bytes(&frame_strings(proof))];
+            valid_family_codec("codex",&hex_bytes(&frame_strings(&sources)),
+                &hex_bytes(&frame_strings(&proofs)))
+        };
+        assert!(family(&source,&proof).is_ok());
+        let mut changed=proof.clone();changed[0]="ORIGINAL_STOP".into();
+        assert!(family(&source,&changed).is_err());
+        changed=proof.clone();changed[7]="457".into();
+        assert!(family(&source,&changed).is_err());
+        let mut changed=source.clone();changed[13]="1".into();
+        assert!(family(&changed,&proof).is_err());
+        changed=source.clone();changed[0]="MANAGED_PROBE_C-v1".into();
+        assert!(family(&changed,&proof).is_err(),
+            "old action-owned kind cannot inherit independent kernel semantics");
+        changed=source.clone();changed[15].clear();
+        assert!(family(&changed,&proof).is_err());
     }
 
     fn fixture(run: impl FnOnce(&RootLock, &mut VerifiedDatabaseConnection<'_>, &OwnerIssuer)) {
