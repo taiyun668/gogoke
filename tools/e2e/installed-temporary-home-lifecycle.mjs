@@ -255,6 +255,19 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
     row.request.domainId === domainId &&
     row.request.operation === operation &&
     (generation === undefined || String(row.request.payload?.generation ?? '') === String(generation)));
+  const originalClosed = attempt => {
+    const records = journal.operations.filter(row => row.request?.requestId === attempt.closeRequestId);
+    const record = records[0], request = record?.request;
+    return attempt.closeDispatchState === 'RECEIPT_RECORDED' && records.length === 1 &&
+      matchesRequestReply(record, 'K-INSTANCE', 'temporary-home-close', ['APPLIED', 'REPLAYED']) &&
+      request.domainId === attempt.domainId && request.targetId === attempt.instanceId &&
+      request.expectedRevision === '1' && request.payload?.sessionId === attempt.sessionId &&
+      request.payload?.originalCreateRequestId === attempt.originalCreateRequestId &&
+      Object.keys(request.payload ?? {}).sort().join('|') === 'originalCreateRequestId|sessionId' &&
+      record.rawFrame === attempt.closeRawFrame && digest(record.rawFrame) === attempt.closeRawSha256 &&
+      isDeepStrictEqual(record.receipt, attempt.closeReceipt) &&
+      closeReceipt(record, attempt.closeRequestId, attempt.instanceId);
+  };
 
   const startupRestore = restored ? (restore.startupState ?? {
     current: manifest.startupAttempts.length ? manifest.startupAttempts.at(-1) : null,
@@ -547,7 +560,13 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
       const previousCaseId = activeCaseId;
       for (const attempt of attempts) {
         activeCaseId = attempt.caseId;
-        if (attempt.teardownState.startsWith('CLOSED')) continue;
+        if (originalClosed(attempt)) continue;
+        if (attempt.closeDispatchState !== 'NOT_DISPATCHED') {
+          attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_CLOSE_ALREADY_DISPATCHED';
+          errors.push(`${attempt.originalCreateRequestId}: original close unresolved or mismatched; no replay`);
+          save();
+          continue;
+        }
         if (!nonempty(attempt.generation)) {
           attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_ORIGINAL_RESUME_GENERATION_UNKNOWN';
           errors.push(`${attempt.originalCreateRequestId}: no original native new-generation receipt`);
@@ -701,20 +720,12 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
           }
         }
         save();
-        if (attempt.closeDispatchState !== 'NOT_DISPATCHED') {
-          if (!closeReceipt({ receipt: attempt.closeReceipt }, attempt.closeRequestId, attempt.instanceId)) {
-            attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_CLOSE_ALREADY_DISPATCHED';
-            errors.push(`${attempt.originalCreateRequestId}: original close unresolved; no replay`);
-          }
-          save();
-          continue;
-        }
         try {
           await product.operation('K-INSTANCE', 'temporary-home-close', attempt.instanceId,
             { sessionId: attempt.sessionId, originalCreateRequestId: attempt.originalCreateRequestId },
             '1', ['APPLIED', 'REPLAYED']);
           const close = journal.operations.at(-1);
-          if (!closeReceipt(close, attempt.closeRequestId, attempt.instanceId)) {
+          if (!originalClosed(attempt)) {
             attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_CLOSE_RECEIPT_INVALID';
             errors.push(`${attempt.originalCreateRequestId}: close receipt did not prove CLOSED(2)`);
           }
@@ -734,8 +745,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
       activeCaseId = previousCaseId;
       journal.temporaryHomeLifecycle = { manifest: path.basename(manifestPath),
         state: manifest.state, attempts: attempts.length,
-        closedReceipts: attempts.filter(row => row.teardownState ===
-          'CLOSE_RECEIPT_CLOSED_SHARED_READBACK_REQUIRED').length,
+        closedReceipts: attempts.filter(originalClosed).length,
         independentSharedReadback: 'NOT_VERIFIED' };
       product.save();
       return { complete: errors.length === 0, errors };
@@ -751,13 +761,42 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
         return { complete: true, state: caseRow.state, errors: [] };
       }
       const settled = await lifecycle.settleAttempts(attempts);
-      const complete = settled.complete && attempts.every(row =>
-        closeReceipt({ receipt: row.closeReceipt }, row.closeRequestId, row.instanceId));
+      const complete = settled.complete && attempts.every(originalClosed);
       caseRow.state = complete ? 'CASE_HOME_CLOSE_RECEIPTS_COMPLETE' : 'CASE_TEARDOWN_INCOMPLETE';
       caseRow.errors = settled.errors;
       if (activeCaseId === caseId) activeCaseId = null;
       save();
       return { complete, state: caseRow.state, errors: settled.errors };
+    },
+    beforeCheckpointClose(caseId) {
+      const attempts = manifest.attempts.filter(row => row.caseId === caseId);
+      if (activeCaseId !== caseId || startup.hasCreatedHomes() || attempts.length === 0 ||
+          attempts.length !== manifest.attempts.length) {
+        throw Error('Checkpoint requires the active exclusive case and its original HOME attempts');
+      }
+      const stops = attempts.map(attempt => {
+        const producer = manifest.producers.find(row => row.sessionId === attempt.sessionId);
+        const session = journal.sessions.find(row => row.id === attempt.sessionId);
+        const records = hEntries(attempt.sessionId, 'stop', attempt.generation);
+        const stopped = records[0];
+        const releases = hEntries(attempt.sessionId, 'admission-release', attempt.generation);
+        if (!producer || !session || String(session.generation) !== String(attempt.generation) ||
+            records.length !== 1 || !stopProof(stopped) || releases.length !== 0 ||
+            attempt.closeDispatchState !== 'NOT_DISPATCHED' ||
+            stopped.request.payload?.seatId !== producer.seatId ||
+            !/^(0|[1-9][0-9]*)$/.test(stopped.receipt.revision) ||
+            !/^(0|[1-9][0-9]*)$/.test(stopped.request.expectedRevision) ||
+            stopped.receipt.revision !== session.revision ||
+            stopped.receipt.previousRevision !== stopped.request.expectedRevision ||
+            BigInt(stopped.receipt.revision) !== BigInt(stopped.request.expectedRevision) + 1n) {
+          throw Error('Checkpoint requires one original stop-only receipt per current owned generation');
+        }
+        return { sessionId: attempt.sessionId, generation: String(attempt.generation),
+          requestId: stopped.request.requestId, stopFact: stopProof(stopped) };
+      });
+      // A checkpoint keeps these same stopped H/HOME owners for later resume.
+      // Its caller still observes the real caption exit and immutable DB facts.
+      return { complete: true, state: 'STOP_ONLY_CHECKPOINT_READBACK_REQUIRED', caseId, stops };
     },
     async beforeCaptionClose() {
       const own = await lifecycle.settleAttempts(manifest.attempts);
