@@ -60,6 +60,7 @@ pub(crate) struct ClaudeAclObject {
 
 pub(crate) struct ClaudeAclRetirement;
 
+
 fn mismatch() -> IsolationError {
     IsolationError::AclWitnessMismatch
 }
@@ -123,6 +124,16 @@ struct Image {
     target_count: usize,
     target_description: String,
     package_sids: Vec<String>,
+    aces: Vec<ObservedAce>,
+}
+
+#[derive(Clone)]
+struct ObservedAce {
+    raw: Vec<u8>,
+    sid: String,
+    ace_type: u8,
+    flags: u8,
+    mask: u32,
 }
 
 fn read_image(handle: Handle, profile: &AppContainerProfile) -> Result<Image, IsolationError> {
@@ -171,6 +182,7 @@ fn read_image(handle: Handle, profile: &AppContainerProfile) -> Result<Image, Is
     let mut target_count = 0;
     let mut target_description = String::new();
     let mut package_sids = Vec::new();
+    let mut aces = Vec::new();
     let mut previous_class = 0u8;
     for index in 0..count.ace_count {
         let mut ace = ptr::null_mut();
@@ -221,8 +233,11 @@ fn read_image(handle: Handle, profile: &AppContainerProfile) -> Result<Image, Is
         let sid_text = String::from_utf16(unsafe { std::slice::from_raw_parts(sid_text, length) })
             .map_err(|_| mismatch())?;
         if sid_text.starts_with("S-1-15-2-") {
-            package_sids.push(sid_text);
+            package_sids.push(sid_text.clone());
         }
+        aces.push(ObservedAce { raw: raw.to_vec(), sid: sid_text,
+            ace_type: header.ace_type, flags: header.ace_flags,
+            mask: unsafe { (*ace.cast::<AccessAce>()).mask } });
         ordered.extend_from_slice(&(raw.len() as u32).to_be_bytes());
         ordered.extend_from_slice(raw);
         if unsafe { EqualSid(sid, profile.sid) } != 0 {
@@ -251,7 +266,39 @@ fn read_image(handle: Handle, profile: &AppContainerProfile) -> Result<Image, Is
         target_count,
         target_description,
         package_sids,
+        aces,
     })
+}
+
+fn acl_frames(encoded: &str) -> Result<Vec<Vec<u8>>, IsolationError> {
+    let bytes=unhex(encoded)?;
+    let mut frames=Vec::new();
+    let mut at=0;
+    while at<bytes.len() {
+        if bytes.len()-at<4 {return Err(mismatch());}
+        let len=u32::from_be_bytes(bytes[at..at+4].try_into().map_err(|_|mismatch())?) as usize;
+        at+=4;
+        if len<16 || len>bytes.len()-at {return Err(mismatch());}
+        frames.push(bytes[at..at+len].to_vec());
+        at+=len;
+    }
+    Ok(frames)
+}
+
+fn removed_acl_frame(before: &str, after: &str) -> Result<Option<Vec<u8>>, IsolationError> {
+    let before=acl_frames(before)?;
+    let after=acl_frames(after)?;
+    if before==after {return Ok(None);}
+    if before.len()!=after.len()+1 {return Err(mismatch());}
+    let mut removed=None;
+    for index in 0..before.len() {
+        let mut candidate=before.clone();
+        let frame=candidate.remove(index);
+        if candidate==after {
+            if removed.replace(frame).is_some(){return Err(mismatch());}
+        }
+    }
+    removed.map(Some).ok_or_else(mismatch)
 }
 
 fn expected_flags(root: bool, directory: bool) -> u32 {
@@ -325,6 +372,81 @@ impl ClaudeAclRetirement {
         }
         proof.validate(pairs).map_err(|_| mismatch())?;
         require_bound_path(root, identity, true)
+    }
+
+    /// Read an old completed retirement after later, independently completed
+    /// retirements and normal stopped peers. Only their exact ACL effects may
+    /// explain a difference from this capture's sealed after image.
+    pub(crate) fn readback_completed_target(
+        profile: &AppContainerProfile,
+        roots: &[(PathBuf, RootIdentity, bool)],
+        objects: &[ClaudeAclObject],
+        known_sids: &[String],
+        completed: &[(&str, &[(PathBuf, RootIdentity, bool)], &[ClaudeAclObject])],
+        later_stopped: &[(&str, bool)],
+        proof: &NativeProcessHoldersGone,
+        pairs: &[(u32, u64)],
+    ) -> Result<(), IsolationError> {
+        proof.validate(pairs).map_err(|_| mismatch())?;
+        Self::verify_inventory(roots, objects)?;
+        let target=profile.package_sid_string()?;
+        if !known_sids.contains(&target) || later_stopped.iter().any(|peer|peer.0==target.as_str()) {
+            return Err(mismatch());
+        }
+        for object in objects {
+            let (root,identity,writable)=roots.get(object.root_index).ok_or_else(mismatch)?;
+            require_bound_path(root,identity,true)?;
+            let relative=decoded_relative(&object.relative_utf16_hex)?;
+            let path=root.join(&relative);
+            let held=open_physical_object(&path,object.directory,READ_CONTROL)?;
+            let current=read_image(held.0,profile)?;
+            if current.identity.opaque()!=object.identity || current.control!=object.control
+                || current.target_count!=0 {return Err(mismatch());}
+            let mut expected=acl_frames(&object.after_hex)?;
+            let original=expected.clone();
+            for (sid,other_roots,other_objects) in completed {
+                if *sid==target.as_str() {continue;}
+                let mut matched=None;
+                for other in *other_objects {
+                    let (other_root,_,_)=other_roots.get(other.root_index).ok_or_else(mismatch)?;
+                    if other_root.join(decoded_relative(&other.relative_utf16_hex)?)==path {
+                        if matched.replace(other).is_some(){return Err(mismatch());}
+                    }
+                }
+                if let Some(other)=matched {
+                    if other.identity!=object.identity || other.directory!=object.directory
+                        || other.control!=object.control {return Err(mismatch());}
+                    if let Some(removed)=removed_acl_frame(&other.before_hex,&other.after_hex)? {
+                        if let Some(index)=expected.iter().position(|ace|ace==&removed) {
+                            expected.remove(index);
+                        }
+                    }
+                }
+            }
+            let mut observed=Vec::new();
+            let mut new_stopped=std::collections::BTreeSet::new();
+            for ace in &current.aces {
+                let peer=later_stopped.iter().find(|peer|peer.0==ace.sid.as_str());
+                if let Some(peer)=peer {
+                    let allowed_root=object.root_index==0 ||
+                        (object.root_index==2 && peer.1);
+                    if !original.contains(&ace.raw) && !expected.contains(&ace.raw) {
+                        if !allowed_root || ace.ace_type!=ACCESS_ALLOWED_ACE_TYPE ||
+                            ace.mask!=directory_rights(*writable) ||
+                            u32::from(ace.flags)!=expected_flags(relative.as_os_str().is_empty(),object.directory) ||
+                            !new_stopped.insert(ace.sid.clone()) {return Err(mismatch());}
+                        continue;
+                    }
+                }
+                observed.push(ace.raw.clone());
+            }
+            if observed!=expected || current.package_sids.iter().any(|sid|
+                !known_sids.contains(sid) && !later_stopped.iter().any(|peer|peer.0==sid.as_str())) {
+                return Err(mismatch());
+            }
+            require_bound_path(root,identity,true)?;
+        }
+        proof.validate(pairs).map_err(|_| mismatch())
     }
     pub(crate) fn verify_inventory(
         roots: &[(PathBuf, RootIdentity, bool)],

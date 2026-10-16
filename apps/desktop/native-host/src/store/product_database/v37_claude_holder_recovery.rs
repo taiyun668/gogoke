@@ -99,7 +99,7 @@ impl<'root> ProductDatabase<'root> {
         &self,
         instance: &str,
         captured: Option<&[String]>,
-    ) -> Result<(Vec<String>, String)> {
+    ) -> Result<(Vec<String>, String, Vec<(String,String,String,String,String)>)> {
         let stopped = rows(
             &self.connection,
             "SELECT a.domain_id,a.session_id,a.generation,e.seat_incarnation,
@@ -132,6 +132,7 @@ impl<'root> ProductDatabase<'root> {
         )?;
         let mut sids = Vec::new();
         let mut provenance = Vec::new();
+        let mut scopes = Vec::new();
         for r in stopped {
             let name = original_session_profile_name(
                 &self.root.canonical_root().identity.opaque(), &r[0], &r[1], &r[3], &r[2],
@@ -157,8 +158,8 @@ impl<'root> ProductDatabase<'root> {
             }
             // Validate the other original payload fields, without interpreting
             // either as a path or granting any new access.
-            user_payload_string(&request, "repositoryId")?;
-            user_payload_string(&request, "worktreeId")?;
+            let repository=user_payload_string(&request, "repositoryId")?;
+            let tree=user_payload_string(&request, "worktreeId")?;
             let stop_raw = unhex(&r[20])?;
             let stop = evidence(decode_request(&stop_raw))?;
             if r[21] != "APPLIED" || stop.raw_bytes != stop_raw
@@ -173,6 +174,7 @@ impl<'root> ProductDatabase<'root> {
             if sids.contains(&sid) {
                 return Err(denied("Claude stopped peer SID reused"));
             }
+            scopes.push((sid.clone(),tree,repository,r[0].clone(),r[6].clone()));
             sids.push(sid);
             for value in r {
                 provenance.extend_from_slice(&(value.len() as u64).to_be_bytes());
@@ -183,7 +185,7 @@ impl<'root> ProductDatabase<'root> {
         if captured.is_some_and(|members| members != sids.as_slice()) {
             return Err(denied("Claude captured stopped peer missing or changed"));
         }
-        Ok((sids, sha256_hex(&provenance)))
+        Ok((sids, sha256_hex(&provenance), scopes))
     }
 
     fn claude_originals(&self, instance: &str) -> Result<Vec<Original>> {
@@ -376,47 +378,46 @@ impl<'root> ProductDatabase<'root> {
         if evidence(profile.sid_identity())? != original.sid {
             return Err(denied("Claude original profile SID"));
         }
-        let homes = evidence(instance::resolve_provider_session_launch_homes(
-            &self.connection,
-            self.root,
-            &profile,
-            &fact(f, "instance")?,
-            &fact(f, "home")?,
-            &fact(f, "domain")?,
-            &fact(f, "session")?,
-            &fact(f, "generation")?,
-            "claude",
-        ))?;
+        let released=original.claim_state=="RELEASED";
+        let homes=if released {
+            evidence(instance::resolve_historical_session_homes(
+                &self.connection,self.root,&profile,&fact(f,"instance")?,
+                &fact(f,"home")?,&fact(f,"domain")?,&fact(f,"session")?,
+                &fact(f,"generation")?,&fact(f,"binding")?,"claude"))?
+        } else {
+            evidence(instance::resolve_provider_session_launch_homes(
+                &self.connection,self.root,&profile,&fact(f,"instance")?,
+                &fact(f,"home")?,&fact(f,"domain")?,&fact(f,"session")?,
+                &fact(f,"generation")?,"claude"))?
+        };
         let seat = evidence(seat::get(
             &self.connection,
             &fact(f, "domain")?,
             &fact(f, "seat")?,
         ))?
         .ok_or_else(|| denied("Claude original seat absent"))?;
-        let relationship = evidence(
-            crate::store::session_transport::session_binding::current_relationship(
-                &self.connection,
-                &fact(f, "domain")?,
-                &fact(f, "session")?,
-            ),
-        )?
-        .ok_or_else(|| denied("Claude original current relationship absent"))?;
         let child = resource_only(original);
-        let relationship_generation = if child { fact(f, "parentGeneration")? }
-            else { fact(f, "generation")? };
-        if (!child && seat.state != if original.claim_state=="RELEASED" {
-            seat::State::Idle
-        } else {seat::State::Busy})
-            || seat.state == seat::State::Reclaimed
+        if seat.state == seat::State::Reclaimed
             || seat.instance_id != fact(f, "instance")?
             || seat.incarnation != fact(f, "incarnation")?
-            || relationship.seat_id != seat.seat_id
-            || relationship.seat_incarnation != seat.incarnation
-            || relationship.instance_id != seat.instance_id
-            || relationship.session_generation != relationship_generation
-            || relationship.seat_authorization_generation != seat.generation
+            || (!released && !child && seat.state!=seat::State::Busy)
         {
             return Err(denied("Claude original E authority changed"));
+        }
+        if !released {
+            let relationship=evidence(
+                crate::store::session_transport::session_binding::current_relationship(
+                    &self.connection,&fact(f,"domain")?,&fact(f,"session")?))?
+                .ok_or_else(||denied("Claude original current relationship absent"))?;
+            let relationship_generation=if child {fact(f,"parentGeneration")?}
+                else {fact(f,"generation")?};
+            if relationship.seat_id!=seat.seat_id ||
+                relationship.seat_incarnation!=seat.incarnation ||
+                relationship.instance_id!=seat.instance_id ||
+                relationship.session_generation!=relationship_generation ||
+                relationship.seat_authorization_generation!=seat.generation {
+                return Err(denied("Claude original E authority changed"));
+            }
         }
         let tier = evidence(seat::permission_tier(&seat))?;
         let writable = matches!(
@@ -483,7 +484,10 @@ impl<'root> ProductDatabase<'root> {
         let (stopped_sids, stopped_provenance) = if resource_only(original) {
             let (sids, provenance, _) = self.claude_child_peers(&fact(&facts, "instance")?)?;
             (sids, provenance)
-        } else { self.claude_stopped_peers(&fact(&facts, "instance")?, None)? };
+        } else {
+            let (sids,provenance,_)=self.claude_stopped_peers(&fact(&facts, "instance")?, None)?;
+            (sids,provenance)
+        };
         put(&mut facts, "stoppedPeerSids", &stopped_sids.join(","));
         put(&mut facts, "stoppedPeerProvenance", &stopped_provenance);
         for (key, value) in [
@@ -831,51 +835,66 @@ impl<'root> ProductDatabase<'root> {
         &self, instance: &str, domain: &str, session: &str, operation: &str,
         require_current_pin: bool,
     ) -> Result<bool> {
-        let Some(record) = journal::read(&self.connection, operation)? else {
-            return Ok(false);
-        };
-        if record.phase != "APPLIED"
-            || record.instance != instance
-            || record.domain != domain
-            || record.session != session
-            || record.revision != 2
-            || record.capture.objects.is_empty()
-        {
-            return Ok(false);
+        let mut verified=Vec::new();
+        for original in self.claude_originals_with_current_pin(instance,require_current_pin)? {
+            if original.claim_state!="RELEASED" {continue;}
+            let old_operation=fact(&original.facts,"operation")?;
+            let Some(record)=journal::read(&self.connection,&old_operation)? else {return Ok(false)};
+            if record.phase!="APPLIED" || record.instance!=instance ||
+                record.domain!=fact(&original.facts,"domain")? ||
+                record.session!=fact(&original.facts,"session")? ||
+                record.operation!=old_operation || record.revision!=2 ||
+                record.capture.objects.is_empty() {return Ok(false)}
+            let known=fact(&record.capture.facts,"knownSids")?
+                .split(',').map(str::to_owned).collect::<Vec<_>>();
+            let roots=match self.claude_validate_capture(&original,&record,&known,true) {
+                Ok(roots)=>roots,Err(_)=>return Ok(false),
+            };
+            let receipt=rows(&self.connection,
+                "SELECT raw_hex,status,previous_revision,revision,session_id FROM main.gogoke_v37_h_operation
+                  WHERE domain_id=?1 AND request_id=?2 AND operation='claude-holder-gone-release'",
+                &[&record.domain,&record.request_id],5)?;
+            if receipt!=vec![vec![record.snapshot_hex.clone(),"APPLIED".into(),
+                fact(&record.capture.facts,"claimRevision")?,
+                original.claim_revision.to_string(),record.session.clone()]] {return Ok(false)}
+            verified.push((original,record,roots,known));
         }
-        let original = self.claude_originals_with_current_pin(instance, require_current_pin)?.into_iter().find(|item| {
-            item.facts
-                .get("operation")
-                .is_some_and(|value| value == operation)
-        });
-        let Some(original) = original else {
-            return Ok(false);
-        };
-        let known = fact(&record.capture.facts, "knownSids")?;
-        let known: Vec<String> = known.split(',').map(str::to_owned).collect();
-        let roots = match self.claude_validate_capture(&original, &record, &known, true) {
-            Ok(roots) => roots,
-            Err(_) => return Ok(false),
-        };
-        let profile = evidence(AppContainerProfile::derive_for_revocation(&original.profile_name))?;
-        let proof = evidence(NativeProcessHoldersGone::observe(&[original.pair]))?;
-        for object in &record.capture.objects {
-            evidence(ClaudeAclRetirement::readback_target(
-                &profile, &roots, object, &known, &proof, &[original.pair],
-            ))?;
+        let Some(index)=verified.iter().position(|(old,record,_,_)|
+            record.operation==operation && record.domain==domain && record.session==session &&
+            old.facts.get("operation").is_some_and(|value|value==operation)) else {return Ok(false)};
+        let stopped=self.claude_stopped_peers(instance,None)?.2;
+        let (original,record,roots,known)=&verified[index];
+        let captured=fact(&record.capture.facts,"stoppedPeerSids")?;
+        let captured=if captured.is_empty(){Vec::new()}else{
+            captured.split(',').map(str::to_owned).collect::<Vec<_>>()};
+        let mut later=Vec::new();
+        for (sid,tree,repository,peer_domain,peer_seat) in stopped.iter()
+            .filter(|(sid,_,_,_,_)|!captured.contains(sid)) {
+            let same_worktree=tree==&original.worktree;
+            if same_worktree {
+                let graph=evidence(worktree::graph_query(&self.connection,tree))?
+                    .ok_or_else(||denied("Claude later stopped peer F graph absent"))?;
+                if graph.classification!="SINGLE" || graph.members.len()!=1 ||
+                    graph.members[0].worktree_id.as_str()!=tree.as_str() ||
+                    graph.members[0].repository_id.as_str()!=repository.as_str() ||
+                    graph.members[0].instance_id!=instance ||
+                    graph.members[0].domain_id.as_str()!=peer_domain.as_str() ||
+                    graph.members[0].seat_id.as_str()!=peer_seat.as_str() {
+                    return Err(denied("Claude later stopped peer F scope changed"));
+                }
+            }
+            later.push((sid.as_str(),same_worktree));
         }
-        let receipt=rows(&self.connection,
-            "SELECT raw_hex,status,previous_revision,revision,session_id FROM main.gogoke_v37_h_operation
-              WHERE domain_id=?1 AND request_id=?2 AND operation='claude-holder-gone-release'",
-            &[domain,&record.request_id],5)?;
-        Ok(receipt
-            == vec![vec![
-                record.snapshot_hex,
-                "APPLIED".into(),
-                fact(&record.capture.facts, "claimRevision")?,
-                original.claim_revision.to_string(),
-                session.into(),
-            ]])
+        let completed=verified.iter().map(|(old,record,roots,_)|
+            (old.sid.as_str(),roots.as_slice(),record.capture.objects.as_slice()))
+            .collect::<Vec<_>>();
+        let profile=evidence(AppContainerProfile::derive_for_revocation(&original.profile_name))?;
+        let proof=evidence(NativeProcessHoldersGone::observe(&[original.pair]))?;
+        evidence(ClaudeAclRetirement::readback_completed_target(
+            &profile,roots,&record.capture.objects,known,&completed,&later,
+            &proof,&[original.pair],
+        ))?;
+        Ok(true)
     }
 
     fn claude_fence_unknown(

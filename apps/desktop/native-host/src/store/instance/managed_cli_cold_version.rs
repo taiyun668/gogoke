@@ -206,7 +206,7 @@ const STRICT_PROJECTIONS: &[StrictProjection] = &[
         from:"FROM main.gogoke_v37_credential_profiles p JOIN main.gogoke_v37_instances i ON i.instance_id=p.instance_id WHERE i.driver_id=?1",key_columns:1,width:9},
     StrictProjection{kind:"HD",columns:"d.binding_id,d.instance_id,d.process_operation_id,d.request_id,d.pid,d.creation_time_100ns,d.snapshot_hex,d.snapshot_digest,d.phase,d.revision",
         from:"FROM main.gogoke_v37_holder_disappearance d JOIN main.gogoke_v37_instances i ON i.instance_id=d.instance_id WHERE i.driver_id=?1",key_columns:1,width:10},
-    StrictProjection{kind:"CHR",columns:"r.process_operation_id,r.instance_id,r.domain_id,r.session_id,r.request_id,r.snapshot_hex,r.snapshot_digest,r.phase,COALESCE(r.original_error,''),r.revision",
+    StrictProjection{kind:"CHR",columns:"r.process_operation_id,r.instance_id,r.domain_id,r.session_id,r.request_id,r.snapshot_hex,r.snapshot_digest,r.phase,r.original_error,r.revision",
         from:"FROM main.gogoke_v37_claude_holder_recovery r JOIN main.gogoke_v37_instances i ON i.instance_id=r.instance_id WHERE i.driver_id=?1",key_columns:1,width:10},
     StrictProjection{kind:"LR",columns:"r.operation_id,r.source_epoch,r.source_cursor,r.process_ticket,r.custodian_nonce,r.domain_id,r.session_id,r.generation,lower(hex(r.raw_bytes)),r.state,r.resolved_event_id,r.no_event_reason",
         from:"FROM main.v37_ledger_raw_source r WHERE EXISTS(SELECT 1 FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id WHERE i.driver_id=?1 AND e.process_operation_id=r.operation_id)",key_columns:3,width:12},
@@ -2499,9 +2499,9 @@ fn all_blockers_are_family(db:&VerifiedDatabaseConnection<'_>,driver:&str,
     };
     let mut blocked=false;
     collect_blocker(&mut blocked,no_unowned_original_h_rows(db))?;
-    let recovery=rows(db,"SELECT r.process_operation_id,r.instance_id,r.domain_id,r.session_id,r.phase FROM main.gogoke_v37_claude_holder_recovery r JOIN main.gogoke_v37_instances i ON i.instance_id=r.instance_id WHERE i.driver_id=?1",driver,5)?;
+    let recovery=rows(db,"SELECT r.process_operation_id,r.instance_id,r.domain_id,r.session_id,r.phase,c.state FROM main.gogoke_v37_claude_holder_recovery r JOIN main.gogoke_v37_instances i ON i.instance_id=r.instance_id LEFT JOIN main.gogoke_v37_h_claim c ON c.process_operation_id=r.process_operation_id AND c.instance_id=r.instance_id AND c.domain_id=r.domain_id AND c.session_id=r.session_id WHERE i.driver_id=?1",driver,6)?;
     for row in recovery {
-        if row[4]!="APPLIED" || !member(&|unit|unit.process==row[0] && unit.instance==row[1]
+        if row[4]!="APPLIED" || row[5]!="RELEASED" || !member(&|unit|unit.process==row[0] && unit.instance==row[1]
             && unit.domain==row[2] && unit.session==row[3]) {
             blocked=true;
         }
@@ -2951,6 +2951,22 @@ pub(crate) fn test_original_claude_release_members(db:&VerifiedDatabaseConnectio
             let (_,kind)=observe_original_unit_absence(&unit,&source[0])?;
             Ok((source,unit.pairs,kind.to_owned()))
         }).collect()
+}
+
+#[cfg(test)]
+pub(crate) fn test_original_claude_recovery_projection(db:&VerifiedDatabaseConnection<'_>)
+    ->Result<Vec<Vec<String>>,ManagedCliError>{
+    let spec=STRICT_PROJECTIONS.iter().find(|spec|spec.kind=="CHR")
+        .ok_or(ManagedCliError::Busy)?;
+    let mut members=std::collections::BTreeMap::new();
+    strict_project(db,"claude",spec,&std::collections::BTreeSet::new(),&mut members)?;
+    Ok(members.into_values().collect())
+}
+
+#[cfg(test)]
+pub(crate) fn test_original_claude_recovery_reverse(db:&VerifiedDatabaseConnection<'_>)
+    ->Result<(),ManagedCliError>{
+    no_unowned_original_h_rows(db)
 }
 
 #[cfg(test)]

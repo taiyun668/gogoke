@@ -54,6 +54,16 @@ fn original_opens(product: &ProductDatabase<'_>) -> Vec<Vec<String>> {
 #[test]
 fn claude_holder_completed_releases_qualify_only_the_exact_retired_version_family() {
     cold_two_claude(|mut product, root, cold| {
+        let applied_revisions=rows(&product,
+            "SELECT o.status,CAST(o.previous_revision AS TEXT),CAST(o.revision AS TEXT),
+                    e.phase,CAST(e.previous_revision AS TEXT),CAST(e.result_revision AS TEXT)
+             FROM main.gogoke_v37_h_operation o JOIN main.gogoke_v37_h_process_episode e
+               ON e.domain_id=o.domain_id AND e.request_id=o.request_id
+             WHERE o.operation='open' AND o.domain_id IN ('projectA','projectB')",&[],6);
+        assert_eq!(applied_revisions.len(),2);
+        assert!(applied_revisions.iter().all(|r|r.iter().map(String::as_str).eq(
+            ["APPLIED","2","3","ACTIVE","2","3"])),
+            "the production OPEN fixture is APPLIED 2-to-3 before pending projection");
         product.connection.execute(
             "UPDATE main.gogoke_v37_h_operation SET status='UNKNOWN',previous_revision=2,revision=2
              WHERE operation='open' AND domain_id IN ('projectA','projectB');
@@ -95,10 +105,34 @@ fn claude_holder_completed_releases_qualify_only_the_exact_retired_version_famil
             assert!(product.completed_claude_holder_release(
                 INSTANCE, &row[2], &row[3], &row[0]).unwrap());
         }
+        let projection=instance::test_original_claude_recovery_projection(&product.connection)
+            .expect("production strict projection must prepare and enumerate both releases");
+        assert_eq!(projection.len(),2);
+        assert!(projection.iter().all(|row|row.len()==10 && row[8]=="NULL"));
+        instance::test_original_claude_recovery_reverse(&product.connection).unwrap();
+        product.connection.execute("SAVEPOINT recovery_source_mutation").unwrap();
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_claude_holder_recovery SET original_error=''
+             WHERE domain_id='projectA'").unwrap();
+        let empty_error=instance::test_original_claude_recovery_projection(&product.connection)
+            .unwrap();
+        assert_ne!(empty_error,projection,"NULL and empty original error are different source bytes");
+        assert!(empty_error.iter().any(|row|row[8]=="''"));
+        product.connection.execute("ROLLBACK TO recovery_source_mutation").unwrap();
+        product.connection.execute("RELEASE recovery_source_mutation").unwrap();
+        product.connection.execute("SAVEPOINT recovery_reverse_mutation").unwrap();
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_claude_holder_recovery SET session_id='unowned-session'
+             WHERE domain_id='projectA'").unwrap();
+        assert!(instance::test_original_claude_recovery_reverse(&product.connection).is_err(),
+            "an unreferenced recovery row must not vanish through a join");
+        product.connection.execute("ROLLBACK TO recovery_reverse_mutation").unwrap();
+        product.connection.execute("RELEASE recovery_reverse_mutation").unwrap();
+        assert_eq!(instance::test_original_claude_recovery_projection(&product.connection).unwrap(),projection);
         let foreign_path=root.canonical_root().canonical_path.join("foreign-root");
         std::fs::create_dir(&foreign_path).unwrap();
         let foreign_root=RootLock::acquire(&foreign_path).unwrap();
-        let first=&completed[0];
+        let first=completed.iter().find(|row|row[2]=="projectA").unwrap();
         assert!(matches!(crate::store::instance::ClaudeReleaseVerifier::completed_release(
             &product,&product.connection,&foreign_root,INSTANCE,&first[2],&first[3],&first[0]),
             Err(instance::ManagedCliError::IdentityChanged)),
@@ -131,8 +165,9 @@ fn claude_holder_completed_releases_qualify_only_the_exact_retired_version_famil
 
         assert!(instance::test_original_claude_release_members(
             &product.connection,root,&product).is_err());
-        assert!(product.dispatch_user_managed_cli(before).is_err(),
-            "the independent same-boot first-copy probe still requires KERNEL_REBOOT");
+        let first_copy_error=product.dispatch_user_managed_cli(before).unwrap_err();
+        assert!(format!("{first_copy_error:?}").contains("HolderCreatedThisBoot"),
+            "the independent same-boot first-copy probe must retain its original Native error: {first_copy_error:?}");
         assert!(rows(&product,"SELECT request_id FROM main.gogoke_v37_instance_version_actions
             WHERE request_id='retired-claude-version'",&[],1).is_empty());
         product.connection.execute(
@@ -163,6 +198,15 @@ fn claude_holder_completed_releases_qualify_only_the_exact_retired_version_famil
         restore_nonce.step_done().unwrap();drop(restore_nonce);
         assert!(product.completed_claude_holder_release(
             INSTANCE,&first[2],&first[3],&first[0]).unwrap());
+        let old=product.claude_originals(INSTANCE).unwrap().into_iter()
+            .find(|row|row.facts.get("operation").is_some_and(|value|value==&first[0]))
+            .unwrap();
+        let roots=product.claude_roots(&old).unwrap();
+        let profile=AppContainerProfile::derive_for_revocation(&old.profile_name).unwrap();
+        profile.grant_bound_tree(&roots[0].0,&roots[0].1,roots[0].2).unwrap();
+        assert!(!matches!(product.completed_claude_holder_release(
+            INSTANCE,&first[2],&first[3],&first[0]),Ok(true)),
+            "regranted retired target SID on the physical instance HOME must refuse");
         product.close_checked().unwrap();
     });
 }
@@ -1333,6 +1377,15 @@ fn claude_holder_completed_receipts_survive_later_real_stopped_peer() {
             .collect::<Vec<_>>(), old_episodes);
         assert_eq!(rpc(&product).into_iter().filter(|row| row[1] != session)
             .collect::<Vec<_>>(), old_rpc);
+        let old=product.claude_originals(INSTANCE).unwrap().into_iter()
+            .find(|row|row.facts.get("session").is_some_and(|value|value=="sessionA"))
+            .unwrap();
+        let roots=product.claude_roots(&old).unwrap();
+        later_profile.grant_bound_tree(&roots[1].0,&roots[1].1,roots[1].2).unwrap();
+        let wrong_tree=product.completed_claude_holder_release(
+            INSTANCE,"projectA","sessionA",old.facts.get("operation").unwrap());
+        assert!(wrong_tree.is_err() || wrong_tree.as_ref().is_ok_and(|value|!*value),
+            "a later stopped peer has no grant provenance in the old session HOME");
         product.close_checked().unwrap();
     });
 }
