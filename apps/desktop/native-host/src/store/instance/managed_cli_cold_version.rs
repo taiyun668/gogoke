@@ -1930,6 +1930,27 @@ fn original_probe_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driv
             managed_version_action::ActionPhase::Failed)) {
         return Err(ManagedCliError::Busy)
     }
+    // The row set must satisfy the reverse side of every durable completed
+    // probe relation before any unmatched C is considered for the B route.
+    // PROBING has only its live StopProof and retains its original path below.
+    for action in &actions {
+        if !matches!(action.phase,managed_version_action::ActionPhase::Probed |
+            managed_version_action::ActionPhase::Consumed) {continue}
+        let witness=managed_version_action::bound_probe_witness(action)
+            .map_err(|error|ManagedCliError::Observation(format!(
+                "reverse original probe witness: {error:?}")))?;
+        let prefix=format!("managed-probe-{driver}-{}-",
+            &sha256_hex(action.request_id.as_bytes())[..40]);
+        let Some(suffix)=witness.operation_id.strip_prefix(&prefix) else {
+            return Err(ManagedCliError::Busy)
+        };
+        let attempt=suffix.parse::<usize>().map_err(|_|ManagedCliError::Busy)?;
+        if attempt==0 || suffix!=attempt.to_string() ||
+            !unique_original_probe_witness_row(&custody_rows,&witness) {
+            return Err(ManagedCliError::Busy)
+        }
+        require_probe_confirmation_revision(db,&witness.operation_id,witness.durable_revision)?;
+    }
     // A final-switch F effect has a durable request-derived key. Do not turn
     // a deleted action with a remaining switch receipt into an independent C.
     let mut owned_switch_keys=std::collections::BTreeSet::new();
