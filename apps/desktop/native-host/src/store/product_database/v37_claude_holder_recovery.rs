@@ -188,6 +188,16 @@ impl<'root> ProductDatabase<'root> {
         Ok((sids, sha256_hex(&provenance), scopes))
     }
 
+    #[cfg(all(test, windows))]
+    pub(super) fn test_claude_original_acl_source(
+        &self, instance: &str, operation: &str,
+    ) -> Result<(Vec<(PathBuf, RootIdentity, bool)>, String)> {
+        let original = self.claude_originals(instance)?.into_iter()
+            .find(|row| row.facts.get("operation").is_some_and(|value| value == operation))
+            .ok_or_else(|| denied("Claude test original ACL source absent"))?;
+        Ok((self.claude_roots(&original)?, original.profile_name))
+    }
+
     fn claude_originals(&self, instance: &str) -> Result<Vec<Original>> {
         self.claude_originals_with_current_pin(instance, true)
     }

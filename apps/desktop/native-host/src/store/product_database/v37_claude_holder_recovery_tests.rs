@@ -198,11 +198,8 @@ fn claude_holder_completed_releases_qualify_only_the_exact_retired_version_famil
         restore_nonce.step_done().unwrap();drop(restore_nonce);
         assert!(product.completed_claude_holder_release(
             INSTANCE,&first[2],&first[3],&first[0]).unwrap());
-        let old=product.claude_originals(INSTANCE).unwrap().into_iter()
-            .find(|row|row.facts.get("operation").is_some_and(|value|value==&first[0]))
-            .unwrap();
-        let roots=product.claude_roots(&old).unwrap();
-        let profile=AppContainerProfile::derive_for_revocation(&old.profile_name).unwrap();
+        let (roots,profile_name)=product.test_claude_original_acl_source(INSTANCE,&first[0]).unwrap();
+        let profile=AppContainerProfile::derive_for_revocation(&profile_name).unwrap();
         profile.grant_bound_tree(&roots[0].0,&roots[0].1,roots[0].2).unwrap();
         assert!(!matches!(product.completed_claude_holder_release(
             INSTANCE,&first[2],&first[3],&first[0]),Ok(true)),
@@ -1377,13 +1374,11 @@ fn claude_holder_completed_receipts_survive_later_real_stopped_peer() {
             .collect::<Vec<_>>(), old_episodes);
         assert_eq!(rpc(&product).into_iter().filter(|row| row[1] != session)
             .collect::<Vec<_>>(), old_rpc);
-        let old=product.claude_originals(INSTANCE).unwrap().into_iter()
-            .find(|row|row.facts.get("session").is_some_and(|value|value=="sessionA"))
-            .unwrap();
-        let roots=product.claude_roots(&old).unwrap();
+        let operation=old_journal.iter().find(|row|row[3]=="sessionA").unwrap()[0].clone();
+        let (roots,_)=product.test_claude_original_acl_source(INSTANCE,&operation).unwrap();
         later_profile.grant_bound_tree(&roots[1].0,&roots[1].1,roots[1].2).unwrap();
         let wrong_tree=product.completed_claude_holder_release(
-            INSTANCE,"projectA","sessionA",old.facts.get("operation").unwrap());
+            INSTANCE,"projectA","sessionA",&operation);
         assert!(wrong_tree.is_err() || wrong_tree.as_ref().is_ok_and(|value|!*value),
             "a later stopped peer has no grant provenance in the old session HOME");
         product.close_checked().unwrap();

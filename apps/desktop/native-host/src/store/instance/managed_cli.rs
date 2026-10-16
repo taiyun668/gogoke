@@ -34,6 +34,9 @@ pub(crate) use cold_version::{ClaudeReleaseVerifier,observe_version_scope_with_r
     no_unsettled_managed_version_change_for_action_with_probe_and_releases};
 #[cfg(test)]
 pub(crate) use cold_version::test_original_claude_release_members;
+#[cfg(all(test, windows))]
+pub(crate) use cold_version::{test_original_claude_recovery_projection,
+    test_original_claude_recovery_reverse};
 
 const REPARSE_POINT: u32 = 0x400;
 const CONTAINER: &str = "v37-managed-cli";
