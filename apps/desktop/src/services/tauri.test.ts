@@ -31,6 +31,7 @@ import {
   recoverNativeVisibleRequest,
   recoverPendingNativeVisibleIntent,
   sendUserMessage,
+  stopNativeVisibleSession,
   steerTurn,
   sendNotification,
   setCodexFeatureFlag,
@@ -1102,7 +1103,7 @@ describe("tauri invoke wrappers", () => {
     } finally { vi.unstubAllGlobals(); }
   });
 
-  it("retains an uncertain child ID through a definitive parent rejection until original recovery", async () => {
+  it.each(["DENIED", "APPLIED"] as const)("retains an uncertain child after parent %s and blocks new writes until original recovery", async (parentResult) => {
     const storage = new Map<string, string>();
     vi.stubGlobal("window", { __TAURI_INTERNALS__: {}, localStorage: {
       getItem: (key: string) => storage.get(key) ?? null,
@@ -1127,8 +1128,11 @@ describe("tauri invoke wrappers", () => {
         "GOGOKE_VISIBLE_UNKNOWN:child_uncertain: original C answer outcome unknown");
       if (command === "recover_native_visible_request") {
         const id = (payload as { nativeRequestId: string }).nativeRequestId;
-        if (id === "visible_parent") throw new Error(
-          "GOGOKE_VISIBLE_DENIED:visible_parent: original parent refused");
+        if (id === "visible_parent") {
+          if (parentResult === "DENIED") throw new Error(
+            "GOGOKE_VISIBLE_DENIED:visible_parent: original parent refused");
+          return { result: { state: "RECEIPTED" } };
+        }
         return { result: { state: "ANSWERED" } };
       }
       return undefined;
@@ -1141,12 +1145,22 @@ describe("tauri invoke wrappers", () => {
       await expect(respondToUserInputRequest("ws-host-uncertain", "gmpc_ref",
         { host0: { answers: ["Yes"] } }, "child_uncertain", bound))
         .rejects.toThrow("outcome unknown");
-      await expect(recoverNativeVisibleRequest("ws-host-uncertain", "visible_parent",association))
+      const parentRecovery = recoverNativeVisibleRequest("ws-host-uncertain", "visible_parent", association);
+      if (parentResult === "DENIED") await expect(parentRecovery)
         .rejects.toThrow("GOGOKE_VISIBLE_DENIED:visible_parent");
+      else await expect(parentRecovery).resolves.toEqual({ result: { state: "RECEIPTED" } });
       expect(pendingNativeVisibleIntent("ws-host-uncertain")?.nativeRequestId).toBe("child_uncertain");
+      const retained = [...storage.values()][0];
+      await expect(stopNativeVisibleSession("ws-host-uncertain", "unrelated_stop"))
+        .rejects.toThrow("child_uncertain is unresolved");
+      expect(invokeMock.mock.calls.filter(([command]) => command === "stop_native_visible_session")).toEqual([]);
+      expect([...storage.values()][0]).toBe(retained);
       await expect(recoverPendingNativeVisibleIntent("ws-host-uncertain"))
         .resolves.toEqual({ result: { state: "ANSWERED" } });
       expect(pendingNativeVisibleIntent("ws-host-uncertain")).toBeNull();
+      expect(pendingNativeVisibleIntent("ws-host-uncertain")).toBeNull();
+      expect(invokeMock.mock.calls.filter(([command, args]) => command === "recover_native_visible_request" &&
+        (args as { nativeRequestId: string }).nativeRequestId === "child_uncertain")).toHaveLength(1);
     } finally { vi.unstubAllGlobals(); }
   });
 

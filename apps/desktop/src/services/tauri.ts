@@ -1926,11 +1926,11 @@ function nativeVisibleJournal(workspaceId: string): NativeVisibleJournal {
     }
     const answerId = answer.nativeRequestId as string;
     const terminalChild = (parsed.rejectedRequestIds as string[]).includes(answerId) ||
-      (parsed.notDispatchedRequestIds as string[]).includes(answerId);
+      (parsed.notDispatchedRequestIds as string[]).includes(answerId) ||
+      (!parsed.pending && (parsed.acceptedRequestIds as string[]).includes(answerId));
     // Older persisted terminal slots have a durable disposition and no longer
     // reserve the one C answer attempt. Never normalize an uncertain child.
-    if (terminalChild || (!parsed.pending &&
-        (parsed.acceptedRequestIds as string[]).includes(answerId))) {
+    if (terminalChild) {
       parsed.dependentAnswer = null;
     }
     const parent = parsed.pending ??
@@ -2132,6 +2132,9 @@ async function invokeVisibleWrite<T>(
       Array.isArray(payload.result.answers.host0.answers) &&
       payload.result.answers.host0.answers.length === 1 &&
       typeof payload.result.answers.host0.answers[0] === "string");
+    if (!parent && journal.dependentAnswer) {
+      throw new Error(`Original native visible request ${journal.dependentAnswer.nativeRequestId} is unresolved: ${journal.dependentAnswer.error ?? "read its original host result before another write"}`);
+    }
     if (parent && !dependent) {
       throw new Error(`Original native visible request ${parent.nativeRequestId} is unresolved: ${parent.error ?? "read its original host result before another write"}`);
     }
