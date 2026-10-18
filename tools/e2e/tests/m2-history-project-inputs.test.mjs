@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createTemporaryHomeLifecycle } from '../installed-temporary-home-lifecycle.mjs';
 import { closeProjectOnlyAfterOwnedHome, validateControlledInstructions, CONTROLLED_CLAUDE_PROMPT } from '../m2-history-boundaries.mjs';
+import { memoizeCaseFinish, preserveActorFailure } from '../m2-memory-win11.mjs';
 import { ActualProduct } from '../product-cdp.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -198,6 +199,84 @@ test('the project-only close occurs once after every owned HOME is complete', as
   await assert.rejects(closeProjectOnlyAfterOwnedHome(home, product,
     async () => { order.push('close'); }), /Both declared project domains/);
   assert.deepEqual(order, []);
+});
+
+test('the actor failure path finishes a begun A-only case after first H open fails without a receipt', async () => {
+  const originalExitCode = process.exitCode;
+  const order = [];
+  const error = Error('first A H open failed before receipt');
+  const journal = { caseId: 'caseA', operations: [{ request: { domainId: 'A', operation: 'open' }, receipt: null }] };
+  const lifecycle = { async finishCase(caseId) {
+    order.push(`finish:${caseId}`);
+    return { complete: false, state: 'CASE_TEARDOWN_INCOMPLETE', errors: ['no proven original H stop'] };
+  } };
+  const homeLifecycle = { ...lifecycle, finishCase: memoizeCaseFinish(lifecycle) };
+  const product = { endpoint: null, save() { order.push('save'); }, async preserveFailure() { order.push('preserve'); } };
+  try {
+    await preserveActorFailure({ error, journal, product, homeLifecycle, caseBegun: true });
+    assert.equal(journal.originalError, String(error.stack));
+    assert.deepEqual(journal.projectOnlyTeardown, { result: {
+      complete: false, state: 'CASE_TEARDOWN_INCOMPLETE', errors: ['no proven original H stop'] }, error: null });
+    assert.deepEqual(order, ['finish:caseA', 'save', 'preserve']);
+    assert.equal(journal.operations.length, 1);
+    assert.equal(journal.operations[0].request.domainId, 'A');
+    assert.equal(journal.operations[0].receipt, null);
+    assert.equal(order.some(value => /stop|close/i.test(value)), false);
+  } finally { process.exitCode = originalExitCode; }
+});
+
+test('successful helper teardown is reused when later actor readback fails', async () => {
+  const originalExitCode = process.exitCode;
+  const order = [];
+  let finishCalls = 0;
+  const journal = { caseId: 'caseAB' };
+  const rawLifecycle = { manifest: { ownedDomains: ['A', 'B'], attempts: [
+    { caseId: 'caseAB', domainId: 'A' }, { caseId: 'caseAB', domainId: 'B' }] },
+  async finishCase() { finishCalls++; order.push('finish'); return { complete: true }; },
+  async beforeCaptionClose() { order.push('teardown'); return { complete: true }; },
+  async verifyClosedReadback() { order.push('closed-readback'); return true; } };
+  const homeLifecycle = Object.create(rawLifecycle);
+  homeLifecycle.finishCase = memoizeCaseFinish(rawLifecycle);
+  const product = { journal, save() { order.push('save'); }, async preserveFailure() { order.push('preserve'); } };
+  try {
+    await closeProjectOnlyAfterOwnedHome(homeLifecycle, product, async () => { order.push('close'); });
+    await preserveActorFailure({ error: Error('later history readback failed'), journal, product,
+      homeLifecycle, caseBegun: true });
+    assert.equal(finishCalls, 1);
+    assert.deepEqual(order, ['finish', 'teardown', 'close', 'closed-readback', 'save', 'preserve']);
+    assert.equal(journal.projectOnlyTeardown.result.complete, true);
+    assert.equal(journal.originalError.includes('later history readback failed'), true);
+  } finally { process.exitCode = originalExitCode; }
+});
+
+test('a teardown throw is recorded separately without replacing the actor error', async () => {
+  const originalExitCode = process.exitCode;
+  const error = Error('original H open failure');
+  const teardownError = Error('finishCase failed');
+  let finishCalls = 0;
+  const journal = { caseId: 'caseA' };
+  const lifecycle = { async finishCase() { finishCalls++; throw teardownError; } };
+  const product = { save() {}, async preserveFailure() {} };
+  try {
+    await preserveActorFailure({ error, journal, product, homeLifecycle: lifecycle, caseBegun: true });
+    assert.equal(finishCalls, 1);
+    assert.equal(journal.originalError, String(error.stack));
+    assert.equal(journal.projectOnlyTeardown.result, null);
+    assert.equal(journal.projectOnlyTeardown.error, String(teardownError.stack));
+  } finally { process.exitCode = originalExitCode; }
+});
+
+test('an actor failure before beginCase does not finish a temporary HOME case', async () => {
+  const originalExitCode = process.exitCode;
+  let finishCalls = 0;
+  const journal = { caseId: 'caseA' };
+  const product = { save() {}, async preserveFailure() {} };
+  try {
+    await preserveActorFailure({ error: Error('pre-case failure'), journal, product,
+      homeLifecycle: { async finishCase() { finishCalls++; } }, caseBegun: false });
+    assert.equal(finishCalls, 0);
+    assert.equal(Object.hasOwn(journal, 'projectOnlyTeardown'), false);
+  } finally { process.exitCode = originalExitCode; }
 });
 
 test('the actual closed reader retains A/B own inventory and rejects C or another case', () => {

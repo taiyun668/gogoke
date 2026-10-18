@@ -14,6 +14,36 @@ import { validateProtectionObservers, captureProtection,
 
 process.env.E2E_TELEMETRY_DISABLED = '1';
 const here = path.dirname(fileURLToPath(import.meta.url));
+export function memoizeCaseFinish(homeLifecycle) {
+  const finish = homeLifecycle.finishCase.bind(homeLifecycle);
+  let caseId;
+  let finishPromise;
+  return requestedCaseId => {
+    if (caseId !== undefined && caseId !== requestedCaseId) {
+      return Promise.reject(Error('Temporary-HOME finishCase is scoped to one M2 case'));
+    }
+    caseId = requestedCaseId;
+    return finishPromise ??= Promise.resolve().then(() => finish(requestedCaseId));
+  };
+}
+
+export async function preserveActorFailure({ error, journal, product, homeLifecycle, caseBegun }) {
+  journal.state = 'FAIL_OR_NOT_RUN_PRESERVE_ORIGINAL';
+  journal.originalError = String(error.stack ?? error);
+  journal.currentEndpoint = product.endpoint ?? null;
+  if (homeLifecycle && caseBegun) {
+    try {
+      journal.projectOnlyTeardown = { result: await homeLifecycle.finishCase(journal.caseId), error: null };
+    } catch (teardownError) {
+      journal.projectOnlyTeardown = { result: null, error: String(teardownError.stack ?? teardownError) };
+    }
+  }
+  product.save(); process.exitCode = 1;
+  try { await product.preserveFailure(); }
+  catch (disconnectError) { journal.disconnectError = String(disconnectError); product.save(); }
+}
+
+async function main() {
 const config = readJson(process.argv[2]);
 const atom = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
 const inside = (child, parent) => child === parent || child.startsWith(parent + path.sep);
@@ -64,6 +94,9 @@ const product = new ActualProduct(config, journal);
 if (projectOnly) journal.protectionInstrument = protectionSources();
 const homeLifecycle = projectOnly ? createTemporaryHomeLifecycle(product,
   path.join(config.evidenceDirectory, 'temporary-home-attempts.json')) : null;
+const finishCase = homeLifecycle ? memoizeCaseFinish(homeLifecycle) : null;
+if (homeLifecycle) homeLifecycle.finishCase = finishCase;
+let caseBegun = false;
 if (projectOnly) journal.causalCloseSources = causalCloseSources();
 delete journal.driverBytes['m1-win11.mjs'];
 delete journal.driverBytes['m1-readback.py'];
@@ -112,6 +145,7 @@ try {
     // The case anchor carries the two-domain declaration into the same
     // immutable baseline; no native HOME create has been dispatched yet.
     homeLifecycle.beginCase(journal.caseId);
+    caseBegun = true;
     await homeLifecycle.captureBaseline();
   }
   await product.launch();
@@ -163,9 +197,8 @@ try {
   journal.v04b = 'NOT_RUN_VENDOR_MEMORY_AND_INSTRUCTION_PROVENANCE';
   journal.acceptance = false; product.save();
 } catch (error) {
-  journal.state = 'FAIL_OR_NOT_RUN_PRESERVE_ORIGINAL';
-  journal.originalError = String(error.stack ?? error);
-  journal.currentEndpoint = product.endpoint ?? null; product.save(); process.exitCode = 1;
-  try { await product.preserveFailure(); }
-  catch (disconnectError) { journal.disconnectError = String(disconnectError); product.save(); }
+  await preserveActorFailure({ error, journal, product, homeLifecycle, caseBegun });
 }
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
