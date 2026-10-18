@@ -33,6 +33,12 @@ pub(crate) enum AcpCommand<'a> {
     SessionNew {
         cwd: &'a str,
     },
+    /// Explicit qualification route for one host-owned Grok server. H must
+    /// derive and bind this token to the fresh physical session.
+    SessionNewHostMcp {
+        cwd: &'a str,
+        server_id: &'a str,
+    },
     /// The caller must have observed loadSession=true on this exact process.
     SessionLoad {
         session_id: &'a str,
@@ -300,6 +306,24 @@ pub(crate) fn encode_acp(
             }
             ("session/new", Json::Object(fields), false)
         }
+        AcpCommand::SessionNewHostMcp { cwd, server_id } => {
+            if vendor != Vendor::Grok {
+                return Err(EncodeError::Unsupported("host MCP registration is Grok-only"));
+            }
+            nonempty(cwd, "cwd")?;
+            grok_mcp::validate_server_id(server_id).map_err(EncodeError::Invalid)?;
+            ("session/new", object([
+                ("cwd", string(cwd)),
+                ("mcpServers", Json::Array(Vec::new())),
+                ("_meta", object([
+                    ("yoloMode", Json::Bool(false)),
+                    ("x.ai/mcp/servers", Json::Array(vec![object([
+                        ("name", string("gogoke_qcard")),
+                        ("serverId", string(server_id)),
+                    ])])),
+                ])),
+            ]), false)
+        }
         AcpCommand::SessionLoad {
             session_id,
             cwd,
@@ -556,4 +580,25 @@ pub(crate) fn grok_launch_args(model: &str, effort: &str) -> Result<Vec<String>,
         "--reasoning-effort".to_owned(), effort.to_owned(),
         "--no-leader".to_owned(), "stdio".to_owned(),
     ])
+}
+
+#[cfg(test)]
+mod grok_host_registration_tests {
+    use super::*;
+
+    #[test]
+    fn grok_host_registration_enum_matches_historical_exact_reader_codec() {
+        let id=RpcId::Number(3);
+        let command=encode_acp(Vendor::Grok,Some(&id),
+            AcpCommand::SessionNewHostMcp {cwd:"D:/synthetic",server_id:"gq_123"}).unwrap();
+        let reader=encode_grok_session_new_host_mcp(&id,"D:/synthetic","gq_123").unwrap();
+        assert_eq!(command,reader);
+        let ordinary=encode_acp(Vendor::Grok,Some(&id),
+            AcpCommand::SessionNew {cwd:"D:/synthetic"}).unwrap();
+        assert!(!ordinary.windows(b"x.ai/mcp/servers".len())
+            .any(|bytes|bytes==b"x.ai/mcp/servers"));
+        assert!(matches!(encode_acp(Vendor::OpenCode,Some(&id),
+            AcpCommand::SessionNewHostMcp {cwd:"D:/synthetic",server_id:"gq_123"}),
+            Err(EncodeError::Unsupported(_))));
+    }
 }

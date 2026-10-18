@@ -61,6 +61,8 @@ export type WorkspaceInfo = {
 export type AppServerEvent = {
   workspace_id: string;
   message: Record<string, unknown>;
+  nativeAssociation?: Record<string, unknown>;
+  nativeSourceRef?: Record<string, unknown>;
 };
 
 export type TrayRecentThreadEntry = {
@@ -404,6 +406,7 @@ export type RequestUserInputQuestion = {
   question: string;
   isOther?: boolean;
   options?: RequestUserInputOption[];
+  recommendedIndex?: number;
 };
 
 export type RequestUserInputParams = {
@@ -411,6 +414,9 @@ export type RequestUserInputParams = {
   turn_id: string;
   item_id: string;
   questions: RequestUserInputQuestion[];
+  card_origin?: "host-mcp";
+  card_state?: "OPEN" | "EXPIRED" | "ANSWER_UNKNOWN" | "ANSWERED";
+  card_revision?: string;
 };
 
 export type RequestUserInputRequest = {

@@ -527,6 +527,62 @@ impl<'root> ProductDatabase<'root> {
             None=>Ok(self.action_reply(action,"UNKNOWN",Some("Original C answer is not ANSWERED with its exact H WRITTEN proof; UNKNOWN cannot resend a response."),None)),
         }
     }
+    fn recover_visible_grok_answer_result(&mut self,action:&Action,request:&V37Request)->Result<Json> {
+        if request.family!="K-QCARD" || request.operation!="answer"
+            || request.domain_id!=action.association.domain || request.request_id!=action.id {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let Some(card)=crate::store::inbox::read_native_card(&self.connection,
+            &action.association.domain,&request.target_id)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                "original visible C card recovery: {error:?}")))? else {
+            return self.visible_answer_result(action,request);
+        };
+        if !super::v37_qcard_user::grok_host_card(&card)? {
+            return self.visible_answer_result(action,request);
+        }
+        if card.card_id!=request.target_id || card.seat_id!=action.association.seat
+            || card.generation!=action.association.generation
+            || card.vendor_thread_id!=action.thread || card.turn_id!=action.turn {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let prior=Statement::prepare(self.connection.as_ptr(),
+            "SELECT request_hex,state,answer_kind FROM main.gogoke_v37_qcard_native_operations
+             WHERE domain_id=?1 AND card_id=?2 AND request_id=?3")?;
+        prior.bind_text(1,&action.association.domain)?;
+        prior.bind_text(2,&request.target_id)?;
+        prior.bind_text(3,&request.request_id)?;
+        if !prior.step_row()? {return self.visible_answer_result(action,request);}
+        if prior.column_text(0)?!=encode_hex(&request.raw_bytes) {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let state=prior.column_text(1)?;let kind=prior.column_text(2)?;
+        if prior.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        drop(prior);
+        if state=="UNKNOWN" {
+            if kind!="WIRE" || card.state!="ANSWER_UNKNOWN" {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            let step=format!("qanswer{}",crate::store::digest::sha256_hex(format!(
+                "{}\n{}\n{}",action.association.domain,action.association.session,
+                request.request_id).as_bytes()));
+            let envelope=crate::store::inbox::CardEnvelope {
+                domain_id:&request.domain_id,card_id:&request.target_id,
+                request_id:&request.request_id,request_bytes:&request.raw_bytes,
+                expected_revision:request.expected_revision,
+            };
+            match crate::store::inbox::settle_native_answer_written(&mut self.connection,
+                &self.owner,&envelope,&action.association.session,&step) {
+                Ok(settled) if settled.phase=="ANSWERED"=>{},
+                Ok(_)|Err(crate::store::inbox::InboxError::Denied)=>{
+                    return self.visible_answer_result(action,request);
+                },
+                Err(error)=>return Err(OrchestrationError::V37StoreFailure(format!(
+                    "original visible Grok C/H WRITTEN recovery: {error:?}"))),
+            }
+        }
+        self.visible_answer_result(action,request)
+    }
     fn recover_visible_action(&mut self,action:&Action)->Result<Vec<u8>> {
         // Durable refusal/unsupported results have no H effect to recover.
         if matches!(action.phase.as_str(),"DENIED"|"UNSUPPORTED") {return Ok(action.reply.canonical().into_bytes());}
@@ -562,7 +618,8 @@ impl<'root> ProductDatabase<'root> {
                     let request=h::decode_request(action.translations.first().ok_or(OrchestrationError::OperationConflict)?)
                         .map_err(|error|OrchestrationError::V37StoreFailure(format!("original visible request recovery: {error:?}")))?;
                     match action.method.as_str() {"thread/resume"=>self.visible_resume_result(action,&request),
-                        "physical-stop"=>self.visible_stop_result(action,&request),_=>self.visible_answer_result(action,&request)}
+                        "physical-stop"=>self.visible_stop_result(action,&request),
+                        _=>self.recover_visible_grok_answer_result(action,&request)}
                 },
                 "thread/start"=>Ok(self.action_reply(action,"UNSUPPORTED",Some("The original selection contains no new-session admission identity."),None)),
                 _=>Err(OrchestrationError::Invalid("original effect method")),

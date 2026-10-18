@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppServerEvent } from "../../../types";
 import { subscribeAppServerEvents } from "../../../services/events";
 import { useAppServerEvents } from "./useAppServerEvents";
+import { RequestUserInputMessage } from "../components/RequestUserInputMessage";
 
 vi.mock("../../../services/events", () => ({
   subscribeAppServerEvents: vi.fn(),
@@ -30,6 +32,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  cleanup();
   vi.clearAllMocks();
 });
 
@@ -43,6 +46,98 @@ async function mount(handlers: Handlers) {
 }
 
 describe("useAppServerEvents", () => {
+  it("submits one host option or one free answer from the visible card", () => {
+    const submit = vi.fn();
+    const request = { workspace_id: "ws", request_id: "gmpc_abc", params: {
+      thread_id: "nativeS", turn_id: "sendA", item_id: "cardabc",
+      card_origin: "host-mcp" as const, card_state: "OPEN" as const, card_revision: "1",
+      questions: [{ id: "host0", header: "Choose", question: "Which?",
+        recommendedIndex: 1, options: [
+          { label: "A", description: "First" }, { label: " B ", description: "Second" },
+        ] }],
+    } };
+    const { container, rerender } = render(<RequestUserInputMessage requests={[request]}
+      activeThreadId="nativeS" activeWorkspaceId="ws" onSubmit={submit} />);
+    expect(container.textContent).toContain("Host question");
+    expect(container.textContent).toContain("Recommended");
+    const send = screen.getByRole("button", { name: "Submit" });
+    expect((send as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: /B/ }));
+    fireEvent.click(send);
+    expect(submit).toHaveBeenLastCalledWith(request, { answers: {
+      host0: { answers: [" B "] },
+    } });
+    fireEvent.change(container.querySelector("textarea")!, { target: { value: "Custom answer" } });
+    fireEvent.click(send);
+    expect(submit).toHaveBeenLastCalledWith(request, { answers: {
+      host0: { answers: ["Custom answer"] },
+    } });
+    const unknown = { ...request, params: { ...request.params,
+      card_state: "ANSWER_UNKNOWN" as const, card_revision: "2" } };
+    rerender(<RequestUserInputMessage requests={[unknown]}
+      activeThreadId="nativeS" activeWorkspaceId="ws" onSubmit={submit} />);
+    expect(container.textContent).toContain("Answer outcome unknown");
+    expect((screen.getByRole("button", { name: "Submit" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((container.querySelector("textarea") as HTMLTextAreaElement).disabled).toBe(true);
+  });
+
+  it("projects only source-bound Grok C host questions with recommendation", async () => {
+    const handlers: Handlers = { onRequestUserInput: vi.fn() };
+    const { root } = await mount(handlers);
+    const event: AppServerEvent = {
+      workspace_id: "ws",
+      nativeAssociation: { sessionId: "session", bindingGeneration: "2" },
+      nativeSourceRef: { operationId: "op", sourceEpoch: "nonce", sourceCursor: "4" },
+      message: { method: "gogoke/hostQuestion", params: {
+        cardId: "cardabc", requestRef: "gmpc_abc", threadId: "nativeS", turnId: "sendA",
+        cardState: "OPEN", cardRevision: "1",
+        nativeQuestion: { provider: "grok", cardOrigin: "host-mcp", bindingVersion: 1, allowFreeAnswer: true,
+          recommendedIndex: 1, questions: [{ id: "host0", header: "Choose",
+            question: "Which?", options: [{label:"A",description:"First"},
+              {label:"B",description:"Second"}] }],
+          binding: { hostSessionId: "session", generation: "2", hostPromptRequestId: "sendA",
+            processOperationId: "op", sourceEpoch: "nonce", sourceCursor: "4" } },
+      } },
+    };
+    act(() => { listener?.(event); });
+    expect(handlers.onRequestUserInput).toHaveBeenCalledWith({
+      workspace_id: "ws", request_id: "gmpc_abc", params: {
+        thread_id: "nativeS", turn_id: "sendA", item_id: "cardabc",
+        card_origin: "host-mcp", card_state: "OPEN", card_revision: "1",
+        questions: [{ id: "host0", header: "Choose",
+          question: "Which?", options: [{label:"A",description:"First"},
+            {label:"B",description:"Second"}], recommendedIndex: 1 }],
+      },
+    });
+    const changed = structuredClone(event);
+    changed.nativeSourceRef!.sourceCursor = "5";
+    act(() => { listener?.(changed); });
+    expect(handlers.onRequestUserInput).toHaveBeenCalledTimes(1);
+    const unknown=structuredClone(event);
+    unknown.message.method="gogoke/hostQuestionState";
+    (unknown.message.params as Record<string, unknown>).cardState="ANSWER_UNKNOWN";
+    (unknown.message.params as Record<string, unknown>).cardRevision="2";
+    act(() => {listener?.(unknown);});
+    expect(handlers.onRequestUserInput).toHaveBeenLastCalledWith(expect.objectContaining({
+      request_id:"gmpc_abc",params:expect.objectContaining({
+        card_state:"ANSWER_UNKNOWN",card_revision:"2",
+      }),
+    }));
+    expect(handlers.onRequestUserInput).toHaveBeenCalledTimes(2);
+    const expired=structuredClone(unknown);
+    (expired.message.params as Record<string, unknown>).cardState="EXPIRED";
+    (expired.message.params as Record<string, unknown>).cardRevision="3";
+    act(() => {listener?.(expired);});
+    expect(handlers.onRequestUserInput).toHaveBeenLastCalledWith(expect.objectContaining({
+      request_id:"gmpc_abc",params:expect.objectContaining({card_state:"EXPIRED"}),
+    }));
+    expect(handlers.onRequestUserInput).toHaveBeenCalledTimes(3);
+    act(() => { listener?.({workspace_id:"ws",message:{method:"x.ai/mcp/sdk_call",id:1,
+      params:{}}}); });
+    expect(handlers.onRequestUserInput).toHaveBeenCalledTimes(3);
+    await act(async () => { root.unmount(); });
+  });
+
   it("routes app-server events to handlers", async () => {
     const handlers: Handlers = {
       onAppServerEvent: vi.fn(),

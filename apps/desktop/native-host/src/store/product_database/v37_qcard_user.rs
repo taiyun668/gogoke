@@ -3,7 +3,7 @@
 //! observations; a User request cannot manufacture a raised provider card.
 use super::*;
 use crate::store::atomic::Parser;
-use crate::store::inbox::{CardEnvelope,NativeQuestionCard};
+use crate::store::inbox::{self,CardEnvelope,NativeQuestionCard};
 
 fn text(value:&str)->Json {Json::String(JsonString::from_str(value))}
 fn claude_card(card:&NativeQuestionCard)->Result<bool> {
@@ -12,6 +12,15 @@ fn claude_card(card:&NativeQuestionCard)->Result<bool> {
     };
     Ok(matches!(payload.get(&JsonString::from_str("provider")),
         Some(Json::String(provider)) if provider.to_well_formed_string().as_deref()==Some("claude")))
+}
+pub(super) fn grok_host_card(card:&NativeQuestionCard)->Result<bool> {
+    let Json::Object(payload)=Parser::parse(&card.question_payload)? else {
+        return Err(OrchestrationError::OperationConflict);
+    };
+    Ok(matches!(payload.get(&JsonString::from_str("provider")),
+        Some(Json::String(provider)) if provider.to_well_formed_string().as_deref()==Some("grok"))
+        && matches!(payload.get(&JsonString::from_str("cardOrigin")),
+        Some(Json::String(origin)) if origin.to_well_formed_string().as_deref()==Some("host-mcp")))
 }
 
 impl<'root> ProductDatabase<'root> {
@@ -34,14 +43,128 @@ impl<'root> ProductDatabase<'root> {
         for (index,value) in [association.domain.as_str(),vendor_wire.as_str(),thread,association.seat.as_str(),
             association.generation.as_str(),association.session.as_str(),association.incarnation.as_str(),association.instance.as_str(),
             association.authorization.as_str()].iter().enumerate() {row.bind_text((index+1) as i32,value)?;}
-        if !row.step_row()? {return Err(OrchestrationError::Invalid("original open C question is unavailable for this association and typed vendor ID"));}
-        let card=row.column_text(0)?;let revision=decimal(&row.column_text(1)?)? as u64;let turn=row.column_text(2)?;
-        if row.step_row()? {return Err(OrchestrationError::OperationConflict);}drop(row);
+        let direct=if row.step_row()? {
+            let found=(row.column_text(0)?,decimal(&row.column_text(1)?)? as u64,
+                row.column_text(2)?);
+            if row.step_row()? {return Err(OrchestrationError::OperationConflict);}
+            Some(found)
+        } else {None};drop(row);
+        let (card,revision,turn)=if let Some(direct)=direct {direct} else {
+            // A visible client may refer to the original ACP outer ID rather
+            // than C's opaque host request reference. Resolve it only through
+            // a unique raised A source under the same current association.
+            let candidates=Statement::prepare(self.connection.as_ptr(),
+                "SELECT card_id,revision,turn_id FROM main.gogoke_v37_qcard_native
+                   WHERE domain_id=?1 AND seat_id=?2 AND generation=?3
+                   AND vendor_thread_id=?4 AND state='OPEN'
+                   AND instr(question_payload,'\"cardOrigin\":\"host-mcp\"')>0")?;
+            for (index,value) in [association.domain.as_str(),association.seat.as_str(),
+                association.generation.as_str(),thread].iter().enumerate() {
+                candidates.bind_text((index+1) as i32,value)?;
+            }
+            let mut found=None;
+            while candidates.step_row()? {
+                let card_id=candidates.column_text(0)?;
+                let version=decimal(&candidates.column_text(1)?)? as u64;
+                let turn=candidates.column_text(2)?;
+                let (source,digest)=super::v37_qcard::read_source_descriptor(
+                    &self.connection,&association.domain,&card_id)?;
+                let raw=crate::store::ledger::read_captured_raw_source(&self.connection,
+                    &source.operation_id,&source.source_epoch,&source.source_cursor)?
+                    .ok_or(OrchestrationError::OperationConflict)?;
+                if raw.domain_id!=association.domain || raw.session_id!=association.session
+                    || raw.generation!=association.generation
+                    || crate::store::digest::sha256_hex(&raw.raw_bytes)!=digest {
+                    return Err(OrchestrationError::AccessDenied);
+                }
+                let card=inbox::read_native_card(&self.connection,&association.domain,&card_id)
+                    .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                        "visible Grok card: {error:?}")))?
+                    .ok_or(OrchestrationError::OperationConflict)?;
+                let Json::Object(payload)=Parser::parse(&card.question_payload)? else {
+                    return Err(OrchestrationError::OperationConflict);
+                };
+                let Some(Json::Object(binding))=payload.get(&k("binding")) else {
+                    return Err(OrchestrationError::OperationConflict);
+                };
+                let Some(Json::String(server))=binding.get(&k("serverId")) else {
+                    return Err(OrchestrationError::OperationConflict);
+                };
+                let server=server.to_well_formed_string()
+                    .ok_or(OrchestrationError::OperationConflict)?;
+                let request=crate::store::session_transport::provider_evidence::acp::decode_grok_mcp(
+                    &raw.raw_bytes,&server).map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!(
+                        "visible Grok A source: {error:?}")))?
+                    .ok_or(OrchestrationError::OperationConflict)?;
+                let outer=match request.outer_id {
+                    crate::store::session_transport::provider_evidence::acp::RpcId::Number(id)=>
+                        Json::Number(id.to_string()),
+                    crate::store::session_transport::provider_evidence::acp::RpcId::String(id)=>text(&id),
+                };
+                if outer.canonical()==vendor_wire {
+                    if found.replace((card_id,version,turn)).is_some() {
+                        return Err(OrchestrationError::OperationConflict);
+                    }
+                }
+            }
+            found.ok_or(OrchestrationError::Invalid(
+                "original open C question is unavailable for this association and typed vendor ID"))?
+        };
         let (key,digest)=super::v37_qcard::read_source_descriptor(&self.connection,&association.domain,&card)?;
+        if super::v37_qcard::card_identity(&association.domain,&association.session,&key).0!=card {
+            return Err(OrchestrationError::AccessDenied);
+        }
         let raw=crate::store::ledger::read_captured_raw_source(&self.connection,&key.operation_id,&key.source_epoch,&key.source_cursor)?
             .ok_or(OrchestrationError::OperationConflict)?;
         if raw.domain_id!=association.domain||raw.session_id!=association.session||raw.generation!=association.generation
             ||crate::store::digest::sha256_hex(&raw.raw_bytes)!=digest {return Err(OrchestrationError::AccessDenied);}
+        let card_record=inbox::read_native_card(&self.connection,&association.domain,&card)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                "visible original card: {error:?}")))?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        if grok_host_card(&card_record)? {
+            let Json::Object(payload)=Parser::parse(&card_record.question_payload)? else {
+                return Err(OrchestrationError::OperationConflict);
+            };
+            let Some(Json::Object(binding))=payload.get(&k("binding")) else {
+                return Err(OrchestrationError::OperationConflict);
+            };
+            let Some(Json::String(server))=binding.get(&k("serverId")) else {
+                return Err(OrchestrationError::OperationConflict);
+            };
+            let server=server.to_well_formed_string().ok_or(OrchestrationError::OperationConflict)?;
+            let original=crate::store::session_transport::provider_evidence::acp::decode_grok_mcp(
+                &raw.raw_bytes,&server).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("visible Grok source: {error:?}")))?
+                .ok_or(OrchestrationError::OperationConflict)?;
+            let original_id=match original.outer_id {
+                crate::store::session_transport::provider_evidence::acp::RpcId::Number(id)=>Json::Number(id.to_string()),
+                crate::store::session_transport::provider_evidence::acp::RpcId::String(id)=>text(&id),
+            };
+            if vendor_wire!=card_record.vendor_request_id && vendor_wire!=original_id.canonical() {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let result=object(params.get(&k("result")).ok_or(OrchestrationError::Invalid("original C answer result"))?)?;
+            exact(result,&["answers"],&[])?;
+            let answers=object(result.get(&k("answers")).ok_or(OrchestrationError::Invalid("original C answers"))?)?;
+            if answers.len()!=1 {return Err(OrchestrationError::Invalid("host question answer count"));}
+            let Some(Json::Object(host))=answers.get(&k("host0")) else {
+                return Err(OrchestrationError::Invalid("host question ID"));
+            };
+            exact(host,&["answers"],&[])?;
+            let Some(Json::Array(values))=host.get(&k("answers")) else {
+                return Err(OrchestrationError::Invalid("host answer values"));
+            };
+            let [Json::String(answer)]=values.as_slice() else {
+                return Err(OrchestrationError::Invalid("host answer cardinality"));
+            };
+            let answer=answer.to_well_formed_string().filter(|value|
+                !value.is_empty() && value.len()<=4096 && !value.contains('\0'))
+                .ok_or(OrchestrationError::Invalid("host answer text"))?;
+            return Ok((card,revision,turn,Json::Object(BTreeMap::from([
+                (k("host0"),Json::Array(vec![text(&answer)]))]))));
+        }
         let crate::store::session_transport::codex_rpc::Reply::Question(question)=
             crate::store::session_transport::codex_rpc::decode(&raw.raw_bytes,None).map_err(|error|
                 OrchestrationError::V37StoreFailure(format!("original typed C question: {error:?}")))? else {return Err(OrchestrationError::AccessDenied);};
@@ -64,28 +187,74 @@ impl<'root> ProductDatabase<'root> {
         Ok((card,revision,turn,Json::Object(native)))
     }
 
-    /// Original raised requests for USER presentation. Availability remains
-    /// subject to current_card_binding at the actual new-answer boundary.
+    fn visible_native_card_snapshot(&self,
+        association:&super::v37_visible_conversation::Association,card:&str)->Result<(Json,bool)> {
+        use super::v37_visible_conversation::{k,source_json};
+            let (key,digest)=super::v37_qcard::read_source_descriptor(&self.connection,&association.domain,&card)?;
+            if super::v37_qcard::card_identity(&association.domain,&association.session,&key).0!=card {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let raw=crate::store::ledger::read_captured_raw_source(&self.connection,&key.operation_id,&key.source_epoch,&key.source_cursor)?
+                .ok_or(OrchestrationError::OperationConflict)?;
+            if raw.domain_id!=association.domain||raw.session_id!=association.session||raw.generation!=association.generation
+                ||crate::store::digest::sha256_hex(&raw.raw_bytes)!=digest {return Err(OrchestrationError::AccessDenied);}
+            let original=source_json(&raw.raw_bytes.iter().map(|byte|format!("{byte:02x}")).collect::<String>())?;
+            let card_record=inbox::read_native_card(&self.connection,&association.domain,&card)
+                .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                    "visible pending card: {error:?}")))?
+                .ok_or(OrchestrationError::OperationConflict)?;
+            if card_record.seat_id!=association.seat || card_record.generation!=association.generation {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let mut visible=BTreeMap::from([(k("cardId"),text(&card)),
+                (k("originalRequest"),original),
+                (k("source"),Json::Object(BTreeMap::from([(k("operationId"),text(&key.operation_id)),
+                    (k("sourceEpoch"),text(&key.source_epoch)),
+                    (k("sourceCursor"),text(&key.source_cursor))])))]);
+            let host=grok_host_card(&card_record)?;
+            if host {
+                visible.insert(k("cardOrigin"),text("host-mcp"));
+                visible.insert(k("requestRef"),Parser::parse(&card_record.vendor_request_id)?);
+                visible.insert(k("nativeQuestion"),Parser::parse(&card_record.question_payload)?);
+                visible.insert(k("threadId"),text(&card_record.vendor_thread_id));
+                visible.insert(k("turnId"),text(&card_record.turn_id));
+                visible.insert(k("cardState"),text(&card_record.state));
+                visible.insert(k("revision"),text(&card_record.revision.to_string()));
+            }
+            Ok((Json::Object(visible),host))
+    }
+
+    /// Original raised OPEN requests for USER presentation. This field keeps
+    /// its existing OPEN-only meaning; terminal C facts use a separate field.
     pub(super) fn visible_pending_questions(&self,
         association:&super::v37_visible_conversation::Association,thread:&str)->Result<Json> {
-        use super::v37_visible_conversation::{k,source_json};
         let rows=Statement::prepare(self.connection.as_ptr(),
             "SELECT card_id FROM main.gogoke_v37_qcard_native WHERE domain_id=?1 AND seat_id=?2 AND generation=?3 AND vendor_thread_id=?4 AND state='OPEN' ORDER BY card_id")?;
         for (index,value) in [association.domain.as_str(),association.seat.as_str(),association.generation.as_str(),thread].iter().enumerate() {rows.bind_text((index+1) as i32,value)?;}
         let mut questions=Vec::new();
         while rows.step_row()? {
             let card=rows.column_text(0)?;
-            let (key,digest)=super::v37_qcard::read_source_descriptor(&self.connection,&association.domain,&card)?;
-            let raw=crate::store::ledger::read_captured_raw_source(&self.connection,&key.operation_id,&key.source_epoch,&key.source_cursor)?
-                .ok_or(OrchestrationError::OperationConflict)?;
-            if raw.domain_id!=association.domain||raw.session_id!=association.session||raw.generation!=association.generation
-                ||crate::store::digest::sha256_hex(&raw.raw_bytes)!=digest {return Err(OrchestrationError::AccessDenied);}
-            let original=source_json(&raw.raw_bytes.iter().map(|byte|format!("{byte:02x}")).collect::<String>())?;
-            questions.push(Json::Object(BTreeMap::from([(k("cardId"),text(&card)),(k("originalRequest"),original),
-                (k("source"),Json::Object(BTreeMap::from([(k("operationId"),text(&key.operation_id)),
-                    (k("sourceEpoch"),text(&key.source_epoch)),(k("sourceCursor"),text(&key.source_cursor))])))])));
+            questions.push(self.visible_native_card_snapshot(association,&card)?.0);
         }
         Ok(Json::Array(questions))
+    }
+
+    /// Terminal host card states remain C facts, read by the same source and
+    /// association as OPEN. Absence from pendingQuestions is never interpreted
+    /// as closure, and a failed read cannot synthesize EXPIRED or ANSWERED.
+    pub(super) fn visible_host_question_states(&self,
+        association:&super::v37_visible_conversation::Association,thread:&str)->Result<Json> {
+        let rows=Statement::prepare(self.connection.as_ptr(),
+            "SELECT card_id FROM main.gogoke_v37_qcard_native WHERE domain_id=?1 AND seat_id=?2 AND generation=?3 AND vendor_thread_id=?4 AND state IN ('EXPIRED','ANSWER_UNKNOWN','ANSWERED') AND instr(question_payload,'\"cardOrigin\":\"host-mcp\"')>0 ORDER BY card_id")?;
+        for (index,value) in [association.domain.as_str(),association.seat.as_str(),association.generation.as_str(),thread].iter().enumerate() {rows.bind_text((index+1) as i32,value)?;}
+        let mut states=Vec::new();
+        while rows.step_row()? {
+            let card=rows.column_text(0)?;
+            let (snapshot,host)=self.visible_native_card_snapshot(association,&card)?;
+            if !host {return Err(OrchestrationError::OperationConflict);}
+            states.push(snapshot);
+        }
+        Ok(Json::Array(states))
     }
 
     pub(super) fn dispatch_user_qcard(&mut self,request:&V37Request)->Result<Vec<u8>> {
@@ -153,6 +322,8 @@ impl<'root> ProductDatabase<'root> {
             request_id:&request.request_id,request_bytes:&request.raw_bytes,expected_revision:request.expected_revision};
         let completed=if claude_card(&card)? {
             self.answer_claude_card(&key,&envelope,values)?
+        } else if grok_host_card(&card)? {
+            self.answer_grok_mcp_card(&key,&envelope,values)?
         } else {self.answer_codex_card(&key,&envelope,values)?};
         let operation=completed.operation;
         let status=if operation.phase=="ANSWERED" {
@@ -175,6 +346,11 @@ impl<'root> ProductDatabase<'root> {
                     crate::store::session_transport::decode_request(bytes).ok())
                     .filter(|send|send.operation=="send")
                     .map(|send|send.request_id)
+            } else if run.evidence.driver_id()=="grok" && grok_host_card(card)? {
+                run.pending_acp.as_ref().and_then(|(bytes,_)|
+                    crate::store::session_transport::decode_request(bytes).ok())
+                    .filter(|send|send.operation=="send")
+                    .map(|send|send.request_id)
             } else {run.turn_id.clone()};
             if card.state=="OPEN" && run.allows_input() && run.custody.binding.generation==card.generation
                 && run.thread_id.as_deref()==Some(card.vendor_thread_id.as_str())
@@ -191,6 +367,10 @@ impl<'root> ProductDatabase<'root> {
                     Err(error)=>availability_error=text(&error),
                 }
             }
+        }
+        if ready && grok_host_card(card)? && !self.grok_card_available(key,card)? {
+            ready=false;
+            availability_error=text("INITIAL_H_PROMPT_BINDING_UNAVAILABLE");
         }
         let result=BTreeMap::from([
             (JsonString::from_str("state"),text(&card.state)),

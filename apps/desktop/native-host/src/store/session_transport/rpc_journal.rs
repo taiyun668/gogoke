@@ -6,7 +6,7 @@
 //! original command and source key; it does not copy provider output.
 
 use super::codex_rpc::{self, Command, Reply, RpcId};
-use super::provider_evidence::{acp, claude_question, commands, permission, stream_json};
+use super::provider_evidence::{acp, claude_question, commands, grok_mcp, permission, stream_json};
 use crate::process::{OriginBoundFrame, PreparedCustody};
 use crate::store::atomic::{AtomicError, Json, JsonString, Parser, Statement};
 use crate::store::authority::{check_owner_in_current_transaction, OwnerIssuer};
@@ -256,6 +256,44 @@ pub(crate) struct GrokPermissionStep<'a> {
     pub(crate) reason:&'a str,
     pub(crate) scope:Option<&'a super::launch::GrokPermissionScope>,
     pub(crate) wire:&'a [u8],
+}
+
+pub(crate) struct GrokMcpBootstrapStep<'a> {
+    pub(crate) domain_id:&'a str,
+    pub(crate) session_id:&'a str,
+    pub(crate) open_request_id:&'a str,
+    pub(crate) open_request_bytes:&'a [u8],
+    pub(crate) step_id:&'a str,
+    pub(crate) custody:&'a PreparedCustody,
+    pub(crate) source:&'a RawSourceKey,
+    pub(crate) wire:&'a [u8],
+}
+pub(crate) struct GrokMcpQuestionStep<'a> {
+    pub(crate) domain_id:&'a str,
+    pub(crate) session_id:&'a str,
+    pub(crate) open_request_id:&'a str,
+    pub(crate) open_request_bytes:&'a [u8],
+    pub(crate) step_id:&'a str,
+    pub(crate) custody:&'a PreparedCustody,
+    pub(crate) card_id:&'a str,
+    pub(crate) answer_request_id:&'a str,
+    pub(crate) source:&'a RawSourceKey,
+    pub(crate) prompt_request_bytes:&'a [u8],
+    pub(crate) wire:&'a [u8],
+}
+impl<'a> GrokMcpQuestionStep<'a> {
+    fn fields(&self)->StepFields<'a> {
+        StepFields {domain_id:self.domain_id,session_id:self.session_id,
+            open_request_id:self.open_request_id,open_request_bytes:self.open_request_bytes,
+            step_id:self.step_id,custody:self.custody}
+    }
+}
+impl<'a> GrokMcpBootstrapStep<'a> {
+    fn fields(&self)->StepFields<'a> {
+        StepFields {domain_id:self.domain_id,session_id:self.session_id,
+            open_request_id:self.open_request_id,open_request_bytes:self.open_request_bytes,
+            step_id:self.step_id,custody:self.custody}
+    }
 }
 impl<'a> GrokPermissionStep<'a> {
     fn fields(&self)->StepFields<'a> {
@@ -1647,6 +1685,654 @@ fn acp_vendor(driver: &str) -> Result<commands::Vendor> {
     }
 }
 
+/// Routing identity for one fresh physical Grok session, derived only from
+/// original H open and custody facts. It is not a bearer grant.
+pub(crate) fn grok_host_server_id(domain:&str,session:&str,generation:&str,
+    open_id:&str,open_bytes:&[u8],ticket:&str,nonce:&str)->String {
+    let open_digest=crate::store::digest::sha256_hex(open_bytes);
+    let values=["gogoke-grok-qcard-v1",domain,session,generation,open_id,
+        open_digest.as_str(),ticket,nonce];
+    let encoded=Json::Array(values.iter().map(|value|
+        Json::String(JsonString::from_str(value))).collect()).canonical();
+    format!("gq_{}",crate::store::digest::sha256_hex(encoded.as_bytes()))
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GrokHostRegistration {
+    pub(crate) server_id:String,
+    pub(crate) native_session_id:Option<String>,
+    pub(crate) step_id:String,
+    pub(crate) command_sha256:String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GrokInitialPrompt {
+    pub(crate) request_id:String,
+    pub(crate) request_bytes:Vec<u8>,
+    pub(crate) step_id:String,
+    pub(crate) rpc_id:acp::RpcId,
+}
+
+/// Count every H send attempt in this physical generation, regardless of its
+/// phase. A second attempt permanently ends first-prompt card eligibility.
+pub(crate) fn grok_initial_prompt(db:&VerifiedDatabaseConnection<'_>,
+    domain:&str,session:&str,operation:&str,generation:&str,ticket:&str,
+    nonce:&str,native_session:&str,historical_turn:Option<&str>)->Result<GrokInitialPrompt> {
+    let historical=historical_turn.is_some();
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT request_id,request_hex,phase,ticket,custodian_nonce FROM
+           main.gogoke_v37_h_stdin_journal WHERE domain_id=?1 AND session_id=?2
+           AND process_operation_id=?3 AND generation=?4 AND operation='send'
+           AND (?5='' OR request_id=?5)")?;
+    for (index,value) in [domain,session,operation,generation].iter().enumerate() {
+        q.bind_text((index+1) as i32,value)?;
+    }
+    q.bind_text(5,historical_turn.unwrap_or(""))?;
+    if !q.step_row()? {return Err(RpcJournalError::Denied);}
+    let request_id=q.column_text(0)?;
+    let request_bytes=unhex(&q.column_text(1)?)?;
+    let phase=q.column_text(2)?;
+    if q.column_text(3)?!=ticket || q.column_text(4)?!=nonce || q.step_row()? {
+        return Err(RpcJournalError::Denied);
+    }
+    drop(q);
+    if !(phase=="PREPARED" || (historical && matches!(phase.as_str(),
+        "RECEIPTED"|"UNKNOWN"))) {
+        return Err(RpcJournalError::Denied);
+    }
+    let request=super::decode_request(&request_bytes).map_err(|error|
+        RpcJournalError::Authority(crate::store::orchestration::OrchestrationError::V37StoreFailure(
+            format!("Grok original H send decode: {error:?}; sha256={}",
+                crate::store::digest::sha256_hex(&request_bytes)))))?;
+    if request.family!="K-SESSION" || request.operation!="send"
+        || request.request_id!=request_id || request.domain_id!=domain
+        || request.target_id!=session || request.payload.len()!=2 {
+        return Err(RpcJournalError::Denied);
+    }
+    let Some(Json::String(body))=request.payload.get(&JsonString::from_str("body")) else {
+        return Err(RpcJournalError::Denied);
+    };
+    let body=body.to_well_formed_string().ok_or(RpcJournalError::Denied)?;
+    let digest=crate::store::digest::sha256_hex(&request_bytes);
+    let step_id=format!("acp-send-{}",&digest[..40]);
+    let rpc_id=acp::RpcId::String(format!("gogoke-acp-send-{}",&digest[..40]));
+    let expected=commands::encode_acp(commands::Vendor::Grok,Some(&rpc_id),
+        commands::AcpCommand::Prompt {session_id:native_session,text:&body})
+        .map_err(RpcJournalError::AcpEncode)?;
+    let prompt=Statement::prepare(db.as_ptr(),
+        "SELECT command_hex,phase,CAST(requires_response AS TEXT) FROM
+           main.gogoke_v37_rpc_steps WHERE domain_id=?1 AND session_id=?2
+           AND process_operation_id=?3 AND generation=?4 AND ticket=?5
+           AND custodian_nonce=?6 AND step_id=?7")?;
+    for (index,value) in [domain,session,operation,generation,ticket,nonce,
+        step_id.as_str()].iter().enumerate(){prompt.bind_text((index+1) as i32,value)?;}
+    if !prompt.step_row()? || prompt.column_text(0)?!=hex(&expected)
+        || prompt.column_text(2)?!="1" {return Err(RpcJournalError::Denied);}
+    let prompt_phase=prompt.column_text(1)?;
+    if prompt.step_row()? || !(prompt_phase=="WRITTEN"
+        || (historical && matches!(prompt_phase.as_str(),"OBSERVED"|"UNKNOWN"))) {
+        return Err(RpcJournalError::Denied);
+    }
+    drop(prompt);
+    if !historical {
+        let cancel_id=acp_cancel_step_id(&step_id)?;
+        let cancelled=Statement::prepare(db.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_rpc_steps WHERE domain_id=?1
+               AND session_id=?2 AND process_operation_id=?3 AND step_id=?4")?;
+        for (index,value) in [domain,session,operation,cancel_id.as_str()]
+            .iter().enumerate() {
+            cancelled.bind_text((index+1) as i32,value)?;
+        }
+        if cancelled.step_row()? {return Err(RpcJournalError::Denied);}
+    }
+    Ok(GrokInitialPrompt {request_id,request_bytes,step_id,rpc_id})
+}
+
+/// Read the original opt-in SessionNew row and its A ACK under the physical
+/// episode. Before ACK this reader is usable only for bootstrap replies.
+pub(crate) fn observed_grok_host_registration(db:&VerifiedDatabaseConnection<'_>,
+    domain:&str,session:&str,operation:&str,generation:&str,open_id:&str,
+    open_bytes:&[u8],ticket:&str,nonce:&str,require_ack:bool)
+    ->Result<Option<GrokHostRegistration>> {
+    // An ordinary Grok session/new or resume has no host server and must
+    // retain its existing path, including before initialize has an ACK.
+    let candidate=Statement::prepare(db.as_ptr(),
+        "SELECT command_hex FROM main.gogoke_v37_rpc_steps WHERE domain_id=?1
+           AND session_id=?2 AND process_operation_id=?3 AND generation=?4
+           AND open_request_id=?5 AND ticket=?6 AND custodian_nonce=?7
+           AND step_id='thread-start'")?;
+    for (index,value) in [domain,session,operation,generation,open_id,ticket,nonce]
+        .iter().enumerate() {candidate.bind_text((index+1) as i32,value)?;}
+    if !candidate.step_row()? {return Ok(None);}
+    let candidate_bytes=unhex(&candidate.column_text(0)?)?;
+    if candidate.step_row()? {return Err(RpcJournalError::Conflict);}drop(candidate);
+    let Json::Object(candidate_fields)=Parser::parse(std::str::from_utf8(&candidate_bytes)
+        .map_err(|error|RpcJournalError::AcpDecode {reason:format!(
+            "registration candidate UTF-8: {error}"),raw_frame:candidate_bytes.clone()})?
+        .trim_end_matches('\n'))? else {return Err(RpcJournalError::Denied);};
+    let host_key=JsonString::from_str("x.ai/mcp/servers");
+    let host_present=matches!(candidate_fields.get(&JsonString::from_str("params")),
+        Some(Json::Object(params)) if matches!(params.get(&JsonString::from_str("_meta")),
+            Some(Json::Object(meta)) if meta.contains_key(&host_key)));
+    if !host_present {return Ok(None);}
+    let episode=Statement::prepare(db.as_ptr(),
+        "SELECT raw_hex FROM main.gogoke_v37_h_process_episode WHERE domain_id=?1
+           AND session_id=?2 AND process_operation_id=?3 AND generation=?4
+           AND request_id=?5 AND old_generation IS NULL")?;
+    for (index,value) in [domain,session,operation,generation,open_id].iter().enumerate() {
+        episode.bind_text((index+1) as i32,value)?;
+    }
+    if !episode.step_row()? || episode.column_text(0)?!=hex(open_bytes)
+        || episode.step_row()? {return Err(RpcJournalError::Denied);}
+    drop(episode);
+    if !observed_acp_capability(db,domain,session,operation,ticket,nonce,
+        generation,open_id,AcpCapability::Initialize)? {
+        return Err(RpcJournalError::Denied);
+    }
+    let row=Statement::prepare(db.as_ptr(),
+        "SELECT command_hex,phase,CAST(requires_response AS TEXT),COALESCE(source_epoch,''),
+                COALESCE(source_cursor,'') FROM main.gogoke_v37_rpc_steps
+         WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3
+           AND generation=?4 AND open_request_id=?5 AND ticket=?6
+           AND custodian_nonce=?7 AND step_id='thread-start'")?;
+    for (index,value) in [domain,session,operation,generation,open_id,ticket,nonce]
+        .iter().enumerate() {row.bind_text((index+1) as i32,value)?;}
+    if !row.step_row()? {return Ok(None);}
+    let command=unhex(&row.column_text(0)?)?;
+    let phase=row.column_text(1)?;
+    let requires=row.column_text(2)?;
+    let source_epoch=row.column_text(3)?;
+    let source_cursor=row.column_text(4)?;
+    if row.step_row()? {return Err(RpcJournalError::Conflict);}drop(row);
+    if requires!="1" || !matches!(phase.as_str(),"WRITTEN"|"OBSERVED") {
+        return Err(RpcJournalError::Denied);
+    }
+    let token=grok_host_server_id(domain,session,generation,open_id,open_bytes,ticket,nonce);
+    let Json::Object(fields)=Parser::parse(std::str::from_utf8(&command).map_err(|error|
+        RpcJournalError::AcpDecode {reason:format!("registration UTF-8: {error}"),
+            raw_frame:command.clone()})?.trim_end_matches('\n'))? else {
+        return Err(RpcJournalError::Denied);
+    };
+    let Some(Json::Object(params))=fields.get(&JsonString::from_str("params")) else {
+        return Err(RpcJournalError::Denied);
+    };
+    let Some(Json::String(cwd))=params.get(&JsonString::from_str("cwd")) else {
+        return Err(RpcJournalError::Denied);
+    };
+    let cwd=cwd.to_well_formed_string().ok_or(RpcJournalError::Denied)?;
+    let expected=commands::encode_grok_session_new_host_mcp(&acp::RpcId::Number(3),
+        &cwd,&token).map_err(RpcJournalError::AcpEncode)?;
+    if expected!=command {return Err(RpcJournalError::Denied);}
+    let native_session_id=if phase=="OBSERVED" {
+        if source_epoch!=nonce {return Err(RpcJournalError::Denied);}
+        let source=ledger::read_captured_raw_source(db,operation,&source_epoch,&source_cursor)?
+            .ok_or(RpcJournalError::Denied)?;
+        if source.state!=RawSourceState::NoEvent
+            || source.no_event_reason.as_deref()!=Some(ACP_RESPONSE_NO_EVENT)
+            || source.domain_id!=domain || source.session_id!=session
+            || source.generation!=generation || source.process_ticket!=ticket
+            || source.custodian_nonce!=nonce {return Err(RpcJournalError::Denied);}
+        let id=acp::RpcId::Number(3);
+        let pending=acp::Pending {id:&id,method:acp::PendingMethod::SessionNew,
+            requested_session_id:None};
+        match acp::decode(&source.raw_bytes,Some(&pending)).map_err(|error|
+            RpcJournalError::AcpDecode {reason:error.reason,raw_frame:error.raw_frame})? {
+            acp::Observation::SessionNew {session_id,..}=>Some(session_id),
+            _=>return Err(RpcJournalError::Denied),
+        }
+    } else {None};
+    if require_ack && native_session_id.is_none() {return Err(RpcJournalError::Denied);}
+    Ok(Some(GrokHostRegistration {server_id:token,native_session_id,
+        step_id:"thread-start".into(),
+        command_sha256:crate::store::digest::sha256_hex(&command)}))
+}
+
+const GROK_MCP_BOOTSTRAP_NO_EVENT:&str="HOST_GROK_MCP_BOOTSTRAP";
+
+pub(crate) fn grok_mcp_bootstrap_step_id(source:&RawSourceKey,raw:&[u8],wire:&[u8])
+    ->Result<String> {
+    let cursor=source.source_cursor.parse::<u64>().map_err(|error|
+        RpcJournalError::Authority(crate::store::orchestration::OrchestrationError::V37StoreFailure(
+            format!("Grok MCP source cursor {}: {error}",source.source_cursor))))?;
+    if cursor==0 || cursor>i64::MAX as u64 || cursor.to_string()!=source.source_cursor {
+        return Err(RpcJournalError::Denied);
+    }
+    let source_digest=crate::store::digest::sha256_hex(raw);
+    let wire_digest=crate::store::digest::sha256_hex(wire);
+    let basis=Json::Array([source.operation_id.as_str(),source.source_epoch.as_str(),
+        source.source_cursor.as_str(),source_digest.as_str(),wire_digest.as_str()]
+        .iter().map(|value|
+            Json::String(JsonString::from_str(value))).collect()).canonical();
+    Ok(format!("gmcp-{cursor}-{}",crate::store::digest::sha256_hex(basis.as_bytes())))
+}
+
+fn grok_mcp_bootstrap_bound(db:&VerifiedDatabaseConnection<'_>,
+    step:&GrokMcpBootstrapStep<'_>,operation:&str,require_pending:bool)->Result<()> {
+    if step.source.operation_id!=operation
+        || step.source.source_epoch!=step.custody.custodian_nonce
+        || !raw(step.wire) || !step.wire.ends_with(b"\n") {
+        return Err(RpcJournalError::Denied);
+    }
+    let registration=observed_grok_host_registration(db,step.domain_id,step.session_id,
+        operation,&step.custody.binding.generation,step.open_request_id,
+        step.open_request_bytes,step.custody.ticket.opaque(),
+        &step.custody.custodian_nonce,false)?.ok_or(RpcJournalError::Denied)?;
+    let source=ledger::read_captured_raw_source(db,operation,&step.source.source_epoch,
+        &step.source.source_cursor)?.ok_or(RpcJournalError::Denied)?;
+    if source.domain_id!=step.domain_id || source.session_id!=step.session_id
+        || source.generation!=step.custody.binding.generation
+        || source.process_ticket!=step.custody.ticket.opaque()
+        || source.custodian_nonce!=step.custody.custodian_nonce
+        || (require_pending && source.state!=RawSourceState::Pending) {
+        return Err(RpcJournalError::Denied);
+    }
+    let request=acp::decode_grok_mcp(&source.raw_bytes,&registration.server_id)
+        .map_err(|error|RpcJournalError::AcpDecode {
+            reason:error.reason,raw_frame:error.raw_frame})?
+        .ok_or(RpcJournalError::Denied)?;
+    if !matches!(request.kind,grok_mcp::Kind::Initialize {..}|grok_mcp::Kind::ToolsList)
+        || commands::encode_grok_mcp_reply(&request,commands::GrokMcpReply::Bootstrap)
+            .map_err(RpcJournalError::AcpEncode)?!=step.wire
+        || grok_mcp_bootstrap_step_id(step.source,&source.raw_bytes,step.wire)?!=step.step_id {
+        return Err(RpcJournalError::Denied);
+    }
+    let other=Statement::prepare(db.as_ptr(),
+        "SELECT source_cursor FROM main.v37_ledger_raw_source WHERE operation_id=?1
+           AND source_epoch=?2 AND source_cursor<>?3")?;
+    other.bind_text(1,operation)?;other.bind_text(2,&step.source.source_epoch)?;
+    other.bind_text(3,&step.source.source_cursor)?;
+    while other.step_row()? {
+        let row=ledger::read_captured_raw_source(db,operation,&step.source.source_epoch,
+            &other.column_text(0)?)?.ok_or(RpcJournalError::Denied)?;
+        if let Ok(Some(prior))=acp::decode_grok_mcp(&row.raw_bytes,
+            &registration.server_id) {
+            if prior.outer_id==request.outer_id || prior.inner_id==request.inner_id {
+                return Err(RpcJournalError::Conflict);
+            }
+        }
+    }
+    let prefix=format!("gmcp-{}-",step.source.source_cursor);
+    let duplicate=Statement::prepare(db.as_ptr(),
+        "SELECT step_id FROM main.gogoke_v37_rpc_steps WHERE domain_id=?1
+           AND session_id=?2 AND process_operation_id=?3 AND substr(step_id,1,?4)=?5")?;
+    duplicate.bind_text(1,step.domain_id)?;duplicate.bind_text(2,step.session_id)?;
+    duplicate.bind_text(3,operation)?;
+    duplicate.bind_text(4,&prefix.len().to_string())?;
+    duplicate.bind_text(5,&prefix)?;
+    while duplicate.step_row()? {
+        if duplicate.column_text(0)?!=step.step_id {return Err(RpcJournalError::Conflict);}
+    }
+    let unresolved=Statement::prepare(db.as_ptr(),
+        "SELECT step_id,phase,CAST(requires_response AS TEXT) FROM
+           main.gogoke_v37_rpc_steps WHERE domain_id=?1 AND session_id=?2
+           AND process_operation_id=?3 AND (phase IN ('INTENT','UNKNOWN')
+             OR (phase='WRITTEN' AND requires_response=1))")?;
+    unresolved.bind_text(1,step.domain_id)?;unresolved.bind_text(2,step.session_id)?;
+    unresolved.bind_text(3,operation)?;
+    while unresolved.step_row()? {
+        let id=unresolved.column_text(0)?;
+        let phase=unresolved.column_text(1)?;
+        if id==step.step_id {continue;}
+        if id==registration.step_id && phase=="WRITTEN" {continue;}
+        if let Some(vendor_session)=registration.native_session_id.as_deref() {
+            let prompt=grok_initial_prompt(db,step.domain_id,step.session_id,
+                operation,&step.custody.binding.generation,step.custody.ticket.opaque(),
+                &step.custody.custodian_nonce,vendor_session,None);
+            match prompt {
+                Ok(prompt) if id==prompt.step_id && phase=="WRITTEN"=>continue,
+                Err(RpcJournalError::Denied)=>{},
+                Err(error)=>return Err(error),
+                _=>{},
+            }
+        }
+        return Err(RpcJournalError::Unknown);
+    }
+    Ok(())
+}
+
+pub(crate) fn prepare_grok_mcp_bootstrap(db:&mut VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,step:&GrokMcpBootstrapStep<'_>)->Result<PreparedStep> {
+    transact(db,|db| {
+        check_owner_in_current_transaction(db,owner)?;
+        original_open(db,&step.fields())?;
+        let (operation,driver)=assert_current_binding(db,&step.fields(),&["ACTIVE"],false)?;
+        if driver!="grok" {return Err(RpcJournalError::Denied);}
+        grok_mcp_bootstrap_bound(db,step,&operation,false)?;
+        if let Some(phase)=same_row(db,&step.fields(),&operation,step.wire)? {
+            let source=ledger::read_captured_raw_source(db,&step.source.operation_id,
+                &step.source.source_epoch,&step.source.source_cursor)?
+                .ok_or(RpcJournalError::Denied)?;
+            if !(phase==Phase::Written && source.state==RawSourceState::NoEvent
+                    && source.no_event_reason.as_deref()==Some(GROK_MCP_BOOTSTRAP_NO_EVENT)
+                || matches!(phase,Phase::Intent|Phase::Unknown)
+                    && source.state==RawSourceState::Pending) {
+                return Err(RpcJournalError::Conflict);
+            }
+            return Ok(PreparedStep {bytes:step.wire.to_vec(),
+                disposition:Disposition::Existing(phase)});
+        }
+        grok_mcp_bootstrap_bound(db,step,&operation,true)?;
+        insert_intent(db,&step.fields(),&operation,step.wire,false)?;
+        Ok(PreparedStep {bytes:step.wire.to_vec(),disposition:Disposition::NewWrite})
+    })
+}
+
+fn transition_grok_mcp_bootstrap(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,
+    step:&GrokMcpBootstrapStep<'_>,phase:Phase,error:Option<&str>)->Result<()> {
+    transact(db,|db| {
+        check_owner_in_current_transaction(db,owner)?;
+        original_open(db,&step.fields())?;
+        let (operation,driver)=assert_current_binding(db,&step.fields(),
+            if phase==Phase::Unknown {&["ACTIVE","UNKNOWN"]} else {&["ACTIVE"]},
+            phase==Phase::Unknown)?;
+        if driver!="grok" {return Err(RpcJournalError::Denied);}
+        grok_mcp_bootstrap_bound(db,step,&operation,false)?;
+        transition_row(db,&step.fields(),&operation,step.wire,phase,error)?;
+        if phase==Phase::Written {
+            ledger::resolve_raw_source_no_event(db,&step.source.operation_id,
+                &step.source.source_epoch,&step.source.source_cursor,
+                GROK_MCP_BOOTSTRAP_NO_EVENT)?;
+        }
+        Ok(())
+    })
+}
+pub(crate) fn mark_grok_mcp_bootstrap_written(db:&mut VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,step:&GrokMcpBootstrapStep<'_>)->Result<()> {
+    transition_grok_mcp_bootstrap(db,owner,step,Phase::Written,None)
+}
+pub(crate) fn mark_grok_mcp_bootstrap_unknown(db:&mut VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,step:&GrokMcpBootstrapStep<'_>,original:&str)->Result<()> {
+    if original.is_empty() || original.len()>4096 {
+        return Err(RpcJournalError::Invalid("original error"));
+    }
+    transition_grok_mcp_bootstrap(db,owner,step,Phase::Unknown,Some(original))
+}
+
+pub(crate) fn grok_mcp_display_matches(fields:&std::collections::BTreeMap<JsonString,Json>,
+    input:&grok_mcp::AskUserInput)->bool {
+    if fields.len()!=7 || !matches!(fields.get(&JsonString::from_str("allowFreeAnswer")),
+        Some(Json::Bool(true))) {return false;}
+    let Some(Json::Array(questions))=fields.get(&JsonString::from_str("questions")) else {
+        return false;
+    };
+    let [Json::Object(question)]=questions.as_slice() else {return false};
+    if question.len()!=4
+        || !matches!(question.get(&JsonString::from_str("id")),Some(Json::String(value))
+            if value.to_well_formed_string().as_deref()==Some("host0"))
+        || !matches!(question.get(&JsonString::from_str("header")),Some(Json::String(value))
+            if value.to_well_formed_string().as_deref()==Some(input.header.as_str()))
+        || !matches!(question.get(&JsonString::from_str("question")),Some(Json::String(value))
+            if value.to_well_formed_string().as_deref()==Some(input.question.as_str())) {
+        return false;
+    }
+    let Some(Json::Array(options))=question.get(&JsonString::from_str("options")) else {
+        return false;
+    };
+    if options.len()!=input.options.len() {return false;}
+    options.iter().zip(&input.options).all(|(option,wanted)|
+        matches!(option,Json::Object(fields) if fields.len()==2
+            && matches!(fields.get(&JsonString::from_str("label")),Some(Json::String(value))
+                if value.to_well_formed_string().as_deref()==Some(wanted.label.as_str()))
+            && matches!(fields.get(&JsonString::from_str("description")),Some(Json::String(value))
+                if value.to_well_formed_string().as_deref()==Some(wanted.description.as_str()))))
+}
+
+fn grok_mcp_question_bound(db:&VerifiedDatabaseConnection<'_>,
+    step:&GrokMcpQuestionStep<'_>,operation:&str)->Result<()> {
+    if step.source.operation_id!=operation
+        || step.source.source_epoch!=step.custody.custodian_nonce
+        || !raw(step.wire) || !step.wire.ends_with(b"\n") {
+        return Err(RpcJournalError::Denied);
+    }
+    let registration=observed_grok_host_registration(db,step.domain_id,step.session_id,
+        operation,&step.custody.binding.generation,step.open_request_id,
+        step.open_request_bytes,step.custody.ticket.opaque(),
+        &step.custody.custodian_nonce,true)?.ok_or(RpcJournalError::Denied)?;
+    let vendor_session=registration.native_session_id.as_deref().ok_or(RpcJournalError::Denied)?;
+    let prompt=grok_initial_prompt(db,step.domain_id,step.session_id,operation,
+        &step.custody.binding.generation,step.custody.ticket.opaque(),
+        &step.custody.custodian_nonce,vendor_session,None)?;
+    if prompt.request_bytes!=step.prompt_request_bytes {return Err(RpcJournalError::Denied);}
+    let source=ledger::read_captured_raw_source(db,operation,
+        &step.source.source_epoch,&step.source.source_cursor)?
+        .ok_or(RpcJournalError::Denied)?;
+    if source.state!=RawSourceState::NoEvent
+        || source.no_event_reason.as_deref()!=Some("HOST_GROK_MCP_QUESTION_CARD")
+        || source.domain_id!=step.domain_id || source.session_id!=step.session_id
+        || source.generation!=step.custody.binding.generation
+        || source.process_ticket!=step.custody.ticket.opaque()
+        || source.custodian_nonce!=step.custody.custodian_nonce {
+        return Err(RpcJournalError::Denied);
+    }
+    let request=acp::decode_grok_mcp(&source.raw_bytes,&registration.server_id)
+        .map_err(|error|RpcJournalError::AcpDecode {
+            reason:error.reason,raw_frame:error.raw_frame})?
+        .ok_or(RpcJournalError::Denied)?;
+    let grok_mcp::Kind::AskUser(input)=&request.kind else {
+        return Err(RpcJournalError::Denied);
+    };
+    let basis=format!("{}\n{}\n{}\n{}\n{}",step.domain_id,step.session_id,
+        step.source.operation_id,step.source.source_epoch,step.source.source_cursor);
+    if step.card_id!=format!("card{}",crate::store::digest::sha256_hex(basis.as_bytes()))
+        || step.step_id!=format!("qanswer{}",crate::store::digest::sha256_hex(
+            format!("{}\n{}\n{}",step.domain_id,step.session_id,
+                step.answer_request_id).as_bytes())) {
+        return Err(RpcJournalError::Denied);
+    }
+    let card=Statement::prepare(db.as_ptr(),
+        "SELECT c.vendor_request_id,c.vendor_item_id,c.vendor_thread_id,c.turn_id,
+                c.question_payload,c.question_id,c.question_header,c.question_text,
+                c.seat_id,c.generation,c.answer,c.answer_kind,o.answer,o.answer_kind
+           FROM main.gogoke_v37_qcard_native c
+           JOIN main.gogoke_v37_qcard_native_operations o
+             ON o.domain_id=c.domain_id AND o.card_id=c.card_id
+          WHERE c.domain_id=?1 AND c.card_id=?2 AND o.request_id=?3
+            AND c.state='ANSWER_UNKNOWN' AND o.state='UNKNOWN'")?;
+    card.bind_text(1,step.domain_id)?;card.bind_text(2,step.card_id)?;
+    card.bind_text(3,step.answer_request_id)?;
+    if !card.step_row()? {return Err(RpcJournalError::Denied);}
+    let vendor_id=card.column_text(0)?;let item=card.column_text(1)?;
+    let thread=card.column_text(2)?;let turn=card.column_text(3)?;
+    let payload=card.column_text(4)?;let question_id=card.column_text(5)?;
+    let header=card.column_text(6)?;let question=card.column_text(7)?;
+    let seat=card.column_text(8)?;let generation=card.column_text(9)?;
+    let answer=card.column_text(10)?;let answer_kind=card.column_text(11)?;
+    let op_answer=card.column_text(12)?;let op_kind=card.column_text(13)?;
+    if card.step_row()? {return Err(RpcJournalError::Conflict);}drop(card);
+    let composite=Json::Array(vec![Json::String(JsonString::from_str(&registration.server_id)),
+        match &request.outer_id {acp::RpcId::Number(id)=>Json::Number(id.to_string()),
+            acp::RpcId::String(id)=>Json::String(JsonString::from_str(id))},
+        match &request.inner_id {acp::RpcId::Number(id)=>Json::Number(id.to_string()),
+            acp::RpcId::String(id)=>Json::String(JsonString::from_str(id))}]).canonical();
+    let reference=format!("gmpc_{}",crate::store::digest::sha256_hex(composite.as_bytes()));
+    if vendor_id!=Json::String(JsonString::from_str(&reference)).canonical()
+        || item!=reference || thread!=vendor_session || turn!=prompt.request_id
+        || question_id!="host0" || header!=input.header || question!=input.question
+        || generation!=step.custody.binding.generation || answer_kind!="WIRE"
+        || op_kind!="WIRE" || answer!=op_answer
+        || answer.as_bytes()!=&step.wire[..step.wire.len()-1] {
+        return Err(RpcJournalError::Denied);
+    }
+    let parsed_payload=Parser::parse(&payload)?;
+    if parsed_payload.canonical()!=payload {return Err(RpcJournalError::Denied);}
+    let Json::Object(payload_fields)=parsed_payload else {
+        return Err(RpcJournalError::Denied);
+    };
+    let field=|name:&str|payload_fields.get(&JsonString::from_str(name));
+    if !grok_mcp_display_matches(&payload_fields,input)
+        || !matches!(field("provider"),Some(Json::String(value))
+            if value.to_well_formed_string().as_deref()==Some("grok"))
+        || !matches!(field("cardOrigin"),Some(Json::String(value))
+            if value.to_well_formed_string().as_deref()==Some("host-mcp"))
+        || !matches!(field("bindingVersion"),Some(Json::Number(value)) if value=="1")
+        || !matches!(field("recommendedIndex"),Some(Json::Number(value))
+            if value==&input.recommended_index.to_string()) {
+        return Err(RpcJournalError::Denied);
+    }
+    let Some(Json::Object(payload_binding))=field("binding") else {
+        return Err(RpcJournalError::Denied);
+    };
+    if payload_binding.len()!=18 {return Err(RpcJournalError::Denied);}
+    let options=Statement::prepare(db.as_ptr(),
+        "SELECT option_id,label,description FROM main.gogoke_v37_qcard_native_options
+           WHERE domain_id=?1 AND card_id=?2 ORDER BY CAST(ordinal AS INTEGER),option_id")?;
+    options.bind_text(1,step.domain_id)?;options.bind_text(2,step.card_id)?;
+    for (index,wanted) in input.options.iter().enumerate() {
+        if !options.step_row()? || options.column_text(0)?!=format!("option{index}")
+            || options.column_text(1)?!=wanted.label
+            || options.column_text(2)?!=wanted.description {
+            return Err(RpcJournalError::Denied);
+        }
+    }
+    if options.step_row()? {return Err(RpcJournalError::Denied);}
+    let expected=[("serverId",registration.server_id.as_str()),
+        ("registrationStepId",registration.step_id.as_str()),
+        ("registrationCommandSha256",registration.command_sha256.as_str()),
+        ("hostSessionId",step.session_id),("openRequestId",step.open_request_id),
+        ("generation",generation.as_str()),("processOperationId",operation),
+        ("hostPromptRequestId",prompt.request_id.as_str()),
+        ("promptStepId",prompt.step_id.as_str()),
+        ("sourceOperationId",step.source.operation_id.as_str()),
+        ("sourceEpoch",step.source.source_epoch.as_str()),
+        ("sourceCursor",step.source.source_cursor.as_str()),
+        ("bindingScope","INITIAL_H_PROMPT")];
+    for (name,wanted) in expected {
+        if !matches!(payload_binding.get(&JsonString::from_str(name)),
+            Some(Json::String(value)) if value.to_well_formed_string().as_deref()==Some(wanted)) {
+            return Err(RpcJournalError::Denied);
+        }
+    }
+    let digests=[("hostPromptRequestSha256",crate::store::digest::sha256_hex(&prompt.request_bytes)),
+        ("sourceFrameSha256",crate::store::digest::sha256_hex(&source.raw_bytes))];
+    for (name,wanted) in digests {
+        if !matches!(payload_binding.get(&JsonString::from_str(name)),
+            Some(Json::String(value)) if value.to_well_formed_string().as_deref()==Some(wanted.as_str())) {
+            return Err(RpcJournalError::Denied);
+        }
+    }
+    let typed=|id:&acp::RpcId|match id {acp::RpcId::Number(value)=>Json::Number(value.to_string()),
+        acp::RpcId::String(value)=>Json::String(JsonString::from_str(value))};
+    for (name,id) in [("promptRpcId",&prompt.rpc_id),("outerRpcId",&request.outer_id),
+        ("innerRpcId",&request.inner_id)] {
+        if payload_binding.get(&JsonString::from_str(name)).map(Json::canonical)
+            !=Some(typed(id).canonical()) {return Err(RpcJournalError::Denied);}
+    }
+    let Json::Object(outer)=Parser::parse(&answer)? else {return Err(RpcJournalError::Denied)};
+    let Some(Json::Object(outer_result))=outer.get(&JsonString::from_str("result")) else {
+        return Err(RpcJournalError::Denied);
+    };
+    let Some(Json::Object(result))=outer_result.get(&JsonString::from_str("result")) else {
+        return Err(RpcJournalError::Denied);
+    };
+    let Some(Json::Array(content))=result.get(&JsonString::from_str("content")) else {
+        return Err(RpcJournalError::Denied);
+    };
+    let [Json::Object(item)]=content.as_slice() else {return Err(RpcJournalError::Denied)};
+    let Some(Json::String(text))=item.get(&JsonString::from_str("text")) else {
+        return Err(RpcJournalError::Denied);
+    };
+    let answer_json=text.to_well_formed_string().ok_or(RpcJournalError::Denied)?;
+    let Json::Object(answer_object)=Parser::parse(&answer_json)? else {
+        return Err(RpcJournalError::Denied);
+    };
+    if answer_object.len()!=1 {return Err(RpcJournalError::Denied);}
+    let Some(Json::String(answer_text))=answer_object.get(&JsonString::from_str("answer")) else {
+        return Err(RpcJournalError::Denied);
+    };
+    let answer_text=answer_text.to_well_formed_string().ok_or(RpcJournalError::Denied)?;
+    let expected_wire=commands::encode_grok_mcp_reply(&request,
+        commands::GrokMcpReply::Answer(&answer_text)).map_err(RpcJournalError::AcpEncode)?;
+    if expected_wire!=step.wire {return Err(RpcJournalError::Denied);}
+    let unresolved=Statement::prepare(db.as_ptr(),
+        "SELECT step_id FROM main.gogoke_v37_rpc_steps WHERE domain_id=?1
+           AND session_id=?2 AND process_operation_id=?3
+           AND (phase IN ('INTENT','UNKNOWN') OR
+                (phase='WRITTEN' AND requires_response=1))")?;
+    unresolved.bind_text(1,step.domain_id)?;unresolved.bind_text(2,step.session_id)?;
+    unresolved.bind_text(3,operation)?;
+    let mut prompt_count=0;
+    while unresolved.step_row()? {
+        let id=unresolved.column_text(0)?;
+        if id==prompt.step_id {prompt_count+=1;}
+        else if id!=step.step_id {return Err(RpcJournalError::Unknown);}
+    }
+    if prompt_count!=1 {return Err(RpcJournalError::Unknown);}
+    let captured=Statement::prepare(db.as_ptr(),
+        "SELECT source_cursor FROM main.v37_ledger_raw_source WHERE operation_id=?1
+           AND source_epoch=?2 AND source_cursor<>?3")?;
+    captured.bind_text(1,operation)?;captured.bind_text(2,&step.source.source_epoch)?;
+    captured.bind_text(3,&step.source.source_cursor)?;
+    while captured.step_row()? {
+        let other=ledger::read_captured_raw_source(db,operation,
+            &step.source.source_epoch,&captured.column_text(0)?)?
+            .ok_or(RpcJournalError::Denied)?;
+        if let Ok(Some(other))=acp::decode_grok_mcp(&other.raw_bytes,
+            &registration.server_id) {
+            if other.outer_id==request.outer_id || other.inner_id==request.inner_id {
+                return Err(RpcJournalError::Conflict);
+            }
+        }
+        let pending=acp::Pending {id:&prompt.rpc_id,
+            method:acp::PendingMethod::SessionPrompt,requested_session_id:None};
+        if matches!(acp::decode(&other.raw_bytes,Some(&pending)),
+            Ok(acp::Observation::Prompt {..}|acp::Observation::RemoteError {..})) {
+            return Err(RpcJournalError::Denied);
+        }
+    }
+    let seat_row=Statement::prepare(db.as_ptr(),
+        "SELECT seat_id FROM main.gogoke_v37_h_process_episode WHERE domain_id=?1
+           AND session_id=?2 AND generation=?3 AND process_operation_id=?4")?;
+    for (index,value) in [step.domain_id,step.session_id,
+        step.custody.binding.generation.as_str(),operation].iter().enumerate() {
+        seat_row.bind_text((index+1) as i32,value)?;
+    }
+    if !seat_row.step_row()? || seat_row.column_text(0)?!=seat || seat_row.step_row()? {
+        return Err(RpcJournalError::Denied);
+    }
+    Ok(())
+}
+
+pub(crate) fn prepare_grok_mcp_question(db:&mut VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,step:&GrokMcpQuestionStep<'_>)->Result<PreparedStep> {
+    transact(db,|db| {
+        check_owner_in_current_transaction(db,owner)?;
+        original_open(db,&step.fields())?;
+        let (operation,driver)=assert_current_binding(db,&step.fields(),&["ACTIVE"],false)?;
+        if driver!="grok" {return Err(RpcJournalError::Denied);}
+        grok_mcp_question_bound(db,step,&operation)?;
+        if let Some(phase)=same_row(db,&step.fields(),&operation,step.wire)? {
+            return Ok(PreparedStep {bytes:step.wire.to_vec(),
+                disposition:Disposition::Existing(phase)});
+        }
+        insert_intent(db,&step.fields(),&operation,step.wire,false)?;
+        Ok(PreparedStep {bytes:step.wire.to_vec(),disposition:Disposition::NewWrite})
+    })
+}
+fn transition_grok_mcp_question(db:&mut VerifiedDatabaseConnection<'_>,owner:&OwnerIssuer,
+    step:&GrokMcpQuestionStep<'_>,phase:Phase,error:Option<&str>)->Result<()> {
+    transact(db,|db| {
+        check_owner_in_current_transaction(db,owner)?;
+        original_open(db,&step.fields())?;
+        let (operation,driver)=assert_current_binding(db,&step.fields(),
+            if phase==Phase::Unknown {&["ACTIVE","UNKNOWN"]} else {&["ACTIVE"]},
+            phase==Phase::Unknown)?;
+        if driver!="grok" {return Err(RpcJournalError::Denied);}
+        grok_mcp_question_bound(db,step,&operation)?;
+        transition_row(db,&step.fields(),&operation,step.wire,phase,error)
+    })
+}
+pub(crate) fn mark_grok_mcp_question_written(db:&mut VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,step:&GrokMcpQuestionStep<'_>)->Result<()> {
+    transition_grok_mcp_question(db,owner,step,Phase::Written,None)
+}
+pub(crate) fn mark_grok_mcp_question_unknown(db:&mut VerifiedDatabaseConnection<'_>,
+    owner:&OwnerIssuer,step:&GrokMcpQuestionStep<'_>,original:&str)->Result<()> {
+    if original.is_empty() || original.len()>4096 {
+        return Err(RpcJournalError::Invalid("original error"));
+    }
+    transition_grok_mcp_question(db,owner,step,Phase::Unknown,Some(original))
+}
+
 fn assert_acp_binding(db: &VerifiedDatabaseConnection<'_>, step: &AcpStep<'_>,
     states: &[&str], allow_unknown_claim: bool) -> Result<(String,String,bool)> {
     if let Some((operation,driver))=candidate_binding_fields(db,&step.fields(),states)? {
@@ -1674,6 +2360,24 @@ fn assert_acp_binding(db: &VerifiedDatabaseConnection<'_>, step: &AcpStep<'_>,
     let (operation,driver)=assert_current_binding(db,&step.fields(),states,
         allow_unknown_claim)?;
     acp_vendor(&driver)?;
+    if let commands::AcpCommand::SessionNewHostMcp {server_id,..}=step.command {
+        if driver!="grok" || step.step_id!="thread-start"
+            || *server_id!=grok_host_server_id(step.domain_id,step.session_id,
+                &step.custody.binding.generation,step.open_request_id,
+                step.open_request_bytes,step.custody.ticket.opaque(),
+                &step.custody.custodian_nonce) {
+            return Err(RpcJournalError::Denied);
+        }
+        let fresh=Statement::prepare(db.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_h_process_episode WHERE domain_id=?1
+               AND session_id=?2 AND request_id=?3 AND generation=?4
+               AND process_operation_id=?5 AND old_generation IS NULL")?;
+        for (index,value) in [step.domain_id,step.session_id,step.open_request_id,
+            step.custody.binding.generation.as_str(),operation.as_str()].iter().enumerate() {
+            fresh.bind_text((index+1) as i32,value)?;
+        }
+        if !fresh.step_row()? || fresh.step_row()? {return Err(RpcJournalError::Denied);}
+    }
     Ok((operation,driver,false))
 }
 
@@ -1725,6 +2429,7 @@ fn acp_command_copy<'a>(command: &commands::AcpCommand<'a>)
     match command {
         C::Initialize { client_version } => C::Initialize { client_version },
         C::SessionNew { cwd } => C::SessionNew { cwd },
+        C::SessionNewHostMcp { cwd, server_id } => C::SessionNewHostMcp { cwd, server_id },
         C::SessionLoad { session_id, cwd, advertised } =>
             C::SessionLoad { session_id, cwd, advertised: *advertised },
         C::SessionResume { session_id, cwd, advertised } =>
@@ -1748,6 +2453,7 @@ fn acp_pending<'a>(step: &'a AcpStep<'_>) -> Result<Option<acp::Pending<'a>>> {
     let (method, requested_session_id) = match step.command {
         C::Initialize { .. } => (acp::PendingMethod::Initialize, None),
         C::SessionNew { .. } => (acp::PendingMethod::SessionNew, None),
+        C::SessionNewHostMcp { .. } => (acp::PendingMethod::SessionNew, None),
         C::SessionLoad { session_id, .. } =>
             (acp::PendingMethod::SessionLoad, Some(*session_id)),
         C::SessionResume { session_id, .. } =>
@@ -3603,6 +4309,60 @@ mod tests {
     use crate::store::same_open::{create_new, route_b_test_guard};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn grok_initial_prompt_counts_all_attempts_but_historical_write_stays_readable() {
+        let _guard=route_b_test_guard();
+        let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("gogoke-gmcp-initial-{}-{stamp}",std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root=RootLock::acquire(&path).unwrap();
+        let mut db=create_new(&root,&path.join("state.sqlite")).unwrap();
+        initialize_schema(&mut db).unwrap();
+        db.execute("CREATE TABLE gogoke_v37_h_stdin_journal(domain_id TEXT,session_id TEXT,
+            process_operation_id TEXT,generation TEXT,operation TEXT,request_id TEXT,
+            request_hex TEXT,phase TEXT,ticket TEXT,custodian_nonce TEXT) STRICT").unwrap();
+        let request=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send","requestId":"sendA","targetId":"sessionA","domainId":"projectA","expectedRevision":"3","payload":{"body":"hello","generation":"1"}}
+"#;
+        let digest=crate::store::digest::sha256_hex(request);
+        let step_id=format!("acp-send-{}",&digest[..40]);
+        let rpc_id=acp::RpcId::String(format!("gogoke-acp-send-{}",&digest[..40]));
+        let command=commands::encode_acp(commands::Vendor::Grok,Some(&rpc_id),
+            commands::AcpCommand::Prompt {session_id:"nativeS",text:"hello"}).unwrap();
+        let insert=Statement::prepare(db.as_ptr(),
+            "INSERT INTO gogoke_v37_h_stdin_journal VALUES('projectA','sessionA','process',
+               '1','send','sendA',?1,'PREPARED','ticket','nonce')").unwrap();
+        insert.bind_text(1,&hex(request)).unwrap();insert.step_done().unwrap();drop(insert);
+        let insert=Statement::prepare(db.as_ptr(),
+            "INSERT INTO gogoke_v37_rpc_steps(domain_id,session_id,open_request_id,step_id,
+               process_operation_id,ticket,custodian_nonce,pid,creation_time,image_path,
+               binary_digest,profile_id,generation,command_hex,requires_response,phase)
+               VALUES('projectA','sessionA','openA',?1,'process','ticket','nonce','1','2',
+               'image','digest','profile','1',?2,1,'WRITTEN')").unwrap();
+        insert.bind_text(1,&step_id).unwrap();insert.bind_text(2,&hex(&command)).unwrap();
+        insert.step_done().unwrap();drop(insert);
+        let fresh=||grok_initial_prompt(&db,"projectA","sessionA","process","1",
+            "ticket","nonce","nativeS",None);
+        assert_eq!(fresh().unwrap().request_bytes,request);
+        let second=String::from_utf8(request.to_vec()).unwrap().replace("sendA","sendB");
+        let insert=Statement::prepare(db.as_ptr(),
+            "INSERT INTO gogoke_v37_h_stdin_journal VALUES('projectA','sessionA','process',
+               '1','send','sendB',?1,'UNKNOWN','ticket','nonce')").unwrap();
+        insert.bind_text(1,&hex(second.as_bytes())).unwrap();
+        insert.step_done().unwrap();drop(insert);
+        assert!(fresh().is_err(),"a second H send row consumes first-prompt eligibility");
+        db.execute("UPDATE gogoke_v37_h_stdin_journal SET phase='RECEIPTED' WHERE request_id='sendA'").unwrap();
+        db.execute("UPDATE gogoke_v37_rpc_steps SET phase='OBSERVED',source_epoch='nonce',
+            source_cursor='1' WHERE step_id LIKE 'acp-send-%'").unwrap();
+        let prior=grok_initial_prompt(&db,"projectA","sessionA","process","1",
+            "ticket","nonce","nativeS",Some("sendA")).unwrap();
+        assert_eq!(prior.request_id,"sendA","later H sends cannot erase a proven old write");
+        db.execute("UPDATE gogoke_v37_h_stdin_journal SET phase='UNKNOWN' WHERE request_id='sendA'").unwrap();
+        assert_eq!(grok_initial_prompt(&db,"projectA","sessionA","process","1",
+            "ticket","nonce","nativeS",Some("sendA")).unwrap().request_id,"sendA",
+            "historical source remains inspectable after an observation UNKNOWN");
+        db.close_checked().unwrap();drop(root);fs::remove_dir_all(path).unwrap();
+    }
 
     fn scalar(db: &VerifiedDatabaseConnection<'_>, sql: &str) -> String {
         let query=Statement::prepare(db.as_ptr(),sql).unwrap();

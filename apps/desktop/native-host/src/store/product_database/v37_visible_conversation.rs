@@ -295,8 +295,10 @@ impl<'root> ProductDatabase<'root> {
             association.incarnation.as_str(),association.instance.as_str(),association.session.as_str(),
             association.authorization.as_str()].iter().enumerate() {seat.bind_text((index+1) as i32,value)?;}
         if !seat.step_row()? {return Err(OrchestrationError::AccessDenied);}
+        let driver=seat.column_text(2)?;let version=seat.column_text(3)?;
         if decimal(&seat.column_text(0)?)?<decimal(&association.authorization)? || seat.column_text(1)?=="RECLAIMED"
-            || seat.column_text(2)?!="codex" || seat.column_text(3)?!="0.160.0" || seat.step_row()? {
+            || !matches!((driver.as_str(),version.as_str()),("codex","0.160.0")|("grok","1.0.41"))
+            || seat.step_row()? {
             return Err(OrchestrationError::OperationConflict);
         }
         drop(seat);
@@ -326,15 +328,28 @@ impl<'root> ProductDatabase<'root> {
             association.seat.as_str(),association.incarnation.as_str()].iter().enumerate() {wt.bind_text((index+1) as i32,value)?;}
         if !wt.step_row()? || wt.step_row()? {return Err(OrchestrationError::OperationConflict);}
         let original=Statement::prepare(self.connection.as_ptr(),
-            "SELECT e.request_id,e.generation,e.process_operation_id,r.rowid,s.ticket,s.custodian_nonce FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_v37_rpc_steps s ON s.domain_id=e.domain_id AND s.session_id=e.session_id AND s.generation=e.generation AND s.process_operation_id=e.process_operation_id AND s.open_request_id=e.request_id AND s.step_id='thread-start' AND s.phase='OBSERVED' JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce AND r.domain_id=s.domain_id AND r.session_id=s.session_id AND r.generation=s.generation AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor WHERE e.domain_id=?1 AND e.session_id=?2 AND e.old_generation IS NULL")?;
+            "SELECT e.request_id,e.generation,e.process_operation_id,r.rowid,s.ticket,s.custodian_nonce,e.raw_hex FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_v37_rpc_steps s ON s.domain_id=e.domain_id AND s.session_id=e.session_id AND s.generation=e.generation AND s.process_operation_id=e.process_operation_id AND s.open_request_id=e.request_id AND s.step_id='thread-start' AND s.phase='OBSERVED' JOIN main.v37_ledger_raw_source r ON r.operation_id=s.process_operation_id AND r.process_ticket=s.ticket AND r.custodian_nonce=s.custodian_nonce AND r.domain_id=s.domain_id AND r.session_id=s.session_id AND r.generation=s.generation AND r.source_epoch=s.source_epoch AND r.source_cursor=s.source_cursor WHERE e.domain_id=?1 AND e.session_id=?2 AND e.old_generation IS NULL")?;
         original.bind_text(1,&association.domain)?;original.bind_text(2,&association.session)?;
         if !original.step_row()? {return Err(OrchestrationError::OperationConflict);}
         let open_request=original.column_text(0)?;let open_generation=original.column_text(1)?;
         let open_operation=original.column_text(2)?;let ack=decimal(&original.column_text(3)?)?;
         let ticket=original.column_text(4)?;let nonce=original.column_text(5)?;
+        let open_bytes=decode_hex(&original.column_text(6)?)?;
         if original.step_row()? {return Err(OrchestrationError::OperationConflict);}drop(original);
-        // The original vendor thread notification is required as well as its
-        // correlated ACK. Neither one alone establishes the visible identity.
+        // Codex needs its independent thread/started source. Grok has no such
+        // notification: its exact opt-in registration and SessionNew A ACK
+        // establish this fresh host-origin projection without inventing one.
+        let started=if driver=="grok" {
+            let registration=crate::store::session_transport::rpc_journal::observed_grok_host_registration(
+                &self.connection,&association.domain,&association.session,&open_operation,
+                &open_generation,&open_request,&open_bytes,&ticket,&nonce,true)
+                .map_err(|error|OrchestrationError::V37StoreFailure(format!("visible Grok registration/ACK: {error:?}")))?
+                .ok_or(OrchestrationError::AccessDenied)?;
+            if registration.native_session_id.as_deref()!=Some(thread.as_str()) {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            ack
+        } else {
         let started=Statement::prepare(self.connection.as_ptr(),
             "SELECT rowid,hex(raw_bytes) FROM main.v37_ledger_raw_source WHERE domain_id=?1 AND session_id=?2 AND operation_id=?3 AND process_ticket=?4 AND custodian_nonce=?5 AND generation=?6 ORDER BY rowid")?;
         for (index,value) in [association.domain.as_str(),association.session.as_str(),open_operation.as_str(),
@@ -349,7 +364,8 @@ impl<'root> ProductDatabase<'root> {
             if string_field(vendor,"id")?!=thread || source_id.is_some() {return Err(OrchestrationError::OperationConflict);}
             source_id=Some(decimal(&started.column_text(0)?)?);
         }
-        let started=source_id.ok_or(OrchestrationError::OperationConflict)?;
+        source_id.ok_or(OrchestrationError::OperationConflict)?
+        };
         // Historical association generations remain readable only through the
         // actual H episode and its own correlated provider continuation ACK.
         let episode=Statement::prepare(self.connection.as_ptr(),
@@ -436,7 +452,7 @@ impl<'root> ProductDatabase<'root> {
             return Ok(("UNKNOWN",Some("Original current H holder has no retained live process custody.".into())));
         };
         if run.operation_id!=operation || run.open_request_id!=request
-            || run.evidence.driver_id()!="codex" || run.evidence.seat_id()!=association.seat
+            || !matches!(run.evidence.driver_id(),"codex"|"grok") || run.evidence.seat_id()!=association.seat
             || run.evidence.seat_incarnation()!=association.incarnation
             || run.custody.binding.domain_id!=association.domain
             || run.custody.binding.generation!=association.generation
@@ -604,8 +620,13 @@ impl<'root> ProductDatabase<'root> {
                             reply.insert(k("state"),s("APPLIED"));
                         }
                         if let Some(reason)=reason {reply.insert(k("reason"),s(&reason));}
-                        reply.insert(k("live"),Json::Object(BTreeMap::from([(k("state"),s(state)),
-                            (k("pendingQuestions"),self.visible_pending_questions(&association,&selected.thread)?)])));
+                        let mut live=BTreeMap::from([(k("state"),s(state)),
+                            (k("pendingQuestions"),self.visible_pending_questions(&association,&selected.thread)?)]);
+                        if selected.started==selected.ack {
+                            live.insert(k("hostQuestionStates"),
+                                self.visible_host_question_states(&association,&selected.thread)?);
+                        }
+                        reply.insert(k("live"),Json::Object(live));
                     },
                     "thread/read"=>{
                         exact(params,&["threadId","includeTurns"],&["cursor"])?;
@@ -733,6 +754,12 @@ impl<'root> ProductDatabase<'root> {
             }
             let source=std::str::from_utf8(&raw.raw_bytes).map_err(|error|
                 OrchestrationError::V37StoreFailure(format!("Original native source {id} UTF-8: {error}")))?;
+            if selected.started==selected.ack {
+                crate::store::session_transport::provider_evidence::acp::decode(&raw.raw_bytes,None)
+                    .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                        "Original Grok native event preflight: {}; raw: {}",error.reason,
+                        String::from_utf8_lossy(&error.raw_frame))))?;
+            }
             let notification=Parser::parse(source.trim_end_matches(['\r','\n']))
                 .map_err(|error|OrchestrationError::V37StoreFailure(format!(
                     "Original native source {id} JSON: {error:?}")))?;
@@ -777,7 +804,8 @@ impl<'root> ProductDatabase<'root> {
             trial.push(Json::Object(BTreeMap::from([(k("notification"),copy_json(&notification)),
                 (k("sourceRef"),copy_json(&source_ref))])));
             let trial_refs={let mut values=copy_array(&refs);values.push(copy_json(&source_ref));values};
-            let shell=visible_native_event_envelope(copy_array(&trial),high,None,None,trial_refs,"PARTIAL",after);
+            let shell=visible_native_event_envelope(copy_array(&trial),high,None,None,trial_refs,"PARTIAL",after,
+                selected.started==selected.ack);
             let mut trial_reply=copy_fields(reply);trial_reply.insert(k("response"),shell);
             if notifications.len()>=64 || Json::Object(trial_reply).canonical().len()+512>crate::ipc::MAX_FRAME_BYTES {
                 if notifications.is_empty() {return Err(OrchestrationError::V37StoreFailure(format!(
@@ -791,7 +819,7 @@ impl<'root> ProductDatabase<'root> {
         let resume=if more {None} else {Some(visible_native_event_resume_token(high,&scope))};
         reply.insert(k("state"),s(if more {"PARTIAL"} else {"APPLIED"}));
         reply.insert(k("response"),visible_native_event_envelope(notifications,high,
-            next.as_deref(),resume.as_deref(),refs,state,after));
+            next.as_deref(),resume.as_deref(),refs,state,after,selected.started==selected.ack));
         Ok(())
     }
     fn visible_original_thread(&self, selected: &Selection) -> Result<Json> {
@@ -802,6 +830,18 @@ impl<'root> ProductDatabase<'root> {
         let source=source_json(&query.column_text(0)?)?;
         let envelope=object(&source)?;
         let result=object(envelope.get(&k("result")).ok_or(OrchestrationError::OperationConflict)?)?;
+        if selected.started==selected.ack {
+            // This is an explicitly host-origin view of a real Grok
+            // SessionNew ACK. It does not invent a Codex thread/started or
+            // claim that ACP supplied turn objects.
+            if string_field(result,"sessionId")?!=selected.thread {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            return Ok(Json::Object(BTreeMap::from([
+                (k("id"),s(&selected.thread)),(k("turns"),Json::Array(Vec::new())),
+                (k("hostProjection"),s("grok-initial-prompt-card")),
+            ])));
+        }
         let thread=copy_json(result.get(&k("thread")).ok_or(OrchestrationError::OperationConflict)?);
         if string_field(object(&thread)?,"id")?!=selected.thread {return Err(OrchestrationError::OperationConflict);}
         Ok(thread)
@@ -862,6 +902,15 @@ impl<'root> ProductDatabase<'root> {
         let scope=format!("thread/read\n{workspace}\n{}\n{}\n{}",selected.row,selected.thread,association.json().canonical());
         let (high,after)=visible_page_position(params,maximum,&scope)?;
         if high<selected.ack.max(selected.started) {return Err(OrchestrationError::AccessDenied);}
+        if selected.started==selected.ack {
+            // The original ACP SessionNew carries no Codex Turn collection.
+            // The separate C host question is presented from live-state.
+            let thread=self.visible_original_thread(selected)?;
+            let refs=vec![self.visible_source_ref(selected.ack,selected)?];
+            reply.insert(k("state"),s("APPLIED"));
+            reply.insert(k("response"),visible_read_envelope(thread,high,None,refs,"COMPLETE"));
+            return Ok(());
+        }
         let mut thread=self.visible_original_thread(selected)?;
         let thread_fields=object(&thread)?;
         let mut turns=match thread_fields.get(&k("turns")) {
@@ -1148,16 +1197,19 @@ fn visible_read_envelope(thread: Json, high: i64, cursor: Option<&str>, refs: Ve
         (k("nativeHistory"),visible_history(high,cursor,refs,state))])))]))
 }
 fn visible_native_event_envelope(notifications: Vec<Json>, high: i64,
-    next: Option<&str>, resume: Option<&str>, refs: Vec<Json>, state: &str, after: i64) -> Json {
+    next: Option<&str>, resume: Option<&str>, refs: Vec<Json>, state: &str, after: i64,
+    host_projection:bool) -> Json {
+    let mut marker=BTreeMap::from([
+        (k("state"),s(state)),(k("highWater"),s(&high.to_string())),
+        (k("afterSourceId"),s(&after.to_string())),
+        (k("nextCursor"),next.map(s).unwrap_or(Json::Null)),
+        (k("resumeCursor"),resume.map(s).unwrap_or(Json::Null)),
+        (k("sourceRefs"),Json::Array(refs)),
+    ]);
+    if host_projection {marker.insert(k("hostProjection"),s("grok-initial-prompt-card"));}
     Json::Object(BTreeMap::from([(k("result"),Json::Object(BTreeMap::from([
         (k("notifications"),Json::Array(notifications)),
-        (k("nativeEvents"),Json::Object(BTreeMap::from([
-            (k("state"),s(state)),(k("highWater"),s(&high.to_string())),
-            (k("afterSourceId"),s(&after.to_string())),
-            (k("nextCursor"),next.map(s).unwrap_or(Json::Null)),
-            (k("resumeCursor"),resume.map(s).unwrap_or(Json::Null)),
-            (k("sourceRefs"),Json::Array(refs)),
-        ]))),
+        (k("nativeEvents"),Json::Object(marker)),
     ])))]))
 }
 fn visible_native_event_unknown() -> Json {
@@ -1245,6 +1297,35 @@ mod tests {
     fn reply(product: &mut ProductDatabase<'_>, frame: &str) -> Json {
         let bytes=product.configure_user_v37(frame.as_bytes()).unwrap();
         Parser::parse(std::str::from_utf8(&bytes).unwrap()).unwrap()
+    }
+    #[test]
+    fn grok_host_thread_projection_reads_actual_sessionnew_ack_without_thread_started() {
+        fixture(|product| {
+            let association=Association {domain:"projectA".into(),session:"sessionA".into(),
+                seat:"leadA".into(),incarnation:"incarnationA".into(),authorization:"1".into(),
+                generation:"1".into(),instance:"instanceA".into()};
+            let selected=Selection {row:1,route:"NATIVE".into(),association:Some(association),
+                repository:"repositoryA".into(),worktree:"worktreeA".into(),
+                thread:"nativeS".into(),open_request:"openA".into(),
+                open_generation:"1".into(),open_operation:"processA".into(),ack:1,started:1};
+            let ack=b"{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"sessionId\":\"nativeS\"}}\n";
+            let row=Statement::prepare(product.connection.as_ptr(),
+                "INSERT INTO main.v37_ledger_raw_source(operation_id,process_ticket,
+                 custodian_nonce,domain_id,session_id,generation,source_epoch,source_cursor,
+                 raw_bytes,state,no_event_reason) VALUES('processA','ticketA','nonceA',
+                 'projectA','sessionA','1','nonceA','1',?1,'NO_EVENT','ACP_RPC_RESPONSE')").unwrap();
+            row.bind_blob(1,ack).unwrap();row.step_done().unwrap();drop(row);
+            let projected=product.visible_original_thread(&selected).unwrap();
+            let projected=object(&projected).unwrap();
+            assert!(is_text(projected.get(&k("id")),"nativeS"));
+            assert!(is_text(projected.get(&k("hostProjection")),"grok-initial-prompt-card"));
+            assert!(matches!(projected.get(&k("turns")),Some(Json::Array(turns)) if turns.is_empty()));
+            let changed=b"{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"sessionId\":\"other\"}}\n";
+            let row=Statement::prepare(product.connection.as_ptr(),
+                "UPDATE main.v37_ledger_raw_source SET raw_bytes=?1 WHERE operation_id='processA'").unwrap();
+            row.bind_blob(1,changed).unwrap();row.step_done().unwrap();drop(row);
+            assert!(product.visible_original_thread(&selected).is_err());
+        });
     }
     #[test]
     fn visible_user_selection_requires_explicit_route_and_preserves_original_bytes() {
