@@ -14,6 +14,18 @@ from pathlib import Path
 def sha(data):
     return hashlib.sha256(data).hexdigest()
 
+def json_exact_equal(left, right):
+    """Compare JSON values without Python's bool/int equality coercion."""
+    try:
+        return json.dumps(left, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                          allow_nan=False) == json.dumps(right, ensure_ascii=False,
+                          sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError):
+        return False
+
+def exact_int(value, expected):
+    return type(value) is int and value == expected
+
 def local_spelling(value):
     text = str(value)
     if text.startswith("\\\\?\\UNC\\"):
@@ -226,14 +238,15 @@ def grok_host_mcp_causal_close_evidence(journal, case):
     recorded_sources = attempt.get("source")
     if attempt.get("schema") != "gogoke.37.causal-close-attempt.v1" or \
             attempt.get("state") != "CAUSAL_PROOF_REVIEW_REQUIRED" or \
-            attempt.get("observerCompleted") is not True or attempt.get("helperExitCode") != 0 or \
-            attempt.get("complete", {}).get("installedCandidateProcesses") != 0 or \
+            attempt.get("observerCompleted") is not True or not exact_int(attempt.get("helperExitCode"), 0) or \
+            not exact_int(attempt.get("complete", {}).get("installedCandidateProcesses"), 0) or \
             not isinstance(recorded_sources, dict) or set(recorded_sources) != set(expected_sources):
         fail("Grok Host-MCP shared causal-close attempt is incomplete")
     for name, expected_path in expected_sources.items():
         pin = recorded_sources.get(name, {})
         actual_path = Path(local_spelling(pin.get("path", ""))).resolve()
-        if not actual_path.is_file() or not same_local_path(actual_path, expected_path.resolve()) or \
+        if set(pin) != {"path", "sha256"} or not actual_path.is_file() or \
+                not same_local_path(actual_path, expected_path.resolve()) or \
                 not re.fullmatch(r"[a-f0-9]{64}", pin.get("sha256", "")) or \
                 sha(actual_path.read_bytes()) != pin["sha256"]:
             fail("Grok Host-MCP causal-close source pin differs")
@@ -272,29 +285,41 @@ def grok_host_mcp_causal_close_evidence(journal, case):
     chain_rows_valid = isinstance(chain, list) and bool(chain) and all(isinstance(row, dict) for row in chain)
     shell = next((row for row in events if row.get("role") == "shell"), None)
     native = next((row for row in events if row.get("role") == "native"), None)
+    shell_ready = ready.get("shell", {})
+    native_ready = ready.get("native", {})
     if ready.get("kind") != "READY" or not image_matches("shell", "gogoke.exe") or \
             not image_matches("native", "gogoke-native-host.exe") or \
+            native_ready.get("pid") == shell_ready.get("pid") or \
+            not json_exact_equal(launch.get("pid"), journal.get("currentEndpoint", {}).get("pid")) or \
+            not isinstance(shell_ready.get("creationUtc"), str) or not shell_ready["creationUtc"] or \
+            not isinstance(native_ready.get("creationUtc"), str) or not native_ready["creationUtc"] or \
+            type(native_ready.get("parentPid")) is not int or \
             not chain_rows_valid or \
-            chain[0].get("pid") != ready.get("native", {}).get("parentPid") or \
-            chain[-1].get("pid") != ready.get("shell", {}).get("pid") or \
-            chain[-1].get("creationUtc") != ready.get("shell", {}).get("cimCreationUtc") or \
+            not json_exact_equal(chain[0].get("pid"), native_ready.get("parentPid")) or \
+            not json_exact_equal(chain[-1].get("pid"), shell_ready.get("pid")) or \
+            not isinstance(shell_ready.get("cimCreationUtc"), str) or not shell_ready["cimCreationUtc"] or \
+            not json_exact_equal(chain[-1].get("creationUtc"), shell_ready.get("cimCreationUtc")) or \
             any(not isinstance(row, dict) or not isinstance(row.get("pid"), int) or \
                 isinstance(row.get("pid"), bool) or not 0 < row["pid"] <= 9007199254740991 or \
                 not isinstance(row.get("creationUtc"), str) or not row["creationUtc"] or \
-                (index < len(chain) - 1 and row.get("parentPid") != chain[index + 1].get("pid"))
+                (index < len(chain) - 1 and not json_exact_equal(
+                    row.get("parentPid"), chain[index + 1].get("pid")))
                 for index, row in enumerate(chain)) or \
-            ready.get("shell", {}).get("pid") != launch.get("pid") or \
-            attempt.get("childExit") != {"code": 0, "signal": None} or len(events) != 2 or \
-            not shell or not native or any(row.get("code") != 0 or
+            not json_exact_equal(shell_ready.get("pid"), launch.get("pid")) or \
+            not json_exact_equal(attempt.get("childExit"), {"code": 0, "signal": None}) or len(events) != 2 or \
+            not shell or not native or any(not exact_int(row.get("code"), 0) or
                 row.get("codeBasis") != "GET_EXIT_CODE_PROCESS" or
-                row.get("pid") != ready.get(row.get("role"), {}).get("pid") or
-                row.get("creationUtc") != ready.get(row.get("role"), {}).get("creationUtc")
+                not json_exact_equal(row.get("pid"), ready.get(row.get("role"), {}).get("pid")) or
+                not json_exact_equal(row.get("creationUtc"), ready.get(row.get("role"), {}).get("creationUtc"))
                 for row in events) or \
-            close.get("pid") != launch.get("pid") or close.get("exitCode") != 0 or \
+            not json_exact_equal(close.get("pid"), launch.get("pid")) or \
+            not exact_int(close.get("exitCode"), 0) or \
             close.get("signal") is not None or close.get("forceKill") is not False or \
             close.get("observationMode") != "SPAWNED_NODE_CHILD" or \
-            close.get("causalProof") != proof or close.get("shellExit") != shell or \
-            close.get("nativeExit") != native or close.get("nativeIdentity") != ready.get("native"):
+            not json_exact_equal(close.get("causalProof"), proof) or \
+            not json_exact_equal(close.get("shellExit"), shell) or \
+            not json_exact_equal(close.get("nativeExit"), native) or \
+            not json_exact_equal(close.get("nativeIdentity"), native_ready):
         fail("Grok Host-MCP causal-close process and original caption receipt differs")
     token = proof.get("token", "")
     arm = proof.get("arm", {})
@@ -305,11 +330,11 @@ def grok_host_mcp_causal_close_evidence(journal, case):
             proof.get("breakpoint") != "CONDITIONAL_ORIGINAL_INVOKE_IN_CAPTION_DISPATCH_STACK" or \
             proof.get("click") != "ONE_ACTUAL_CAPTION_DOM_EVENT_IN_SYNCHRONOUS_DISPATCH" or \
             proof.get("resumedOriginalCall") is not True or arm.get("token") != token or \
-            arm.get("waitResult") != "WAIT_TIMEOUT" or arm.get("waitMilliseconds") != 0 or \
-            arm.get("shellPid") != ready.get("shell", {}).get("pid") or \
-            arm.get("nativePid") != ready.get("native", {}).get("pid") or \
-            arm.get("shellCreationUtc") != ready.get("shell", {}).get("creationUtc") or \
-            arm.get("nativeCreationUtc") != ready.get("native", {}).get("creationUtc"):
+            arm.get("waitResult") != "WAIT_TIMEOUT" or not exact_int(arm.get("waitMilliseconds"), 0) or \
+            not json_exact_equal(arm.get("shellPid"), shell_ready.get("pid")) or \
+            not json_exact_equal(arm.get("nativePid"), native_ready.get("pid")) or \
+            not json_exact_equal(arm.get("shellCreationUtc"), shell_ready.get("creationUtc")) or \
+            not json_exact_equal(arm.get("nativeCreationUtc"), native_ready.get("creationUtc")):
         fail("Grok Host-MCP causal-close caption dispatch or retained ARM proof differs")
     return {"mode": close["observationMode"], "attemptState": attempt["state"],
             "sourceSha256": {name: recorded_sources[name]["sha256"] for name in expected_sources},
@@ -321,6 +346,23 @@ def grok_host_mcp_causal_close_evidence(journal, case):
 
 def provider_normal_close_readback_entry(journal):
     """Validate the existing provider close entry and its Grok-only causal extension."""
+    host_mcp_cases = [row for row in journal.get("cases", [])
+                      if row.get("caseMode") == "grokHostMcpQuestion"]
+    if host_mcp_cases:
+        if len(host_mcp_cases) != 1 or len(journal.get("cases", [])) != 1:
+            fail("Grok Host-MCP causal-close proof is scoped to its singleton case")
+        for launch, close in zip(journal.get("launches", []), journal.get("closes", [])):
+            process_exits = journal.get("productExits", [])
+            if launch.get("sourceCommit") != journal.get("sourceCommit") or \
+                    launch.get("bootstrap", {}).get("version") != journal.get("installedVersion") or \
+                    not all(name in journal.get("installedSha256", {}) for name in
+                            ("gogoke.exe", "gogoke-native-host.exe", "resource-index.json")) or \
+                    not exact_int(close.get("exitCode"), 0) or close.get("forceKill") is not False or \
+                    not json_exact_equal(close.get("pid"), launch.get("pid")) or \
+                    not any(json_exact_equal(event.get("pid"), launch.get("pid")) and
+                            exact_int(event.get("code"), 0) for event in process_exits):
+                fail("Actual Grok candidate identity or strict normal-close receipt differs")
+        return grok_host_mcp_causal_close_evidence(journal, host_mcp_cases[0])
     for launch, close in zip(journal.get("launches", []), journal.get("closes", [])):
         if launch.get("sourceCommit") != journal.get("sourceCommit") or \
                 launch.get("bootstrap", {}).get("version") != journal.get("installedVersion") or \
@@ -331,12 +373,6 @@ def provider_normal_close_readback_entry(journal):
                 not any(event.get("pid") == launch.get("pid") and event.get("code") == 0
                         for event in journal.get("productExits", [])):
             fail("Actual installed candidate identity or normal-close receipt differs")
-    host_mcp_cases = [row for row in journal.get("cases", [])
-                      if row.get("caseMode") == "grokHostMcpQuestion"]
-    if host_mcp_cases:
-        if len(host_mcp_cases) != 1 or len(journal.get("cases", [])) != 1:
-            fail("Grok Host-MCP causal-close proof is scoped to its singleton case")
-        return grok_host_mcp_causal_close_evidence(journal, host_mcp_cases[0])
     return None
 
 root = Path(local_spelling(sys.argv[1])).resolve(strict=True)
@@ -1665,7 +1701,8 @@ def grok_host_mcp_question_evidence(db, domain, case, session, journal):
         fail("Grok Host-MCP original E model/effort was not retained through normal release")
     sends_by_id = {row["request"].get("requestId"): (index, row) for index, row in session_sends}
     all_case_sends = {turn["sendRequestId"] for turn in turns}
-    if not all(turn.get("question") == expected[index] and turn.get("ordinal") == index + 1 and
+    if not all(json_exact_equal(turn.get("question"), expected[index]) and
+               exact_int(turn.get("ordinal"), index + 1) and
                turn.get("answerMode") == expected[index]["answerMode"] and
                turn.get("answerGeneratedAfterCardObservation") is True and
                isinstance(turn.get("privateAnswer"), str) and turn["privateAnswer"]
@@ -1749,7 +1786,7 @@ def grok_host_mcp_question_evidence(db, domain, case, session, journal):
         if h_receipt.get("requestId") != send_id or h_receipt.get("operation") != "send" or \
                 h_receipt.get("targetId") != session_id or h_receipt.get("status") != "APPLIED" or \
                 not isinstance(terminal_receipt, dict) or terminal_receipt.get("status") != "APPLIED" or \
-                h_receipt.get("result") != terminal_receipt.get("result") or \
+                not json_exact_equal(h_receipt.get("result"), terminal_receipt.get("result")) or \
                 terminal_receipt.get("result", {}).get("createdTurn") is not True or \
                 terminal_receipt.get("result", {}).get("stopReason") != "end_turn":
             fail("Grok Host-MCP original H prompt terminal receipt differs from its durable receipt")
@@ -1777,11 +1814,11 @@ def grok_host_mcp_question_evidence(db, domain, case, session, journal):
                 question_id != "host0" or header != spec["header"] or question != spec["question"] or \
                 answer_shape != "OPTIONS_OR_FREE" or auto_ms != "" or \
                 card_answer_kind != "WIRE" or payload.get("provider") != "grok" or \
-                payload.get("cardOrigin") != "host-mcp" or payload.get("bindingVersion") != 1 or \
+                payload.get("cardOrigin") != "host-mcp" or not exact_int(payload.get("bindingVersion"), 1) or \
                 payload.get("allowFreeAnswer") is not True or \
-                payload.get("recommendedIndex") != spec["recommendedIndex"] or \
-                payload.get("questions") != [{"id": "host0", "header": spec["header"],
-                    "question": spec["question"], "options": spec["options"]}]:
+                not exact_int(payload.get("recommendedIndex"), spec["recommendedIndex"]) or \
+                not json_exact_equal(payload.get("questions"), [{"id": "host0", "header": spec["header"],
+                    "question": spec["question"], "options": spec["options"]}]):
             fail("Grok Host-MCP C card is not the exact recovered Host-MCP question")
         options = db.execute(
             "SELECT option_id,ordinal,label,description FROM gogoke_v37_qcard_native_options "
@@ -1796,11 +1833,11 @@ def grok_host_mcp_question_evidence(db, domain, case, session, journal):
         descriptor = json.loads(bytes.fromhex(raised_hex).decode("utf-8"))
         if raised_id != "raise" + sha(f"{domain}\n{session_id}\n{process_operation}\n"
                 f"{nonce}\n{source_record.get('sourceCursor', '')}".encode("utf-8")) or \
-                raised_state != "RAISED" or descriptor != {
+                raised_state != "RAISED" or not json_exact_equal(descriptor, {
                 "operationId": source_record.get("operationId"),
                 "sourceEpoch": source_record.get("sourceEpoch"),
                 "sourceCursor": source_record.get("sourceCursor"),
-                "frameSha256": source_record.get("frameSha256")}:
+                "frameSha256": source_record.get("frameSha256")}):
             fail("Grok Host-MCP C raise descriptor differs from the recorded original A source")
         source = exact_one(db,
             "SELECT raw_bytes,state,no_event_reason,resolved_event_id,operation_id,generation,"
@@ -1832,7 +1869,8 @@ def grok_host_mcp_question_evidence(db, domain, case, session, journal):
                 set(message.get("params", {})) != {"name", "arguments"} or \
                 message.get("params", {}).get("name") != "ask_user" or \
                 set(arguments) != {"header", "question", "options", "recommendedIndex"} or \
-                arguments != {key: spec[key] for key in ("header", "question", "options", "recommendedIndex")}:
+                not json_exact_equal(arguments,
+                    {key: spec[key] for key in ("header", "question", "options", "recommendedIndex")}):
             fail("Grok Host-MCP A source is not the exact registered ask_user question")
         expected_binding = {
             "serverId": server_id, "registrationStepId": "thread-start",
@@ -1845,11 +1883,12 @@ def grok_host_mcp_question_evidence(db, domain, case, session, journal):
             "sourceOperationId": process_operation, "sourceEpoch": nonce,
             "sourceCursor": descriptor["sourceCursor"], "sourceFrameSha256": sha(raw),
             "bindingScope": "INITIAL_H_PROMPT"}
-        if payload.get("binding") != expected_binding or binding_record != expected_binding or \
+        if not json_exact_equal(payload.get("binding"), expected_binding) or \
+                not json_exact_equal(binding_record, expected_binding) or \
                 turn.get("card", {}).get("turnId") != send_id or \
-                turn.get("card", {}).get("source") != {"operationId": process_operation,
+                not json_exact_equal(turn.get("card", {}).get("source"), {"operationId": process_operation,
                     "sourceEpoch": nonce, "sourceCursor": descriptor["sourceCursor"],
-                    "frameSha256": sha(raw)}:
+                    "frameSha256": sha(raw)}):
             fail("Grok Host-MCP C binding does not preserve all original H, registration and A identities")
         composite = canonical([server_id, outer, inner]).encode("utf-8")
         request_ref = "gmpc_" + sha(composite)
@@ -1889,7 +1928,7 @@ def grok_host_mcp_question_evidence(db, domain, case, session, journal):
                 recovered.get("state") != "OPEN" or recovered.get("availableForAnswer") is not True or \
                 recovered.get("turnId") != send_id or recovered.get("seatId") != case["seatId"] or \
                 recovered.get("generation") != generation or recovered.get("requestRef") != request_ref or \
-                recovered.get("nativeQuestion") != payload:
+                not json_exact_equal(recovered.get("nativeQuestion"), payload):
             fail("Grok Host-MCP recovered C receipt does not match the original A question")
         answer = turn["privateAnswer"]
         if answer_operation.get("request", {}).get("payload") != {
@@ -1920,7 +1959,7 @@ def grok_host_mcp_question_evidence(db, domain, case, session, journal):
         expected_answer_frame = {"jsonrpc": "2.0", "id": outer, "result": {
             "jsonrpc": "2.0", "id": inner, "result": {"content": [
                 {"type": "text", "text": expected_answer_json}], "isError": False}}}
-        if answer_frame != expected_answer_frame or \
+        if not json_exact_equal(answer_frame, expected_answer_frame) or \
                 bytes.fromhex(answer_db_row[0]).decode("utf-8") != answer_operation["rawFrame"] or \
                 answer_db_row[1:9] != (card_id, "ANSWERED", vendor_request_id, case["seatId"],
                     send_id, generation, "WIRE", card_answer) or not answer_db_row[9]:

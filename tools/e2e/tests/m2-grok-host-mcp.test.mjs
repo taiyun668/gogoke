@@ -18,14 +18,14 @@ test('Grok Host-MCP immutable reader joins original H, A and C facts and rejects
       const reader = path.resolve(here, '..', 'm2-provider-capture-readback.py');
       const causalCloseFixture = Buffer.from(JSON.stringify(
         closeFixture(123, 'SPAWNED_NODE_CHILD'))).toString('base64');
-      const source = String.raw`import ast, hashlib, json, re, sqlite3, subprocess, sys
-import base64, os
+const source = String.raw`import ast, hashlib, json, re, sqlite3, subprocess, sys
+import base64, os, shutil
 from pathlib import Path
 
 reader_path, temp_root = Path(sys.argv[1]), Path(sys.argv[2])
 source = reader_path.read_text(encoding='utf-8')
 tree = ast.parse(source)
-needed = {'sha', 'fail', 'exact_one', 'local_spelling', 'same_local_path',
+needed = {'sha', 'fail', 'exact_one', 'json_exact_equal', 'exact_int', 'local_spelling', 'same_local_path',
           'grok_host_mcp_question_evidence', 'grok_host_mcp_causal_close_evidence',
           'provider_normal_close_readback_entry'}
 pieces = [ast.get_source_segment(source, node) for node in tree.body
@@ -46,6 +46,7 @@ def close_entry_journal(case_mode='grokHostMcpQuestion'):
         'installedPath':close_base['boundInstalledIdentity']['installed'],
         'installedSha256':{**close_base['boundInstalledIdentity']['installedSha256'],
                            'resource-index.json':'3'*64},
+        'currentEndpoint':{'pid':123},
         'launches':[{'pid':123,'sourceCommit':'a'*40,'bootstrap':{'version':'1.0.41'}}],
         'productExits':[{'pid':123,'code':0}],
         'cases':[{'driverId':'grok','caseMode':case_mode}]})
@@ -217,7 +218,7 @@ def fixture(name):
         prompt_step_id = 'acp-send-'+h_digest[:40]
         prompt_rpc_id = 'gogoke-acp-send-'+h_digest[:40]
         outer = 'outer-1' if idx == 0 else 9
-        inner = 7 if idx == 0 else 'inner-2'
+        inner = 1 if idx == 0 else 'inner-2'
         args = {key:spec[key] for key in ('header','question','options','recommendedIndex')}
         question_frame = {'jsonrpc':'2.0','id':outer,'method':'x.ai/mcp/sdk_call','params':{
             'serverId':server,'message':{'jsonrpc':'2.0','id':inner,'method':'tools/call',
@@ -482,6 +483,16 @@ def full_main_close_controls():
     variants=[('coherent-positive',None),('missing-image','missing-image'),
         ('wrong-image-sha','wrong-image-sha'),('invalid-physical-fileid','invalid-physical-fileid'),
         ('missing-ancestry','missing-ancestry'),
+        ('native-equals-shell','native-equals-shell'),
+        ('shell-native-creation-empty','shell-native-creation-empty'),
+        ('shell-native-creation-missing','shell-native-creation-missing'),
+        ('helper-exit-boolean','helper-exit-boolean'),
+        ('candidate-process-count-boolean','candidate-process-count-boolean'),
+        ('wait-milliseconds-boolean','wait-milliseconds-boolean'),
+        ('event-exit-boolean','event-exit-boolean'),
+        ('child-exit-boolean','child-exit-boolean'),
+        ('close-exit-boolean','close-exit-boolean'),
+        ('product-exit-boolean','product-exit-boolean'),
         ('safe-ancestor-pid-boundary','safe-ancestor-pid-boundary'),
         ('unsafe-ancestor-pid','unsafe-ancestor-pid')]
     for label,mutation in variants:
@@ -512,6 +523,51 @@ def full_main_close_controls():
             mutate_fileids(value['causalCloseAttempts'])
         elif mutation=='missing-ancestry':
             value['causalCloseAttempts'][0]['ready']['nativeAncestorChain']=[]
+        elif mutation=='native-equals-shell':
+            attempt=value['causalCloseAttempts'][0]
+            native_pid=attempt['ready']['shell']['pid']
+            attempt['ready']['native']['pid']=native_pid
+            next(row for row in attempt['events'] if row['role']=='native')['pid']=native_pid
+            attempt['pausedCall']['arm']['nativePid']=native_pid
+            value['closes'][0]['nativeIdentity']['pid']=native_pid
+            value['closes'][0]['nativeExit']['pid']=native_pid
+        elif mutation in ('shell-native-creation-empty','shell-native-creation-missing'):
+            attempt=value['causalCloseAttempts'][0]
+            missing=mutation.endswith('missing')
+            for role in ('shell','native'):
+                process=attempt['ready'][role]
+                if missing: process.pop('creationUtc',None)
+                else: process['creationUtc']=''
+                event=next(row for row in attempt['events'] if row['role']==role)
+                close_exit=value['closes'][0]['shellExit' if role=='shell' else 'nativeExit']
+                arm_key=role+'CreationUtc'
+                if missing:
+                    event.pop('creationUtc',None); close_exit.pop('creationUtc',None)
+                    attempt['pausedCall']['arm'].pop(arm_key,None)
+                    value['closes'][0]['causalProof']['arm'].pop(arm_key,None)
+                    if role=='native': value['closes'][0]['nativeIdentity'].pop('creationUtc',None)
+                else:
+                    event['creationUtc']=''; close_exit['creationUtc']=''
+                    attempt['pausedCall']['arm'][arm_key]=''
+                    value['closes'][0]['causalProof']['arm'][arm_key]=''
+                    if role=='native': value['closes'][0]['nativeIdentity']['creationUtc']=''
+        elif mutation=='helper-exit-boolean':
+            value['causalCloseAttempts'][0]['helperExitCode']=False
+        elif mutation=='candidate-process-count-boolean':
+            value['causalCloseAttempts'][0]['complete']['installedCandidateProcesses']=False
+        elif mutation=='wait-milliseconds-boolean':
+            value['causalCloseAttempts'][0]['pausedCall']['arm']['waitMilliseconds']=False
+            value['closes'][0]['causalProof']['arm']['waitMilliseconds']=False
+        elif mutation=='event-exit-boolean':
+            for row in value['causalCloseAttempts'][0]['events']: row['code']=False
+            value['closes'][0]['shellExit']['code']=False
+            value['closes'][0]['nativeExit']['code']=False
+        elif mutation=='child-exit-boolean':
+            value['causalCloseAttempts'][0]['childExit']['code']=False
+        elif mutation=='close-exit-boolean':
+            value['closes'][0]['exitCode']=False
+        elif mutation=='product-exit-boolean':
+            value['productExits'][0]['code']=False
         elif mutation in ('safe-ancestor-pid-boundary','unsafe-ancestor-pid'):
             ready=value['causalCloseAttempts'][0]['ready']
             native_pid=ready['native']['pid']
@@ -546,8 +602,134 @@ def full_main_close_controls():
     print('full-main-wrong-image-sha: rejected')
     print('full-main-invalid-physical-fileid: rejected')
     print('full-main-missing-ancestry: rejected')
+    print('full-main-native-equals-shell: rejected')
+    print('full-main-shell-native-creation-empty: rejected')
+    print('full-main-shell-native-creation-missing: rejected')
+    print('full-main-helper-exit-boolean: rejected')
+    print('full-main-candidate-process-count-boolean: rejected')
+    print('full-main-wait-milliseconds-boolean: rejected')
+    print('full-main-event-exit-boolean: rejected')
+    print('full-main-child-exit-boolean: rejected')
+    print('full-main-close-exit-boolean: rejected')
+    print('full-main-product-exit-boolean: rejected')
     print('full-main-safe-ancestor-pid-boundary: accepted')
     print('full-main-unsafe-ancestor-pid: rejected')
+
+    def full_main_variant(label, journal_mutation=None, db_mutation=None):
+        variant_root=temp_root/('full-main-'+label)
+        variant_root.mkdir()
+        base_db=temp_root/'state.sqlite'
+        original_db_sha=hashlib.sha256(base_db.read_bytes()).hexdigest()
+        target_db=variant_root/'state.sqlite'
+        shutil.copyfile(base_db,target_db)
+        value=json.loads(json.dumps(close_journal))
+        if db_mutation:
+            changed=sqlite3.connect(target_db)
+            db_mutation(changed,value)
+            assert changed.execute('PRAGMA foreign_key_check').fetchall()==[]
+            changed.commit()
+            changed.close()
+        if journal_mutation:
+            journal_mutation(value)
+        changed_journal=variant_root/'journal.json'
+        changed_journal.write_text(json.dumps(value,separators=(',',':')),encoding='utf-8')
+        output=variant_root/'result.json'
+        before=hashlib.sha256(target_db.read_bytes()).hexdigest()
+        run=subprocess.run([sys.executable,str(reader_path),str(variant_root),str(output),str(changed_journal)],
+            capture_output=True,text=True,encoding='utf-8')
+        after=hashlib.sha256(target_db.read_bytes()).hexdigest()
+        assert before==after, label+' changed its SQLite input'
+        assert hashlib.sha256(base_db.read_bytes()).hexdigest()==original_db_sha
+        if run.returncode==0 or output.exists():
+            raise AssertionError(label+' malformed full-main evidence was accepted: '+run.stdout+' '+run.stderr[-1200:])
+        print('full-main-'+label+': rejected')
+
+    def set_answer_inner_id(value, replacement):
+        frame=json.loads(value)
+        frame['result']['id']=replacement
+        return canonical(frame)
+
+    def mutate_answer_inner_bool(db,value):
+        turn=value['cases'][0]['hostMcpQuestion']['turns'][0]
+        wire=set_answer_inner_id(db.execute('SELECT answer FROM gogoke_v37_qcard_native WHERE domain_id=? AND card_id=?',
+            (domain,turn['cardId'])).fetchone()[0],True)
+        db.execute('UPDATE gogoke_v37_qcard_native SET answer=? WHERE domain_id=? AND card_id=?',
+            (wire,domain,turn['cardId']))
+        db.execute('UPDATE gogoke_v37_qcard_native_operations SET answer=? WHERE domain_id=? AND request_id=?',
+            (wire,domain,turn['answerRequestId']))
+        step='qanswer'+digest(f'{domain}\n{sid}\n{turn["answerRequestId"]}'.encode())
+        db.execute('UPDATE gogoke_v37_rpc_steps SET command_hex=? WHERE domain_id=? AND session_id=? AND step_id=?',
+            ((wire+'\n').encode().hex(),domain,sid,step))
+
+    def mutate_c_payload_field(field, replacement):
+        def mutate(db,value):
+            turn=value['cases'][0]['hostMcpQuestion']['turns'][0]
+            payload=json.loads(db.execute('SELECT question_payload FROM gogoke_v37_qcard_native '
+                'WHERE domain_id=? AND card_id=?',(domain,turn['cardId'])).fetchone()[0])
+            payload[field]=replacement
+            encoded=canonical(payload)
+            db.execute('UPDATE gogoke_v37_qcard_native SET question_payload=? WHERE domain_id=? AND card_id=?',
+                (encoded,domain,turn['cardId']))
+            recover_id=turn['recoverRequestIds'][-1]
+            row=db.execute('SELECT receipt_bytes FROM v37_ledger_receipt WHERE family=? AND domain_id=? AND request_id=?',
+                ('K-QCARD',domain,recover_id)).fetchone()
+            receipt=json.loads(bytes(row[0]).decode('utf-8'))
+            receipt['result']['nativeQuestion']=payload
+            receipt_bytes=json.dumps(receipt,separators=(',',':')).encode()
+            db.execute('UPDATE v37_ledger_receipt SET receipt_bytes=? WHERE family=? AND domain_id=? AND request_id=?',
+                (receipt_bytes,'K-QCARD',domain,recover_id))
+            operation=next(row for row in value['operations'] if row['request']['requestId']==recover_id)
+            operation['receipt']=receipt
+        return mutate
+
+    def mutate_a_recommended_index_boolean(db,value):
+        turn=value['cases'][0]['hostMcpQuestion']['turns'][0]
+        raw_row=db.execute('SELECT raw_bytes FROM v37_ledger_raw_source WHERE domain_id=? AND session_id=? '
+            'AND source_cursor=? AND no_event_reason=?',(domain,sid,'2','HOST_GROK_MCP_QUESTION_CARD')).fetchone()
+        frame=json.loads(bytes(raw_row[0]).decode('utf-8'))
+        frame['params']['message']['params']['arguments']['recommendedIndex']=True
+        raw=(json.dumps(frame,ensure_ascii=False,separators=(',',':'))+'\n').encode()
+        source_sha=digest(raw)
+        db.execute('UPDATE v37_ledger_raw_source SET raw_bytes=? WHERE domain_id=? AND session_id=? '
+            'AND source_cursor=? AND no_event_reason=?',(raw,domain,sid,'2','HOST_GROK_MCP_QUESTION_CARD'))
+        descriptor_row=db.execute('SELECT request_id,request_hex FROM gogoke_v37_qcard_native_operations '
+            'WHERE domain_id=? AND card_id=? AND state=?',(domain,turn['cardId'],'RAISED')).fetchone()
+        descriptor=json.loads(bytes.fromhex(descriptor_row[1]).decode('utf-8'))
+        descriptor['frameSha256']=source_sha
+        db.execute('UPDATE gogoke_v37_qcard_native_operations SET request_hex=? WHERE domain_id=? AND request_id=?',
+            (canonical(descriptor).encode().hex(),domain,descriptor_row[0]))
+        turn['card']['source']['frameSha256']=source_sha
+        turn['card']['binding']['sourceFrameSha256']=source_sha
+        payload=json.loads(db.execute('SELECT question_payload FROM gogoke_v37_qcard_native '
+            'WHERE domain_id=? AND card_id=?',(domain,turn['cardId'])).fetchone()[0])
+        payload['binding']['sourceFrameSha256']=source_sha
+        encoded=canonical(payload)
+        db.execute('UPDATE gogoke_v37_qcard_native SET question_payload=? WHERE domain_id=? AND card_id=?',
+            (encoded,domain,turn['cardId']))
+        recover_id=turn['recoverRequestIds'][-1]
+        row=db.execute('SELECT receipt_bytes FROM v37_ledger_receipt WHERE family=? AND domain_id=? AND request_id=?',
+            ('K-QCARD',domain,recover_id)).fetchone()
+        receipt=json.loads(bytes(row[0]).decode('utf-8'))
+        receipt['result']['nativeQuestion']=payload
+        db.execute('UPDATE v37_ledger_receipt SET receipt_bytes=? WHERE family=? AND domain_id=? AND request_id=?',
+            (json.dumps(receipt,separators=(',',':')).encode(),'K-QCARD',domain,recover_id))
+        operation=next(row for row in value['operations'] if row['request']['requestId']==recover_id)
+        operation['receipt']=receipt
+
+    full_main_variant('answer-inner-boolean',db_mutation=mutate_answer_inner_bool)
+    full_main_variant('turn-ordinal-boolean',journal_mutation=lambda value:
+        value['cases'][0]['hostMcpQuestion']['turns'][0].update({'ordinal':True}))
+    full_main_variant('turn-question-recommendation-boolean',journal_mutation=lambda value:
+        value['cases'][0]['hostMcpQuestion']['turns'][0]['question'].update({'recommendedIndex':True}))
+    full_main_variant('a-recommended-index-boolean',db_mutation=mutate_a_recommended_index_boolean)
+    full_main_variant('c-binding-version-boolean',db_mutation=mutate_c_payload_field('bindingVersion',True))
+    full_main_variant('c-recommended-index-boolean',db_mutation=mutate_c_payload_field('recommendedIndex',True))
+    print('full-main-answer-inner-boolean: rejected')
+    print('full-main-turn-ordinal-boolean: rejected')
+    print('full-main-turn-question-recommendation-boolean: rejected')
+    print('full-main-a-recommended-index-boolean: rejected')
+    print('full-main-c-binding-version-boolean: rejected')
+    print('full-main-c-recommended-index-boolean: rejected')
 
 full_main_close_controls()
 `;
@@ -564,8 +746,19 @@ full_main_close_controls()
       for (const label of ['full-main-coherent-positive: accepted complete production-DDL SQLite entry',
         'full-main-missing-image: rejected', 'full-main-wrong-image-sha: rejected',
         'full-main-invalid-physical-fileid: rejected', 'full-main-missing-ancestry: rejected',
+        'full-main-native-equals-shell: rejected', 'full-main-shell-native-creation-empty: rejected',
+        'full-main-shell-native-creation-missing: rejected', 'full-main-helper-exit-boolean: rejected',
+        'full-main-candidate-process-count-boolean: rejected', 'full-main-wait-milliseconds-boolean: rejected',
+        'full-main-event-exit-boolean: rejected', 'full-main-child-exit-boolean: rejected',
+        'full-main-close-exit-boolean: rejected', 'full-main-product-exit-boolean: rejected',
         'full-main-safe-ancestor-pid-boundary: accepted', 'full-main-unsafe-ancestor-pid: rejected']) {
         assert.ok(run.stdout.includes(label), `missing full-main close outcome: ${label}\n${run.stdout}`);
+      }
+      for (const label of ['full-main-answer-inner-boolean: rejected', 'full-main-turn-ordinal-boolean: rejected',
+        'full-main-turn-question-recommendation-boolean: rejected', 'full-main-a-recommended-index-boolean: rejected',
+        'full-main-c-binding-version-boolean: rejected',
+        'full-main-c-recommended-index-boolean: rejected']) {
+        assert.ok(run.stdout.includes(label), `missing full-main JSON type outcome: ${label}\n${run.stdout}`);
       }
       assert.ok(run.status === 0, 'actual provider normal-close reader entry accepts only shared causal Grok evidence');
     } finally {
