@@ -91,11 +91,21 @@ def session_facts(db, journal, case):
         seat_id=case["seatId"], seat_incarnation=seat["incarnation"],
         instance_id=case["instanceId"], process_operation_id=claim["process_operation_id"],
         stop_fact_id=session["stopFactId"], binding_mode="native_v2")
+    custody = one(db, "SELECT operation_id,domain_id,generation,state,stop_proof_hash,ticket,custodian_nonce "
+                  "FROM gogoke_coordination_process_custody WHERE domain_id=? AND operation_id=?",
+                  (domain, facts["processOperationId"]))
+    check(custody["operation_id"] == facts["processOperationId"] == claim["process_operation_id"] and
+          custody["domain_id"] == domain and custody["generation"] == facts["generation"] == session["generation"] and
+          custody["state"] == facts["custodyState"] == "STOPPED" and
+          custody["stop_proof_hash"] == facts["stopFactId"] == session["stopFactId"] and
+          isinstance(custody["ticket"], str) and custody["ticket"] and
+          isinstance(custody["custodian_nonce"], str) and custody["custodian_nonce"],
+          "Original H process custody ticket/nonce differs from the verified StopFact tuple")
     return {**facts, "seatId": case["seatId"], "instanceId": case["instanceId"],
             "nativeBinding": facts["bindingEvidence"]["binding"],
             "nativeSelection": facts["bindingEvidence"]["selection"],
-            "processTicket": facts["custody"]["ticket"],
-            "custodianNonce": facts["custody"]["custodian_nonce"]}
+            "processTicket": custody["ticket"],
+            "custodianNonce": custody["custodian_nonce"]}
 
 
 def child_identity_facts(child, marker):
