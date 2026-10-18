@@ -9,6 +9,7 @@ import os
 import re
 import sqlite3
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 def sha(data):
@@ -45,12 +46,14 @@ def capture_process_identity(pid_text, expected_sha):
     kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
 
     class FileTime(ctypes.Structure):
         _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
 
     pid = int(pid_text)
-    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    handle = kernel32.OpenProcess(0x1000 | 0x00100000, False, pid)  # QUERY_LIMITED_INFORMATION | SYNCHRONIZE
     if not handle:
         raise ctypes.WinError(ctypes.get_last_error())
     try:
@@ -67,10 +70,26 @@ def capture_process_identity(pid_text, expected_sha):
         if image_sha != expected_sha:
             raise RuntimeError("Exact live process image SHA-256 differs from the fixed provider pin")
         creation_100ns = (int(creation.high) << 32) | int(creation.low)
+        wait_result = int(kernel32.WaitForSingleObject(handle, 0))
+        wait_error = ctypes.get_last_error() if wait_result == 0xFFFFFFFF else 0
+        liveness = process_liveness_observation(wait_result, wait_error)
         return {"processId": str(pid), "creationTime100ns": str(creation_100ns),
-                "imageSha256": image_sha}
+                "imageSha256": image_sha, **liveness,
+                "observationTimeUtc": datetime.now(timezone.utc).isoformat(timespec="microseconds")}
     finally:
         kernel32.CloseHandle(handle)
+
+
+def process_liveness_observation(wait_result, last_error=0):
+    """Interpret the original zero-time wait result without inferring later state."""
+    raw = int(wait_result) & 0xFFFFFFFF
+    if raw == 0x00000102:  # WAIT_TIMEOUT: the process was unsignaled at this observation.
+        return {"waitForSingleObjectResult": raw, "aliveAtObservation": True}
+    if raw == 0x00000000:
+        raise RuntimeError(f"WaitForSingleObject(handle,0) returned WAIT_OBJECT_0 (0x{raw:08x}); process had exited")
+    if raw == 0xFFFFFFFF:
+        raise RuntimeError(f"WaitForSingleObject(handle,0) returned WAIT_FAILED (0x{raw:08x}); Win32 error={int(last_error)}")
+    raise RuntimeError(f"WaitForSingleObject(handle,0) returned unexpected status 0x{raw:08x}")
 
 def native_directory_identity(value):
     if os.name != "nt":
