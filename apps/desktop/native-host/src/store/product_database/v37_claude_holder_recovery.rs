@@ -102,6 +102,18 @@ struct StoppedPeer {
     incarnation: String,
     home: String,
     binding: String,
+    stop_fact: Option<String>,
+}
+
+fn claude_profile_directories(profile_name:&str)->Result<Vec<PathBuf>> {
+    let folder=profile_name.to_ascii_lowercase();
+    if !folder.starts_with("gogoke37.session.") ||
+        !folder.bytes().all(|b|b.is_ascii_lowercase() || b.is_ascii_digit() || b==b'.') {
+        return Err(denied("Claude later stopped native profile name"));
+    }
+    let base=PathBuf::from("AppData").join("Local").join("Packages").join(folder);
+    Ok(vec![base.clone(),base.join("AC"),base.join("AC").join("Temp"),
+        base.join("AC").join("Temp").join("claude")])
 }
 
 impl<'root> ProductDatabase<'root> {
@@ -198,7 +210,7 @@ impl<'root> ProductDatabase<'root> {
             scopes.push(StoppedPeer{sid:sid.clone(),profile_name:name,tree,repository,
                 domain:r[0].clone(),seat:r[6].clone(),session:r[1].clone(),
                 generation:r[2].clone(),incarnation:r[3].clone(),home:r[10].clone(),
-                binding:r[9].clone()});
+                binding:r[9].clone(),stop_fact:Some(r[12].clone())});
             sids.push(sid);
             for value in r {
                 provenance.extend_from_slice(&(value.len() as u64).to_be_bytes());
@@ -870,6 +882,7 @@ impl<'root> ProductDatabase<'root> {
     fn completed_later_profile_directories(
         &self, instance:&str,peer:&StoppedPeer,
         instance_root:&(PathBuf,RootIdentity,bool),
+        allow_normally_stopped_cleaned:bool,
     )->Result<Vec<PathBuf>> {
         let profile=evidence(AppContainerProfile::derive_for_revocation(&peer.profile_name))?;
         if evidence(profile.sid_identity())?!=peer.sid {
@@ -882,8 +895,15 @@ impl<'root> ProductDatabase<'root> {
             homes.instance.identity!=instance_root.1 {
             return Err(denied("Claude later stopped instance HOME changed"));
         }
-        let graph=evidence(worktree::graph_query(&self.connection,&peer.tree))?
-            .ok_or_else(||denied("Claude later stopped F graph absent"))?;
+        let graph=evidence(worktree::graph_query(&self.connection,&peer.tree))?;
+        if graph.is_none() {
+            if allow_normally_stopped_cleaned {
+                self.validate_normally_stopped_cleaned_peer(instance,peer)?;
+                return Ok(claude_profile_directories(&peer.profile_name)?);
+            }
+            return Err(denied("Claude later stopped F graph absent"));
+        }
+        let graph=graph.unwrap();
         if graph.state!="REGISTERED" || graph.classification!="SINGLE" ||
             graph.members.len()!=1 || graph.members[0].worktree_id!=peer.tree ||
             graph.members[0].repository_id!=peer.repository ||
@@ -897,6 +917,15 @@ impl<'root> ProductDatabase<'root> {
             binding.baseline_commit!=graph.members[0].baseline_commit {
             return Err(denied("Claude later stopped physical F binding changed"));
         }
+        self.validate_original_peer_create(instance,peer,&binding.permission_tier,
+            &binding.seat_generation.to_string(),&binding.baseline_commit)?;
+        claude_profile_directories(&peer.profile_name)
+    }
+
+    fn validate_original_peer_create(
+        &self, instance:&str,peer:&StoppedPeer, permission_tier:&str,
+        seat_generation:&str, baseline_commit:&str,
+    )->Result<()> {
         let create=rows(&self.connection,
             "SELECT o.request_id,o.request_hash,o.repository_id,o.domain_id,o.seat_id,
                     o.seat_incarnation,CAST(o.seat_generation AS TEXT),
@@ -918,24 +947,85 @@ impl<'root> ProductDatabase<'root> {
             row[5]!=peer.incarnation || row[5]!=row[16] ||
             row[6]!=row[17] || row[7]!=row[18] ||
             row[8]!=instance || row[8]!=row[19] ||
-            row[9]!=binding.permission_tier || row[9]!=row[20] ||
+            row[9]!=permission_tier || row[9]!=row[20] ||
             row[10]!=row[21] || row[11]!="REGISTERED" || !row[12].is_empty() ||
-            row[6]!=binding.seat_generation.to_string() {
+            row[6]!=seat_generation {
             return Err(denied("Claude later stopped original F create changed"));
+        }
+        let worktree=rows(&self.connection,
+            "SELECT repository_id,domain_id,seat_id,seat_incarnation,
+                    CAST(seat_generation AS TEXT),CAST(seat_revision AS TEXT),
+                    permission_tier,instance_id,source_revision,baseline_commit,path_id,
+                    state,revision FROM main.gogoke_v37_worktrees WHERE worktree_id=?1",
+            &[&peer.tree],13)?;
+        let [tree]=worktree.as_slice() else {
+            return Err(denied("Claude later stopped original F row absent"));
+        };
+        if tree[0]!=peer.repository || tree[1]!=peer.domain || tree[2]!=peer.seat ||
+            tree[3]!=peer.incarnation || tree[4]!=seat_generation ||
+            tree[6]!=permission_tier || tree[7]!=instance || tree[8]!="1" ||
+            tree[9]!=baseline_commit || tree[10].len()<3 || !tree[10].starts_with("wt") ||
+            tree[11]!="REGISTERED" || tree[12]!="1" {
+            return Err(denied("Claude later stopped original F binding changed"));
+        }
+        Ok(())
+    }
+
+    fn validate_normally_stopped_cleaned_peer(
+        &self, instance:&str,peer:&StoppedPeer,
+    )->Result<()> {
+        let stop_fact=peer.stop_fact.as_deref()
+            .filter(|value|value.starts_with("sha256:") && value.len()==71 &&
+                value[7..].bytes().all(|b|b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+            .ok_or_else(||denied("Claude cleaned peer StopFact absent"))?;
+        let tree=rows(&self.connection,
+            "SELECT w.repository_id,w.domain_id,w.seat_id,w.seat_incarnation,
+                    CAST(w.seat_generation AS TEXT),CAST(w.seat_revision AS TEXT),
+                    w.permission_tier,w.instance_id,w.source_revision,w.baseline_commit,
+                    w.path_id,w.worktree_path,w.state,w.revision,
+                    (SELECT COUNT(*) FROM main.gogoke_v37_worktree_members m
+                      WHERE m.worktree_id=w.worktree_id)
+               FROM main.gogoke_v37_worktrees w WHERE w.worktree_id=?1",
+            &[&peer.tree],15)?;
+        let [tree]=tree.as_slice() else {
+            return Err(denied("Claude cleaned peer original F row absent"));
+        };
+        if tree[0]!=peer.repository || tree[1]!=peer.domain || tree[2]!=peer.seat ||
+            tree[3]!=peer.incarnation || tree[7]!=instance || tree[8]!="1" ||
+            tree[10].len()<3 || !tree[10].starts_with("wt") ||
+            tree[12]!="REGISTERED" || tree[13]!="1" || tree[14]!="0" {
+            return Err(denied("Claude cleaned peer F binding changed"));
+        }
+        self.validate_original_peer_create(instance,peer,&tree[6],&tree[4],&tree[9])?;
+        let lifecycle=rows(&self.connection,
+            "SELECT state,CAST(revision AS TEXT),COALESCE(stop_fact_id,'')
+               FROM main.gogoke_v37_worktree_lifecycle WHERE worktree_id=?1",
+            &[&peer.tree],3)?;
+        if lifecycle!=vec![vec!["CLEANED".to_owned(),"3".to_owned(),stop_fact.to_owned()]] {
+            return Err(denied("Claude cleaned peer lifecycle StopFact changed"));
+        }
+        let operations=rows(&self.connection,
+            "SELECT request_id,request_hash,operation,phase,cause,COALESCE(result_commit,'')
+               FROM main.gogoke_v37_worktree_lifecycle_ops WHERE worktree_id=?1
+              ORDER BY operation,request_id", &[&peer.tree],6)?;
+        let hash_ok=|value:&str|value.len()==64 && value.bytes().all(|b|
+            b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        if operations.len()!=2 || operations.iter().any(|row|row[0].is_empty() ||
+            !hash_ok(&row[1]) || row[3]!="APPLIED" || !row[4].is_empty() || !row[5].is_empty()) ||
+            operations.iter().filter(|row|row[2]=="REGISTER").count()!=1 ||
+            operations.iter().filter(|row|row[2]=="CLEANUP").count()!=1 {
+            return Err(denied("Claude cleaned peer original F lifecycle operations changed"));
         }
         let pending=rows(&self.connection,
             "SELECT 1 FROM main.gogoke_v37_worktree_lifecycle_ops
               WHERE worktree_id=?1 AND phase IN ('INTENT','UNKNOWN') LIMIT 1",
             &[&peer.tree],1)?;
         if !pending.is_empty() {return Err(denied("Claude later stopped F lifecycle pending"));}
-        let folder=peer.profile_name.to_ascii_lowercase();
-        if !folder.starts_with("gogoke37.session.") ||
-            !folder.bytes().all(|b|b.is_ascii_lowercase() || b.is_ascii_digit() || b==b'.') {
-            return Err(denied("Claude later stopped native profile name"));
+        if !evidence(worktree::cleaned_worktree_absent_for_stop_fact(
+            &self.connection,self.root,&peer.tree,stop_fact))? {
+            return Err(denied("Claude cleaned peer physical F absence unproven"));
         }
-        let base=PathBuf::from("AppData").join("Local").join("Packages").join(folder);
-        Ok(vec![base.clone(),base.join("AC"),base.join("AC").join("Temp"),
-            base.join("AC").join("Temp").join("claude")])
+        Ok(())
     }
 
     fn verified_official_pid_source(&self, old:&Original)->Result<()> {
@@ -1023,7 +1113,7 @@ impl<'root> ProductDatabase<'root> {
         let mut later_profile_directories=Vec::new();
         for peer in stopped.iter().filter(|peer|!captured.contains(&peer.sid)) {
             later_profile_directories.extend(self.completed_later_profile_directories(
-                instance,peer,&roots[0])?);
+                instance,peer,&roots[0],true)?);
             later.push((peer.sid.as_str(),peer.tree==original.worktree));
         }
         let mut all_known=originals.iter().map(|old|old.sid.clone()).collect::<Vec<_>>();
@@ -1053,9 +1143,9 @@ impl<'root> ProductDatabase<'root> {
                 domain:fact(&old.facts,"domain")?,seat:fact(&old.facts,"seat")?,
                 session:fact(&old.facts,"session")?,generation:fact(&old.facts,"generation")?,
                 incarnation:fact(&old.facts,"incarnation")?,home:fact(&old.facts,"home")?,
-                binding:fact(&old.facts,"binding")?};
+                binding:fact(&old.facts,"binding")?,stop_fact:None};
             later_profile_directories.extend(self.completed_later_profile_directories(
-                instance,&peer,&roots[0])?);
+                instance,&peer,&roots[0],false)?);
             let relative=PathBuf::from("sessions").join(format!("{}.json",old.pair.0));
             use std::os::windows::ffi::OsStrExt;
             let relative_hex=relative.as_os_str().encode_wide()
@@ -1090,9 +1180,10 @@ impl<'root> ProductDatabase<'root> {
                 generation:fact(&old.facts,"generation")?,
                 incarnation:fact(&old.facts,"incarnation")?,
                 home:fact(&old.facts,"home")?,binding:fact(&old.facts,"binding")?,
+                stop_fact:None,
             };
             later_profile_directories.extend(self.completed_later_profile_directories(
-                instance,&peer,&roots[0])?);
+                instance,&peer,&roots[0],false)?);
         }
         let mut missing_pid=Vec::new();
         for (old,old_record,old_roots,_) in &verified {

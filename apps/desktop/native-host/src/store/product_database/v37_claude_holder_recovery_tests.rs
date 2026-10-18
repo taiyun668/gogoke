@@ -1312,12 +1312,66 @@ fn claude_holder_completed_receipts_survive_later_real_stopped_peer() {
         assert_eq!(old_journal.len(), 2);
         assert!(old_journal.iter().all(|row| row[7] == "APPLIED"));
         assert!(old_claims.iter().filter(|row| row[1] == "sessionA" || row[1] == "sessionB")
+            .all(|row| row[6] == "RELEASED"));
+        assert!(old_claims.iter().filter(|row| row[1] == "sessionA" || row[1] == "sessionB")
             .all(|row| row[6] == "RELEASED" && row[9].is_empty()));
 
-        let domain = "projectA";
-        let seat_id = "seatA";
-        let tree = "treeA";
-        let session = "laterSessionA";
+        let registered_seat=seat::get(&product.connection,"projectA","seatA").unwrap().unwrap();
+        assert_eq!(registered_seat.state,seat::State::Idle);
+        let registered_generation=registered_seat.generation+1;
+        let registered_session="laterSessionA";
+        for (verb,revision) in [("admission-reserve",0),("admission-commit",1)] {
+            applied(&mut product,&operation("projectA","K-SESSION",verb,
+                &format!("registered-peer-{verb}"),registered_session,revision,
+                &format!(r#"{{"seatId":"seatA","generation":"{registered_generation}"}}"#)));
+        }
+        applied(&mut product,&operation("projectA","K-SESSION","open",
+            "registered-peer-open",registered_session,2,
+            &format!(r#"{{"seatId":"seatA","generation":"{registered_generation}",
+                "repositoryId":"fixtureRepo","worktreeId":"treeA"}}"#)));
+        let registered_open=product.native_sessions.get(&("projectA".into(),registered_session.into()))
+            .unwrap().operation_id.clone();
+        let registered_stop_raw=product.dispatch_user_request(&operation("projectA","K-SESSION",
+            "stop","registered-peer-stop",registered_session,3,
+            &format!(r#"{{"seatId":"seatA","generation":"{registered_generation}"}}"#)))
+            .expect("actual native stop for the later peer on registered F");
+        let registered_stop=h::decode_receipt(&registered_stop_raw).unwrap();
+        assert_eq!(registered_stop.status,V37Status::Applied,
+            "registered later H stop: {}",String::from_utf8_lossy(&registered_stop_raw));
+        let registered_fact=rows(&product,
+            "SELECT c.stop_proof_hash,e.stop_fact_id,a.stop_fact_id,c.state,e.phase,a.state
+               FROM main.gogoke_coordination_process_custody c
+               JOIN main.gogoke_v37_h_process_episode e ON e.process_operation_id=c.operation_id
+               JOIN main.gogoke_v37_h_claim a ON a.process_operation_id=c.operation_id
+              WHERE c.operation_id=?1",&[&registered_open],6);
+        assert_eq!(registered_fact.len(),1);
+        assert_eq!(registered_fact[0][0],registered_fact[0][1]);
+        assert_eq!(registered_fact[0][0],registered_fact[0][2]);
+        assert_eq!((&registered_fact[0][3][..],&registered_fact[0][4][..],
+            &registered_fact[0][5][..]),("STOPPED","STOPPED","STOPPED"));
+        applied(&mut product,&operation("projectA","K-SESSION","admission-release",
+            "registered-peer-release",registered_session,registered_stop.revision,
+            &format!(r#"{{"seatId":"seatA","generation":"{registered_generation}"}}"#)));
+
+        let domain = "projectC";
+        let seat_id = "seatC";
+        let tree = "treeC";
+        let session = "laterSessionC";
+        let later_sessions=[registered_session,session];
+        seat::set_project_parallel_cap(&mut product.connection,&product.owner,domain,1).unwrap();
+        seat::store_template(&mut product.connection,NativeOrigin::user(&product.owner),StoreTemplate{
+            domain_id:domain,template_id:"templateA",
+            settings_json:br#"{"effort":"high","model":"claude-sonnet-4-6","permissionTier":"NETWORKED_WRITE"}"#,
+        }).unwrap();
+        seat::create(&mut product.connection,NativeOrigin::user(&product.owner),CreateSeat{
+            domain_id:domain,seat_id,template_id:"templateA",instance_id:Some(INSTANCE),
+            kind:Kind::Long,request_id:"claude-holder-seat-seatC",request_bytes:b"seat seatC",
+        }).unwrap();
+        applied(&mut product,&operation(domain,"K-WORKTREE","create","claude-tree-treeC",
+            tree,0,&format!(r#"{{"repositoryId":"fixtureRepo","seatId":"{seat_id}",
+                "layout":"single"}}"#)));
+        applied(&mut product,&operation(domain,"K-WORKTREE","register","claude-register-treeC",
+            tree,1,"{}"));
         let seat_now = seat::get(&product.connection, domain, seat_id).unwrap().unwrap();
         assert_eq!(seat_now.state, seat::State::Idle);
         let f_before = worktree::resolve_for_launch(&product.connection, root,
@@ -1373,7 +1427,9 @@ fn claude_holder_completed_receipts_survive_later_real_stopped_peer() {
             tree, "fixtureRepo", domain, seat_id, &seat_after.incarnation,
             seat_after.generation).unwrap();
         assert_eq!((&f_before.path, &f_before.identity), (&f_after.path, &f_after.identity),
-            "later normal H used the same registered SINGLE F root");
+            "later normal H used its distinct registered SINGLE F root");
+        drop(f_after);
+        drop(f_before);
         later_profile.verify_bound_directory_grant(&history.home, &history.home_identity, true)
             .expect("later legitimate STOPPED package SID is present on the reused instance HOME");
         let later_claim = claims(&product).into_iter().find(|row| row[1] == session).unwrap();
@@ -1390,21 +1446,159 @@ fn claude_holder_completed_receipts_survive_later_real_stopped_peer() {
                 "old completed receipt survives later normal stop");
         }
         assert_eq!(journal(&product), old_journal);
-        assert_eq!(claims(&product).into_iter().filter(|row| row[1] != session)
+        assert_eq!(claims(&product).into_iter().filter(|row| !later_sessions.contains(&row[1].as_str()))
             .collect::<Vec<_>>(), old_claims);
-        assert_eq!(original_opens(&product).into_iter().filter(|row| row[4] != session)
+        assert_eq!(original_opens(&product).into_iter().filter(|row| !later_sessions.contains(&row[4].as_str()))
             .collect::<Vec<_>>(), old_opens);
         assert_eq!(custody(&product).into_iter().filter(|row|
             old_custody.iter().any(|old| old[0] == row[0])).collect::<Vec<_>>(), old_custody);
-        assert_eq!(episodes(&product).into_iter().filter(|row| row[2] != session)
+        assert_eq!(episodes(&product).into_iter().filter(|row| !later_sessions.contains(&row[2].as_str()))
             .collect::<Vec<_>>(), old_episodes);
-        assert_eq!(rpc(&product).into_iter().filter(|row| row[1] != session)
+        assert_eq!(rpc(&product).into_iter().filter(|row| !later_sessions.contains(&row[1].as_str()))
             .collect::<Vec<_>>(), old_rpc);
-        let operation=old_journal.iter().find(|row|row[3]=="sessionA").unwrap()[0].clone();
-        let (roots,_)=product.test_claude_original_acl_source(INSTANCE,&operation).unwrap();
+        let old_operation=old_journal.iter().find(|row|row[3]=="sessionA").unwrap()[0].clone();
+
+        let graph=worktree::graph_query(&product.connection,tree).unwrap().unwrap();
+        let cleanup_request=operation(
+            domain,"K-WORKTREE","cleanup","claude-later-cleanup",tree,
+            graph.revision as u64,"{}");
+        let cleanup_raw=product.dispatch_user_request(&cleanup_request)
+            .expect("native F cleanup after the actual normal H stop and release");
+        let cleanup_receipt=h::decode_receipt(&cleanup_raw).unwrap();
+        assert_eq!(cleanup_receipt.status,V37Status::Applied,
+            "native F cleanup: {}",String::from_utf8_lossy(&cleanup_raw));
+        let cleanup=rows(&product,
+            "SELECT l.state,l.stop_fact_id,o.request_id,o.request_hash,o.phase
+               FROM main.gogoke_v37_worktree_lifecycle l
+               JOIN main.gogoke_v37_worktree_lifecycle_ops o ON o.worktree_id=l.worktree_id
+              WHERE l.worktree_id=?1 AND o.operation='CLEANUP'",&[tree],5);
+        assert_eq!(cleanup.len(),1);
+        assert_eq!(cleanup[0][0],"CLEANED");
+        assert_eq!(cleanup[0][1],stopped_fact[0][0]);
+        assert_eq!(cleanup[0][2],"claude-later-cleanup");
+        assert_eq!(cleanup[0][3],crate::store::digest::sha256_hex(&cleanup_request.raw_bytes),
+            "cleanup hash is the digest of the exact original native request bytes");
+        assert_eq!(cleanup[0][4],"APPLIED");
+        assert!(worktree::graph_query(&product.connection,tree).unwrap().is_none(),
+            "the public worktree graph continues to hide CLEANED F");
+
+        let before_reopen=(journal(&product),claims(&product),original_opens(&product),
+            custody(&product),episodes(&product),rpc(&product));
+        product.close_checked().unwrap();
+        let mut product=ProductDatabase::open(root,&cold.database).unwrap();
+        product.recover_disappeared_claude_resources(INSTANCE,None)
+            .expect("complete normal STOPPED peer provenance survives native F cleanup and reopen");
+        assert_eq!((journal(&product),claims(&product),original_opens(&product),
+            custody(&product),episodes(&product),rpc(&product)),before_reopen,
+            "recovery reads the old evidence without rewriting it");
+        macro_rules! assert_cleaned_peer_refused_without_writes {
+            ($reason:expr) => {{
+                let before=(journal(&product),claims(&product),original_opens(&product),
+                    custody(&product),episodes(&product),rpc(&product));
+                let result=product.recover_disappeared_claude_resources(INSTANCE,None);
+                assert!(result.is_err(),"{}",$reason);
+                assert_eq!((journal(&product),claims(&product),original_opens(&product),
+                    custody(&product),episodes(&product),rpc(&product)),before,
+                    "{} must not rewrite any original evidence",$reason);
+            }};
+        }
+        let cleaned_f_binding=rows(&product,
+            "SELECT seat_incarnation,path_id FROM main.gogoke_v37_worktrees
+              WHERE worktree_id='treeC'",&[],2);
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_worktree_lifecycle_ops SET phase='UNKNOWN'
+             WHERE worktree_id='treeC' AND operation='CLEANUP'").unwrap();
+        assert_cleaned_peer_refused_without_writes!("cleanup UNKNOWN is not APPLIED");
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_worktree_lifecycle_ops SET phase='APPLIED'
+             WHERE worktree_id='treeC' AND operation='CLEANUP'").unwrap();
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_worktree_lifecycle_ops SET request_hash='mismatched'
+             WHERE worktree_id='treeC' AND operation='CLEANUP'").unwrap();
+        assert_cleaned_peer_refused_without_writes!("mismatched cleanup request hash is refused");
+        product.connection.execute(&format!(
+            "UPDATE main.gogoke_v37_worktree_lifecycle_ops SET request_hash='{}'
+             WHERE worktree_id='treeC' AND operation='CLEANUP'",cleanup[0][3])).unwrap();
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_worktree_lifecycle
+             SET stop_fact_id='sha256:0000000000000000000000000000000000000000000000000000000000000000'
+             WHERE worktree_id='treeC'").unwrap();
+        assert_cleaned_peer_refused_without_writes!("cleanup StopFact mismatch is refused");
+        product.connection.execute(&format!(
+            "UPDATE main.gogoke_v37_worktree_lifecycle SET stop_fact_id='{}'
+             WHERE worktree_id='treeC'",cleanup[0][1])).unwrap();
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_worktree_lifecycle_ops SET phase='UNKNOWN'
+             WHERE worktree_id='treeC' AND operation='REGISTER'").unwrap();
+        assert_cleaned_peer_refused_without_writes!("missing APPLIED original F registration is refused");
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_worktree_lifecycle_ops SET phase='APPLIED'
+             WHERE worktree_id='treeC' AND operation='REGISTER'").unwrap();
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_worktrees SET instance_id='wrongInstance'
+             WHERE worktree_id='treeC'").unwrap();
+        assert_cleaned_peer_refused_without_writes!("wrong F instance is refused");
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_worktrees SET instance_id='instanceA'
+             WHERE worktree_id='treeC'").unwrap();
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_worktrees SET domain_id='wrongDomain'
+             WHERE worktree_id='treeC'").unwrap();
+        assert_cleaned_peer_refused_without_writes!("wrong F domain is refused");
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_worktrees SET domain_id='projectC'
+             WHERE worktree_id='treeC'").unwrap();
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_worktrees SET seat_incarnation='wrongIncarnation'
+             WHERE worktree_id='treeC'").unwrap();
+        assert_cleaned_peer_refused_without_writes!("wrong F incarnation is refused");
+        product.connection.execute(&format!(
+            "UPDATE main.gogoke_v37_worktrees SET seat_incarnation='{}'
+             WHERE worktree_id='treeC'",cleaned_f_binding[0][0])).unwrap();
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_worktree_operations SET phase='UNKNOWN'
+             WHERE worktree_id='treeC'").unwrap();
+        assert_cleaned_peer_refused_without_writes!("original F create source is required");
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_worktree_operations SET phase='REGISTERED'
+             WHERE worktree_id='treeC'").unwrap();
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_worktrees SET path_id='wtwrong' WHERE worktree_id='treeC'")
+            .unwrap();
+        assert_cleaned_peer_refused_without_writes!("original F path binding is required");
+        product.connection.execute(&format!(
+            "UPDATE main.gogoke_v37_worktrees SET path_id='{}' WHERE worktree_id='treeC'",
+            cleaned_f_binding[0][1])).unwrap();
+        let cleaned_path=rows(&product,
+            "SELECT worktree_path FROM main.gogoke_v37_worktrees WHERE worktree_id='treeC'",&[],1);
+        let cleaned_path=std::path::PathBuf::from(cleaned_path[0][0].clone());
+        std::fs::create_dir(&cleaned_path).unwrap();
+        assert_cleaned_peer_refused_without_writes!("recreated F path is refused");
+        std::fs::remove_dir(&cleaned_path).unwrap();
+
+        let (domain_b,seat_b,tree_b,_)=SCOPES[1];
+        assert_ne!(tree_b,"treeA");
+        assert_eq!(worktree::graph_query(&product.connection,tree_b).unwrap()
+            .unwrap().state,"REGISTERED");
+        let seat_b_now=seat::get(&product.connection,domain_b,seat_b).unwrap().unwrap();
+        assert_eq!(seat_b_now.state,seat::State::Idle);
+        let next_generation=seat_b_now.generation+1;
+        let next_session="afterCleanedPeerReopen";
+        for (verb,revision) in [("admission-reserve",0),("admission-commit",1)] {
+            applied(&mut product,&operation(domain_b,"K-SESSION",verb,
+                &format!("cleaned-peer-{verb}"),next_session,revision,
+                &format!(r#"{{"seatId":"{seat_b}","generation":"{next_generation}"}}"#)));
+        }
+        applied(&mut product,&operation(domain_b,"K-SESSION","open",
+            "cleaned-peer-reopen-open",next_session,2,
+            &format!(r#"{{"seatId":"{seat_b}","generation":"{next_generation}",
+                "repositoryId":"fixtureRepo","worktreeId":"{tree_b}"}}"#)));
+        assert!(product.native_sessions.contains_key(&(domain_b.into(),next_session.into())),
+            "a new original H opens on a distinct still-registered F");
+        let (roots,_)=product.test_claude_original_acl_source(INSTANCE,&old_operation).unwrap();
         later_profile.grant_bound_tree(&roots[1].0,&roots[1].1,roots[1].2).unwrap();
         let wrong_tree=product.completed_claude_holder_release(
-            INSTANCE,"projectA","sessionA",&operation);
+            INSTANCE,"projectA","sessionA",&old_operation);
         assert!(wrong_tree.is_err() || wrong_tree.as_ref().is_ok_and(|value|!*value),
             "a later stopped peer has no grant provenance in the old session HOME");
         product.close_checked().unwrap();

@@ -738,6 +738,36 @@ fn proven_cleaned_root(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
     Ok(true)
 }
 
+/// Recheck physical absence for a caller that has already matched the full
+/// original cleanup provenance. Bind the stored path to this exact native F
+/// identity before observing it; a stale or redirected path is not evidence.
+pub(crate) fn cleaned_worktree_absent_for_stop_fact(
+    db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
+    worktree_id: &str, stop_fact_id: &str,
+) -> Result<bool> {
+    if !atom(worktree_id) || stop_fact_id.is_empty() {
+        return Ok(false);
+    }
+    let row = Statement::prepare(db.as_ptr(),
+        "SELECT w.worktree_path,w.path_id FROM main.gogoke_v37_worktrees w
+         JOIN main.gogoke_v37_worktree_lifecycle l ON l.worktree_id=w.worktree_id
+         WHERE w.worktree_id=?1 AND l.state='CLEANED' AND l.stop_fact_id=?2
+           AND EXISTS(SELECT 1 FROM main.gogoke_v37_worktree_lifecycle_ops o
+             WHERE o.worktree_id=w.worktree_id AND o.operation='CLEANUP' AND o.phase='APPLIED')")?;
+    row.bind_text(1, worktree_id)?;
+    row.bind_text(2, stop_fact_id)?;
+    if !row.step_row()? { return Ok(false); }
+    let path = PathBuf::from(row.column_text(0)?);
+    let path_id = row.column_text(1)?;
+    let expected = root.canonical_root().canonical_path.join("v37-worktrees")
+        .join("single").join(&path_id);
+    if row.step_row()? || !atom(path_id.as_str()) || !path_id.starts_with("wt") || path != expected {
+        return Err(WorktreeError::Denied);
+    }
+    require_absent(&path)?;
+    Ok(true)
+}
+
 pub(crate) fn cleanup_stop_gate(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
     worktree_id: &str) -> Result<Vec<ExactStopFact>> {
     // resolve_id verifies the graph member's host-generated canonical path,
