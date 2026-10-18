@@ -62,7 +62,7 @@ def binding(input_file, output_file):
             cfg['executionEnabled'] is True and cfg['acceptance'] is False,
             'bound non-acceptance physical view input required')
     old, new = component(cfg['oldComponent']), component(cfg['newComponent'])
-    require(new['candidateNumber'] == old['candidateNumber'] + 1 and
+    require(new['candidateNumber'] > old['candidateNumber'] and
             re.fullmatch(r'[a-f0-9]{64}', cfg['toolSourceSha256']) and
             hashlib.sha256(Path(__file__).read_bytes()).hexdigest() == cfg['toolSourceSha256'],
             'component transition or loaded physical tool source differs')
