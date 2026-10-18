@@ -141,9 +141,26 @@ export class ActualProduct {
     }
     this.socket = new WebSocket(socketUrl);
     await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(Error('Diagnostic connection deadline')), 5000);
-      this.socket.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
-      this.socket.addEventListener('error', () => { clearTimeout(timer); reject(Error('Diagnostic connection failed')); }, { once: true });
+      let settled = false;
+      const fail = error => {
+        if (settled) return;
+        settled = true; clearTimeout(timer);
+        try { this.socket.close(); }
+        catch (closeError) { error.message += `; connection cleanup: ${String(closeError?.stack ?? closeError)}`; }
+        reject(error);
+      };
+      const timer = setTimeout(() => fail(Error(`Diagnostic connection deadline (readyState=${this.socket.readyState})`)), 5000);
+      this.socket.addEventListener('open', () => {
+        if (settled) return;
+        settled = true; clearTimeout(timer); resolve();
+      }, { once: true });
+      this.socket.addEventListener('error', event => {
+        const original = event.error ?? event.message ?? event.type;
+        fail(Error(`Diagnostic connection failed (readyState=${this.socket.readyState}): ${String(original?.stack ?? original)}`, { cause: original }));
+      }, { once: true });
+      this.socket.addEventListener('close', event => {
+        fail(Error(`Diagnostic connection closed before open (code=${event.code}, reason=${event.reason}, readyState=${this.socket.readyState})`));
+      }, { once: true });
     });
   }
   async attachRetained(binding = {}) {
