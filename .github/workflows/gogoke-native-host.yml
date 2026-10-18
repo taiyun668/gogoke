@@ -279,6 +279,7 @@ jobs:
             'service-transport' { @('ipc::') }
             'managed-source-only' { @(
               'global_cli_discovery_and_location_are_forbidden_for_every_driver',
+              'user_manual_global_repin_refuses_observation_and_preserves_original_instance',
               'registered_instance_without_source_conflicts_before_global_observation',
               'pin_is_read_from_same_verified_store_and_requires_observed_login',
               'actual_catalog_hardlink_program_prepares_suspended_lpac_activates_and_stops',
@@ -1087,12 +1088,12 @@ jobs:
             @{ id = 'native-codex-session-open'; filter = 'actual_pinned_codex_product_open_records_rpc_and_durable_stop_without_model_call' },
             @{ id = 'code-mode-member-binding'; filter = 'fixed_codex_component_rejects_unpinned_bytes_before_grant_and_pins_exact_file' },
             @{ id = 'native-current-install-pin'; filter = 'pin_is_read_from_same_verified_store_and_requires_observed_login' },
-            @{ id = 'manual-repin-product'; filter = 'user_manual_program_repin_observes_fixed_cli_and_preserves_original_instance' },
+            @{ id = 'manual-repin-product'; filter = 'user_manual_global_repin_refuses_observation_and_preserves_original_instance' },
             @{ id = 'manual-repin-preservation'; filter = 'manual_repin_preserves_home_creation_credentials_and_legacy_unknown_exactly' },
             @{ id = 'manual-repin-conflicts'; filter = 'manual_repin_rejects_pending_claim_episode_and_generation_change_without_writes' },
             @{ id = 'manual-repin-witness'; filter = 'manual_repin_does_not_legitimize_changed_creation_pin_or_damaged_witness' },
             @{ id = 'native-install-admission'; filter = 'product_admission_enforces_persisted_caps_and_rolls_back_busy_on_denial' },
-            @{ id = 'native-missing-program'; filter = 'rejects_root_or_platform_version_mismatch_and_missing_program' },
+            @{ id = 'native-missing-program'; filter = 'global_cli_discovery_and_location_are_forbidden_for_every_driver' },
             @{ id = 'persistent-partial-eof'; filter = 'persistent_reader_distinguishes_unterminated_output_from_empty_eof' },
             @{ id = 'process-coordination'; filter = 'prepared_process_identity_is_durable_before_activation' },
             @{ id = 'stop-124-negative'; filter = 'natural_exit_124_and_close_error_still_reject_stop_proof' },
