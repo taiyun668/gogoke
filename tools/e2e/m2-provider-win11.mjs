@@ -96,7 +96,7 @@ if (opencode && (opencode.model.toLowerCase().includes('gpt') || !/(grok|xai)/i.
 
 const journal = { schema: 'gogoke.37.m2-provider-win11-e2e.v1', caseId: id('m2ProviderE2E'),
   sourceCommit: config.sourceCommit, domainId: config.domainId, repositoryId: config.repositoryId,
-  installedVersion: config.version, installedSha256: config.installedSha256,
+  installedVersion: config.version, installedPath: config.installed, installedSha256: config.installedSha256,
   state: 'RUNNING', acceptance: false, authenticationActions: false, observerDatabaseWrites: false,
   hostOperationsWriteCandidateDatabase: true, credentialReads: false, b5: 'NOT_RUN_UNSUPPORTED',
   marker: id('M2_PROVIDER_MARKER'), cases: [], operations: [], sessions: [], launches: [], closes: [],

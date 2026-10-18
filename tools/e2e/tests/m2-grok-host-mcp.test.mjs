@@ -18,7 +18,7 @@ test('Grok Host-MCP immutable reader joins original H, A and C facts and rejects
       const reader = path.resolve(here, '..', 'm2-provider-capture-readback.py');
       const causalCloseFixture = Buffer.from(JSON.stringify(
         closeFixture(123, 'SPAWNED_NODE_CHILD'))).toString('base64');
-      const source = String.raw`import ast, hashlib, json, re, sqlite3, sys
+      const source = String.raw`import ast, hashlib, json, re, sqlite3, subprocess, sys
 import base64, os
 from pathlib import Path
 
@@ -43,7 +43,8 @@ close_base['causalCloseAttempts'][0]['schema'] = 'gogoke.37.causal-close-attempt
 def close_entry_journal(case_mode='grokHostMcpQuestion'):
     value = json.loads(json.dumps(close_base))
     value.update({'sourceCommit':'a'*40,'installedVersion':'1.0.41',
-        'installedSha256':{'gogoke.exe':'1'*64,'gogoke-native-host.exe':'2'*64,
+        'installedPath':close_base['boundInstalledIdentity']['installed'],
+        'installedSha256':{**close_base['boundInstalledIdentity']['installedSha256'],
                            'resource-index.json':'3'*64},
         'launches':[{'pid':123,'sourceCommit':'a'*40,'bootstrap':{'version':'1.0.41'}}],
         'productExits':[{'pid':123,'code':0}],
@@ -385,14 +386,165 @@ def writer_only(db,case,journal):
     normalized={**update,'_meta':{'threadId':vendor,'rawSourceCursor':'6'}}
     db.execute('UPDATE v37_ledger_index SET update_json=? WHERE source_cursor=?',(canonical(normalized),'6'))
 run_case('writer-only-no-vendor-consumption',writer_only,True)
+
+def table_from(relative,name):
+    text=(repo/relative).read_text(encoding='utf-8')
+    match=re.search(r'"(CREATE TABLE (?:IF NOT EXISTS )?'+re.escape(name)+r'\s*\([^\"]*\) STRICT)"',text,re.S)
+    if not match: raise AssertionError('missing production table DDL '+name)
+    return match.group(1)
+
+def full_main_close_controls():
+    # Exercise the actual readback CLI over the production DDL; close facts remain synthetic.
+    db,case,source_journal,session=fixture('state')
+    admission='apps/desktop/native-host/src/store/session_transport/admission.rs'
+    binding_source='apps/desktop/native-host/src/store/session_transport/session_binding.rs'
+    worktree_source='apps/desktop/native-host/src/store/worktree/mod.rs'
+    for name in ['gogoke_v37_h_owner_binding','gogoke_v37_h_claim','gogoke_v37_h_operation',
+                 'gogoke_v37_h_seat_binding']:
+        db.execute(table_from(admission,name))
+    db.execute(rust_const('apps/desktop/native-host/src/store/authority/process_custody.rs','SCHEMA'))
+    for name in ['SCHEMA','PENDING_SCHEMA','EFFECTIVE_SEAT_SCHEMA']:
+        db.execute(rust_const(binding_source,name))
+    for name in ['gogoke_v37_worktree_sources','gogoke_v37_worktrees',
+                 'gogoke_v37_worktree_operations','gogoke_v37_worktree_lifecycle']:
+        db.execute(table_from(worktree_source,name))
+    db.execute(schema_table('v37_ledger_meta'))
+    db.execute('INSERT INTO v37_ledger_meta VALUES(1,?)',(nonce,))
+    stop_fact='sha256:'+'1'*64
+    db.execute('INSERT INTO gogoke_v37_h_owner_binding VALUES(?,?,?,?,?,?,?)',
+        ('binding-original',instance,domain,'SESSION',sid,generation,'ACTIVE'))
+    db.execute('INSERT INTO gogoke_v37_h_claim VALUES(?,?,?,?,?,?,?,?,?,?)',
+        (domain,sid,instance,'home-original','binding-original',generation,'RELEASED',5,process_op,stop_fact))
+    bind=(domain,sid,seat,'incarnation-1',19,instance)
+    db.execute('INSERT INTO gogoke_v37_native_selection VALUES(?,?,?,?,?,?)',bind)
+    db.execute('INSERT INTO gogoke_v37_session_binding_v2 VALUES(?,?,?,?,?,?,?)',(*bind,'NATIVE_V2'))
+    fixed_sha=case['fixedSha256']
+    db.execute('INSERT INTO gogoke_coordination_process_custody VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+        (process_op,ticket,nonce,'1234','100000','D:/synthetic/grok.exe','sha256:'+fixed_sha,
+         instance,domain,generation,'STOPPED',stop_fact))
+    physical=temp_root/'v37-worktrees'/'single'/'wtAudit'
+    physical.mkdir(parents=True,exist_ok=True)
+    identity=subprocess.check_output([sys.executable,str(reader_path),'--directory-identity',str(physical)],
+        text=True).strip()
+    db.execute('INSERT INTO gogoke_v37_worktree_sources VALUES(?,?,?,?,?,?,?,?,?,?)',
+        ('gogokeSeatTestbed',str(temp_root/'source'),'source-identity',str(temp_root/'source/.git'),
+         'common-identity','HTTPS','a'*40,'sha256:'+'b'*64,'2.0',1))
+    db.execute('INSERT INTO gogoke_v37_worktrees VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        (worktree,'wtAudit','gogokeSeatTestbed',domain,seat,'incarnation-1',18,1,'ReadOnly',instance,1,
+         str(physical),identity,'b'*64,20,'pointer-id','common-id','a'*40,'REGISTERED',1))
+    db.execute('INSERT INTO gogoke_v37_worktree_operations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        ('create-original','c'*64,'gogokeSeatTestbed',domain,seat,worktree,'wtAudit','incarnation-1',
+         18,1,instance,'ReadOnly','REGISTERED',''))
+    db.execute('INSERT INTO gogoke_v37_worktree_lifecycle(worktree_id,state,revision) VALUES(?,?,?)',
+        (worktree,'REGISTERED',2))
+    case.update({'sessionId':sid,'stopFact':stop_fact,
+        'loggedInInstance':{'instanceId':instance,'driverId':'grok','version':'1.0.41','state':'LOGGED_IN'},
+        'processIdentity':{'processId':'1234','creationTime100ns':'100000',
+            'basis':'ACTUAL_PRODUCT_DESCENDANT_PROCESS_COMMAND_LINE_FILTERED','imageSha256':fixed_sha,
+            'productRootPid':'123'}})
+    case['modelEffortEvidence']={'basis':'REQUIRES_CAPTURED_ACTUAL_PROCESS_ARGV','argv':
+        {'basis':'ACTUAL_PRODUCT_DESCENDANT_PROCESS_COMMAND_LINE_FILTERED','imageSha256':fixed_sha,
+         'processId':'1234','modelArgCount':1,'effortArgCount':1,'commandLineSha256':'e'*64,
+         'modelFlag':'--model','effortFlag':'--reasoning-effort','model':'grok-4.6','effort':'high',
+         'productRootPid':'123'}}
+    session['generation']=generation
+    for op,rid,rev in [('stop','stop-request','3'),('admission-release','release-request','4'),
+                       ('capability-probe','capability-request','3')]:
+        entry=make_operation('K-SESSION',op,rid,sid,{'generation':generation,'seatId':seat},rev)
+        result={'stopFact':stop_fact} if op=='stop' else {}
+        if op=='capability-probe':
+            result={'driverId':'grok','version':'1.0.41','binaryDigest':'sha256:'+fixed_sha,
+                    'evidenceBasis':'NATIVE_ACP_INITIALIZE_DECLARATION'}
+        entry['receipt']={'requestId':rid,'operation':op,'targetId':sid,'status':'APPLIED',
+            'previousRevision':rev,'revision':str(int(rev)+1),'result':result}
+        source_journal['operations'].append(entry)
+        if op=='capability-probe':
+            db.execute('INSERT INTO v37_ledger_receipt VALUES(?,?,?,?,?)',
+                ('K-SESSION',domain,rid,entry['rawFrame'].encode(),json.dumps(entry['receipt']).encode()))
+    for entry in source_journal['operations']:
+        request=entry['request']
+        if request['family']=='K-SESSION' and request['operation'] in ('open','stop','admission-release'):
+            db.execute('INSERT INTO gogoke_v37_h_operation VALUES(?,?,?,?,?,?,?,?)',
+                (domain,request['requestId'],entry['rawFrame'].encode().hex(),request['operation'],sid,'APPLIED',
+                 int(request['expectedRevision']),int(entry['receipt']['revision'])))
+    close_journal=close_entry_journal()
+    close_journal.update({'schema':'gogoke.37.m2-provider-win11-e2e.v1',
+        'state':'DIRECT_PROVIDER_H_RECEIPTS_A_READBACK_REQUIRED','acceptance':False,
+        'observerDatabaseWrites':False,'hostOperationsWriteCandidateDatabase':True,'credentialReads':False,
+        'caseId':'private-full-reader','domainId':domain,'repositoryId':'gogokeSeatTestbed',
+        'currentEndpoint':{'pid':123},'cases':[case],'operations':source_journal['operations'],
+        'sessions':[session]})
+    assert db.execute('PRAGMA foreign_key_check').fetchall()==[]
+    db.commit()
+    db.close()
+    journal_path=temp_root/'synthetic-journal.json'
+    journal_path.write_text(json.dumps(close_journal,separators=(',',':')),encoding='utf-8')
+    variants=[('coherent-positive',None),('missing-image','missing-image'),
+        ('wrong-image-sha','wrong-image-sha'),('invalid-physical-fileid','invalid-physical-fileid'),
+        ('missing-ancestry','missing-ancestry')]
+    for label,mutation in variants:
+        value=json.loads(journal_path.read_text(encoding='utf-8'))
+        if mutation=='missing-image':
+            def mutate_images(node):
+                if isinstance(node,dict):
+                    node.pop('image',None)
+                    for child in node.values(): mutate_images(child)
+                elif isinstance(node,list):
+                    for child in node: mutate_images(child)
+            mutate_images(value['causalCloseAttempts'])
+        elif mutation=='wrong-image-sha':
+            def mutate_hashes(node):
+                if isinstance(node,dict):
+                    if isinstance(node.get('image'),dict): node['image']['sha256']='0'*64
+                    for child in node.values(): mutate_hashes(child)
+                elif isinstance(node,list):
+                    for child in node: mutate_hashes(child)
+            mutate_hashes(value['causalCloseAttempts'])
+        elif mutation=='invalid-physical-fileid':
+            def mutate_fileids(node):
+                if isinstance(node,dict):
+                    if isinstance(node.get('image'),dict): node['image']['fileId']='invalid-file-id'
+                    for child in node.values(): mutate_fileids(child)
+                elif isinstance(node,list):
+                    for child in node: mutate_fileids(child)
+            mutate_fileids(value['causalCloseAttempts'])
+        elif mutation=='missing-ancestry':
+            value['causalCloseAttempts'][0]['ready']['nativeAncestorChain']=[]
+        changed_journal=temp_root/(label+'-journal.json')
+        changed_journal.write_text(json.dumps(value,separators=(',',':')),encoding='utf-8')
+        out=temp_root/(label+'-result.json')
+        run=subprocess.run([sys.executable,str(reader_path),str(temp_root),str(out),str(changed_journal)],
+            capture_output=True,text=True,encoding='utf-8')
+        if label=='coherent-positive':
+            if run.returncode!=0: raise AssertionError('complete reader positive failed: '+run.stderr[-2500:])
+            result=json.loads(out.read_text(encoding='utf-8'))
+            assert result['directProviderEvidence'] is True and result['acceptance'] is False
+            assert result['measurementPreservedDatabaseBytes'] is True
+            assert result['sessions'][0]['causalNormalCloseEvidence']['mode']=='SPAWNED_NODE_CHILD'
+        elif run.returncode==0 or out.exists():
+            raise AssertionError(label+' malformed close was accepted by complete reader')
+    print('full-main-coherent-positive: accepted complete production-DDL SQLite entry')
+    print('full-main-missing-image: rejected')
+    print('full-main-wrong-image-sha: rejected')
+    print('full-main-invalid-physical-fileid: rejected')
+    print('full-main-missing-ancestry: rejected')
+
+full_main_close_controls()
 `;
-      const run = spawnSync(python, ['-c', source, reader, dir], {
+      const fixtureScript = path.join(dir, 'grok-host-mcp-fixture.py');
+      fs.writeFileSync(fixtureScript, source, 'utf8');
+      const run = spawnSync(python, [fixtureScript, reader, dir], {
         encoding: 'utf8', windowsHide: true, maxBuffer: 4 * 1024 * 1024,
       });
       assert.equal(run.status, 0, run.stderr || run.error?.message || run.stdout);
       for (const label of ['positive branch read actual SQLite', 'mixed-h: rejected', 'source-mismatch: rejected',
         'typed-id-mismatch: rejected', 'free-answer-leak: rejected', 'writer-only-no-vendor-consumption: rejected']) {
         assert.ok(run.stdout.includes(label), `missing fixture outcome: ${label}\n${run.stdout}`);
+      }
+      for (const label of ['full-main-coherent-positive: accepted complete production-DDL SQLite entry',
+        'full-main-missing-image: rejected', 'full-main-wrong-image-sha: rejected',
+        'full-main-invalid-physical-fileid: rejected', 'full-main-missing-ancestry: rejected']) {
+        assert.ok(run.stdout.includes(label), `missing full-main close outcome: ${label}\n${run.stdout}`);
       }
       assert.ok(run.status === 0, 'actual provider normal-close reader entry accepts only shared causal Grok evidence');
     } finally {

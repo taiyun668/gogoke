@@ -240,9 +240,50 @@ def grok_host_mcp_causal_close_evidence(journal, case):
     ready = attempt.get("ready", {})
     proof = attempt.get("pausedCall", {})
     events = attempt.get("events", [])
+    installed = journal.get("installedPath")
+    installed_sha256 = journal.get("installedSha256", {})
+    def image_matches(role, name):
+        process = ready.get(role, {})
+        image = process.get("image", {})
+        expected_sha256 = installed_sha256.get(name, "") if isinstance(installed_sha256, dict) else ""
+        image_path_text = image.get("path")
+        installed_text = installed
+        volume_serial = image.get("volumeSerial")
+        file_id = image.get("fileId")
+        image_sha256 = image.get("sha256")
+        if not all(isinstance(value, str) for value in
+                   (image_path_text, installed_text, expected_sha256, volume_serial, file_id, image_sha256)):
+            return False
+        try:
+            image_path = Path(local_spelling(image_path_text))
+            installed_path = Path(local_spelling(installed_text))
+            path_matches = image_path.is_absolute() and installed_path.is_absolute() and \
+                same_local_path(image_path, installed_path / name)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            path_matches = False
+        return process.get("role") == role and \
+            isinstance(process.get("pid"), int) and not isinstance(process.get("pid"), bool) and \
+            0 < process["pid"] <= 9007199254740991 and path_matches and \
+            re.fullmatch(r"[a-f0-9]{64}", expected_sha256) is not None and \
+            image_sha256 == expected_sha256 and \
+            re.fullmatch(r"[a-f0-9]{8}", volume_serial, re.IGNORECASE) is not None and \
+            re.fullmatch(r"0x[a-f0-9]{32}", file_id, re.IGNORECASE) is not None
+    chain = ready.get("nativeAncestorChain")
+    chain_rows_valid = isinstance(chain, list) and bool(chain) and all(isinstance(row, dict) for row in chain)
     shell = next((row for row in events if row.get("role") == "shell"), None)
     native = next((row for row in events if row.get("role") == "native"), None)
-    if ready.get("kind") != "READY" or ready.get("shell", {}).get("pid") != launch.get("pid") or \
+    if ready.get("kind") != "READY" or not image_matches("shell", "gogoke.exe") or \
+            not image_matches("native", "gogoke-native-host.exe") or \
+            not chain_rows_valid or \
+            chain[0].get("pid") != ready.get("native", {}).get("parentPid") or \
+            chain[-1].get("pid") != ready.get("shell", {}).get("pid") or \
+            chain[-1].get("creationUtc") != ready.get("shell", {}).get("cimCreationUtc") or \
+            any(not isinstance(row, dict) or not isinstance(row.get("pid"), int) or \
+                isinstance(row.get("pid"), bool) or row["pid"] <= 0 or \
+                not isinstance(row.get("creationUtc"), str) or not row["creationUtc"] or \
+                (index < len(chain) - 1 and row.get("parentPid") != chain[index + 1].get("pid"))
+                for index, row in enumerate(chain)) or \
+            ready.get("shell", {}).get("pid") != launch.get("pid") or \
             attempt.get("childExit") != {"code": 0, "signal": None} or len(events) != 2 or \
             not shell or not native or any(row.get("code") != 0 or
                 row.get("codeBasis") != "GET_EXIT_CODE_PROCESS" or
