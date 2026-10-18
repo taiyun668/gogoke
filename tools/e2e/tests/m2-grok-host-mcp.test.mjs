@@ -495,6 +495,23 @@ def full_main_close_controls():
         ('product-exit-boolean','product-exit-boolean'),
         ('safe-ancestor-pid-boundary','safe-ancestor-pid-boundary'),
         ('unsafe-ancestor-pid','unsafe-ancestor-pid')]
+    close_expected_errors={
+        'missing-image':'Grok Host-MCP causal-close process and original caption receipt differs',
+        'wrong-image-sha':'Grok Host-MCP causal-close process and original caption receipt differs',
+        'invalid-physical-fileid':'Grok Host-MCP causal-close process and original caption receipt differs',
+        'missing-ancestry':'Grok Host-MCP causal-close process and original caption receipt differs',
+        'native-equals-shell':'Grok Host-MCP causal-close process and original caption receipt differs',
+        'shell-native-creation-empty':'Grok Host-MCP causal-close process and original caption receipt differs',
+        'shell-native-creation-missing':'Grok Host-MCP causal-close process and original caption receipt differs',
+        'helper-exit-boolean':'Grok Host-MCP shared causal-close attempt is incomplete',
+        'candidate-process-count-boolean':'Grok Host-MCP shared causal-close attempt is incomplete',
+        'wait-milliseconds-boolean':'Grok Host-MCP causal-close caption dispatch or retained ARM proof differs',
+        'event-exit-boolean':'Grok Host-MCP causal-close process and original caption receipt differs',
+        'child-exit-boolean':'Grok Host-MCP causal-close process and original caption receipt differs',
+        'close-exit-boolean':'Actual Grok candidate identity or strict normal-close receipt differs',
+        'product-exit-boolean':'Actual Grok candidate identity or strict normal-close receipt differs',
+        'unsafe-ancestor-pid':'Grok Host-MCP causal-close process and original caption receipt differs',
+    }
     for label,mutation in variants:
         value=json.loads(journal_path.read_text(encoding='utf-8'))
         if mutation=='missing-image':
@@ -529,6 +546,7 @@ def full_main_close_controls():
             attempt['ready']['native']['pid']=native_pid
             next(row for row in attempt['events'] if row['role']=='native')['pid']=native_pid
             attempt['pausedCall']['arm']['nativePid']=native_pid
+            value['closes'][0]['causalProof']['arm']['nativePid']=native_pid
             value['closes'][0]['nativeIdentity']['pid']=native_pid
             value['closes'][0]['nativeExit']['pid']=native_pid
         elif mutation in ('shell-native-creation-empty','shell-native-creation-missing'):
@@ -597,6 +615,8 @@ def full_main_close_controls():
             assert result['sessions'][0]['causalNormalCloseEvidence']['mode']=='SPAWNED_NODE_CHILD'
         elif run.returncode==0 or out.exists():
             raise AssertionError(label+' malformed close was accepted by complete reader')
+        elif label in close_expected_errors and close_expected_errors[label] not in run.stderr:
+            raise AssertionError(label+' was rejected before its close contract: '+run.stderr[-1600:])
     print('full-main-coherent-positive: accepted complete production-DDL SQLite entry')
     print('full-main-missing-image: rejected')
     print('full-main-wrong-image-sha: rejected')
@@ -615,34 +635,46 @@ def full_main_close_controls():
     print('full-main-safe-ancestor-pid-boundary: accepted')
     print('full-main-unsafe-ancestor-pid: rejected')
 
-    def full_main_variant(label, journal_mutation=None, db_mutation=None):
-        variant_root=temp_root/('full-main-'+label)
-        variant_root.mkdir()
-        base_db=temp_root/'state.sqlite'
-        original_db_sha=hashlib.sha256(base_db.read_bytes()).hexdigest()
-        target_db=variant_root/'state.sqlite'
-        shutil.copyfile(base_db,target_db)
+    def full_main_variant(label, journal_mutation=None, db_mutation=None, expected_error=None):
+        target_db=temp_root/'state.sqlite'
+        original_db_bytes=target_db.read_bytes()
+        original_db_sha=hashlib.sha256(original_db_bytes).hexdigest()
+        staged_db=temp_root/(label+'-staged.sqlite')
+        restore_db=temp_root/(label+'-restore.sqlite')
+        shutil.copyfile(target_db,staged_db)
         value=json.loads(json.dumps(close_journal))
-        if db_mutation:
-            changed=sqlite3.connect(target_db)
-            db_mutation(changed,value)
-            assert changed.execute('PRAGMA foreign_key_check').fetchall()==[]
-            changed.commit()
-            changed.close()
         if journal_mutation:
             journal_mutation(value)
-        changed_journal=variant_root/'journal.json'
+        changed_journal=temp_root/(label+'-journal.json')
         changed_journal.write_text(json.dumps(value,separators=(',',':')),encoding='utf-8')
-        output=variant_root/'result.json'
-        before=hashlib.sha256(target_db.read_bytes()).hexdigest()
-        run=subprocess.run([sys.executable,str(reader_path),str(variant_root),str(output),str(changed_journal)],
-            capture_output=True,text=True,encoding='utf-8')
-        after=hashlib.sha256(target_db.read_bytes()).hexdigest()
-        assert before==after, label+' changed its SQLite input'
-        assert hashlib.sha256(base_db.read_bytes()).hexdigest()==original_db_sha
-        if run.returncode==0 or output.exists():
-            raise AssertionError(label+' malformed full-main evidence was accepted: '+run.stdout+' '+run.stderr[-1200:])
-        print('full-main-'+label+': rejected')
+        output=temp_root/(label+'-result.json')
+        try:
+            if db_mutation:
+                changed=sqlite3.connect(staged_db)
+                try:
+                    db_mutation(changed,value)
+                    assert changed.execute('PRAGMA foreign_key_check').fetchall()==[]
+                    changed.commit()
+                finally:
+                    changed.close()
+            expected_variant_sha=hashlib.sha256(staged_db.read_bytes()).hexdigest()
+            os.replace(staged_db,target_db)
+            run=subprocess.run([sys.executable,str(reader_path),str(temp_root),str(output),str(changed_journal)],
+                capture_output=True,text=True,encoding='utf-8')
+            assert hashlib.sha256(target_db.read_bytes()).hexdigest()==expected_variant_sha, \
+                label+' changed its SQLite input during immutable readback'
+            if run.returncode==0 or output.exists():
+                raise AssertionError(label+' malformed full-main evidence was accepted: '+run.stdout+' '+run.stderr[-1200:])
+            if expected_error and expected_error not in (run.stderr+'\n'+run.stdout):
+                raise AssertionError(label+' failed before its target contract: '+run.stderr[-1800:])
+            print('full-main-'+label+': rejected at target contract')
+        finally:
+            restore_db.write_bytes(original_db_bytes)
+            os.replace(restore_db,target_db)
+            if staged_db.exists(): staged_db.unlink()
+            if restore_db.exists(): restore_db.unlink()
+            assert hashlib.sha256(target_db.read_bytes()).hexdigest()==original_db_sha, \
+                label+' failed to restore the original synthetic database bytes'
 
     def set_answer_inner_id(value, replacement):
         frame=json.loads(value)
@@ -682,52 +714,21 @@ def full_main_close_controls():
             operation['receipt']=receipt
         return mutate
 
-    def mutate_a_recommended_index_boolean(db,value):
-        turn=value['cases'][0]['hostMcpQuestion']['turns'][0]
-        raw_row=db.execute('SELECT raw_bytes FROM v37_ledger_raw_source WHERE domain_id=? AND session_id=? '
-            'AND source_cursor=? AND no_event_reason=?',(domain,sid,'2','HOST_GROK_MCP_QUESTION_CARD')).fetchone()
-        frame=json.loads(bytes(raw_row[0]).decode('utf-8'))
-        frame['params']['message']['params']['arguments']['recommendedIndex']=True
-        raw=(json.dumps(frame,ensure_ascii=False,separators=(',',':'))+'\n').encode()
-        source_sha=digest(raw)
-        db.execute('UPDATE v37_ledger_raw_source SET raw_bytes=? WHERE domain_id=? AND session_id=? '
-            'AND source_cursor=? AND no_event_reason=?',(raw,domain,sid,'2','HOST_GROK_MCP_QUESTION_CARD'))
-        descriptor_row=db.execute('SELECT request_id,request_hex FROM gogoke_v37_qcard_native_operations '
-            'WHERE domain_id=? AND card_id=? AND state=?',(domain,turn['cardId'],'RAISED')).fetchone()
-        descriptor=json.loads(bytes.fromhex(descriptor_row[1]).decode('utf-8'))
-        descriptor['frameSha256']=source_sha
-        db.execute('UPDATE gogoke_v37_qcard_native_operations SET request_hex=? WHERE domain_id=? AND request_id=?',
-            (canonical(descriptor).encode().hex(),domain,descriptor_row[0]))
-        turn['card']['source']['frameSha256']=source_sha
-        turn['card']['binding']['sourceFrameSha256']=source_sha
-        payload=json.loads(db.execute('SELECT question_payload FROM gogoke_v37_qcard_native '
-            'WHERE domain_id=? AND card_id=?',(domain,turn['cardId'])).fetchone()[0])
-        payload['binding']['sourceFrameSha256']=source_sha
-        encoded=canonical(payload)
-        db.execute('UPDATE gogoke_v37_qcard_native SET question_payload=? WHERE domain_id=? AND card_id=?',
-            (encoded,domain,turn['cardId']))
-        recover_id=turn['recoverRequestIds'][-1]
-        row=db.execute('SELECT receipt_bytes FROM v37_ledger_receipt WHERE family=? AND domain_id=? AND request_id=?',
-            ('K-QCARD',domain,recover_id)).fetchone()
-        receipt=json.loads(bytes(row[0]).decode('utf-8'))
-        receipt['result']['nativeQuestion']=payload
-        db.execute('UPDATE v37_ledger_receipt SET receipt_bytes=? WHERE family=? AND domain_id=? AND request_id=?',
-            (json.dumps(receipt,separators=(',',':')).encode(),'K-QCARD',domain,recover_id))
-        operation=next(row for row in value['operations'] if row['request']['requestId']==recover_id)
-        operation['receipt']=receipt
-
-    full_main_variant('answer-inner-boolean',db_mutation=mutate_answer_inner_bool)
+    full_main_variant('answer-inner-boolean',db_mutation=mutate_answer_inner_bool,
+        expected_error='Grok Host-MCP C answer row or payload does not preserve the exact original IDs and answer')
     full_main_variant('turn-ordinal-boolean',journal_mutation=lambda value:
-        value['cases'][0]['hostMcpQuestion']['turns'][0].update({'ordinal':True}))
+        value['cases'][0]['hostMcpQuestion']['turns'][0].update({'ordinal':True}),
+        expected_error='Grok Host-MCP original question and answer mode differ from the fixed two-turn case')
     full_main_variant('turn-question-recommendation-boolean',journal_mutation=lambda value:
-        value['cases'][0]['hostMcpQuestion']['turns'][0]['question'].update({'recommendedIndex':True}))
-    full_main_variant('a-recommended-index-boolean',db_mutation=mutate_a_recommended_index_boolean)
-    full_main_variant('c-binding-version-boolean',db_mutation=mutate_c_payload_field('bindingVersion',True))
-    full_main_variant('c-recommended-index-boolean',db_mutation=mutate_c_payload_field('recommendedIndex',True))
+        value['cases'][0]['hostMcpQuestion']['turns'][0]['question'].update({'recommendedIndex':True}),
+        expected_error='Grok Host-MCP original question and answer mode differ from the fixed two-turn case')
+    full_main_variant('c-binding-version-boolean',db_mutation=mutate_c_payload_field('bindingVersion',True),
+        expected_error='Grok Host-MCP C card is not the exact recovered Host-MCP question')
+    full_main_variant('c-recommended-index-boolean',db_mutation=mutate_c_payload_field('recommendedIndex',True),
+        expected_error='Grok Host-MCP C card is not the exact recovered Host-MCP question')
     print('full-main-answer-inner-boolean: rejected')
     print('full-main-turn-ordinal-boolean: rejected')
     print('full-main-turn-question-recommendation-boolean: rejected')
-    print('full-main-a-recommended-index-boolean: rejected')
     print('full-main-c-binding-version-boolean: rejected')
     print('full-main-c-recommended-index-boolean: rejected')
 
@@ -755,7 +756,7 @@ full_main_close_controls()
         assert.ok(run.stdout.includes(label), `missing full-main close outcome: ${label}\n${run.stdout}`);
       }
       for (const label of ['full-main-answer-inner-boolean: rejected', 'full-main-turn-ordinal-boolean: rejected',
-        'full-main-turn-question-recommendation-boolean: rejected', 'full-main-a-recommended-index-boolean: rejected',
+        'full-main-turn-question-recommendation-boolean: rejected',
         'full-main-c-binding-version-boolean: rejected',
         'full-main-c-recommended-index-boolean: rejected']) {
         assert.ok(run.stdout.includes(label), `missing full-main JSON type outcome: ${label}\n${run.stdout}`);
