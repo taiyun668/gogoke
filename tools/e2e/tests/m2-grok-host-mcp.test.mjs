@@ -481,7 +481,9 @@ def full_main_close_controls():
     journal_path.write_text(json.dumps(close_journal,separators=(',',':')),encoding='utf-8')
     variants=[('coherent-positive',None),('missing-image','missing-image'),
         ('wrong-image-sha','wrong-image-sha'),('invalid-physical-fileid','invalid-physical-fileid'),
-        ('missing-ancestry','missing-ancestry')]
+        ('missing-ancestry','missing-ancestry'),
+        ('safe-ancestor-pid-boundary','safe-ancestor-pid-boundary'),
+        ('unsafe-ancestor-pid','unsafe-ancestor-pid')]
     for label,mutation in variants:
         value=json.loads(journal_path.read_text(encoding='utf-8'))
         if mutation=='missing-image':
@@ -510,12 +512,28 @@ def full_main_close_controls():
             mutate_fileids(value['causalCloseAttempts'])
         elif mutation=='missing-ancestry':
             value['causalCloseAttempts'][0]['ready']['nativeAncestorChain']=[]
+        elif mutation in ('safe-ancestor-pid-boundary','unsafe-ancestor-pid'):
+            ready=value['causalCloseAttempts'][0]['ready']
+            native_pid=ready['native']['pid']
+            def bind_native_parent(node):
+                if isinstance(node,dict):
+                    if node.get('role')=='native' and node.get('pid')==native_pid:
+                        node['parentPid']=200
+                    for child in node.values(): bind_native_parent(child)
+                elif isinstance(node,list):
+                    for child in node: bind_native_parent(child)
+            bind_native_parent(value)
+            middle=9007199254740991 if mutation=='safe-ancestor-pid-boundary' else 9007199254740992
+            ready['nativeAncestorChain']=[
+                {'pid':200,'parentPid':middle,'creationUtc':'synthetic-first-ancestor'},
+                {'pid':middle,'parentPid':123,'creationUtc':'synthetic-middle-ancestor'},
+                {'pid':123,'parentPid':122,'creationUtc':ready['shell']['cimCreationUtc']}]
         changed_journal=temp_root/(label+'-journal.json')
         changed_journal.write_text(json.dumps(value,separators=(',',':')),encoding='utf-8')
         out=temp_root/(label+'-result.json')
         run=subprocess.run([sys.executable,str(reader_path),str(temp_root),str(out),str(changed_journal)],
             capture_output=True,text=True,encoding='utf-8')
-        if label=='coherent-positive':
+        if label in ('coherent-positive','safe-ancestor-pid-boundary'):
             if run.returncode!=0: raise AssertionError('complete reader positive failed: '+run.stderr[-2500:])
             result=json.loads(out.read_text(encoding='utf-8'))
             assert result['directProviderEvidence'] is True and result['acceptance'] is False
@@ -528,6 +546,8 @@ def full_main_close_controls():
     print('full-main-wrong-image-sha: rejected')
     print('full-main-invalid-physical-fileid: rejected')
     print('full-main-missing-ancestry: rejected')
+    print('full-main-safe-ancestor-pid-boundary: accepted')
+    print('full-main-unsafe-ancestor-pid: rejected')
 
 full_main_close_controls()
 `;
@@ -543,7 +563,8 @@ full_main_close_controls()
       }
       for (const label of ['full-main-coherent-positive: accepted complete production-DDL SQLite entry',
         'full-main-missing-image: rejected', 'full-main-wrong-image-sha: rejected',
-        'full-main-invalid-physical-fileid: rejected', 'full-main-missing-ancestry: rejected']) {
+        'full-main-invalid-physical-fileid: rejected', 'full-main-missing-ancestry: rejected',
+        'full-main-safe-ancestor-pid-boundary: accepted', 'full-main-unsafe-ancestor-pid: rejected']) {
         assert.ok(run.stdout.includes(label), `missing full-main close outcome: ${label}\n${run.stdout}`);
       }
       assert.ok(run.status === 0, 'actual provider normal-close reader entry accepts only shared causal Grok evidence');

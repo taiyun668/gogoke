@@ -279,7 +279,7 @@ def grok_host_mcp_causal_close_evidence(journal, case):
             chain[-1].get("pid") != ready.get("shell", {}).get("pid") or \
             chain[-1].get("creationUtc") != ready.get("shell", {}).get("cimCreationUtc") or \
             any(not isinstance(row, dict) or not isinstance(row.get("pid"), int) or \
-                isinstance(row.get("pid"), bool) or row["pid"] <= 0 or \
+                isinstance(row.get("pid"), bool) or not 0 < row["pid"] <= 9007199254740991 or \
                 not isinstance(row.get("creationUtc"), str) or not row["creationUtc"] or \
                 (index < len(chain) - 1 and row.get("parentPid") != chain[index + 1].get("pid"))
                 for index, row in enumerate(chain)) or \
