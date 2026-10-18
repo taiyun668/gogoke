@@ -145,6 +145,14 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
   const journal = product.journal;
   const domainId = product.config.domainId;
   const config = product.config;
+  const declaredDomains = config.temporaryHomeDomains;
+  const ownedDomains = declaredDomains === undefined ? [domainId] : declaredDomains;
+  if (!nonempty(domainId) || !Array.isArray(ownedDomains) || ownedDomains.length === 0 ||
+      new Set(ownedDomains).size !== ownedDomains.length || !ownedDomains.includes(domainId) ||
+      ownedDomains.some(value => !nonempty(value)) ||
+      (declaredDomains !== undefined && ownedDomains.length < 2)) {
+    throw Error('Temporary-HOME owned domains must be unique and include the startup domain');
+  }
   const readbackConfig = config.temporaryHomeReadback;
   const restored = restore !== null;
   const originalManifestOrigin = restore?.originalManifestOrigin ?? manifestPath;
@@ -160,6 +168,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
         path.dirname(path.resolve(originalManifestOrigin)) !== path.dirname(path.resolve(manifestPath)) ||
         !restore.manifest || restore.manifest.schema !== 'gogoke.37.temporary-home-attempts.v1' ||
         restore.manifest.caseId !== journal.caseId || restore.manifest.domainId !== domainId ||
+        !isDeepStrictEqual(restore.manifest.ownedDomains ?? [domainId], ownedDomains) ||
         !Array.isArray(restore.manifest.cases) || !Array.isArray(restore.manifest.producers) ||
         !Array.isArray(restore.manifest.attempts) || !Array.isArray(restore.manifest.authorizedRepairs) ||
         !restore.baselineReference?.path || !/^[a-f0-9]{64}$/.test(restore.baselineReference.sha256) ||
@@ -206,6 +215,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
     schema: 'gogoke.37.temporary-home-attempts.v1',
     caseId: journal.caseId,
     domainId,
+    ...(declaredDomains === undefined ? {} : { ownedDomains: [...ownedDomains] }),
     state: 'RUNNING',
     cases: [],
     producers: [],
@@ -223,6 +233,10 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
   let baselineReference = restored ? { ...restore.baselineReference } : null;
   const producerFor = request => manifest.producers.find(row =>
     row.domainId === request.domainId && row.sessionId === request.targetId);
+  const sessionFor = attempt => journal.sessions.find(row => row.id === attempt.sessionId &&
+    (row.domainId ?? domainId) === attempt.domainId);
+  const ownedProducerFor = attempt => manifest.producers.find(row =>
+    row.domainId === attempt.domainId && row.sessionId === attempt.sessionId);
   const attemptFor = requestId => manifest.attempts.find(row => row.originalCreateRequestId === requestId);
   const candidateAttemptFor = request => request?.family === 'K-SESSION' &&
     request.operation === 'stop' && request.payload?.resumeRequestId
@@ -292,18 +306,18 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
     product.save();
     return { report, reference };
   };
-  const hEntries = (sessionId, operation, generation) => journal.operations.filter(row =>
+  const hEntries = (ownerDomain, sessionId, operation, generation) => journal.operations.filter(row =>
     row.request?.family === 'K-SESSION' && row.request.targetId === sessionId &&
-    row.request.domainId === domainId &&
+    row.request.domainId === ownerDomain &&
     row.request.operation === operation &&
     (generation === undefined || String(row.request.payload?.generation ?? '') === String(generation)));
-  const ordinaryStops = (sessionId, generation) => hEntries(sessionId, 'stop', generation)
+  const ordinaryStops = (ownerDomain, sessionId, generation) => hEntries(ownerDomain, sessionId, 'stop', generation)
     .filter(row => Object.keys(row.request.payload ?? {}).sort().join('|') === 'generation|seatId');
   const releaseSourceFor = (attempt, producer, stopped, visited = new Set()) => {
     if (visited.has(attempt.originalCreateRequestId)) return null;
     visited.add(attempt.originalCreateRequestId);
     const revision = stopped.receipt.revision;
-    const resumes = hEntries(attempt.sessionId, 'resume', attempt.generation);
+    const resumes = hEntries(attempt.domainId, attempt.sessionId, 'resume', attempt.generation);
     if (resumes.length === 0) return { revision, promoted: false };
     if (resumes.length !== 1) return null;
     const original = resumes[0];
@@ -328,7 +342,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
       const generation = original.receipt.result?.newGeneration;
       if (typeof generation !== 'string' || !/^[1-9][0-9]*$/.test(generation) ||
           generation === attempt.generation || child.generation !== generation) return null;
-      const stops = ordinaryStops(child.sessionId, generation);
+      const stops = ordinaryStops(child.domainId, child.sessionId, generation);
       if (stops.length !== 1 || !stopProof(stops[0]) ||
           !isDeepStrictEqual(child.hStopSource, { requestId: stops[0].request.requestId,
             rawFrame: stops[0].rawFrame, rawSha256: digest(stops[0].rawFrame), stopFact: stopProof(stops[0]) })) return null;
@@ -420,7 +434,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
         throw Error('Restored temporary-HOME producer requires the exact existing session');
       }
       const rows = manifest.producers.filter(row => row.sessionId === session.id &&
-        row.domainId === domainId && row.instanceId === instanceId && row.caseId === caseId);
+        row.domainId === (session.domainId ?? domainId) && row.instanceId === instanceId && row.caseId === caseId);
       if (rows.length !== 1) throw Error('Restored temporary-HOME producer is not unique');
       return rows[0];
     },
@@ -493,10 +507,15 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
           !journal.sessions.includes(session)) {
         throw Error('Temporary-HOME producer requires the exact journaled session and configured instance');
       }
-      if (manifest.producers.some(row => row.sessionId === session.id)) {
+      const ownerDomain = session.domainId ?? domainId;
+      if (!ownedDomains.includes(ownerDomain) ||
+          (declaredDomains !== undefined && session.domainId !== ownerDomain)) {
+        throw Error('Temporary-HOME producer domain is not an exact owned journal session');
+      }
+      if (manifest.producers.some(row => row.sessionId === session.id && row.domainId === ownerDomain)) {
         throw Error('Temporary-HOME producer anchor already exists');
       }
-      const producer = { caseId, domainId, sessionId: session.id, instanceId, seatId: session.seatId,
+      const producer = { caseId, domainId: ownerDomain, sessionId: session.id, instanceId, seatId: session.seatId,
         source: 'CASE_CREATED_SESSION_BEFORE_NATIVE_CREATE_DISPATCH' };
       if (!manifest.cases.some(row => row.caseId === caseId)) {
         manifest.cases.push({ caseId, state: 'RUNNING', attempts: [] });
@@ -511,8 +530,9 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
       if (createHomeFor(request)) {
         if (restored) throw Error('Restored lifecycle requires explicit original admission resubmission; no new create');
         const producer = producerFor(request);
-        if (!producer || producer.caseId !== activeCaseId || request.domainId !== domainId ||
+        if (!producer || producer.caseId !== activeCaseId || request.domainId !== producer.domainId ||
             request.targetId !== producer.sessionId ||
+            (request.operation === 'admission-reserve' && request.payload?.seatId !== producer.seatId) ||
             !nonempty(request.requestId) || typeof record.rawFrame !== 'string' ||
             record.rawFrame !== JSON.stringify(request) ||
             !nonempty(request.payload?.generation)) {
@@ -520,7 +540,8 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
         }
         if (attemptFor(request.requestId)) throw Error('Duplicate original temporary-HOME create requestId');
         const attempt = {
-          caseId: producer.caseId, domainId, sessionId: producer.sessionId, instanceId: producer.instanceId,
+          caseId: producer.caseId, domainId: producer.domainId,
+          sessionId: producer.sessionId, instanceId: producer.instanceId,
           operation: request.operation,
           producerGeneration: String(request.payload.generation),
           generation: request.operation === 'resume' ? null : String(request.payload.generation),
@@ -728,7 +749,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
         }
         if (attempt.operation === 'resume' && !nonempty(attempt.generation) &&
             attempt.receipt?.status === 'UNKNOWN') {
-          const session = journal.sessions.find(row => row.id === attempt.sessionId);
+          const session = sessionFor(attempt);
           const producer = manifest.producers.find(row => row.sessionId === attempt.sessionId &&
             row.caseId === attempt.caseId && row.domainId === attempt.domainId &&
             row.instanceId === attempt.instanceId);
@@ -767,7 +788,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
               await product.operation('K-SESSION', 'stop', attempt.sessionId,
                 { seatId: producer.seatId, generation: attempt.producerGeneration,
                   resumeRequestId: attempt.originalCreateRequestId },
-                original.receipt.revision, ['APPLIED', 'REPLAYED']);
+                original.receipt.revision, ['APPLIED', 'REPLAYED'], attempt.domainId);
             } catch (error) {
               attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_CANDIDATE_STOP_FAILED_OR_UNKNOWN';
               attempt.candidateStopError = String(error?.stack ?? error);
@@ -798,7 +819,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
           try {
             await product.operation('K-INSTANCE', 'temporary-home-close', attempt.instanceId,
               { sessionId: attempt.sessionId, originalCreateRequestId: attempt.originalCreateRequestId },
-              '1', ['APPLIED', 'REPLAYED']);
+              '1', ['APPLIED', 'REPLAYED'], attempt.domainId);
             if (!originalClosed(attempt)) {
               attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_CLOSE_RECEIPT_INVALID';
               errors.push(`${attempt.originalCreateRequestId}: candidate close receipt did not prove CLOSED(2)`);
@@ -819,8 +840,8 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
           save();
           continue;
         }
-        const session = journal.sessions.find(row => row.id === attempt.sessionId);
-        const producer = manifest.producers.find(row => row.sessionId === attempt.sessionId);
+        const session = sessionFor(attempt);
+        const producer = ownedProducerFor(attempt);
         if (!session || !producer || product.socket?.readyState !== WebSocket.OPEN) {
           attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_HOST_OR_PRODUCER_UNAVAILABLE';
           errors.push(`${attempt.originalCreateRequestId}: host/producer unavailable`);
@@ -828,9 +849,9 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
           continue;
         }
 
-        let stops = ordinaryStops(attempt.sessionId, attempt.generation);
+        let stops = ordinaryStops(attempt.domainId, attempt.sessionId, attempt.generation);
         if (stops.length === 0) {
-          const opened = hEntries(attempt.sessionId, 'open', attempt.generation);
+          const opened = hEntries(attempt.domainId, attempt.sessionId, 'open', attempt.generation);
           const resumed = journal.operations.filter(row => row.request?.family === 'K-SESSION' &&
             row.request.domainId === attempt.domainId && row.request.targetId === attempt.sessionId &&
             row.request.operation === 'resume' &&
@@ -850,10 +871,10 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
           try {
             const stopped = await product.operation('K-SESSION', 'stop', attempt.sessionId,
               { generation: String(attempt.generation), seatId: producer.seatId },
-              session.revision, ['APPLIED', 'REPLAYED']);
+              session.revision, ['APPLIED', 'REPLAYED'], attempt.domainId);
             session.revision = stopped.revision;
             product.save();
-            stops = ordinaryStops(attempt.sessionId, attempt.generation);
+            stops = ordinaryStops(attempt.domainId, attempt.sessionId, attempt.generation);
           } catch (error) {
             attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_H_STOP_FAILED_OR_UNKNOWN';
             attempt.teardownError = String(error?.stack ?? error);
@@ -932,7 +953,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
             try {
               const released = await product.operation('K-SESSION', 'admission-release', attempt.sessionId,
                 { generation: String(attempt.generation), seatId: producer.seatId },
-                releaseRevision, ['APPLIED', 'REPLAYED']);
+                releaseRevision, ['APPLIED', 'REPLAYED'], attempt.domainId);
               const release = journal.operations.at(-1);
               if (!releaseReceipt(release, attempt, producer, releaseRevision) || release.receipt !== released) {
                 throw Error('New H release receipt did not prove the exact stopped claim was released');
@@ -979,7 +1000,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
         try {
           await product.operation('K-INSTANCE', 'temporary-home-close', attempt.instanceId,
             { sessionId: attempt.sessionId, originalCreateRequestId: attempt.originalCreateRequestId },
-            '1', ['APPLIED', 'REPLAYED']);
+            '1', ['APPLIED', 'REPLAYED'], attempt.domainId);
           const close = journal.operations.at(-1);
           if (!originalClosed(attempt)) {
             attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_CLOSE_RECEIPT_INVALID';
@@ -1031,11 +1052,11 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
         throw Error('Checkpoint requires the active exclusive case and its original HOME attempts');
       }
       const stops = attempts.map(attempt => {
-        const producer = manifest.producers.find(row => row.sessionId === attempt.sessionId);
-        const session = journal.sessions.find(row => row.id === attempt.sessionId);
-        const records = ordinaryStops(attempt.sessionId, attempt.generation);
+        const producer = ownedProducerFor(attempt);
+        const session = sessionFor(attempt);
+        const records = ordinaryStops(attempt.domainId, attempt.sessionId, attempt.generation);
         const stopped = records[0];
-        const releases = hEntries(attempt.sessionId, 'admission-release', attempt.generation);
+        const releases = hEntries(attempt.domainId, attempt.sessionId, 'admission-release', attempt.generation);
         if (!producer || !session || String(session.generation) !== String(attempt.generation) ||
             records.length !== 1 || !stopProof(stopped) || releases.length !== 0 ||
             attempt.closeDispatchState !== 'NOT_DISPATCHED' ||

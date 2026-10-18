@@ -1,6 +1,6 @@
 """Original H/A/D/F evidence after normal candidate close; no CLI or model calls.
 
-signed Python m2-history-boundaries-readback.py STATE_ROOT NEW_OUTPUT JOURNAL before-refusal|final|peer-final
+signed Python m2-history-boundaries-readback.py STATE_ROOT NEW_OUTPUT JOURNAL before-refusal|final|peer-final|project-only-final
 Only candidate state.sqlite and explicitly named private evidence artifacts are read.
 Independently of peerRead, opens only exact original test thread/start JSONL paths
 after registered-home and H/A/F checks. No credentials or active WAL. No DB writes.
@@ -153,6 +153,8 @@ def snapshot(db, sessions, cases):
     for table in ("gogoke_v37_side_registry", "gogoke_v37_side_sync", "gogoke_v37_side_pending"):
         result[table] = []
         for case in cases:
+            if "sideBinding" not in case:
+                continue
             result[table].extend(rows(db, f"SELECT * FROM {table} WHERE domain_id=? AND side_id=? ORDER BY rowid",
                                      (case["sideBinding"]["domainId"], case["sideId"])))
     return result
@@ -734,11 +736,85 @@ def verify_flow(db, journal, boundary, result, original_reader_sha=None):
     result["directFlowEvidence"] = True
 
 
+def verify_project_only(db, journal, boundary, result):
+    check(boundary.get("selection") == "V04B_PROJECT_ISOLATION" and
+          boundary["readerSha256"] == digest(Path(__file__).read_bytes()) and
+          boundary["driverSha256"] == digest(Path(__file__).with_name("m2-history-boundaries.mjs").read_bytes()) and
+          boundary["state"] == "PROJECT_ONLY_FLOW_COMPLETE_DIRECT_READBACK_REQUIRED" and
+          len(boundary["cases"]) == 1 and not boundary["refusals"],
+          "Project-only readback requires one exact original A/B flow and no V10 refusal")
+    case = boundary["cases"][0]
+    check(case["state"] == "PROJECT_ONLY_FLOW_COMPLETE_DIRECT_READBACK_REQUIRED" and
+          "sideBinding" not in case and "sideSessionId" not in case and "formalSessionId" not in case and
+          len(case["projectSessions"]) == 2 and
+          case["projectA"]["domainId"] == journal["domainId"] != case["projectB"]["domainId"],
+          "Project-only case must contain just two distinct original project H sessions")
+    selected = [session for session in journal["sessions"] if session["id"] in case["projectSessions"]]
+    check(len(selected) == len(journal["sessions"]) == 2 and
+          [session["id"] for session in selected] == case["projectSessions"] and
+          all(session["purpose"] == "WORK" for session in selected),
+          "Project-only flow has another or missing native H session")
+    operations = {entry["request"]["requestId"]: entry for entry in journal["operations"]
+                  if entry.get("request", {}).get("requestId")}
+    check(len(operations) == sum(bool(entry.get("request", {}).get("requestId"))
+                                 for entry in journal["operations"]) and
+          all(entry.get("request", {}).get("schema") == "gogoke.37.operations.v1"
+              for entry in journal["operations"]) and
+          not any(entry["request"].get("operation") in
+                  ("resume", "reconnect", "compact", "renew-session")
+                  for entry in journal["operations"]),
+          "Project-only flow must not hide owner-side composition or V10 refusal operations")
+    observed = []
+    for session, binding in zip(selected, (case["projectA"], case["projectB"])):
+        check(all(session[key] == binding[key] for key in
+                  ("domainId", "repositoryId", "seatId", "worktreeId")) and
+              session["instanceId"] == case["instanceId"] and session.get("stopFact"),
+              "Project-only H/F/domain binding or StopFact differs")
+        releases = [entry for entry in journal["operations"] if
+                    entry.get("request", {}).get("family") == "K-SESSION" and
+                    entry["request"].get("operation") == "admission-release" and
+                    entry["request"].get("domainId") == session["domainId"] and
+                    entry["request"].get("targetId") == session["id"]]
+        check(len(releases) == 1 and releases[0]["rawFrame"] ==
+              json.dumps(releases[0]["request"], separators=(",", ":"), ensure_ascii=False) and
+              json.loads(releases[0]["rawReceipt"]) == releases[0]["receipt"] and
+              releases[0]["receipt"]["status"] == "APPLIED" and
+              releases[0]["receipt"]["requestId"] == releases[0]["request"]["requestId"] and
+              releases[0]["receipt"]["targetId"] == session["id"] and
+              releases[0]["receipt"]["operation"] == "admission-release" and
+              releases[0]["receipt"]["family"] == "K-SESSION" and
+              releases[0]["receipt"]["previousRevision"] == releases[0]["request"]["expectedRevision"] and
+              releases[0]["receipt"]["revision"] == session["revision"],
+              "Project-only H release lacks its exact original APPLIED request/receipt")
+        release = releases[0]
+        native_release = one(db, "SELECT * FROM gogoke_v37_h_operation WHERE domain_id=? AND session_id=? AND request_id=?",
+                             (session["domainId"], session["id"], release["request"]["requestId"]))
+        check(native_release["operation"] == "admission-release" and native_release["status"] == "APPLIED" and
+              decode_hex(native_release["raw_hex"]) == release["request"] and
+              str(native_release["previous_revision"]) == release["request"]["expectedRevision"] and
+              str(native_release["revision"]) == release["receipt"]["revision"],
+              "Project-only original Native H release row differs from the retained raw receipt")
+        observed.append(session_evidence(db, session, case, operations, journal["sourceCommit"]))
+    a, b = observed
+    check(a["domainId"] != b["domainId"] and a["nativeSessionId"] != b["nativeSessionId"] and
+          b["marker"] not in a["originalBody"] and a["marker"] not in b["originalBody"] and
+          a["worktree"]["repository_id"] == b["worktree"]["repository_id"] == journal["repositoryId"] and
+          a["episode"]["instance_id"] == b["episode"]["instance_id"] == case["instanceId"],
+          "Original A/B markers, physical native identities, or registered F bindings overlap")
+    result["cases"].append({"caseId": case["caseId"], "driverId": case["driverId"],
+        "projectDomains": [a["domainId"], b["domainId"]], "actualHInputIsolation": True,
+        "sessions": observed, "V04b": "NOT_RUN_EFFECTIVE_VENDOR_MEMORY_AND_INSTRUCTION_PROVENANCE_MISSING",
+        "V10": "NOT_RUN_PROJECT_ONLY_SELECTION"})
+    result["scopedSnapshot"] = serializable(snapshot(db, selected, [case]))
+    result["unknownFrameCount"] = sum(source["unknownFrameCount"] for source in observed)
+    result["directFlowEvidence"] = True
+
+
 def main():
     supplementary = (len(sys.argv) == 7 and sys.argv[4] in ("before-refusal", "peer-final") and
                      sys.argv[5] == "--supplementary-original-reader")
     check(supplementary or len(sys.argv) == 5 and
-          sys.argv[4] in ("before-refusal", "final", "peer-final", "same-domain-final"),
+          sys.argv[4] in ("before-refusal", "final", "peer-final", "same-domain-final", "project-only-final"),
           "Expected candidate root, new output, original journal and phase")
     root = Path(sys.argv[1]).resolve(strict=True)
     output = Path(sys.argv[2]).resolve(strict=False)
@@ -811,9 +887,14 @@ def main():
         with closing(sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA query_only=ON")
-            verify_flow(db, journal, boundary, result, original_reader_sha)
-            # Original vendor metadata readback is independent of the optional peer-read control.
-            result["verifiedVendorObjects"], result["vendorObjectNotRun"] = vendor_objects(root, result["cases"])
+            if sys.argv[4] == "project-only-final":
+                verify_project_only(db, journal, boundary, result)
+                result["verifiedVendorObjects"], result["vendorObjectNotRun"] = [], [
+                    {"state": "NOT_RUN_PROJECT_ONLY_VENDOR_PROVENANCE_OUT_OF_SCOPE"}]
+            else:
+                verify_flow(db, journal, boundary, result, original_reader_sha)
+                # Original vendor metadata readback is independent of the optional peer-read control.
+                result["verifiedVendorObjects"], result["vendorObjectNotRun"] = vendor_objects(root, result["cases"])
             if sys.argv[4] == "final":
                 check(boundary["state"] == "FLOW_COMPLETE_DIRECT_READBACK_REQUIRED", "Actual history refusal flow incomplete")
                 reference = boundary["baselineReadback"]

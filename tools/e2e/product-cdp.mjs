@@ -274,6 +274,7 @@ export class ActualProduct {
       this.save();
       throw error;
     }
+    record.rawReceipt = raw; this.save();
     record.receipt = JSON.parse(raw); record.finishedAt = new Date().toISOString(); this.save();
     if (record.receipt?.schema !== request.schema ||
         record.receipt?.requestId !== request.requestId || record.receipt?.targetId !== targetId ||

@@ -66,6 +66,42 @@ def need(ok, reason):
         raise RuntimeError(reason)
 
 
+def owned_home_domains(manifest):
+    domains = manifest.get("ownedDomains", [manifest.get("domainId")])
+    if "ownedDomains" in manifest:
+        auxiliary = {(row.get("caseId"), row.get("sourceKind")) for name in
+                     ("startupAttempts", "noStartupHomes", "authorizedRepairs")
+                     for row in manifest.get(name, [])}
+        case_rows = {(row.get("caseId"), row.get("sourceKind")) for row in manifest["cases"]
+                     if row.get("caseId") != manifest["caseId"]}
+        need(isinstance(domains, list) and len(domains) >= 2 and
+             all(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value)
+                 for value in domains) and
+             len(set(domains)) == len(domains) and manifest.get("domainId") in domains and
+             sum(row.get("caseId") == manifest["caseId"] for row in manifest["cases"]) == 1 and
+             case_rows == auxiliary and
+             all(row.get("caseId") == manifest["caseId"] for row in
+                 manifest["producers"] + manifest["attempts"]) and
+             all(row.get("domainId") in domains for row in
+                 manifest["producers"] + manifest["attempts"]),
+             "Declared multi-domain HOME set contains another case or an undeclared domain")
+    return domains
+
+
+def home_inventory_differences(before, after, own_ids, repaired_ids):
+    changed, missing = [], sorted(set(before) - set(after))
+    for home_id, prior in before.items():
+        if home_id not in after:
+            continue
+        expected = dict(prior)
+        if home_id in repaired_ids:
+            expected.update(state="CLOSED", revision="2")
+        if after[home_id] != expected:
+            changed.append({"homeId": home_id, "before": prior, "after": after[home_id]})
+    extra = sorted(set(after) - set(before) - set(own_ids))
+    return changed, missing, extra
+
+
 def sha(value):
     return hashlib.sha256(value).hexdigest()
 
@@ -644,16 +680,18 @@ def run(input_path, output_path):
          isinstance(manifest.get("noStartupHomes", []), list) and
          isinstance(manifest.get("authorizedRepairs", []), list),
          "Own creation manifest differs")
+    owned_domains = owned_home_domains(manifest)
     producers = manifest.get("producers")
     cases = manifest.get("cases")
     need(isinstance(producers, list) and isinstance(cases, list) and
          len({row["caseId"] for row in cases}) == len(cases) and
-         len({row["sessionId"] for row in producers}) == len(producers),
+         (len({(row["domainId"], row["sessionId"]) for row in producers}) if "ownedDomains" in manifest
+          else len({row["sessionId"] for row in producers})) == len(producers),
          "Exact own-case producer collection required")
     for attempt in manifest["attempts"]:
         matched = [row for row in producers if row["sessionId"] == attempt["sessionId"] and
             row["instanceId"] == attempt["instanceId"] and row["caseId"] == attempt["caseId"] and
-            row["domainId"] == attempt["domainId"] == manifest["domainId"]]
+            row["domainId"] == attempt["domainId"] and row["domainId"] in owned_domains]
         case_rows = [row for row in cases if row["caseId"] == attempt["caseId"] and
             row.get("attempts", []).count(attempt["originalCreateRequestId"]) == 1]
         need(len(matched) == len(case_rows) == 1, "Attempt has no exact original case/domain/producer anchor")
@@ -663,6 +701,7 @@ def run(input_path, output_path):
          "Fresh observer output outside installed state required")
     report = {"schema": REPORT_SCHEMA, "mode": mode, "phase": phase, "acceptance": False,
         "caseId": manifest["caseId"], "domainId": manifest["domainId"],
+        **({"ownedDomains": owned_domains} if "ownedDomains" in manifest else {}),
         "source": {"reader": {"path": str(source), "sha256": file_sha(source)},
             "core": config["core"], "manifest": config["manifest"],
             "manifestOrigin": str(manifest_origin),
@@ -691,6 +730,7 @@ def run(input_path, output_path):
                  and baseline["source"]["reader"] == report["source"]["reader"] and
                  baseline["source"]["core"] == config["core"] and
                  baseline["caseId"] == manifest["caseId"] and baseline["domainId"] == manifest["domainId"] and
+                 baseline.get("ownedDomains", [baseline["domainId"]]) == owned_domains and
                  baseline["source"]["manifestOrigin"] == str(manifest_origin) and
                  baseline["measurement"]["rootPhysicalIdentity"] == measured["rootPhysicalIdentity"] and
                  baseline["measurement"]["rootIdentity"] == measured["rootIdentity"] and
@@ -870,16 +910,7 @@ def run(input_path, output_path):
                 errors.append({"source": "authorizedRepair",
                     "error": "Declared baseline repairs lack exact final proof"})
             after = {row["home_id"]: row for row in homes}
-            changed, missing, extra = [], sorted(set(before) - set(after)), []
-            for home_id, prior in before.items():
-                if home_id not in after:
-                    continue
-                expected = dict(prior)
-                if home_id in repaired_ids:
-                    expected.update(state="CLOSED", revision="2")
-                if after[home_id] != expected:
-                    changed.append({"homeId": home_id, "before": prior, "after": after[home_id]})
-            extra = sorted(set(after) - set(before) - set(own_ids))
+            changed, missing, extra = home_inventory_differences(before, after, own_ids, repaired_ids)
             exact = not errors and not (changed or missing or extra)
             if changed or missing or extra:
                 errors.append({"source": "inventory", "error": "HOME inventory differs from declared scope"})

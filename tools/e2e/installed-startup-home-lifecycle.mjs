@@ -126,6 +126,63 @@ export function createStartupHomeLifecycle(product, manifest, save, runReadback,
   const sameEndpoint = (left, right) => left && right &&
     ['pid', 'port', 'setId', 'generationId', 'readyPath', 'stderrPath', 'url']
       .every(key => left[key] === right[key]);
+  const retainedReadinessFailure = () => {
+    const ref = journal.originalReadinessFailure;
+    if (!ref) return false;
+    check(path.isAbsolute(ref.path ?? '') && /^[a-f0-9]{64}$/.test(ref.sha256 ?? '') &&
+      path.isAbsolute(restore?.originalManifestOrigin ?? '') &&
+      path.dirname(ref.path) === path.dirname(restore.originalManifestOrigin) &&
+      fs.existsSync(ref.path),
+    'Original failed readiness journal bytes differ');
+    const snapshotBytes = fs.readFileSync(ref.path);
+    check(createHash('sha256').update(snapshotBytes).digest('hex') === ref.sha256,
+      'Original failed readiness journal bytes differ');
+    const original = JSON.parse(snapshotBytes.toString('utf8'));
+    const timing = original.readinessTiming, observed = original.startupReadiness;
+    const endpoint = original.currentEndpoint;
+    check(original.state === 'FAIL_ORIGINAL_REQUESTS_RETAINED' && original.acceptance === false &&
+      nonempty(original.caseId) && original.caseId === journal.caseId &&
+      (!original.stopWorktreePrepare || (
+        original.stopWorktreePrepare.state === original.state &&
+        original.stopWorktreePrepare.acceptance === original.acceptance &&
+        original.stopWorktreePrepare.domainId === original.domainId &&
+        original.stopWorktreePrepare.repositoryId === original.repositoryId &&
+        original.stopWorktreePrepare.sourceCommit === original.sourceCommit &&
+        original.stopWorktreePrepare.stateRoot === original.stateRoot &&
+        original.stopWorktreePrepare.evidenceDirectory === original.evidenceDirectory &&
+        original.stopWorktreePrepare.candidateVersion === original.candidateVersion &&
+        isDeepStrictEqual(original.stopWorktreePrepare.candidateInstalledSha256,
+          original.candidateInstalledSha256))) &&
+      String(original.stopWorktreePrepare?.error ?? original.error ?? '')
+        .startsWith('Error: Actual product readiness missing: ') &&
+      original.sourceCommit === product.config.sourceCommit &&
+      original.domainId === product.config.domainId &&
+      original.repositoryId === product.config.repositoryId &&
+      original.stateRoot === product.config.stateRoot &&
+      original.evidenceDirectory === path.dirname(ref.path) &&
+      original.candidateVersion === product.config.version &&
+      isDeepStrictEqual(original.candidateInstalledSha256, product.config.installedSha256) &&
+      Array.isArray(original.operations) && original.operations.length === 0 &&
+      Array.isArray(original.launches) && original.launches.length === 0 &&
+      Array.isArray(original.closes) && original.closes.length === 0 &&
+      (original.productExits?.length ?? 0) === 0 && original.failedProductHeld === true &&
+      timing?.readyAcceptedBeforeDeadline === false && timing.readyPresentAtDecision === false &&
+      timing.spawnAttemptUtc === original.productSpawnAttemptUtc &&
+      timing.spawnReturnedUtc === original.productSpawnReturnedUtc &&
+      typeof timing.decisionAtUtc === 'string' && typeof timing.deadlineAtUtc === 'string' &&
+      Number.isFinite(Date.parse(timing.decisionAtUtc)) &&
+      Number.isFinite(Date.parse(timing.deadlineAtUtc)) &&
+      Date.parse(timing.decisionAtUtc) >= Date.parse(timing.deadlineAtUtc) &&
+      observed?.targetUrl === null && observed.diagnosticConnected === false &&
+      observed.readyReceiptPresent === false && observed.readyAcceptedBeforeDeadline === false &&
+      endpoint && timing.readyPath === endpoint.readyPath &&
+      ['pid', 'port', 'setId', 'generationId', 'readyPath', 'stderrPath']
+        .every(key => endpoint[key] === product.endpoint?.[key]) &&
+      journal.launches?.[0]?.readinessQualification === 'LATE_AFTER_ORIGINAL_FAILURE_NOT_ACCEPTANCE' &&
+      isDeepStrictEqual(journal.launches[0].originalReadinessFailure, ref),
+    'Retained readiness source is not the same untouched failed original spawn');
+    return true;
+  };
   const closeRow = async row => {
     if (closed(row) || refused(row)) return;
     check(row.closeDispatchState === 'NOT_DISPATCHED',
@@ -210,6 +267,9 @@ export function createStartupHomeLifecycle(product, manifest, save, runReadback,
       save(); product.save();
     },
     async observeRetainedNoStartup() {
+      const failedReadiness = retainedReadinessFailure();
+      const failedClientImport = String(journal.error ?? '').includes('ERR_MODULE_NOT_FOUND') &&
+        String(journal.error ?? '').includes("@e2e-dev/web");
       if (!restored || !expectedNoCreate || manifest.startupAttempts.length !== 0 ||
           manifest.noStartupHomes.length !== 1 || expectedNoCreate.sourceKind !== 'NATIVE_STARTUP_NO_CREATE' ||
           expectedNoCreate.state !== 'CLOSED_PREDECESSOR' ||
@@ -221,8 +281,7 @@ export function createStartupHomeLifecycle(product, manifest, save, runReadback,
           !Array.isArray(journal.launches) || journal.launches.length !== 1 ||
           !Array.isArray(journal.operations) || journal.operations.length !== 0 ||
           (journal.startupHomeReads?.length ?? 0) !== 0 ||
-          !String(journal.error ?? '').includes('ERR_MODULE_NOT_FOUND') ||
-          !String(journal.error ?? '').includes("@e2e-dev/web") ||
+          (!failedClientImport && !failedReadiness) ||
           !product.socket || product.socket.readyState !== WebSocket.OPEN || product.child || product.tester ||
           journal.retainedAttachment?.observationMode !== 'ATTACHED_RETAINED_PRODUCT' ||
           journal.retainedAttachment.ui?.url !== journal.launches[0].url ||
@@ -240,6 +299,7 @@ export function createStartupHomeLifecycle(product, manifest, save, runReadback,
       startupLifecycleSource();
       const observation = { source: 'CURRENT_RETAINED_USER_CONFIGURATION_READ',
         originalBootstrapMissing: true,
+        originalReadinessFailure: failedReadiness ? { ...journal.originalReadinessFailure } : null,
         originalManifest: { path: restore.originalManifestOrigin, sha256: restore.originalManifestSha256 },
         originalLaunch: structuredClone(journal.launches[0]),
         state: 'PERSISTED_BEFORE_READ', startedAt: new Date().toISOString() };

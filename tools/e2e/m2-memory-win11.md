@@ -9,9 +9,13 @@ marker turn. Its immutable reader binds each original H input, native response,
 A source and F registration to the real candidate. Physical vendor history
 objects count as evidence only when their individual readback succeeds;
 missing or unqualified objects remain `NOT_RUN`, even if the H/A/F flow completes.
-The module also performs its existing side/formal sequence because its reader
-requires that baseline and refusal chain. These are fresh sessions for the
-cross-project condition; earlier M2 results cannot be relabelled as this run.
+The default full flow also performs its original side/formal sequence and
+refusal chain. Set `historyBoundary.selection` to `V04B_PROJECT_ISOLATION`
+for one A/B pair and only the two original project marker turns. This selection
+does not dispatch SideChat, formal review, denied resume or compact. Its
+separate reader phase checks the original A/B H inputs, completed turns,
+StopFacts, releases, A source, and registered F bindings; V10 remains `NOT_RUN`.
+Earlier M2 results cannot be relabelled as this run.
 
 This entry reports **partial evidence only**. Codex's original `config/read`
 response must show `features.memories`, `memories.generate_memories` and
@@ -23,6 +27,24 @@ state and its actual instruction-file load set are not reported by the current
 original stream. Neither the flag, separate homes, no-write snapshot nor model
 prose closes V04b. The immutable reader and this driver leave V04b overall
 `NOT_RUN`. OpenCode, Grok and Antigravity are `NOT_RUN` in this entry.
+
+For `V04B_PROJECT_ISOLATION`, bind exactly one case's `projectA` and `projectB`
+with distinct real project domains; omit `sideBinding`. Both selected USER
+seats/F worktrees must already be registered and exclusively idle on the same
+already logged-in fixed instance. Supply the existing signed
+`temporaryHomeReadback` `{path,sha256,corePath,coreSha256}` source pins. The
+driver derives the ordered owned-domain set `[projectA.domainId,
+projectB.domainId]` into one shared HOME manifest and one global baseline.
+It registers each exact journaled session before native admission and sends
+all ordinary operations through `ActualProduct.operation` with its original
+domain as the seventh argument. Both H sessions are live before either marker;
+after both original completed turns, both are stopped and released. The shared
+HOME lifecycle requires both original domains' own close receipts before one
+causal caption close and immutable closed readback. Any HOME from an undeclared
+third domain or another case remains an unapproved inventory change. The
+existing formal/memory/ledger before/after observations still require all 13
+configured fields to compare equal. This route does not establish effective
+vendor memory activity or loaded-instruction provenance.
 
 Use the signed Node and Python runtimes on Owner Win11. Make a **fresh private**
 JSON fixture outside the repository and candidate state root, with a new
@@ -53,8 +75,8 @@ Private fixture shape (all angle-bracket values must be replaced locally):
   "repositoryId": "gogokeSeatTestbed",
   "observers": [
     {"name": "formal", "runtime": "<signed observer runtime>", "args": ["<read-only observer>", "{output}"], "equalFields": ["formal", "registeredFormal", "formalData", "formalRegistry", "shortcuts"]},
-    {"name": "memory", "runtime": "<signed observer runtime>", "args": ["<read-only observer>", "{output}"], "equalFields": ["<actual memory fact field>"]},
-    {"name": "ledger", "runtime": "<signed observer runtime>", "args": ["<read-only observer>", "{output}"], "equalFields": ["<actual ledger fact field>"]}
+    {"name": "memory", "runtime": "<signed observer runtime>", "args": ["<read-only observer>", "{output}"], "equalFields": ["dataAfter", "stage1OutputCount", "memoryJobCount", "memoryDirectoryPresent", "databasePresent"]},
+    {"name": "ledger", "runtime": "<signed observer runtime>", "args": ["<read-only observer>", "{output}"], "equalFields": ["epoch", "rootIdentity", "measurementPreservedDatabaseBytes"]}
   ],
   "historyBoundary": {
     "lifecycleOwnership": "EXCLUSIVE_M2_HISTORY_SEATS",
@@ -72,7 +94,16 @@ Private fixture shape (all angle-bracket values must be replaced locally):
 }
 ```
 
-An optional second case may use `driverId: "claude"`, with its own **distinct**
+For the project-only route, replace `historyBoundary` with the same
+`lifecycleOwnership` and one `cases` row containing only the original
+`driverId`, `instanceId`, `version`, `sha256`, `projectA`, and `projectB`
+bindings; add `"selection":"V04B_PROJECT_ISOLATION"` and
+`"peerRead":false`. Do not provide `sideBinding`. This is a distinct one-shot
+case; its final private input must also explicitly set `executionEnabled:true`,
+`acceptance:false` and the signed `temporaryHomeReadback` pins. This does not
+change the default full-flow fixture or its assertions.
+
+An optional second case in the default full flow may use `driverId: "claude"`, with its own **distinct**
 three registered seats/worktrees and a different already logged-in instance.
 Each case's A/B pair shares one instance. The test must own those test seats
 exclusively; it does not register or create them. The script creates no

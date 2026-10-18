@@ -5,7 +5,12 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ActualProduct, id, readJson, sha256 } from './product-cdp.mjs';
-import { runHistoryBoundaryCases } from './m2-history-boundaries.mjs';
+import { runHistoryBoundaryCases, closeProjectOnlyAfterOwnedHome } from './m2-history-boundaries.mjs';
+import { createTemporaryHomeLifecycle } from './installed-temporary-home-lifecycle.mjs';
+import { closeCausally, causalCloseSources } from './causal-close/causal-close.mjs';
+import { validateProtectionObservers, captureProtection,
+  compareProtection as compareSharedProtection, readProtectionSnapshot,
+  protectionSources } from './installed-protection-observation.mjs';
 
 process.env.E2E_TELEMETRY_DISABLED = '1';
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -14,29 +19,39 @@ const atom = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0
 const inside = (child, parent) => child === parent || child.startsWith(parent + path.sep);
 const check = (condition, reason) => { if (!condition) throw Error(reason); };
 const cases = config.historyBoundary?.cases;
+const projectOnly = config.historyBoundary?.selection === 'V04B_PROJECT_ISOLATION';
 const required = ['installed', 'installedSha256', 'version', 'sourceCommit', 'registryKey',
   'pwsh', 'python', 'stateRoot', 'evidenceDirectory', 'result', 'domainId', 'repositoryId', 'observers'];
 check(process.platform === 'win32' && process.argv[2] && required.every(key => config[key] !== undefined) &&
   config.testerArmy !== false && config.repositoryId === 'gogokeSeatTestbed' && atom(config.domainId) &&
   /^[a-f0-9]{40}$/.test(config.sourceCommit) && Array.isArray(cases) && cases.length >= 1 && cases.length <= 2 &&
   new Set(cases.map(row => row.driverId)).size === cases.length &&
+  (projectOnly ? cases.length === 1 : config.historyBoundary?.selection === undefined) &&
   cases.every(row => ['codex', 'claude'].includes(row.driverId) && row.projectA?.domainId === config.domainId &&
-    row.projectB?.domainId !== config.domainId && row.sideBinding?.domainId === config.domainId) &&
+    row.projectB?.domainId !== config.domainId &&
+    (projectOnly ? row.sideBinding === undefined : row.sideBinding?.domainId === config.domainId)) &&
+  (!projectOnly || (config.executionEnabled === true && config.acceptance === false &&
+    (config.temporaryHomeDomains === undefined ||
+      JSON.stringify(config.temporaryHomeDomains) ===
+        JSON.stringify([config.domainId, cases[0].projectB.domainId])) &&
+    cases.every(row => [row.projectA, row.projectB].every(binding =>
+      binding && ['domainId', 'repositoryId', 'seatId', 'worktreeId'].every(key => atom(binding[key])) &&
+      binding.repositoryId === config.repositoryId) &&
+      row.projectA.worktreeId !== row.projectB.worktreeId) &&
+    config.temporaryHomeReadback &&
+    ['path', 'corePath'].every(key => path.isAbsolute(config.temporaryHomeReadback[key] ?? '')) &&
+    ['sha256', 'coreSha256'].every(key => /^[a-f0-9]{64}$/.test(config.temporaryHomeReadback[key] ?? '')))) &&
   config.historyBoundary.peerRead !== true &&
   config.historyBoundary.lifecycleOwnership === 'EXCLUSIVE_M2_HISTORY_SEATS' &&
-  Array.isArray(config.observers) && ['formal', 'memory', 'ledger'].every(name =>
-    config.observers.some(row => row.name === name)) &&
-  config.observers.every(row => atom(row.name) && typeof row.runtime === 'string' &&
-    Array.isArray(row.args) && row.args.includes('{output}') && Array.isArray(row.equalFields) &&
-    row.equalFields.length > 0) &&
-  ['formal', 'registeredFormal', 'formalData', 'formalRegistry', 'shortcuts'].every(field =>
-    config.observers.find(row => row.name === 'formal').equalFields.includes(field)) &&
+  Array.isArray(config.observers) &&
   !fs.existsSync(config.result) && fs.existsSync(config.evidenceDirectory) &&
   [config.installed, config.stateRoot, config.evidenceDirectory, config.result].every(path.isAbsolute) &&
   inside(path.resolve(config.result), path.resolve(config.evidenceDirectory)) &&
   [config.installed, config.stateRoot, path.resolve(here, '..', '..')].every(root =>
     !inside(path.resolve(config.evidenceDirectory), path.resolve(root))),
   'Fresh private installed M2 memory fixture, exclusive F bindings and observers required');
+validateProtectionObservers(config.observers);
+if (projectOnly) config.temporaryHomeDomains = [config.domainId, cases[0].projectB.domainId];
 
 const journal = { schema: 'gogoke.37.m2-win11-e2e.v1', entry: 'm2-memory-win11',
   caseId: id('m2Memory'), sourceCommit: config.sourceCommit, domainId: config.domainId,
@@ -46,6 +61,10 @@ const journal = { schema: 'gogoke.37.m2-win11-e2e.v1', entry: 'm2-memory-win11',
     .filter(driverId => !cases.some(row => row.driverId === driverId))
     .map(driverId => ({ driverId, state: 'NOT_RUN_NO_CASE' })) };
 const product = new ActualProduct(config, journal);
+if (projectOnly) journal.protectionInstrument = protectionSources();
+const homeLifecycle = projectOnly ? createTemporaryHomeLifecycle(product,
+  path.join(config.evidenceDirectory, 'temporary-home-attempts.json')) : null;
+if (projectOnly) journal.causalCloseSources = causalCloseSources();
 delete journal.driverBytes['m1-win11.mjs'];
 delete journal.driverBytes['m1-readback.py'];
 for (const file of ['m2-memory-win11.mjs', 'm2-history-boundaries.mjs',
@@ -61,20 +80,12 @@ async function runChild(runtime, args, label) {
   });
 }
 async function snapshot(phase) {
-  for (const observer of config.observers) {
-    const file = path.join(config.evidenceDirectory, `${observer.name}-m2-memory-${phase}.json`);
-    check(!fs.existsSync(file), `Existing ${observer.name} ${phase} snapshot`);
-    await runChild(observer.runtime, observer.args.map(arg => arg === '{output}' ? file : arg),
-      `${observer.name} ${phase} readonly observer`);
-    journal.snapshots[`${observer.name}-${phase}`] = { file: path.basename(file), sha256: sha256(file) };
-    product.save();
-  }
+  await captureProtection(config.observers, null,
+    name => path.join(config.evidenceDirectory, `${name}-m2-memory-${phase}.json`),
+    (name, reference) => { journal.snapshots[`${name}-${phase}`] = reference; product.save(); });
 }
 function snapshotValue(name, phase) {
-  const ref = journal.snapshots[`${name}-${phase}`];
-  const file = path.join(config.evidenceDirectory, ref.file);
-  check(sha256(file) === ref.sha256, `Original ${name} ${phase} bytes changed`);
-  return readJson(file);
+  return readProtectionSnapshot(config.evidenceDirectory, journal.snapshots[`${name}-${phase}`]);
 }
 async function historyReadback(phase) {
   const file = `m2-memory-history-${phase}.json`;
@@ -87,7 +98,8 @@ async function historyReadback(phase) {
     proof.readerSha256 === journal.driverBytes['m2-history-boundaries-readback.py'] &&
     proof.measurementPreservedDatabaseBytes === true && proof.directFlowEvidence === true &&
     proof.acceptance === false && proof.databaseWrites === false && proof.credentialReads === false &&
-    (phase !== 'final' || proof.directRefusalEvidence === true),
+    (phase !== 'final' || proof.directRefusalEvidence === true) &&
+    (phase !== 'project-only-final' || proof.directRefusalEvidence === false),
   `${phase}: original H/A/F immutable facts are incomplete`);
   const ref = { phase: `history-${phase}`, file, sha256: sha256(output) };
   journal.readbacks.push(ref); product.save();
@@ -96,6 +108,12 @@ async function historyReadback(phase) {
 
 try {
   await snapshot('before');
+  if (projectOnly) {
+    // The case anchor carries the two-domain declaration into the same
+    // immutable baseline; no native HOME create has been dispatched yet.
+    homeLifecycle.beginCase(journal.caseId);
+    await homeLifecycle.captureBaseline();
+  }
   await product.launch();
   const instances = await product.instances();
   check(cases.every(row => instances.instances.some(instance => instance.instanceId === row.instanceId &&
@@ -110,9 +128,14 @@ try {
       return ref;
     },
   } }, journal);
-  check(flow.state === 'FLOW_COMPLETE_DIRECT_READBACK_REQUIRED', 'Original cross-project flow incomplete');
-  await product.closeNormally();
-  const ref = await historyReadback('final');
+  check(flow.state === (projectOnly ? 'PROJECT_ONLY_FLOW_COMPLETE_DIRECT_READBACK_REQUIRED' :
+    'FLOW_COMPLETE_DIRECT_READBACK_REQUIRED'), 'Original cross-project flow incomplete');
+  if (projectOnly) {
+    await closeProjectOnlyAfterOwnedHome(homeLifecycle, product, closeCausally);
+  } else {
+    await product.closeNormally();
+  }
+  const ref = await historyReadback(projectOnly ? 'project-only-final' : 'final');
   const proof = readJson(path.join(config.evidenceDirectory, ref.file));
   check(proof.cases.length === cases.length &&
     new Set(proof.cases.map(row => row.driverId)).size === cases.length &&
@@ -121,19 +144,17 @@ try {
     row.actualHInputIsolation === true && row.projectDomains.length === 2),
   'Both configured live same-instance project inputs need direct proof');
   await snapshot('after');
-  for (const observer of config.observers) {
-    const before = snapshotValue(observer.name, 'before');
-    const after = snapshotValue(observer.name, 'after');
-    for (const field of observer.equalFields) check(Object.hasOwn(before, field) &&
-      Object.hasOwn(after, field) && JSON.stringify(before[field]) === JSON.stringify(after[field]),
-    `${observer.name}.${field} changed across original run`);
-  }
+  const protection = compareSharedProtection(config.observers, snapshotValue);
+  check(protection.measuredFieldCount === 13 && protection.allEqual === true,
+    'Original thirteen protection fields changed across history case');
+  journal.protectionComparison = protection; product.save();
   for (const phase of ['before', 'after']) {
     const memory = snapshotValue('memory', phase);
     check(memory.memoryDataUnchangedByRead === true && memory.stage1OutputCount === 0 &&
       memory.memoryJobCount === 0, `${phase} product memory observer failed`);
   }
-  journal.state = 'DIRECT_CROSS_PROJECT_FACTS_REVIEW_REQUIRED';
+  journal.state = projectOnly ? 'V04B_PROJECT_INPUT_FACTS_REVIEW_REQUIRED' :
+    'DIRECT_CROSS_PROJECT_FACTS_REVIEW_REQUIRED';
   journal.v04b = 'NOT_RUN_VENDOR_MEMORY_AND_INSTRUCTION_PROVENANCE';
   journal.acceptance = false; product.save();
 } catch (error) {

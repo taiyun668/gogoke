@@ -10,6 +10,22 @@ const atom = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0
 const check = (value, why) => { if (!value) throw Error(why); };
 const decimal = value => typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value);
 
+export async function closeProjectOnlyAfterOwnedHome(home, product, close) {
+  const domains = home.manifest.ownedDomains;
+  const attempted = new Set(home.manifest.attempts.filter(row =>
+    row.caseId === product.journal.caseId).map(row => row.domainId));
+  check(Array.isArray(domains) && domains.length === 2 &&
+    domains.every(domain => attempted.has(domain)) && attempted.size === domains.length,
+  'Both declared project domains require original HOME attempts before caption close');
+  const settled = await home.finishCase(product.journal.caseId);
+  check(settled.complete === true, 'Both original project HOME attempts require complete teardown');
+  const teardown = await home.beforeCaptionClose();
+  check(teardown.complete === true, 'Owned project and startup HOME teardown incomplete');
+  await close(product);
+  check(await home.verifyClosedReadback() === true,
+    'Original two-domain HOME closed readback is incomplete');
+}
+
 async function originalCmdReadTarget(config, source) {
   const code = String.raw`import ctypes,hashlib,json,os,sys
 original=sys.argv[1]
@@ -46,9 +62,11 @@ print(json.dumps({'path':alias,'fileIdentity':[str(st.st_dev),str(st.st_ino)],'s
 export async function runHistoryBoundaryCases(product, config, journal) {
   const c = config.historyBoundary;
   if (!c) return { state: 'NOT_RUN_NOT_CONFIGURED', acceptance: false };
+  const projectOnly = c.selection === 'V04B_PROJECT_ISOLATION';
   check(process.platform === 'win32' && config.repositoryId === 'gogokeSeatTestbed' &&
     c.lifecycleOwnership === 'EXCLUSIVE_M2_HISTORY_SEATS' &&
-    typeof c.normalCloseReadbackRestart === 'function' &&
+    (projectOnly ? c.cases?.length === 1 && product.temporaryHomeLifecycle?.manifest?.ownedDomains?.length === 2 :
+      c.selection === undefined && typeof c.normalCloseReadbackRestart === 'function') &&
     /^[a-f0-9]{40}$/.test(config.sourceCommit) && config.domainId === product.config.domainId &&
     product.tester && product.tester.page.url() === product.endpoint.url &&
     journal.connectionBackend?.agentActs === 0 && journal.connectionBackend?.telemetryDisabled === true &&
@@ -60,21 +78,25 @@ export async function runHistoryBoundaryCases(product, config, journal) {
       atom(row.instanceId) && typeof row.version === 'string' && /^[a-f0-9]{64}$/.test(row.sha256),
     'One original fixed already admitted instance per configured provider');
     pins.add(row.driverId);
-    for (const project of [row.projectA, row.projectB, row.sideBinding]) {
+    for (const project of [row.projectA, row.projectB, ...(projectOnly ? [] : [row.sideBinding])]) {
       check(project && ['domainId', 'repositoryId', 'seatId', 'worktreeId'].every(key => atom(project[key])) &&
         project.repositoryId === config.repositoryId &&
         !seats.has(`${project.domainId}/${project.seatId}`) && !trees.has(project.worktreeId),
       'Disjoint exclusive original domain/F/E test objects in the authorized test repository');
       seats.add(`${project.domainId}/${project.seatId}`); trees.add(project.worktreeId);
     }
-    check(row.projectA.domainId !== row.projectB.domainId && row.sideBinding.domainId === row.projectA.domainId,
-      'Two actual project domains are required; the independent third side seat must belong to the source domain');
+    check(row.projectA.domainId !== row.projectB.domainId &&
+      (projectOnly || row.sideBinding.domainId === row.projectA.domainId) &&
+      (!projectOnly || JSON.stringify(product.temporaryHomeLifecycle.manifest.ownedDomains) ===
+        JSON.stringify([row.projectA.domainId, row.projectB.domainId])),
+    'Two actual owned project domains are required; full flow additionally needs its side seat');
   }
   const record = { schema: 'gogoke.37.m2-history-boundaries.v1', state: 'RUNNING', acceptance: false,
     driverSha256: sha256(path.join(here, 'm2-history-boundaries.mjs')),
     readerSha256: sha256(path.join(here, 'm2-history-boundaries-readback.py')),
     sourceCommit: config.sourceCommit, domainId: config.domainId, stateRoot: config.stateRoot,
     evidenceDirectory: config.evidenceDirectory, cases: [], refusals: [], peerReadRequested: c.peerRead === true,
+    ...(projectOnly ? { selection: 'V04B_PROJECT_ISOLATION' } : {}),
     notRun: [
       { caseId: 'V04b_EFFECTIVE_VENDOR_MEMORY', reason: 'Codex startup memory flags are checked from the original H/A config/read response; vendor memory-store/activity, other providers and loaded-instruction provenance still need direct evidence. H inputs alone do not close V04b.' },
       { caseId: 'WORKER_OWNERLEAD_HISTORY_MODEL_QUERY', reason: 'WORK has no dedicated history-query tool. The separate original builtin file-read case, when configured, measures only direct access to an exact private lead test object.' },
@@ -83,6 +105,11 @@ export async function runHistoryBoundaryCases(product, config, journal) {
   for (const driverId of ['codex', 'claude', 'opencode', 'grok'].filter(value => !pins.has(value))) {
     record.notRun.push({ caseId: driverId, reason: 'No exclusive real fixed already logged-in test instance configured.' });
   }
+  if (projectOnly) record.notRun.push(
+    { caseId: 'V10_SIDE_CHAT', reason: 'V04b project-only selection does not dispatch SideChat.' },
+    { caseId: 'V10_FORMAL_REVIEW', reason: 'V04b project-only selection does not dispatch formal review.' },
+    { caseId: 'V10_REFUSALS', reason: 'V04b project-only selection does not dispatch denied resume or compact controls.' },
+    { caseId: 'V04b_VENDOR_INSTRUCTION_PROVENANCE', reason: 'Two original marker turns do not establish loaded vendor instruction provenance.' });
   journal.historyBoundary = record; journal.sessions ??= []; product.save();
   const request = (domainId, family, operation, targetId, payload, expectedRevision) => ({
     schema: 'gogoke.37.operations.v1', family, operation, requestId: id('m2History'),
@@ -98,6 +125,7 @@ export async function runHistoryBoundaryCases(product, config, journal) {
     } catch (error) { entry.originalError = String(error.stack ?? error); product.save(); throw error; }
   };
   const operation = async (domainId, family, verb, target, payload = {}, revision = '0', allowed = ['APPLIED']) => {
+    if (projectOnly) return product.operation(family, verb, target, payload, revision, allowed, domainId);
     const req = request(domainId, family, verb, target, payload, revision);
     // ActualProduct.operation fixes the runner domain. Use the identical real
     // User bridge with this original session's domain; never change product.config.
@@ -151,6 +179,7 @@ export async function runHistoryBoundaryCases(product, config, journal) {
       instanceId: row.instanceId, generation: (BigInt(card.result.generation) + 1n).toString(),
       revision: '0', cursor: '0', events: [], turns: [], inputs: [], graph };
     journal.sessions.push(s); product.save();
+    if (projectOnly) product.temporaryHomeLifecycle.registerProducer(s, row.instanceId);
     await step(s, 'admission-reserve', { seatId: s.seatId });
     await step(s, 'admission-commit', { seatId: s.seatId });
     return s;
@@ -213,7 +242,8 @@ export async function runHistoryBoundaryCases(product, config, journal) {
     for (const row of c.cases) {
       const item = { caseId: id('history'), driverId: row.driverId, instanceId: row.instanceId,
         version: row.version, sha256: row.sha256, state: 'RUNNING', acceptance: false,
-        projectA: row.projectA, projectB: row.projectB, sideBinding: row.sideBinding, sideId: id('historySide') };
+        projectA: row.projectA, projectB: row.projectB,
+        ...(projectOnly ? {} : { sideBinding: row.sideBinding, sideId: id('historySide') }) };
       record.cases.push(item); product.save();
       const instance = instances.instances.find(value => value.instanceId === row.instanceId);
       if (!instance || instance.state !== 'LOGGED_IN') {
@@ -228,6 +258,11 @@ export async function runHistoryBoundaryCases(product, config, journal) {
       const second = await send(b, row, id('PROJECT_B_PRIVATE'), 'V04b project B history');
       await finishInput(a, first.input, row, first.sent);
       await finishInput(b, second.input, row, second.sent);
+      if (projectOnly) {
+        await stop(a, true); await stop(b, true);
+        item.state = 'PROJECT_ONLY_FLOW_COMPLETE_DIRECT_READBACK_REQUIRED'; product.save();
+        continue;
+      }
       await stop(a, false); await stop(b, true);
       const side = await allocate(row.sideBinding, row, 'SIDE_CHAT', item.caseId);
       item.sideSessionId = side.id;
@@ -265,6 +300,13 @@ export async function runHistoryBoundaryCases(product, config, journal) {
       await finishInput(formal, fresh.input, row, fresh.sent);
       await stop(formal, true); await step(a, 'admission-release', { seatId: a.seatId });
       item.state = 'FLOW_COMPLETE_BEFORE_REFUSALS'; product.save();
+    }
+    if (projectOnly) {
+      check(record.cases.length === 1 && record.cases[0].state ===
+        'PROJECT_ONLY_FLOW_COMPLETE_DIRECT_READBACK_REQUIRED',
+      'Original A/B project marker turns and both H releases are required');
+      record.state = 'PROJECT_ONLY_FLOW_COMPLETE_DIRECT_READBACK_REQUIRED'; product.save();
+      return record;
     }
     check(record.cases.some(row => row.state === 'FLOW_COMPLETE_BEFORE_REFUSALS'), 'No actual history case ran; preserve NOT_RUN');
     record.state = 'BEFORE_REFUSAL_READBACK_REQUIRED'; product.save();
