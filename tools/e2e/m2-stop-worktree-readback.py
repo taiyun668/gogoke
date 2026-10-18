@@ -287,8 +287,8 @@ def child_case_facts(db, journal, case, tree, phase, stop):
                "custodian_nonce,receipt_hex,request_id FROM gogoke_v37_h_stdin_journal "
                "WHERE domain_id=? AND session_id=? AND request_id=? AND operation='send'",
                (case["domainId"], case["session"]["id"], send_id))
-    request_wire = decode_hex(stdin["request_hex"])
-    receipt_wire = decode_hex(stdin["receipt_hex"])
+    request_wire = json.loads(bytes.fromhex(stdin["request_hex"]).decode("utf-8"))
+    receipt_wire = json.loads(bytes.fromhex(stdin["receipt_hex"]).decode("utf-8"))
     initial_receipt = sent["receipt"]
     receipt = child.get("terminalReceipt")
     send_rows = rows(db, "SELECT request_id FROM gogoke_v37_h_stdin_journal "
