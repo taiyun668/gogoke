@@ -238,18 +238,45 @@ export async function runHistoryBoundaryCases(product, config, journal) {
     await product.custody(); product.verifyBytes();
     const ui = await product.evaluate('({url:location.href,home:!!document.querySelector(".home-product-entry"),tauri:!!window.__TAURI_INTERNALS__})');
     check(ui.url === product.endpoint.url && ui.home && ui.tauri, 'Actual installed hard Home locator absent');
-    const instances = await product.instances();
+    const targetedClaude = projectOnly && c.cases.every(row => row.driverId === 'claude');
+    const instances = targetedClaude ? null : await product.instances();
     for (const row of c.cases) {
       const item = { caseId: id('history'), driverId: row.driverId, instanceId: row.instanceId,
         version: row.version, sha256: row.sha256, state: 'RUNNING', acceptance: false,
         projectA: row.projectA, projectB: row.projectB,
         ...(projectOnly ? {} : { sideBinding: row.sideBinding, sideId: id('historySide') }) };
       record.cases.push(item); product.save();
-      const instance = instances.instances.find(value => value.instanceId === row.instanceId);
-      if (!instance || instance.state !== 'LOGGED_IN') {
-        item.state = 'NOT_RUN_NOT_ALREADY_LOGGED_IN'; product.save(); continue;
+      if (targetedClaude) {
+        const first = journal.operations.length;
+        const read = (verb, revision, allowed = ['APPLIED']) => product.operation(
+          'K-INSTANCE', verb, row.instanceId, {}, revision, allowed, 'global');
+        let version = await read('version-and-new-version', '0', ['APPLIED', 'STALE']);
+        if (version.status === 'STALE') version = await read('version-and-new-version', version.revision);
+        check(version.result?.version === row.version &&
+          version.result?.programDigest === `sha256:${row.sha256}`,
+        'Original target registration differs from the fixed history image/version');
+        const installed = await read('install-state', version.revision);
+        const login = await read('login-state', version.revision);
+        check(installed.revision === version.revision && login.revision === version.revision &&
+          installed.result?.installed === true && login.result?.state === 'LOGGED_IN',
+        'Original target installation and login are not currently qualified');
+        item.instanceRead = { basis: 'ORIGINAL_TARGET_NATIVE_VERSION_INSTALL_LOGIN',
+          instanceId: row.instanceId, version: version.result.version,
+          programDigest: version.result.programDigest, revision: version.revision,
+          installState: 'INSTALLED', loginState: login.result.state,
+          expectedDriverId: row.driverId, driverIdReturnedByTheseReads: false,
+          operationIndexes: journal.operations.slice(first).map(entry => journal.operations.indexOf(entry)) };
+        // The following original H capability-probe establishes the driver and
+        // physical binary pin independently; these three reads do not return it.
+        product.save();
+      } else {
+        const instance = instances.instances.find(value => value.instanceId === row.instanceId);
+        if (!instance || instance.state !== 'LOGGED_IN') {
+          item.state = 'NOT_RUN_NOT_ALREADY_LOGGED_IN'; product.save(); continue;
+        }
+        check(instance.driverId === row.driverId && instance.version === row.version,
+          'Actual F instance differs from fixed history pin');
       }
-      check(instance.driverId === row.driverId && instance.version === row.version, 'Actual F instance differs from fixed history pin');
       const a = await open(row.projectA, row, 'WORK', item.caseId);
       const b = await open(row.projectB, row, 'WORK', item.caseId);
       item.projectSessions = [a.id, b.id]; product.save();

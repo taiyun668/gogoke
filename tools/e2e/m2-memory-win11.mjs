@@ -115,10 +115,15 @@ try {
     await homeLifecycle.captureBaseline();
   }
   await product.launch();
-  const instances = await product.instances();
-  check(cases.every(row => instances.instances.some(instance => instance.instanceId === row.instanceId &&
-    instance.driverId === row.driverId && instance.version === row.version && instance.state === 'LOGGED_IN')),
-  'Every selected fixed instance must already be logged in; no partial case or login');
+  // The Claude project-only flow reads its target through the existing Native
+  // version/install/login operations in the history core. A different instance's
+  // failed recovery must not become a prerequisite for this observation.
+  if (!(projectOnly && cases.every(row => row.driverId === 'claude'))) {
+    const instances = await product.instances();
+    check(cases.every(row => instances.instances.some(instance => instance.instanceId === row.instanceId &&
+      instance.driverId === row.driverId && instance.version === row.version && instance.state === 'LOGGED_IN')),
+    'Every selected fixed instance must already be logged in; no partial case or login');
+  }
   const flow = await runHistoryBoundaryCases(product, { ...config, historyBoundary: {
     ...config.historyBoundary,
     normalCloseReadbackRestart: async phase => {
