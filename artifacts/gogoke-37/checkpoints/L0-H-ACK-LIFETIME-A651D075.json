@@ -1,0 +1,50 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "checkpoint": "L0-H-ACK-LIFETIME-A651D075",
+  "recorded_utc": "2026-09-29T19:08:17Z",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "state": "L0_M1_IN_PROGRESS_NOT_ACCEPTED",
+  "authorization": {
+    "owner_merged_pr": 53,
+    "authorized_origin_main": "e2f0c57853b1fca6bc4d6dcbca0185b57baf452f",
+    "manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d",
+    "plan_revision": "PR #55 still open at 856480935cd999c9658b02993c166fbd3c29acc4; the prior focused audit comment remains unresolved. No revised authorization yet."
+  },
+  "cloud_run": {
+    "run_id": 36615461693,
+    "source_sha": "a651d075305b8dc568c0e932fff4ef3f2ffc6554",
+    "runner": "Cloud Windows win25-vs2026, not Owner Win11 product proof",
+    "native_library": "490 passed, 1 failed, 0 skipped; baseline LOCAL path still fails",
+    "registryRead_fresh_directory": "PASS under test-only capability",
+    "registryRead_LOCAL_pipe": "FAIL under test-only capability",
+    "registryRead_unqualified_pipe": "FAIL under test-only capability and path override; first helper opened the pipe but exited 101",
+    "direct_child_stderr": "seat_pipe_child_helper panicked at native Job admission ack read: Windows error 233, No process is on the other end of the pipe",
+    "measurement_root_cause": "The fixture server thread closed its single pipe handle immediately after writing the ack; the first helper could read after that close. Separate ProcMon replay outcomes differed because of this close/read race. This is a fixture lifetime bug, not evidence of a product permission change.",
+    "source_basis": "https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-operations documents keeping the server connection until the client has read written data.",
+    "machine_result_sha256": "ae25444c7b77f82468ef7c81fdf6904cf975261651762ccdb0683ed382314c79",
+    "procmon_summary_sha256": "7c7eccf15dc2e91ed01d6efb1d4a9b72b13376d93c1143369c760f645303c5af",
+    "cdb_summary_sha256": "7d21f3dbcdf26304932f21e4ec790cb2275b62a5d4c148c918c95fccf29a7a55"
+  },
+  "fix_in_flight": {
+    "source_sha": "f6d44502",
+    "cloud_run_id": 36617041464,
+    "change": "Fixture server keeps the pipe open until the first helper has completed and its success has been asserted; product transport and release capability remain unchanged.",
+    "state": "RUNNING_OR_QUEUED_AT_CHECKPOINT"
+  },
+  "inbox": {
+    "branch": "control/gogoke-s1-r4-inbox",
+    "head": "b4f7e866029b8c5a9a1211100effadf01a03ffbc",
+    "result": "unchanged at natural checkpoint boundary"
+  },
+  "verification": {
+    "real_codex_seat": "NOT_RUN",
+    "ot4_login": "NOT_REQUESTED",
+    "m1": "NOT_COMPLETE",
+    "m2": "NOT_RUN",
+    "m3": "NOT_RUN",
+    "formal_data_touched": false,
+    "self_acceptance": false
+  },
+  "next": "Read run 36617041464 and the exact helper completion. Continue PR #55 focused re-audit only after Claude revision; Owner merges, then Controller creates new MANIFEST-bound authorization PR; Owner merges and Controller reads it back before production L0 work. OT3 caps 4 and 4 remain pending persistence. This checkpoint is not a stop."
+}

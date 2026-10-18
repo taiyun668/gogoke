@@ -1,0 +1,128 @@
+{
+  "schema": "gogoke.37.stable-candidate-checkpoint.v1",
+  "state": "OWNER_WINDOWS_RESTART_REQUIRED_ORIGINAL_FENCE_SAVED",
+  "candidate": {
+    "version": "0.1.24",
+    "source_commit": "8866c3c0f18332f731fe3640f93ea1a6141186d3",
+    "installed_on_owner_win11": true,
+    "frozen_run": 37225117805,
+    "frozen_artifact": 11312009908,
+    "frozen_archive_sha256": "8fb7dbe3379ce2eb9dc98711fcd12dd642b4ae2a4a093ab5abb7e0847610195c",
+    "reproducibility_artifact": 11312304696,
+    "signing_main": "a27a7bb57e6b24d58b4e14e9967e2ff1d39f5855",
+    "signing_run": 37234128464,
+    "signed_artifact": 11315121372,
+    "signed_archive_sha256": "28d4435d7fe7a18f5c16aac643c36079c238936c83fa7d7ee7327ab244003f80",
+    "local_signature": "PASS_PURPOSE_BOUND_P256",
+    "exact_frozen_member_matches": 7,
+    "installed_native_sha256": "f80f76f52a39a7a016bb3db5c934110daa79ad1bd864df34ece948fe6565a8fb",
+    "installed_shell_sha256": "578cc7a894f6bd9321c473c3c5511a374a36b2bb38fade3ca072b8a319058ac3"
+  },
+  "authorization": {
+    "receipt_blob": "fae816fb4e43f55623ffcee4c008d3febd63d7ad",
+    "scope_digest": "e77f7348b84e6b30c27976383c80ab8163c915174d29d22c5274087d3be0fbe0",
+    "receipt_introduction": "e43f1ac0b1492dce0f9ef5d469df4a240e11e7c9",
+    "main_verifier_scope_readback": "PASS"
+  },
+  "cloud": {
+    "frozen_desktop": "PASS_INCLUDING_INDEPENDENT_REPRODUCIBILITY",
+    "frozen_security_mutations": {
+      "run": 37225115615,
+      "job": 111503068976,
+      "state": "PASS",
+      "compiled_failure_restoration_pairs": 16
+    },
+    "qualification": {
+      "source": "bb0bfb6096303e15c8b96089a9afbd910de8ad30",
+      "run": 37233724575,
+      "artifact": 11316031579,
+      "release_exit": 0,
+      "full_library": {
+        "exit": 0,
+        "discovered": 682,
+        "executed": 682,
+        "passed": 682,
+        "failed": 0,
+        "skipped": 0
+      },
+      "shim": {
+        "exit": 0,
+        "passed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "other_suites_in_this_run": "NOT_RUN_EXPLICIT_SCOPE"
+    },
+    "evidence_bridge": "Only cfg(test) assertions and CI/harness/checkpoint changed after frozen886. The two changed production prefixes and other apps/third_party bytes were independently checked equal. Earlier same-production process/focused/server and frozen16-pair mutation evidence remains applicable. This does not claim equal PE files across different commit headers.",
+    "installed_smoke": {
+      "run": 37234580419,
+      "attempt": 2,
+      "artifact": 11316105350,
+      "state": "PASS_SAME_SIGNED_FROZEN_BYTES",
+      "negative_installer_artifact": 11315448545
+    },
+    "independent_review": "R1-R10 read-only review plus scoped qualification closure PASS; not acceptance"
+  },
+  "win11": {
+    "retirement": "PASS_EXIT0_DELETED_RECEIPT_ORIGINAL_DATA_AND_CUSTODY_PRESERVED",
+    "empty_directory_cleanup": {
+      "independent_scope": "PASS_EXACT_CANDIDATE_EMPTY_DIRECTORIES_ONLY",
+      "inventory_sha256": "0032f3dcbca8bd7640740555438d07a72801aadf54dab4412ecf3afb1af23f1a",
+      "audit_receipt_sha256": "4aa4e3d41dbdb71b342e1076c8d3959dec07881a4acd302426f7d2d852c2471d",
+      "directories": 1114,
+      "files_deleted": 0,
+      "per_item_identity_and_empty_recheck": true,
+      "per_item_absence_readback": true
+    },
+    "installation": "PASS_EXIT0_ACTUAL_FROZEN_BYTES_REGISTRATION_AND_PHYSICAL_INSTANCE_PRESERVED",
+    "original_preboot_e2e": "REFUSED_SAME_KERNEL_BOOT_EXACT_FENCE_SAVED_NOT_MODEL_FLOW_PASS",
+    "normal_close": {
+      "exit": 0,
+      "force_kill": false
+    },
+    "readback": {
+      "state": "PASS_ORIGINAL_PREBOOT_SCENE_NORMAL_CLOSED_AND_PRESERVED",
+      "exact_original_custody_count": 35,
+      "unknown_count": 2,
+      "null_stop_proofs_preserved": true,
+      "acl_step_count": 0,
+      "model_episode_count": 0,
+      "claim_state": "COMMITTED",
+      "generation": 3,
+      "physical_home_and_instance_metadata": "UNCHANGED",
+      "formal_changed": [],
+      "credential_content_read": false,
+      "sql_measurement_writes": false
+    },
+    "real_kernel_boot_transition": "NOT_RUN_OWNER_ACTION",
+    "post_boot_acl_model_and_m2_flow": "NOT_RUN"
+  },
+  "preserved_failures": [
+    {
+      "run": 37225115615,
+      "state": "FULL_LIBRARY_FAIL_681_1_0",
+      "cause": "Invalid one-object snapshot fixture expected a two-object decode; test-only correction passed subsequent directed and formal tests."
+    },
+    {
+      "run": 37228860268,
+      "state": "FULL_LIBRARY_FAIL_681_1_0",
+      "cause": "Original Job first stop returned ResidualCustody; assertion omitted final proof. Historical cause UNKNOWN, not called fixed. Original object/budgets/assertions retained with proof-bearing assertion; subsequent directed and formal full passed."
+    },
+    {
+      "run": 37234580419,
+      "attempt": 1,
+      "artifact": 11314774646,
+      "state": "CLOUD_INSTALLED_SMOKE_FAIL",
+      "original": "GIT_FACT_READ_FAILED: http=403 remaining=0",
+      "resolution": "Same bytes and credential-free candidate policy retained; fresh isolated runner attempt2 passed. No product edit or token injection."
+    }
+  ],
+  "failure_original": "legacy account scope requires original stopped observer custody; exact metadata fence saved, Windows system restart required",
+  "references": "Reused existing candidate sign/preflight and ordinary Interactive/Limited retirement/install/formal/native metadata scripts, G4 exact object cleanup, original ActualProduct CDP and retained prelaunch frame. Read current AGENTS/model routing, original lifecycle/custody and F/H journals, main verifier and current receipt. Data/root/worktree/CLI identities are original; copied private evidence/config is not a replacement product. Native code compiled and tested only in cloud.",
+  "threat_model": "Same OS user project/session/purpose isolation; login stays ordinary same user, model sessions stay LPAC with existing lpacIdentityServices. No new capability, elevation, perMachine installation or formal-product modification. Pre-existing same-user directory reparse legacy remains deferred; elevation/perMachine requires its repair first. Boot fence does not convert UNKNOWN into STOPPED, fabricate StopFact, release admission or license old-worktree cleanup.",
+  "owner_touchpoint": "Save other work and perform one real Windows restart. A new kernel boot is required by the original on-disk metadata fence; app restart or a substitute identity cannot satisfy it. Controller does not restart Windows automatically because it cannot determine unsaved work in other apps.",
+  "next": "After Owner restart, use the prepared fresh private after-restart config and the same original request once. Actual native boot/ACL recovery must pass and preserve35 original custody records; then run real M2 Codex main/history flows and hard readbacks. Batch other provider OT4 only when ready. No new Codex login requested now.",
+  "acceptance": false,
+  "public_release": false,
+  "product_pr_merge": false
+}

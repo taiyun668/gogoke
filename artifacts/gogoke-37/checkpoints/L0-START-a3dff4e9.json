@@ -1,0 +1,42 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "checkpoint": "L0-START-a3dff4e9",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "source_head_before_checkpoint": "a3dff4e9067da13e44d842bf8cc76fcd2e187b76",
+  "state": "L0_STARTED_INCOMPLETE",
+  "authorization_readback": {
+    "owner_merged_pr": 53,
+    "origin_main_merge_commit": "e2f0c57853b1fca6bc4d6dcbca0185b57baf452f",
+    "receipt_blob": "90361681cb25cd8f7c5071ebe775a6ea11a41e24",
+    "receipt_bound_manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d",
+    "origin_main_manifest_blob_at_start": "4e19564c7c637b071a2fe4869d652f6edadc5a4d",
+    "result": "MATCH"
+  },
+  "owner_ot3": {
+    "test_repository": "taiyun668/gogoke-seat-testbed",
+    "repository_visibility_readback": "PRIVATE",
+    "test_seat_write_repositories": ["taiyun668/gogoke-seat-testbed"],
+    "lead_instance": "Codex",
+    "lead_model": "GPT-6 Sol",
+    "lead_reasoning": "high",
+    "write_scope": "host-created isolated worktrees only",
+    "main_tree_merge_decider": "lead seat",
+    "max_simultaneous_subordinate_seats": 3,
+    "subordinate_delegation": false,
+    "runtime_enforcement_state": "NOT_IMPLEMENTED"
+  },
+  "l0_progress": {
+    "draft_pr": 54,
+    "contract_codec_and_catalog": "IMPLEMENTED_AS_UNWIRED_CONTRACT",
+    "focused_fake_cases": ["K-SESSION", "K-LEDGER", "K-INBOX", "K-QCARD", "K-SEAT", "K-INSTANCE", "K-SIDE", "K-POLICY", "K-WORKTREE"],
+    "k_ui": "UNSUPPORTED_PENDING_EXACT_RECEIPT_FORWARDING",
+    "focused_local_tests": "10_PASS_0_FAIL_AT_a3dff4e9",
+    "shared_files": "2_MODIFIED_5_CONDITIONAL_VERIFIED_UNCHANGED_45_NOT_IMPLEMENTED",
+    "real_native_and_installed_product": "NOT_RUN",
+    "current_head_cloud": "RUNNING_AT_CHECKPOINT",
+    "acceptance": false
+  },
+  "logical_boundary": "Private repository and host-created worktree are configuration inputs, not proof that a same-user child process is confined. Do not launch a test seat or request OT4 login until the real host enforcement and instance identity are verified.",
+  "next": "Finish L0 shared extension seams and real-path contract wiring without changing the existing R2 path; validate on exact cloud source commits. Then start the M1 lines in plan order and prepare one real Codex test instance before asking Owner for OT4 login."
+}

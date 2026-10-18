@@ -1,0 +1,552 @@
+//! Tauri-owned native-host lifecycle for the Design 37 desktop path.
+//!
+//! The existing R2 service still owns its short-lived native host.  This module
+//! is the long-lived owner used when the service is switched to `connectExisting`.
+//! Keeping the owner here makes the process relationship explicit: Tauri starts
+//! the exact host, keeps its process handle, and never accepts a host endpoint
+//! from Node or another caller.
+
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
+
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+const MAX_HANDSHAKE_LINE: usize = 16 * 1024;
+const STARTUP_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+struct StartupChildGuard(Option<Child>);
+
+impl Drop for StartupChildGuard {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.as_mut() {
+            if child.try_wait().ok().flatten().is_none() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct Design37Host {
+    child: Mutex<Child>,
+    stderr_tail: Arc<Mutex<Vec<u8>>>,
+    stderr_reader: Mutex<Option<std::thread::JoinHandle<Result<(), String>>>>,
+    service_pipe: String,
+    user_pipe: String,
+    capability: String,
+    root: PathBuf,
+    host_pid: u32,
+    user_connection: Mutex<Option<std::fs::File>>,
+}
+
+impl Design37Host {
+    /// Spawn the host owned by this Tauri process and consume its complete
+    /// startup handshake.  The binary and root are supplied by the verified
+    /// installed resource set; callers cannot provide either through IPC.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn spawn(binary: &Path, root: &Path) -> Result<Self, String> {
+        let user_pid = std::process::id();
+        let root_text = root
+            .to_str()
+            .ok_or_else(|| "GOGOKE_DESIGN37_ROOT_NOT_UTF8".to_string())?;
+        let mut child = Command::new(binary)
+            .arg("--root")
+            .arg(root_text)
+            .arg("--desktop-session")
+            .arg("--user-pid")
+            .arg(user_pid.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|error| {
+                format!(
+                    "GOGOKE_DESIGN37_HOST_START_FAILED:WIN32_{}",
+                    error.raw_os_error().unwrap_or(0)
+                )
+            })?;
+        let host_pid = child.id();
+        let mut startup_child = StartupChildGuard(Some(child));
+        let stderr_tail = Arc::new(Mutex::new(Vec::new()));
+        let stderr = startup_child.0.as_mut().and_then(|child| child.stderr.take());
+        let stderr_reader = if let Some(stderr) = stderr {
+            // The host remains long-lived. Drain stderr so a diagnostic cannot
+            // block it; the process exit path still reports the exit status.
+            let stderr_tail_writer = Arc::clone(&stderr_tail);
+            Some(std::thread::Builder::new()
+                .name("gogoke-design37-host-stderr".to_string())
+                .spawn(move || {
+                    let mut reader = BufReader::new(stderr);
+                    let mut tail = Vec::with_capacity(4096);
+                    let mut chunk = [0u8; 1024];
+                    loop {
+                        let count = reader.read(&mut chunk).map_err(|error|
+                            format!("GOGOKE_DESIGN37_HOST_STDERR_READ_FAILED:WIN32_{}:{error}",
+                                error.raw_os_error().unwrap_or(0)))?;
+                        if count == 0 {
+                            return Ok(());
+                        }
+                        tail.extend_from_slice(&chunk[..count]);
+                        if tail.len() > 4096 {
+                            let drain = tail.len() - 4096;
+                            tail.drain(..drain);
+                        }
+                        *stderr_tail_writer.lock().map_err(|error|
+                            format!("GOGOKE_DESIGN37_HOST_STDERR_LOCK_FAILED:{error}"))? = tail.clone();
+                    }
+                })
+                .map_err(|error| {
+                    with_stderr_tail(format!("GOGOKE_DESIGN37_HOST_STDERR_FAILED:{error}"), &stderr_tail)
+                })?)
+        } else { None };
+        let stdout = startup_child
+            .0
+            .as_mut()
+            .and_then(|child| child.stdout.take())
+            .ok_or_else(|| with_stderr_tail("GOGOKE_DESIGN37_HOST_STDOUT_MISSING".to_string(), &stderr_tail))?;
+        let handshake = read_handshake_with_timeout(stdout, root, &stderr_tail)?;
+        let (service_pipe, capability, user_pipe) = handshake;
+        let child = startup_child.0.as_ref().expect("startup child retained");
+        let user_connection = connect_and_verify_user_pipe(&user_pipe, child)
+            .map_err(|error| with_stderr_tail(error, &stderr_tail))?;
+        let child = startup_child.0.take().expect("startup child retained");
+        Ok(Self {
+            child: Mutex::new(child),
+            stderr_tail,
+            stderr_reader: Mutex::new(stderr_reader),
+            service_pipe,
+            user_pipe,
+            capability,
+            root: root.to_path_buf(),
+            host_pid,
+            user_connection: Mutex::new(Some(user_connection)),
+        })
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    pub(crate) fn spawn(_binary: &Path, _root: &Path) -> Result<Self, String> {
+        Err("GOGOKE_PRODUCT_WINDOWS_OWNER_PATH_ONLY".to_string())
+    }
+
+    pub(crate) fn user_pipe(&self) -> &str {
+        &self.user_pipe
+    }
+    pub(crate) fn service_pipe(&self) -> &str {
+        &self.service_pipe
+    }
+    pub(crate) fn capability(&self) -> &str {
+        &self.capability
+    }
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+    pub(crate) fn host_pid(&self) -> u32 {
+        self.host_pid
+    }
+
+    /// Check that the retained host is still alive before a caller attempts a
+    /// user operation.  The retained Child handle prevents PID reuse while the
+    /// owner is alive; the native side additionally proves the pipe peer.
+    pub(crate) fn is_running(&self) -> Result<bool, String> {
+        let mut child = self
+            .child
+            .lock()
+            .map_err(|_| "GOGOKE_DESIGN37_HOST_LOCK_POISONED".to_string())?;
+        let status = child.try_wait()
+            .map_err(|error| {
+                format!(
+                    "GOGOKE_DESIGN37_HOST_STATUS_FAILED:WIN32_{}",
+                    error.raw_os_error().unwrap_or(0)
+                )
+            })?;
+        let Some(status) = status else { return Ok(true) };
+        let mut original = format!("GOGOKE_DESIGN37_HOST_EXITED:EXIT_STATUS:{status}");
+        // The exact Child has exited. Finish its existing pipe reader so the
+        // returned tail includes its final diagnostic, rather than a snapshot
+        // taken before the original reader consumed the last bytes.
+        let capture = self.stderr_reader.lock()
+            .map_err(|error| format!("GOGOKE_DESIGN37_HOST_STDERR_READER_LOCK_FAILED:{error}"))
+            .and_then(|mut reader| finish_stderr_reader(&mut reader));
+        if let Err(error) = capture { original.push_str(&format!(":{error}")); }
+        Err(with_stderr_tail(original, &self.stderr_tail))
+    }
+
+    /// Synchronize with the exact retained host's replacement service listener.
+    /// No client connection or operation is retried.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn confirm_service_ready(&self, timeout: std::time::Duration) -> Result<(), String> {
+        let started = std::time::Instant::now();
+        let reply = self.request_user(br#"{"operation":"ServiceTransportReady"}"#)?;
+        if reply != br#"{"serviceTransportReady":true}"# {
+            return Err(format!("GOGOKE_DESIGN37_SERVICE_READY_FAILED:{}",
+                String::from_utf8_lossy(&reply)));
+        }
+        // The worker's publication is not a reservation: kernel accept may
+        // already be reading an unverified preface. Wait once for an actual
+        // pending ConnectNamedPipe, using the existing request budget.
+        let remaining = timeout.checked_sub(started.elapsed())
+            .and_then(|value| u32::try_from(value.as_millis()).ok())
+            .filter(|value| *value > 0)
+            .ok_or_else(|| "GOGOKE_DESIGN37_SERVICE_READY_BUDGET_EXHAUSTED".to_string())?;
+        let pipe: Vec<u16> = self.service_pipe.encode_utf16().chain(Some(0)).collect();
+        if unsafe { windows_sys::Win32::System::Pipes::WaitNamedPipeW(pipe.as_ptr(), remaining) } == 0 {
+            return Err(format!("GOGOKE_DESIGN37_SERVICE_READY_WAIT_FAILED:WIN32_{}",
+                std::io::Error::last_os_error().raw_os_error().unwrap_or(0)));
+        }
+        self.is_running()?;
+        Ok(())
+    }
+
+    /// Send one User frame over the retained, object-verified connection.
+    /// The peer process object is checked immediately before every request.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn request_user(&self, frame: &[u8]) -> Result<Vec<u8>, String> {
+        if frame.len() > 4 * 1024 * 1024 {
+            return Err("GOGOKE_DESIGN37_USER_FRAME_TOO_LARGE".to_string());
+        }
+        let mut child = self
+            .child
+            .lock()
+            .map_err(|_| "GOGOKE_DESIGN37_HOST_LOCK_POISONED".to_string())?;
+        verify_user_server_object(&mut child, &self.user_connection)?;
+        let mut connection = self
+            .user_connection
+            .lock()
+            .map_err(|_| "GOGOKE_DESIGN37_USER_PIPE_LOCK_POISONED".to_string())?;
+        let pipe = connection
+            .as_mut()
+            .ok_or_else(|| "GOGOKE_DESIGN37_USER_PIPE_CLOSED".to_string())?;
+        pipe.write_all(&(frame.len() as u32).to_le_bytes())
+            .map_err(io_error)?;
+        pipe.write_all(frame).map_err(io_error)?;
+        pipe.flush().map_err(io_error)?;
+        let mut header = [0u8; 4];
+        pipe.read_exact(&mut header).map_err(io_error)?;
+        let length = u32::from_le_bytes(header) as usize;
+        if length > 4 * 1024 * 1024 {
+            return Err("GOGOKE_DESIGN37_USER_REPLY_TOO_LARGE".to_string());
+        }
+        let mut reply = vec![0u8; length];
+        pipe.read_exact(&mut reply).map_err(io_error)?;
+        Ok(reply)
+    }
+}
+
+impl Drop for Design37Host {
+    fn drop(&mut self) {
+        if let Ok(connection) = self.user_connection.get_mut() {
+            let _ = connection.take();
+        }
+        if let Ok(child) = self.child.get_mut() {
+            for _ in 0..50 {
+                if let Ok(Some(status)) = child.try_wait() {
+                    report_closed_host(status, &mut self.stderr_reader, &self.stderr_tail);
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            if child.try_wait().ok().flatten().is_none() {
+                if let Err(error) = child.kill() {
+                    eprintln!("GOGOKE_DESIGN37_HOST_CLOSE_KILL_FAILED:WIN32_{}:{error}", error.raw_os_error().unwrap_or(0));
+                }
+                match child.wait() {
+                    Ok(status) => report_closed_host(status, &mut self.stderr_reader, &self.stderr_tail),
+                    Err(error) => eprintln!("GOGOKE_DESIGN37_HOST_CLOSE_WAIT_FAILED:WIN32_{}:{error}", error.raw_os_error().unwrap_or(0)),
+                }
+            } else if let Ok(Some(status)) = child.try_wait() {
+                report_closed_host(status, &mut self.stderr_reader, &self.stderr_tail);
+            }
+        }
+    }
+}
+
+fn finish_stderr_reader(
+    reader: &mut Option<std::thread::JoinHandle<Result<(), String>>>,
+) -> Result<(), String> {
+    match reader.take() {
+        None => Ok(()),
+        Some(reader) => reader.join()
+            .map_err(|_| "GOGOKE_DESIGN37_HOST_STDERR_READER_PANICKED".to_string())?,
+    }
+}
+
+/// Closing the UI is also a host exit observation. Do not discard the exact
+/// host's final stderr when no later request can call `is_running`.
+fn report_closed_host(
+    status: std::process::ExitStatus,
+    reader: &mut Mutex<Option<std::thread::JoinHandle<Result<(), String>>>>,
+    tail: &Arc<Mutex<Vec<u8>>>,
+) {
+    let capture = reader.get_mut()
+        .map_err(|error| format!("GOGOKE_DESIGN37_HOST_STDERR_READER_LOCK_FAILED:{error}"))
+        .and_then(finish_stderr_reader);
+    let mut original = format!("GOGOKE_DESIGN37_HOST_EXITED:EXIT_STATUS:{status}");
+    if let Err(error) = capture { original.push_str(&format!(":{error}")); }
+    eprintln!("{}", with_stderr_tail(original, tail));
+}
+
+#[cfg(target_os = "windows")]
+fn next_line<R: BufRead>(lines: &mut std::io::Lines<R>, expected: &str) -> Result<String, String> {
+    let line = lines
+        .next()
+        .ok_or_else(|| format!("GOGOKE_DESIGN37_HOST_{expected}_MISSING"))?
+        .map_err(|error| {
+            format!(
+                "GOGOKE_DESIGN37_HOST_HANDSHAKE_READ_FAILED:WIN32_{}",
+                error.raw_os_error().unwrap_or(0)
+            )
+        })?;
+    if line.len() > MAX_HANDSHAKE_LINE
+        || !line.starts_with(expected)
+        || !line
+            .as_bytes()
+            .get(expected.len())
+            .is_some_and(|byte| *byte == b'\t')
+    {
+        return Err(format!("GOGOKE_DESIGN37_HOST_{expected}_INVALID"));
+    }
+    Ok(line)
+}
+
+#[cfg(target_os = "windows")]
+fn read_handshake_with_timeout(
+    stdout: impl Read + Send + 'static,
+    root: &Path,
+    stderr_tail: &Arc<Mutex<Vec<u8>>>,
+) -> Result<(String, String, String), String> {
+    let root = root.to_path_buf();
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("gogoke-design37-host-handshake".to_string())
+        .spawn(move || {
+            let mut lines = BufReader::new(stdout).lines();
+            let result = (|| -> Result<(String, String, String), String> {
+                let locked = next_line(&mut lines, "LOCKED")?;
+                validate_locked(&locked, &root)?;
+                let pipe = next_line(&mut lines, "PIPE")?;
+                let pipe_path = field(&pipe, "PIPE")?;
+                let capability_line = next_line(&mut lines, "CAPABILITY")?;
+                let capability = field(&capability_line, "CAPABILITY")?;
+                if !is_hex_64(&capability) {
+                    return Err("GOGOKE_DESIGN37_HOST_CAPABILITY_INVALID".to_string());
+                }
+                let user_pipe_line = next_line(&mut lines, "USER_PIPE")?;
+                let user_pipe = field(&user_pipe_line, "USER_PIPE")?;
+                validate_service_pipe(&pipe_path)?;
+                validate_user_pipe(&user_pipe)?;
+                if pipe_path == user_pipe {
+                    return Err("GOGOKE_DESIGN37_PIPE_CHANNELS_NOT_DISTINCT".to_string());
+                }
+                Ok((pipe_path, capability, user_pipe))
+            })();
+            let _ = sender.send(result);
+        })
+        .map_err(|error| with_stderr_tail(format!("GOGOKE_DESIGN37_HOST_HANDSHAKE_THREAD_FAILED:{error}"), stderr_tail))?;
+    match receiver.recv_timeout(STARTUP_HANDSHAKE_TIMEOUT) {
+        Ok(result) => result.map_err(|error| with_stderr_tail(error, stderr_tail)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(with_stderr_tail(
+            "GOGOKE_DESIGN37_HOST_HANDSHAKE_TIMEOUT".to_string(),
+            stderr_tail,
+        )),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(with_stderr_tail(
+            "GOGOKE_DESIGN37_HOST_HANDSHAKE_FAILED".to_string(),
+            stderr_tail,
+        )),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn field(line: &str, expected: &str) -> Result<String, String> {
+    let value = line
+        .strip_prefix(&format!("{expected}\t"))
+        .unwrap_or_default();
+    if value.is_empty() || value.contains(['\r', '\n', '\0']) {
+        return Err(format!("GOGOKE_DESIGN37_HOST_{expected}_INVALID"));
+    }
+    Ok(value.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn validate_locked(line: &str, root: &Path) -> Result<(), String> {
+    let body = field(line, "LOCKED")?;
+    let requested = body.split('\t').next().unwrap_or_default();
+    if requested != root.to_string_lossy() {
+        return Err("GOGOKE_DESIGN37_HOST_ROOT_MISMATCH".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn is_hex_64(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+#[cfg(target_os = "windows")]
+fn validate_service_pipe(value: &str) -> Result<(), String> {
+    validate_pipe(
+        value,
+        r"\\.\pipe\gogoke.current-user.v1.",
+        "GOGOKE_DESIGN37_SERVICE_PIPE_INVALID",
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn validate_user_pipe(value: &str) -> Result<(), String> {
+    validate_pipe(
+        value,
+        r"\\.\pipe\gogoke.user.v1.",
+        "GOGOKE_DESIGN37_USER_PIPE_INVALID",
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn validate_pipe(value: &str, prefix: &str, error: &str) -> Result<(), String> {
+    if !value.starts_with(prefix)
+        || value.len() > prefix.len() + 120
+        || !value[prefix.len()..]
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(error.to_string());
+    }
+    Ok(())
+}
+
+fn with_stderr_tail(error: String, tail: &Arc<Mutex<Vec<u8>>>) -> String {
+    let bytes = match tail.lock() {
+        Ok(value) => value.clone(),
+        Err(original) => return format!("{error}:STDERR_TAIL_LOCK_FAILED:{original}"),
+    };
+    if bytes.is_empty() {
+        return error;
+    }
+    format!("{error}:STDERR_TAIL:{}", String::from_utf8_lossy(&bytes))
+}
+
+#[cfg(target_os = "windows")]
+fn io_error(error: std::io::Error) -> String {
+    format!(
+        "GOGOKE_DESIGN37_USER_PIPE_IO:WIN32_{}",
+        error.raw_os_error().unwrap_or(0)
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn connect_and_verify_user_pipe(path: &str, child: &Child) -> Result<std::fs::File, String> {
+    use std::fs::OpenOptions;
+    let pipe = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(io_error)?;
+    verify_pipe_server_object(child, &pipe)?;
+    let mut preface = [0x47u8];
+    pipe.try_clone()
+        .map_err(io_error)?
+        .write_all(&mut preface)
+        .map_err(io_error)?;
+    Ok(pipe)
+}
+
+#[cfg(target_os = "windows")]
+fn verify_user_server_object(
+    child: &mut Child,
+    pipe: &Mutex<Option<std::fs::File>>,
+) -> Result<(), String> {
+    let connection = pipe
+        .lock()
+        .map_err(|_| "GOGOKE_DESIGN37_USER_PIPE_LOCK_POISONED".to_string())?;
+    let connection = connection
+        .as_ref()
+        .ok_or_else(|| "GOGOKE_DESIGN37_USER_PIPE_CLOSED".to_string())?;
+    verify_pipe_server_object(child, connection)
+}
+
+#[cfg(target_os = "windows")]
+fn verify_pipe_server_object(child: &Child, pipe: &std::fs::File) -> Result<(), String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::HANDLE;
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    let mut server_pid = 0u32;
+    let pipe_handle = pipe.as_raw_handle() as HANDLE;
+    if unsafe { GetNamedPipeServerProcessId(pipe_handle, &mut server_pid) } == 0 || server_pid == 0
+    {
+        return Err(format!(
+            "GOGOKE_DESIGN37_USER_SERVER_PID_FAILED:WIN32_{}",
+            unsafe { windows_sys::Win32::Foundation::GetLastError() }
+        ));
+    }
+    let server = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
+            0,
+            server_pid,
+        )
+    };
+    if server.is_null() {
+        return Err(format!(
+            "GOGOKE_DESIGN37_USER_SERVER_OPEN_FAILED:WIN32_{}",
+            unsafe { windows_sys::Win32::Foundation::GetLastError() }
+        ));
+    }
+    let comparison = compare_object_handles(child.as_raw_handle() as HANDLE, server);
+    unsafe {
+        CloseHandle(server);
+    }
+    let same = comparison?;
+    if !same {
+        return Err("GOGOKE_DESIGN37_USER_SERVER_OBJECT_MISMATCH".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+use std::os::windows::io::AsRawHandle;
+
+#[cfg(target_os = "windows")]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GetNamedPipeServerProcessId(
+        pipe: windows_sys::Win32::Foundation::HANDLE,
+        pid: *mut u32,
+    ) -> i32;
+    fn OpenProcess(access: u32, inherit: i32, pid: u32) -> windows_sys::Win32::Foundation::HANDLE;
+    fn CloseHandle(handle: windows_sys::Win32::Foundation::HANDLE) -> i32;
+    fn GetModuleHandleW(name: *const u16) -> windows_sys::Win32::Foundation::HMODULE;
+    fn GetProcAddress(module: windows_sys::Win32::Foundation::HMODULE, name: *const u8) -> *mut std::ffi::c_void;
+}
+
+#[cfg(target_os = "windows")]
+fn compare_object_handles(
+    first: windows_sys::Win32::Foundation::HANDLE,
+    second: windows_sys::Win32::Foundation::HANDLE,
+) -> Result<bool, String> {
+    type CompareObjectHandles = unsafe extern "system" fn(
+        windows_sys::Win32::Foundation::HANDLE,
+        windows_sys::Win32::Foundation::HANDLE,
+    ) -> i32;
+    let module_name: Vec<u16> = "KernelBase.dll".encode_utf16().chain(Some(0)).collect();
+    let proc_name = b"CompareObjectHandles\0";
+    let module = unsafe { GetModuleHandleW(module_name.as_ptr()) };
+    if module.is_null() {
+        return Err(format!(
+            "GOGOKE_DESIGN37_COMPARE_OBJECT_MODULE_FAILED:WIN32_{}",
+            unsafe { windows_sys::Win32::Foundation::GetLastError() }
+        ));
+    }
+    let address = unsafe { GetProcAddress(module, proc_name.as_ptr()) };
+    if address.is_null() {
+        return Err(format!(
+            "GOGOKE_DESIGN37_COMPARE_OBJECT_UNAVAILABLE:WIN32_{}",
+            unsafe { windows_sys::Win32::Foundation::GetLastError() }
+        ));
+    }
+    let compare: CompareObjectHandles = unsafe { std::mem::transmute(address) };
+    Ok(unsafe { compare(first, second) } != 0)
+}

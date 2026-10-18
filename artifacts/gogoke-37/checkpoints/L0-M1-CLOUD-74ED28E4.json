@@ -1,0 +1,40 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "checkpoint": "L0-M1-CLOUD-74ED28E4",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "source_head": "74ed28e468c891178d0284a04b07f989b8842002",
+  "state": "L0_M1_IN_PROGRESS_NOT_ACCEPTED",
+  "authorization": {
+    "owner_merged_pr": 53,
+    "authorized_origin_main": "e2f0c57853b1fca6bc4d6dcbca0185b57baf452f",
+    "manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d",
+    "plan_revision": "PR #55 open; no revised-plan merge or new authorization yet"
+  },
+  "cloud_run": {
+    "run_id": 36597681041,
+    "server": "PASS",
+    "native_lib": "490 passed, 1 failed, 0 skipped, 491 executed",
+    "only_native_lib_failure": "process::windows::tests::real_app_container_descendant_reaches_native_seat_pipe",
+    "h_journal_fixture": "The byte-exact receipt fixture and live UNKNOWN/new-ID fence tests executed successfully on this SHA; this is a unit-test result, not a real product M1 claim.",
+    "native_machine_result_sha256": "4c642d52a15aeb50e1c0c90bc84c8bbd65fe1a6dd60f19eeee037e7a996cac28",
+    "lpac_cdb_summary_sha256": "195615f95b6fae2369ac365767a5379f4f980fe8d8ae4f91dde20a139a7a2e87"
+  },
+  "audit": {
+    "pr55_head": "856480935cd999c9658b02993c166fbd3c29acc4",
+    "pr55_comment": "https://github.com/taiyun668/gogoke/pull/55#issuecomment-5894355857",
+    "result": "Focused read-only audit found M1 observation coverage missing for the two new cap fields, missing-value refusal and restart persistence, plus ambiguous E.2 recommendation-to-Owner-field authority. Claude revision requested; PR is not yet reported mergeable.",
+    "mapping": "The reviewer found 52 shared-file mappings, seven asset categories, source pins and authorization order unchanged; structural plan self-test and manifest hash checks passed. These do not establish product acceptance."
+  },
+  "lpac": "Signed CDB attached to the exact cloud LPAC parent at prior and current SHA. The uploaded summary lost per-marker call sequence and NtCreateUserProcess return status; the failure cause remains unknown. A bounded ordered direct call trace is the next diagnostic, with no security or permission changes.",
+  "verification": {
+    "real_codex_seat": "NOT_RUN",
+    "ot4_login": "NOT_REQUESTED",
+    "m1": "NOT_COMPLETE",
+    "m2": "NOT_RUN",
+    "m3": "NOT_RUN",
+    "formal_data_touched": false,
+    "self_acceptance": false
+  },
+  "next": "Read Claude's revised PR #55 head and run a focused read-only recheck; Owner merges only after reported mergeable. Then create a separate authorization PR bound to the new origin/main MANIFEST blob and wait for Owner merge/readback. Continue LPAC root-cause work and then resume E/F cap construction with OT3 values 4 and 4 under the new authorization. This checkpoint is not a stop."
+}

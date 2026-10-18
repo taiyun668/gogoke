@@ -1,0 +1,25 @@
+{
+  "schema": "gogoke.37.light-checkpoint.v1",
+  "state": "CANDIDATE36_REAL_PRODUCT_CHANGE_READY_FOR_CLOUD_CHAIN",
+  "version": "0.1.36",
+  "changes": "Real instance-page interaction improvement: login/cancel/device-code controls precede diagnostics; original authorization URL and complete CLI output are available in a collapsed disclosure. Errors and host state/actions are unchanged. Candidate version metadata advances with this real product change, not an empty rebuild for a different hash.",
+  "results": {
+    "signedNodeTypecheck": "PASS",
+    "productIdentity": "PASS",
+    "independentReadonlyReview": "NO_BLOCKERS",
+    "browserFakeAssertions": "PASS_CANCEL_ENABLED_BEFORE_DEFAULT_COLLAPSED_DETAILS_AND_ORIGINAL_OUTPUT_RETAINED",
+    "realCandidate36Installation": "NOT_RUN",
+    "candidate35Bytes": "PRESERVED_OBSERVATION_ONLY",
+    "nativePermissionsAndCliChanges": "NONE"
+  },
+  "parallel": {
+    "M3": "Independent G.1 browser-preview worktree developing workspace navigation and state cards with K-UI fake data; real boundary results remain NOT_RUN.",
+    "B5": "Independent readonly account/instance isolation research; prior UNSUPPORTED/NOT_RUN remains, no CLI installation, credential migration or login.",
+    "OpenCode": "Existing configuration paths cannot skip Bun's first root lstat; same-physical-tree alias is an unproven cloud candidate. No ACL or CLI modification; continue source-based no-ACL alternatives."
+  },
+  "references": "GOGO PARTY room runtime-context/error views disclose original fields beneath the main status; NaveHQ display/mock draft is a boundary reference rather than executable UI; LoomOS has specifications without an equivalent Vite implementation. Repository reuse-blueprint/upstream-reference-map and existing Settings primitives/K-UI preview are the implementation basis. UI skill targeted searches had no verified disclosure match, so no database match is claimed; existing product patterns and general accessibility/layout defaults were used.",
+  "next": "Controlled cloud build, frozen-member verification, trusted-main candidate resource signing/public verification, same-byte cloud installed smoke, then ordinary Win11 install with protected-state snapshots. Successful candidate36 supersedes candidate35 and carries Claude/Grok real-model flows plus remaining M2 cases. Candidate35 observation must not downgrade or interrupt a newer installed candidate. Every external wait retains a named parallel development/research item.",
+  "measurementNotes": "Detached Vite Start-Process was rejected by automatic policy; a tool-managed foreground signed-Node Vite session was accepted. Preview is fake data, not installed-product acceptance. DOM comparison used observed element order after the browser readonly API did not expose compareDocumentPosition.",
+  "publicRelease": false,
+  "acceptance": false
+}

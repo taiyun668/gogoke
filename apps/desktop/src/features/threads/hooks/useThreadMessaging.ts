@@ -14,12 +14,16 @@ import type {
 import {
   compactThread as compactThreadService,
   sendUserMessage as sendUserMessageService,
+  nativeConversationAssociation,
+  originalPendingNativeVisibleIntent,
+  resumeThread as resumeThreadService,
   steerTurn as steerTurnService,
   startReview as startReviewService,
   interruptTurn as interruptTurnService,
   getAppsList as getAppsListService,
   listMcpServerStatus as listMcpServerStatusService,
 } from "@services/tauri";
+import type { NativeConversationAssociation } from "@services/tauri";
 import { expandCustomPromptText } from "@utils/customPrompts";
 import {
   asString,
@@ -68,6 +72,8 @@ type UseThreadMessagingOptions = {
   dispatch: Dispatch<ThreadAction>;
   getCustomName: (workspaceId: string, threadId: string) => string | undefined;
   markProcessing: (threadId: string, isProcessing: boolean) => void;
+  hostPromptTerminalObserved?: (workspaceId: string, threadId: string,
+    requestId: string, association: NativeConversationAssociation) => boolean;
   markReviewing: (threadId: string, isReviewing: boolean) => void;
   setActiveTurnId: (threadId: string, turnId: string | null) => void;
   recordThreadActivity: (
@@ -116,6 +122,7 @@ export function useThreadMessaging({
   dispatch,
   getCustomName,
   markProcessing,
+  hostPromptTerminalObserved,
   markReviewing,
   setActiveTurnId,
   recordThreadActivity,
@@ -152,6 +159,16 @@ export function useThreadMessaging({
         }
         finalText = promptExpansion?.expanded ?? messageText;
       }
+      let native = false;
+      let nativeAssociation: NativeConversationAssociation | null = null;
+      try {
+        nativeAssociation = "__TAURI_INTERNALS__" in window
+          ? await nativeConversationAssociation(workspace.id) : null;
+        native = nativeAssociation !== null;
+      } catch (error) {
+        pushThreadErrorMessage(threadId, error instanceof Error ? error.message : String(error));
+        return { status: "blocked" };
+      }
       const isProcessing = threadStatusById[threadId]?.isProcessing ?? false;
       const activeTurnId = activeTurnIdByThread[threadId] ?? null;
       const {
@@ -186,7 +203,7 @@ export function useThreadMessaging({
         threadId,
         timestamp,
       });
-      markProcessing(threadId, true);
+      if (!native) markProcessing(threadId, true);
       safeMessageActivity();
       onDebug?.({
         id: `${Date.now()}-${shouldSteer ? "client-turn-steer" : "client-turn-start"}`,
@@ -199,10 +216,10 @@ export function useThreadMessaging({
           turnId: activeTurnId,
           text: finalText,
           images,
-          model: resolvedModel,
-          effort: resolvedEffort,
-          serviceTier: resolvedServiceTier,
-          collaborationMode: sanitizedCollaborationMode,
+          model: native ? undefined : resolvedModel,
+          effort: native ? undefined : resolvedEffort,
+          serviceTier: native ? undefined : resolvedServiceTier,
+          collaborationMode: native ? undefined : sanitizedCollaborationMode,
           sendIntent,
           threadCustomName: customThreadName,
         },
@@ -212,6 +229,7 @@ export function useThreadMessaging({
           shouldPreflightRuntimeCodexArgsForSend?.(workspace.id, threadId) ?? true;
         if (
           !shouldSteer &&
+          !native &&
           shouldPreflightRuntimeCodexArgs &&
           ensureWorkspaceRuntimeCodexArgs
         ) {
@@ -238,7 +256,7 @@ export function useThreadMessaging({
             workspace.id,
             threadId,
             finalText,
-            buildTurnStartPayload({
+            native ? { images, appMentions } : buildTurnStartPayload({
               model: resolvedModel,
               effort: resolvedEffort,
               serviceTier: resolvedServiceTier,
@@ -259,14 +277,14 @@ export function useThreadMessaging({
           payload: response,
         });
         if (rpcError) {
-          if (requestMode !== "steer") {
+          if (!native && requestMode !== "steer") {
             markProcessing(threadId, false);
             setActiveTurnId(threadId, null);
             pushThreadErrorMessage(threadId, `Turn failed to start: ${rpcError}`);
             safeMessageActivity();
             return { status: "blocked" };
           }
-          if (isStaleSteerTurnError(rpcError)) {
+          if (!native && isStaleSteerTurnError(rpcError)) {
             markProcessing(threadId, false);
             setActiveTurnId(threadId, null);
           }
@@ -280,7 +298,7 @@ export function useThreadMessaging({
         if (requestMode === "steer") {
           const result = (response?.result ?? response) as Record<string, unknown>;
           const steeredTurnId = asString(result?.turnId ?? result?.turn_id ?? "");
-          if (steeredTurnId) {
+          if (!native && steeredTurnId) {
             setActiveTurnId(threadId, steeredTurnId);
           }
           return { status: "sent" };
@@ -291,20 +309,42 @@ export function useThreadMessaging({
           | null;
         const turnId = asString(turn?.id ?? "");
         if (!turnId) {
-          markProcessing(threadId, false);
-          setActiveTurnId(threadId, null);
+          if (!native) {
+            markProcessing(threadId, false);
+            setActiveTurnId(threadId, null);
+          }
           pushThreadErrorMessage(threadId, "Turn failed to start.");
           safeMessageActivity();
           return { status: "blocked" };
         }
-        setActiveTurnId(threadId, turnId);
+        // Native turn state comes from the original ordered notifications,
+        // including a completion that may already precede this delayed reply.
+        if (!native) setActiveTurnId(threadId, turnId);
         return { status: "sent" };
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        if (requestMode !== "steer") {
+        if (native && requestMode !== "steer" &&
+            errorMessage.startsWith("GOGOKE_VISIBLE_UNKNOWN:") &&
+            errorMessage.includes(":GOGOKE_HOST_PROMPT_PENDING:")) {
+          // The original H send and visible intent remain UNKNOWN until the
+          // typed ACP result. This is a host pending state, not a native turn.
+          onDebug?.({ id: `${Date.now()}-host-prompt-pending`, timestamp: Date.now(),
+            source: "server", label: "Original Grok host prompt pending",
+            payload: errorMessage });
+          const pendingId = /^GOGOKE_VISIBLE_UNKNOWN:([A-Za-z][A-Za-z0-9_-]{0,63}):GOGOKE_HOST_PROMPT_PENDING:/.exec(errorMessage)?.[1];
+          const retained = originalPendingNativeVisibleIntent(workspace.id);
+          if (pendingId && nativeAssociation && retained?.nativeRequestId === pendingId &&
+              retained.payload.threadId === threadId &&
+              !hostPromptTerminalObserved?.(workspace.id,threadId,pendingId,nativeAssociation)) {
+            markProcessing(threadId, true);
+          }
+          safeMessageActivity();
+          return { status: "pending" };
+        }
+        if (!native && requestMode !== "steer") {
           markProcessing(threadId, false);
           setActiveTurnId(threadId, null);
-        } else if (isStaleSteerTurnError(errorMessage)) {
+        } else if (!native && isStaleSteerTurnError(errorMessage)) {
           markProcessing(threadId, false);
           setActiveTurnId(threadId, null);
         }
@@ -337,6 +377,7 @@ export function useThreadMessaging({
       activeTurnIdByThread,
       getCustomName,
       markProcessing,
+      hostPromptTerminalObserved,
       model,
       onDebug,
       pushThreadErrorMessage,
@@ -420,15 +461,23 @@ export function useThreadMessaging({
     }
     const activeTurnId = activeTurnIdByThread[activeThreadId] ?? null;
     const turnId = activeTurnId ?? "pending";
-    markProcessing(activeThreadId, false);
-    setActiveTurnId(activeThreadId, null);
-    dispatch({
-      type: "addAssistantMessage",
-      threadId: activeThreadId,
-      text: "Session stopped.",
-    });
-    if (!activeTurnId) {
-      pendingInterruptsRef.current.add(activeThreadId);
+    let native = false;
+    try {
+      native = "__TAURI_INTERNALS__" in window &&
+        Boolean(await nativeConversationAssociation(activeWorkspace.id));
+    } catch (error) {
+      pushThreadErrorMessage(activeThreadId, error instanceof Error ? error.message : String(error));
+      return;
+    }
+    if (native && !activeTurnId) {
+      pushThreadErrorMessage(activeThreadId, "Native interrupt requires the original active turn identity.");
+      return;
+    }
+    if (!native) {
+      markProcessing(activeThreadId, false);
+      setActiveTurnId(activeThreadId, null);
+      dispatch({ type: "addAssistantMessage", threadId: activeThreadId, text: "Session stopped." });
+      if (!activeTurnId) pendingInterruptsRef.current.add(activeThreadId);
     }
     onDebug?.({
       id: `${Date.now()}-client-turn-interrupt`,
@@ -456,6 +505,7 @@ export function useThreadMessaging({
         payload: response,
       });
     } catch (error) {
+      if (native) pushThreadErrorMessage(activeThreadId, error instanceof Error ? error.message : String(error));
       onDebug?.({
         id: `${Date.now()}-client-turn-interrupt-error`,
         timestamp: Date.now(),
@@ -472,6 +522,7 @@ export function useThreadMessaging({
     markProcessing,
     onDebug,
     pendingInterruptsRef,
+    pushThreadErrorMessage,
     setActiveTurnId,
   ]);
 
@@ -874,7 +925,14 @@ export function useThreadMessaging({
       if (!threadId) {
         return;
       }
-      await refreshThread(activeWorkspace.id, threadId);
+      try {
+        if ("__TAURI_INTERNALS__" in window && await nativeConversationAssociation(activeWorkspace.id)) {
+          await resumeThreadService(activeWorkspace.id, threadId);
+        }
+        await refreshThread(activeWorkspace.id, threadId);
+      } catch (error) {
+        pushThreadErrorMessage(threadId, error instanceof Error ? error.message : String(error));
+      }
       safeMessageActivity();
     },
     [
@@ -882,6 +940,7 @@ export function useThreadMessaging({
       activeWorkspace,
       ensureThreadForActiveWorkspace,
       refreshThread,
+      pushThreadErrorMessage,
       safeMessageActivity,
       threadStatusById,
     ],

@@ -1,0 +1,79 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "checkpoint": "L0-H-HELPER-F014CE2E",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "state": "M1_IN_PROGRESS_NOT_ACCEPTED",
+  "source_commit": "f014ce2e2e4a28a0eb7c1a2810e41671a7c3adda",
+  "authorization": {
+    "main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
+    "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
+    "receipt_blob": "8020812e3abf35887829f50c78ec9f513272bf70",
+    "readback": "MATCH"
+  },
+  "helper_boundary": {
+    "threat_model": "Untrusted LPAC seats can write their registered private F configuration; an unrestricted User helper reading that configuration would cross the LPAC-to-User boundary. This is distinct from unrestricted same-user processes, which cross no privilege boundary.",
+    "implementation": "Both fixed CLI device-login and account/read use the same isolated identity, actual registered F home, explicit environment, pinned program and retained Job. No copied home, credential read, weaker token or security setting change.",
+    "fresh_sol_review": "No confirmed static boundary defect; installed runtime behavior remains unproved."
+  },
+  "cloud": {
+    "run_id": 36641853199,
+    "source": "f014ce2e2e4a28a0eb7c1a2810e41671a7c3adda",
+    "release_build": "PASS",
+    "required_process_axes": "PASS",
+    "server_tests": "PASS",
+    "library": {
+      "discovered": 511,
+      "passed": 509,
+      "failed": 2,
+      "ignored": 0
+    },
+    "failed_focus": [
+      "pinned-codex-account-read",
+      "pinned-codex-credential-files"
+    ],
+    "direct_stderr": "failed to canonicalize CODEX_HOME: Access is denied (os error 5); account/read stdout subsequently closes with Windows error109",
+    "evidence_location": "%LOCALAPPDATA%/gogoke-audit/native-f014ce2e-36641853199",
+    "root_cause": "NOT_YET_PROVEN",
+    "next": "Determine the actual Win32 canonicalization access requirement and repair only its necessary scoped dependency; retain the LPAC token and exact physical F home."
+  },
+  "permission_intent": "E now validates and persists the four explicit permissionTier values; missing values have no default, invalid values are rejected, reclaimed seats cannot supply intent. This is intent only: H still denies launch without real enforcement witness. Cloud validation of this additional change is pending.",
+  "candidate_chain": {
+    "pr": 57,
+    "head": "19be2793a41c18a0898198d7789d48a0e822fcbc",
+    "change": "Ineligible desktop workflow_run completions use unique ignored groups; authorized pushes and dispatches retain cancellation.",
+    "fresh_focus": {
+      "event_cases": 16,
+      "job_guard_cases": 16,
+      "failed": 0,
+      "effective_parent_mutation_failures": 11
+    },
+    "latest_all_axis_review": "IN_PROGRESS",
+    "signing_and_installed_smoke": "NOT_RUN_PENDING_TRUSTED_MAIN_ACTIVATION",
+    "main_merge": "NOT_AUTHORIZED_NOT_DONE"
+  },
+  "private_custody": {
+    "blocked_cleanup": [
+      "%LOCALAPPDATA%/gogoke-audit/candidate-chain-7cceecf-risk:125 synthetic audit files",
+      "%TEMP%/ci57-group-audit-19be.js:one audit script"
+    ],
+    "approval_refusal": "Preserved; no alternate deletion route or retry.",
+    "retained_review_evidence": "%LOCALAPPDATA%/gogoke-audit/candidate-chain-495502c-final:96 files retained until final review and handoff.",
+    "candidate_worktree": "Controller-created exclusive candidate-chain worktree retained for PR57 integration; not an abandoned checkout."
+  },
+  "m1_remaining": [
+    "Actual native K-SESSION launch/authority, authenticated SeatIo and B1/A/C event pipeline",
+    "Host-bound isolated testbed workspace; no seat write to common Git metadata; Git commit/merge is M2 scope",
+    "Actual installed OT3 caps4 and instance preparation",
+    "Exact-byte candidate chain, ordinary Win11 product checks and OT4 login"
+  ],
+  "non_claims": {
+    "owner_win11": "NOT_RUN",
+    "real_seat": "NOT_RUN",
+    "ot4": "NOT_REQUESTED",
+    "m1": "NOT_COMPLETE",
+    "formal_data_changed": false,
+    "self_acceptance": false
+  },
+  "next": "Fix the helper canonicalization failure from direct evidence, cloud-test the batch, finish PR57 review and prepare its main activation handoff. Continue authorized H construction; this checkpoint is not a stop."
+}

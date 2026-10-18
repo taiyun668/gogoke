@@ -479,6 +479,14 @@ Owner 已认可最小方案，替换上一节“只沿原具名初始化、不�
 
 本次只增加这一条 shared path；需求、阶段、H 写域、契约持久写方、不变量和 Owner 触点不变。参照 main `3609d91f` 上 PR #85 的单共享路径范围修订：同 PR 更新 v2 回执、MANIFEST 和三处固定回执 blob。Owner 合并后，Controller 精确读回 main 回执、MANIFEST 与范围摘要再施工；本提案不宣称候选、安装或产品验收通过。 T00 轻核对：可信 `origin/main` `3609d91fe1fa33639c186079ec71de669b3c1dd6` 不含该路径；施工提交 `fcc19b542248d9cf1b04db931f19d30d2f135e07` 的静态源 blob 为 `cddc6faf4e68e2bf24f2d1c82ecccfec9ddf5bbc`，仅作来源核对，不表示该文件已在 main 生效。
 
+## 2026-10-13：未绑定席位的既有只读投影（Integrator 同范围 change request）
+
+0.1.65 的原 USER 席位页读取被一条合法的 USER/IDLE、尚未绑定实例的记录阻断。K-SEAT 本来允许 NULL 绑定；K-UI 已要求如实呈现全部字段和缺失事实。由 Integrator 开放现有 `v37_seat.rs` 的 `read_user_seats_page` 精确投影：保留原席位和七种状态，以 `instance:null` 表示原 NULL 绑定，界面显示“未绑定实例”。已绑定但来源缺失或不一致仍保留原错误，不伪造实例、choice 或页面成功，不自动绑定或改库。
+
+G 的既有席位组件、D 的既有侧聊投影及 Integrator 的 `services/tauri.ts` 同步消费空绑定；未绑定席位不成为侧聊投递目标，不默认选取其他实例，已有侧聊仍按其自身宿主绑定读回。不新增 K-SEAT 操作、状态机、写方、权限或模型调用，choices 的原资格筛选保持。只修既有合法状态的实现遗漏，不改变正式 K-UI 要求。
+
+所有路径及条件、持久写方、需求和 invariants 均不变；可信 main 校验器重算的 scope digest 与当前授权回执相同。该变更请求由 Controller 依既有 Integrator 共享文件规则批准，无新增 Owner 触点。参照原 K-SEAT create-then-bind、K-UI 缺值语义及当前 Seats/sidechat 消费链；原失败和闭库测量保留，施工与受影响检查完成前不宣称页面通过。
+
 ## 2026-10-12：F.2 自管 CLI 生命周期的唯一共享桥接路径（范围提案，待 Owner 合并）
 
 F.2 已要求显式升级、退回、自检、查更新和零实例卸载；原 USER dispatcher 目前只接安装流程。只新增 `apps/desktop/native-host/src/store/product_database/v37_managed_cli.rs` 为 INTEGRATOR 共享路径，将这些既定 USER 动作接到 F 的可信版本目录、原 copy/instance/SOURCE 和已有 ProductDatabase 权威事务。其私有 H/custody/intent 核对不能从 F 兄弟模块或已列桌面转发文件取得；现有桌面与 Node 共享路径继续由汇合席位使用，不新增其他写路径。

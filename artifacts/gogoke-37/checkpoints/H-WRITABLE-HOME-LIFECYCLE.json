@@ -1,0 +1,96 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "base_source": "5ed18d5a2d94c9e53668f543c62a4cbc151fa370",
+  "state": "IMPLEMENTED_CLOUD_PENDING",
+  "authorization": {
+    "main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
+    "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
+    "receipt_blob": "8020812e3abf35887829f50c78ec9f513272bf70",
+    "exact_readback": "MATCH"
+  },
+  "threat_model": "The restricted CLI maintains its own runtime SQLite files inside an already-authorized exact writable F home. Object DELETE completes that write lifecycle without changing the token, root scope, read-only trees, programs, or parent directories. No formal product data is accessed.",
+  "direct_evidence": {
+    "run": 36656953688,
+    "source": "61b8465b5b34512f1ee748c2717fbf32dbbd5085",
+    "artifact_id": 11072903962,
+    "confirmed": "Both actual account/read CLI attempts create SQLite DB/journal successfully. Each then makes 22 journal deletion-open attempts with desired access0x10080/0x10000; all return NTSTATUS0xc0000022. Existing writable ACL lacks object DELETE.",
+    "logs": [
+      {
+        "log": "cli-state-2716-134352069591799064.log",
+        "sha256": "459c59dde32b9340adc60e5aedf85e27657d4dc16f63aa8f59147c222d7530b6",
+        "journal_delete_open_denied": 0
+      },
+      {
+        "log": "cli-state-6612-134352068720707320.log",
+        "sha256": "5359062d31e60ef085b3255ee7147db6e77475e640f641706b6f6628980c76b2",
+        "journal_delete_open_denied": 22
+      },
+      {
+        "log": "cli-state-6840-134352070818232212.log",
+        "sha256": "56081da1591e762821f17fd8c410b2131a6008a0149995b1d01097ce0cf6b54e",
+        "journal_delete_open_denied": 22
+      },
+      {
+        "log": "cli-state-8188-134352070205063590.log",
+        "sha256": "d07d4a3f24980648bb1dabd76173b650fd7c3cd57af42c84b55e1677e846983d",
+        "journal_delete_open_denied": 0
+      }
+    ],
+    "native_instrument": "Persistent guarded NT syscall entry/return sites on the exact pinned CLI PID; on-disk bytes/token/ACL unchanged, debugger execution timing/memory changed. Not acceptance."
+  },
+  "implementation": {
+    "acl": "Writable exactboundtree mask0x1201bf ->0x1301bf; objectDELETE only. Readonly0x1200a9, programRX and parent grants unchanged; noFILE_DELETE_CHILD. Existing mismatched ACEs still rejected.",
+    "temp_layout": "host-root/v37-temporary-homes/<instanceId>/<directoryRef> separate from persistent CODEX_HOME, sameinstance/domain/owner/generation/SID/physicalidentity; no migration/copy/removal.",
+    "old_states": "Detached layout in internal create fingerprint/marker; oldintent cannot authorize a newlocation. Persistent resolver refuses anylegacy nested temporary-homes object beforegrant.",
+    "mapping": "Finite1..3 heldnative roots: persistentFhome/currentSESSIONhome/exactFworktree. NativeRootLock ancestry, physicalidentities and NT/DOS pathsfromsamehandles; mappings confer no ACLrights. Single-home launch remainscompatible.",
+    "design_basis": "Design37§9 defines persistentinstance and temporarySESSION/CALL lifetimes/ownership, not physical nesting; PLAN/K-INSTANCE likewise. Independent specialist confirmed this is internalF/H implementation within existing authorization."
+  },
+  "validation": {
+    "independent_f_focus": "Knownfixes readback5ed18d5a, no remainingconfirmedstaticblocker; reusedcontext, not fresh or acceptance.",
+    "independent_acl_layout_focus": "FiveRootownedfiles reviewed and causeindependentlyrecounted; no confirmedstaticblocker; reusedcontext, not fresh or acceptance.",
+    "expanded_mapping_independent_review": "Threefile independent staticallaxis review, no confirmedblocker; reusedcontext, not fresh or acceptance. Newmulti-root nativeH caller remains NOT_WIRED.",
+    "new_native_cloud": "NOT_RUN_YET",
+    "new_win11_sac": "NOT_RUN",
+    "local_native": "NOT_RUN_BY_RULE",
+    "new_tests": [
+      "ActualLPAC ownfile rename/delete while preservingblocked/readonlyfiles",
+      "Legacy nestedtemp refused andpreserved",
+      "Oldcreationintent refused before detacheddirectorycreation",
+      "Sameproductionsource finite3root mapping andinvalidconfig/buffer tests"
+    ],
+    "symlink_control": "Fixture creation now required; error fails test rather than silently skipping reparse rejection."
+  },
+  "remaining": "NativeHopen/B1/A/C/SeatIo productioncomposition, exactcandidate signing/install/bootstrap, OT4login and realM1 behavior remain incomplete. Cross-project nativehistory isolation is not proved by separatedtemp layout; no such completionclaim.",
+  "custody": {
+    "detours_residue": "159 auto-cleanup-rejected untrackedobjects retained andexcluded; no retry/bypass",
+    "m1_complete": false,
+    "acceptance": false
+  },
+  "roundtrip_review": "Direct NtOpenFile evidence resolves the flattened SQLite cause. Batch narrow objectDELETE, detachedtemp predicates and finite3root mapping so next nativecloud run tests their combined real-byte behavior. Continueaftercheckpoint.",
+  "previous_f_cloud": {
+    "source": "5ed18d5a2d94c9e53668f543c62a4cbc151fa370",
+    "run": "36657166933",
+    "release_build": "PASS",
+    "lib_tests": {
+      "command": "cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml --lib -- --nocapture",
+      "exit_code": 101,
+      "discovered": 520.0,
+      "executed": 520.0,
+      "passed": 517.0,
+      "failed": 3.0,
+      "skipped": 0.0,
+      "state": "FAIL",
+      "log": "lib-tests.log"
+    },
+    "focused_summary": {
+      "passed": 15,
+      "failed": 3,
+      "skipped": 0
+    },
+    "f_real_git": "FAIL",
+    "partial_eof": "PASS",
+    "new_f_failure": "Actual pinned Git image was launched with extended DOS spelling; its own installation-relative template path retained the verbatim namespace prefix and git init returned128/cannot copy template. Read-only invocation of the same installed backend with normal versus extended DOS spelling independently reproduced its --exec-path spelling difference.",
+    "f_repair": "Use normal local DOS launch spelling of the same held canonical Git file. File/byte pin and native launched image checks remain; no template bypass or fixture-only workaround.",
+    "log_hash": "7becd97ae9482a0b2d56c834c74d71b02d34bf2aa2df1e7d5569000c2bcaa76a"
+  }
+}

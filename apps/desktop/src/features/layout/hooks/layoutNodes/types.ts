@@ -17,6 +17,7 @@ import { PromptPanel } from "../../../prompts/components/PromptPanel";
 import { TerminalDock } from "../../../terminal/components/TerminalDock";
 import type { TerminalSessionState } from "../../../terminal/hooks/useTerminalSession";
 import { UpdateToast } from "../../../update/components/UpdateToast";
+import type { PanelTabId, PanelTabsSelection } from "../../components/PanelTabs";
 
 export type WorktreeRenameState = {
   name: string;
@@ -55,7 +56,9 @@ export type LayoutPrimarySurface = {
 };
 
 export type LayoutGitSurface = {
-  filePanelMode: ComponentProps<typeof GitDiffPanel>["filePanelMode"];
+  filePanelMode: PanelTabId;
+  panelTabsSelection?: PanelTabsSelection;
+  project?: { workspaceId: string | null; threadId: string | null };
   fileTreeProps: ComponentProps<typeof FileTreePanel> | null;
   promptPanelProps: ComponentProps<typeof PromptPanel>;
   gitDiffPanelProps: ComponentProps<typeof GitDiffPanel>;

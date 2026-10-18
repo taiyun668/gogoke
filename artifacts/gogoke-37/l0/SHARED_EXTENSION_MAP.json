@@ -1,0 +1,881 @@
+{
+  "schema": "gogoke.37.l0.shared-extension-map.v1",
+  "scope": "Evidence/planning at the current branch HEAD; not implementation acceptance. Existing seam means a real callable insertion point only, never completed Design 37 behavior.",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "head": "1c9834867de22be500f8e31c5d57af9d771ce96e",
+  "sources": [
+    "docs/design/gogoke-37-plan-v1/PLAN.json (52 entries; authoritative order)",
+    "third_party/t3code/apps/server/src/gogoke/contracts/v37/SHARED_STATUS.json (current status)",
+    "origin/main:AGENTS.md",
+    "current source files at HEAD"
+  ],
+  "t00_note": "artifacts/gogoke-37/t00/T00-RECHECK-161448a4.json reports 50 entries and is stale relative to current PLAN/SHARED_STATUS count 52; it is not used as current T00 authority.",
+  "disposition_counts": {
+    "EXISTING_SEAM": 34,
+    "NEEDS_L0_CHANGE": 8,
+    "CONDITIONAL_VERIFIED_UNCHANGED": 5,
+    "ALREADY_MODIFIED_PARTIAL": 5,
+    "NOT_IMPLEMENTED_CURRENT_STATUS": 42
+  },
+  "next_smallest_coherent_batch": {
+    "focus": "A: derive the seat-ledger view from existing canonical orchestration events after native seat binding is available.",
+    "seam": "orchestration.rs: project_event() line 593, commit_orchestration() line 860 and read_events() line 1009 already provide unique event IDs and ordered source rows. A's new native ledger module must own scoped projection and subscription.",
+    "method": "Retain original event ID and sequence, preserve project/thread origin, and never label an event as a seat event without verified seat binding. Read the canonical rows under native reader authority; ledger subscription state may retain a cursor and host epoch without copying event facts.",
+    "boundary": "Keep protocol.rs V37Unwired and session.rs deny-before-mutation guards closed; no UI route or user-facing seat card until an authenticated native-origin dispatcher can call a real service.",
+    "size": "Do not alter the tightly verified R2 authority schema solely to store a duplicate source cursor: orchestration_events already has unique event IDs and a global sequence. First establish A's scoped native ledger module and seat-origin binding; add persistence only for new subscription state that cannot be derived from canonical rows. Keep protocol.rs and session.rs denied until a real authenticated native-origin read/dispatch route exists.",
+    "caveat": "The initial proposal to change authority/schema.sql for event cursor state failed a logic check: the existing canonical table already has the cursor facts. This revised batch is a candidate, not proof of implementation, live access, acceptance or completion."
+  },
+  "legacy_worktree_fact": "apps/desktop/src-tauri/src/lib.rs lines 344-376 registers add_worktree/remove_worktree and related Tauri commands; apps/desktop/src-tauri/src/workspaces/commands.rs forwards them to legacy workspaces_core; apps/desktop/src-tauri/src/shared/workspaces_core/worktree.rs performs actual Git worktree operations under the legacy workspace data root. These commands are live for Codex workspaces and have no v37 seat binding. Leave them legacy-only; F needs its own native-host worktree service/graph.",
+  "entries": [
+    {
+      "number": 1,
+      "path": "apps/desktop/native-host/src/lib.rs",
+      "planned_extension": "module registration for new host modules",
+      "serves": [
+        "H",
+        "A",
+        "C",
+        "E",
+        "F",
+        "D"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "pub mod ipc/process/store at lines 1-4; real native modules can be registered here; no v37 module is registered",
+      "disposition": "EXISTING_SEAM",
+      "reason": "The module root is callable and real, but this is only an insertion seam; the v37 service is absent."
+    },
+    {
+      "number": 2,
+      "path": "apps/desktop/native-host/src/main.rs",
+      "planned_extension": "startup wiring of new host services",
+      "serves": [
+        "H",
+        "A",
+        "C",
+        "E",
+        "F",
+        "D"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "main() at line 11 starts the existing host; no generic v37 service startup call",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Real host startup exists; v37 services are not wired."
+    },
+    {
+      "number": 3,
+      "path": "apps/desktop/native-host/src/ipc/mod.rs",
+      "planned_extension": "typed operation dispatch for the new operation families",
+      "serves": [
+        "H",
+        "A",
+        "C",
+        "E",
+        "F",
+        "D"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "Private IPC admission and frame validation at lines 12-72; no typed v37 operation dispatcher",
+      "disposition": "NEEDS_L0_CHANGE",
+      "reason": "Transport security checks exist, but the planned typed operation dispatch is absent and must preserve caller admission."
+    },
+    {
+      "number": 4,
+      "path": "apps/desktop/native-host/src/process/mod.rs",
+      "planned_extension": "export of the generic session launch module",
+      "serves": [
+        "H"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "windows module is private at line 10; no generic session launch export",
+      "disposition": "NEEDS_L0_CHANGE",
+      "reason": "Current process module does not export a generic session launcher."
+    },
+    {
+      "number": 5,
+      "path": "apps/desktop/native-host/src/process/windows.rs",
+      "planned_extension": "ProcessLaunch extended with explicit environment, per-session directories and a pinned program identity, without weakening the existing custody",
+      "serves": [
+        "H"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "ProcessLaunch struct line 283 and controlled_fixture_request line 306; launch path pins fixture identity",
+      "disposition": "NEEDS_L0_CHANGE",
+      "reason": "Real custody exists for the controlled fixture only; no explicit generic environment, per-session dirs or pinned CLI identity. Preserve all current custody checks."
+    },
+    {
+      "number": 6,
+      "path": "apps/desktop/native-host/src/store/mod.rs",
+      "planned_extension": "registration of ledger, inbox, seat, instance and worktree stores",
+      "serves": [
+        "A",
+        "C",
+        "E",
+        "F",
+        "D"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "Real orchestration/protocol/session modules exported at lines 44-49",
+      "disposition": "EXISTING_SEAM",
+      "reason": "The store module root is callable, but ledger/inbox/seat/instance/worktree stores are not registered."
+    },
+    {
+      "number": 7,
+      "path": "apps/desktop/native-host/src/store/protocol.rs",
+      "planned_extension": "the new closed operation set added to the existing whitelist",
+      "serves": [
+        "H",
+        "A",
+        "C",
+        "E",
+        "F",
+        "D"
+      ],
+      "conditional": false,
+      "l0_status": "MODIFIED",
+      "actual_current_extension": "decode_operation_frame() line 115; V37Unwired guard lines 140-144",
+      "disposition": "ALREADY_MODIFIED_PARTIAL",
+      "reason": "The L0 fail-closed marker guard is live; native-origin v37 operation parsing and admitted operation table remain absent."
+    },
+    {
+      "number": 8,
+      "path": "apps/desktop/native-host/src/store/session.rs",
+      "planned_extension": "schema initialisation, version check and same-connection handling for new tables",
+      "serves": [
+        "A",
+        "C",
+        "E",
+        "F",
+        "D"
+      ],
+      "conditional": false,
+      "l0_status": "MODIFIED",
+      "actual_current_extension": "serve_lines() line 134, serve_pipe() line 213, handle_line() line 2002; v37 denied before mutation",
+      "disposition": "ALREADY_MODIFIED_PARTIAL",
+      "reason": "The L0 deny-before-mutation and error-cause preservation changes are live; no real H dispatcher or generic schema initialization exists."
+    },
+    {
+      "number": 9,
+      "path": "apps/desktop/native-host/src/store/orchestration.rs",
+      "planned_extension": "decision recorded in L0: existing Message/Activity/Session/Turn/Approval events are mapped into the seat ledger, with one authority, not a second history",
+      "serves": [
+        "A"
+      ],
+      "conditional": false,
+      "l0_status": "MODIFIED",
+      "actual_current_extension": "EventProposal line 59; project_event() line 593; commit_orchestration() line 860; read_events() line 1009",
+      "disposition": "ALREADY_MODIFIED_PARTIAL",
+      "reason": "Real Message/Activity/Session/Turn/Approval event storage and projection exist, plus error-cause changes; no v37 seat-ledger mapping exists. Extend this canonical event path, not a second history."
+    },
+    {
+      "number": 10,
+      "path": "apps/desktop/native-host/src/store/authority/mod.rs",
+      "planned_extension": "authority exports for new records",
+      "serves": [
+        "A",
+        "C",
+        "E",
+        "F",
+        "D"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "Real authority modules are privately registered from line 5; no v37 ledger exports",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Authority module registration is real; no new ledger/inbox/seat/instance/worktree modules are exported."
+    },
+    {
+      "number": 11,
+      "path": "apps/desktop/native-host/src/store/authority/bootstrap.rs",
+      "planned_extension": "migration and trusted-issuer boundary for new operations",
+      "serves": [
+        "A",
+        "C",
+        "E",
+        "F",
+        "D"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "create_schema_v2() line 354 and migration/schema verification functions",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Real transactional schema migration seam exists; v37 tables and issuer boundary are absent."
+    },
+    {
+      "number": 12,
+      "path": "apps/desktop/native-host/src/store/authority/schema.sql",
+      "planned_extension": "new tables, added only through the migration path",
+      "serves": [
+        "A",
+        "C",
+        "E",
+        "F",
+        "D"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "Existing authority tables, including process custody; no v37 ledger/inbox/seat tables",
+      "disposition": "NEEDS_L0_CHANGE",
+      "reason": "The SQL schema is real, but planned records must be added through the existing migration path, not directly bootstrapped."
+    },
+    {
+      "number": 13,
+      "path": "apps/desktop/native-host/src/store/authority/process_custody.rs",
+      "planned_extension": "stop-fact reuse for generic sessions; the existing proof is kept, not redone",
+      "serves": [
+        "H"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "Existing custody schema at line 7 and authority exports in process_custody module",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Real stop/custody records are available for reuse; no generic session integration exists and proof must not be duplicated."
+    },
+    {
+      "number": 14,
+      "path": "apps/desktop/native-host/Cargo.toml",
+      "planned_extension": "dependencies of new host modules",
+      "serves": [
+        "H",
+        "A",
+        "C",
+        "E",
+        "F",
+        "D"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "Cargo package and dependency sections at lines 1-20; no v37-only module dependencies",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Dependency manifest is a real edit point; no dependency change is currently required or present."
+    },
+    {
+      "number": 15,
+      "path": "third_party/t3code/apps/server/src/gogoke/index.ts",
+      "planned_extension": "exports of new service modules",
+      "serves": [
+        "A",
+        "B1",
+        "B2",
+        "B3",
+        "B4",
+        "B5",
+        "C",
+        "D",
+        "E",
+        "F"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "Existing service barrel exports; no new Design 37 service export",
+      "disposition": "EXISTING_SEAM",
+      "reason": "A real barrel exists; v37 service modules are not exported."
+    },
+    {
+      "number": 16,
+      "path": "third_party/t3code/apps/server/src/gogoke/contracts/model.ts",
+      "planned_extension": "v37 objects and added fields under a versioned schema",
+      "serves": [
+        "A",
+        "B1",
+        "B2",
+        "B3",
+        "B4",
+        "B5",
+        "C",
+        "D",
+        "E",
+        "F",
+        "G"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "Existing R2 contract types; missing versioned Design 37 seat-ledger object types",
+      "disposition": "NEEDS_L0_CHANGE",
+      "reason": "Typed contracts are real, but the planned v37 objects and fields are absent."
+    },
+    {
+      "number": 17,
+      "path": "third_party/t3code/apps/server/src/gogoke/contracts/codec.ts",
+      "planned_extension": "version compatibility: new object types and fields without breaking stored records",
+      "serves": [
+        "A",
+        "B1",
+        "B2",
+        "B3",
+        "B4",
+        "B5",
+        "C",
+        "D",
+        "E",
+        "F",
+        "G"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "Existing R2 encode/decode compatibility codec; no v37 object schema cases",
+      "disposition": "NEEDS_L0_CHANGE",
+      "reason": "Codec extension point is real; adding a v37 type without compatibility cases would leave persisted-record compatibility incomplete."
+    },
+    {
+      "number": 18,
+      "path": "third_party/t3code/apps/server/src/gogoke/contracts/index.ts",
+      "planned_extension": "exports",
+      "serves": [
+        "A",
+        "B1",
+        "B2",
+        "B3",
+        "B4",
+        "B5",
+        "C",
+        "D",
+        "E",
+        "F",
+        "G"
+      ],
+      "conditional": false,
+      "l0_status": "MODIFIED",
+      "actual_current_extension": "v37 contract barrel export already present",
+      "disposition": "ALREADY_MODIFIED_PARTIAL",
+      "reason": "The v37 typed contract module is exported, but model/codec integration and live service use remain incomplete."
+    },
+    {
+      "number": 19,
+      "path": "third_party/t3code/apps/server/src/gogoke/persistence/base/nativeHostClient.ts",
+      "planned_extension": "typed client for the new operation families",
+      "serves": [
+        "A",
+        "C",
+        "E",
+        "F",
+        "H",
+        "D"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "Large real typed R2 host-client operations; no Design 37 operation family",
+      "disposition": "NEEDS_L0_CHANGE",
+      "reason": "Existing client is callable, but the planned typed v37 operation methods and native-origin binding are absent."
+    },
+    {
+      "number": 20,
+      "path": "third_party/t3code/apps/server/src/gogoke/bootstrap/index.ts",
+      "planned_extension": "composition of new services",
+      "serves": [
+        "A",
+        "C",
+        "D",
+        "E",
+        "F"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "constructGogokeService() line 19 composes existing services",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Real service composition seam exists; new v37 services are not composed."
+    },
+    {
+      "number": 21,
+      "path": "third_party/t3code/apps/server/src/gogoke/bootstrap/nativeStoreService.ts",
+      "planned_extension": "service interface and decode for new operations",
+      "serves": [
+        "A",
+        "C",
+        "E",
+        "F",
+        "D"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "NativeStoreSession/Connector/Service interfaces around lines 70-232",
+      "disposition": "NEEDS_L0_CHANGE",
+      "reason": "Real interfaces and decoders exist for current operations; no v37 operation service interface/decode path exists."
+    },
+    {
+      "number": 22,
+      "path": "third_party/t3code/apps/server/src/gogoke/bootstrap/productEntry.ts",
+      "planned_extension": "product request shapes beyond the controlled Goal request, admitted through the same entry",
+      "serves": [
+        "A",
+        "C",
+        "D",
+        "E",
+        "F",
+        "G"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "decodeProductGoalRequest() line 150 and existing controlled Goal entry",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Callable product entry exists for the controlled Goal request; no new seat/inbox/instance request is admitted."
+    },
+    {
+      "number": 23,
+      "path": "third_party/t3code/apps/server/src/gogoke/adapters/native/registry.ts",
+      "planned_extension": "registration of the five adapter manifests keyed by driver and adapter version; each B line ships its manifest in its own directory",
+      "serves": [
+        "B1",
+        "B2",
+        "B3",
+        "B4",
+        "B5"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "Real adapter registry and open-instance path around line 389",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Registry is a callable extension point; five new adapter manifests are not registered."
+    },
+    {
+      "number": 24,
+      "path": "third_party/t3code/apps/server/src/gogoke/runtimeCatalog/catalog.ts",
+      "planned_extension": "runtime drivers for the five CLIs admitted through the existing catalog and lease transitions",
+      "serves": [
+        "B1",
+        "B2",
+        "B3",
+        "B4",
+        "B5",
+        "F"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "decodeRuntimeInstanceConfig() line 108 and RuntimeCatalog.resolveInstance() line 208",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Real config/lease catalog is callable; five CLI runtime drivers are not yet admitted by this catalog."
+    },
+    {
+      "number": 25,
+      "path": "third_party/t3code/apps/server/src/gogoke/host/coordinator.ts",
+      "planned_extension": "coordination of generic sessions next to the existing controlled task",
+      "serves": [
+        "H",
+        "B1",
+        "B2",
+        "B3",
+        "B4",
+        "B5"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "Real controlled-task coordinator functions; no generic multi-session admission path",
+      "disposition": "EXISTING_SEAM",
+      "reason": "A live coordinator exists for the current controlled task; generic v37 session coordination is absent."
+    },
+    {
+      "number": 26,
+      "path": "third_party/t3code/apps/server/package.json",
+      "planned_extension": "dependencies of borrowed TS parts; no native addons",
+      "serves": [
+        "A",
+        "B1",
+        "B2",
+        "B3",
+        "B4",
+        "B5",
+        "C",
+        "D"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "Existing server scripts/dependencies; no v37-specific dependency addition",
+      "disposition": "EXISTING_SEAM",
+      "reason": "The package manifest is a real edit point; no dependency change has been made."
+    },
+    {
+      "number": 27,
+      "path": "third_party/t3code/pnpm-lock.yaml",
+      "planned_extension": "lockfile for the above",
+      "serves": [
+        "A",
+        "B1",
+        "B2",
+        "B3",
+        "B4",
+        "B5",
+        "C",
+        "D"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "Existing server workspace lockfile; no v37 dependency delta",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Lockfile is live and locked; keep unchanged unless the chosen service requires a dependency."
+    },
+    {
+      "number": 28,
+      "path": "apps/desktop/src-tauri/src/lib.rs",
+      "planned_extension": "command registration for new UI calls",
+      "serves": [
+        "G"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "run() line 78 and Tauri invoke_handler lines 344-376 register current commands",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Real command registry exists; new product calls can be registered here only after a real host service exists."
+    },
+    {
+      "number": 29,
+      "path": "apps/desktop/src-tauri/src/public_runtime/product_entry.rs",
+      "planned_extension": "forwarding of the new product request shapes",
+      "serves": [
+        "G"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "run_product_service() line 346 and existing product command line 1161",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Forwarding path for the controlled Goal request is real; new seat request shapes are absent."
+    },
+    {
+      "number": 30,
+      "path": "apps/desktop/src-tauri/src/workspaces/commands.rs",
+      "planned_extension": "decision recorded in L0: legacy Codex-thread worktree commands stay for legacy threads only and are not reachable for seats",
+      "serves": [
+        "F"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "add_worktree() line 241 and remove_worktree() line 392 call legacy workspaces_core; registered in Tauri handler",
+      "disposition": "EXISTING_SEAM",
+      "reason": "These are real Codex workspace commands, not seat commands. Keep them legacy-only; a new host worktree module is the next safe F seam."
+    },
+    {
+      "number": 31,
+      "path": "apps/desktop/src-tauri/src/shared/workspaces_core.rs",
+      "planned_extension": "read-only reuse; F ports the Git worktree logic into the host",
+      "serves": [
+        "F"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "Real workspaces_core module exports existing workspace operations",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Current shared core is live for legacy Codex workspaces; v37 worktrees must be ported to the native host, not routed here."
+    },
+    {
+      "number": 32,
+      "path": "apps/desktop/src-tauri/src/shared/workspaces_core/worktree.rs",
+      "planned_extension": "read-only reuse; same as above",
+      "serves": [
+        "F"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "add/remove/rename worktree core functions; add path creates under the legacy workspace data root",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Actual Git worktree behavior exists for legacy workspaces only; the host seat worktree graph/standard is missing."
+    },
+    {
+      "number": 33,
+      "path": "apps/desktop/src/App.tsx",
+      "planned_extension": "window routing",
+      "serves": [
+        "G"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "Existing app/window route switch; no v37 page route",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Real route composition seam exists; no v37 UI route is present."
+    },
+    {
+      "number": 34,
+      "path": "apps/desktop/src/features/app/components/MainApp.tsx",
+      "planned_extension": "slots for seat page, instance page, inbox, side chat, question cards and worktree graph",
+      "serves": [
+        "G"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "MainApp renders existing application pages/modals; no v37 seat slots",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Real page composition exists; planned slots are not implemented and should wait for live service behavior."
+    },
+    {
+      "number": 35,
+      "path": "apps/desktop/src/services/tauri.ts",
+      "planned_extension": "transport functions for the new UI calls",
+      "serves": [
+        "G"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "Existing typed invoke wrappers for current Tauri commands",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Transport wrapper module is callable; no v37 UI-call wrapper exists."
+    },
+    {
+      "number": 36,
+      "path": "apps/desktop/package.json",
+      "planned_extension": "UI dependencies, only if a reused component needs one",
+      "serves": [
+        "G"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "Existing desktop scripts/dependencies; no v37 dependency addition",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Manifest is live; no new UI dependency is currently required."
+    },
+    {
+      "number": 37,
+      "path": "apps/desktop/package-lock.json",
+      "planned_extension": "lockfile for the above",
+      "serves": [
+        "G"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "Existing npm lockfile; no v37 dependency delta",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Lockfile is current; leave unchanged unless a reused component requires a dependency."
+    },
+    {
+      "number": 38,
+      "path": ".github/workflows/gogoke-native-host.yml",
+      "planned_extension": "native tests of new host modules in cloud CI",
+      "serves": [
+        "H",
+        "A",
+        "C",
+        "E",
+        "F",
+        "D"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "Existing native-host cloud build/test job",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Cloud CI has a real native test job; new host modules are not yet covered."
+    },
+    {
+      "number": 39,
+      "path": ".github/workflows/gogoke-desktop.yml",
+      "planned_extension": "service and UI tests, packaging of new service modules",
+      "serves": [
+        "A",
+        "B1",
+        "B2",
+        "B3",
+        "B4",
+        "B5",
+        "C",
+        "D",
+        "E",
+        "F",
+        "G"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "Existing desktop/server test and package workflow",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Cloud workflow is real; v37 services/UI are not yet registered for coverage or packaging."
+    },
+    {
+      "number": 40,
+      "path": ".github/workflows/gogoke-source-hygiene.yml",
+      "planned_extension": "hygiene scan with positive samples for new evidence types",
+      "serves": [
+        "A",
+        "F",
+        "H"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "Existing source-hygiene job",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Hygiene job is active; no new v37 evidence rule is added."
+    },
+    {
+      "number": 41,
+      "path": "tools/ci/gogoke-server-tests.mjs",
+      "planned_extension": "registration of new service test suites",
+      "serves": [
+        "A",
+        "B1",
+        "B2",
+        "B3",
+        "B4",
+        "B5",
+        "C",
+        "D",
+        "E",
+        "F"
+      ],
+      "conditional": false,
+      "l0_status": "MODIFIED",
+      "actual_current_extension": "Existing suite selector plus v37 test file selection",
+      "disposition": "ALREADY_MODIFIED_PARTIAL",
+      "reason": "CI selects the additional v37 test file; that is registration only, not proof the 42 pending shared files or product behavior are complete."
+    },
+    {
+      "number": 42,
+      "path": "apps/desktop/src/features/settings/components/SettingsView.tsx",
+      "planned_extension": "a slot for the instance section inside Settings",
+      "serves": [
+        "G"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "SettingsView() line 71 composes current section body",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Real settings renderer exists; the instance section is absent."
+    },
+    {
+      "number": 43,
+      "path": "apps/desktop/src/features/settings/components/sections/SettingsSectionContainers.tsx",
+      "planned_extension": "dispatch of the instance section",
+      "serves": [
+        "G"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "SettingsSectionContainers() line 22 dispatches current settings sections",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Real section dispatch exists; the instance section has no live container."
+    },
+    {
+      "number": 44,
+      "path": "apps/desktop/src/features/settings/components/settingsTypes.ts",
+      "planned_extension": "instance section id in the closed section union",
+      "serves": [
+        "G"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "SETTINGS_SECTION_IDS line 3 and SettingsSection union line 25",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Closed section ID union is real; no instance section ID exists."
+    },
+    {
+      "number": 45,
+      "path": "apps/desktop/src/features/settings/components/settingsViewConstants.ts",
+      "planned_extension": "label for the instance section in the exhaustive map",
+      "serves": [
+        "G"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "SETTINGS_SECTION_LABELS line 77 and LABEL_KEYS line 93",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Exhaustive label maps are real; no instance entry exists."
+    },
+    {
+      "number": 46,
+      "path": "apps/desktop/src/features/settings/components/SettingsNav.tsx",
+      "planned_extension": "one navigation item for the instance section in the hard-coded list",
+      "serves": [
+        "G"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "SettingsNav() line 25 renders the hard-coded navigation list",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Real navigation list exists; no instance item exists."
+    },
+    {
+      "number": 47,
+      "path": "apps/desktop/src/i18n/index.tsx",
+      "planned_extension": "English and zh-CN translation keys for the instance section label; TranslationKey is derived from the English table",
+      "serves": [
+        "G"
+      ],
+      "conditional": false,
+      "l0_status": "NOT_IMPLEMENTED",
+      "actual_current_extension": "TranslationKey derived from English table at line 173; translate() line 1196",
+      "disposition": "EXISTING_SEAM",
+      "reason": "Real typed English/zh-CN translation tables exist; no instance label key exists."
+    },
+    {
+      "number": 48,
+      "path": "apps/desktop/src/features/app/components/RequestUserInputMessage.tsx",
+      "planned_extension": "reused as the question-card primitive; changed only if wrapping from a new directory is not enough",
+      "serves": [
+        "G",
+        "C"
+      ],
+      "conditional": true,
+      "l0_status": "VERIFIED_UNCHANGED",
+      "actual_current_extension": "RequestUserInputMessage() line 21 accepts choices/free text and answer callback",
+      "disposition": "CONDITIONAL_VERIFIED_UNCHANGED",
+      "reason": "Current component is reusable as a primitive; seat/turn binding and durable answer recovery belong in a wrapper and no L0 edit is needed."
+    },
+    {
+      "number": 49,
+      "path": "apps/desktop/native-host/Cargo.lock",
+      "planned_extension": "kept in step with Cargo.toml because CI builds with --locked",
+      "serves": [
+        "H",
+        "A",
+        "C",
+        "D",
+        "E",
+        "F"
+      ],
+      "conditional": true,
+      "l0_status": "VERIFIED_UNCHANGED",
+      "actual_current_extension": "No dependency change recorded; lockfile remains aligned with Cargo.toml",
+      "disposition": "CONDITIONAL_VERIFIED_UNCHANGED",
+      "reason": "No native dependency or manifest change exists; preserve the --locked build."
+    },
+    {
+      "number": 50,
+      "path": "tools/check-public-source.py",
+      "planned_extension": "new scan rules only if existing rules miss a new evidence type",
+      "serves": [
+        "A",
+        "F",
+        "H"
+      ],
+      "conditional": true,
+      "l0_status": "VERIFIED_UNCHANGED",
+      "actual_current_extension": "Existing scanner; no new v37 evidence type introduced",
+      "disposition": "CONDITIONAL_VERIFIED_UNCHANGED",
+      "reason": "No scanner rule change is needed for current evidence types."
+    },
+    {
+      "number": 51,
+      "path": "tools/tests/test_check_public_source.py",
+      "planned_extension": "positive samples for any new rule",
+      "serves": [
+        "A",
+        "F",
+        "H"
+      ],
+      "conditional": true,
+      "l0_status": "VERIFIED_UNCHANGED",
+      "actual_current_extension": "Existing scanner tests; no new rule positive sample needed",
+      "disposition": "CONDITIONAL_VERIFIED_UNCHANGED",
+      "reason": "No new scan rule or evidence type is introduced."
+    },
+    {
+      "number": 52,
+      "path": "tools/ci/gogoke-package-service.mjs",
+      "planned_extension": "resources and notices of borrowed parts, if the chosen parts need them",
+      "serves": [
+        "A",
+        "B1",
+        "B2",
+        "B3",
+        "B4",
+        "B5",
+        "C",
+        "D"
+      ],
+      "conditional": true,
+      "l0_status": "VERIFIED_UNCHANGED",
+      "actual_current_extension": "Existing packaging/resource logic; no borrowed dependency/resource change",
+      "disposition": "CONDITIONAL_VERIFIED_UNCHANGED",
+      "reason": "No borrowed dependency or resource requires packaging changes."
+    }
+  ]
+}

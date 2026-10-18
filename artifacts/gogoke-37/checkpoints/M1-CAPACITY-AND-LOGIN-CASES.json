@@ -1,0 +1,19 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "recordedDate": "2026-10-02",
+  "state": "M1_AFFECTED_CLOUD_CHECKS_PENDING_BEFORE_STABLE_CHAIN",
+  "changes": "Added the existing K-SESSION fake's persisted E/F capacity facts and five reusable admission cases. Added real instance-component success/failure assertions across closing and reopening the page while the same host login request settles. No CLI, native product, permission or authorization-scope change.",
+  "results": {
+    "independentReview": "Sol focused review PASS after adding the independent instance-only fixture for missing project cap; both missing-value orders now have assertions. Official focused rerun 12/12 PASS.",
+    "local": "Signed Node: protocol 12/12 and instance component plus preview host 12/12 PASS; desktop TypeScript PASS; focused fake TypeScript PASS. Project and instance capacity mutations remained executable and caused the respective new assertions to fail; restored tests PASS.",
+    "caseIds": ["session-cap-missing", "session-cap-limits", "session-cap-conservative", "session-cap-invalid", "session-cap-reopen"],
+    "cloud": "Pending for this source; earlier source results are historical evidence only.",
+    "actualWin11M1": "NOT_RUN: original installed 0.1.17 and its authenticated physical instance home are preserved until the stable-point chain. No signing or installation in this development step.",
+    "measurementFailures": "Direct node --test does not run the Vitest suite. Existing local server-wide typecheck lacks dependencies; neither is claimed PASS. The focused official runner and bounded typecheck passed. Full server cloud gate remains required."
+  },
+  "next": "Independent focused review, push the stable code, and complete affected cloud gates. Then run one exact-source signed candidate and installation smoke chain followed by the real ordinary Win11 V00a/V01-V04 cases; retain raw ledger, inbox, native card, stop and restart facts. Reuse valid instance credentials; request OT4 only if the actual installed host proves login is required.",
+  "reference": "参照：existing v37_session_tests::product_admission_enforces_persisted_caps_and_rolls_back_busy_on_denial, seat/instance persisted setters, admission reserve's two occupancy counts, and the existing shared coreConformance runner. Adopted positive signed-i64 caps, refusal when either is absent, and conservative occupancy through STOPPED/UNKNOWN until release. Fixture-only setters and trusted instance observation do not add wire operations. UI cases use the actual Design37InstanceSection with the existing K-UI preview host; a reconstructed component reads the same settled request rather than starting another login. Native/cloud tests and actual model/Owner-window behavior remain distinct evidence.",
+  "decision": "Controller completed an existing M1 test gap within the authorized scope; no new Owner touchpoint or new test platform is necessary.",
+  "publicRelease": false,
+  "acceptance": false
+}

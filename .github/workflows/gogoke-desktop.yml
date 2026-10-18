@@ -503,10 +503,105 @@ jobs:
           }
           cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml resource_trust --lib
           if ($LASTEXITCODE -ne 0) { throw "resource trust tests failed: $LASTEXITCODE" }
+          $boundSteps = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml managed_cli_bound_step --lib 2>&1
+          $boundSteps | Out-Host
+          $boundSteps | Set-Content -LiteralPath (Join-Path $evidence 'managed-cli-bound-step-baseline.log') -Encoding utf8
+          if ($LASTEXITCODE -ne 0 -or
+              @($boundSteps | Where-Object { $_ -match 'test result: ok\. 4 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+            throw "Managed CLI original action and legacy probe tests failed or did not execute exactly four tests: $LASTEXITCODE"
+          }
+          $boundSource = 'src-tauri/src/public_runtime/product_entry.rs'
+          $boundOriginal = [IO.File]::ReadAllBytes($boundSource)
+          $boundHash = (Get-FileHash -LiteralPath $boundSource).Hash.ToLowerInvariant()
+          $boundText = [Text.UTF8Encoding]::new($false,$true).GetString($boundOriginal)
+          $boundNeedle = '["driverId","requestId","targetVersion"]'
+          if ([regex]::Matches($boundText,[regex]::Escape($boundNeedle)).Count -ne 1) {
+            throw 'Managed CLI reply identity mutation target is not unique'
+          }
+          $boundMutation = [ordered]@{ source='${{ github.event.pull_request.head.sha || github.sha }}'; acceptance=$false; originalHash=$boundHash; state='NOT_RUN' }
+          try {
+            [IO.File]::WriteAllText($boundSource,$boundText.Replace($boundNeedle,'["driverId","targetVersion"]'),[Text.UTF8Encoding]::new($false))
+            $boundMutation.changedHash = (Get-FileHash -LiteralPath $boundSource).Hash.ToLowerInvariant()
+            $boundCheck = & cargo +1.89.0 check --locked --manifest-path src-tauri/Cargo.toml --lib 2>&1
+            $boundMutation.checkExit = $LASTEXITCODE
+            $boundCheck | Out-Host
+            $boundCheck | Set-Content -LiteralPath (Join-Path $evidence 'managed-cli-reply-identity-check.log') -Encoding utf8
+            if ($boundMutation.checkExit -ne 0) { throw 'Reply identity mutation did not compile; not a behavioral failure' }
+            $wrongReply = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml managed_cli_bound_step_requires_original_request_and_operation --lib 2>&1
+            $boundMutation.testExit = $LASTEXITCODE
+            $wrongReply | Out-Host
+            $wrongReply | Set-Content -LiteralPath (Join-Path $evidence 'managed-cli-reply-identity-mutation.log') -Encoding utf8
+            if ($LASTEXITCODE -eq 0 -or
+                @($wrongReply | Where-Object { $_ -match 'test result: FAILED\. 0 passed; 1 failed; 0 ignored' }).Count -ne 1) {
+              throw 'Wrong-request reply mutation was not rejected by the original behavior assertion'
+            }
+            $boundMutation.state = 'COMPILED_BEHAVIOR_MUTATION_KILLED'
+          } finally {
+            [IO.File]::WriteAllBytes($boundSource,$boundOriginal)
+            $boundMutation.restoredHash = (Get-FileHash -LiteralPath $boundSource).Hash.ToLowerInvariant()
+            $boundMutation | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence 'managed-cli-reply-identity-mutation.json') -Encoding utf8
+            if ($boundMutation.restoredHash -cne $boundHash) { throw 'Reply identity source not restored exactly' }
+          }
+          $boundRestored = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml managed_cli_bound_step --lib 2>&1
+          $boundRestored | Out-Host
+          $boundRestored | Set-Content -LiteralPath (Join-Path $evidence 'managed-cli-reply-identity-restored.log') -Encoding utf8
+          if ($LASTEXITCODE -ne 0 -or
+              @($boundRestored | Where-Object { $_ -match 'test result: ok\. 4 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+            throw 'Restored managed CLI reply identity controls did not pass'
+          }
+          $legacyNeedle = '(?s)(if step==ManagedCliPrepareStep::Probe \{\s*)ManagedCliProbeMode::Legacy'
+          $boundTestsStart = $boundText.IndexOf('mod tests {')
+          if ([regex]::Matches($boundText,$legacyNeedle).Count -ne 1 -or $boundTestsStart -lt 0 -or
+              [regex]::Match($boundText,$legacyNeedle).Index -ge $boundTestsStart) {
+            throw 'Managed CLI production legacy mode mutation target is not unique'
+          }
+          $legacyMutation = [ordered]@{ source='${{ github.event.pull_request.head.sha || github.sha }}'; acceptance=$false; originalHash=$boundHash; state='NOT_RUN' }
+          try {
+            $legacyChanged = [regex]::Replace($boundText,$legacyNeedle,'${1}ManagedCliProbeMode::Bound')
+            if ($boundText.Substring($boundTestsStart) -cne $legacyChanged.Substring($legacyChanged.IndexOf('mod tests {'))) {
+              throw 'Legacy mode mutation changed test source'
+            }
+            [IO.File]::WriteAllText($boundSource,$legacyChanged,[Text.UTF8Encoding]::new($false))
+            $legacyMutation.changedHash = (Get-FileHash -LiteralPath $boundSource).Hash.ToLowerInvariant()
+            $legacyCheck = & cargo +1.89.0 check --locked --manifest-path src-tauri/Cargo.toml --lib 2>&1
+            $legacyMutation.checkExit = $LASTEXITCODE
+            $legacyCheck | Out-Host
+            $legacyCheck | Set-Content -LiteralPath (Join-Path $evidence 'managed-cli-legacy-mode-check.log') -Encoding utf8
+            if ($legacyMutation.checkExit -ne 0) { throw 'Legacy mode mutation did not compile; not a behavioral failure' }
+            $wrongMode = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml managed_cli_bound_step_probe_mode_uses_original_pending_action --lib 2>&1
+            $legacyMutation.testExit = $LASTEXITCODE
+            $wrongMode | Out-Host
+            $wrongMode | Set-Content -LiteralPath (Join-Path $evidence 'managed-cli-legacy-mode-mutation.log') -Encoding utf8
+            if ($LASTEXITCODE -eq 0 -or
+                @($wrongMode | Where-Object { $_ -match 'test result: FAILED\. 0 passed; 1 failed; 0 ignored' }).Count -ne 1) {
+              throw 'Legacy STAGED mode mutation was not rejected by the original behavior assertion'
+            }
+            $legacyMutation.state = 'COMPILED_BEHAVIOR_MUTATION_KILLED'
+          } finally {
+            [IO.File]::WriteAllBytes($boundSource,$boundOriginal)
+            $legacyMutation.restoredHash = (Get-FileHash -LiteralPath $boundSource).Hash.ToLowerInvariant()
+            $legacyMutation | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence 'managed-cli-legacy-mode-mutation.json') -Encoding utf8
+            if ($legacyMutation.restoredHash -cne $boundHash) { throw 'Legacy mode source not restored exactly' }
+          }
+          $legacyRestored = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml managed_cli_bound_step --lib 2>&1
+          $legacyRestored | Out-Host
+          $legacyRestored | Set-Content -LiteralPath (Join-Path $evidence 'managed-cli-legacy-mode-restored.log') -Encoding utf8
+          if ($LASTEXITCODE -ne 0 -or
+              @($legacyRestored | Where-Object { $_ -match 'test result: ok\. 4 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+            throw 'Restored original and legacy managed CLI reply controls did not pass'
+          }
           $custody = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml cancelled_reply_retains_job_and_lease_until_accounted_settlement --lib 2>&1
           $custody | Out-Host
           if ($LASTEXITCODE -ne 0 -or -not (@($custody | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed' }).Count -eq 1)) {
             throw "Product process custody test failed or did not execute exactly one test: $LASTEXITCODE"
+          }
+          $serviceFailure = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml managed_product_failure_reports_bounded_service_output --lib 2>&1
+          $serviceFailureCode = $LASTEXITCODE
+          $serviceFailure | Out-Host
+          $serviceFailure | Set-Content -LiteralPath (Join-Path $evidence 'managed-service-original-failure.log') -Encoding utf8
+          if ($serviceFailureCode -ne 0 -or
+              @($serviceFailure | Where-Object { $_ -match 'test result: ok\. 1 passed; 0 failed; 0 ignored' }).Count -ne 1) {
+            throw 'Original service error and static operation-class assertions did not pass exactly once'
           }
           $outerJob = & cargo +1.89.0 test --locked --manifest-path src-tauri/Cargo.toml outer_job_owner_hard_exit_kills_suspended_node --lib 2>&1
           $outerJob | Out-Host
@@ -529,6 +624,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gogoke-update-loader-only-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/gogoke-update-loader-diagnostic/*
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload native trust and managed CLI mutation evidence
+        if: always() && (github.event_name != 'workflow_dispatch' || (!inputs.experimental_candidate && !inputs.update_loader_only))
+        uses: actions/upload-artifact@v4
+        with:
+          name: gogoke-native-trust-${{ matrix.lane }}-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/gogoke-update-loader-diagnostic/*
           if-no-files-found: error
           retention-days: 30

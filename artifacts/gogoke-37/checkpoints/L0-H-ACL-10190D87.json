@@ -1,0 +1,101 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "checkpoint": "L0-H-ACL-10190D87",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "state": "WAITING_OWNER_CANDIDATE_CHAIN_SCOPE_NOT_ACCEPTED",
+  "source_commit": "10190d874def57ff5c2a7505a80af4ca3b14d227",
+  "authorization": {
+    "main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
+    "owner_merged_pr": 56,
+    "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
+    "receipt_blob": "8020812e3abf35887829f50c78ec9f513272bf70",
+    "readback": "MATCH",
+    "prior_owner_pause": "RESUMED_BY_OWNER"
+  },
+  "inbox": {
+    "head": "b4f7e866029b8c5a9a1211100effadf01a03ffbc",
+    "result": "UNCHANGED"
+  },
+  "direct_failures_and_fixes": [
+    {
+      "source": "7512ae51",
+      "run_id": 36630778508,
+      "library": { "passed": 507, "failed": 2, "ignored": 0 },
+      "failures": [
+        "pinned_codex_empty_home_reports_native_logout_and_durable_stop: successful account/read followed by no-op close hook, forced exit124 and correctly rejected incomplete stop proof",
+        "bound_nonempty_tree_grants_only_its_recorded_instance_identity: opaque AclWitnessMismatch"
+      ]
+    },
+    {
+      "source": "bbd137fd556690b4a372c2f4a4257115ad49e4d6",
+      "run_id": 36632949245,
+      "library": { "passed": 509, "failed": 1, "ignored": 0 },
+      "release_build": "PASS",
+      "required_process_axes": "PASS",
+      "focused_probes": "PASS",
+      "server_tests": "PASS",
+      "pinned_codex_real_account_read_and_durable_stop": "PASS",
+      "native_input_eof_exit0_test": "PASS",
+      "remaining_failure": "bound_nonempty_tree_grants_only_its_recorded_instance_identity",
+      "fix": "Close the exact retained app-server stdin handle before the stop hook; preserve close errors and existing exit124 rejection. Do not replace a stop proof with a caller assertion.",
+      "independent_focused_static_review": "Fresh Sol/high found no confirmed blocker; it did not perform local native builds or acceptance."
+    }
+  ],
+  "current_acl_change": {
+    "source": "10190d874def57ff5c2a7505a80af4ca3b14d227",
+    "change": "Read actual GetAce headers, SID, masks and flags rather than reconstructing EXPLICIT_ACCESS; return relative-object and expected/observed ACE details. Unsupported ACE forms and original Windows errors remain denials with direct diagnostic context.",
+    "root_cause": "NOT_YET_PROVEN",
+    "hypothesis": "The old reconstructed ACL view may have discarded information used by the inheritance witness.",
+    "falsifier": "The unchanged successful bound-tree behavior test under the raw observer. No package ACE means propagation did not occur; different masks or flags identify the actual mismatch. A pass on this source is cloud behavior only.",
+    "scope": "Existing authorized H module and L0 native-host workflow only; no broader grants, ancestor grants, retries or stop-rule relaxation.",
+    "early_cloud_probes": [
+      "bound_nonempty_tree_grants_only_its_recorded_instance_identity",
+      "native_input_close_delivers_eof_and_preserves_graceful_stop_proof",
+      "pinned_codex_empty_home_reports_native_logout_and_durable_stop"
+    ]
+  },
+  "cloud_pending": {
+    "run_id": 36634561919,
+    "source": "10190d874def57ff5c2a7505a80af4ca3b14d227",
+    "workflow": ".github/workflows/gogoke-native-host.yml",
+    "result": "IN_PROGRESS_NOT_A_PASS",
+    "next": "Read exact final machine result and direct ACL errors; repair the actual cause within scope without treating failure as an Owner product decision."
+  },
+  "candidate_chain_scope": {
+    "proposal": "artifacts/gogoke-37/checkpoints/CANDIDATE-CHAIN-SCOPE-REQUEST.json",
+    "state": "OWNER_SCOPE_QUESTION_PENDING",
+    "logic": "The current plan is explicit about write scopes. Five files required to restore the real candidate chain are absent; renaming them as an independent support package cannot create permission.",
+    "review_correction": "Read-only reviewer initially inferred supporting-package authority; Controller checked the premise and the reviewer withdrew it.",
+    "not_done": "None of the five proposed paths changed. No candidate signing, candidate installation, main merge, public release or candidate trust-root change.",
+    "owner_choice": "Authorize the precise narrow five-file scope, or revise the plan and rebind authorization. No Owner private-key signing step is added."
+  },
+  "m1_remaining": [
+    "Native K-SESSION/open wiring; current dispatcher implements only admission reserve/commit/release",
+    "Durable E permission-tier binding and actual verified H launch witness; all tiers remain denied until implemented",
+    "Native F host-created worktree identity and H binding; do not accept paths or authority from operation payloads",
+    "SeatIo authority and actual B1/A/C/M1 behavior on the real installed candidate",
+    "Write the authorized project and instance caps4 through the genuine installed product",
+    "Prepare the real Codex test instance before asking for OT4 login"
+  ],
+  "threat_model": "Untrusted LPAC seats must be confined to exact authorized native homes and worktrees and verified active Job identity. Unrestricted same-user processes do not cross a privilege boundary. No elevation, trust-root or security-setting change is authorized.",
+  "custody": {
+    "worker_writers": "COMPLETED",
+    "product_commits": ["bbd137fd", "10190d87"],
+    "product_changes_pushed": true,
+    "local_native_build_or_test": false,
+    "ordinary_baseline": "Retained privately; hash and exact ordinary-view readback are in L0-F1-OWNER-PAUSE-7512AE51.json. Refresh before actual installation.",
+    "temporary_baseline_task": "REMOVED_AND_VERIFIED",
+    "formal_product_data_or_registration_changed": false,
+    "main_changed": false
+  },
+  "validation": {
+    "git_diff_check": "PASS",
+    "local_public_source_scan_at_10190_inputs": { "files": 24774, "leaks": 0 },
+    "m1": "NOT_COMPLETE",
+    "owner_win11_product": "NOT_RUN",
+    "ot4": "NOT_REQUESTED",
+    "self_acceptance": false
+  },
+  "path_reflection": "Take the existing Windows ACL object as the measurement source and put the two known failure cases early in existing cloud CI. Repair the candidate chain once on exact frozen bytes after scope authority is settled; do not use copied installations or formal-domain signatures as substitutes."
+}

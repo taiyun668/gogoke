@@ -1,0 +1,266 @@
+{
+  "schema": "gogoke.37.l0.shared-disposition.v1",
+  "plan_shared_count": 52,
+  "entries": [
+    {
+      "path": "apps/desktop/native-host/src/lib.rs",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/native-host/src/main.rs",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/native-host/src/ipc/mod.rs",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/native-host/src/process/mod.rs",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/native-host/src/process/windows.rs",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/mod.rs",
+      "status": "MODIFIED",
+      "reason": "Registers the F instance schema and H native-only v37 wire modules; caller binding and actual operations remain pending"
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/protocol.rs",
+      "status": "MODIFIED",
+      "reason": "L0 rejects v37 markers before legacy dispatch on the shared Node channel; real native-origin parsing remains pending"
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/session.rs",
+      "status": "MODIFIED",
+      "reason": "L0 denies unwired v37 ingress before mutation; after authority bootstrap it initializes the F global instance schema. Real H dispatcher remains pending"
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/orchestration.rs",
+      "status": "MODIFIED",
+      "reason": "Error variants retain original I/O and private-pipe causes; legacy event projection into the v37 ledger remains pending"
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/authority/mod.rs",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/authority/bootstrap.rs",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/authority/schema.sql",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/authority/process_custody.rs",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/native-host/Cargo.toml",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "third_party/t3code/apps/server/src/gogoke/index.ts",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "third_party/t3code/apps/server/src/gogoke/contracts/model.ts",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "third_party/t3code/apps/server/src/gogoke/contracts/codec.ts",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "third_party/t3code/apps/server/src/gogoke/contracts/index.ts",
+      "status": "MODIFIED",
+      "reason": "Exports the v37 typed contract module"
+    },
+    {
+      "path": "third_party/t3code/apps/server/src/gogoke/persistence/base/nativeHostClient.ts",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "third_party/t3code/apps/server/src/gogoke/bootstrap/index.ts",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "third_party/t3code/apps/server/src/gogoke/bootstrap/nativeStoreService.ts",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "third_party/t3code/apps/server/src/gogoke/bootstrap/productEntry.ts",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "third_party/t3code/apps/server/src/gogoke/adapters/native/registry.ts",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "third_party/t3code/apps/server/src/gogoke/runtimeCatalog/catalog.ts",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "third_party/t3code/apps/server/src/gogoke/host/coordinator.ts",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "third_party/t3code/apps/server/package.json",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "third_party/t3code/pnpm-lock.yaml",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/lib.rs",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/public_runtime/product_entry.rs",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/workspaces/commands.rs",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/shared/workspaces_core.rs",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/shared/workspaces_core/worktree.rs",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/src/App.tsx",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/src/features/app/components/MainApp.tsx",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/src/services/tauri.ts",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/package.json",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/package-lock.json",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": ".github/workflows/gogoke-native-host.yml",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": ".github/workflows/gogoke-desktop.yml",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": ".github/workflows/gogoke-source-hygiene.yml",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "tools/ci/gogoke-server-tests.mjs",
+      "status": "MODIFIED",
+      "reason": "Selects the additional v37 test file in CI"
+    },
+    {
+      "path": "apps/desktop/src/features/settings/components/SettingsView.tsx",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/src/features/settings/components/sections/SettingsSectionContainers.tsx",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/src/features/settings/components/settingsTypes.ts",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/src/features/settings/components/settingsViewConstants.ts",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/src/features/settings/components/SettingsNav.tsx",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/src/i18n/index.tsx",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "Real-line extension remains pending; no dead stub was added"
+    },
+    {
+      "path": "apps/desktop/src/features/app/components/RequestUserInputMessage.tsx",
+      "status": "VERIFIED_UNCHANGED",
+      "reason": "Existing choice/free-text component remains reusable; no UI wrapper is implemented in L0"
+    },
+    {
+      "path": "apps/desktop/native-host/Cargo.lock",
+      "status": "VERIFIED_UNCHANGED",
+      "reason": "No Cargo dependency or manifest was changed"
+    },
+    {
+      "path": "tools/check-public-source.py",
+      "status": "VERIFIED_UNCHANGED",
+      "reason": "No new evidence format or scan rule was introduced"
+    },
+    {
+      "path": "tools/tests/test_check_public_source.py",
+      "status": "VERIFIED_UNCHANGED",
+      "reason": "No new scan rule needs a positive sample"
+    },
+    {
+      "path": "tools/ci/gogoke-package-service.mjs",
+      "status": "VERIFIED_UNCHANGED",
+      "reason": "No borrowed dependency or resource was introduced"
+    }
+  ]
+}

@@ -23,12 +23,45 @@ export function reduceThreadQueue(state: ThreadState, action: ThreadAction): Thr
         ),
       };
     case "addUserInputRequest": {
-      const exists = state.userInputRequests.some(
+      const index = state.userInputRequests.findIndex(
         (item) =>
           item.request_id === action.request.request_id &&
           item.workspace_id === action.request.workspace_id,
       );
-      if (exists) {
+      const incoming=action.request;
+      const current=index >= 0 ? state.userInputRequests[index] : null;
+      const priorRevision=current?.params.card_revision ?? "0";
+      const nextRevision=incoming.params.card_revision ?? "0";
+      const stale=nextRevision.length < priorRevision.length ||
+        (nextRevision.length === priorRevision.length && nextRevision < priorRevision);
+      if (incoming.params.card_origin === "host-mcp" &&
+          (incoming.params.card_state === "EXPIRED" ||
+            incoming.params.card_state === "ANSWERED")) {
+        if (index < 0) return state;
+        const prior=state.userInputRequests[index];
+        if (prior.params.card_origin !== "host-mcp" ||
+            prior.params.thread_id !== incoming.params.thread_id ||
+            prior.params.turn_id !== incoming.params.turn_id ||
+            prior.params.item_id !== incoming.params.item_id || stale) return state;
+        return { ...state, userInputRequests: state.userInputRequests.filter((_, at) => at !== index) };
+      }
+      if (index >= 0) {
+        const prior=state.userInputRequests[index];
+        if (prior.params.card_origin !== "host-mcp" ||
+            incoming.params.card_origin !== "host-mcp" ||
+            prior.params.thread_id !== incoming.params.thread_id ||
+            prior.params.turn_id !== incoming.params.turn_id ||
+            prior.params.item_id !== incoming.params.item_id ||
+            incoming.params.card_state !== "ANSWER_UNKNOWN" ||
+            prior.params.card_state === "ANSWER_UNKNOWN" || stale) {
+          return state;
+        }
+        return { ...state, userInputRequests: state.userInputRequests.map((item, at) =>
+          at === index ? incoming : item) };
+      }
+      if (action.request.params.card_origin === "host-mcp" &&
+          action.request.params.card_state !== "OPEN" &&
+          action.request.params.card_state !== "ANSWER_UNKNOWN") {
         return state;
       }
       return {

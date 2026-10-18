@@ -1,0 +1,76 @@
+{
+  "schema": "gogoke.37.light-checkpoint.v1",
+  "changed": [
+    "Installed the frozen signed 0.1.33 candidate with original data root and six HOME identities preserved.",
+    "Independently audited and removed 1117 exact empty candidate directories, each read back ABSENT; zero files deleted.",
+    "Read the original Claude status failure from the installed product; prepared cache cleanup to reuse existing DirectoryRoots namespace custody."
+  ],
+  "result": {
+    "installedSource": "aa4e5772547bb2a0136148df2af99f0588c0fefc",
+    "win11Install": "PASS_ACTUAL_FROZEN_INSTALL_IDENTITIES_PRESERVED",
+    "formalProtection": "FIVE_GROUPS_UNCHANGED_AFTER_INSTALL_AND_STATUS_REPRODUCTION",
+    "claudeStatus": "CLI_EXIT_ZERO_THEN_CACHE_OPEN_v37-instances_WIN32_32",
+    "originalProductClose": "EXIT_ZERO_NO_FORCE_KILL",
+    "causeEvidence": "The real instance-list call completes gone-resource recovery for codexTestM2Ready; source and metadata prove it retains CredentialBinding.source_parents across the later Claude refresh. This explains the container self-conflict; the kernel handle itself was not directly observed.",
+    "proposedFix": "Ancestors use no-follow metadata observation followed by the existing shared path/FileID DirectoryRoots pin. The leaf retains exclusive same-handle deletion and absence readback.",
+    "newFixCloud": "NOT_RUN",
+    "newFixWin11": "NOT_RUN",
+    "acceptance": false,
+    "newFixStatic": "INDEPENDENT_FOCUSED_NO_STATIC_BLOCKER_NOT_ACCEPTANCE"
+  },
+  "stableEvidence": {
+    "scopeDigest": "e77f7348b84e6b30c27976383c80ab8163c915174d29d22c5274087d3be0fbe0",
+    "receiptBlob": "fae816fb4e43f55623ffcee4c008d3febd63d7ad",
+    "desktopRun": 37431488988,
+    "frozenArtifact": 11398646843,
+    "frozenArchiveSha256": "9f4f4ae2b71d806edf22d128f4a8dae219219723ecadeb7586cad6a9133aff99",
+    "signingMain": "c205070d05ffa12925108bc6792d079b20e85421",
+    "signingRun": 37437028621,
+    "signedArtifact": 11399820871,
+    "signedArchiveSha256": "7d05665066017af0c68b16c5446986dbac362b0693080c85f0044587ffe6bd24",
+    "sameProductMembers": "SEVEN_UNCHANGED_BEFORE_AND_AFTER_SIGNING_PUBLIC_SIGNATURE_VERIFIED",
+    "manifestSha256": "6e471d8d021fbd93c135ac9cfa93f7160e99660c7a8074f04a227a616328b145",
+    "signatureSha256": "5914223438474576e1dcc95cb69385274513039a4622fdec8f4e975b3cd85027",
+    "smokeRun": 37437253874,
+    "smokeArtifact": 11400252876,
+    "smokeArchiveSha256": "6e7896e69fdd24baa26826a286a5eb89fda01d2b8aa88583c29cacff6ce78ab3",
+    "installerNegativeArtifact": 11400327631,
+    "installerNegativeArchiveSha256": "2fa25b53b6cb86d7794403785ea7fd42ee8bea83b9fc092851aebe4d36ebff0a",
+    "setupSha256": "0ddf57a0e539b8014771a290bb2426f1179fd2a683f82c5d80c53c6a8e2a6aa6",
+    "installedShellSha256": "ee98751066f99cb115eb24c5e9542d0cb46bd1b62be6c93e3f48dc223404018a",
+    "nativeHostSha256": "8e74aa92065dd2f0b8492ae8c81f5450a726b3e13ccc93066254ece644ad71e3",
+    "nodeSha256": "e3be0545990c90995d7bf3a7af5d64af1f2e0fc1bbd9b79c27f7abc1e9676e50",
+    "resourceIndexSha256": "05007764d5f1096062c7b62900f8bcf2c39a7393fe7b02775da4e2ef3c56696d",
+    "packSha256": "bc6e2098baf30a9b5b0c109c9fbf146721806eaf8eb98ec6da3a3d7c2eaa3e93",
+    "libraryBasis": {
+      "source": "f0815822fee137b85109143cceaf7b1b121d87eb",
+      "run": 37428314111,
+      "passed": 728,
+      "otherAxes": "SKIPPED"
+    },
+    "exactAffected33": {
+      "run": 37431689027,
+      "cacheAndLoginPassed": 7,
+      "processPassed": 3,
+      "lpacShimPassed": 2,
+      "fullLibrary": "NOT_RUN"
+    },
+    "cleanupInventorySha256": "151c31e3cedde4cc5fc28c9607aba5bfc31e64d8dfd69ba64486e346c6ded6dd"
+  },
+  "next": "Cloud-verify the shared-custody fix and its original-conflict mutation; continue real Codex/Grok M2 cases on installed 33 while the next blocking candidate builds. Preserve original UNKNOWN tree, all instances and all failed journals.",
+  "reference": {
+    "checked": [
+      "GOGO PARTY room and seat-runtime sources",
+      "NaveHQ runtime, executors and wheel notes",
+      "LoomOS sources, specifications and lessons",
+      "docs/research",
+      "PROVIDER_LAUNCH_REFERENCES.md",
+      "compat_module.rs DirectoryRoots and named original cloud tests",
+      "Microsoft CreateFileW sharing rules"
+    ],
+    "adopted": "Existing DirectoryRoots same-path/FileID shared Arc custody, directly verified by fixed_module, shared_directory_pin_lasts_until_final_module_and_keeps_child_operations and sealed_three_roots tests in cloud run 37428314111.",
+    "difference": "Historical checked areas had no equivalent Win32 custody pool. Cache cleanup now adopts the current native implementation; no new pool, retry, wait or weaker namespace sharing is introduced.",
+    "official": "https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew"
+  },
+  "threatModel": "Current-user processes only; this is an internal holder conflict, not a cross-user or elevation boundary. LPAC capabilities and file/directory isolation remain unchanged. No credentials read, copied or hashed; no new login, reboot, public release, main change or acceptance."
+}

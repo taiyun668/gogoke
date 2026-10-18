@@ -186,6 +186,111 @@ export function useAppServerEvents(handlers: AppServerEventHandlers) {
       }
       const params = getAppServerParams(payload);
 
+      if (method === "gogoke/hostQuestion" || method === "gogoke/hostQuestionState") {
+        const cardState = params.cardState;
+        const cardRevision = params.cardRevision;
+        if (typeof cardState !== "string" ||
+            (method === "gogoke/hostQuestion" && cardState !== "OPEN") ||
+            (method === "gogoke/hostQuestionState" &&
+              !["EXPIRED", "ANSWER_UNKNOWN", "ANSWERED"].includes(cardState)) ||
+            typeof cardRevision !== "string" || !/^[1-9][0-9]*$/.test(cardRevision) ||
+            cardRevision.length > 20) return;
+        const association = payload.nativeAssociation;
+        const source = payload.nativeSourceRef;
+        const binding = (params.nativeQuestion as Record<string, unknown> | undefined)?.binding;
+        const nativeQuestion = params.nativeQuestion as Record<string, unknown> | undefined;
+        const questions = nativeQuestion?.questions;
+        if (!association || !source || !binding || typeof binding !== "object" ||
+            !nativeQuestion || nativeQuestion.provider !== "grok" ||
+            nativeQuestion.cardOrigin !== "host-mcp" ||
+            nativeQuestion.bindingVersion !== 1 ||
+            nativeQuestion.allowFreeAnswer !== true ||
+            typeof params.requestRef !== "string" || !params.requestRef.startsWith("gmpc_") ||
+            typeof params.cardId !== "string" || !params.cardId.startsWith("card") ||
+            typeof params.threadId !== "string" || !params.threadId ||
+            typeof params.turnId !== "string" || !params.turnId ||
+            !Array.isArray(questions) || questions.length !== 1) return;
+        const bound = binding as Record<string, unknown>;
+        if (bound.hostSessionId !== association.sessionId ||
+            bound.generation !== association.bindingGeneration ||
+            bound.hostPromptRequestId !== params.turnId ||
+            bound.processOperationId !== source.operationId ||
+            bound.sourceEpoch !== source.sourceEpoch ||
+            bound.sourceCursor !== source.sourceCursor) return;
+        const question = questions[0] as Record<string, unknown>;
+        const options = question.options;
+        const recommendedIndex = nativeQuestion.recommendedIndex;
+        if (question.id !== "host0" || typeof question.header !== "string" ||
+            typeof question.question !== "string" || !Array.isArray(options) ||
+            !Number.isSafeInteger(recommendedIndex) ||
+            (recommendedIndex as number) < 0 ||
+            (recommendedIndex as number) >= options.length ||
+            !options.every((option) => option && typeof option.label === "string" &&
+              typeof option.description === "string" && option.label.trim())) return;
+        currentHandlers.onRequestUserInput?.({
+          workspace_id,
+          request_id: params.requestRef,
+          params: {
+            thread_id: params.threadId,
+            turn_id: params.turnId,
+            item_id: params.cardId,
+            card_origin: "host-mcp",
+            card_state: cardState as "OPEN" | "EXPIRED" | "ANSWER_UNKNOWN" | "ANSWERED",
+            card_revision: cardRevision,
+            questions: [{
+              id: "host0", header: question.header, question: question.question,
+              options: options.map((option) => ({ label: option.label, description: option.description })),
+              recommendedIndex: recommendedIndex as number,
+            }],
+          },
+        });
+        return;
+      }
+
+      if (method === "gogoke/hostText") {
+        const association = payload.nativeAssociation;
+        const source = payload.nativeSourceRef;
+        const threadId = params.threadId;
+        const itemId = params.itemId;
+        const delta = params.delta;
+        if (!association || !source || Object.keys(source).length !== 5 ||
+            typeof association.bindingGeneration !== "string" ||
+            source.generation !== association.bindingGeneration ||
+            typeof source.operationId !== "string" || !source.operationId ||
+            typeof source.sourceEpoch !== "string" || !source.sourceEpoch ||
+            typeof source.sourceCursor !== "string" || !/^[1-9][0-9]*$/.test(source.sourceCursor) ||
+            typeof source.rawSourceId !== "string" || !/^[1-9][0-9]*$/.test(source.rawSourceId) ||
+            typeof threadId !== "string" || !threadId ||
+            typeof itemId !== "string" || !/^hostsource[0-9a-f]{64}$/.test(itemId) ||
+            typeof delta !== "string" || !delta || delta.length > 1048576) return;
+        // One A source is one host-session item. Text does not start, finish,
+        // or resurrect an ACP prompt; only its typed H terminal does that.
+        currentHandlers.onAgentMessageCompleted?.({workspaceId: workspace_id,
+          threadId, itemId, text: delta});
+        return;
+      }
+
+      if (method === "gogoke/hostPromptState") {
+        const association = payload.nativeAssociation;
+        const source = payload.nativeSourceRef;
+        const threadId = params.threadId;
+        const turnId = params.turnId;
+        const status = params.status;
+        if (!association || !source || Object.keys(source).length !== 5 ||
+            source.generation !== association.bindingGeneration ||
+            typeof source.operationId !== "string" || !source.operationId ||
+            typeof source.sourceEpoch !== "string" || !source.sourceEpoch ||
+            typeof source.sourceCursor !== "string" || !/^[1-9][0-9]*$/.test(source.sourceCursor) ||
+            typeof source.rawSourceId !== "string" || !/^[1-9][0-9]*$/.test(source.rawSourceId) ||
+            typeof threadId !== "string" || !threadId ||
+            typeof turnId !== "string" || !/^hostprompt[0-9a-f]{64}$/.test(turnId) ||
+            (status !== "completed" && status !== "failed")) return;
+        if (status === "completed") currentHandlers.onTurnCompleted?.(workspace_id,threadId,turnId);
+        else currentHandlers.onTurnError?.(workspace_id,threadId,turnId,
+          {message:"Original ACP prompt failed.",willRetry:false});
+        return;
+      }
+
       if (method === "codex/connected") {
         currentHandlers.onWorkspaceConnected?.(workspace_id);
         return;

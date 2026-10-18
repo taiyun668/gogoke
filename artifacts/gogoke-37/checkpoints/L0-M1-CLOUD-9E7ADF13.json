@@ -1,0 +1,40 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "checkpoint": "L0-M1-CLOUD-9E7ADF13",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "state": "L0_M1_IN_PROGRESS_NOT_ACCEPTED",
+  "authorization": {
+    "owner_merged_pr": 53,
+    "authorized_origin_main": "e2f0c57853b1fca6bc4d6dcbca0185b57baf452f",
+    "manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d"
+  },
+  "cloud_run": {
+    "run_id": 36591186112,
+    "source_head": "9e7adf1326a319cb8e7437c9e217be6f943561de",
+    "server_job": "PASS",
+    "native_lib_tests": "480 passed, 2 failed, 0 skipped, 482 executed",
+    "failures": [
+      "process::windows::tests::real_app_container_descendant_reaches_native_seat_pipe",
+      "store::seat::tests::legacy_bound_seat_migrates_without_losing_identity_or_binding"
+    ],
+    "lpac_child_trace": "The exact LPAC parent had four Process Create SUCCESS events for two copied helper and two signed system-image attempts. Each created process had a Process Exit event about one to two milliseconds later; the captured child events show no access-denied result for these four processes. The ProcMon Process Exit result SUCCESS is a trace operation result, not a zero exit status. The script at this SHA did not retain exit status or other child lifecycle events.",
+    "causal_limit": "The trace narrows the failure to process creation after the kernel create event and before CreateProcessW returns Win32 error 5. It does not identify the failing Windows call or denied object. LPAC is not concluded to inherently forbid descendants."
+  },
+  "repairs_in_flight": {
+    "seat": "A fresh focused Sol audit found four live migration fixture insert statements in addition to the read statement. Commit 9b59b593 drops all five before close and adds same-transaction current OwnerIssuer checks plus revision CAS. This exact commit still needs cloud validation.",
+    "diagnostic": "Commit 954a32db records child lifecycle and parsed exit status from the same signed ProcMon trace, plus immediate GetLastError and LastNtStatus after direct CreateProcessW failure. LastNtStatus is only a clue; it is not CreateProcess's public error contract. Exact cloud run 36592521853 is pending.",
+    "native_card": "C's same-DB native Codex question-card store is under independent risk audit and is not yet committed or product-wired.",
+    "session_journal": "H's durable stdin journal remains in construction."
+  },
+  "verification": {
+    "real_codex_seat": "NOT_RUN",
+    "ot4_login": "NOT_REQUESTED",
+    "m1": "NOT_COMPLETE",
+    "m2": "NOT_RUN",
+    "m3": "NOT_RUN",
+    "formal_data_touched": false
+  },
+  "route_reflection": "The Process Create and Process Exit sequence is a more direct discriminator than isolated registry denials. The next run combines child lifecycle, exit status, immediate thread status and the seat fixture repair at one exact SHA; no ACL or capability change is justified by the current trace.",
+  "next": "Read the exact 954a32db cloud result, finish native-card review and H journal, then compose the real M1 product route. Continue construction after this checkpoint."
+}

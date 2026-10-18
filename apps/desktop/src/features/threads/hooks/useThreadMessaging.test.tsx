@@ -3,6 +3,8 @@ import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   sendUserMessage as sendUserMessageService,
+  nativeConversationAssociation,
+  originalPendingNativeVisibleIntent,
   steerTurn as steerTurnService,
   startReview as startReviewService,
   interruptTurn as interruptTurnService,
@@ -15,6 +17,8 @@ import { useThreadMessaging } from "./useThreadMessaging";
 
 vi.mock("@services/tauri", () => ({
   sendUserMessage: vi.fn(),
+  nativeConversationAssociation: vi.fn(),
+  originalPendingNativeVisibleIntent: vi.fn(),
   steerTurn: vi.fn(),
   startReview: vi.fn(),
   interruptTurn: vi.fn(),
@@ -136,6 +140,91 @@ describe("useThreadMessaging telemetry", () => {
 
     expect(ensureWorkspaceRuntimeCodexArgs).toHaveBeenCalledTimes(1);
     expect(ensureWorkspaceRuntimeCodexArgs).toHaveBeenCalledWith("ws-1", "thread-1");
+  });
+
+  it("keeps only the exact host pending reply in progress without a fabricated turn", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: {}, configurable: true });
+    vi.mocked(nativeConversationAssociation).mockResolvedValue({ domainId: "projectA",
+      sessionId: "sessionA", seatId: "seatA", incarnation: "incA",
+      authorizationGeneration: "1", bindingGeneration: "1", instanceId: "instanceA" });
+    vi.mocked(originalPendingNativeVisibleIntent).mockReturnValue({
+      nativeRequestId: "visible_parent", workspaceId: "ws-1",
+      expectedAssociation: { domainId: "projectA", sessionId: "sessionA", seatId: "seatA",
+        incarnation: "incA", authorizationGeneration: "1", bindingGeneration: "1",
+        instanceId: "instanceA" },
+      command: "send_user_message", payload: { threadId: "nativeS" }, error: null,
+    });
+    vi.mocked(sendUserMessageService).mockRejectedValueOnce(new Error(
+      "GOGOKE_VISIBLE_UNKNOWN:visible_parent:GOGOKE_HOST_PROMPT_PENDING: original H WRITTEN"));
+    const markProcessing = vi.fn();
+    const pushThreadErrorMessage = vi.fn();
+    try {
+      const { result } = renderHook(() => useThreadMessaging({
+        activeWorkspace: workspace, activeThreadId: "nativeS", accessMode: "current",
+        model: null, effort: null, collaborationMode: null,
+        reviewDeliveryMode: "inline", steerEnabled: false, customPrompts: [],
+        threadStatusById: {}, activeTurnIdByThread: {}, rateLimitsByWorkspace: {},
+        pendingInterruptsRef: { current: new Set<string>() }, dispatch: vi.fn(),
+        getCustomName: vi.fn(() => undefined), markProcessing, markReviewing: vi.fn(),
+        setActiveTurnId: vi.fn(), recordThreadActivity: vi.fn(),
+        safeMessageActivity: vi.fn(), onDebug: vi.fn(), pushThreadErrorMessage,
+        ensureThreadForActiveWorkspace: vi.fn(async () => "nativeS"),
+        ensureThreadForWorkspace: vi.fn(async () => "nativeS"),
+        refreshThread: vi.fn(async () => null),
+        forkThreadForWorkspace: vi.fn(async () => null), updateThreadParent: vi.fn(),
+      }));
+      let sent: Awaited<ReturnType<typeof result.current.sendUserMessageToThread>>;
+      await act(async () => { sent = await result.current.sendUserMessageToThread(
+        workspace, "nativeS", "Ask", []); });
+      expect(sent!).toEqual({ status: "pending" });
+      expect(markProcessing).toHaveBeenCalledWith("nativeS", true);
+      expect(pushThreadErrorMessage).not.toHaveBeenCalled();
+    } finally { delete (window as Window & { __TAURI_INTERNALS__?: object }).__TAURI_INTERNALS__; }
+  });
+
+  it("does not reactivate an original host prompt whose source terminal preceded the pending IPC", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: {}, configurable: true });
+    const association = { domainId: "projectA", sessionId: "sessionA", seatId: "seatA",
+      incarnation: "incA", authorizationGeneration: "1", bindingGeneration: "1",
+      instanceId: "instanceA" };
+    vi.mocked(nativeConversationAssociation).mockResolvedValue(association);
+    vi.mocked(originalPendingNativeVisibleIntent).mockReturnValue({
+      nativeRequestId: "visible_parent", workspaceId: "ws-1",
+      expectedAssociation: association, command: "send_user_message",
+      payload: { threadId: "nativeS" }, error: null,
+    });
+    let rejectSend: ((error: Error) => void) | null = null;
+    vi.mocked(sendUserMessageService).mockImplementation(() => new Promise((_,reject) => {
+      rejectSend = reject;
+    }));
+    const markProcessing = vi.fn();
+    const terminalObserved = vi.fn(() => true);
+    try {
+      const { result } = renderHook(() => useThreadMessaging({
+        activeWorkspace: workspace, activeThreadId: "nativeS", accessMode: "current",
+        model: null, effort: null, collaborationMode: null,
+        reviewDeliveryMode: "inline", steerEnabled: false, customPrompts: [],
+        threadStatusById: {}, activeTurnIdByThread: {}, rateLimitsByWorkspace: {},
+        pendingInterruptsRef: { current: new Set<string>() }, dispatch: vi.fn(),
+        getCustomName: vi.fn(() => undefined), markProcessing,
+        hostPromptTerminalObserved: terminalObserved, markReviewing: vi.fn(),
+        setActiveTurnId: vi.fn(), recordThreadActivity: vi.fn(),
+        safeMessageActivity: vi.fn(), onDebug: vi.fn(), pushThreadErrorMessage: vi.fn(),
+        ensureThreadForActiveWorkspace: vi.fn(async () => "nativeS"),
+        ensureThreadForWorkspace: vi.fn(async () => "nativeS"),
+        refreshThread: vi.fn(async () => null),
+        forkThreadForWorkspace: vi.fn(async () => null), updateThreadParent: vi.fn(),
+      }));
+      let send: Promise<Awaited<ReturnType<typeof result.current.sendUserMessageToThread>>>;
+      await act(async () => { send = result.current.sendUserMessageToThread(
+        workspace,"nativeS","Ask",[]); });
+      markProcessing("nativeS",false); // the ordered Native terminal callback
+      await act(async () => { rejectSend!(new Error(
+        "GOGOKE_VISIBLE_UNKNOWN:visible_parent:GOGOKE_HOST_PROMPT_PENDING: original H WRITTEN"));
+        expect(await send).toEqual({ status: "pending" }); });
+      expect(terminalObserved).toHaveBeenCalledWith("ws-1","nativeS","visible_parent",association);
+      expect(markProcessing.mock.calls).toEqual([["nativeS",false]]);
+    } finally { delete (window as Window & { __TAURI_INTERNALS__?: object }).__TAURI_INTERNALS__; }
   });
 
   it("forwards explicit app mentions to turn/start", async () => {

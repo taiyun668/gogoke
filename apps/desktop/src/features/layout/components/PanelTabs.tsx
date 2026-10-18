@@ -1,10 +1,19 @@
-import { useRef, type KeyboardEvent, type ReactNode } from "react";
+import { createContext, useContext, useRef, type KeyboardEvent, type ReactNode } from "react";
 import { useI18n } from "@/i18n";
 import Folder from "lucide-react/dist/esm/icons/folder";
 import GitBranch from "lucide-react/dist/esm/icons/git-branch";
 import ScrollText from "lucide-react/dist/esm/icons/scroll-text";
+import Users from "lucide-react/dist/esm/icons/users";
+import MessagesSquare from "lucide-react/dist/esm/icons/messages-square";
 
-export type PanelTabId = "git" | "files" | "prompts";
+export type LegacyPanelTabId = "git" | "files" | "prompts";
+export type PanelTabId = LegacyPanelTabId | "seats" | "sidechat";
+export type PanelTabsSelection = { active: PanelTabId; onSelect: (id: PanelTabId) => void };
+const Selection = createContext<PanelTabsSelection | null>(null);
+/** The integrator owns extended selection; old panels retain their three-tab props. */
+export function PanelTabsScope({ value, children }: { value: PanelTabsSelection; children: ReactNode }) {
+  return <Selection.Provider value={value}>{children}</Selection.Provider>;
+}
 
 type PanelTab = {
   id: PanelTabId;
@@ -14,7 +23,7 @@ type PanelTab = {
 
 type PanelTabsProps = {
   active: PanelTabId;
-  onSelect: (id: PanelTabId) => void;
+  onSelect: (id: LegacyPanelTabId) => void;
   tabs?: PanelTab[];
 };
 
@@ -25,9 +34,21 @@ const defaultTabs: PanelTab[] = [
 ];
 
 export function PanelTabs({ active, onSelect, tabs = defaultTabs }: PanelTabsProps) {
+  const selection = useContext(Selection);
+  if (selection) {
+    tabs = [...defaultTabs,
+      { id: "seats", label: "席位", icon: <Users aria-hidden /> },
+      { id: "sidechat", label: "旁聊", icon: <MessagesSquare aria-hidden /> },
+    ];
+  }
+  const selected = selection?.active ?? active;
+  const pick = (id: PanelTabId) => {
+    if (selection) selection.onSelect(id);
+    else if (id === "git" || id === "files" || id === "prompts") onSelect(id);
+  };
   const { tx } = useI18n();
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const activeIndex = tabs.findIndex((tab) => tab.id === active);
+  const activeIndex = tabs.findIndex((tab) => tab.id === selected);
   const focusableIndex = activeIndex >= 0 ? activeIndex : 0;
 
   const selectByIndex = (index: number, options?: { focus?: boolean }) => {
@@ -35,7 +56,7 @@ export function PanelTabs({ active, onSelect, tabs = defaultTabs }: PanelTabsPro
       return;
     }
     const normalized = (index + tabs.length) % tabs.length;
-    onSelect(tabs[normalized].id);
+    pick(tabs[normalized].id);
     if (options?.focus) {
       tabRefs.current[normalized]?.focus();
     }
@@ -70,14 +91,14 @@ export function PanelTabs({ active, onSelect, tabs = defaultTabs }: PanelTabsPro
   return (
     <div className="panel-tabs" role="tablist" aria-label={tx("Panel")} aria-orientation="horizontal">
       {tabs.map((tab, index) => {
-        const isActive = active === tab.id;
+        const isActive = selected === tab.id;
         const label = tx(tab.label);
         return (
           <button
             key={tab.id}
             type="button"
             className={`panel-tab${isActive ? " is-active" : ""}`}
-            onClick={() => onSelect(tab.id)}
+            onClick={() => pick(tab.id)}
             onKeyDown={(event) => handleKeyDown(event, index)}
             ref={(element) => {
               tabRefs.current[index] = element;

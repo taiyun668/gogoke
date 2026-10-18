@@ -1,0 +1,21 @@
+{
+  "schema": "gogoke.37.authorization-readback.v2",
+  "state": "PASS_EXACT_OWNER_MAIN_AUTHORIZATION_READBACK",
+  "pullRequest": 88,
+  "mainCommit": "10f9177952056a1bdfa5da96dc894c8ac5b52080",
+  "mergedBy": "taiyun668",
+  "receiptBlob": "7c10662961d63c7c43b7026038d851c865addfb3",
+  "scopeDigest": "f6ae82f17c77287abba4eb12a5481de7b4100065d2493aa35be543c0fee8781f",
+  "supersedesScope": "593b8be6d6b41ba19255636a673441e2d3c7b4f1fd7140806229b6312f1b7490",
+  "trustedVerifierBlob": "9a2157d714e66c8f9dd28bb3935ef0a268205670",
+  "manifestChecked": true,
+  "sourcePinsChecked": true,
+  "signerReceiptPinsChecked": [
+    ".github/workflows/gogoke-candidate-sign.yml",
+    "tools/ci/gogoke-candidate-sign.ps1",
+    "tools/ci/gogoke-candidate-installed-preflight.ps1"
+  ],
+  "newSharedPath": "apps/desktop/src-tauri/src/public_runtime/design37_host.rs",
+  "productChangeBeforeReadback": false,
+  "acceptance": false
+}

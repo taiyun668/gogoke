@@ -1,0 +1,64 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "state": "OWNER_CORRECTION_REFERENCE_IMPLEMENTATION_STUDIED_SOURCE_ONLY",
+  "priorCheckpointCommit": "61c54c52665bd6417021174b6519726f83b2ec74",
+  "ownerCorrection": "Study GOGO PARTY instance management; current gogoke instance/login interaction is inadequate.",
+  "reference": {
+    "project": "GOGO PARTY",
+    "commit": "8812d3c075d78e196819a60b467bf9cb26f41cb7",
+    "files": {
+      "packages/room/src/instances.ts": "3133e61ed856225595e9c7888eeb9db4a74ccb56",
+      "packages/room/src/accounts.ts": "9fdaa1c4b6d99746d0bb0864553ffcf1250c778f",
+      "packages/room/src/server.ts": "0961b392a5a7d6e64fa72a3a6898f1dba5c39259",
+      "packages/room/public/index.html": "f72cd876cb0c25c4d7b355ff2637bb56c3bdb374"
+    },
+    "inspection": "READ_ONLY_CURRENT_IMPLEMENTATION; source files unchanged, unrelated existing dirty and untracked work preserved; no private source copied into this public artifact",
+    "runtimeValidation": "NOT_RUN"
+  },
+  "referenceMechanisms": [
+    "Global instance list groups providers and exposes labels, dedicated directories, observed login state with observation time, and seat occupancy; new-and-login is one user action.",
+    "Product prepares an independent home; vendor CLI owns credentials. Product does not copy authentication between instances.",
+    "Codex reference uses normal codex login; CLI output supplies authorization URL. Real login explicitly enables host browser opening and UI offers a clickable authorization link.",
+    "Backend loginSessions map is indexed by instance/session key and home, retains progress, final exit code and normalized/masked output. login-status queries by instance; frontend request UUID is not required to find the current login.",
+    "Line sink decodes split UTF-8 chunks, removes ANSI, buffers complete lines, flushes final partial output and masks secrets before display.",
+    "Login process completion and actual login readiness are separate. Free vendor status command confirms readiness; UI displays progress and detection actions.",
+    "Running and bound instance protections live in the store; PID and creation time identify surviving prior processes; normal stop/failure/removal paths release appropriate occupancy."
+  ],
+  "referenceLimits": [
+    "Login session map survives panel replacement within the same host process; it is not durable process-restart storage. Do not claim restart recovery from this reference.",
+    "Reference allows one seat per instance; Design37 explicitly supports multiple isolated sessions and configured concurrency4. Do not copy its one-seat restriction.",
+    "Reference includes host CLI reuse and loginEnv restores real AppData for browser profiles. Current gogoke test identity remains independent and LPAC confined; copying those environment values or adopting Owner home would require a separate boundary analysis.",
+    "Reference launches Edge/explorer and also uses window.open. It is an interaction reference, not authorization to operate an external authentication browser or assume foreground visibility.",
+    "Reference delete retries and source-comment claims are not automatically appropriate production fixes for gogoke."
+  ],
+  "gogokeDirectComparison": {
+    "installedSource": "aae122c392393dc48fead2fa2f336d6af8af8267",
+    "nativeLoginBlob": "e6951c87658eba3791ce4da36ea08dc724096f5d",
+    "instanceUIBlob": "7999a100f19198b2da1c0b314c4895ed583773b4",
+    "forcedLoginMode": "Native launch explicitly uses login --device-auth; no automatic browser window is expected from this CLI mode.",
+    "missingProductInteraction": "Current UI only renders vendor text, including terminal ANSI, and Copy instructions; no product authorization link/action is rendered.",
+    "lostRequestIdentity": "loginRequestId/revision are React component state. Closing settings loses the identity needed by native exact-request status, although native Final may still retain the original result.",
+    "managementGap": "Current independent-test-instance form is bootstrap wiring, not the complete global instance-management experience described by Design37.",
+    "logicCheck": "Device auth itself is not evidence of a broken CLI or expanded permissions. Missing visible authorization action and host-owned recoverable login state explain the unnecessary Owner glue. Borrow the lifecycle and interaction, preserve the actual fixed CLI and current isolation model."
+  },
+  "currentOwnerLoginCustody": {
+    "instance": "codexTestM1",
+    "originalRequestIdentity": "PRESERVED_PRIVATELY_BEFORE_THIS_REFERENCE_STUDY",
+    "lastObservedState": "PENDING",
+    "deviceCodeOrCredentialCapturedInStudy": false,
+    "loginCancelledOrRestartedByStudy": false,
+    "authenticationCompletedClaim": false
+  },
+  "correctionDirection": [
+    "Within M1 F.1 login lifecycle, keep original request identity and status recoverable through host-owned instance state rather than requiring Owner to keep settings mounted.",
+    "Present a clear visible authorization entry and readable progress; automatically reconcile the original CLI final result with a fresh actual login observation. Verify fixed CLI and host opening capabilities before choosing login mode or browser integration.",
+    "Deliver the full global instance management page, provider grouping, labels and lifecycle controls in the already authorized G.1/M3 phase; versions and re-pin remain F.2/M2.",
+    "Continue existing immutable-program, LPAC file isolation, credential non-read, concurrency and formal-data protection rules; do not substitute GOGO PARTY runtime for the actual installed gogoke product."
+  ],
+  "productChangesInThisStudy": false,
+  "planOrAuthorizationChanges": false,
+  "M1Complete": false,
+  "acceptance": false,
+  "controllerMerge": false,
+  "routeReflection": "Prior replies treated CLI mechanics as the finished product flow and asked Owner to supply navigation and preserve transient request state. Study the existing whole instance lifecycle first, then repair the actual host/UI responsibility; repeated manual login is not the remedy for a lost product-owned request identity."
+}

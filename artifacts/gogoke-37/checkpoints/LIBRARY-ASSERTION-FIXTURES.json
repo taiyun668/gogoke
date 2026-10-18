@@ -1,0 +1,12 @@
+{
+  "schema": "gogoke.37.light-checkpoint.v1",
+  "state": "FULL_LIBRARY_TWO_FIXTURE_ERRORS_CORRECTED_CLOUD_RERUN_NEXT",
+  "changes": "Seat configuration test now parses the JSON object and checks only the top-level reasoningEffort alias; the nested orchestrationScope.reasoningEfforts list remains preserved. Session predicate fixture inserts only columns actually present in the verified seat_settings schema. Production code/schema/H blocker predicate unchanged.",
+  "results": "129e94e7 native37628898381 completed the original749 library tests across four independent runners:747 passed,2 failed,0 ignored. Runtime/login/session passed; remainder700 passed2failed47filtered; aggregate failed correctly. No full-library PASS claim. Existing test bodies and negative H blocker assertions retained.",
+  "failureOriginal": [
+    "assertion failed: !settings.contains(\"reasoningEffort\")",
+    "SqliteExec code1: table main.gogoke_v37_seat_settings has no column named incarnation"
+  ],
+  "references": "Direct original cloud log and production Parser/settings map, E2_SETTINGS nested reasoningEfforts and actual seat SETTINGS schema. Independent Luna read-only source diagnosis confirmed old/unprojected H claims must remain blockers until RELEASED; fixture correction does not mint StopFact or authorize release.",
+  "next": "Push the bounded fixture changes and rerun existing full_library_only cloud partitions. PR74 remains exact9215819d; wait for both Windows builds, then mark Ready and notify Owner. No authorization integration before Owner merge/readback."
+}

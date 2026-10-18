@@ -1,0 +1,96 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "state": "FROZEN_OWNER_REQUEST",
+  "owner_instruction": "先收一下",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "last_cloud_source": "9bed95c3b7786933f1d5da5ca0a8df711e1133b8",
+  "authorization_main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
+  "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
+  "authorization_receipt_blob": "8020812e3abf35887829f50c78ec9f513272bf70",
+  "inbox_observed": "b4f7e866029b8c5a9a1211100effadf01a03ffbc",
+  "scope": "Existing PR #56 all-line/all-milestone authorization remains valid. The unnecessary composition reauthorization request was withdrawn in 4a792ed1; this freeze is solely the Owner stop, not another scope or acceptance gate.",
+  "committed_progress": [
+    "9bed95c3 connects Owner-private worktree-source configuration and logical-ID-only User K-WORKTREE create to actual native Git custody.",
+    "Registered Git digest is checked on the same held file before any version subprocess; old source records remain readable through an exact previous-schema migration adding only the native programs table; absent path registration refuses execution.",
+    "Product-entry cloud controls cover actual configure/close/reopen/create, wrong domain/seat, replay/conflict, UNKNOWN without new custody, old schema and changed Git bytes without prepare.",
+    "Two compatibility fixtures use the actual RootLock canonical paths; native Git target/cwd use its supported local DOS spelling without changing physical identity checks.",
+    "LPAC rename/delete test now includes actual exit/file outcomes and stderr; no guessed permission change."
+  ],
+  "ci_at_freeze": {
+    "native": {
+      "run_id": 36665984324,
+      "source": "9bed95c3b7786933f1d5da5ca0a8df711e1133b8",
+      "state": "IN_PROGRESS_LIBRARY_TESTS",
+      "server_job": "PASS",
+      "limit": "No final native counts or four-failure resolution claim until machine evidence is read back."
+    },
+    "desktop": {
+      "run_id": 36665986789,
+      "source": "9bed95c3b7786933f1d5da5ca0a8df711e1133b8",
+      "state": "IN_PROGRESS_FROZEN_AND_REPRO_BUILDS",
+      "browser_and_notices": "PASS"
+    },
+    "hygiene": { "run_id": 36665988994, "state": "PASS" },
+    "policy": "Already-dispatched read-only cloud evidence runs may finish; no new CI run dispatched for the frozen WIP. Results must remain bound to their actual source, not the freeze commit."
+  },
+  "frozen_wip": [
+    {
+      "path": "apps/desktop/native-host/src/store/session_transport/codex_rpc.rs",
+      "owner": "f_native_worktree_core",
+      "sha256": "c6317950c72f171a65256b15ea3015a78d8c17db63fe37d5549dde330313250c",
+      "change": "Fixed 0.149 JSONL codec, exact request correlation, effective memory-off readback, thread/turn commands, notifications/questions and original remote errors. Registered in mod.rs, tests not yet compiled/executed."
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/session_transport/launch.rs",
+      "owner": "CONTROLLER",
+      "sha256": "1185fc9e9cced3ec1f6532ca07c7b5c7b8f249d5f08fbbe832894bfefce2b6ec",
+      "change": "Sealed current E/H/Owner snapshot plus F homes/worktree/.git guard, exact ACL/profile/program, three handle-bound mapping roots and explicit memory-off/session-local SQLite/log configuration. Not called by Product open yet."
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/session_transport/mod.rs",
+      "owner": "CONTROLLER",
+      "sha256": "e16c0420c48e13b24b1a0fa5cedf8338ccc1b91d8fc659300bd39349d40e8200",
+      "change": "Registers the two native H modules."
+    },
+    {
+      "path": "apps/desktop/native-host/src/store/product_database/v37_login.rs",
+      "owner": "CONTROLLER",
+      "sha256": "9db8c9822b565f3403887843a6a920c4014cd64ca9140a0f1f32abbcdca7a55d",
+      "change": "Uses new codec on actual native CLI initialization/config read before account observation; preserves actual RPC error response tail. Behavior changed and cloud NOT_RUN for these bytes."
+    }
+  ],
+  "wip_validation": "Rustfmt parser-only check passed on the three source files before the final removal of the false historical-instance comparison; git diff --check passed. No local native compile/test. No cloud run for frozen WIP.",
+  "publication_hygiene": "Each of the five pending publication files was scanned directly from its actual working bytes with --file: zero leaks. The attempted --worktree scan included ignored dependency directories and encountered long-path warnings; it was interrupted and is not a PASS or product finding. Committed-source scan is required before push.",
+  "reviews": {
+    "git_restore_schema": "Reused independent seat, static/SQLite focused review on exact 9bed95c3: no remaining confirmed issue; NON_FRESH_NOT_ACCEPTANCE.",
+    "launch_architecture": "Reused read-only specialist identified a creation-provenance/current-instance comparison error; Controller removed it. Product wiring must retain full launch evidence through confirmed durable stop, including failed/UNKNOWN custody branches. NON_FRESH_NOT_ACCEPTANCE."
+  },
+  "remaining": [
+    "Read completed 9bed95c3 native machine evidence and original LPAC stderr; fix measured failures under current authorization.",
+    "Compile and execute frozen codec/effective-memory-readback/launch WIP in cloud; syntax formatting is not compile or behavior evidence.",
+    "Product K-SESSION open still Unsupported and bare-tier launch permission still refused. Wire a complete real open/send/output/stop/recovery path; keep full F pointer/root evidence through durable stop.",
+    "Keep v37 original-operation journal separate from actual Codex JSON-RPC wire. Add same-DB RPC-substep/raw-frame correlation; never expect Codex to return a v37 receipt or fabricate OriginBoundFrame.",
+    "Connect actual native H transport with A raw capture, B1 normalization and C questions; do not substitute Node probe transport or model assertions.",
+    "PR #57 trusted-main candidate-chain activation remains pending Owner merge; no edit authorization is inferred to authorize main merge.",
+    "Prepare exact installed Win11 candidate and OT4 login handoff when ready; M1 not complete and OT4 not requested."
+  ],
+  "custody": {
+    "agents": "All three reused agents completed; no child writer remains active.",
+    "untracked_retained": [
+      "apps/desktop/native-host/src/process/session/compat/detours-extract/",
+      "apps/desktop/native-host/src/process/session/compat/detours-source.zip"
+    ],
+    "reason": "159 previously automatic-approval-rejected cleanup objects; preserved with no deletion retry or workaround.",
+    "diagnostic_worktree": "Root-owned .controller-worktrees/cli-state-trace retained at 61b8465b for direct-error provenance; not the candidate.",
+    "prior_patch": "%LOCALAPPDATA%/gogoke-audit/pending-user-worktree-ingress-b4085f9c.patch retained; its former four-file WIP is now incorporated in 9bed95c3."
+  },
+  "formal_product_data": "NOT_ACCESSED_OR_CHANGED_BY_THIS_CLOUD_ONLY_SEGMENT",
+  "m1_complete": false,
+  "ot4": "NOT_REQUESTED",
+  "main_changed": false,
+  "public_release": false,
+  "acceptance": false,
+  "next_action": "Wait for Owner resume. Then read exact branch/authorization/inbox and finished source-bound CI evidence before continuing the listed native composition work.",
+  "roundtrip_review": "One cloud batch now carries real product-entry, schema and byte-pin controls. Fixed wire and actual CLI configuration are reused rather than guessed from a surrogate. Preserve protocol separation and attach all required native evidence to the real custody before claiming a runnable session."
+}

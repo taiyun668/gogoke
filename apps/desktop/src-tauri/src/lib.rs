@@ -268,6 +268,7 @@ pub fn run() {
             }
         })
         .setup(move |app| {
+            codex::initialize_native_visible_app(app.handle());
             let state = state::AppState::load(&app.handle());
             app.manage(state);
             #[cfg(target_os = "windows")]
@@ -351,6 +352,13 @@ pub fn run() {
             gogoke_update::gogoke_update_signal_ready,
             gogoke_update::gogoke_update_take_failure,
             public_runtime::product_entry::gogoke_r2_goal_probe,
+            public_runtime::product_entry::gogoke_design37_register_codex_instance,
+            public_runtime::product_entry::gogoke_design37_user_operation,
+            public_runtime::product_entry::gogoke_design37_install_cli,
+            public_runtime::design37_instances::gogoke_design37_instances,
+            public_runtime::design37_instances::gogoke_design37_instance_register,
+            public_runtime::design37_instances::gogoke_design37_instance_login,
+            public_runtime::design37_instances::gogoke_design37_instance_cancel,
             files::file_read,
             files::file_write,
             files::read_image_as_data_url,
@@ -377,11 +385,14 @@ pub fn run() {
             workspaces::update_workspace_settings,
             workspaces::set_workspace_runtime_codex_args,
             codex::start_thread,
+            codex::native_visible_transport,
             codex::send_user_message,
             codex::turn_steer,
             codex::turn_interrupt,
             codex::start_review,
             codex::respond_to_server_request,
+            codex::recover_native_visible_request,
+            codex::stop_native_visible_session,
             codex::remember_approval_rule,
             codex::generate_commit_message,
             codex::generate_run_metadata,

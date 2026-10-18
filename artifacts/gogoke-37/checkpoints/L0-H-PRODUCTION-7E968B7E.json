@@ -1,0 +1,66 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "checkpoint": "L0-H-PRODUCTION-7E968B7E",
+  "recorded_utc": "2026-09-29T20:46:42.170538+00:00",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "state": "L0_M1_IN_PROGRESS_NOT_ACCEPTED",
+  "source_commit": "7e968b7e74c51a8b0cb1085ca20899ee30aba464",
+  "authorization": {
+    "owner_merged_pr": 56,
+    "main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
+    "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
+    "receipt_blob": "8020812e3abf35887829f50c78ec9f513272bf70",
+    "readback": "MATCH"
+  },
+  "inbox": {
+    "head": "b4f7e866029b8c5a9a1211100effadf01a03ffbc",
+    "result": "UNCHANGED"
+  },
+  "implemented": [
+    "Owner-only project and instance caps with missing-value denial",
+    "Same verified connection and one H admission transaction with seat BUSY transition and exact seat incarnation/generation binding",
+    "Production LPAC registryRead and unqualified seat pipe, exact peer SID/handle and restricted pipe DACL",
+    "Native User seat operations and home preparation, exact previous-schema migration"
+  ],
+  "cloud": {
+    "run_id": 36627401775,
+    "source": "7e968b7e74c51a8b0cb1085ca20899ee30aba464",
+    "conclusion": "SUCCESS",
+    "native_library": {
+      "passed": 501,
+      "failed": 0,
+      "ignored": 0
+    },
+    "required_process_axes": "PASS",
+    "focused_failure_probes": "PASS",
+    "server_tests": "PASS"
+  },
+  "prior_failure": {
+    "run_id": 36626967613,
+    "source": "2db881e4",
+    "direct_cause": "BEGIN IMMEDIATE SameOpenError was not convertible to OrchestrationError by question mark; preserve it through AtomicError conversion",
+    "fix": "7e968b7e"
+  },
+  "owner_ot3": {
+    "project_parallel_cap": 4,
+    "codex_test_instance_concurrency_cap": 4,
+    "schema_and_native_write_path": "IMPLEMENTED",
+    "real_product_values": "NOT_YET_WRITTEN"
+  },
+  "threat_model": "A seat is untrusted and has only its native LPAC token, precise instance/session scope and allowed workspace. Admission and host authority must verify current Owner or live exact Job peer and seat incarnation/generation. Unrestricted processes already holding the same user rights are not treated as a cross-privilege attacker. No security setting changes are authorized.",
+  "work_in_progress": [
+    "Drain exact child stderr and retain tail on protocol failures; cloud verification pending",
+    "F.1 fixed pinned CLI account/read and Owner device-login path; not yet installed or run",
+    "Instance/session ACL witnesses and installed Owner UI action; implementation pending"
+  ],
+  "non_claims": {
+    "real_codex_seat": "NOT_RUN",
+    "owner_win11": "NOT_RUN",
+    "ot4_login": "NOT_REQUESTED",
+    "m1": "NOT_COMPLETE",
+    "formal_data_touched": false,
+    "self_acceptance": false
+  },
+  "next": "Continue login and native launch product paths and cloud verification, prepare the genuine installed test instance, then request OT4 only when Owner input is actually required. This checkpoint does not end construction."
+}

@@ -1,0 +1,23 @@
+{
+  "schema": "gogoke.37.light-checkpoint.v1",
+  "acceptance": false,
+  "changed": [
+    "已真实释放两个历史未启动的 COMMITTED provider 请求；原失败保留，没有新增 STOPPED 或停止证明。两次 admission-release 均 APPLIED，席位读回 IDLE，候选正常退出 0。",
+    "Claude、OpenCode、Grok 测试实例的持久并发上限仍为 4。未来新测试实例创建显式填写 4；缺持久值仍拒绝。真实使用实例由 Owner 在实例页设置。",
+    "用已安装 0.1.31 分别运行 OpenCode 与 Grok 原实例，保留真实失败；未新增登录、修改固定 CLI、扩大 LPAC 权限或读取凭据内容。"
+  ],
+  "result": [
+    "缓存目录清理修复源 9c734c26 的云端原生库 720 passed、0 failed、0 skipped；生产 LPAC 路径测试 2 passed。full_library_only 跳过的独立 axes、focused、server 和 mutation 不算通过。新字节尚未安装实测。",
+    "OpenCode 在真实 ACP 初始化时退出；原 stderr 是盘根 lstat EPERM，随后协议管道 Windows error 232。真实 H stop、StopFact、准入释放和正常关闭退出 0 完成，正式版五组快照不变。",
+    "Grok 在模型进程创建前，grant-model-home 的 auth.json ACL 见证失败。普通视图元数据证明 F 注册 HOME 身份一致、父目录存在该 SID 可继承 ACE，而 auth.json 的 DACL 受保护且没有该 SID ACE。没有证据指认是谁设置保护位。该未启动请求真实释放、席位 IDLE、候选正常退出 0；正式版五组快照不变。",
+    "主施工源 b4f37c2c 的 0.1.32 构建及 c14eaf7c 的原生资格检查仍在运行；尚未签名、安装或发布。main verifier 重算 main 与候选 PLAN 数据的范围摘要，均与当前 v2 回执一致。",
+    "快照精简版在普通视图与原完整快照核对五组保护对象一致；只减少非保护组扫描，不以一次耗时外推速度改善。V08 新两席位准入与 H open 已完成，真实规则调用仍在进行，尚未正常关闭最终读回。"
+  ],
+  "next": [
+    "重新运行 V08，按真实 H stop 和准入释放结算后读回；阶段内继续云端检查。",
+    "Grok 同一个 F 私有 HOME 原本已授权可写和 DELETE。独立复核确认可做域内定界施工；已经派发独占 H/F 工人实现动态 auth FileID、精确 SID ACL 意图与真实撤销，Root 保留共享数据库接线。旧 Codex alias 链、普通树验证和并发上限 4 不改；固定 CLI 刷新行为仍须同字节实测。",
+    "OpenCode 所需的根外真实元数据读取超出现有隔离目录范围。已提交 Owner 边界问题；在裁决前保持 B3 失败原件，不改 CLI、系统 ACL、系统能力或提权。"
+  ],
+  "references": "参照：原 provider E2E journals、原 H/F immutable readback、现有 release_unstarted_owner_commit 原生交易、既有 WINDOWS_PERMISSION_BOUNDARY_DECISION、Codex 路径拼写兼容层与 F CredentialBinding 生命周期；查过 gogo-party、NaveHQ、LoomOS 和仓库调研，未发现可直接复用的 Bun 根元数据桥。官方 OpenCode/Bun 源码说明 realpath 首先 lstat 盘根；Windows ACL 继承文档与原对象 DACL 元数据解释 Grok 失败。采用现有真实释放和精确身份原语；不把 Codex 专用 alias 链直接套到 Grok，也不把路径拼写修正等同新增对象读取权限。",
+  "path_reflection": "先读取原错误及对象元数据，一次核对路径、身份、ACL 和真实生命周期，避免扩大 HOME 授权或反复要求登录。未完成的模型端到端和未安装字节均保持未运行。"
+}

@@ -1,0 +1,58 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "checkpoint": "L0-M1-DIRECT-PROCESS-E5E8C113",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "state": "L0_M1_IN_PROGRESS_NOT_ACCEPTED",
+  "authorization": {
+    "owner_merged_pr": 53,
+    "authorized_origin_main": "e2f0c57853b1fca6bc4d6dcbca0185b57baf452f",
+    "manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d"
+  },
+  "direct_evidence": {
+    "native_run_36576029492": {
+      "head": "9b35de87",
+      "result": "465 passed, 1 failed, 0 ignored",
+      "lpac": "Parent read and opened the helper with execute access. Rust Command::spawn returned Windows error 5 before the seat pipe was reached. The raw Windows creation API had not yet been measured."
+    },
+    "native_run_36577103110": {
+      "head": "66bd30d9",
+      "result": "466 passed, 1 failed, 0 ignored",
+      "lpac": "Rust Command::spawn returned Windows error 5 for both the helper and a signed System32 child."
+    },
+    "native_run_36578049066": {
+      "head": "bbeb80af",
+      "result": "466 passed, 1 failed, 0 ignored",
+      "lpac": "Direct CreateProcessW of the signed System32 child returned Windows error 5. This places that control's failure at the Windows API, not merely the Rust process wrapper."
+    },
+    "native_run_36579223725": {
+      "head": "e5e8c113",
+      "result": "466 passed, 1 failed, 0 ignored",
+      "lpac": "Effective ProcessChildProcessPolicy flags were 0x0. The direct CreateProcessW call still returned Windows error 5. No child process policy or system security setting was changed."
+    },
+    "hygiene_run_36579231248": {
+      "head": "e5e8c113",
+      "result": "PASS"
+    },
+    "desktop_run_36579231257": {
+      "head": "e5e8c113",
+      "state_at_checkpoint": "IN_PROGRESS",
+      "purpose": "Build and execute the actual Tauri-owned host plus Node reconnect composition test on cloud Windows."
+    }
+  },
+  "implementation": {
+    "product_entry": "Tauri now retains the Design37 host and verified resource generation; subsequent Node readiness/service connections use only Tauri-supplied stdin coordinates for that host. A generation mismatch fails closed. The cloud composition test is pending; active-host resource update lifecycle is not yet complete.",
+    "instance": "The native catalog now has an internal pinned-path resolver which compares the current installed Codex bytes and package identity to the durable pin. Launch must still recheck the actual image under process custody. Native User read views are under construction.",
+    "b1": "Pinned Codex 0.149.0 was probed without a model turn in an isolated home. account/read with an empty request returned account null and requiresOpenaiAuth true in that fresh home; target-instance login and credential validity remain untested.",
+    "h_and_ledger": "Session transport has fail-closed permission guards and custody primitives, but no complete real seat launch, raw-output ledger capture, or trusted restart reconciliation. An independent read-only architecture pass identified these direct gaps."
+  },
+  "verification": {
+    "real_codex_seat": "NOT_RUN",
+    "ot4_login": "NOT_REQUESTED",
+    "m1": "NOT_COMPLETE",
+    "m2": "NOT_RUN",
+    "m3": "NOT_RUN",
+    "formal_data_touched": false
+  },
+  "next": "Finish the exact-target LPAC CreateProcess comparison, read the desktop composition result and repair any cloud failure, then connect native User instance/session operations, real launch and output custody. Checkpoint only: construction continues."
+}

@@ -1,0 +1,65 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "checkpoint": "L0-M1-CHANNEL-07837031",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "source_head_before_checkpoint": "07837031",
+  "state": "L0_CHANNEL_AND_SOURCE_LEDGER_REPAIR_IN_PROGRESS_M1_NOT_RUN",
+  "authorization": {
+    "owner_merged_pr": 53,
+    "authorized_origin_main": "e2f0c57853b1fca6bc4d6dcbca0185b57baf452f",
+    "manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d",
+    "owner_ot3": "Private taiyun668/gogoke-seat-testbed exists; test seats may write only that repository from host-created isolated worktrees; Controller uses GPT-6 Sol high with at most three subordinate seats and no downstream delegation"
+  },
+  "direct_evidence": {
+    "run_36569041419": {
+      "head": "44cb5d46",
+      "server": "PASS",
+      "native_release": "PASS",
+      "native_lib": "450_PASS_1_FAIL_0_SKIP",
+      "lpac_failure": "The captured cmd output was Access is denied; the helper did not reach its seat pipe open. The missing client diagnostic file is not a pipe error."
+    },
+    "run_36570131957": {
+      "head": "a127220c",
+      "server_and_native": "FAIL",
+      "root_cause": "Rust E0502 in the new persistent protocol reader; corrected in following commit 2537a575"
+    },
+    "run_36570559058": {
+      "head": "8fd3285f",
+      "server_and_native": "FAIL",
+      "root_cause": "Cloud Windows SDK linker could not open KernelBase.lib. Process-object comparison remains required and is now resolved dynamically from the documented DLL, failing closed if absent."
+    },
+    "run_36571533479": {
+      "head": "d0982878",
+      "server": "PASS",
+      "native_release": "PASS",
+      "native_axes": "b07_PASS_host_typed_ops_0_PASS_2_FAIL",
+      "native_lib": "454_PASS_2_FAIL_0_SKIP",
+      "failures": [
+        "LPAC cmd still reported Access is denied before the copied helper ran; file recreation alone did not establish the cause. The next run distinguishes whether another cmd descendant can run.",
+        "Ledger source gap negative test exposed that the existing-stream error text did not distinguish a gap from duplicate/rewind; typed distinction was corrected.",
+        "Both real host integration tests read a reply header then received Windows error 233 while reading the body. The next test run reports the exact request call site and length before product repair."
+      ]
+    },
+    "run_36572683209": {
+      "head": "07837031",
+      "state_at_checkpoint": "IN_PROGRESS"
+    }
+  },
+  "implementation": {
+    "user_origin": "Tauri-owned host and dedicated User pipe now compare retained live process objects in both directions; actual installed-product invocation remains unwired and unverified.",
+    "service_lifetime": "Native desktop mode separates User and service channels on one verified database executor; real reconnect test is currently failing and remains under repair.",
+    "ledger": "A.1 source stream duplicate/gap state and atomic SQLite trigger added; cloud negative test correction pending.",
+    "persistent_stdio": "Native bounded multi-frame Job-owned transport added; cloud full-gate validation pending.",
+    "b1": "Codex 0.149.0 TypeScript session adapter committed at 0ef353ca; focused signed-Node tests 16/16 pass, actual CLI transport and Win11 tests NOT_RUN.",
+    "testbed": "Private repository identity was read back; seat write confinement and actual project operation NOT_RUN."
+  },
+  "verification": {
+    "real_codex_seat": "NOT_RUN",
+    "ot4_login": "NOT_REQUESTED",
+    "m1_acceptance": "NOT_RUN",
+    "m2": "NOT_RUN",
+    "m3": "NOT_RUN"
+  },
+  "next": "Read exact-head cloud output for the reply call site, LPAC child-launch control, and ledger negative test; repair failures without weakening process identity. Wire an actual User operation, Node existing-host product entry, H transport, and Codex adapter, then prepare the isolated Codex instance before OT4. This checkpoint is a record, not a stop or acceptance."
+}

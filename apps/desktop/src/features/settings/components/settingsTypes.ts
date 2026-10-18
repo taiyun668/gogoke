@@ -12,6 +12,7 @@ export const SETTINGS_SECTION_IDS = [
   "git",
   "server",
   "agents",
+  "instances",
 ] as const;
 
 export const SETTINGS_EXTRA_SECTION_IDS = ["codex", "features"] as const;

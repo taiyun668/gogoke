@@ -1,0 +1,29 @@
+{
+  "schema": "gogoke.37.checkpoint.v1",
+  "state": "ACTUAL_WEBVIEW_CONNECT_PROVEN_M1_MODEL_FLOW_PENDING",
+  "changed": [
+    "按 Owner 即刻决定，以真实 Win11 端到端和 CLI 协议录制为主；新增 tools/e2e 开发包，不进入产品。固定 e2e 0.16.0、@e2e-dev/web 0.11.2，关闭遥测、安装脚本和浏览器下载，不使用 agent.act、模型或新登录。",
+    "固化真实候选注册/字节/启动回执/PID/端口归属、原 WebView 连接、User 请求持久记录、正常标题栏关闭与重启、两逻辑会话、问题/插话/工具/compact/renew/resume/账本读回。终态核对实际 threadId、turnId 和 completed；本次运行记录驱动字节。",
+    "保留精确对象/DACL 安全验证；撤生产 grant 的编译变异继续运行。删除非等价 Rust 父进程的辅助程序协议夹具，实际辅助程序执行由安装后的固定 CLI 裁决。"
+  ],
+  "results": {
+    "connect_trial": "真实已安装 0.1.19 原 WebView，经 e2e 公开 connect 接口连接；硬定位和真实宿主实例状态通过，原标题栏退出 0，正式保护五字段经独立比较无变化。没有模型调用、登录或 agent.act。旧 readiness 路径测量错误未到库调用，原文保留。该试验不证明后来修改的驱动字节已受测。",
+    "driver_review": "独立只读复核发现 normalized terminal 缺 threadId/成功状态约束，已补齐；STOPPED 会话在 admission 未释放时仍可读取账本，先前相反前提已核对纠正。脚本语法通过，真实 M1 流程尚未执行。",
+    "frozen_020": "f52cc0a9080f0354b988af52e34c91f285dfca3d，desktop dispatch 37110617239 全五 job 通过；main 签名 dispatch 37113468630 通过，artifact 11270811794 已核下载摘要、用途签名和七个冻结成员一致；同字节安装 smoke 37113551550 已通过。普通视图原 0.1.19 正常卸载完成、原 root/home 保全、正式五字段无变化；0.1.20 尚未安装。",
+    "cloud_pending": "native dispatch 37110615512 剩余安全门禁仍运行；未完成项不计通过。",
+    "g4": "两个已结束连接试验任务，经独立审计确切 action/脚本字节/当前 SID/Interactive/Limited/过去单次触发/无相关进程后，Controller 精确删除并逐项回读 ABSENT。旧候选卸载后，独立审计确切清单 d4bb980c107bd7b4b3ea6efdd12d2c8c39952dee9a857279310f99782ca07877 的 1114 个普通目录、文件0、身份/路径/重解析/额外项不符0；Controller 从深到浅即时核身份与空目录，1114 项全部回读 ABSENT，文件删除0。原脚本、失败和成功证据保留。"
+  },
+  "decision": "这是 Owner 已授权的真实产品端到端开发依赖和 H.1 固定组件缺口修复，不改 CLI、模型 LPAC、目录或能力范围；无需新增 Owner 触点。原实例 home 与凭据沿用，当前仅只读登录状态。",
+  "参照": [
+    "先查既有 gogo-party 实例 home/status 与席位进程保管；本仓已验证的普通视图实际产品 launcher、端口归属、User batch、output drain、正常关闭、正式/内存快照直接复用。NaveHQ/LoomOS 未找到本候选 WebView2 自动化现成包。",
+    "查 docs/research/reuse-blueprint.md 与源拆解的真实协议建议，采用实际 RPC/raw/normalized ledger 的只读录制；方向内顺序与实际关联保留，不虚构两方向时序，不把失败录制称成功黄金样本。",
+    "按 Owner 指定试用 tester-army/e2e 官方仓库、browser.mdx 与公开 engine/surface 契约，采用 persistent CDP 原 context，不开替代页面。当前可用，暂不回退自写 raw CDP；raw CDP 只做原页面身份 bootstrap。",
+    "核固定 Codex 0.160.0 上游 release：Rust 1.95.0 的子管道实现与旧 Rust 1.85.1 夹具不同。旧夹具原 Windows5 不能作为固定 CLI 执行结论，故简化仪器并回到真实安装对象。"
+  ],
+  "next": [
+    "云端剩余检查完成后，装同字节 0.1.20，继续保全原数据、实例 home 与正式版；旧候选退休与已审计空目录清理已并行完成。",
+    "沿原 codexTestM1 跑真实端到端，正常关闭后核直接账本并录固定 CLI 黄金样本；完成与失败均保存原文，不隐式重复写请求。",
+    "完成 M1 必要本体证据后汇报，不自行验收。"
+  ],
+  "acceptance": false
+}

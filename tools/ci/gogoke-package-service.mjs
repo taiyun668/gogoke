@@ -548,7 +548,51 @@ async function smokeTauri(installed, request, negativeComponent = null, candidat
   let spawnError, exited = false, socket;
   child.once('error', (error) => { spawnError = error; });
   child.once('exit', () => { exited = true; });
+  let phase = 'webview-startup';
+  let primaryPhase = null;
+  let primaryError = null;
+  let cleanupError = null;
+  let smokeResult;
+  let cleanupResult = null;
+  const diagnosticSecrets = [process.env.GITHUB_TOKEN, process.env.GH_TOKEN, repo, os.tmpdir(), process.env.RUNNER_TEMP,
+    process.env.GITHUB_WORKSPACE, process.env.USERPROFILE, process.env.TEMP, process.env.TMP, installed, root, other].filter(Boolean);
+  const redactDiagnostic = (value, limit = 6000) => {
+    let text = String(value ?? '');
+    for (const secret of diagnosticSecrets) text = text.replaceAll(secret, '[redacted]');
+    return text.replace(/(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]+/gi, '[redacted-token]')
+      .replace(/Bearer\s+\S+/gi, 'Bearer [redacted-token]').slice(0, limit);
+  };
+  const describeError = (error) => {
+    if (!error) return null;
+    return {
+      name: redactDiagnostic(error.name ?? 'Error', 128),
+      message: redactDiagnostic(error.message ?? error),
+      code: error.code == null ? null : redactDiagnostic(error.code, 128),
+      syscall: error.syscall == null ? null : redactDiagnostic(error.syscall, 256),
+      path: error.path == null ? null : redactDiagnostic(error.path, 1024),
+      stack: error.stack == null ? null : redactDiagnostic(error.stack),
+    };
+  };
+  const diagnosticFailure = () => {
+    const error = new Error(primaryError?.message ?? cleanupError?.message ?? 'installed smoke failed');
+    error.smokeDiagnostic = {
+      phase: primaryPhase ?? phase,
+      cleanupPhase: cleanupError ? phase : null,
+      primaryError: describeError(primaryError),
+      cleanupError: describeError(cleanupError),
+      child: {
+        pid: child.pid ?? null,
+        exited,
+        exitCode: child.exitCode ?? null,
+        signalCode: child.signalCode ?? null,
+        spawnError: describeError(spawnError),
+        cleanup: cleanupResult,
+      },
+    };
+    return error;
+  };
   try {
+    try {
     const deadline = Date.now() + 45000;
     let target;
     while (Date.now() < deadline && !target) {
@@ -566,6 +610,7 @@ async function smokeTauri(installed, request, negativeComponent = null, candidat
       if (!target) await delay(250);
     }
     if (!target) throw new Error('installed Tauri WebView target unavailable');
+    phase = 'webview-debugger-connect';
     const endpoint = new URL(target.webSocketDebuggerUrl);
     if (!['127.0.0.1', 'localhost'].includes(endpoint.hostname) || Number(endpoint.port) !== port || endpoint.protocol !== 'ws:') throw new Error('unexpected WebView debugger endpoint');
     socket = new WebSocket(endpoint);
@@ -592,6 +637,7 @@ async function smokeTauri(installed, request, negativeComponent = null, candidat
       socket.addEventListener('message', onMessage); socket.addEventListener('close', onClose);
       socket.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, returnByValue: true, awaitPromise: true } }));
     });
+    phase = 'product-readiness';
     let ready = false;
     while (Date.now() < deadline && !ready) {
       ready = await evaluate('Boolean(window.__TAURI_INTERNALS__ && document.querySelector(".home-product-entry"))');
@@ -599,6 +645,7 @@ async function smokeTauri(installed, request, negativeComponent = null, candidat
     }
     if (!ready) throw new Error('installed Home product entry did not render');
     if (negativeComponent) {
+      phase = 'negative-component-invokes';
       const expected = negativeComponent === 'node' ? 'GOGOKE_PRODUCT_COMPONENT_MISSING:node-runtime'
         : negativeComponent === 'native-host' ? 'GOGOKE_PRODUCT_COMPONENT_MISSING:native-host'
         : 'GOGOKE_PRODUCT_SERVICE_FAILED:1';
@@ -614,6 +661,7 @@ async function smokeTauri(installed, request, negativeComponent = null, candidat
         nodeOptionsCanary: 'NOT_EXECUTED', appSha256: digest(path.join(installed, 'gogoke.exe')) };
     }
     const readyDeadline = Date.now() + 30000;
+    phase = 'update-readiness';
     while (!fs.existsSync(updateReceipt) && Date.now() < readyDeadline) await delay(100);
     const expectedVersion = candidate?.version ?? JSON.parse(fs.readFileSync(path.join(desktop, 'package.json'), 'utf8')).version;
     if (!fs.existsSync(updateReceipt)) {
@@ -636,6 +684,7 @@ async function smokeTauri(installed, request, negativeComponent = null, candidat
       throw new Error('installed product did not publish version-bound readiness after native Controller admission');
     }
     if (fs.existsSync(canaryMarker)) throw new Error('Tauri-launched Node executed injected NODE_OPTIONS preload');
+    phase = 'positive-product-invoke';
     const response = await evaluate(`window.__TAURI_INTERNALS__.invoke('gogoke_r2_goal_probe', {request:${JSON.stringify(request)}})`);
     assertSmokeResponse(response, request);
     if (fs.existsSync(canaryMarker)) throw new Error('installed product request executed injected NODE_OPTIONS preload');
@@ -666,7 +715,7 @@ async function smokeTauri(installed, request, negativeComponent = null, candidat
       if (fs.existsSync(marker) || fs.existsSync(updateReceipt) || fs.existsSync(canaryMarker)) {
         throw new Error('poisoned installed candidate executed sentinel, published readiness, or ran NODE_OPTIONS');
       }
-      return { schema: 'gogoke.r2-06-candidate-service-smoke.v1', state: 'PASS',
+      smokeResult = { schema: 'gogoke.r2-06-candidate-service-smoke.v1', state: 'PASS',
         platform: 'WINDOWS_CLOUD_NOT_OWNER_WIN11', sourceCommit: candidate.sourceCommit,
         generationId: candidate.generationId, smokeRunId: process.env.GITHUB_RUN_ID,
         smokeRunAttempt: process.env.GITHUB_RUN_ATTEMPT,
@@ -677,6 +726,7 @@ async function smokeTauri(installed, request, negativeComponent = null, candidat
         negative: { invocation: 'gogoke_r2_goal_probe', rejection,
           poisonPath: 'gogoke-service/generations/node_modules/@ff-labs/fff-node',
           poisonExecuted: false, readinessReceipt: 'ABSENT', adoption: false } };
+      return smokeResult;
     }
     const installedSmoke = { state: 'PASS', platform: 'WINDOWS_CLOUD_NOT_OWNER_WIN11',
       runId: process.env.GITHUB_RUN_ID, sourceSha: process.env.GITHUB_SHA,
@@ -685,12 +735,27 @@ async function smokeTauri(installed, request, negativeComponent = null, candidat
       updateReadiness: 'INSTALLED_SERVICE_NATIVE_CONTROLLER_ADMITTED', nodeOptionsCanary: 'NOT_EXECUTED',
       appSha256: digest(path.join(installed, 'gogoke.exe')), adoption: false, release: false };
     console.log('PASS installed Tauri Home and product invoke');
-    return installedSmoke;
+    smokeResult = installedSmoke;
+    return smokeResult;
+    } catch (error) {
+      primaryError = error;
+      primaryPhase = phase;
+    }
   } finally {
+    phase = 'child-and-temporary-state-cleanup';
+    try {
     socket?.close();
     if (!exited && child.pid) {
       const killed = spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { encoding: 'utf8', timeout: 10000, windowsHide: true });
-      if (killed.error) throw new Error('owned cloud smoke process cleanup unknown; temp retained');
+      cleanupResult = {
+        attempted: true,
+        status: killed.status ?? null,
+        signal: killed.signal ?? null,
+        error: describeError(killed.error),
+        stdout: redactDiagnostic(String(killed.stdout ?? '').slice(-1000), 1000),
+        stderr: redactDiagnostic(String(killed.stderr ?? '').slice(-1000), 1000),
+      };
+      if (killed.error) throw killed.error;
       for (let i = 0; i < 20 && !exited; i += 1) await delay(250);
     }
     if (!exited && !spawnError) throw new Error('owned cloud smoke process exit unconfirmed; temp retained');
@@ -712,7 +777,13 @@ async function smokeTauri(installed, request, negativeComponent = null, candidat
     const resolved = fs.realpathSync(temp);
     if (!within(fs.realpathSync(os.tmpdir()), resolved) || !path.basename(resolved).startsWith('gogoke-ui-smoke-')) throw new Error('unsafe cloud smoke temp cleanup');
     fs.rmSync(resolved, { recursive: true, force: true });
+    } catch (error) {
+      cleanupError = error;
+    }
+    if (cleanupError) throw diagnosticFailure();
   }
+  if (primaryError) throw diagnosticFailure();
+  return smokeResult;
 }
 
 function assertSmokeResponse(response, request) {
@@ -805,13 +876,33 @@ if (mode === 'stage') {
  } else throw new Error('usage: stage <service-dir> <node-license> | seal | verify <installed-dir> <manifest> | smoke <installed-dir> | smoke-negative <installed-dir> | candidate-installed-service <installed-dir> <generation-id> <source-commit> <version> <evidence-file> | record-smoke <positive-receipt> [negative-receipt]');
 } catch (error) {
   let message = String(error?.message ?? error);
-  for (const value of [process.env.GITHUB_TOKEN, process.env.GH_TOKEN, repo, os.tmpdir(), process.env.RUNNER_TEMP, root, other]) {
+  const privateValues = [process.env.GITHUB_TOKEN, process.env.GH_TOKEN, repo, os.tmpdir(), process.env.RUNNER_TEMP,
+    process.env.GITHUB_WORKSPACE, process.env.USERPROFILE, process.env.TEMP, process.env.TMP, root, other].filter(Boolean);
+  const redactFailureText = (value, limit = 6000) => {
+    let text = String(value ?? '');
+    for (const privateValue of privateValues) text = text.replaceAll(privateValue, '[redacted]');
+    return text.replace(/(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]+/gi, '[redacted-token]')
+      .replace(/Bearer\s+\S+/gi, 'Bearer [redacted-token]').slice(0, limit);
+  };
+  for (const value of privateValues) {
     if (value) message = message.replaceAll(value, '[redacted]');
   }
-  message = message.slice(0, 5000);
+  message = redactFailureText(message, 5000);
   const failure = { schema: 'gogoke.r2-04.package-operation.v1', operation: mode, state: 'FAIL',
     sourceSha: process.env.GITHUB_SHA ?? 'LOCAL_DIAGNOSTIC', runId: process.env.GITHUB_RUN_ID ?? null,
-    message, nativeLocallyCompiled: false };
+    message, nativeLocallyCompiled: false,
+    diagnostic: error?.smokeDiagnostic ?? {
+      phase: 'package-operation',
+      primaryError: {
+        name: redactFailureText(error?.name ?? 'Error', 128),
+        message: redactFailureText(error?.message ?? error),
+        code: error?.code == null ? null : redactFailureText(error.code, 128),
+        syscall: error?.syscall == null ? null : redactFailureText(error.syscall, 256),
+        path: error?.path == null ? null : redactFailureText(error.path, 1024),
+        stack: error?.stack == null ? null : redactFailureText(error.stack),
+      },
+      cleanupError: null,
+    } };
   let failureReceipt = null;
   if (mode === 'smoke' || mode === 'smoke-negative') {
     try { failureReceipt = configuredSmokeReceiptPath(); } catch { /* Invalid receipt path has no safe write target. */ }
@@ -820,18 +911,18 @@ if (mode === 'stage') {
     try {
       writeSmokeReceipt({ schema: smokeReceiptSchema, state: 'FAIL', failure });
     } catch {
-      console.error('::error::' + message.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A'));
+      console.error('::error::' + JSON.stringify(failure.diagnostic).replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A'));
       console.error('::error::installed smoke failure receipt could not be written');
     }
 } else if (mode === 'candidate-installed-service' || mode === 'formal-installed-service' || ((mode === 'smoke' || mode === 'smoke-negative') && process.env.GOGOKE_R2_SMOKE_RECEIPT)) {
-    console.error('::error::' + message.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A'));
+    console.error('::error::' + JSON.stringify(failure.diagnostic).replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A'));
   } else {
     fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
     let record = {};
     try { record = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch { /* First failed seal has no inventory. */ }
     record.packageOperationFailure = failure;
     fs.writeFileSync(manifestPath, JSON.stringify(record, null, 2) + '\n');
-    console.error('::error::' + message.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A'));
+    console.error('::error::' + JSON.stringify(failure.diagnostic).replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A'));
   }
   process.exitCode = 1;
 }

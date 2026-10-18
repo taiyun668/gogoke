@@ -1,0 +1,19 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "recordedDate": "2026-10-02",
+  "state": "G0_FAKE_BROWSER_PREVIEW_IMPLEMENTED_AND_INDEPENDENTLY_REVIEWED",
+  "changes": "Added a DEV-only browser entry under the authorized G UI directory. It mounts the real instance-page component and styles over the existing K-UI forwarding fake; production index does not import it and a real Tauri bridge is refused.",
+  "results": {
+    "local": "Existing signed Node: typecheck PASS; two focused test files, 10 tests PASS, no failures or skips",
+    "browser": "Actual local Vite page: pending -> close/reopen -> cancel -> retry -> failure with original synthetic text -> retry -> success verified through visible controls",
+    "independent": "install_fact_focus_audit read actual five files and independently ran 10 tests; no required fix",
+    "realProduct": "NOT_RUN: fake preview is not authentication, M1, native restart or SAC evidence; original installed 0.1.17 and its authenticated home unchanged",
+    "production": "No version bump, native build, signing or installation",
+    "measurement": "Initial TypeScript errors identified duplicate receipt schema and missing ES2022 Object type; explicit receipt fields and browser library declaration corrected. First fixture mixed raw and parsed snapshots; parser intentionally strips requestId, so raw identity comparisons were corrected and rerun. No product-state workaround."
+  },
+  "next": "Cloud-check this source and continue UI iteration in the local preview. Complete PR61's same-head Windows checks and single Owner merge, read main v2 scope authorization exactly, then continue the real M1 path at the next stable point with the preserved instance home.",
+  "reference": "参照：gogo-party browser workbench/account host; NaveHQ mock display document's explicit fact boundary; LoomOS specs/task tree had no Vite/Tauri preview implementation. Read repository reuse-blueprint, upstream-reference-map, parts/substrate teardown and execution-layer table. Reused the existing V37UiForwardingFakePort, Design37InstanceSection and parser tests. Fake host only holds browser-memory data and manual scene outcomes; full browser reload resets it. No upstream runtime, CLI, credentials, authorization URL or native method is used.",
+  "retained": "Local signed-Node Vite process and private screenshot retained for Owner preview; source lives in the execution branch. Active original 0.1.17 held task retained; independently audited ended resume-status task deleted and individually read back absent, all evidence files retained.",
+  "publicRelease": false,
+  "acceptance": false
+}

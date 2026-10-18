@@ -1,0 +1,42 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "checkpoint": "L0-M1-CLOUD-EE86B6C0",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "source_head": "ee86b6c04a1297b4c4650c72d2047874780e13c2",
+  "state": "L0_M1_IN_PROGRESS_NOT_ACCEPTED",
+  "authorization": {
+    "owner_merged_pr": 53,
+    "authorized_origin_main": "e2f0c57853b1fca6bc4d6dcbca0185b57baf452f",
+    "manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d"
+  },
+  "cloud_run": {
+    "run_id": 36594071336,
+    "server_job": "PASS",
+    "native_release_and_focused_axes": "PASS",
+    "native_lib_tests": "488 passed, 2 failed, 0 skipped, 490 executed",
+    "failures": [
+      "process::windows::tests::real_app_container_descendant_reaches_native_seat_pipe",
+      "store::session_transport::journal::tests::completion_requires_bound_adapter_receipt_and_fences_reprepare"
+    ],
+    "journal_test_direct_error": "Invalid(\"receipt frame\") at completion; the fixture emits JSON through cmd.exe echo. Investigating the fixture bytes before changing the production decoder."
+  },
+  "audit": {
+    "h_stdin_journal": "Independent read-only audit of commit 4ccb8370 found four concrete issues: new-ID prepare after unresolved intent, prepare after owner-binding revocation, unbounded receipt JSON depth, and incorrect previousRevision equality across STALE/recovery. Focused repair in progress; this audit is not acceptance.",
+    "c_native_card": "Independent read-only audit found native request identity aliasing and overstrict vendor question IDs. Commit ee86b6c0 repairs both; fresh focused Sol review found no new blocker, while exact cloud tests establish only native unit behavior. Product wiring remains NOT_RUN."
+  },
+  "lpac_diagnostic": {
+    "prior_run": 36592521853,
+    "direct_observation": "Direct CreateProcessW returns Win32 5 and immediate RtlGetLastNtStatus reports 0xc0000022. Signed ProcMon child lifecycle shows four child starts, primary executable and ntdll image loads, then child exits with status 0 within approximately 1–3 ms. This does not identify the failing Windows call or prove who terminated the child.",
+    "next_instrument": "Commit 02a33b03 adds a test-only gate so signed cloud CDB can attach to the exact LPAC parent and capture failure stacks; cloud run 36595122333 is in progress. The diagnostic does not alter package capability, ACL, Job, or system security settings."
+  },
+  "verification": {
+    "real_codex_seat": "NOT_RUN",
+    "ot4_login": "NOT_REQUESTED",
+    "m1": "NOT_COMPLETE",
+    "m2": "NOT_RUN",
+    "m3": "NOT_RUN",
+    "formal_data_touched": false
+  },
+  "next": "Read CDB and H repair cloud results; fix measurement or product failures from direct evidence, then compose the real M1 product route. Continue after this checkpoint."
+}

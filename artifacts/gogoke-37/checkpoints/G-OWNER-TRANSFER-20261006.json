@@ -1,0 +1,30 @@
+{
+  "schema": "gogoke.37.light-checkpoint.v1",
+  "recordedUtc": "2026-10-06T16:14:33.0118270Z",
+  "changed": [
+    "Owner transfers G interface and interaction implementation to Claude",
+    "Controller stops interface development and preserves g37-m3-preview branch and interrupted worktree"
+  ],
+  "result": {
+    "gBranch": "codex/g37-m3-preview",
+    "gHead": "06a89a2a8a477f0ceece8dc63607927fdbb2ed88",
+    "interruptedFile": "apps/desktop/src/features/seats/Design37WorkspacePreview.tsx",
+    "interruptedWip": "PRESERVED_NOT_VALIDATED_NOT_INTEGRATED",
+    "currentCandidateSource": "7867b3fcf97755dce6bba64a2e1d3e4e7ececd45",
+    "candidateVersion": "0.1.36",
+    "candidateBuild": "RUNNING",
+    "installed": "NOT_RUN",
+    "acceptance": false
+  },
+  "next": [
+    "Claude iterates G in browser K-UI fake preview on its branch",
+    "Controller owns host adapters integration actual E2E and candidate chain",
+    "Controller assigns fresh context independent review for Claude PR then integrates stable G commits into a candidate",
+    "Any proposed K-UI change goes to Controller for L0 shared agreement"
+  ],
+  "reference": [
+    "Owner division-of-work decision 2026-10-06",
+    "Retained G preview commit and independent review findings: project attribution and per-sidechat status require correction",
+    "No new UI edits after transfer; previous frozen candidate remains unchanged"
+  ]
+}

@@ -6,6 +6,9 @@ $script:receiptAllowed = $false
 $script:receiptStream = $null
 $script:registrationLock = $null
 $script:pinned = [System.Collections.Generic.List[Microsoft.Win32.SafeHandles.SafeFileHandle]]::new()
+$script:ownedDirectoryPins = [System.Collections.Generic.Dictionary[string,object]]::new(
+    [StringComparer]::OrdinalIgnoreCase)
+$script:retainedDirectoryCount = 0
 $script:missingShortcuts = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
 
 function Fail([string]$code) { throw $code }
@@ -138,12 +141,13 @@ function Assert-Opened([IntPtr]$handle, [string]$path, [bool]$directory,
     }
     return $identity
 }
-function Pin-Directory([string]$path, [object]$expectedIdentity) {
-    $handle = Open-Object $path $true $false
+function Pin-Directory([string]$path, [object]$expectedIdentity, [bool]$delete) {
+    $handle = Open-Object $path $true $delete
     try {
         $identity = Assert-Opened $handle.DangerousGetHandle() $path $true $expectedIdentity
         $script:pinned.Add($handle)
-        return $identity
+        $pin = @{ path = $path; handle = $handle; identity = $identity }
+        return $pin
     } catch {
         $handle.Dispose()
         throw
@@ -207,7 +211,8 @@ function Assert-Root {
     $null = Assert-Opened $rootHandle.DangerousGetHandle() $data.root $true $data.rootIdentity
     Assert-Instance
 }
-function Delete-Opened([Microsoft.Win32.SafeHandles.SafeFileHandle]$handle) {
+function Delete-Opened([Microsoft.Win32.SafeHandles.SafeFileHandle]$handle,
+    [bool]$allowDirectoryNotEmpty) {
     $buffer = [Runtime.InteropServices.Marshal]::AllocHGlobal(1)
     try {
         [Runtime.InteropServices.Marshal]::WriteByte($buffer, 0, 1)
@@ -215,8 +220,16 @@ function Delete-Opened([Microsoft.Win32.SafeHandles.SafeFileHandle]$handle) {
         # close. No POSIX or ignore-readonly disposition flags are used.
         if (-not [GogokeUninstallNative]::SetFileInformationByHandle(
             $handle.DangerousGetHandle(), 4, $buffer, [uint32]1)) {
-            Fail 'GOGOKE_UNINSTALL_DELETE_FAILED'
+            $win32 = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            if ($allowDirectoryNotEmpty -and $win32 -eq 145) {
+                return $false
+            }
+            if ($allowDirectoryNotEmpty) {
+                Fail "GOGOKE_UNINSTALL_DIRECTORY_DELETE_FAILED_WIN32_$win32"
+            }
+            Fail "GOGOKE_UNINSTALL_DELETE_FAILED:WIN32_$win32"
         }
+        return $true
     } finally {
         [Runtime.InteropServices.Marshal]::FreeHGlobal($buffer)
     }
@@ -244,7 +257,7 @@ function Verify-File([object]$entry, [bool]$delete) {
         if ($hash -cne [string]$entry.sha256) { Fail 'GOGOKE_UNINSTALL_FILE_CHANGED' }
         $null = Assert-Opened $raw $entry.path $false $entry.identity
         Assert-Root
-        if ($delete) { Delete-Opened $handle }
+        if ($delete) { $null = Delete-Opened $handle $false }
     } finally {
         if ($stream) { $stream.Dispose() }
         $handle.Dispose()
@@ -313,13 +326,36 @@ function Verify-Shortcut([object]$entry) {
         $null = Assert-Opened $raw $path $false $entry.record.identity
         Assert-Root
         $null = Shortcut-Path $entry
-        Delete-Opened $handle
+        $null = Delete-Opened $handle $false
     } finally {
         if ($stream) { $stream.Dispose() }
         if ($handle) { $handle.Dispose() }
     }
     if ((Path-State $path) -cne 'MISSING') {
         Fail 'GOGOKE_UNINSTALL_SHORTCUT_DELETE_UNCONFIRMED'
+    }
+}
+function Remove-OwnedDirectories {
+    # These are only the intermediate parents of validated owned files. The
+    # first pin requested DELETE access, so deletion uses that original handle
+    # and never reopens a directory against its no-delete-sharing pin.
+    $directories = @($script:ownedDirectoryPins.Values | Sort-Object -Property @{
+        Expression = { ([string]$_.path).Length }; Descending = $true
+    })
+    foreach ($pin in $directories) {
+        Assert-Root
+        $null = Assert-Opened $pin.handle.DangerousGetHandle() $pin.path $true $pin.identity
+        $deleted = Delete-Opened $pin.handle $true
+        $pin.handle.Dispose()
+        if (-not $deleted) {
+            # ERROR_DIR_NOT_EMPTY (145) means an unknown child remains. Keep
+            # that directory and continue with the other owned parents.
+            $script:retainedDirectoryCount++
+            continue
+        }
+        if ((Path-State $pin.path) -cne 'MISSING') {
+            Fail 'GOGOKE_UNINSTALL_DIRECTORY_DELETE_UNCONFIRMED'
+        }
     }
 }
 function Write-Receipt([string]$state, [string]$detail) {
@@ -458,19 +494,33 @@ try {
         $relative = if (Same $parentPath $data.root) { '' }
             else { $parentPath.Substring($rootPrefix.Length) }
         $current = $data.root
+        $newDirectoryPins = [System.Collections.Generic.List[object]]::new()
         foreach ($part in $relative.Split([char]'\')) {
             if (-not $part) { continue }
             $current = [IO.Path]::Combine($current, $part)
-            if ($seen.Add('dir:' + $current)) { $null = Pin-Directory $current $null }
+            if ($seen.Add('dir:' + $current)) {
+                $newDirectoryPins.Add((Pin-Directory $current $null $true))
+            }
         }
         Verify-File $entry $false
+        foreach ($pin in $newDirectoryPins) {
+            # Only a successfully rechecked owned file makes its parent pins
+            # eligible for the later bottom-up directory deletion pass.
+            $script:ownedDirectoryPins.Add($pin.path, $pin)
+        }
     }
     foreach ($entry in $data.files) { Verify-File $entry $true }
     foreach ($entry in $data.shortcuts) { Verify-Shortcut $entry }
+    Remove-OwnedDirectories
     Assert-Root
     $subkey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' + $data.registryKey
     [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKey($subkey, $false)
-    Write-Receipt 'DELETED' 'owned files removed; unknown files and user data retained'
+    $detail = 'owned files removed; unknown files and user data retained'
+    if ($script:retainedDirectoryCount -gt 0) {
+        $detail += '; retained ' + [string]$script:retainedDirectoryCount +
+            ' owned parent directories after Win32 145 (directory not empty)'
+    }
+    Write-Receipt 'DELETED' $detail
     exit 0
 } catch {
     try { Write-Receipt 'FAILED' ([string]$_.Exception.Message) } catch { }

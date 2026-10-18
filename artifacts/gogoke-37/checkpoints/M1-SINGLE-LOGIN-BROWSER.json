@@ -1,0 +1,73 @@
+{
+  "schema": "gogoke.37.single-login-browser.v1",
+  "recordedDate": "2026-10-02",
+  "basis": "Owner explicitly requests fixing the simultaneous two authorization pages",
+  "baseSource": "bfebb74f81e17e3d3961895fcc3e244fabf24c65",
+  "currentInstalledCandidate": "0.1.17",
+  "nextCandidate": "0.1.18",
+  "state": "IMPLEMENTED_FOCUSED_MECHANISM_REVIEW_PASS_CLOUD_PENDING",
+  "directCause": "Fixed codex login calls webbrowser::open; the host subsequently calls its own opener with the URL from that same process",
+  "logic": "These are two real producers of the same browser action. Assigning browser opening solely to the existing host removes the duplicate without modifying the CLI or introducing timing guesses.",
+  "reference": {
+    "参照": "先查 gogo-party accounts.ts 的 loginEnv、PROVIDER_LOGIN 与 createLineSink：当前也同时保留 CLI 自开页与房间开页，不照搬该重复。查询 NaveHQ 的现有 OAuth/container 记录及 LoomOS 源码/规格，没有找到适用于本次 Windows 单次开页的控制。再读仓库 parts/substrate 拆解、execution-layer-capability-table、reuse-blueprint 与 upstream-reference-map，以及已带入的 t3code app-server schema。最后核官方登录文档和固定 rust-v0.149.0 login、app-server account processor、其固定 webbrowser 1.2.4 Windows 源码。采用已验证的官方结构化 account/login/start 路径和现有原 Job/pipe；不自创 BROWSER 环境开关、CLI patch、注册表改动、拦截、等待或重试。",
+    "officialDocs": "https://learn.chatgpt.com/docs/auth",
+    "fixedCliSource": "https://github.com/openai/codex/blob/rust-v0.149.0/codex-rs/app-server/src/request_processors/account_processor.rs",
+    "fixedCliBrowserSource": "https://github.com/openai/codex/blob/rust-v0.149.0/codex-rs/login/src/server.rs",
+    "fixedOpenerSource": "https://github.com/amodm/webbrowser-rs/blob/v1.2.4/src/windows.rs",
+    "independentMechanismReview": "single_opener_protocol_review"
+  },
+  "implementation": "Same fixed CLI app-server, ordinary same-user login; one account/login/start chatgpt, returned authUrl opened only by host; original loginId matching and original Job/durable stop; original LPAC account/read determines final state",
+  "fixedCliSha256": "14b7e6b2356e82d1d9275579eaa588757b4e0a501b65dcc19fccdf77bd83dc00",
+  "scope": {
+    "fixedCliModified": false,
+    "credentialsReadWrittenCopiedByHost": false,
+    "originalRegisteredHome": true,
+    "loginSameUser": true,
+    "modelSessions": "UNCHANGED_ALL_LPAC",
+    "automaticAccountRead": "UNCHANGED_LPAC",
+    "lpacIdentityServices": "UNCHANGED",
+    "modelOrArbitraryRpcSentFromLogin": false,
+    "systemOrBrowserSettingsChanged": false,
+    "retryOrNewBudget": false
+  },
+  "OwnerLogin017": {
+    "state": "PASS_ORIGINAL_HOST_AUTO_LOGGED_IN",
+    "source": "b1a4a0d7fc82a0bde32b4b23a8e8c388802aa7d9",
+    "instance": "codexTestM1",
+    "revision": "3",
+    "settled": true,
+    "errorPresent": false,
+    "privateReadbackSha256": "9af9e12149c93173af24146eede608250373299ef82de80c5cecc52d3f434d17",
+    "credentialsRead": false,
+    "newLoginStarted": false,
+    "formalChanged": 0,
+    "formalReadbackSha256": "290b59800086f4a731e6df067c8094e0ec2fbfebb878d69e96f1f4f050de01c3",
+    "measurementIssue": "Stopped-native metadata reader cannot open state.sqlite while the real host is active; sqlite reports unable to open database file. Original successful product/API and formal results remain separate PASS; task exit1 is retained, not called PASS.",
+    "nextNativeMetadata": "Read same original authority database only after actual product gracefully closes for the candidate upgrade; do not copy database or bypass its live lock"
+  },
+  "cloud": "NEW_EXACT_SOURCE_REQUIRED_AFTER_CI_LOCATOR_CORRECTION",
+  "finalAuditInstrumentCorrection": {
+    "seat": "single_opener_final_audit",
+    "finding": "R9 mutation selected the first cancellation block; after login RPC addition it would remove stop/proof definitions and fail compilation rather than the stderr behavior assertion",
+    "logic": "The first cancellation block is now the vendor cancellation request, not final stderr retention. A syntax failure cannot establish the intended behavior regression. The actual final diagnostic already has a unique comment anchor.",
+    "change": "Anchor R9 removal at the unique final cancellation diagnostic comment; preserve original RPC cancellation, stop proof, stderr reads and all existing tests",
+    "productionChangedByCorrection": false,
+    "previousSource": "bec163bdc795b12371aec53ad20d8235ac6838f0",
+    "previousNativeRun": "37010754153",
+    "previousDesktopRun": "37010759514",
+    "previousClaims": "Partial server and browser results only; superseded for candidate freeze. No full native, mutation, signing or Win11 PASS claimed."
+  },
+  "focusedReview": {
+    "seat": "single_opener_protocol_review",
+    "result": "NO_MECHANISM_BLOCKER_TO_CLOUD_VALIDATION",
+    "documentationFinding": "Implementation sends cancel request then original Job stop, not a waited cancel response; permissions description corrected without adding a new wait",
+    "runtimeTest": "Real custodied PowerShell protocol child covers both start/completion orders and EOF0, with actual fixed CLI LPAC account/read determining LOGGED_OUT rather than synthetic completion granting LOGGED_IN",
+    "regressions": "Existing mixed stdout/stderr limit and zero-exit stderr tests now exercise rpc Some production branch; real fixed CLI callback and ACTIVE factory fault remain",
+    "nativeLocal": "NOT_RUN_CLOUD_ONLY"
+  },
+  "ordinaryWin11NewBytes": "NOT_RUN",
+  "M1Complete": false,
+  "acceptance": false,
+  "merge": false,
+  "publicRelease": false
+}

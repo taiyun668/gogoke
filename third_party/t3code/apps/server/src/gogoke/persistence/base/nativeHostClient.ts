@@ -21,8 +21,8 @@ export class NativeHostClientError extends Error {
   override readonly name = "NativeHostClientError";
   readonly code: string;
 
-  constructor(code: string, detail: string) {
-    super(`${code}: ${detail}`);
+  constructor(code: string, detail: string, options?: ErrorOptions) {
+    super(`${code}: ${detail}`, options);
     this.code = code;
   }
 }
@@ -2161,11 +2161,19 @@ export function encodeActionOutcomeFrame(
  * passes a SQLite filename or inherits OS handles.
  */
 export class NativeHostClient {
-  readonly #child: NodeChildProcess.ChildProcess;
+  readonly #child: NodeChildProcess.ChildProcess | null;
+  readonly #childClosed: Promise<Error | null> | null;
   readonly #pipe: number;
+  #closing: Promise<void> | null = null;
 
-  private constructor(child: NodeChildProcess.ChildProcess, pipe: number) {
+  private constructor(child: NodeChildProcess.ChildProcess | null, pipe: number) {
     this.#child = child;
+    this.#childClosed = child === null ? null : new Promise<Error | null>((resolve) => {
+      child.once("close", () => resolve(null));
+      // Capture an early error as a fact immediately; close still propagates
+      // the original error, rather than leaving a rejected Promise unobserved.
+      child.once("error", resolve);
+    });
     this.#pipe = pipe;
   }
 
@@ -2177,54 +2185,105 @@ export class NativeHostClient {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
-    if (child.stdout === null) {
-      child.kill();
-      throw new NativeHostClientError("HOST_STDIO", "native-host stdout was not created");
-    }
-    const stdout = NodeReadline.createInterface({ input: child.stdout });
+    let stderrTail = Buffer.alloc(0);
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderrTail = Buffer.concat([stderrTail, chunk]).subarray(-4096);
+    });
+    const childState: {
+      spawnError: Error | null;
+      processError: Error | null;
+      closed: { code: number | null; signal: NodeJS.Signals | null } | null;
+    } = { spawnError: null, processError: null, closed: null };
+    child.on("error", (error) => {
+      if (child.pid === undefined) childState.spawnError = error;
+      else childState.processError = error;
+    });
+    child.once("close", (code, signal) => { childState.closed = { code, signal }; });
+    let stdout: NodeReadline.Interface | null = null;
     let handshake: Awaited<ReturnType<typeof readStartupHandshake>>;
     try {
+      if (child.stdout === null) {
+        throw new NativeHostClientError("HOST_STDIO", "native-host stdout was not created");
+      }
+      stdout = NodeReadline.createInterface({ input: child.stdout });
       handshake = await readStartupHandshake(stdout);
     } catch (error) {
-      stdout.close();
-      child.kill();
-      throw error;
+      stdout?.close();
+      const exitCode = child.exitCode;
+      const exitSignal = child.signalCode;
+      let killResult: boolean | null = null;
+      let killError: unknown = null;
+      try { killResult = child.kill(); }
+      catch (failure) { killError = failure; }
+      const original = error instanceof NativeHostClientError ? error
+        : new NativeHostClientError("HOST_EOF", String(error), { cause: error });
+      const detail = original.message.slice(original.code.length + 2);
+      const facts = [detail];
+      if (childState.spawnError !== null) {
+        const errorCode = (childState.spawnError as NodeJS.ErrnoException).code;
+        facts.push(`SPAWN_ERROR:${errorCode ?? "UNKNOWN"}:${childState.spawnError.message}`);
+      }
+      if (childState.processError !== null) facts.push(`PROCESS_ERROR:${childState.processError.message}`);
+      if (killError !== null) facts.push(`KILL_ERROR:${String(killError)}`);
+      if (child.pid !== undefined && killResult === false) facts.push("KILL_RESULT:false");
+      // A failed spawn can report a libuv close code without a child process.
+      if (child.pid !== undefined && childState.spawnError === null) {
+        const code = childState.closed?.code ?? exitCode;
+        const signal = childState.closed?.signal ?? exitSignal;
+        if (code !== null) facts.push(`EXIT_CODE:${code}`);
+        if (signal !== null) facts.push(`${exitSignal !== null ? "EXIT_SIGNAL" : "CLOSE_SIGNAL_AFTER_KILL_REQUEST"}:${signal}`);
+      }
+      if (child.pid !== undefined && childState.closed === null) facts.push("CHILD_CLOSE_UNCONFIRMED");
+      if (stderrTail.length > 0) facts.push(`STDERR_TAIL:${stderrTail.toString("utf8")}`);
+      if (child.pid !== undefined && child.stderr !== null && !child.stderr.readableEnded && childState.closed === null) {
+        facts.push("STDERR_DRAIN_UNCONFIRMED");
+      }
+      throw new NativeHostClientError(original.code, facts.join(": "), { cause: original });
     }
     const { pipeLine, capabilityLine } = handshake;
     stdout.close();
-    if (!capabilityLine.startsWith("CAPABILITY\t")) {
-      child.kill();
-      throw new NativeHostClientError(
-        "HOST_CAPABILITY",
-        "native-host did not provide a service capability",
-      );
-    }
-    const capability = capabilityLine.slice(11).trim();
-    if (!/^[0-9a-f]{64}$/.test(capability)) {
-      child.kill();
-      throw new NativeHostClientError(
-        "HOST_CAPABILITY",
-        "native-host service capability is not canonical",
-      );
-    }
-    const pipePath = pipeLine.slice(5).trim();
-    const pipe = NodeFS.openSync(pipePath, "r+");
-    NodeFS.writeSync(pipe, Buffer.from([0x47]));
-    const client = new NativeHostClient(child, pipe);
     try {
+      return NativeHostClient.connectService(pipeLine, capabilityLine, child);
+    } catch (error) {
+      child.kill();
+      throw error;
+    }
+  }
+
+  /** Connects to a host already owned by the native product; this is service transport only. */
+  static connectExisting(input: {
+    readonly pipePath: string;
+    readonly capability: string;
+  }): NativeHostClient {
+    return NativeHostClient.connectService(`PIPE\t${input.pipePath}`, `CAPABILITY\t${input.capability}`, null);
+  }
+
+  private static connectService(
+    pipeLine: string,
+    capabilityLine: string,
+    child: NodeChildProcess.ChildProcess | null,
+  ): NativeHostClient {
+    const pipePath = pipeLine.slice(5);
+    if (!/^PIPE\t\\\\\.\\pipe\\gogoke\.current-user\.v1\.[A-Za-z0-9._-]{1,120}$/.test(pipeLine)) {
+      throw new NativeHostClientError("HOST_PIPE", "native-host service pipe path is invalid");
+    }
+    if (!/^CAPABILITY\t[0-9a-f]{64}$/.test(capabilityLine)) {
+      throw new NativeHostClientError("HOST_CAPABILITY", "native-host service capability is not canonical");
+    }
+    const capability = capabilityLine.slice(11);
+    const pipe = NodeFS.openSync(pipePath, "r+");
+    try {
+      NodeFS.writeSync(pipe, Buffer.from([0x47]));
+      const client = new NativeHostClient(child, pipe);
       const authenticated = client.request(
         JSON.stringify({ capability, operation: "AuthenticateService" }),
       );
       if (authenticated.body !== '{"authenticated":true}') {
-        throw new NativeHostClientError(
-          "HOST_CAPABILITY",
-          "native-host did not confirm service authentication",
-        );
+        throw new NativeHostClientError("HOST_CAPABILITY", "native-host did not confirm service authentication");
       }
       return client;
     } catch (error) {
       NodeFS.closeSync(pipe);
-      child.kill();
       throw error;
     }
   }
@@ -2857,26 +2916,41 @@ export class NativeHostClient {
     return this.request(frame);
   }
 
-  async close(): Promise<void> {
+  close(): Promise<void> {
+    this.#closing ??= this.closeOnce();
+    return this.#closing;
+  }
+
+  private async closeOnce(): Promise<void> {
+    const child = this.#child;
+    if (child === null) {
+      NodeFS.closeSync(this.#pipe);
+      return;
+    }
     try {
-      if (this.#child.exitCode === null) {
+      if (child.exitCode === null) {
         await this.request(JSON.stringify({ operation: "Shutdown" }));
       }
-    } catch {
-      this.#child.kill();
+    } catch (error) {
+      console.warn(`Native host graceful shutdown failed: ${String(error)}`);
+      child.kill();
     }
     NodeFS.closeSync(this.#pipe);
-    await new Promise<void>((resolve) => {
-      if (this.#child.exitCode !== null) {
-        resolve();
-        return;
-      }
-      this.#child.once("exit", () => resolve());
-      setTimeout(() => {
-        this.#child.kill();
-        resolve();
-      }, 2000);
-    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const stopped = await Promise.race([this.#childClosed, new Promise<never>((_, reject) => {
+        // Preserve the existing termination deadline, but a kill request is
+        // not a close fact. Only the captured process close event can succeed.
+        timer = setTimeout(() => {
+          if (child.exitCode === null && child.signalCode === null && !child.kill()) {
+            reject(new NativeHostClientError("HOST_STOP_UNCONFIRMED", "owned child termination failed"));
+          }
+        }, 2000);
+      })]);
+      if (stopped !== null) throw stopped;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 
   private request(frame: string): NativeHostReply {
@@ -2921,14 +2995,14 @@ export function readStartupHandshake(stdout: NodeReadline.Interface): Promise<{
       if (stage === 0) {
         if (!line.startsWith("LOCKED")) {
           cleanup();
-          reject(new NativeHostClientError("HOST_LOCK", line));
+          reject(new NativeHostClientError("HOST_LOCK", "native-host did not report lock status"));
         } else {
           stage = 1;
         }
       } else if (stage === 1) {
         if (!line.startsWith("PIPE\t")) {
           cleanup();
-          reject(new NativeHostClientError("HOST_PIPE", line));
+          reject(new NativeHostClientError("HOST_PIPE", "native-host did not report service pipe"));
         } else {
           pipeLine = line;
           stage = 2;

@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import { expect, it } from "@effect/vitest";
 import { NativeHostClient } from "../persistence/base/nativeHostClient.ts";
 import {
+  decodeExistingHostEnvelope,
   decodeProductGoalRequest,
   handleProductGoalRequest,
   handleProductReadiness,
@@ -115,6 +116,31 @@ it("seals donor server commands at the executable argument boundary", () => {
     root: "C:\\Gogoke",
     hostBinary: "C:\\Gogoke\\gogoke-native-host.exe",
   });
+});
+
+it("admits only the Tauri-owned existing-host stdin envelope", () => {
+  const args = ["--root", "C:\\Gogoke", "--native-host",
+    "C:\\Gogoke\\gogoke-native-host.exe", "--existing-design37-host"];
+  expect(parseProductProcessArgs(args)).toEqual({
+    root: "C:\\Gogoke", hostBinary: "C:\\Gogoke\\gogoke-native-host.exe", existingHost: true,
+  });
+  const envelope = { servicePipe: "\\\\.\\pipe\\gogoke.current-user.v1.store.test",
+    serviceCapability: "a".repeat(64),
+    requestBytesBase64: Buffer.from('{"operation":"readiness"}').toString("base64") };
+  const decoded = decodeExistingHostEnvelope(Buffer.from(JSON.stringify(envelope)));
+  expect(decoded.servicePipe).toBe(envelope.servicePipe);
+  expect(Buffer.from(decoded.requestBytes).toString()).toBe('{"operation":"readiness"}');
+  for (const invalidEnvelope of [
+    { ...envelope, servicePipe: "\\\\.\\pipe\\gogoke.user.v1.store.test" },
+    { ...envelope, serviceCapability: "b".repeat(63) },
+    { ...envelope, requestBytesBase64: `${envelope.requestBytesBase64}=` },
+    { ...envelope, hostBinary: "C:\\caller.exe" },
+  ]) {
+    expect(() => decodeExistingHostEnvelope(Buffer.from(JSON.stringify(invalidEnvelope))))
+      .toThrow("INVALID_PRODUCT_ENTRY");
+  }
+  expect(() => parseProductProcessArgs([...args, "--service-pipe", envelope.servicePipe]))
+    .toThrow("INVALID_PRODUCT_ENTRY");
 });
 
 

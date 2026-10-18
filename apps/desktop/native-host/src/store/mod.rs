@@ -43,6 +43,27 @@ pub mod migrate;
 #[cfg(windows)]
 pub mod orchestration;
 
+#[cfg(windows)]
+pub(crate) mod instance;
+
+#[cfg(windows)]
+pub(crate) mod worktree;
+
+#[cfg(windows)]
+pub(crate) mod seat;
+
+#[cfg(windows)]
+pub(crate) mod ledger;
+
+#[cfg(windows)]
+pub(crate) mod inbox;
+
+#[cfg(windows)]
+pub(crate) mod sidechat;
+
+#[cfg(windows)]
+pub(crate) mod session_transport;
+
 pub mod protocol;
 
 #[cfg(windows)]

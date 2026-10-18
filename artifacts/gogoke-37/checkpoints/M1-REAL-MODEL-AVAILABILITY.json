@@ -1,0 +1,91 @@
+{
+  "schema": "gogoke.37.checkpoint.v1",
+  "state": "M1_PARTIAL_OWNER_MODEL_DECISION_REQUIRED",
+  "source_commit": "d1d3af8916fee6c3a07295901abd543b0d86c546",
+  "authorization": {
+    "owner_merge": "PR61",
+    "main_commit": "5896e6d5581f42a7f59af52140a0b2a840775342",
+    "receipt_blob": "a1d4fb9d352da575a84129b8b22bad52577b6a5d",
+    "trusted_main_verifier_blob": "b022b689ccac966fc1f9984e1ef26a01fd3755f0",
+    "scope_digest": "274dd8499160a4cdd5c0887cf6819632b0c0efbd22efd3eaaeba6f016edaa656",
+    "readback": "PASS: Owner merge, exact receipt and trusted main verifier; main and candidate plan scope digests agree"
+  },
+  "changed": [
+    "阶段内只执行云端检查；G.0 在签名 Node/Vite 的 K-UI 假实现预览中核对。稳定源采用同一份冻结输入完成受信签名、云端装机和普通 Win11 换装。",
+    "原 0.1.17 正常关闭并卸载，保留原数据与实例 home。独立审计绑定精确清单后，逐项非递归清理 1114 个候选残留空目录，每项回读 Absent。",
+    "安装并运行冻结的 0.1.18；通过真实产品入口打开固定 CLI 的 LPAC 会话、读取实际线程特性、发送一次模型请求并记录真实停止事实。"
+  ],
+  "results": {
+    "native_run": 37049041256,
+    "native_evidence_artifact": 11249202600,
+    "native_evidence_archive_sha256": "f4f43d84d6bd3a0cdc193919d1af8960abb5b39389ef31f2b1e5663f699a2cf3",
+    "native": "PASS: library 585/0/0; required axes 3/0/0; focused 27/0/0; LPAC shim 2/0/0; 11 compiled behavioral mutations failed as required and all 11 restorations passed",
+    "server": "PASS 642/0/0 on the same source",
+    "browser": "PASS 1056/0/0 on the same source",
+    "desktop_run": 37049046666,
+    "desktop": "PASS: five jobs including frozen/repro lanes and six component byte comparisons",
+    "hygiene_run": 37049047545,
+    "hygiene": "PASS on the frozen source",
+    "frozen_artifact": 11247585247,
+    "frozen_archive_sha256": "c65b46de2739183387b2c0fe780d3c8a259993441371596941032fc53cf9af28",
+    "trusted_main_signing_run": 37054637795,
+    "signed_artifact": 11248375623,
+    "signed_archive_sha256": "1291450160e1a1e0fed9d16d4f14191f8925a9de72f416b90e09ac6a67451644",
+    "signature": "PASS: purpose-bound candidate P256; seven signed members exactly match frozen input; no formal release sidecars or code signing",
+    "installed_smoke_run": 37054918550,
+    "installed_smoke_artifact": 11250020915,
+    "installer_negative_artifact": 11249896064,
+    "cloud_installation": "PASS: actual installed product/service, readiness, uninstall and bounded negative installation axes; Windows cloud is not Owner Win11",
+    "ordinary_win11": "PASS: frozen 0.1.18 installation and product readiness; actual installed shell/native/index hashes match; original data/root/home/instance metadata preserved",
+    "formal_preservation": "PASS after uninstall, install and the model attempt: legacy formal tree, actual registered formal tree, formal data, formal registry and three formal shortcuts unchanged",
+    "instance_readback": "codexTestM1, fixed 0.149.0, revision3 LOGGED_IN; login-state is persisted state readback, not a fresh provider process or proof of model availability",
+    "actual_session": "PASS: admission reserve/commit, real LPAC open, loaded feature response and actual stop receipt. The stopped claim is retained, not released or replayed.",
+    "loaded_thread_features": {
+      "memories": false,
+      "multi_agent_v2": false,
+      "default_mode_request_user_input": true
+    },
+    "cli_sha256": "14b7e6b2356e82d1d9275579eaa588757b4e0a501b65dcc19fccdf77bd83dc00",
+    "model_turn": "FAILED: original CLI terminal event reports HTTP400 for the Owner-specified model; no native question or product probe file was produced",
+    "model_catalog": {
+      "source": "actual fixed CLI instance models_cache.json, fetched by that CLI; model metadata only",
+      "client_version": "0.149.0",
+      "fetched_at": "2026-10-02T20:54:43.029709800Z",
+      "visible_model_ids": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"],
+      "equivalent_gpt_6_sol_alias": "NOT_FOUND; no silent substitution"
+    },
+    "memory_observation": "One failed real session only: memories directory absent, stage1 outputs and memory jobs zero, pre/post database and WAL hashes identical. The empty database container already existed before this session. No two-session or successful-model memory-off acceptance claim.",
+    "g4_empty_directory_inventory_sha256": "16ba868a66743665018083d961df726ae4633fc8dd60def4e6d64ec59c232da4",
+    "g4_empty_directories": "Independent audit PASS: exactly 1114 directories, 0 files, 0 reparse points; Controller removed each nonrecursively with FileID/attribute/empty checks and verified each Absent",
+    "g4_ended_task_inventory_sha256": "042daa8ab1fba5662af60fef6fcf3cbc60d62e120d767ce1afc92a3ca534fc97",
+    "g4_ended_tasks": "Independent audit PASS: exactly 12 ended Interactive/Limited task definitions; Controller checked each bound custody, action, script and ended state, removed only that definition and read each Absent. Scripts, installed candidate, data, home and evidence retained."
+  },
+  "original_failure": {
+    "source": "original A raw frame, method error, plus matching turn/completed failed event",
+    "message": "The 'gpt-6-sol' model is not supported when using Codex with a ChatGPT account.",
+    "status": 400,
+    "will_retry": false,
+    "evidence_retrieval": "Read-only connections could not open the actual database while the host was running in either view. After the actual session stopped through the product and the actual caption closed normally, the same original raw frames could be read. This does not establish the exact locking mechanism. No original send was repeated.",
+    "remaining_product_diagnostic_issue": "The normalized output retains failed turn status but omits this original model error; the raw error remains durably PENDING. Carry its original reason into the normal product output under A/B1; this fix requires no Owner scope decision."
+  },
+  "logic_check": "OT3 names GPT-6-Sol/high and the fixed CLI remains required. This actual CLI/account path rejects that exact model and its fresh catalog supplies no equivalent alias. Replacing it with GPT-5.6-Sol or changing the pinned CLI would change a recorded Owner decision. The narrow conclusion is about this tested path, not all ChatGPT accounts or proof that a CLI upgrade would solve it.",
+  "path_reflection": "模型名称应在首次真实调用前与固定 CLI 的实际模型目录核对，减少完成整条候选链后才发现不兼容的往返。接下来保留已装候选和原凭据，Owner 选定模型后直接从真实产品续测；诊断修正在阶段内只跑云端，不为这次选择重签、重装或重复登录。",
+  "next": [
+    "Owner chooses whether to use the current catalog's GPT-5.6-Sol/high for M1 or retain GPT-6-Sol and first establish a compatible CLI/account path. Keep the existing installed frozen candidate and original credentials; no repeated OT4 merely to create evidence.",
+    "After that choice, reconcile/release the original stopped claim as appropriate, configure/read back the approved model through the product, then run native question, inbox/steer, ledger, resume/restart, compact/renew and two-session memory cases. UNKNOWN is never blindly resent.",
+    "Repair model error normalization during the stage with cloud checks; consolidate any required candidate chain at the next stable point."
+  ],
+  "参照": [
+    "采用已验证的原 0.1.17 Interactive/Limited 任务、安装回读、同一物理 home 保全和真实 caption 关闭方式；修正正式版快照，包含 HKCU 当前登记的真实安装树及其嵌套开始菜单快捷方式。",
+    "核对实际 v37_inbox、v37_qcard_user、v37_output、v37_runtime 与测试；纠正测试导航：turn-end 本身保留 PENDING，之后显式 deliver 仍可得到原生 append ACK，不能用错误预期修产品。",
+    "复读 gogo-party accounts.ts、所选席位/模型源及仓库调研；未找到把当前 GPT-6-Sol 改名为 GPT-5.6-Sol 的依据。使用这次真实 CLI 原文和新鲜模型目录，不从登录状态或静态名称推断模型可用性。",
+    "固定 rust-v0.149.0 官方 StateRuntime/SqliteConfig/MemoryStore 源码区分空数据库迁移与记忆提取/合并。按已有原 home 的前后哈希、实际线程配置及 pipeline 数据观察，不把空数据库存在误判为记忆启用。"
+  ],
+  "non_claims": [
+    "M1 NOT_COMPLETE: successful authenticated model behavior, native question, Inbox/steer, generation change, resume/restart ledger recovery and two successful-session memory observations remain unexecuted",
+    "No fixed CLI patch, model fallback, new capability, security setting change, formal data modification or credential read",
+    "No public Design37 release, PR54 merge or self acceptance",
+    "Private frozen inputs, original requests/results and trusted main worktree retained for the required Owner decision and exact continuation"
+  ],
+  "acceptance": false
+}

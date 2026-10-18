@@ -1,0 +1,58 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "checkpoint": "L0-REAUTH-8A984B6A",
+  "recorded_utc": "2026-09-29T19:48:24Z",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "state": "L0_M1_IN_PROGRESS_NOT_ACCEPTED",
+  "authorization_readback": {
+    "owner_merged_pr": 56,
+    "merged_by": "taiyun668",
+    "merge_commit": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
+    "plan_merge_commit": "420df17e147e9ffde5b1a187cb5d6ddcb701ec67",
+    "pr_head": "1863ad88d19609852318d6a8cbbeab9d107c6a5c",
+    "only_changed_path": "artifacts/gogoke-37/intake/PUBLIC_AUTHORIZATION_RECEIPT.json",
+    "receipt_blob_on_main_and_branch": "8020812e3abf35887829f50c78ec9f513272bf70",
+    "receipt_bound_manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
+    "actual_manifest_blob_on_main_and_branch": "2d3b34a7903e7b0223d043786863706c2297c78c",
+    "result": "MATCH"
+  },
+  "t00": {
+    "mapping_snapshot": "5b638c73200c0fb691a74c5717e3bdbbba45357d",
+    "authorization_base": "420df17e147e9ffde5b1a187cb5d6ddcb701ec67",
+    "shared_paths": "52_UNIQUE_PRESENT_SAME_BLOB",
+    "source_pins": "9_MATCH",
+    "asset_categories": "7_RECHECKED_EXISTING_SOURCE_UNCHANGED_NEW_WORK_STILL_NEW",
+    "conditional_shared_paths": "5_VERIFIED_UNCHANGED",
+    "measurement_correction": "The first per-path script read mapping_snapshot from the wrong JSON level and compared an empty ref. Repeating against baseline.mapping_snapshot.main returned zero mismatches; the complete tree diff independently showed only the plan files and earlier authorization receipt added after the snapshot.",
+    "durable_detail": "PR #56 description"
+  },
+  "pr54_cloud": {
+    "prior_run": 36618679509,
+    "prior_source": "d1e0b9d28744ba3605e33fabfe508b7ad446b727",
+    "failure": "Both Windows lanes received CONFLICT from a K-INSTANCE/install-state request for an absent instance, while a stale product composition test expected UNSUPPORTED.",
+    "direct_cause": "The native dispatcher already implements install-state; absence returns CONFLICT. This is an obsolete test assertion, not a product behavior failure.",
+    "test_correction_commit": "1a23f189f6dec99a1a7cd1da823e7390fb84d0ae",
+    "authorized_main_merge_commit_on_branch": "dea9e5305965926cdcc82401b0274b8726273994",
+    "new_cloud_result": "PENDING"
+  },
+  "owner_ot3": {
+    "project_parallel_cap": 4,
+    "codex_test_instance_concurrency_cap": 4,
+    "persistence": "NOT_YET_IMPLEMENTED"
+  },
+  "h_boundary": "Test-only registryRead and unqualified seat pipe differential passed on cloud Windows, but the production LPAC path, active Job/generation authority consumer, and enforceable launch permission are not yet wired. No real Codex seat or Owner Win11 product result is claimed.",
+  "inbox": {
+    "branch": "control/gogoke-s1-r4-inbox",
+    "head": "b4f7e866029b8c5a9a1211100effadf01a03ffbc",
+    "result": "unchanged at authorization checkpoint"
+  },
+  "verification": {
+    "real_codex_seat": "NOT_RUN",
+    "ot4_login": "NOT_REQUESTED",
+    "m1": "NOT_COMPLETE",
+    "formal_data_touched": false,
+    "self_acceptance": false
+  },
+  "next": "Continue L0/H construction and cloud checks on the new authorization base. Persist the two explicit OT3 values in E.1/F.1, read them inside H's one admission transaction, wire production peer/Job/generation and permission enforcement, then prepare a real Codex test instance before asking Owner for OT4 login. This checkpoint does not stop work."
+}

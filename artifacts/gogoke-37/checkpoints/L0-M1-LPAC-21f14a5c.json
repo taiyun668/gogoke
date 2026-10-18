@@ -1,0 +1,45 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "checkpoint": "L0-M1-LPAC-21f14a5c",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "source_head_before_checkpoint": "21f14a5c5e887e43bb9cb67693fd3f4ed2efb7ff",
+  "state": "L0_NATIVE_CLOUD_REPAIR_IN_PROGRESS_M1_NOT_RUN",
+  "authorization": {
+    "owner_merged_pr": 53,
+    "authorized_origin_main": "e2f0c57853b1fca6bc4d6dcbca0185b57baf452f",
+    "manifest_blob": "4e19564c7c637b071a2fe4869d652f6edadc5a4d"
+  },
+  "evidence": {
+    "native_run_36566461234": {
+      "head": "41c5094f90e6544b19f49561f9d59d7b0caa7972",
+      "server": "SUCCESS",
+      "native_release_build": "PASS",
+      "native_process_axes": "PASS",
+      "native_library": "442_PASS_1_FAIL_0_SKIP",
+      "failed_test": "process::windows::tests::real_app_container_descendant_reaches_native_seat_pipe",
+      "direct_error": "The parent cmd process exited with code 1; reading the optional helper diagnostic file returned Windows error 2 because that file did not exist. No child pipe-open error was obtained.",
+      "logical_check": "The initial interpretation of error 2 as the pipe client's error was incorrect: it belonged to the test's read_to_string call. The test did not prove the helper started or reached pipe open."
+    },
+    "repair_run_36567333084": {
+      "head": "21f14a5c5e887e43bb9cb67693fd3f4ed2efb7ff",
+      "change": "Seat pipe name uses the AppContainer LOCAL namespace; this was a hypothesis, not a proven repair",
+      "observed_result": "The same test still timed out, and the diagnostic file was still missing. Native binary compilation independently failed on a service-worker error conversion; that compile issue was corrected in 3d021cd0.",
+      "state_at_checkpoint": "FAILED_HYPOTHESIS_UNCONFIRMED"
+    }
+  },
+  "integration": {
+    "service_frame_executor": "Committed at f0d38ca6 and f1787797; cloud compilation pending in repair run",
+    "seat_io_channel": "Committed at 5643648e and b087b777; production admission and dispatch remain unwired",
+    "user_origin": "The current Tauri to Node to native-host path does not carry a host-observed User source; a separate Tauri-owned native origin path is required before User operations can be admitted",
+    "e1_registry": "IN_CONSTRUCTION",
+    "a1_ledger": "IN_CONSTRUCTION"
+  },
+  "verification": {
+    "real_codex_seat": "NOT_RUN",
+    "ot4_login": "NOT_REQUESTED",
+    "m1_acceptance": "NOT_RUN"
+  },
+  "correction": "2026-09-29: Controller withdrew the original LPAC error attribution after checking the expression that produced the reported Err(2). The same test now captures the cmd/helper output in the existing writable home so the next run can distinguish launch from pipe failures. No pipe compatibility conclusion is claimed.",
+  "next": "Read the direct cmd/helper output from the next exact-head cloud run and repair the actual cause; continue native User origin and same-connection seat dispatch before exercising one real Codex instance. Continue work after this checkpoint under PR 53 authorization."
+}

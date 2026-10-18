@@ -61,6 +61,8 @@ export type WorkspaceInfo = {
 export type AppServerEvent = {
   workspace_id: string;
   message: Record<string, unknown>;
+  nativeAssociation?: Record<string, unknown>;
+  nativeSourceRef?: Record<string, unknown>;
 };
 
 export type TrayRecentThreadEntry = {
@@ -211,7 +213,7 @@ export type PersonalityPreference = "friendly" | "pragmatic";
 export type FollowUpMessageBehavior = "queue" | "steer";
 export type ComposerSendIntent = "default" | "queue" | "steer";
 export type SendMessageResult = {
-  status: "sent" | "blocked" | "steer_failed";
+  status: "sent" | "pending" | "blocked" | "steer_failed";
 };
 
 export type ComposerEditorPreset = "default" | "helpful" | "smart";
@@ -404,6 +406,7 @@ export type RequestUserInputQuestion = {
   question: string;
   isOther?: boolean;
   options?: RequestUserInputOption[];
+  recommendedIndex?: number;
 };
 
 export type RequestUserInputParams = {
@@ -411,6 +414,9 @@ export type RequestUserInputParams = {
   turn_id: string;
   item_id: string;
   questions: RequestUserInputQuestion[];
+  card_origin?: "host-mcp";
+  card_state?: "OPEN" | "EXPIRED" | "ANSWER_UNKNOWN" | "ANSWERED";
+  card_revision?: string;
 };
 
 export type RequestUserInputRequest = {

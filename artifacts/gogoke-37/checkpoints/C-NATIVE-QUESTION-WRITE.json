@@ -1,0 +1,73 @@
+{
+  "schema": "gogoke.37.construction-checkpoint.v1",
+  "state": "ACTIVE_CONTINUING_AFTER_SOURCE_REVIEW_AND_CLOUD_TIMEOUT",
+  "repository": "taiyun668/gogoke",
+  "branch": "codex/gogoke-37-l0",
+  "source_before_batch": "fc2bb6faa387dfbfe34ce0566ee3f93c2d3244cc",
+  "authorization_main": "8a984b6ac402d217a8897adaa4a7dcc56fbf68e3",
+  "manifest_blob": "2d3b34a7903e7b0223d043786863706c2297c78c",
+  "receipt_blob": "8020812e3abf35887829f50c78ec9f513272bf70",
+  "owner_basis": "Owner continued the run; PR #56 authorizes all L0-G and M1-M3. No new scope approval is needed for these necessary native C/H/A seams. Checkpoint is not a stop.",
+  "last_fixed_source_evidence": {
+    "source": "fc2bb6faa387dfbfe34ce0566ee3f93c2d3244cc",
+    "native_run": 36682909041,
+    "native_artifact": 11083722802,
+    "release_build": "PASS",
+    "required_axes": { "passed": 3, "failed": 0, "skipped": 0 },
+    "focused": { "executed": 20, "passed": 20, "failed": 0, "skipped": 0 },
+    "server": "PASS",
+    "library": {
+      "state": "CANCELLED_AT_30_MINUTE_JOB_TIMEOUT_NO_FINAL_SUMMARY",
+      "discovered": 545,
+      "observed_unique_pass_terminal_lines": 465,
+      "observed_unique_fail_terminal_lines": 2,
+      "without_observed_terminal": 78,
+      "counts_are_partial_not_complete_execution": true,
+      "single_hanging_test": "NOT_ESTABLISHED"
+    },
+    "lpac_shim": "SKIPPED_NOT_PASS",
+    "desktop_run": 36682999884,
+    "desktop": "PASS_ALL_FIVE_JOBS_INCLUDING_INDEPENDENT_EXECUTABLE_BYTE_COMPARISON",
+    "hygiene_run": 36683003423,
+    "hygiene": "PASS"
+  },
+  "instrument_repairs": [
+    "The original NULL Job query returned the caller's current Job. It was not an invalid-handle control. Query the process pseudo-handle as the actual wrong-object-type Job negative case, preserving the native error.",
+    "The stop hash now includes parent_grace_exited. Independent Python hashlib over the original little-endian u64 length-prefixed fixture fields gives b0e763947d3d243bc78caff93e0c9daec371baff218878d62ec5c2355dba16fc; the old vector omitted the field. Update the vector, not the production hash.",
+    "Long real CLI checks hash the pinned images repeatedly through native test code. Optimize only gogoke-native-host in the test profile at level 1, explicitly retaining debug assertions and overflow checks. Release configuration, required tests and all time budgets remain unchanged. Whether this reduces the measured duration is pending the same cloud tests; no load or single-hang cause is claimed."
+  ],
+  "native_c_composition": [
+    "A original captured question key and SHA256 produce a C descriptor and complete canonical vendor question projection. C does not become a second raw history. Numeric and string request IDs remain distinct, and every native source is checked against the original H session, generation, ticket and nonce.",
+    "Current Owner/E/F/H launch evidence and active turn are mandatory for a new answer. C's same transaction returns New or Existing; Existing never grants another writer invocation. The H no-ACK answer response ends at durable exact WRITTEN.",
+    "C ANSWERED is supported only by the private typed proof factory checking original User bytes, full canonical answer command, original captured question descriptor/hash, vendor ID, seat/turn/generation, exact H process metadata and observed native thread. The result explicitly reports NATIVE_EXACT_WRITE_RECEIPT and vendorConsumptionConfirmed=false. Ordinary K-INBOX DELIVERED is not changed.",
+    "serverRequest/resolved is a lifecycle fact, not consumption proof: official fixed 0.149 emits it for cancellation and before parsing/submitting a normal answer. OPEN cards expire on known resolved or turn terminal facts; UNKNOWN/ANSWERED are not overwritten.",
+    "Delayed question projection re-reads later already-terminal A closure facts and cannot turn an already-closed request into OPEN. Historical exact WRITTEN can settle after production reopen marks current custody UNKNOWN; no new write permission follows.",
+    "Already-captured question/tail processing is separated from new-input permission. Stop drains and projects original stdout while retaining the stopped native process object, proof and guards, before changing H to STOPPED or confirming release. If the original stdout terminal boundary is not yet observed, that same stop proof remains retained; no second OS stop or added wait is introduced. Saving a frame from the still-held native stdout object also accepts COMMITTED/UNKNOWN only after exact stored PID, creation time, image, binary digest and profile checks; this historical read fact never grants input or a post-restart launch.",
+    "The User-origin K-QCARD answer/recover adapter selects stored C/H identities. Output exposes current unresolved card references, with C reference changes included in read-receipt currentness; payloads are read through C. A copied request ID with different bytes is a conflict."
+  ],
+  "review": {
+    "first": "Fresh Astra source review returned three logic-checked findings: late closure before projection, reopen WRITTEN blocked by current UNKNOWN, and EOF input fence blocking captured tail. No acceptance claim.",
+    "mutation": "Fresh Sol source mutation review found F1/F2 closed but required stop-tail projection for F3. Root then added projection before stop-custody release and an actual native-stop regression control. Follow-up found that UNKNOWN capture still could not project C, and generic reader errors were misread as EOF. Root restricted UNKNOWN to captured-source projection (new answer checks still require ACTIVE), changed stop to require the typed clean EOF cause, and added UNKNOWN stop and error-kind controls. These final mutations await fixed-source cloud execution.",
+    "native_or_final_acceptance": false
+  },
+  "current_validation": {
+    "parser_only": "PASS_NO_LOCAL_NATIVE_COMPILE_OR_RUN",
+    "diff_check": "PASS",
+    "changed_file_public_hygiene": "PASS_ZERO_LEAKS",
+    "native_stop_hash_independent_vector": "PASS",
+    "new_source_cloud": "NOT_RUN_BEFORE_FIXED_COMMIT",
+    "controls": "Original CLI open/stop remains real. A/C ordering and modeled EOF data are explicitly synthetic unit controls, not provider questions or model evidence. The stop-tail control uses the real native stop with modeled A data. Exact-command and settle-fault control reopens the original database and runs the production custody initializer."
+  },
+  "remaining": [
+    "Run the fixed-source cloud package and correct direct failures; verify test-package timing without increasing deadlines.",
+    "Complete remaining H/B1 native resume, input lifecycle and service integration; run actual model and native-question behavior after prepared OT4 login.",
+    "PR #57 trusted-main candidate signer activation remains Owner-merge pending; no main merge authority inferred.",
+    "Ordinary-view Win11 candidate, OT4 login and M1 completion remain pending."
+  ],
+  "custody": "34 private original fc2 evidence files and previous private diagnostics retained. Previously rejected 159 Detours cleanup objects and cli-state-trace worktree remain preserved without retry or bypass. No in-flight worker owns these source files; Controller owns the current composition.",
+  "formal_product_data": "NOT_ACCESSED_OR_CHANGED_BY_THIS_CLOUD_ONLY_SEGMENT",
+  "ot4": "NOT_REQUESTED",
+  "m1_complete": false,
+  "acceptance": false,
+  "roundtrip_review": "Preserve one source batch for C, original instrument corrections and all three review mutations, then one full native dispatch. Use original logs and production reopen/stop, not another external probe. Readback failures and incomplete counts remain explicit while construction continues."
+}
