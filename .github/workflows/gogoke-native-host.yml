@@ -2118,11 +2118,27 @@ jobs:
               $original = [IO.File]::ReadAllBytes($case.path)
               $source = [Text.Encoding]::UTF8.GetString($original)
               $hash = (Get-FileHash -LiteralPath $case.path).Hash
-              if ([regex]::Matches($source,[regex]::Escape($case.needle)).Count -ne 1) {
+              $start = 0
+              $length = $source.Length
+              if ($case.axis -ceq 'R10-resume') {
+                $begin = 'pub(crate) fn promote_resume('
+                $after = 'pub(super) fn backfill('
+                if ([regex]::Matches($source,[regex]::Escape($begin)).Count -ne 1 -or
+                    [regex]::Matches($source,[regex]::Escape($after)).Count -ne 1) {
+                  throw 'R10-resume original promotion function boundaries must match once'
+                }
+                $start = $source.IndexOf($begin)
+                $end = $source.IndexOf($after)
+                if ($end -le $start) { throw 'R10-resume original promotion function boundary order changed' }
+                $length = $end - $start
+              }
+              $target = $source.Substring($start,$length)
+              if ([regex]::Matches($target,[regex]::Escape($case.needle)).Count -ne 1) {
                 throw "$($case.axis) native fact predicate must match once"
               }
               try {
-                [IO.File]::WriteAllText($case.path,$source.Replace($case.needle,$case.stale),[Text.UTF8Encoding]::new($false))
+                $mutated = $source.Substring(0,$start) + $target.Replace($case.needle,$case.stale) + $source.Substring($start+$length)
+                [IO.File]::WriteAllText($case.path,$mutated,[Text.UTF8Encoding]::new($false))
                 $output = & cargo test --locked --manifest-path apps/desktop/native-host/Cargo.toml $case.filter --lib -- --nocapture 2>&1
                 $code = $LASTEXITCODE
                 Write-Host "GOGOKE_SECURITY_EXIT phase=mutated code=$code"
