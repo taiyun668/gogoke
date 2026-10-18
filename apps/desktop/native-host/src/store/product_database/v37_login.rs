@@ -813,9 +813,6 @@ impl<'root> ProductDatabase<'root> {
         drop(query);
         let mut instances = Vec::with_capacity(ids.len());
         for instance_id in ids {
-            self.recover_disappeared_credential_resources(&instance_id, None)?;
-            self.recover_disappeared_claude_resources(&instance_id, None)?;
-            self.recover_grok_home_resources(&instance_id, None)?;
             let row = self.read_registered_instance(&instance_id)?
                 .ok_or(OrchestrationError::Invalid("owner instance list row"))?;
             if row.driver_id.is_empty() || row.driver_id.len() > 128

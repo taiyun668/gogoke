@@ -784,6 +784,11 @@ fn failed_resume_profile_only_cold_recovery_preserves_original_claim_at_each_bou
         applied(&mut product,&operation("global","K-INSTANCE","register","failed-register",INSTANCE,0,
             r#"{"driverId":"codex"}"#));
         qualify_file_backend(&mut product,&root);
+        if cut=="AFTER_CAPTURE" {
+            managed_cli_test_setup::ready(&mut product,&root,"claude");
+            applied(&mut product,&operation("global","K-INSTANCE","register","independent-claude-register",
+                "instanceClaude",0,r#"{"driverId":"claude"}"#));
+        }
         instance::set_instance_concurrency_cap(&mut product.connection,&product.owner,INSTANCE,1).unwrap();
         seat::set_project_parallel_cap(&mut product.connection,&product.owner,"projectA",1).unwrap();
         seat::store_template(&mut product.connection,NativeOrigin::user(&product.owner),StoreTemplate {
@@ -849,6 +854,68 @@ fn failed_resume_profile_only_cold_recovery_preserves_original_claim_at_each_bou
         product.close_checked().unwrap();wait_actual_parent_exit(&parent,pair);
         let mut product=ProductDatabase::open(&root,&database).unwrap();
         let before=claim_rows(&product);assert_eq!(before,claims,"failed child cannot replace old STOPPED claim");
+        if cut=="AFTER_CAPTURE" {
+            // The original H/CLI producer above made a real failed resume. Model
+            // its historical missing typed observation without inventing an H
+            // episode, profile, source, or a recovery callback.
+            let step_id=format!("{}-thread-resume",process[0]);
+            let typed=rows(&product,"SELECT phase,source_epoch,source_cursor FROM main.gogoke_v37_rpc_steps
+                WHERE domain_id='projectA' AND session_id='sessionA' AND step_id=?1",
+                &[&step_id],3);
+            assert_eq!(typed.len(),1);assert_eq!(typed[0][0],"OBSERVED");
+            let missing=Statement::prepare(product.connection.as_ptr(),"UPDATE main.gogoke_v37_rpc_steps
+                SET phase='UNKNOWN',source_epoch=NULL,source_cursor=NULL,
+                    original_error='test-created historical missing typed observation'
+                WHERE domain_id='projectA' AND session_id='sessionA' AND step_id=?1 AND phase='OBSERVED'").unwrap();
+            missing.bind_text(1,&step_id).unwrap();missing.step_done().unwrap();drop(missing);
+            assert!(h::rpc_journal::observed_failed_codex_resume(&product.connection,"projectA","sessionA",
+                &active.generation,&history.request_id,&process[0],&process[1],&process[2],&old_thread)
+                .unwrap().is_none(),"the original source predicate must see no typed OBSERVED response");
+            let frozen=resource_snapshot(&product);
+            let rpc=rows(&product,"SELECT phase,COALESCE(source_epoch,''),COALESCE(source_cursor,''),
+                COALESCE(original_error,'') FROM main.gogoke_v37_rpc_steps
+                WHERE domain_id='projectA' AND session_id='sessionA' AND step_id=?1",&[&step_id],4);
+            let changes=rows(&product,"SELECT CAST(total_changes() AS TEXT)",&[],1);
+            let refused=OrchestrationError::Invalid("failed resume typed OBSERVED response absent");
+            assert_eq!(format!("{:?}",product.recover_disappeared_credential_resources(INSTANCE,None).unwrap_err()),
+                format!("{refused:?}"),"targeted original recovery must retain its SOURCE refusal");
+            assert_eq!(format!("{:?}",product.ensure_native_credential_backend(INSTANCE,&resume).unwrap_err()),
+                format!("{refused:?}"),"targeted admission must retain the same SOURCE refusal");
+            let list=product.dispatch_owner_instance_list_frame(br#"{"schema":"gogoke.37.instance-list.v1"}"#)
+                .expect("observational list must survive one unrelated failed-resume SOURCE refusal");
+            let Json::Object(page)=crate::store::atomic::Parser::parse(std::str::from_utf8(&list).unwrap()).unwrap()
+                else {panic!("original instance list object")};
+            let Some(Json::Array(instances))=page.get(&JsonString::from_str("instances"))
+                else {panic!("original instance list rows")};
+            assert_eq!(instances.len(),2);
+            for (entry,(id,driver,login)) in instances.iter().zip([
+                (INSTANCE,"codex","LOGGED_IN"),("instanceClaude","claude","UNKNOWN")]) {
+                let Json::Object(fields)=entry else {panic!("original instance list row")};
+                for (key,expected) in [("instanceId",id),("driverId",driver),("loginState",login),
+                    ("installState","INSTALLED")] {
+                    assert!(matches!(fields.get(&JsonString::from_str(key)),Some(Json::String(value))
+                        if value.to_well_formed_string().as_deref()==Some(expected)),
+                        "{id} must retain the original {key} qualification");
+                }
+            }
+            assert_eq!(resource_snapshot(&product),frozen,"read and refused targeted paths preserve original F/H resources");
+            assert_eq!(rows(&product,"SELECT phase,COALESCE(source_epoch,''),COALESCE(source_cursor,''),
+                COALESCE(original_error,'') FROM main.gogoke_v37_rpc_steps
+                WHERE domain_id='projectA' AND session_id='sessionA' AND step_id=?1",&[&step_id],4),rpc);
+            assert_eq!(rows(&product,"SELECT CAST(total_changes() AS TEXT)",&[],1),changes,
+                "read and refused targeted paths must make no database writes");
+            assert_eq!(claim_rows(&product),claims,"old STOPPED claim and StopFact stay original");
+            assert!(instance::read_private_history_generation(&product.connection,&active.binding_id,&active.generation)
+                .unwrap().unwrap().source.is_none(),"missing typed OBSERVED cannot become SOURCE");
+            let restore=Statement::prepare(product.connection.as_ptr(),"UPDATE main.gogoke_v37_rpc_steps
+                SET phase='OBSERVED',source_epoch=?1,source_cursor=?2,original_error=NULL
+                WHERE domain_id='projectA' AND session_id='sessionA' AND step_id=?3 AND phase='UNKNOWN'").unwrap();
+            restore.bind_text(1,&typed[0][1]).unwrap();restore.bind_text(2,&typed[0][2]).unwrap();
+            restore.bind_text(3,&step_id).unwrap();restore.step_done().unwrap();drop(restore);
+            assert!(h::rpc_journal::observed_failed_codex_resume(&product.connection,"projectA","sessionA",
+                &active.generation,&history.request_id,&process[0],&process[1],&process[2],&old_thread)
+                .unwrap().is_some(),"original typed source restored for the existing cold recovery axis");
+        }
         let writes=holder_gone_acl_write_count_for_test();
         set_holder_gone_cut_for_test(Some(cut));
         let error=product.recover_disappeared_credential_resources(INSTANCE,None).unwrap_err();
