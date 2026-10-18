@@ -2,7 +2,7 @@
 // not a host/model substitute or an M2 acceptance decision.
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ActualProduct, readJson, sha256, id, delay } from './product-cdp.mjs';
@@ -15,6 +15,16 @@ const drivers = ['claude', 'opencode', 'grok'];
 const atom = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
 const inside = (child, parent) => child === parent || child.startsWith(parent + path.sep);
 const sameWindowsPath = (left, right) => path.resolve(left).toUpperCase() === path.resolve(right).toUpperCase();
+const grokHostMcpQuestionSpecs = [
+  { header: 'Format', question: 'Which non-secret format should this marker use?',
+    options: [{ label: 'JSON', description: 'Use the JSON format.' },
+      { label: 'Plain', description: 'Use plain text.' }], recommendedIndex: 1,
+    answerMode: 'RECOMMENDED_OPTION' },
+  { header: 'Label', question: 'What exact non-secret label should this marker use?',
+    options: [{ label: 'Alpha', description: 'Use the first fixed label.' },
+      { label: 'Beta', description: 'Use the second fixed label.' }], recommendedIndex: 0,
+    answerMode: 'FREE_TEXT' },
+];
 const config = readJson(process.argv[2]);
 const required = ['installed', 'installedSha256', 'version', 'sourceCommit', 'registryKey', 'pwsh',
   'python', 'stateRoot', 'evidenceDirectory', 'result', 'domainId', 'repositoryId', 'observers', 'cases'];
@@ -46,11 +56,12 @@ if (process.platform !== 'win32' || !process.argv[2] || required.some(key => con
 }
 const writeCases = config.cases.filter(row => row.caseMode === 'grokWrite');
 const sequenceCases = config.cases.filter(row => row.caseMode === 'sequence');
+const grokHostMcpCases = config.cases.filter(row => row.caseMode === 'grokHostMcpQuestion');
 const grokContextAfterResumeCases = config.cases.filter(row =>
   row.contextAfterResume === true && row.caseMode === 'sequence');
 const claudeSequenceCases = config.cases.filter(row => row.caseMode === 'claudeSequence');
 if (config.cases.some(row => row.caseMode !== undefined &&
-      !['grokWrite', 'sequence', 'claudeSequence'].includes(row.caseMode)) ||
+      !['grokWrite', 'sequence', 'claudeSequence', 'grokHostMcpQuestion'].includes(row.caseMode)) ||
     config.cases.some(row => row.contextAfterResume !== undefined &&
       typeof row.contextAfterResume !== 'boolean') ||
     (grokContextAfterResumeCases.length > 0 && (grokContextAfterResumeCases.length !== 1 ||
@@ -70,6 +81,12 @@ if (config.cases.some(row => row.caseMode !== undefined &&
       !sameWindowsPath(path.dirname(path.resolve(writeCases[0].worktreePath)),
         path.resolve(config.stateRoot, 'v37-worktrees', 'single'))))) {
   throw Error('Grok Write needs one exact registered F root identity and one new private marker');
+}
+if ((grokHostMcpCases.length > 0 && (grokHostMcpCases.length !== 1 || config.cases.length !== 1 ||
+      grokHostMcpCases[0].driverId !== 'grok' || grokHostMcpCases[0].version !== '1.0.41' ||
+      grokHostMcpCases[0].sha256 !== 'ab5d2a424f08281798acbdbb06076166fe000d7995ede94a673417b805210a25' ||
+      grokHostMcpCases[0].contextAfterResume === true || grokHostMcpCases[0].writeMarker !== undefined))) {
+  throw Error('Grok Host-MCP question case requires the one existing fixed Grok instance and executable pin');
 }
 const opencode = config.cases.find(row => row.driverId === 'opencode');
 if (opencode && (opencode.model.toLowerCase().includes('gpt') || !/(grok|xai)/i.test(opencode.model))) {
@@ -255,6 +272,170 @@ async function observeReceipt(session, row, turn = row) {
     await delay(300); // Observe only this request. Never issue a second send.
   }
   throw Error(`${row.driverId}: original H receipt observation expired; preserve product and request`);
+}
+async function runGrokHostMcpQuestionTurns(row, record, session) {
+  const hostCase = { state: 'RUNNING', registration: null, turns: [] };
+  record.hostMcpQuestion = hostCase; product.save();
+  const safeRpcId = value => (typeof value === 'string' && value.length > 0) ||
+    (typeof value === 'number' && Number.isSafeInteger(value));
+  let sharedBinding = null;
+  for (const [ordinal, spec] of grokHostMcpQuestionSpecs.entries()) {
+    const turn = { ordinal: ordinal + 1, question: spec, answerMode: spec.answerMode,
+      state: 'PRE_SEND', sendRequestId: null, card: null };
+    hostCase.turns.push(turn); product.save();
+    let before;
+    for (;;) {
+      const prior = session.cursor;
+      before = await output(session);
+      check(/^[0-9]+$/.test(before.rawHighwater ?? '') &&
+        /^[0-9]+$/.test(before.ledgerHighwater ?? '') &&
+        !before.nativeCardRefs?.some(card => card.state === 'OPEN'),
+      'Grok Host-MCP case needs an original H page without a pending card');
+      if (BigInt(before.cursor) === BigInt(before.ledgerHighwater)) break;
+      check(BigInt(before.cursor) > BigInt(prior),
+        'Grok Host-MCP pre-send H page made no ledger progress');
+    }
+    turn.beforeSendRawHighwater = before.rawHighwater;
+    const question = { header: spec.header, question: spec.question,
+      options: spec.options, recommendedIndex: spec.recommendedIndex };
+    const prompt = 'Use the registered ask_user tool exactly once with this one question, and no other tools: ' +
+      JSON.stringify(question) + '. After the User answers, repeat that answer exactly in your final response.';
+    turn.prompt = prompt; record.prompt = prompt; product.save();
+    const sent = await sessionStep(session, 'send', { body: prompt }, ['APPLIED', 'UNKNOWN']);
+    const sendOperation = journal.operations.at(-1);
+    turn.sendRequestId = sendOperation.request.requestId;
+    turn.sendStatus = sent.status; turn.sendRawFrame = sendOperation.rawFrame;
+    record.sendRequestId = turn.sendRequestId;
+    record.sendStatus = sent.status; record.state = 'SENT_ORIGINAL_ONCE'; product.save();
+    if (sent.status === 'UNKNOWN' && sent.result.reason) {
+      throw Error(`grok: original Host-MCP H send UNKNOWN reason=${sent.result.reason}; no resend`);
+    }
+    const cardDeadline = Date.now() + 600000;
+    let asking;
+    while (Date.now() < cardDeadline) {
+      const page = await output(session);
+      check(page.nativeCardRefsIncomplete === false,
+        'Grok Host-MCP native card reference page is incomplete');
+      const matches = (page.nativeCardRefs ?? []).filter(card => card.state === 'OPEN' &&
+        card.turnId === turn.sendRequestId);
+      check(matches.length <= 1, 'Grok Host-MCP original H send has an ambiguous OPEN card count');
+      if (matches.length === 1) { asking = { page, card: matches[0] }; break; }
+      const receipt = page.nativeInputReceipts?.find(value => value.requestId === turn.sendRequestId);
+      if (receipt?.receipt?.status && receipt.receipt.status !== 'UNKNOWN') {
+        throw Error(`grok: original Host-MCP H send terminated before its card (${receipt.receipt.status}); no replay`);
+      }
+      await delay(300);
+    }
+    check(asking !== undefined, 'Grok Host-MCP original H send did not produce one current C card');
+    turn.cardId = asking.card.cardId; turn.cardRevision = asking.card.revision;
+    turn.recoverRequestIds = [];
+    let recovered = await operation('K-QCARD', 'recover', turn.cardId, {}, turn.cardRevision,
+      ['APPLIED', 'STALE']);
+    turn.recoverRequestIds.push(journal.operations.at(-1).request.requestId);
+    if (recovered.status === 'STALE') {
+      recovered = await operation('K-QCARD', 'recover', turn.cardId, {}, recovered.revision);
+      turn.recoverRequestIds.push(journal.operations.at(-1).request.requestId);
+    }
+    const native = recovered.result.nativeQuestion;
+    const shown = native?.questions?.length === 1 ? native.questions[0] : null;
+    const binding = native?.binding;
+    const hSendBytes = Buffer.from(turn.sendRawFrame, 'utf8');
+    const hSendSha256 = createHash('sha256').update(hSendBytes).digest('hex');
+    const actualOptions = shown?.options?.map(({ label, description }) => ({ label, description }));
+    check(recovered.result.state === 'OPEN' && recovered.result.availableForAnswer === true &&
+      recovered.result.turnId === turn.sendRequestId && recovered.result.seatId === row.seatId &&
+      recovered.result.generation === session.generation && native?.provider === 'grok' &&
+      native.cardOrigin === 'host-mcp' && native.bindingVersion === 1 &&
+      native.allowFreeAnswer === true && native.recommendedIndex === spec.recommendedIndex &&
+      shown?.id === 'host0' && shown.header === spec.header && shown.question === spec.question &&
+      JSON.stringify(actualOptions) === JSON.stringify(spec.options) &&
+      binding?.bindingScope === 'INITIAL_H_PROMPT' &&
+      binding.hostSessionId === session.id && binding.openRequestId === record.openRequestId &&
+      binding.generation === session.generation && binding.hostPromptRequestId === turn.sendRequestId &&
+      binding.hostPromptRequestSha256 === hSendSha256 && binding.registrationStepId === 'thread-start' &&
+      atom(binding.serverId) && /^[a-f0-9]{64}$/.test(binding.registrationCommandSha256 ?? '') &&
+      /^[a-f0-9]{64}$/.test(binding.sourceFrameSha256 ?? '') &&
+      binding.sourceOperationId === binding.processOperationId &&
+      typeof binding.sourceEpoch === 'string' && binding.sourceEpoch.length > 0 &&
+      /^[0-9]+$/.test(binding.sourceCursor ?? '') &&
+      ['promptRpcId', 'outerRpcId', 'innerRpcId'].every(key => safeRpcId(binding[key])) &&
+      typeof binding.promptStepId === 'string' && binding.promptStepId.length > 0,
+    'Grok Host-MCP C card must bind the exact original H prompt, registered server, raw A source and typed IDs');
+    if (sharedBinding === null) {
+      sharedBinding = { serverId: binding.serverId, registrationStepId: binding.registrationStepId,
+        registrationCommandSha256: binding.registrationCommandSha256,
+        hostSessionId: binding.hostSessionId, openRequestId: binding.openRequestId,
+        generation: binding.generation, processOperationId: binding.processOperationId };
+      hostCase.registration = sharedBinding;
+    } else {
+      check(binding.serverId === sharedBinding.serverId &&
+        binding.registrationStepId === sharedBinding.registrationStepId &&
+        binding.registrationCommandSha256 === sharedBinding.registrationCommandSha256 &&
+        binding.hostSessionId === sharedBinding.hostSessionId &&
+        binding.openRequestId === sharedBinding.openRequestId &&
+        binding.generation === sharedBinding.generation &&
+        binding.processOperationId === sharedBinding.processOperationId,
+      'Grok Host-MCP turns must share the same original registered H process');
+    }
+    turn.card = { cardId: turn.cardId, revision: turn.cardRevision,
+      requestRef: recovered.result.requestRef, turnId: recovered.result.turnId,
+      source: { operationId: binding.sourceOperationId, sourceEpoch: binding.sourceEpoch,
+        sourceCursor: binding.sourceCursor, frameSha256: binding.sourceFrameSha256 },
+      binding: { ...binding }, nativeQuestion: native };
+    turn.state = 'OPEN_C_RECOVERED'; product.save();
+    const answer = spec.answerMode === 'RECOMMENDED_OPTION'
+      ? spec.options[spec.recommendedIndex].label
+      : randomBytes(24).toString('hex');
+    check(spec.answerMode !== 'FREE_TEXT' ||
+      (!JSON.stringify(spec).includes(answer) && !JSON.stringify(record.seatSettings).includes(answer) &&
+       !turn.prompt.includes(answer) && !spec.options.some(option => option.label === answer)),
+    'Grok Host-MCP free answer is private and absent from prompt, question, options and seat settings');
+    turn.answerMode = spec.answerMode; turn.privateAnswer = answer;
+    turn.answerGeneratedAfterCardObservation = true; product.save();
+    const answered = await operation('K-QCARD', 'answer', turn.cardId,
+      { generation: session.generation, answers: { host0: [answer] } }, recovered.revision,
+      ['APPLIED', 'UNKNOWN']);
+    const answerOperation = journal.operations.at(-1);
+    turn.answerRequestId = answerOperation.request.requestId;
+    turn.answerWriteRequestId = turn.answerRequestId;
+    turn.answerRequestRawFrame = answerOperation.rawFrame;
+    turn.answerStatus = answered.status;
+    check(answered.status === 'UNKNOWN' || (answered.result.state === 'ANSWERED' &&
+      answered.result.deliveryBasis === 'NATIVE_EXACT_WRITE_RECEIPT' &&
+      answered.result.vendorConsumptionConfirmed === false),
+    'Grok Host-MCP exact C/H answer write is not vendor answer consumption');
+    product.save();
+    const terminal = await observeReceipt(session, row, turn);
+    check(terminal.receipt?.result?.createdTurn === true &&
+      terminal.receipt.result.stopReason === 'end_turn' &&
+      typeof terminal.receipt.result.sourceEpoch === 'string' &&
+      /^[0-9]+$/.test(terminal.receipt.result.sourceCursor ?? '') &&
+      BigInt(terminal.receipt.result.sourceCursor) >= BigInt(turn.beforeSendRawHighwater),
+    'Grok Host-MCP original H send must receive its same-turn ACP terminal');
+    const outputDeadline = Date.now() + 600000;
+    let complete = false;
+    while (Date.now() < outputDeadline) {
+      const page = await output(session);
+      check(/^[0-9]+$/.test(page.rawHighwater ?? '') &&
+        /^[0-9]+$/.test(page.ledgerHighwater ?? ''),
+      'Grok Host-MCP terminal output cursor shape differs');
+      if (BigInt(page.rawHighwater) >= BigInt(terminal.receipt.result.sourceCursor) &&
+          BigInt(page.cursor) === BigInt(page.ledgerHighwater)) {
+        turn.terminalOutputPage = { rawHighwater: page.rawHighwater,
+          ledgerCursor: page.cursor, ledgerHighwater: page.ledgerHighwater };
+        complete = true; break;
+      }
+      await delay(300);
+    }
+    check(complete, 'Grok Host-MCP original H terminal source was not fully observed');
+    turn.terminalReceipt = terminal.receipt; turn.state = 'ORIGINAL_H_TERMINAL_OBSERVED';
+    record.prompt = prompt; record.sendRequestId = turn.sendRequestId;
+    product.save();
+  }
+  hostCase.state = 'TWO_ORIGINAL_TURNS_ANSWERED_AND_TERMINAL';
+  record.hostMcpQuestionObserved = true;
+  record.state = 'ORIGINAL_H_RECEIPTED';
+  product.save();
 }
 function claudeTerminalResult(result, beforeSendRawHighwater) {
   return result?.createdTurn === true &&
@@ -787,6 +968,7 @@ async function runCase(row, instances) {
   for (const action of ['admission-reserve', 'admission-commit']) await sessionStep(session, action, { seatId: row.seatId });
   const opened = await sessionStep(session, 'open', { seatId: row.seatId,
     repositoryId: config.repositoryId, worktreeId: row.worktreeId });
+  record.openRequestId = journal.operations.at(-1).request.requestId;
   if (row.driverId === 'claude' && row.caseMode === 'claudeSequence') {
     check(Object.hasOwn(opened.result, 'threadId') && opened.result.threadId === null &&
       opened.result.readinessBasis === 'ORIGINAL_CLAUDE_INITIALIZE_ACK',
@@ -840,6 +1022,16 @@ async function runCase(row, instances) {
   }
   if (row.caseMode === 'claudeSequence') {
     await runClaudeSequenceTurns(row, record, session);
+    return;
+  }
+  if (row.caseMode === 'grokHostMcpQuestion') {
+    await runGrokHostMcpQuestionTurns(row, record, session);
+    const stopped = await sessionStep(session, 'stop', { seatId: row.seatId });
+    check(typeof stopped.result.stopFact === 'string' && stopped.result.stopFact.length > 0,
+      'grok: original Host-MCP process normal stop fact');
+    record.stopFact = stopped.result.stopFact;
+    await sessionStep(session, 'admission-release', { seatId: row.seatId });
+    record.result = 'DIRECT_H_RECEIPT_A_READBACK_REQUIRED'; product.save();
     return;
   }
   if (grokWrite) {
@@ -971,12 +1163,15 @@ async function readbackAndGolden() {
   for (const record of journal.cases) {
     if (record.result === 'NOT_RUN_NOT_LOGGED_IN') continue;
     const observed = facts.sessions.find(value => value.sessionId === record.sessionId);
+    const providerOutputObserved = record.expectedAnswer === '778'
+      ? observed?.answerObserved === true && Boolean(observed?.vendorSessionId)
+      : record.caseMode === 'grokHostMcpQuestion'
+        ? observed?.hostMcpQuestionObserved === true && observed?.markerObserved === true
+        : record.caseMode === 'grokWrite' ? observed?.writeObserved === true
+          : observed?.markerObserved === true;
     check(observed?.driverId === record.driverId && observed?.version === record.fixedVersion &&
       observed?.binarySha256 === `sha256:${record.fixedSha256}` && observed?.allEpisodesStopped &&
-      observed?.providerEndTurn === true && (record.expectedAnswer === '778'
-        ? observed?.answerObserved === true && Boolean(observed?.vendorSessionId)
-        : record.caseMode === 'grokWrite' ? observed?.writeObserved === true
-          : observed?.markerObserved === true),
+      observed?.providerEndTurn === true && providerOutputObserved,
       `${record.driverId}: original A end-turn, answer or marker, and stopped pinned H session`);
     const bundle = path.join(config.evidenceDirectory, `m2-${record.driverId}-protocol-golden.json`);
     if (fs.existsSync(bundle)) throw Error(`${record.driverId}: private golden output already exists`);

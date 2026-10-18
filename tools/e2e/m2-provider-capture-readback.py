@@ -1485,6 +1485,433 @@ def grok_write_evidence(db, domain, case, session, send, prompt_command,
             "targetSha256": sha(expected_bytes), "actualOsAclDisposition": "NOT_RUN",
             "permissionCause": "UNATTRIBUTED"}
 
+def grok_host_mcp_question_evidence(db, domain, case, session, journal):
+    """Read the two actual Grok Host-MCP questions from their original H/A/C rows."""
+    canonical = lambda value: json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                         separators=(",", ":"))
+    typed_id = lambda value: (type(value) is str and 0 < len(value) <= 128) or \
+        (type(value) is int and abs(value) <= 9_007_199_254_740_991)
+    expected = [
+        {"header": "Format", "question": "Which non-secret format should this marker use?",
+         "options": [{"label": "JSON", "description": "Use the JSON format."},
+                     {"label": "Plain", "description": "Use plain text."}],
+         "recommendedIndex": 1, "answerMode": "RECOMMENDED_OPTION"},
+        {"header": "Label", "question": "What exact non-secret label should this marker use?",
+         "options": [{"label": "Alpha", "description": "Use the first fixed label."},
+                     {"label": "Beta", "description": "Use the second fixed label."}],
+         "recommendedIndex": 0, "answerMode": "FREE_TEXT"},
+    ]
+    host_case = case.get("hostMcpQuestion")
+    turns = host_case.get("turns") if isinstance(host_case, dict) else None
+    sid = session.get("id")
+    if case.get("driverId") != "grok" or case.get("caseMode") != "grokHostMcpQuestion" or \
+            case.get("fixedVersion") != "1.0.41" or \
+            case.get("fixedSha256") != "ab5d2a424f08281798acbdbb06076166fe000d7995ede94a673417b805210a25" or \
+            case.get("result") != "DIRECT_H_RECEIPT_A_READBACK_REQUIRED" or \
+            host_case.get("state") != "TWO_ORIGINAL_TURNS_ANSWERED_AND_TERMINAL" or \
+            case.get("hostMcpQuestionObserved") is not True or len(turns or []) != 2 or \
+            not isinstance(sid, str) or not sid or not isinstance(session.get("threadId"), str) or \
+            not session["threadId"]:
+        fail("Grok Host-MCP reader requires one exact fixed two-turn original H case")
+    session_id, vendor_session = sid, session["threadId"]
+    journal_operations = journal.get("operations", [])
+    session_sends = [(index, row) for index, row in enumerate(journal_operations)
+        if row.get("request", {}).get("family") == "K-SESSION" and
+        row["request"].get("targetId") == session_id and row["request"].get("operation") == "send"]
+    if len(session_sends) != 2 or [row["request"].get("requestId") for _, row in session_sends] != \
+            [turn.get("sendRequestId") for turn in turns]:
+        fail("Grok Host-MCP case must have exactly two ordered original H sends")
+    if case.get("sendRequestId") != turns[-1].get("sendRequestId") or \
+            case.get("prompt") != turns[-1].get("prompt"):
+        fail("Grok Host-MCP terminal H send is not the final recorded question turn")
+    open_rows = exact_one(db,
+        "SELECT request_id,raw_hex,generation,process_operation_id,seat_id,instance_id,phase "
+        "FROM gogoke_v37_h_process_episode WHERE domain_id=? AND session_id=? "
+        "AND old_generation IS NULL", (domain, session_id))
+    open_id, open_bytes, generation, process_operation, episode_seat, episode_instance, episode_phase = open_rows
+    if open_id != case.get("openRequestId") or episode_seat != case.get("seatId") or \
+            episode_instance != case.get("instanceId") or episode_phase != "STOPPED":
+        fail("Grok Host-MCP original H process episode or E binding differs")
+    host_pins = exact_one(db,
+        "SELECT s.incarnation,s.instance_id,s.state,settings.settings_json "
+        "FROM gogoke_v37_seats s JOIN gogoke_v37_seat_settings settings "
+        "USING(domain_id,seat_id) WHERE s.domain_id=? AND s.seat_id=?",
+        (domain, case["seatId"]))
+    seat_settings = json.loads(host_pins[3])
+    if host_pins[1:3] != (case["instanceId"], "IDLE") or \
+            seat_settings.get("model") != case.get("seatSettings", {}).get("model") or \
+            seat_settings.get("effort") != case.get("seatSettings", {}).get("effort"):
+        fail("Grok Host-MCP original E model/effort was not retained through normal release")
+    sends_by_id = {row["request"].get("requestId"): (index, row) for index, row in session_sends}
+    all_case_sends = {turn["sendRequestId"] for turn in turns}
+    if not all(turn.get("question") == expected[index] and turn.get("ordinal") == index + 1 and
+               turn.get("answerMode") == expected[index]["answerMode"] and
+               turn.get("answerGeneratedAfterCardObservation") is True and
+               isinstance(turn.get("privateAnswer"), str) and turn["privateAnswer"]
+               for index, turn in enumerate(turns)):
+        fail("Grok Host-MCP original question and answer mode differ from the fixed two-turn case")
+    if turns[0]["privateAnswer"] != expected[0]["options"][expected[0]["recommendedIndex"]]["label"] or \
+            re.fullmatch(r"[a-f0-9]{48}", turns[1]["privateAnswer"]) is None or \
+            turns[1]["privateAnswer"] in [item["label"] for item in expected[1]["options"]]:
+        fail("Grok Host-MCP option answer or post-C private free answer differs")
+    if any(turns[1]["privateAnswer"] in turn.get("prompt", "") for turn in turns) or \
+            turns[1]["privateAnswer"] in json.dumps(case.get("seatSettings", {}), ensure_ascii=False) or \
+            turns[1]["privateAnswer"] in json.dumps(seat_settings, ensure_ascii=False):
+        fail("Grok Host-MCP answer leaked into an original H prompt or E settings")
+
+    # Bind the opt-in production registration and its actual ACP acknowledgement.
+    registration = exact_one(db,
+        "SELECT command_hex,phase,requires_response,source_epoch,source_cursor,open_request_id,"
+        "generation,process_operation_id,ticket,custodian_nonce FROM gogoke_v37_rpc_steps "
+        "WHERE domain_id=? AND session_id=? AND step_id='thread-start'",
+        (domain, session_id))
+    reg_hex, reg_phase, reg_requires, reg_epoch, reg_cursor, reg_open, reg_generation, \
+        reg_operation, ticket, nonce = registration
+    reg_bytes = bytes.fromhex(reg_hex)
+    reg_frame = json.loads(reg_bytes.decode("utf-8").rstrip("\n"))
+    params = reg_frame.get("params", {})
+    meta = params.get("_meta", {})
+    servers = meta.get("x.ai/mcp/servers")
+    if reg_phase != "OBSERVED" or reg_requires != 1 or reg_epoch != nonce or \
+            reg_open != open_id or reg_generation != generation or reg_operation != process_operation or \
+            reg_frame.get("method") != "session/new" or type(reg_frame.get("id")) is not int or \
+            reg_frame.get("id") != 3 or params.get("mcpServers") != [] or \
+            meta.get("yoloMode") is not False or not isinstance(servers, list) or len(servers) != 1 or \
+            servers[0].get("name") != "gogoke_qcard" or not isinstance(servers[0].get("serverId"), str):
+        fail("Grok Host-MCP original thread-start is not the production registered SessionNew")
+    server_id = servers[0]["serverId"]
+    reg_ack = exact_one(db,
+        "SELECT raw_bytes,state,no_event_reason,operation_id,generation,process_ticket,custodian_nonce,"
+        "session_id,source_epoch,source_cursor FROM v37_ledger_raw_source WHERE domain_id=? "
+        "AND session_id=? AND operation_id=? AND source_epoch=? AND source_cursor=?",
+        (domain, session_id, process_operation, reg_epoch, reg_cursor))
+    ack_raw, ack_state, ack_reason, ack_operation, ack_generation, ack_ticket, ack_nonce, \
+        ack_session, ack_epoch, ack_cursor = reg_ack
+    ack = json.loads(bytes(ack_raw).decode("utf-8"))
+    if ack_state != "NO_EVENT" or ack_reason != "ACP_RPC_RESPONSE" or \
+            (ack_operation, ack_generation, ack_ticket, ack_nonce, ack_session, ack_epoch, ack_cursor) != \
+            (process_operation, generation, ticket, nonce, session_id, reg_epoch, reg_cursor) or \
+            type(ack.get("id")) is not type(reg_frame["id"]) or ack.get("id") != reg_frame["id"] or \
+            ack.get("result", {}).get("sessionId") != vendor_session:
+        fail("Grok Host-MCP registration lacks its actual typed A session/new acknowledgement")
+    registration_hash = sha(reg_bytes)
+
+    # Verify each C card, original A request, exact H answer write, and same-turn consumption.
+    evidence_turns = []
+    operation_indexes = {row.get("request", {}).get("requestId"): index
+                         for index, row in enumerate(journal_operations)}
+    for index, (turn, spec) in enumerate(zip(turns, expected)):
+        send_id = turn["sendRequestId"]
+        send_index, send_operation = sends_by_id[send_id]
+        h_request = send_operation.get("request")
+        h_wire = send_operation.get("rawFrame")
+        if not isinstance(h_request, dict) or h_request.get("operation") != "send" or \
+                h_request.get("family") != "K-SESSION" or h_request.get("targetId") != session_id or \
+                h_request.get("domainId") != domain or h_request.get("payload", {}).get("body") != turn.get("prompt") or \
+                h_wire != json.dumps(h_request, ensure_ascii=False, separators=(",", ":")) or \
+                turn.get("sendRawFrame") != h_wire:
+            fail("Grok Host-MCP turn has no exact original H User send bytes")
+        stored_send = exact_one(db,
+            "SELECT phase,receipt_status,request_hex,session_id,generation,ticket,process_operation_id,custodian_nonce,receipt_hex "
+            "FROM gogoke_v37_h_stdin_journal WHERE domain_id=? AND request_id=? AND operation='send'",
+            (domain, send_id))
+        phase, receipt_status, request_hex, stored_session, stored_generation, stored_ticket, \
+            stored_operation, stored_nonce, receipt_hex = stored_send
+        h_bytes = h_wire.encode("utf-8")
+        if (phase, receipt_status, request_hex.lower(), stored_session, stored_generation,
+                stored_ticket, stored_operation, stored_nonce) != \
+                ("RECEIPTED", "APPLIED", h_bytes.hex(), session_id, generation, ticket,
+                 process_operation, nonce):
+            fail("Grok Host-MCP original H send lacks its one durable APPLIED receipt")
+        h_receipt = json.loads(bytes.fromhex(receipt_hex).decode("utf-8"))
+        terminal_receipt = turn.get("terminalReceipt")
+        if h_receipt.get("requestId") != send_id or h_receipt.get("operation") != "send" or \
+                h_receipt.get("targetId") != session_id or h_receipt.get("status") != "APPLIED" or \
+                not isinstance(terminal_receipt, dict) or terminal_receipt.get("status") != "APPLIED" or \
+                h_receipt.get("result") != terminal_receipt.get("result") or \
+                terminal_receipt.get("result", {}).get("createdTurn") is not True or \
+                terminal_receipt.get("result", {}).get("stopReason") != "end_turn":
+            fail("Grok Host-MCP original H prompt terminal receipt differs from its durable receipt")
+
+        source_record = turn.get("card", {}).get("source", {})
+        binding_record = turn.get("card", {}).get("binding", {})
+        card_id = turn.get("card", {}).get("cardId")
+        if not isinstance(card_id, str) or not card_id:
+            fail("Grok Host-MCP recovered C card identity is missing")
+        expected_card_id = "card" + sha(f"{domain}\n{session_id}\n{process_operation}\n"
+            f"{nonce}\n{source_record.get('sourceCursor', '')}".encode("utf-8"))
+        if card_id != expected_card_id:
+            fail("Grok Host-MCP C card identity is not derived from its original A source")
+        card = exact_one(db,
+            "SELECT revision,state,vendor_request_id,vendor_thread_id,vendor_item_id,auto_resolution_ms,"
+            "question_payload,question_id,question_header,question_text,answer_shape,seat_id,turn_id,"
+            "generation,answer_kind,answer FROM gogoke_v37_qcard_native WHERE domain_id=? AND card_id=?",
+            (domain, card_id))
+        revision, card_state, vendor_request_id, thread, vendor_item_id, auto_ms, payload_text, \
+            question_id, header, question, answer_shape, card_seat, turn_id, card_generation, \
+            card_answer_kind, card_answer = card
+        payload = json.loads(payload_text)
+        if canonical(payload) != payload_text or card_state != "ANSWERED" or thread != vendor_session or \
+                turn_id != send_id or card_seat != case["seatId"] or card_generation != generation or \
+                question_id != "host0" or header != spec["header"] or question != spec["question"] or \
+                answer_shape != "OPTIONS_OR_FREE" or auto_ms != "" or \
+                card_answer_kind != "WIRE" or payload.get("provider") != "grok" or \
+                payload.get("cardOrigin") != "host-mcp" or payload.get("bindingVersion") != 1 or \
+                payload.get("allowFreeAnswer") is not True or \
+                payload.get("recommendedIndex") != spec["recommendedIndex"] or \
+                payload.get("questions") != [{"id": "host0", "header": spec["header"],
+                    "question": spec["question"], "options": spec["options"]}]:
+            fail("Grok Host-MCP C card is not the exact recovered Host-MCP question")
+        options = db.execute(
+            "SELECT option_id,ordinal,label,description FROM gogoke_v37_qcard_native_options "
+            "WHERE domain_id=? AND card_id=? ORDER BY CAST(ordinal AS INTEGER),option_id",
+            (domain, card_id)).fetchall()
+        if options != [(f"option{i}", str(i), item["label"], item["description"])
+                       for i, item in enumerate(spec["options"])]:
+            fail("Grok Host-MCP C option rows differ from the original A request")
+        raised_id, raised_hex, raised_state = exact_one(db,
+            "SELECT request_id,request_hex,state FROM gogoke_v37_qcard_native_operations "
+            "WHERE domain_id=? AND card_id=? AND state='RAISED'", (domain, card_id))
+        descriptor = json.loads(bytes.fromhex(raised_hex).decode("utf-8"))
+        if raised_id != "raise" + sha(f"{domain}\n{session_id}\n{process_operation}\n"
+                f"{nonce}\n{source_record.get('sourceCursor', '')}".encode("utf-8")) or \
+                raised_state != "RAISED" or descriptor != {
+                "operationId": source_record.get("operationId"),
+                "sourceEpoch": source_record.get("sourceEpoch"),
+                "sourceCursor": source_record.get("sourceCursor"),
+                "frameSha256": source_record.get("frameSha256")}:
+            fail("Grok Host-MCP C raise descriptor differs from the recorded original A source")
+        source = exact_one(db,
+            "SELECT raw_bytes,state,no_event_reason,resolved_event_id,operation_id,generation,"
+            "process_ticket,custodian_nonce,session_id,source_epoch,source_cursor FROM v37_ledger_raw_source "
+            "WHERE domain_id=? AND session_id=? AND operation_id=? AND source_epoch=? AND source_cursor=?",
+            (domain, session_id, descriptor["operationId"], descriptor["sourceEpoch"], descriptor["sourceCursor"]))
+        raw, source_state, no_event_reason, event_id, source_op, source_gen, source_ticket, \
+            source_nonce, source_session, source_epoch, source_cursor = source
+        raw = bytes(raw)
+        source_frame = json.loads(raw.decode("utf-8"))
+        if source_state != "NO_EVENT" or no_event_reason != "HOST_GROK_MCP_QUESTION_CARD" or \
+                event_id is not None or (source_op, source_gen, source_ticket, source_nonce,
+                    source_session, source_epoch, source_cursor) != \
+                    (process_operation, generation, ticket, nonce, session_id, nonce, descriptor["sourceCursor"]) or \
+                sha(raw) != descriptor["frameSha256"]:
+            fail("Grok Host-MCP raw A question source lost its original H process binding")
+        outer = source_frame.get("id")
+        params = source_frame.get("params", {})
+        message = params.get("message", {})
+        inner = message.get("id")
+        arguments = message.get("params", {}).get("arguments", {})
+        if set(source_frame) != {"jsonrpc", "id", "method", "params"} or \
+                source_frame.get("jsonrpc") != "2.0" or not typed_id(outer) or \
+                source_frame.get("method") != "x.ai/mcp/sdk_call" or \
+                set(params) != {"serverId", "message"} or params.get("serverId") != server_id or \
+                set(message) != {"jsonrpc", "id", "method", "params"} or \
+                message.get("jsonrpc") != "2.0" or not typed_id(inner) or \
+                message.get("method") != "tools/call" or \
+                set(message.get("params", {})) != {"name", "arguments"} or \
+                message.get("params", {}).get("name") != "ask_user" or \
+                set(arguments) != {"header", "question", "options", "recommendedIndex"} or \
+                arguments != {key: spec[key] for key in ("header", "question", "options", "recommendedIndex")}:
+            fail("Grok Host-MCP A source is not the exact registered ask_user question")
+        expected_binding = {
+            "serverId": server_id, "registrationStepId": "thread-start",
+            "registrationCommandSha256": registration_hash, "hostSessionId": session_id,
+            "openRequestId": open_id, "generation": generation,
+            "processOperationId": process_operation, "hostPromptRequestId": send_id,
+            "hostPromptRequestSha256": sha(h_bytes), "promptStepId": "acp-send-" + sha(h_bytes)[:40],
+            "promptRpcId": "gogoke-acp-send-" + sha(h_bytes)[:40],
+            "outerRpcId": outer, "innerRpcId": inner,
+            "sourceOperationId": process_operation, "sourceEpoch": nonce,
+            "sourceCursor": descriptor["sourceCursor"], "sourceFrameSha256": sha(raw),
+            "bindingScope": "INITIAL_H_PROMPT"}
+        if payload.get("binding") != expected_binding or binding_record != expected_binding or \
+                turn.get("card", {}).get("turnId") != send_id or \
+                turn.get("card", {}).get("source") != {"operationId": process_operation,
+                    "sourceEpoch": nonce, "sourceCursor": descriptor["sourceCursor"],
+                    "frameSha256": sha(raw)}:
+            fail("Grok Host-MCP C binding does not preserve all original H, registration and A identities")
+        composite = canonical([server_id, outer, inner]).encode("utf-8")
+        request_ref = "gmpc_" + sha(composite)
+        if json.loads(vendor_request_id) != request_ref or vendor_item_id != request_ref or \
+                turn.get("card", {}).get("requestRef") != request_ref:
+            fail("Grok Host-MCP C vendor request identity is not derived from the typed original IDs")
+
+        recover_ids = turn.get("recoverRequestIds", [])
+        if not recover_ids:
+            fail("Grok Host-MCP C recovery request identity is absent")
+        recover_id = recover_ids[-1]
+        recover_operation = next((row for row in journal_operations if
+            row.get("request", {}).get("requestId") == recover_id), None)
+        answer_id = turn.get("answerRequestId")
+        answer_operation = next((row for row in journal_operations if
+            row.get("request", {}).get("requestId") == answer_id), None)
+        if recover_operation is None or answer_operation is None or \
+                recover_operation.get("request", {}).get("operation") != "recover" or \
+                recover_operation.get("request", {}).get("targetId") != card_id or \
+                answer_operation.get("request", {}).get("operation") != "answer" or \
+                answer_operation.get("request", {}).get("targetId") != card_id:
+            fail("Grok Host-MCP original K-QCARD recover or answer request is missing")
+        recover_index = operation_indexes.get(recover_id, -1)
+        answer_index = operation_indexes.get(answer_id, -1)
+        next_send_index = session_sends[index + 1][0] if index + 1 < len(session_sends) else len(journal_operations)
+        if not send_index < recover_index <= answer_index < next_send_index:
+            fail("Grok Host-MCP C answer is not attached to its original H send before any next send")
+        recover_wire = recover_operation.get("rawFrame")
+        recover_request = recover_operation.get("request")
+        recover_bytes, recover_receipt_bytes = exact_one(db,
+            "SELECT request_bytes,receipt_bytes FROM v37_ledger_receipt "
+            "WHERE family='K-QCARD' AND domain_id=? AND request_id=?", (domain, recover_id))
+        recover_receipt = json.loads(bytes(recover_receipt_bytes).decode("utf-8"))
+        recovered = recover_receipt.get("result", {})
+        if bytes(recover_bytes).decode("utf-8") != recover_wire or \
+                recover_request.get("payload") != {} or recover_receipt.get("status") not in ("APPLIED", "REPLAYED") or \
+                recovered.get("state") != "OPEN" or recovered.get("availableForAnswer") is not True or \
+                recovered.get("turnId") != send_id or recovered.get("seatId") != case["seatId"] or \
+                recovered.get("generation") != generation or recovered.get("requestRef") != request_ref or \
+                recovered.get("nativeQuestion") != payload:
+            fail("Grok Host-MCP recovered C receipt does not match the original A question")
+        answer = turn["privateAnswer"]
+        if answer_operation.get("request", {}).get("payload") != {
+                "generation": generation, "answers": {"host0": [answer]}} or \
+                answer_operation.get("rawFrame") != json.dumps(answer_operation["request"],
+                    ensure_ascii=False, separators=(",", ":")) or \
+                turn.get("answerRequestRawFrame") != answer_operation.get("rawFrame"):
+            fail("Grok Host-MCP answer request bytes do not carry the exact option or free answer")
+        answer_receipt = answer_operation.get("receipt", {})
+        answer_req_bytes, answer_receipt_bytes = exact_one(db,
+            "SELECT request_bytes,receipt_bytes FROM v37_ledger_receipt "
+            "WHERE family='K-QCARD' AND domain_id=? AND request_id=?", (domain, answer_id))
+        persisted_answer_receipt = json.loads(bytes(answer_receipt_bytes).decode("utf-8"))
+        if bytes(answer_req_bytes).decode("utf-8") != answer_operation["rawFrame"] or \
+                persisted_answer_receipt.get("status") not in ("APPLIED", "REPLAYED") or \
+                persisted_answer_receipt.get("result", {}).get("state") != "ANSWERED" or \
+                persisted_answer_receipt.get("result", {}).get("deliveryBasis") != "NATIVE_EXACT_WRITE_RECEIPT" or \
+                persisted_answer_receipt.get("result", {}).get("vendorConsumptionConfirmed") is not False or \
+                answer_receipt.get("status") not in ("APPLIED", "UNKNOWN"):
+            fail("Grok Host-MCP C exact-write receipt is absent or overstates provider consumption")
+        answer_db_row = exact_one(db,
+            "SELECT request_hex,card_id,state,vendor_request_id,seat_id,turn_id,generation,"
+            "answer_kind,answer,native_receipt_id FROM gogoke_v37_qcard_native_operations "
+            "WHERE domain_id=? AND request_id=?", (domain, answer_id))
+        answer_wire = card_answer.encode("utf-8")
+        answer_frame = json.loads(answer_wire)
+        expected_answer_json = canonical({"answer": answer}).encode("utf-8").decode("utf-8")
+        expected_answer_frame = {"jsonrpc": "2.0", "id": outer, "result": {
+            "jsonrpc": "2.0", "id": inner, "result": {"content": [
+                {"type": "text", "text": expected_answer_json}], "isError": False}}}
+        if answer_frame != expected_answer_frame or \
+                bytes.fromhex(answer_db_row[0]).decode("utf-8") != answer_operation["rawFrame"] or \
+                answer_db_row[1:9] != (card_id, "ANSWERED", vendor_request_id, case["seatId"],
+                    send_id, generation, "WIRE", card_answer) or not answer_db_row[9]:
+            fail("Grok Host-MCP C answer row or payload does not preserve the exact original IDs and answer")
+        step_id = "qanswer" + sha(f"{domain}\n{session_id}\n{answer_id}".encode("utf-8"))
+        writer = exact_one(db,
+            "SELECT command_hex,phase,requires_response,process_operation_id,generation,ticket,"
+            "custodian_nonce,open_request_id,source_epoch,source_cursor FROM gogoke_v37_rpc_steps "
+            "WHERE domain_id=? AND session_id=? AND step_id=?",
+            (domain, session_id, step_id))
+        writer_hex, writer_phase, writer_requires, writer_operation, writer_generation, writer_ticket, \
+            writer_nonce, writer_open, writer_epoch, writer_cursor = writer
+        writer_bytes = bytes.fromhex(writer_hex)
+        if writer_bytes != answer_wire + b"\n" or writer_phase != "WRITTEN" or writer_requires != 0 or \
+                (writer_operation, writer_generation, writer_ticket, writer_nonce, writer_open,
+                 writer_epoch, writer_cursor) != (process_operation, generation, ticket, nonce,
+                    open_id, None, None) or turn.get("answerWriteRequestId") != answer_id:
+            fail("Grok Host-MCP exact C receipt is not bound to one original-H qanswer writer")
+
+        digest = sha(h_bytes)
+        prompt_step_id = "acp-send-" + digest[:40]
+        prompt_rpc_id = "gogoke-acp-send-" + digest[:40]
+        prompt_step = exact_one(db,
+            "SELECT command_hex,phase,requires_response,source_epoch,source_cursor,process_operation_id,"
+            "generation,ticket,custodian_nonce,open_request_id FROM gogoke_v37_rpc_steps "
+            "WHERE domain_id=? AND session_id=? AND step_id=?",
+            (domain, session_id, prompt_step_id))
+        prompt_hex, prompt_phase, prompt_requires, prompt_epoch, prompt_cursor, prompt_operation, \
+            prompt_generation, prompt_ticket, prompt_nonce, prompt_open = prompt_step
+        prompt_bytes = bytes.fromhex(prompt_hex)
+        prompt_command = json.loads(prompt_bytes.decode("utf-8").rstrip("\n"))
+        if prompt_phase != "OBSERVED" or prompt_requires != 1 or \
+                (prompt_operation, prompt_generation, prompt_ticket, prompt_nonce, prompt_open) != \
+                (process_operation, generation, ticket, nonce, open_id) or \
+                prompt_command != {"jsonrpc": "2.0", "id": prompt_rpc_id,
+                    "method": "session/prompt", "params": {"sessionId": vendor_session,
+                        "prompt": [{"type": "text", "text": turn["prompt"]}]}} or \
+                prompt_epoch != terminal_receipt["result"].get("sourceEpoch") or \
+                prompt_cursor != terminal_receipt["result"].get("sourceCursor"):
+            fail("Grok Host-MCP original H prompt step is not the same answered turn terminal")
+        terminal_cursor = terminal_receipt["result"].get("sourceCursor")
+        before_cursor = turn.get("beforeSendRawHighwater")
+        if not isinstance(terminal_cursor, str) or not terminal_cursor.isdecimal() or \
+                not isinstance(before_cursor, str) or not before_cursor.isdecimal() or \
+                int(terminal_cursor) <= int(before_cursor):
+            fail("Grok Host-MCP terminal A source is outside its original H turn")
+        scoped_rows = db.execute(
+            "SELECT source_epoch,source_cursor,raw_bytes,state,no_event_reason,resolved_event_id "
+            "FROM v37_ledger_raw_source WHERE domain_id=? AND session_id=? AND operation_id=? "
+            "AND generation=? AND process_ticket=? AND custodian_nonce=? "
+            "AND CAST(source_cursor AS INTEGER)>? AND CAST(source_cursor AS INTEGER)<=? "
+            "ORDER BY CAST(source_cursor AS INTEGER),rowid",
+            (domain, session_id, process_operation, generation, ticket, nonce,
+             int(before_cursor), int(terminal_cursor))).fetchall()
+        if not scoped_rows:
+            fail("Grok Host-MCP original H turn has no scoped raw A source rows")
+        question_rows, output_text, terminal_rows = [], "", []
+        for epoch, cursor, raw_bytes, source_state, reason, resolved_event_id in scoped_rows:
+            frame = json.loads(bytes(raw_bytes).decode("utf-8"))
+            if frame.get("method") == "x.ai/mcp/sdk_call" and \
+                    frame.get("params", {}).get("message", {}).get("method") == "tools/call" and \
+                    frame.get("params", {}).get("message", {}).get("params", {}).get("name") == "ask_user":
+                question_rows.append((epoch, cursor, bytes(raw_bytes), source_state, reason, frame))
+            if frame.get("method") == "session/update" and \
+                    frame.get("params", {}).get("update", {}).get("sessionUpdate") == "agent_message_chunk":
+                if source_state != "RESOLVED" or reason is not None or not isinstance(resolved_event_id, str):
+                    fail("Grok Host-MCP answer text lacks one resolved original A/H event")
+                update = frame["params"]["update"]
+                normalized = exact_one(db,
+                    "SELECT cursor,source_epoch,source_cursor,update_json,source_event_id "
+                    "FROM v37_ledger_index WHERE source_kind='v37' AND domain_id=? AND session_id=? "
+                    "AND source_event_id=?", (domain, session_id, resolved_event_id))
+                if normalized[1:3] != (epoch, cursor) or normalized[4] != resolved_event_id:
+                    fail("Grok Host-MCP provider text raw source and H normalized source coordinates differ")
+                normalized_update = json.loads(normalized[3])
+                if normalized_update.get("sessionUpdate") != update.get("sessionUpdate") or \
+                        normalized_update.get("content") != update.get("content") or \
+                        normalized_update.get("_meta", {}).get("threadId") != vendor_session or \
+                        normalized_update.get("_meta", {}).get("rawSourceCursor") != cursor:
+                    fail("Grok Host-MCP provider text differs between original A and normalized H")
+                content = update.get("content")
+                if isinstance(content, dict) and content.get("type") == "text" and isinstance(content.get("text"), str):
+                    output_text += content["text"]
+            if source_state == "NO_EVENT" and reason == "ACP_RPC_RESPONSE" and \
+                    frame.get("id") == prompt_rpc_id and frame.get("result", {}).get("stopReason") == "end_turn":
+                terminal_rows.append((epoch, cursor, frame, bytes(raw_bytes)))
+        if len(question_rows) != 1 or len(terminal_rows) != 1:
+            fail("Grok Host-MCP turn needs one original A ask_user request and its one typed terminal")
+        q_epoch, q_cursor, q_raw, q_state, q_reason, q_frame = question_rows[0]
+        if (q_epoch, q_cursor, q_state, q_reason) != (nonce, descriptor["sourceCursor"],
+                "NO_EVENT", "HOST_GROK_MCP_QUESTION_CARD") or \
+                q_raw != raw or sha(q_raw) != descriptor["frameSha256"] or answer not in output_text:
+            fail("Grok Host-MCP same-turn A answer did not consume the original C value")
+        terminal_epoch, terminal_cursor_actual, terminal_frame, terminal_raw = terminal_rows[0]
+        if terminal_epoch != terminal_receipt["result"].get("sourceEpoch") or \
+                terminal_cursor_actual != terminal_cursor or \
+                terminal_frame.get("id") != prompt_rpc_id or \
+                turn.get("terminalOutputPage", {}).get("rawHighwater", "-1").isdecimal() is not True or \
+                int(turn["terminalOutputPage"]["rawHighwater"]) < int(terminal_cursor):
+            fail("Grok Host-MCP final A terminal was not observed through the original H output page")
+        evidence_turns.append({"ordinal": index + 1, "sendRequestId": send_id,
+            "cardId": card_id, "questionSourceEpoch": q_epoch, "questionSourceCursor": q_cursor,
+            "questionFrameSha256": sha(q_raw), "outerRpcId": outer, "innerRpcId": inner,
+            "recommendedIndex": spec["recommendedIndex"], "answerMode": spec["answerMode"],
+            "answerSha256": sha(answer.encode("utf-8")), "answerWriteStepId": step_id,
+            "answerWriteFrameSha256": sha(writer_bytes), "terminalSourceEpoch": terminal_epoch,
+            "terminalSourceCursor": terminal_cursor_actual,
+            "terminalFrameSha256": sha(terminal_raw), "answerConsumedInSameTurn": True})
+    return {"hostMcpQuestionObserved": True, "registrationStepId": "thread-start",
+        "registrationServerId": server_id, "registrationCommandSha256": registration_hash,
+        "turns": evidence_turns, "allAnswersConsumedInOriginalTurns": True}
+
 if sequence_mode:
     read_sequence()
     raise SystemExit(0)
@@ -1503,9 +1930,18 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
         marker = case.get("marker")
         expected_answer = case.get("expectedAnswer")
         grok_write = case.get("caseMode") == "grokWrite"
-        if case.get("caseMode", "singleAnswer") not in ("singleAnswer", "grokWrite") or \
-                (grok_write and (driver != "grok" or len(journal["cases"]) != 1)):
+        grok_host_mcp_question = case.get("caseMode") == "grokHostMcpQuestion"
+        if case.get("caseMode", "singleAnswer") not in (
+                "singleAnswer", "grokWrite", "grokHostMcpQuestion") or \
+                ((grok_write or grok_host_mcp_question) and
+                 (driver != "grok" or len(journal["cases"]) != 1)):
             fail("Provider case mode differs from its one selected fixed CLI")
+        if grok_host_mcp_question:
+            host_turns = case.get("hostMcpQuestion", {}).get("turns", [])
+            marker = host_turns[-1].get("privateAnswer") if len(host_turns) == 2 else None
+            if expected_answer is not None or case.get("marker") is not None or \
+                    not isinstance(marker, str) or re.fullmatch(r"[a-f0-9]{48}", marker) is None:
+                fail("Grok Host-MCP case requires only its private post-C free-answer witness")
         natural_claude = driver == "claude" and not supplement
         natural_opencode = driver == "opencode" and expected_answer is not None
         if natural_claude or natural_opencode:
@@ -1981,6 +2417,8 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             write_evidence = grok_write_evidence(db, domain, case, session, send,
                 outbound_prompts[0], original_wire, by_action["open"]["receipt"], seat,
                 binding[3], actual_identity, expected_bytes)
+        host_mcp_question_evidence = grok_host_mcp_question_evidence(
+            db, domain, case, session, journal) if grok_host_mcp_question else None
         if not prompt_echo or not (write_evidence if grok_write else
                 answer_output if natural_claude or natural_opencode else marker_output) or not vendor_end:
             fail(f"{driver}: original H prompt, provider answer or marker, and vendor end-turn are not all present")
@@ -2006,6 +2444,8 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             "rawFrameCount": len(incoming), "unknownFrameCount": sum(row[5] == "PENDING" for row in incoming),
             "allEpisodesStopped": True, "claimState": claim[0], "providerPromptObserved": prompt_echo,
             "providerEndTurn": vendor_end, "markerObserved": marker_output,
+            "hostMcpQuestionObserved": host_mcp_question_evidence is not None,
+            "hostMcpQuestionEvidence": host_mcp_question_evidence,
             "writeObserved": bool(write_evidence), "writeEvidence": write_evidence,
             "answerObserved": answer_output,
             "expectedAnswer": expected_answer,
@@ -2032,6 +2472,7 @@ result["measurementPreservedDatabaseBytes"] = before == result["filesAfter"]
 result["directProviderEvidence"] = result["measurementPreservedDatabaseBytes"] and \
     all(row["allEpisodesStopped"] and row["providerEndTurn"] and
         (row["writeObserved"] if row.get("caseMode") == "grokWrite" else
+         row.get("hostMcpQuestionObserved") is True if row.get("caseMode") == "grokHostMcpQuestion" else
          row["answerObserved"] if (row["driverId"] == "claude" and not supplement) or
              (row["driverId"] == "opencode" and row["expectedAnswer"] == "778")
          else row["markerObserved"])
