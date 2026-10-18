@@ -503,6 +503,16 @@ H 发起，Integrator 只在既有 apps/desktop/native-host/src/main.rs 接线�
 
 `apps/desktop/native-host/src/store/product_database/v37_runtime.rs` 的 open 与 resume 在 C PREPARED 成功记录后、H 绑定或 activation 前，alias bind 失败会直接返回，遗漏调用仍由原 host 持有的 `abort_prepared`。提案只为这两处加入原 custodian 清理，并覆盖 `apps/desktop/native-host/src/store/product_database/v37_runtime_tests.rs` 的真实 suspended child 故障注入与有效 mutation。保留首因、清理错误及全部 UNKNOWN、claim 和 alias 状态；abort 不构成 StopFact，也不提供冷恢复，不改历史数据。Owner 在同一 PR 合并并读回前不施工。
 
+## 2026-10-16：原生 plain resume UNKNOWN 候选的显式 USER 停止（H 同范围 detail）
+
+原代际已经凭自己的 StopFact 为 STOPPED，下一代 plain resume 的真实子进程仍由当前宿主持有，而原 resume 因协议读失败记为 UNKNOWN 时，普通两字段 stop 的 claim 代际与候选 C custody 不同，因此正确拒绝。现有 compound change 的候选停止会改写原 episode，不能用于此处。H 在既有认证 USER `K-SESSION/stop` 内只接受精确 `{seatId, generation, resumeRequestId}`，其中 generation 是原 STOPPED claim；Native 从原 resume raw、唯一 UNKNOWN episode、当前 claim 和 F/H/C 原身份解析候选，不接受调用方 PID、新代际、路径、ticket 或 nonce，child/model 停止不进入此分支。
+
+在 OS 动作前，以原 H operation 表的独立内部标记 `stop-resume-candidate` 持久记录新 stop 的原始 raw、ID、原 resume 选择及当前 revision；不改 wire family/operation、schema、proof kind 或写方。仅对原 retained Job 关闭 input、实际停止、捕获同源 A 尾部并验真实 EOF，之后通过现有 C authority 写该候选自己的 StopProof，再将独立 H stop 记为 APPLIED。原 resume episode 的 UNKNOWN/raw/result revision、RPC UNKNOWN/错误、旧 claim/StopFact 均保持；新回执标明 candidate scope、实际停止代际、原 resumeRequestId 和该 C proof，不代表 resume 成功、旧 claim 停止、admission release、F HOME 关闭或版本资格。同 ID/同 raw 只按原 H intent 与该 C proof 读回，未知 proof/custody 不重复 OS 动作；新 ID 冲突拒绝。
+
+`product_database/v37_runtime.rs`、`v37_runtime_tests.rs` 的既有 shared-file extension 与 `K-SESSION` seams 仅增上述细节；`session_transport/episodes.rs` 只加原候选关联与新 H intent/result 的窄 H helper。F 的现有 temporary HOME 关闭可只读验证新 H raw、原 resume/F HOME 身份和该候选真实 C StopProof，继续使用原 F 关闭效果与 `ORIGINAL_STOP` proof kind，不借旧代际 StopFact；F credential_launch 的 live revoke 与重启 reconcile 同样仅新增此精确原 H/C 证明的只读入口，沿用原凭据效果 writer 与权限，缺原证据继续拒绝。完整历史与版本检查需独立辨认这个内部 H 标记和未晋升但已停止的 C 候选，未归类时仍 Busy。原生回归须经原 producer 建 old STOPPED、真实 retained 新 Job、协议读边界故障致原 resume UNKNOWN，再由显式 USER stop 验 Job 为零、C proof、A EOF、原记录字节不变；负例覆盖错源、身份、raw、CAS、重复 ID、无 Job/EOF、以及 intent/C/H 提交切断。正式原生测试在云端，Owner 实装候选验证单列，未执行不写通过。
+
+本细节不改变 2026-10-13 event-loop 错误清理的“无 resume cancellation”，也不把 2026-10-14 preactivation `abort_prepared` 扩为 activation 后停止。既有 shared path、H/F/C 写域、requirements、invariants、Owner 触点和安全边界不变；scope_digest 须按最终 PLAN.json 重算并独立审查，Controller 合并后精确读回才生效。
+
 
 ## 2026-10-14：以直接原生事实限定重评历史版本阻断（待 Claude 复核合并）
 
