@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { closeFixture } from './causal-close-fixture.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -15,20 +16,57 @@ test('Grok Host-MCP immutable reader joins original H, A and C facts and rejects
     try {
       const python = process.env.GOGOKE_TEST_PYTHON ?? 'python';
       const reader = path.resolve(here, '..', 'm2-provider-capture-readback.py');
+      const causalCloseFixture = Buffer.from(JSON.stringify(
+        closeFixture(123, 'SPAWNED_NODE_CHILD'))).toString('base64');
       const source = String.raw`import ast, hashlib, json, re, sqlite3, sys
+import base64, os
 from pathlib import Path
 
 reader_path, temp_root = Path(sys.argv[1]), Path(sys.argv[2])
 source = reader_path.read_text(encoding='utf-8')
 tree = ast.parse(source)
-needed = {'sha', 'fail', 'exact_one', 'grok_host_mcp_question_evidence'}
+needed = {'sha', 'fail', 'exact_one', 'local_spelling', 'same_local_path',
+          'grok_host_mcp_question_evidence', 'grok_host_mcp_causal_close_evidence',
+          'provider_normal_close_readback_entry'}
 pieces = [ast.get_source_segment(source, node) for node in tree.body
           if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in needed]
 if {node.name for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in needed} != needed:
     raise AssertionError('actual immutable readback helper definitions are incomplete')
-namespace = {'hashlib': hashlib, 'json': json, 're': re}
+namespace = {'hashlib': hashlib, 'json': json, 're': re, 'os': os, 'Path': Path,
+             '__file__': str(reader_path)}
 exec('\n\n'.join(pieces), namespace)
 readback = namespace['grok_host_mcp_question_evidence']
+normal_close_entry = namespace['provider_normal_close_readback_entry']
+
+close_base = json.loads(base64.b64decode('${causalCloseFixture}'))
+close_base['causalCloseAttempts'][0]['schema'] = 'gogoke.37.causal-close-attempt.v1'
+def close_entry_journal(case_mode='grokHostMcpQuestion'):
+    value = json.loads(json.dumps(close_base))
+    value.update({'sourceCommit':'a'*40,'installedVersion':'1.0.41',
+        'installedSha256':{'gogoke.exe':'1'*64,'gogoke-native-host.exe':'2'*64,
+                           'resource-index.json':'3'*64},
+        'launches':[{'pid':123,'sourceCommit':'a'*40,'bootstrap':{'version':'1.0.41'}}],
+        'productExits':[{'pid':123,'code':0}],
+        'cases':[{'driverId':'grok','caseMode':case_mode}]})
+    return value
+
+actual_close = normal_close_entry(close_entry_journal())
+assert actual_close['mode'] == 'SPAWNED_NODE_CHILD'
+assert actual_close['originalChildExitCode'] == 0
+for name, mutate in [
+    ('missing-causal-proof', lambda value: value.update({'causalCloseAttempts':[]})),
+    ('source-pin-mismatch', lambda value: value['causalCloseAttempts'][0]['source']['module'].__setitem__('sha256','0'*64)),
+    ('caption-binding-mismatch', lambda value: value['closes'][0]['causalProof'].__setitem__('resumedOriginalCall',False)),
+    ('writer-only-close', lambda value: value['closes'][0].update({'observationMode':'NORMAL_CLOSE_ONLY'})),
+]:
+    malformed = close_entry_journal()
+    mutate(malformed)
+    try: normal_close_entry(malformed)
+    except RuntimeError: pass
+    else: raise AssertionError(name+' causal normal-close evidence was accepted')
+ordinary = close_entry_journal('singleAnswer')
+ordinary['causalCloseAttempts'] = []
+assert normal_close_entry(ordinary) is None
 
 domain, sid, vendor, seat, instance, worktree = 'test-domain', 'session-original', 'grok-thread', 'seat-grok', 'grokTestM2', 'tree-original'
 generation, process_op, ticket, nonce, open_id = '19', 'process-original', 'ticket-original', 'nonce-original', 'open-request'
@@ -356,6 +394,7 @@ run_case('writer-only-no-vendor-consumption',writer_only,True)
         'typed-id-mismatch: rejected', 'free-answer-leak: rejected', 'writer-only-no-vendor-consumption: rejected']) {
         assert.ok(run.stdout.includes(label), `missing fixture outcome: ${label}\n${run.stdout}`);
       }
+      assert.ok(run.status === 0, 'actual provider normal-close reader entry accepts only shared causal Grok evidence');
     } finally {
       assert.equal(path.dirname(dir), tempRoot);
       fs.rmSync(dir, { recursive: true, force: true });

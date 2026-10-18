@@ -209,6 +209,95 @@ def managed_source_readback(db, case):
             "programSourceKind": source["source"], "copyState": copy["state"],
             "qualifications": qualifications, "currentRowsMatchOriginal": True}
 
+def grok_host_mcp_causal_close_evidence(journal, case):
+    """Require the shared spawned causal-close receipt for this Grok-only case."""
+    attempts = journal.get("causalCloseAttempts", [])
+    closes = journal.get("closes", [])
+    launches = journal.get("launches", [])
+    if case.get("driverId") != "grok" or case.get("caseMode") != "grokHostMcpQuestion" or \
+            len(attempts) != 1 or len(closes) != 1 or len(launches) != 1:
+        fail("Grok Host-MCP immutable readback requires one shared causal-close attempt")
+    attempt, close, launch = attempts[0], closes[0], launches[0]
+    source_root = Path(__file__).resolve().parent / "causal-close"
+    expected_sources = {
+        "module": source_root / "causal-close.mjs",
+        "helper": source_root / "candidate-close-events.ps1",
+    }
+    recorded_sources = attempt.get("source")
+    if attempt.get("schema") != "gogoke.37.causal-close-attempt.v1" or \
+            attempt.get("state") != "CAUSAL_PROOF_REVIEW_REQUIRED" or \
+            attempt.get("observerCompleted") is not True or attempt.get("helperExitCode") != 0 or \
+            attempt.get("complete", {}).get("installedCandidateProcesses") != 0 or \
+            not isinstance(recorded_sources, dict) or set(recorded_sources) != set(expected_sources):
+        fail("Grok Host-MCP shared causal-close attempt is incomplete")
+    for name, expected_path in expected_sources.items():
+        pin = recorded_sources.get(name, {})
+        actual_path = Path(local_spelling(pin.get("path", ""))).resolve()
+        if not actual_path.is_file() or not same_local_path(actual_path, expected_path.resolve()) or \
+                not re.fullmatch(r"[a-f0-9]{64}", pin.get("sha256", "")) or \
+                sha(actual_path.read_bytes()) != pin["sha256"]:
+            fail("Grok Host-MCP causal-close source pin differs")
+    ready = attempt.get("ready", {})
+    proof = attempt.get("pausedCall", {})
+    events = attempt.get("events", [])
+    shell = next((row for row in events if row.get("role") == "shell"), None)
+    native = next((row for row in events if row.get("role") == "native"), None)
+    if ready.get("kind") != "READY" or ready.get("shell", {}).get("pid") != launch.get("pid") or \
+            attempt.get("childExit") != {"code": 0, "signal": None} or len(events) != 2 or \
+            not shell or not native or any(row.get("code") != 0 or
+                row.get("codeBasis") != "GET_EXIT_CODE_PROCESS" or
+                row.get("pid") != ready.get(row.get("role"), {}).get("pid") or
+                row.get("creationUtc") != ready.get(row.get("role"), {}).get("creationUtc")
+                for row in events) or \
+            close.get("pid") != launch.get("pid") or close.get("exitCode") != 0 or \
+            close.get("signal") is not None or close.get("forceKill") is not False or \
+            close.get("observationMode") != "SPAWNED_NODE_CHILD" or \
+            close.get("causalProof") != proof or close.get("shellExit") != shell or \
+            close.get("nativeExit") != native or close.get("nativeIdentity") != ready.get("native"):
+        fail("Grok Host-MCP causal-close process and original caption receipt differs")
+    token = proof.get("token", "")
+    arm = proof.get("arm", {})
+    if proof.get("command") != "plugin:window|close" or \
+            not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", token) or \
+            not isinstance(proof.get("label"), str) or not proof["label"] or \
+            not re.fullmatch(r"g37CaptionDispatch_[a-f0-9]{32}", proof.get("dispatchFunction", "")) or \
+            proof.get("breakpoint") != "CONDITIONAL_ORIGINAL_INVOKE_IN_CAPTION_DISPATCH_STACK" or \
+            proof.get("click") != "ONE_ACTUAL_CAPTION_DOM_EVENT_IN_SYNCHRONOUS_DISPATCH" or \
+            proof.get("resumedOriginalCall") is not True or arm.get("token") != token or \
+            arm.get("waitResult") != "WAIT_TIMEOUT" or arm.get("waitMilliseconds") != 0 or \
+            arm.get("shellPid") != ready.get("shell", {}).get("pid") or \
+            arm.get("nativePid") != ready.get("native", {}).get("pid") or \
+            arm.get("shellCreationUtc") != ready.get("shell", {}).get("creationUtc") or \
+            arm.get("nativeCreationUtc") != ready.get("native", {}).get("creationUtc"):
+        fail("Grok Host-MCP causal-close caption dispatch or retained ARM proof differs")
+    return {"mode": close["observationMode"], "attemptState": attempt["state"],
+            "sourceSha256": {name: recorded_sources[name]["sha256"] for name in expected_sources},
+            "shellPid": shell["pid"], "nativePid": native["pid"],
+            "shellExitCode": shell["code"], "nativeExitCode": native["code"],
+            "originalChildExitCode": attempt["childExit"]["code"],
+            "captionProofSha256": sha(json.dumps(proof, ensure_ascii=False,
+                sort_keys=True, separators=(",", ":")).encode("utf-8"))}
+
+def provider_normal_close_readback_entry(journal):
+    """Validate the existing provider close entry and its Grok-only causal extension."""
+    for launch, close in zip(journal.get("launches", []), journal.get("closes", [])):
+        if launch.get("sourceCommit") != journal.get("sourceCommit") or \
+                launch.get("bootstrap", {}).get("version") != journal.get("installedVersion") or \
+                not all(name in journal.get("installedSha256", {}) for name in
+                        ("gogoke.exe", "gogoke-native-host.exe", "resource-index.json")) or \
+                close.get("exitCode") != 0 or close.get("forceKill") is not False or \
+                close.get("pid") != launch.get("pid") or \
+                not any(event.get("pid") == launch.get("pid") and event.get("code") == 0
+                        for event in journal.get("productExits", [])):
+            fail("Actual installed candidate identity or normal-close receipt differs")
+    host_mcp_cases = [row for row in journal.get("cases", [])
+                      if row.get("caseMode") == "grokHostMcpQuestion"]
+    if host_mcp_cases:
+        if len(host_mcp_cases) != 1 or len(journal.get("cases", [])) != 1:
+            fail("Grok Host-MCP causal-close proof is scoped to its singleton case")
+        return grok_host_mcp_causal_close_evidence(journal, host_mcp_cases[0])
+    return None
+
 root = Path(local_spelling(sys.argv[1])).resolve(strict=True)
 output = Path(sys.argv[2])
 journal_path = Path(sys.argv[3]).resolve(strict=True)
@@ -244,16 +333,7 @@ if journal.get("schema") != "gogoke.37.m2-provider-win11-e2e.v1" or \
         len(journal.get("launches", [])) != required_closes or \
         len(journal.get("closes", [])) != required_closes:
     fail("Original standalone provider journal is incomplete or not at its readback phase")
-for launch, close in zip(journal["launches"], journal["closes"]):
-    if launch.get("sourceCommit") != journal["sourceCommit"] or \
-            launch.get("bootstrap", {}).get("version") != journal.get("installedVersion") or \
-            not all(name in journal.get("installedSha256", {}) for name in
-                    ("gogoke.exe", "gogoke-native-host.exe", "resource-index.json")) or \
-            close.get("exitCode") != 0 or close.get("forceKill") is not False or \
-            close.get("pid") != launch.get("pid") or \
-            not any(event.get("pid") == launch.get("pid") and event.get("code") == 0
-                    for event in journal.get("productExits", [])):
-        fail("Actual installed candidate identity or normal-close receipt differs")
+host_mcp_causal_close = provider_normal_close_readback_entry(journal)
 database = root / "state.sqlite"
 wal = Path(str(database) + "-wal")
 journal_file = Path(str(database) + "-journal")
@@ -2446,6 +2526,8 @@ with sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True) as db
             "providerEndTurn": vendor_end, "markerObserved": marker_output,
             "hostMcpQuestionObserved": host_mcp_question_evidence is not None,
             "hostMcpQuestionEvidence": host_mcp_question_evidence,
+            **({"causalNormalCloseEvidence": host_mcp_causal_close}
+               if case.get("caseMode") == "grokHostMcpQuestion" else {}),
             "writeObserved": bool(write_evidence), "writeEvidence": write_evidence,
             "answerObserved": answer_output,
             "expectedAnswer": expected_answer,

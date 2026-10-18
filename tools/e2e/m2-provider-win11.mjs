@@ -9,6 +9,7 @@ import { ActualProduct, readJson, sha256, id, delay } from './product-cdp.mjs';
 import { captureProtection, compareProtection as compareSharedProtection, protectionSources } from './installed-protection-observation.mjs';
 import { readManagedSource } from './m2-provider-managed-source.mjs';
 import { createTemporaryHomeLifecycle } from './installed-temporary-home-lifecycle.mjs';
+import { causalCloseSources, closeCausally, requireRecordedNormalClose } from './causal-close/causal-close.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const drivers = ['claude', 'opencode', 'grok'];
@@ -1279,7 +1280,18 @@ try {
   const instances = await product.instances();
   for (const row of config.cases) await runCase(row, instances);
   journal.state = 'DIRECT_PROVIDER_H_RECEIPTS_A_READBACK_REQUIRED'; product.save();
-  await product.closeNormally();
+  if (journal.cases.some(row => row.caseMode === 'grokHostMcpQuestion')) {
+    const sources = causalCloseSources();
+    const teardown = await homeLifecycle.beforeCaptionClose();
+    if (teardown?.complete !== true) {
+      throw Error('Temporary-HOME teardown incomplete before Grok Host-MCP causal close: ' +
+        (teardown?.errors ?? ['missing completion receipt']).join('; '));
+    }
+    await closeCausally(product);
+    requireRecordedNormalClose(journal, product.endpoint, sources, product.config);
+  } else {
+    await product.closeNormally();
+  }
   await snapshot('after');
   compareProtection();
   await readbackAndGolden();
