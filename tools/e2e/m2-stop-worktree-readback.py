@@ -21,6 +21,11 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def local_spelling(value):
+    text = str(value).replace("/", "\\")
+    return (text[4:] if text.startswith("\\\\?\\") else text).casefold()
+
+
 def rows(db, sql, args=()):
     return [dict(row) for row in db.execute(sql, args)]
 
@@ -42,6 +47,26 @@ def operation(journal, request_id):
           entry["receipt"]["targetId"] == entry["request"]["targetId"],
           "Original User request/receipt wire identity differs")
     return entry
+
+
+def child_terminal_output_receipt(journal, session, child):
+    entry = operation(journal, child.get("terminalOutputRequestId"))
+    request, page = entry["request"], entry["receipt"].get("result", {})
+    matches = [item for item in page.get("nativeInputReceipts", [])
+               if item.get("requestId") == child.get("sendRequestId")]
+    check(request.get("family") == "K-SESSION" and request.get("operation") == "output-stream" and
+          request.get("targetId") == session["id"] and
+          request.get("payload", {}).get("generation") == session["generation"] and
+          isinstance(request.get("payload", {}).get("afterCursor"), str) and
+          page.get("generation") == session["generation"] and
+          isinstance(page.get("rawHighwater"), str) and page["rawHighwater"].isdecimal() and
+          int(page["rawHighwater"]) >= int(child["terminalCursor"]) and len(matches) == 1 and
+          matches[0].get("phase") == "RECEIPTED" and
+          matches[0].get("receipt") == child.get("terminalReceipt"),
+          "Original H output-stream does not carry the same send ID's exact typed receipt")
+    return {"outputRequestId": child["terminalOutputRequestId"],
+            "sendRequestId": child["sendRequestId"], "rawHighwater": page["rawHighwater"],
+            "receipt": matches[0]["receipt"]}
 
 
 def session_facts(db, journal, case):
@@ -68,7 +93,285 @@ def session_facts(db, journal, case):
         stop_fact_id=session["stopFactId"], binding_mode="native_v2")
     return {**facts, "seatId": case["seatId"], "instanceId": case["instanceId"],
             "nativeBinding": facts["bindingEvidence"]["binding"],
-            "nativeSelection": facts["bindingEvidence"]["selection"]}
+            "nativeSelection": facts["bindingEvidence"]["selection"],
+            "processTicket": facts["custody"]["ticket"],
+            "custodianNonce": facts["custody"]["custodian_nonce"]}
+
+
+def child_identity_facts(child, marker):
+    identity = child.get("processIdentity") if isinstance(child, dict) else None
+    pid, nonce = child.get("childPid"), child.get("childNonce")
+    check(isinstance(identity, dict) and isinstance(pid, str) and pid.isdecimal() and
+          isinstance(nonce, str) and nonce and isinstance(marker, dict) and
+          set(marker) == {"nonce", "pid", "ppid"} and marker.get("nonce") == nonce and
+          str(marker.get("pid")) == pid and str(marker.get("ppid", "")).isdecimal() and
+          identity.get("processId") == pid and identity.get("imageSha256") == child.get("signedNodeSha256") and
+          isinstance(identity.get("creationTime100ns"), str) and identity["creationTime100ns"].isdecimal() and
+          identity.get("waitForSingleObjectResult") == 0x102 and
+          identity.get("aliveAtObservation") is True and isinstance(identity.get("observationTimeUtc"), str) and
+          identity.get("observationTimeUtc"),
+          "Original same-handle process identity, WAIT_TIMEOUT, and ready marker do not bind")
+    return {"processId": pid, "creationTime100ns": identity["creationTime100ns"],
+            "imageSha256": identity["imageSha256"], "waitForSingleObjectResult": 0x102,
+            "aliveAtObservation": True, "observationTimeUtc": identity["observationTimeUtc"],
+            "readyMarkerSha256": child["readyMarkerSha256"], "readyMarker": marker}
+
+
+def child_tool_source_facts(source_rows, init_frame, child, init_raw_bytes=None):
+    before, terminal = int(child["beforeRawHighwater"]), int(child["terminalCursor"])
+    epoch, session_id = child["sourceEpoch"], child["vendorSessionId"]
+    check(init_frame.get("type") == "system" and init_frame.get("subtype") == "init" and
+          init_frame.get("session_id") == session_id and
+          init_frame.get("claude_code_version") == child["cliVersion"] == "2.1.196" and
+          local_spelling(init_frame.get("cwd", "")) == local_spelling(child["worktreePath"]),
+          "Original Claude init does not bind the fixed CLI and exact F cwd")
+    decoded = []
+    cursors = []
+    for row in source_rows:
+        cursor = row["source_cursor"]
+        check(row["source_epoch"] == epoch and str(cursor).isdecimal() and
+              before < int(cursor) <= terminal and row["operation_id"] == child["processOperationId"] and
+              row["generation"] == child["generation"] and row["process_ticket"] == child["ticket"] and
+              row["custodian_nonce"] == child["custodianNonce"],
+              "Original child A frame escaped its H process/source interval")
+        cursors.append(int(cursor))
+        raw = bytes(row["raw_bytes"])
+        decoded.append((row, json.loads(raw.decode("utf-8")), raw))
+    check(cursors == list(range(before + 1, terminal + 1)),
+          "Original child H/A source interval has a cursor gap or duplicate")
+    echoes = [(row, frame, raw) for row, frame, raw in decoded if frame.get("type") == "user" and
+              frame.get("session_id") == session_id and frame.get("uuid") == child["userUuid"] and
+              frame.get("message") == {"role": "user", "content": [{"type": "text", "text": child["body"]}]}]
+    terminal_rows = [(row, frame, raw) for row, frame, raw in decoded
+                     if str(row["source_cursor"]) == str(child["terminalCursor"])]
+    check(len(echoes) == 1 and echoes[0][0]["state"] == "NO_EVENT" and
+          echoes[0][0]["no_event_reason"] == "CLAUDE_STDIN_ACK" and
+          len(terminal_rows) == 1,
+          "Original Claude user replay or typed terminal row is missing or ambiguous")
+    terminal_row, terminal_frame, terminal_raw = terminal_rows[0]
+    check(terminal_frame.get("type") == "result" and terminal_frame.get("subtype") == "success" and
+          terminal_frame.get("is_error") is False and terminal_frame.get("session_id") == session_id and
+          terminal_row["state"] == "NO_EVENT" and
+          terminal_row["no_event_reason"] == "CLAUDE_RESULT_RESPONSE" and
+          digest(terminal_raw) == child["rawResultSha256"],
+          "Original Claude Result is not the typed H-receipted terminal source")
+    uses, tool_results, assistant_texts = [], [], []
+    for row, frame, raw in decoded:
+        if frame.get("type") == "assistant":
+            message = frame.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, list):
+                uses.extend((row, frame, block, raw) for block in content
+                            if isinstance(block, dict) and block.get("type") == "tool_use")
+                if frame.get("session_id") == session_id:
+                    assistant_texts.extend((row, block) for block in content
+                        if row["state"] == "RESOLVED" and row["resolved_event_id"] is not None and
+                        isinstance(block, dict) and block.get("type") == "text" and
+                        isinstance(block.get("text"), str))
+        if frame.get("type") == "user":
+            message = frame.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, list):
+                tool_results.extend((row, frame, block, raw) for block in content
+                    if isinstance(block, dict) and block.get("type") == "tool_result")
+    check(len(uses) == len(tool_results) == 1,
+          "Original Claude A interval does not contain exactly one tool_use and one tool_result")
+    use_row, use_frame, use, use_raw = uses[0]
+    result_row, result_frame, tool_result, result_raw = tool_results[0]
+    assistant_answers = [(row, block) for row, block in assistant_texts
+                         if int(row["source_cursor"]) > int(result_row["source_cursor"])]
+    tool_input = use.get("input")
+    result_message = result_frame.get("message")
+    result_content = result_message.get("content") if isinstance(result_message, dict) else None
+    check(use_frame.get("session_id") == result_frame.get("session_id") == session_id and
+          use.get("name") == child["toolName"] == "Bash" and isinstance(tool_input, dict) and
+          tool_input.get("command") == child["exactCommand"] and
+          ("cwd" not in tool_input or local_spelling(tool_input["cwd"]) == local_spelling(child["worktreePath"])) and
+          result_frame.get("type") == "user" and result_frame.get("parent_tool_use_id") in (None, "") and
+          isinstance(result_message, dict) and result_message.get("role") == "user" and
+          isinstance(result_content, list) and len(result_content) == 1 and result_content[0] == tool_result and
+          isinstance(use.get("id"), str) and use.get("id") and
+          use.get("id") == tool_result.get("tool_use_id") and
+          use_row["state"] in ("PENDING", "NO_EVENT") and use_row["resolved_event_id"] is None and
+          result_row["state"] in ("PENDING", "NO_EVENT") and result_row["resolved_event_id"] is None and
+          int(result_row["source_cursor"]) > int(use_row["source_cursor"]) and
+          int(result_row["source_cursor"]) < terminal,
+          "Original Bash use/result IDs, command, cwd, source order, or unhandled state differ")
+    content_value = tool_result.get("content")
+    if isinstance(content_value, str):
+        result_text = content_value
+    elif isinstance(content_value, list) and content_value and all(
+            isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str)
+            for part in content_value):
+        result_text = "".join(part["text"] for part in content_value)
+    else:
+        result_text = None
+    try:
+        tool_output = json.loads(result_text.strip()) if isinstance(result_text, str) else None
+    except (json.JSONDecodeError, TypeError):
+        tool_output = None
+    expected_output = {"nonce": child["childNonce"], "pid": int(child["childPid"]),
+                       "readyMarkerPath": child["readyMarkerPath"]}
+    answer_text = "".join(block["text"] for _, block in assistant_answers)
+    try:
+        assistant_output = json.loads(answer_text.strip())
+    except (json.JSONDecodeError, TypeError):
+        assistant_output = None
+    check(tool_result.get("is_error") is False and tool_output == expected_output and
+          assistant_output == expected_output and answer_text.strip() == result_text.strip() ==
+          terminal_frame.get("result"),
+          "Original tool_result, final assistant echo, and nonce/PID marker payload differ")
+    return {"toolUseId": use["id"], "toolName": use["name"], "exactCommand": tool_input["command"],
+            "cwd": child["worktreePath"], "toolUseInputCwd": tool_input.get("cwd"),
+            "cwdBasis": "ORIGINAL_TOOL_INPUT_CWD" if "cwd" in tool_input else "ORIGINAL_CLAUDE_INIT_CWD",
+            "toolUseSourceCursor": str(use_row["source_cursor"]),
+            "toolUseRawSha256": digest(use_raw), "toolResultSourceCursor": str(result_row["source_cursor"]),
+            "toolResultRawSha256": digest(result_raw), "toolResultState": result_row["state"],
+            "toolResultNoEventReason": result_row["no_event_reason"],
+            "toolResultClassification": "ORIGINAL_UNHANDLED_CLAUDE_TOOL_RESULT_NO_SUCCESS_CREDIT",
+            "toolOutput": tool_output, "terminalSourceCursor": str(terminal_row["source_cursor"]),
+            "rawResultSha256": digest(terminal_raw), "assistantOutput": assistant_output,
+            "rawUserReplayHex": echoes[0][2].hex(), "rawToolUseHex": use_raw.hex(),
+            "rawToolResultHex": result_raw.hex(), "rawTerminalResultHex": terminal_raw.hex(),
+            "rawInitHex": bytes(init_raw_bytes).hex() if init_raw_bytes is not None else None,
+            "rawSourceFrames": [{"sourceCursor": str(row["source_cursor"]), "state": row["state"],
+                "noEventReason": row["no_event_reason"], "rawSha256": digest(raw), "rawBytesHex": raw.hex()}
+                for row, _frame, raw in decoded]}
+
+
+def child_case_facts(db, journal, case, tree, phase, stop):
+    child = case.get("childCase")
+    if not isinstance(child, dict) or child.get("state") != "PRESTOP_IDENTITY_VERIFIED":
+        return {"state": "NOT_RUN_OR_INCOMPLETE", "acceptance": False}
+    child = {**child, "processOperationId": stop["processOperationId"],
+             "ticket": stop["processTicket"], "custodianNonce": stop["custodianNonce"]}
+    send_id = child.get("sendRequestId")
+    sent = operation(journal, send_id)
+    output_receipt = child_terminal_output_receipt(journal, case["session"], child)
+    request = sent["request"]
+    pre_read_id = child.get("beforeRawHighwaterRequestId")
+    pre_read = operation(journal, pre_read_id)
+    operations = journal.get("operations", [])
+    pre_position = next((index for index, entry in enumerate(operations)
+                         if entry.get("request", {}).get("requestId") == pre_read_id), -1)
+    send_position = next((index for index, entry in enumerate(operations)
+                          if entry.get("request", {}).get("requestId") == send_id), -1)
+    pre_result = pre_read["receipt"].get("result", {})
+    check(request.get("family") == "K-SESSION" and request.get("operation") == "send" and
+          request.get("domainId") == case["domainId"] and request.get("targetId") == case["session"]["id"] and
+          request.get("payload") == {"generation": case["session"]["generation"], "body": child["body"]} and
+          pre_read["request"].get("family") == "K-SESSION" and
+          pre_read["request"].get("operation") == "output-stream" and
+          pre_read["request"].get("domainId") == case["domainId"] and
+          pre_read["request"].get("targetId") == case["session"]["id"] and
+          pre_read["request"].get("payload") == {"generation": case["session"]["generation"], "afterCursor": "0"} and
+          pre_read["receipt"].get("status") == "APPLIED" and
+          pre_result.get("rawHighwater") == child.get("beforeRawHighwater") and
+          0 <= pre_position < send_position and
+          isinstance(child.get("beforeRawHighwater"), str) and child["beforeRawHighwater"].isdecimal() and
+          child.get("sourceEpoch") and isinstance(child.get("terminalCursor"), str) and
+          child["terminalCursor"].isdecimal() and
+          int(child["terminalCursor"]) > int(child["beforeRawHighwater"]),
+          "Original child H send request or source interval is not bound")
+    stdin = one(db, "SELECT phase,receipt_status,request_hex,session_id,generation,ticket,process_operation_id,"
+               "custodian_nonce,receipt_hex,request_id FROM gogoke_v37_h_stdin_journal "
+               "WHERE domain_id=? AND session_id=? AND request_id=? AND operation='send'",
+               (case["domainId"], case["session"]["id"], send_id))
+    request_wire = decode_hex(stdin["request_hex"])
+    receipt_wire = decode_hex(stdin["receipt_hex"])
+    initial_receipt = sent["receipt"]
+    receipt = child.get("terminalReceipt")
+    send_rows = rows(db, "SELECT request_id FROM gogoke_v37_h_stdin_journal "
+                     "WHERE domain_id=? AND session_id=? AND operation='send' ORDER BY rowid",
+                     (case["domainId"], case["session"]["id"]))
+    check(send_rows == [{"request_id": send_id}] and
+          stdin["phase"] == "RECEIPTED" and stdin["receipt_status"] == "APPLIED" and
+          stdin["request_id"] == send_id and stdin["session_id"] == case["session"]["id"] and
+          stdin["generation"] == case["session"]["generation"] and
+          stdin["process_operation_id"] == child["processOperationId"] and
+          stdin["ticket"] == child["ticket"] and stdin["custodian_nonce"] == child["custodianNonce"] and
+          request_wire == request and json.loads(sent["rawReceipt"]) == initial_receipt and
+          isinstance(receipt, dict) and receipt_wire == receipt and receipt.get("requestId") == send_id and
+          receipt["status"] == "APPLIED" and
+          receipt["result"].get("createdTurn") is True and
+          receipt["result"].get("deliveryBasis") == "CLAUDE_USER_REPLAY_AND_RESULT" and
+          receipt["result"].get("resultSubtype") == "success" and
+          receipt["result"].get("userUuid") == child["userUuid"] and
+          receipt["result"].get("vendorSessionId") == child["vendorSessionId"] and
+          receipt["result"].get("sourceEpoch") == child["sourceEpoch"] and
+          receipt["result"].get("sourceCursor") == child["terminalCursor"] and
+          receipt["result"].get("rawResultSha256") == child["rawResultSha256"],
+          "Original child H send is not the exact typed successful Claude receipt")
+    raw_rows = rows(db, "SELECT generation,operation_id,source_epoch,source_cursor,raw_bytes,state,"
+                     "process_ticket,custodian_nonce,no_event_reason,resolved_event_id "
+                     "FROM v37_ledger_raw_source WHERE domain_id=? AND session_id=? AND operation_id=? "
+                     "AND generation=? AND process_ticket=? AND custodian_nonce=? "
+                     "AND source_epoch=? AND CAST(source_cursor AS INTEGER)>? AND CAST(source_cursor AS INTEGER)<=? "
+                     "ORDER BY CAST(source_cursor AS INTEGER)",
+                     (case["domainId"], case["session"]["id"], child["processOperationId"],
+                      case["session"]["generation"], child["ticket"], child["custodianNonce"],
+                      child["sourceEpoch"], child["beforeRawHighwater"], child["terminalCursor"]))
+    prior_inits = rows(db, "SELECT source_epoch,source_cursor,raw_bytes,state,no_event_reason "
+                      "FROM v37_ledger_raw_source WHERE domain_id=? AND session_id=? "
+                      "AND operation_id=? AND generation=? AND process_ticket=? AND custodian_nonce=? "
+                      "AND source_epoch=? ORDER BY CAST(source_cursor AS INTEGER)",
+                      (case["domainId"], case["session"]["id"], child["processOperationId"],
+                       case["session"]["generation"], child["ticket"], child["custodianNonce"], child["sourceEpoch"]))
+    check(all(str(row["source_cursor"]).isdecimal() for row in prior_inits),
+          "Original Claude source cursor is not decimal")
+    prior_cursors = [int(row["source_cursor"]) for row in prior_inits
+                     if str(row["source_cursor"]).isdecimal() and
+                     int(row["source_cursor"]) <= int(child["beforeRawHighwater"])]
+    check((max(prior_cursors) if prior_cursors else 0) == int(child["beforeRawHighwater"]),
+          "Pre-send H raw highwater is not the exact original A cursor before the send")
+    init_sources = [(row, json.loads(bytes(row["raw_bytes"]).decode("utf-8"))) for row in prior_inits]
+    all_inits = [(row, frame) for row, frame in init_sources
+                 if frame.get("type") == "system" and frame.get("subtype") == "init"]
+    matching_init = [(row, frame) for row, frame in all_inits
+                     if frame.get("session_id") == child["vendorSessionId"]]
+    check(len(matching_init) >= 1 and len(all_inits) == len(matching_init) and
+          all(frame.get("claude_code_version") == "2.1.196" and
+              local_spelling(frame.get("cwd", "")) == local_spelling(tree["worktree_path"])
+              for _row, frame in all_inits) and
+          any(int(row["source_cursor"]) <= int(child["beforeRawHighwater"])
+              for row, _frame in matching_init),
+          "Original child H/A process has no exact same-session init/cwd/version binding")
+    init_row, init_frame = matching_init[0]
+    tool_facts = child_tool_source_facts(raw_rows, init_frame, child, bytes(init_row["raw_bytes"]))
+    identity_facts = child_identity_facts(child, child.get("readyMarker"))
+    cleanup_entry = operation(journal, case["preStopCleanupRequestId"])
+    stop_entry = operation(journal, case["session"]["stopRequestId"])
+    cleanup_position = next((index for index, entry in enumerate(journal["operations"])
+                             if entry.get("request", {}).get("requestId") == case["preStopCleanupRequestId"]), -1)
+    stop_position = next((index for index, entry in enumerate(journal["operations"])
+                          if entry.get("request", {}).get("requestId") == case["session"]["stopRequestId"]), -1)
+    check(type(child.get("identityJournalOperationCount")) is int and
+          child["identityJournalOperationCount"] == cleanup_position and
+          0 <= cleanup_position < stop_position and
+          cleanup_entry["request"].get("operation") == "cleanup" and
+          stop_entry["request"].get("operation") == "stop",
+          "Original same-handle live observation did not precede denied cleanup and H stop")
+    marker_file_facts = None
+    if phase == "stopped":
+        marker_path = native.contained_physical(tree["worktree_path"], child["readyMarkerPath"])
+        marker_raw = marker_path.read_bytes()
+        marker = json.loads(marker_raw.decode("utf-8"))
+        check(digest(marker_raw) == child["readyMarkerSha256"] and marker == child["readyMarker"],
+              "Original test-owned F ready marker bytes or identity changed")
+        marker_file_facts = {"sha256": digest(marker_raw), "length": len(marker_raw),
+                             "path": str(marker_path), "rawBytesHex": marker_raw.hex()}
+    else:
+        marker_file_facts = child.get("readyMarkerReadback")
+        check(isinstance(marker_file_facts, dict) and marker_file_facts.get("sha256") == child["readyMarkerSha256"],
+              "Final phase lacks the exact stopped-phase ready marker readback")
+    return {"state": "SOURCE_AND_STOP_FACT_RECORDED_REQUIRES_FINAL_COMMON_CHECK", "acceptance": False,
+            "sendRequestId": send_id, "processOperationId": child["processOperationId"],
+            "outputReceipt": output_receipt,
+            "sourceEpoch": child["sourceEpoch"], "beforeRawHighwater": child["beforeRawHighwater"],
+            "terminalCursor": child["terminalCursor"], "vendorSessionId": child["vendorSessionId"],
+            "rawSendRequestHex": stdin["request_hex"], "rawTerminalReceiptHex": stdin["receipt_hex"],
+            "identity": identity_facts, "readyMarkerReadback": marker_file_facts,
+            "toolEvidence": tool_facts, "stopFactId": case["session"]["stopFactId"]}
 
 
 def worktree_facts(db, journal, case, phase):
@@ -84,6 +387,7 @@ def worktree_facts(db, journal, case, phase):
                                               child_must_exist=phase == "stopped")
     exists = worktree_path.is_dir() and not worktree_path.is_symlink()
     stop = session_facts(db, journal, case)
+    child_evidence = child_case_facts(db, journal, case, row, phase, stop)
     lifecycle = rows(db, "SELECT state,revision,COALESCE(stop_fact_id,'') AS stop_fact_id "
                      "FROM gogoke_v37_worktree_lifecycle WHERE worktree_id=?", (case["worktreeId"],))
     cleanup_rows = rows(db, "SELECT request_id,request_hash,worktree_id,operation,phase "
@@ -109,7 +413,8 @@ def worktree_facts(db, journal, case, phase):
                 "baselineCommit": row["baseline_commit"], "pathDevice": str(worktree_path.stat().st_dev),
                 "pathInode": str(worktree_path.stat().st_ino), "exists": True,
                 "lifecycleState": "REGISTERED", "lifecycleRevision": case["graphRevision"],
-                "stopFactId": stop["stopFactId"], "session": stop}
+                "stopFactId": stop["stopFactId"], "session": stop,
+                "childEvidence": child_evidence}
     cleanup = operation(journal, case["cleanupRequestId"])
     raw = cleanup["rawFrame"].encode("utf-8")
     lifecycle_row = one(db, "SELECT state,revision,COALESCE(stop_fact_id,'') AS stop_fact_id "
@@ -134,7 +439,7 @@ def worktree_facts(db, journal, case, phase):
             "baselineCommit": row["baseline_commit"], "exists": False,
             "lifecycleState": lifecycle_row["state"], "lifecycleRevision": lifecycle_row["revision"],
             "stopFactId": lifecycle_row["stop_fact_id"], "cleanupRequestId": case["cleanupRequestId"],
-            "session": stop}
+            "session": stop, "childEvidence": child_evidence}
 
 
 def main():
@@ -197,6 +502,8 @@ def main():
     if sys.argv[4] == "final":
         check(worktree.get("stopFactId") == case["session"]["stopFactId"] and
               worktree.get("lifecycleState") == "CLEANED", "Final worktree is not cleaned by its original StopFact")
+        check(worktree.get("childEvidence") == baseline.get("worktree", {}).get("childEvidence"),
+              "Final raw A/tool-result evidence differs from the same stopped baseline")
         identity_fields = ("worktreeId", "repositoryId", "domainId", "seatId", "instanceId",
                            "worktreeIdentity", "gitPointerHash", "gitPointerIdentity", "commonIdentity", "baselineCommit")
         check(all(worktree[key] == baseline["worktree"][key] for key in identity_fields),
