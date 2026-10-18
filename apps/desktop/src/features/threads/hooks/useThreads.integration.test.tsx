@@ -11,6 +11,8 @@ import {
   readThread,
   resumeThread,
   sendUserMessage as sendUserMessageService,
+  nativeConversationAssociation,
+  originalPendingNativeVisibleIntent,
   setThreadName,
   startThread,
   startReview,
@@ -35,6 +37,8 @@ vi.mock("@services/tauri", () => ({
   respondToUserInputRequest: vi.fn(),
   rememberApprovalRule: vi.fn(),
   sendUserMessage: vi.fn(),
+  nativeConversationAssociation: vi.fn(),
+  originalPendingNativeVisibleIntent: vi.fn(),
   steerTurn: vi.fn(),
   startReview: vi.fn(),
   startThread: vi.fn(),
@@ -70,6 +74,61 @@ describe("useThreads UX integration", () => {
 
   afterEach(() => {
     nowSpy.mockRestore();
+  });
+
+  it("keeps the same source-qualified host terminal authoritative in either IPC order", async () => {
+    Object.defineProperty(window,"__TAURI_INTERNALS__",{value:{},configurable:true});
+    const association={domainId:"projectA",sessionId:"sessionA",seatId:"seatA",
+      incarnation:"incA",authorizationGeneration:"1",bindingGeneration:"1",
+      instanceId:"instanceA"};
+    const turnId=`hostprompt${"a".repeat(64)}`;
+    const terminal=(status:"completed"|"failed") => ({
+      workspace_id:"ws-1",
+      message:{method:"gogoke/hostPromptState",params:{threadId:"nativeS",turnId,status}},
+      nativeAssociation:association,
+      nativeSourceRef:{operationId:"processA",generation:"1",sourceEpoch:"nonceA",
+        sourceCursor:"3",rawSourceId:"3"},
+    });
+    try {
+      for (const [status,terminalFirst] of [
+        ["completed",true],["failed",true],["completed",false],
+      ] as const) {
+        handlers=null;
+        vi.mocked(nativeConversationAssociation).mockResolvedValue(association);
+        vi.mocked(originalPendingNativeVisibleIntent).mockReturnValue({
+          nativeRequestId:"visible_parent",workspaceId:"ws-1",expectedAssociation:association,
+          command:"send_user_message",payload:{threadId:"nativeS"},error:null,
+        });
+        let rejectSend:((error:Error)=>void)|null=null;
+        vi.mocked(sendUserMessageService).mockImplementation(() => new Promise((_,reject) => {
+          rejectSend=reject;
+        }));
+        const {result,unmount}=renderHook(() => useThreads({
+          activeWorkspace:workspace,onWorkspaceConnected:vi.fn(),
+        }));
+        let send:Promise<unknown>;
+        await act(async () => {send=result.current.sendUserMessageToThread(
+          workspace,"nativeS","Ask",[]);});
+        expect(sendUserMessageService).toHaveBeenCalled();
+        const deliver=() => {
+          handlers?.onAppServerEvent?.(terminal(status));
+          if (status==="completed") handlers?.onTurnCompleted?.("ws-1","nativeS",turnId);
+          else handlers?.onTurnError?.("ws-1","nativeS",turnId,
+            {message:"Original ACP prompt failed.",willRetry:false});
+        };
+        if (terminalFirst) act(deliver);
+        await act(async () => {rejectSend!(new Error(
+          "GOGOKE_VISIBLE_UNKNOWN:visible_parent:GOGOKE_HOST_PROMPT_PENDING: original H WRITTEN"));
+          expect(await send).toEqual({status:"pending"});});
+        if (!terminalFirst) {
+          expect(result.current.threadStatusById.nativeS?.isProcessing).toBe(true);
+          act(deliver);
+        }
+        expect(result.current.threadStatusById.nativeS?.isProcessing).toBe(false);
+        unmount();
+        vi.mocked(sendUserMessageService).mockClear();
+      }
+    } finally {delete (window as Window & {__TAURI_INTERNALS__?:object}).__TAURI_INTERNALS__;}
   });
 
   it("resumes selected threads when no local items exist", async () => {

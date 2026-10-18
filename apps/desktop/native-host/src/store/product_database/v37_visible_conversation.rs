@@ -1031,21 +1031,37 @@ impl<'root> ProductDatabase<'root> {
             }
         }
         let rows=Statement::prepare(self.connection.as_ptr(),
-            "SELECT rowid,source_epoch,source_cursor FROM main.v37_ledger_raw_source WHERE domain_id=?1 AND session_id=?2 AND generation=?3 AND operation_id=?4 AND process_ticket=?5 AND custodian_nonce=?6 AND rowid>?7 AND rowid<=?8 ORDER BY rowid")?;
+            "SELECT rowid,operation_id,process_ticket,custodian_nonce,source_epoch,source_cursor FROM main.v37_ledger_raw_source WHERE domain_id=?1 AND session_id=?2 AND generation=?3 AND rowid<=?4 ORDER BY rowid")?;
         for (index,value) in [association.domain.as_str(),association.session.as_str(),
-            association.generation.as_str(),operation.as_str(),ticket.as_str(),nonce.as_str()].iter().enumerate() {
+            association.generation.as_str()].iter().enumerate() {
             rows.bind_text((index+1) as i32,value)?;
         }
-        rows.bind_i64(7,selected.ack)?;rows.bind_i64(8,high)?;
+        rows.bind_i64(4,high)?;
+        let mut ordinal=0_i64;
+        let mut last_row=0_i64;
+        let mut saw_ack=false;
         while rows.step_row()? {
             let row=decimal(&rows.column_text(0)?)?;
-            let epoch=rows.column_text(1)?;let cursor=rows.column_text(2)?;
-            if epoch!=nonce {return Err(OrchestrationError::AccessDenied);}
+            let row_operation=rows.column_text(1)?;
+            let row_ticket=rows.column_text(2)?;
+            let row_nonce=rows.column_text(3)?;
+            let epoch=rows.column_text(4)?;let cursor=rows.column_text(5)?;
+            let next=ordinal.checked_add(1).ok_or(OrchestrationError::OperationConflict)?;
+            if decimal(&cursor)?!=next || row_operation!=operation ||
+                row_ticket!=ticket || row_nonce!=nonce || epoch!=nonce {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            ordinal=next;last_row=row;
             let raw=crate::store::ledger::read_captured_raw_source(&self.connection,&operation,&epoch,&cursor)?
                 .ok_or(OrchestrationError::OperationConflict)?;
             if raw.domain_id!=association.domain || raw.session_id!=association.session ||
                 raw.generation!=association.generation || raw.process_ticket!=ticket ||
-                raw.custodian_nonce!=nonce {return Err(OrchestrationError::AccessDenied);}
+                raw.custodian_nonce!=nonce || raw.key.operation_id!=operation ||
+                raw.key.source_epoch!=epoch || raw.key.source_cursor!=cursor {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            if row==selected.ack {saw_ack=true;}
+            if row<=selected.ack {continue;}
             let Some(delta)=host_text_source(&raw.raw_bytes,&selected.thread)? else {continue;};
             let item=host_source_item_id(&operation,&epoch,&cursor);
             let suffix=&item["hostsource".len()..];
@@ -1058,6 +1074,7 @@ impl<'root> ProductDatabase<'root> {
             ])));
             turn_refs.push(vec![self.visible_source_ref(row,selected)?]);
         }
+        if !saw_ack || last_row!=high {return Err(OrchestrationError::OperationConflict);}
         if after<0 || after as usize>turns.len() {return Err(OrchestrationError::Invalid("visible host page position"));}
         let mut page=Vec::new();let mut refs=if after==0 {vec![self.visible_source_ref(selected.ack,selected)?]}
             else {Vec::new()};
@@ -1208,7 +1225,15 @@ impl<'root> ProductDatabase<'root> {
     fn visible_thread_page(&self, workspace: &str, selected: &Selection,
         params: &BTreeMap<JsonString,Json>, reply: &mut BTreeMap<JsonString,Json>) -> Result<()> {
         let association=selected.association.as_ref().ok_or(OrchestrationError::AccessDenied)?;
-        let maximum=self.visible_high_water(selected)?;
+        let maximum=if selected.started==selected.ack {
+            let scoped=Statement::prepare(self.connection.as_ptr(),
+                "SELECT COALESCE(MAX(rowid),0) FROM main.v37_ledger_raw_source WHERE domain_id=?1 AND session_id=?2 AND generation=?3")?;
+            scoped.bind_text(1,&association.domain)?;
+            scoped.bind_text(2,&association.session)?;
+            scoped.bind_text(3,&association.generation)?;
+            if !scoped.step_row()? {return Err(OrchestrationError::OperationConflict);}
+            decimal(&scoped.column_text(0)?)?
+        } else {self.visible_high_water(selected)?};
         let scope=format!("thread/read\n{workspace}\n{}\n{}\n{}",selected.row,selected.thread,association.json().canonical());
         let (high,after)=visible_page_position(params,maximum,&scope)?;
         if high<selected.ack.max(selected.started) {return Err(OrchestrationError::AccessDenied);}
@@ -1923,6 +1948,56 @@ mod tests {
             let second=if reversed {&started}else {&changed};
             partial.start(second,partial_test_source(23)).unwrap();
             assert!(partial.finish("turnInterrupted","agentInterrupted",0,&partial_test_terminal(),&partial_test_source(24),&partial_test_coverage(24)).unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn grok_history_requires_complete_same_episode_source_prefix() {
+        for mode in ["valid","gap","mixed-ticket","mixed-operation","wrong-maximum"] {
+            fixture(|product| {
+                product.connection.execute("INSERT INTO main.gogoke_coordination_process_custody(operation_id,ticket,custodian_nonce,pid,creation_time_100ns,image_path,binary_digest_sha256,profile_id,domain_id,generation,state) VALUES('processA','ticketA','nonceA','1','1','synthetic','digest','profileA','projectA','1','ACTIVE')").unwrap();
+                product.connection.execute("INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase) VALUES('projectA','openA','sessionA','1','00',0,'processA','instanceA','homeA','bindingA','leadA','incarnationA','ACTIVE')").unwrap();
+                product.connection.execute("INSERT INTO main.gogoke_v37_h_generation VALUES('projectA','sessionA','1','openA','processA')").unwrap();
+                let association=Association{domain:"projectA".into(),session:"sessionA".into(),
+                    seat:"leadA".into(),incarnation:"incarnationA".into(),authorization:"1".into(),
+                    generation:"1".into(),instance:"instanceA".into()};
+                let selected=Selection{row:1,route:"NATIVE".into(),association:Some(association.clone()),
+                    repository:"repositoryA".into(),worktree:"worktreeA".into(),thread:"nativeS".into(),
+                    open_request:"openA".into(),open_generation:"1".into(),
+                    open_operation:"processA".into(),ack:1,started:1};
+                let frames=[
+                    ("1","processA","ticketA",br#"{"jsonrpc":"2.0","id":3,"result":{"sessionId":"nativeS"}}"#.as_slice()),
+                    (if mode=="gap" {"3"} else {"2"},
+                        if mode=="mixed-operation" {"otherProcess"} else {"processA"},
+                        if mode=="mixed-ticket" {"otherTicket"} else {"ticketA"},
+                        br#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"nativeS","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"real source text"}}}}"#.as_slice()),
+                ];
+                for (cursor,operation,ticket,bytes) in frames {
+                    let row=Statement::prepare(product.connection.as_ptr(),
+                        "INSERT INTO main.v37_ledger_raw_source(operation_id,process_ticket,custodian_nonce,domain_id,session_id,generation,source_epoch,source_cursor,raw_bytes,state,no_event_reason) VALUES(?1,?2,'nonceA','projectA','sessionA','1','nonceA',?3,?4,'PENDING',NULL)").unwrap();
+                    let mut frame=bytes.to_vec();frame.push(b'\n');
+                    row.bind_text(1,operation).unwrap();row.bind_text(2,ticket).unwrap();
+                    row.bind_text(3,cursor).unwrap();row.bind_blob(4,&frame).unwrap();
+                    row.step_done().unwrap();
+                }
+                let mut reply=product.visible_reply("workspaceA","UNKNOWN",Some(&association),None);
+                let high=if mode=="wrong-maximum" {3} else {2};
+                let result=product.visible_grok_thread_page("workspaceA",&selected,high,0,
+                    "test-scope",&mut reply);
+                if mode=="valid" {
+                    result.unwrap();
+                    assert!(is_text(reply.get(&k("state")),"APPLIED"));
+                    let response=object(reply.get(&k("response")).unwrap()).unwrap();
+                    let result=object(response.get(&k("result")).unwrap()).unwrap();
+                    let history=object(result.get(&k("nativeHistory")).unwrap()).unwrap();
+                    assert!(is_text(history.get(&k("state")),"COMPLETE"));
+                    assert!(matches!(history.get(&k("sourceRefs")),Some(Json::Array(refs)) if refs.len()==2));
+                    let thread=object(result.get(&k("thread")).unwrap()).unwrap();
+                    assert!(matches!(thread.get(&k("turns")),Some(Json::Array(turns)) if turns.len()==1));
+                } else {
+                    assert!(result.is_err(),"{mode} cannot claim a complete original source history");
+                }
+            });
         }
     }
 
