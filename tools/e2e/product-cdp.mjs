@@ -217,11 +217,12 @@ export class ActualProduct {
     this.save();
     return { endpoint, target, ui };
   }
-  evaluate(expression) {
+  evaluate(expression, timeoutMs = 180000) {
+    if (![180000, 600000].includes(timeoutMs)) throw Error('Unsupported compiled product operation budget');
     if (this.tester) {
       if (this.tester.page.url() !== this.endpoint.url) throw Error('Actual e2e page identity changed; no operation dispatched');
       return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(Error('Product operation deadline; original request retained, no resend')), 180000);
+        const timer = setTimeout(() => reject(Error('Product operation deadline; original request retained, no resend')), timeoutMs);
         this.tester.page.evaluate(expression).then(
           value => { clearTimeout(timer); resolve(value); },
           error => { clearTimeout(timer); reject(error); },
@@ -242,7 +243,7 @@ export class ActualProduct {
         if (message.error || message.result?.exceptionDetails) finish(Error(JSON.stringify(message.error ?? message.result.exceptionDetails)));
         else finish(null, message.result?.result?.value);
       };
-      const timer = setTimeout(() => finish(Error('Product operation deadline; no mutation replay')), 180000);
+      const timer = setTimeout(() => finish(Error('Product operation deadline; no mutation replay')), timeoutMs);
       socket.addEventListener('message', received); socket.addEventListener('close', closed);
       socket.send(JSON.stringify({ id: requestId, method: 'Runtime.evaluate', params: { expression, returnByValue: true, awaitPromise: true } }));
     });
