@@ -222,3 +222,38 @@ test('the actual closed reader retains A/B own inventory and rejects C or anothe
   const run = spawnSync(python, ['-c', source, reader], { encoding: 'utf8', windowsHide: true });
   assert.equal(run.status, 0, run.stderr || run.error?.message);
 });
+
+test('the shared history reader preserves only the four observed unresolved Claude frame shapes', () => {
+  const python = process.env.GOGOKE_TEST_PYTHON ?? 'python';
+  const reader = path.resolve(here, '..', 'm2-history-boundaries-readback.py');
+  const source = `import importlib.util,sys\n` +
+    `spec=importlib.util.spec_from_file_location('history_reader',sys.argv[1]); r=importlib.util.module_from_spec(spec); spec.loader.exec_module(r)\n` +
+    `sid='native-session'\n` +
+    `frames=[\n` +
+    ` {'type':'system','subtype':'init','session_id':sid},\n` +
+    ` {'type':'rate_limit_event','session_id':sid,'rate_limit_info':{}},\n` +
+    ` {'type':'system','subtype':'thinking_tokens','session_id':sid},\n` +
+    ` {'type':'assistant','session_id':sid,'request_id':'req_retained_native','parent_tool_use_id':None,'message':{'role':'assistant','content':[{'type':'thinking','thinking':'...'}]}},\n` +
+    `]\n` +
+    `expected=['system/init','rate_limit_event','system/thinking_tokens','assistant/thinking-only']\n` +
+    `assert [r.pending_unhandled_claude_frame(frame,sid)[0] for frame in frames]==expected\n` +
+    `assert r.PENDING_CLASSIFICATION=='PRESERVED_UNRESOLVED_RAW_SOURCE_NO_SUCCESS_CREDIT'\n` +
+    `def reject(frame,session=sid):\n` +
+    ` try: r.pending_unhandled_claude_frame(frame,session)\n` +
+    ` except RuntimeError: return\n` +
+    ` raise AssertionError('unsupported Claude PENDING frame was accepted')\n` +
+    `for frame in [\n` +
+    ` {'type':'system','subtype':'init','session_id':'other'},\n` +
+    ` {'type':'system','subtype':'init','session_id':sid,'method':'control'},\n` +
+    ` {'type':'result','subtype':'success','session_id':sid},\n` +
+    ` {'type':'user','session_id':sid},\n` +
+    ` {'type':'assistant','session_id':sid,'message':{'role':'assistant','content':[{'type':'text','text':'marker'}]}},\n` +
+    ` {'type':'assistant','session_id':sid,'message':{'role':'assistant','content':[{'type':'thinking','thinking':'...'}, {'type':'tool_use','id':'tool'}]}},\n` +
+    ` {'type':'assistant','session_id':sid,'message':{'role':'assistant','content':[{'type':'thinking','thinking':'...','tool_use':{'id':'tool'}}]}},\n` +
+    ` {'type':'rate_limit_event','rate_limit_info':{},'request_id':'rpc'},\n` +
+    ` {'type':'assistant','session_id':sid,'request_id':None,'message':{'role':'assistant','content':[{'type':'thinking','thinking':'...'}]}},\n` +
+    `]: reject(frame)\n` +
+    `assert r.pending_unhandled_codex_frame({'method':'warning','params':{}},'thread-1')==( 'warning',None)\n`;
+  const run = spawnSync(python, ['-c', source, reader], { encoding: 'utf8', windowsHide: true });
+  assert.equal(run.status, 0, run.stderr || run.error?.message);
+});

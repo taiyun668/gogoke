@@ -221,7 +221,9 @@ export async function runHistoryBoundaryCases(product, config, journal) {
     input.state = 'ORIGINAL_NATIVE_TURN_COMPLETE'; product.save();
   };
   const send = async (s, row, marker, label) => {
-    const body = `Private non-secret ${label}. Reply with this exact marker: ${marker}. ` +
+    const body = (projectOnly
+      ? `For this project's release checklist, the release label is ${marker}. What is this project's release label? State the label in one short sentence. `
+      : `Private non-secret ${label}. Reply with this exact marker: ${marker}. `) +
       'Use no tools or agents. Do not read or write files, inspect credentials, contact anyone, or open a browser.';
     const sent = await step(s, 'send', { body }, ['APPLIED', 'UNKNOWN']);
     const input = { body, marker, requestId: journal.operations.at(-1).request.requestId, sendReceipt: sent };
@@ -281,8 +283,8 @@ export async function runHistoryBoundaryCases(product, config, journal) {
       const b = await open(row.projectB, row, 'WORK', item.caseId);
       item.projectSessions = [a.id, b.id]; product.save();
       // Both original native sessions are live before either marker is sent.
-      const first = await send(a, row, id('PROJECT_A_PRIVATE'), 'V04b project A history');
-      const second = await send(b, row, id('PROJECT_B_PRIVATE'), 'V04b project B history');
+      const first = await send(a, row, id(projectOnly ? 'RELEASE_A' : 'PROJECT_A_PRIVATE'), 'V04b project A history');
+      const second = await send(b, row, id(projectOnly ? 'RELEASE_B' : 'PROJECT_B_PRIVATE'), 'V04b project B history');
       await finishInput(a, first.input, row, first.sent);
       await finishInput(b, second.input, row, second.sent);
       if (projectOnly) {

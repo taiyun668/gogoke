@@ -83,6 +83,9 @@ PENDING_UNMAPPED_CODEX_METHODS = frozenset((
 ))
 PENDING_UNMAPPED_CODEX_ITEMS = frozenset(("userMessage", "agentMessage", "reasoning"))
 PENDING_CLASSIFICATION = "PRESERVED_UNRESOLVED_RAW_SOURCE_NO_SUCCESS_CREDIT"
+PENDING_CLAUDE_FORBIDDEN_FIELDS = frozenset((
+    "id", "method", "result", "error", "control_request",
+))
 
 
 def normalizer_item_string(value):
@@ -125,6 +128,56 @@ def pending_unhandled_codex_frame(frame, thread_id):
     check(type(time_value) is int and 0 <= time_value <= 2**64 - 1,
           "Pending Codex item would fail normalizer lifecycle validation")
     return method, item["type"]
+
+
+def pending_unhandled_claude_frame(frame, native_session_id):
+    """Preserve only the four observed, unprojected Claude raw frame shapes.
+
+    This identifies original frame shape only. It does not turn PENDING into a
+    normalized event, notification, successful turn, or source validation.
+    """
+    check(isinstance(frame, dict) and not (PENDING_CLAUDE_FORBIDDEN_FIELDS & frame.keys()),
+          "Pending Claude source is an RPC response, control request, or unsupported frame")
+    frame_type = frame.get("type")
+    # Claude's own assistant frames retain an opaque req_* field; it is not a
+    # JSON-RPC response ID or an authority to settle any host request.
+    if "request_id" in frame:
+        check(frame_type == "assistant" and isinstance(frame["request_id"], str) and
+              frame["request_id"], "Pending Claude non-assistant request or invalid assistant request ID")
+    frame_session = frame.get("session_id")
+    if frame_session is not None:
+        check(isinstance(native_session_id, str) and frame_session == native_session_id,
+              "Pending Claude source has another native session identity")
+
+    if frame_type == "system" and frame.get("subtype") == "init":
+        check(isinstance(native_session_id, str) and native_session_id and
+              frame_session == native_session_id and
+              not any(key in frame for key in ("content", "message", "tool_use")),
+              "Pending Claude init frame lacks exact session binding")
+        return "system/init", None
+    if frame_type == "rate_limit_event":
+        check(isinstance(frame.get("rate_limit_info"), dict) and
+              not any(key in frame for key in ("content", "message", "tool_use")),
+              "Pending Claude rate-limit frame has an unsupported mixed shape")
+        return "rate_limit_event", None
+    if frame_type == "system" and frame.get("subtype") == "thinking_tokens":
+        check(not any(key in frame for key in ("content", "message", "tool_use")),
+              "Pending Claude thinking-token frame has an unsupported mixed shape")
+        return "system/thinking_tokens", None
+    if frame_type == "assistant":
+        message = frame.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        check(isinstance(native_session_id, str) and native_session_id and
+              frame_session == native_session_id and isinstance(message, dict) and
+              message.get("role") == "assistant" and isinstance(content, list) and content and
+              all(isinstance(item, dict) and item.get("type") == "thinking" and
+                  isinstance(item.get("thinking"), str) and
+                  not any(key in item for key in ("content", "tool_use", "tool_calls")) for item in content) and
+              not any(key in message for key in ("text", "tool_use", "tool_calls")) and
+              frame.get("parent_tool_use_id") is None,
+              "Pending Claude assistant frame is not exact session-bound thinking-only output")
+        return "assistant/thinking-only", None
+    check(False, "Pending Claude source is outside the four observed unprojected frame shapes")
 
 
 def path_spelling(value):
@@ -211,19 +264,6 @@ def session_evidence(db, session, case, operations, source_commit, peer=None):
     associated_rpc_sources = {(row["source_epoch"], row["source_cursor"]) for row in outgoing
                               if row["source_epoch"] is not None and row["source_cursor"] is not None}
     unknown_frames = []
-    for row, frame in decoded:
-        if row["state"] != "PENDING":
-            continue
-        # Preserve only exact Unhandled notification shapes with original H
-        # custody and no RPC response association. A source SHA is provenance,
-        # not evidence that a PENDING row is a notification or a success.
-        check(case["driverId"] == "codex" and
-              (row["source_epoch"], row["source_cursor"]) not in associated_rpc_sources,
-              "Pending original source has unqualified provider or RPC response custody")
-        method, item_type = pending_unhandled_codex_frame(frame, session["threadId"])
-        unknown_frames.append({"sourceEpoch": row["source_epoch"],
-            "sourceCursor": row["source_cursor"], "method": method, "itemType": item_type,
-            "state": "PENDING", "classification": PENDING_CLASSIFICATION})
     commands = [(row, decode_hex(row["command_hex"])) for row in outgoing]
     open_request = case["sideOpenRequest"] if session["purpose"] == "SIDE_CHAT" else operations[session["openRequestId"]]["request"]
     check(decode_hex(episode["raw_hex"]) == open_request and episode["request_id"] == open_request["requestId"] and
@@ -340,6 +380,24 @@ def session_evidence(db, session, case, operations, source_commit, peer=None):
                   frame.get("params", {}).get("sessionId") == native_id and
                   frame.get("params", {}).get("prompt") == [{"type": "text", "text": original_body}]]
         check(len(writes) == 1 and writes[0][0]["phase"] == "OBSERVED", "Original ACP native prompt missing")
+    for row, frame in decoded:
+        if row["state"] != "PENDING":
+            continue
+        # Original H custody was checked for every source row above. Keep
+        # PENDING as PENDING and exclude every RPC-linked source tuple.
+        check((row["source_epoch"], row["source_cursor"]) not in associated_rpc_sources,
+              "Pending original source is linked to an H RPC response")
+        if case["driverId"] == "codex":
+            method, item_type = pending_unhandled_codex_frame(frame, session["threadId"])
+            observed = {"method": method, "itemType": item_type}
+        elif case["driverId"] == "claude":
+            frame_shape, _ = pending_unhandled_claude_frame(frame, native_id)
+            observed = {"frameShape": frame_shape}
+        else:
+            check(False, "Pending original source has unsupported provider custody")
+        unknown_frames.append({"sourceEpoch": row["source_epoch"],
+            "sourceCursor": row["source_cursor"], **observed,
+            "state": "PENDING", "classification": PENDING_CLASSIFICATION})
     if case["driverId"] != "codex":
         terminal = [(row, frame) for row, frame in decoded if row["source_epoch"] == sent["result"]["sourceEpoch"] and
                     row["source_cursor"] == sent["result"]["sourceCursor"]]
