@@ -322,9 +322,6 @@ class OriginalResumeCandidateStop(unittest.TestCase):
                 "rawSha256": hashlib.sha256(self.stop_raw).hexdigest(),
                 "receipt": self.stop_receipt, "stoppedGeneration": "2"}}
         self.db.execute("INSERT INTO gogoke_v37_h_operation VALUES(?,?,?,?,?,?,?,?)",
-            ("projectA", "originalResume", "sessionA", "resume", self.resume_raw.hex(),
-             "UNKNOWN", 3, 4))
-        self.db.execute("INSERT INTO gogoke_v37_h_operation VALUES(?,?,?,?,?,?,?,?)",
             ("projectA", "candidateStop", "sessionA", "stop-resume-candidate",
              self.stop_raw.hex(), "APPLIED", 4, 4))
         candidate_op = "h-resume-" + hashlib.sha256(self.resume_raw).hexdigest()[:40]
@@ -361,6 +358,8 @@ class OriginalResumeCandidateStop(unittest.TestCase):
             attempt or self.attempt, self.resume_raw)
 
     def test_original_unknown_and_independent_h_c_proof_are_exact(self):
+        self.assertEqual(self.db.execute(
+            "SELECT COUNT(*) FROM gogoke_v37_h_operation WHERE request_id='originalResume'").fetchone()[0], 0)
         fact, raw_sha, source = self.source()
         self.assertEqual((fact, raw_sha),
             (self.candidate_fact, hashlib.sha256(self.stop_raw).hexdigest()))
@@ -372,8 +371,40 @@ class OriginalResumeCandidateStop(unittest.TestCase):
         self.assertEqual(self.db.execute("SELECT stop_fact_id FROM gogoke_v37_h_claim").fetchone()[0],
             self.old_fact)
 
+    def test_parent_release_needs_its_original_applied_raw_and_revision(self):
+        release = {"schema": self.resume["schema"], "family": "K-SESSION",
+            "operation": "admission-release", "requestId": "parentRelease", "domainId": "projectA",
+            "targetId": "sessionA", "expectedRevision": "4",
+            "payload": {"seatId": "seatA", "generation": "1"}}
+        self.db.execute("UPDATE gogoke_v37_h_claim SET state='RELEASED',revision=5")
+        with self.assertRaises(RuntimeError):
+            self.source()
+        self.db.execute("INSERT INTO gogoke_v37_h_operation VALUES(?,?,?,?,?,?,?,?)",
+            ("projectA", "parentRelease", "sessionA", "admission-release",
+             json.dumps(release, separators=(",", ":")).encode().hex(), "APPLIED", 4, 5))
+        self.assertEqual(self.source()[0], self.candidate_fact)
+        for change in [
+            "UPDATE gogoke_v37_h_operation SET status='UNKNOWN' WHERE request_id='parentRelease'",
+            "UPDATE gogoke_v37_h_operation SET previous_revision=3 WHERE request_id='parentRelease'",
+            "UPDATE gogoke_v37_h_claim SET revision=6",
+            "UPDATE gogoke_v37_h_claim SET stop_fact_id='changed'",
+        ]:
+            with self.subTest(change=change):
+                self.db.execute("SAVEPOINT release_negative")
+                try:
+                    self.db.execute(change)
+                    with self.assertRaises(RuntimeError):
+                        self.source()
+                finally:
+                    self.db.execute("ROLLBACK TO release_negative")
+                    self.db.execute("RELEASE release_negative")
+        self.assertEqual(self.attempt["receipt"]["status"], "UNKNOWN")
+        self.assertEqual(self.db.execute("SELECT stop_fact_id FROM gogoke_v37_h_claim").fetchone()[0], self.old_fact)
+
     def test_single_source_drift_fails_closed(self):
         changes = [
+            ("INSERT INTO gogoke_v37_h_operation VALUES('projectA','originalResume','sessionA',"
+             "'resume',?,'UNKNOWN',3,4)", self.resume_raw.hex(), RuntimeError),
             ("UPDATE gogoke_v37_h_process_episode SET raw_hex='00' WHERE request_id='originalResume'", None, RuntimeError),
             ("UPDATE gogoke_v37_h_operation SET status='UNKNOWN' WHERE request_id='candidateStop'", None, RuntimeError),
             ("UPDATE gogoke_coordination_process_custody SET stop_proof_hash=NULL WHERE generation='2'", None, RuntimeError),

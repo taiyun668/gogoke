@@ -118,7 +118,13 @@ function candidateFixture(name, options = {}) {
       requestId:'candidateStop', domainId:'projectA', targetId, expectedRevision, payload:{ ...payload } };
     options.mutateRequest?.(request);
     const record = { request, rawFrame:JSON.stringify(request), receipt:null };
-    f.lifecycle.beforeDispatch(record); f.journal.operations.push(record);
+    f.lifecycle.beforeDispatch(record);
+    const persisted = JSON.parse(fs.readFileSync(f.lifecycle.manifestPath));
+    const intent = persisted.attempts.find(row => row.originalCreateRequestId === 'originalUnknownResume');
+    assert.equal(intent.candidateStopDispatchState, 'PERSISTED_BEFORE_DISPATCH');
+    assert.equal(intent.candidateStopRawFrame, record.rawFrame);
+    assert.equal(intent.candidateStopRequestId, request.requestId);
+    f.journal.operations.push(record);
     if (options.transportUnknown) {
       f.lifecycle.afterDispatchError(record, Error('original candidate stop transport unknown'));
       throw Error('original candidate stop transport unknown');
@@ -189,6 +195,8 @@ test('candidate selector and exact four-field proof refuse drift before F close'
     ['wrong-revision', { mutateRequest: request => { request.expectedRevision = '3'; } }],
     ['wrong-scope', { mutateReceipt: receipt => { receipt.result.stopScope = 'ORDINARY'; } }],
     ['wrong-generation', { mutateReceipt: receipt => { receipt.result.stoppedGeneration = '1'; } }],
+    ['numeric-old-generation', { mutateReceipt: receipt => { receipt.result.stoppedGeneration = 1; } }],
+    ['numeric-new-generation', { mutateReceipt: receipt => { receipt.result.stoppedGeneration = 2; } }],
     ['extra-result', { mutateReceipt: receipt => { receipt.result.pid = '12'; } }],
   ]) {
     const f = candidateFixture(`candidate-${name}`, options);
@@ -207,6 +215,64 @@ test('changed original UNKNOWN resume raw cannot authorize candidate stop', asyn
   assert.deepEqual(f.calls, []);
   assert.deepEqual(f.oldStop, oldStop);
   assert.equal(f.lifecycle.manifest.attempts[0].candidateStopDispatchState, 'NOT_DISPATCHED');
+});
+
+test('checkpoint parent and UNKNOWN child finish in dependency order from their original revisions', async () => {
+  for (const unresolved of [false, true]) {
+    const name = `checkpoint-parent-child-${unresolved}`;
+    const f = fixture(name);
+    const parent = f.record('admission-reserve', 'parentCreate', '1');
+    parent.request.expectedRevision = '0'; parent.receipt.previousRevision = '0'; parent.receipt.revision = '1';
+    parent.rawFrame = JSON.stringify(parent.request); f.create(parent);
+    const stopped = f.record('stop', 'oldStop', '1', 'APPLIED', { stopFact:`sha256:${'a'.repeat(64)}` });
+    f.journal.operations.push(stopped);
+    f.lifecycle.beforeCheckpointClose(name);
+    const resume = f.record('resume', 'childResume', '1', 'UNKNOWN');
+    delete resume.request.payload.seatId;
+    resume.request.expectedRevision = '4'; resume.receipt.previousRevision = '4'; resume.receipt.revision = '5';
+    resume.rawFrame = JSON.stringify(resume.request); f.create(resume);
+    const oldStop = structuredClone(stopped), originalResume = structuredClone(resume);
+    let claimRevision = '5', claimState = 'STOPPED';
+    const normal = f.product.operation.bind(f.product);
+    f.product.operation = async (family, operation, targetId, payload, expectedRevision, allowed) => {
+      if (!['admission-release', 'stop'].includes(operation)) {
+        return normal(family, operation, targetId, payload, expectedRevision, allowed);
+      }
+      f.calls.push({ family, operation, targetId, payload, expectedRevision });
+      const request = { schema:'gogoke.37.operations.v1', family, operation,
+        requestId:`owned-${operation}`, domainId:'projectA', targetId, expectedRevision, payload };
+      const record = { request, rawFrame:JSON.stringify(request), receipt:null };
+      f.lifecycle.beforeDispatch(record); f.journal.operations.push(record);
+      assert.equal(claimState, 'STOPPED'); assert.equal(expectedRevision, claimRevision);
+      if (operation === 'stop' && unresolved) {
+        f.lifecycle.afterDispatchError(record, Error('candidate stop original transport unknown'));
+        throw Error('candidate stop original transport unknown');
+      }
+      record.receipt = { schema:request.schema, family, operation, requestId:request.requestId, targetId,
+        previousRevision:expectedRevision, revision:claimRevision, status:'APPLIED',
+        result: operation === 'stop' ? { stopScope:'ORIGINAL_RESUME_CANDIDATE',
+          originalResumeRequestId:'childResume', stoppedGeneration:'2', stopFact:`sha256:${'b'.repeat(64)}` }
+          : { generation:'1' } };
+      if (operation === 'admission-release') {
+        claimState = 'RELEASED'; claimRevision = '6'; record.receipt.revision = claimRevision;
+      }
+      f.lifecycle.afterReceipt(record); return record.receipt;
+    };
+    const first = await f.lifecycle.finishCase(name);
+    assert.equal(first.complete, !unresolved, first.errors.join('; '));
+    assert.equal((await f.lifecycle.finishCase(name)).complete, !unresolved);
+    assert.deepEqual(f.calls.map(row => row.operation), unresolved ? ['stop'] :
+      ['stop', 'temporary-home-close', 'admission-release', 'temporary-home-close']);
+    assert.deepEqual(stopped, oldStop); assert.deepEqual(resume, originalResume);
+    assert.equal(f.lifecycle.manifest.attempts[1].generation, null);
+    if (!unresolved) {
+      const parentAttempt = f.lifecycle.manifest.attempts[0];
+      assert.equal(parentAttempt.hStopSource.requestId, 'oldStop');
+      assert.equal(parentAttempt.releaseReceipt.previousRevision, '5');
+      assert.equal(parentAttempt.releaseReceipt.revision, '6');
+      assert.equal(f.lifecycle.manifest.attempts.every(row => row.closeDispatchState === 'RECEIPT_RECORDED'), true);
+    }
+  }
 });
 
 test('UNKNOWN stop is retained with zero stop or close resends', async () => {

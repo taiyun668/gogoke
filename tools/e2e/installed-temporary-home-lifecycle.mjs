@@ -50,6 +50,7 @@ function stopProof(record) {
     receipt?.requestId === request.requestId && receipt?.targetId === request.targetId &&
     receipt?.family === request.family && receipt?.operation === request.operation;
   return exactReply && request.family === 'K-SESSION' && request.operation === 'stop' &&
+    Object.keys(request.payload ?? {}).sort().join('|') === 'generation|seatId' &&
     ['APPLIED', 'REPLAYED'].includes(receipt.status) &&
     typeof receipt.result?.stopFact === 'string' && /^sha256:[a-f0-9]{64}$/.test(receipt.result.stopFact)
     ? receipt.result.stopFact : null;
@@ -83,7 +84,8 @@ function candidateStopProof(record, attempt, producer, original) {
       receipt.revision !== request.expectedRevision ||
       result?.stopScope !== 'ORIGINAL_RESUME_CANDIDATE' ||
       result.originalResumeRequestId !== resume.requestId ||
-      !/^[1-9][0-9]*$/.test(result.stoppedGeneration ?? '') ||
+      typeof result.stoppedGeneration !== 'string' ||
+      !/^[1-9][0-9]*$/.test(result.stoppedGeneration) ||
       result.stoppedGeneration === attempt.producerGeneration ||
       !/^sha256:[a-f0-9]{64}$/.test(result.stopFact ?? '') ||
       Object.keys(result).sort().join('|') !==
@@ -115,10 +117,9 @@ function closeReceipt(record, requestId, targetId) {
     result?.state === 'CLOSED';
 }
 
-function releaseReceipt(record, attempt, producer, stopRecord) {
+function releaseReceipt(record, attempt, producer, stopRevision) {
   const request = record?.request;
   const receipt = record?.receipt;
-  const stopRevision = stopRecord?.receipt?.revision;
   return request?.schema === 'gogoke.37.operations.v1' && receipt?.schema === request.schema &&
     request.family === 'K-SESSION' && request.operation === 'admission-release' &&
     request.domainId === attempt.domainId && request.targetId === attempt.sessionId &&
@@ -295,6 +296,30 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
     row.request.domainId === domainId &&
     row.request.operation === operation &&
     (generation === undefined || String(row.request.payload?.generation ?? '') === String(generation)));
+  const ordinaryStops = (sessionId, generation) => hEntries(sessionId, 'stop', generation)
+    .filter(row => Object.keys(row.request.payload ?? {}).sort().join('|') === 'generation|seatId');
+  const releaseRevisionFor = (attempt, producer, stopped) => {
+    const revision = stopped.receipt.revision;
+    const resumes = hEntries(attempt.sessionId, 'resume', attempt.generation);
+    if (resumes.length === 0) return revision;
+    if (resumes.length !== 1) return null;
+    const original = resumes[0];
+    const children = manifest.attempts.filter(row => row.caseId === attempt.caseId &&
+      row.domainId === attempt.domainId && row.sessionId === attempt.sessionId &&
+      row.instanceId === attempt.instanceId && row.operation === 'resume' &&
+      row.producerGeneration === attempt.generation &&
+      row.originalCreateRequestId === original.request.requestId);
+    if (children.length !== 1 || !originalClosed(children[0]) ||
+        typeof revision !== 'string' || !/^(0|[1-9][0-9]*)$/.test(revision) ||
+        original.request.expectedRevision !== revision ||
+        original.receipt?.previousRevision !== revision ||
+        original.receipt.revision !== String(BigInt(revision) + 1n)) return null;
+    const child = children[0];
+    const candidates = journal.operations.filter(row => row.request?.requestId === child.candidateStopRequestId);
+    const source = candidates.length === 1 && candidateStopProof(candidates[0], child, producer, original);
+    return source && isDeepStrictEqual(source, child.candidateStopSource)
+      ? original.receipt.revision : null;
+  };
   const originalClosed = attempt => {
     const records = journal.operations.filter(row => row.request?.requestId === attempt.closeRequestId);
     const record = records[0], request = record?.request;
@@ -658,7 +683,11 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
     async settleAttempts(attempts) {
       const errors = [];
       const previousCaseId = activeCaseId;
-      for (const attempt of attempts) {
+      // The first candidate stop requires the old claim still STOPPED. Settle
+      // unpromoted children before releasing their original parent claim.
+      const candidate = row => row.operation === 'resume' && !nonempty(row.generation) &&
+        row.receipt?.status === 'UNKNOWN';
+      for (const attempt of [...attempts.filter(candidate), ...attempts.filter(row => !candidate(row))]) {
         activeCaseId = attempt.caseId;
         if (originalClosed(attempt)) continue;
         if (attempt.closeDispatchState !== 'NOT_DISPATCHED') {
@@ -768,7 +797,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
           continue;
         }
 
-        let stops = hEntries(attempt.sessionId, 'stop', attempt.generation);
+        let stops = ordinaryStops(attempt.sessionId, attempt.generation);
         if (stops.length === 0) {
           const opened = hEntries(attempt.sessionId, 'open', attempt.generation);
           const resumed = journal.operations.filter(row => row.request?.family === 'K-SESSION' &&
@@ -793,7 +822,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
               session.revision, ['APPLIED', 'REPLAYED']);
             session.revision = stopped.revision;
             product.save();
-            stops = hEntries(attempt.sessionId, 'stop', attempt.generation);
+            stops = ordinaryStops(attempt.sessionId, attempt.generation);
           } catch (error) {
             attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_H_STOP_FAILED_OR_UNKNOWN';
             attempt.teardownError = String(error?.stack ?? error);
@@ -814,6 +843,13 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
           rawSha256: digest(stops[0].rawFrame),
           stopFact: stopProof(stops[0]),
         };
+        const releaseRevision = releaseRevisionFor(attempt, producer, stops[0]);
+        if (releaseRevision === null) {
+          attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_CURRENT_RELEASE_SOURCE_UNPROVEN';
+          errors.push(`${attempt.originalCreateRequestId}: current release revision lacks its own settled resume source`);
+          save();
+          continue;
+        }
         attempt.releaseDispatchState ??= 'NOT_DISPATCHED';
         const releases = journal.operations.filter(row =>
           row.request?.family === 'K-SESSION' && row.request.operation === 'admission-release' &&
@@ -842,7 +878,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
           attempt.releaseRawSha256 = typeof existingRelease.rawFrame === 'string'
             ? digest(existingRelease.rawFrame) : null;
           attempt.releaseReceipt = existingRelease.receipt ?? null;
-          if (!releaseReceipt(existingRelease, attempt, producer, stops[0])) {
+          if (!releaseReceipt(existingRelease, attempt, producer, releaseRevision)) {
             attempt.releaseDispatchState = existingRelease.receipt ? 'RECEIPT_RECORDED' : 'DISPATCH_RESULT_UNKNOWN';
             attempt.releaseError = existingRelease.originalError ??
               `Existing H release status=${existingRelease.receipt?.status ?? 'UNKNOWN'}`;
@@ -863,9 +899,9 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
           try {
             const released = await product.operation('K-SESSION', 'admission-release', attempt.sessionId,
               { generation: String(attempt.generation), seatId: producer.seatId },
-              stops[0].receipt.revision, ['APPLIED', 'REPLAYED']);
+              releaseRevision, ['APPLIED', 'REPLAYED']);
             const release = journal.operations.at(-1);
-            if (!releaseReceipt(release, attempt, producer, stops[0]) || release.receipt !== released) {
+            if (!releaseReceipt(release, attempt, producer, releaseRevision) || release.receipt !== released) {
               throw Error('New H release receipt did not prove the exact stopped claim was released');
             }
             attempt.releaseDispatchState = 'RECEIPT_RECORDED';
@@ -963,7 +999,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
       const stops = attempts.map(attempt => {
         const producer = manifest.producers.find(row => row.sessionId === attempt.sessionId);
         const session = journal.sessions.find(row => row.id === attempt.sessionId);
-        const records = hEntries(attempt.sessionId, 'stop', attempt.generation);
+        const records = ordinaryStops(attempt.sessionId, attempt.generation);
         const stopped = records[0];
         const releases = hEntries(attempt.sessionId, 'admission-release', attempt.generation);
         if (!producer || !session || String(session.generation) !== String(attempt.generation) ||

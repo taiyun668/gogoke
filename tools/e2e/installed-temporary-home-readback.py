@@ -285,10 +285,14 @@ def original_resume_candidate_stop_source(db, home, attempt, original_raw):
     original = json.loads(original_raw)
     unknown = attempt.get("receipt")
     resumes = [dict(row) for row in db.execute(
-        """SELECT raw_hex,status,previous_revision,revision FROM gogoke_v37_h_operation
-           WHERE domain_id=? AND request_id=? AND session_id=? AND operation='resume'""",
+        """SELECT raw_hex,phase AS status,previous_revision,result_revision AS revision
+           FROM gogoke_v37_h_process_episode
+           WHERE domain_id=? AND request_id=? AND session_id=?""",
         (home["domain_id"], original["requestId"], home["owner_id"]))]
-    need(len(resumes) == 1 and resumes[0]["raw_hex"] == original_raw.hex() and
+    need(not list(db.execute(
+         "SELECT request_id FROM gogoke_v37_h_operation WHERE domain_id=? AND request_id=?",
+         (home["domain_id"], original["requestId"]))) and
+         len(resumes) == 1 and resumes[0]["raw_hex"] == original_raw.hex() and
          resumes[0]["status"] == "UNKNOWN" and
          original["payload"]["generation"] == attempt["producerGeneration"] and
          unknown["schema"] == original["schema"] and unknown["family"] == "K-SESSION" and
@@ -297,6 +301,7 @@ def original_resume_candidate_stop_source(db, home, attempt, original_raw):
          unknown["previousRevision"] == original["expectedRevision"] ==
             str(resumes[0]["previous_revision"]) and
          unknown["revision"] == str(resumes[0]["revision"]) and
+         resumes[0]["revision"] == resumes[0]["previous_revision"] + 1 and
          isinstance(unknown.get("result"), dict) and
          "newGeneration" not in unknown.get("result", {}),
          "Original UNKNOWN resume request/receipt differs")
@@ -356,12 +361,38 @@ def original_resume_candidate_stop_source(db, home, attempt, original_raw):
              AND c.domain_id=a.domain_id AND c.generation=a.generation
            WHERE a.domain_id=? AND a.session_id=? AND a.generation=?""",
         (home["domain_id"], home["owner_id"], row["old_generation"]))]
-    need(len(old) == 1 and old[0]["state"] == old[0]["e_phase"] == old[0]["c_state"] == "STOPPED" and
-         old[0]["revision"] == resumes[0]["revision"] and
+    need(len(old) == 1 and old[0]["state"] in ("STOPPED", "RELEASED") and
+         old[0]["e_phase"] == old[0]["c_state"] == "STOPPED" and
          old[0]["stop_fact_id"] == old[0]["e_stop"] == old[0]["c_stop"] and
          re.fullmatch(r"sha256:[a-f0-9]{64}", old[0]["stop_fact_id"] or "") and
          old[0]["stop_fact_id"] != row["stop_proof_hash"],
          "Original stopped claim/StopFact differs from candidate C proof")
+    if old[0]["state"] == "STOPPED":
+        need(old[0]["revision"] == resumes[0]["revision"],
+             "Original stopped claim revision differs")
+    else:
+        # A later release changes only the current claim. Its original APPLIED
+        # journal must explain that revision; neither stop proof is rewritten.
+        releases = []
+        for item in db.execute(
+            """SELECT request_id,raw_hex,status,previous_revision,revision
+               FROM gogoke_v37_h_operation
+               WHERE domain_id=? AND session_id=? AND operation='admission-release'""",
+            (home["domain_id"], home["owner_id"])):
+            release = json.loads(bytes.fromhex(item["raw_hex"]))
+            if release.get("payload", {}).get("generation") == row["old_generation"]:
+                releases.append((item, release))
+        need(len(releases) == 1, "Original parent release source missing or ambiguous")
+        item, release = releases[0]
+        need(item["status"] == "APPLIED" and
+             item["previous_revision"] == resumes[0]["revision"] and
+             item["revision"] == item["previous_revision"] + 1 == old[0]["revision"] and
+             release == {"schema": original["schema"], "family": "K-SESSION",
+                "operation": "admission-release", "requestId": item["request_id"],
+                "domainId": home["domain_id"], "targetId": home["owner_id"],
+                "expectedRevision": str(item["previous_revision"]),
+                "payload": {"seatId": row["seat_id"], "generation": row["old_generation"]}},
+             "Original parent release raw/status/CAS differs")
     return row["stop_proof_hash"], sha(stop_raw), source
 
 
