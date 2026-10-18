@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, renderHook } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { respondToUserInputRequest } from "@services/tauri";
 import { useThreadUserInput } from "./useThreadUserInput";
 
@@ -9,6 +9,9 @@ vi.mock("@services/tauri", () => ({
 }));
 
 describe("useThreadUserInput", () => {
+  beforeEach(() => {
+    vi.mocked(respondToUserInputRequest).mockReset().mockResolvedValue(undefined);
+  });
   it("submits request-user-input answers and appends an answered item", async () => {
     const dispatch = vi.fn();
     const { result } = renderHook(() => useThreadUserInput({ dispatch }));
@@ -65,5 +68,28 @@ describe("useThreadUserInput", () => {
       requestId: "req-7",
       workspaceId: "ws-1",
     });
+  });
+
+  it.each(["ANSWERED", "UNKNOWN"] as const)("retains the original Host card binding and handles %s without inventing an answer", async (outcome) => {
+    const dispatch = vi.fn();
+    const { result } = renderHook(() => useThreadUserInput({ dispatch }));
+    const request = { workspace_id: "ws-host", request_id: "gmpc_original",
+      params: { thread_id: "original-thread", turn_id: "original-prompt", item_id: "cardOriginal",
+        card_origin: "host-mcp" as const, card_state: "OPEN" as const,
+        questions: [{ id: "host0", header: "Scope", question: "Which scope?" }] } };
+    const response = { answers: { host0: { answers: ["This project only"] } } };
+    if (outcome === "UNKNOWN") vi.mocked(respondToUserInputRequest)
+      .mockRejectedValueOnce(new Error("GOGOKE_VISIBLE_UNKNOWN:original_child: original answer unsettled"));
+    await act(async () => {
+      const submitted = result.current.handleUserInputSubmit(request, response);
+      if (outcome === "UNKNOWN") await expect(submitted).rejects.toThrow("original answer unsettled");
+      else await submitted;
+    });
+    expect(respondToUserInputRequest).toHaveBeenCalledExactlyOnceWith("ws-host", "gmpc_original",
+      response.answers, undefined, { requestRef: "gmpc_original", hostPromptRequestId: "original-prompt",
+        threadId: "original-thread", cardId: "cardOriginal", cardState: "OPEN", cardOrigin: "host-mcp" });
+    if (outcome === "UNKNOWN") expect(dispatch).not.toHaveBeenCalled();
+    else expect(dispatch).toHaveBeenCalledWith({ type: "removeUserInputRequest",
+      requestId: "gmpc_original", workspaceId: "ws-host" });
   });
 });
