@@ -372,6 +372,9 @@ pub(crate) fn acp(frame: &[u8], provider: Provider, bound_session: &str, bound_t
         acp::Observation::Initialize { result, .. } =>
             Ok(Output::SessionData { method: "initialize", value_json: result.canonical() }),
         acp::Observation::Unhandled { raw_frame } => {
+            // An unbound Grok x.ai/mcp/sdk_call stays here. H must explicitly
+            // opt into acp::decode_grok_mcp with its registered server ID;
+            // normalization has no registration, pending prompt or card grant.
             let method = parse_object(frame).ok()
                 .and_then(|value| if let Json::Object(fields) = value {
                     if let Some(Json::String(name)) = field(&fields, "method") {

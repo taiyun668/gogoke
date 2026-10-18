@@ -103,9 +103,19 @@ pub(crate) enum Observation {
     Unhandled { raw_frame: Vec<u8> },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DecodeError {
     pub(crate) reason: String,
     pub(crate) raw_frame: Vec<u8>,
+}
+
+/// Opt-in parser for the one host-owned Grok reverse MCP server. Ordinary ACP
+/// normalization deliberately leaves this method unhandled until H supplies
+/// its session-bound server ID and original source/custody binding.
+pub(crate) fn decode_grok_mcp(
+    frame: &[u8], expected_server_id: &str,
+) -> Result<Option<super::grok_mcp::Request>, DecodeError> {
+    super::grok_mcp::decode(frame, expected_server_id)
 }
 
 fn invalid(frame: &[u8], reason: impl Into<String>) -> DecodeError {
