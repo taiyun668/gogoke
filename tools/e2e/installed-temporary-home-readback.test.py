@@ -401,6 +401,16 @@ class OriginalResumeCandidateStop(unittest.TestCase):
         self.assertEqual(self.attempt["receipt"]["status"], "UNKNOWN")
         self.assertEqual(self.db.execute("SELECT stop_fact_id FROM gogoke_v37_h_claim").fetchone()[0], self.old_fact)
 
+    def test_source_helper_rejects_extra_original_resume_payload(self):
+        original = copy.deepcopy(self.resume)
+        original["payload"]["seatId"] = "seatA"
+        raw = json.dumps(original, separators=(",", ":")).encode()
+        self.db.execute("UPDATE gogoke_v37_h_process_episode SET raw_hex=? WHERE request_id='originalResume'",
+            (raw.hex(),))
+        # Isolated helper control, not a claim that Native can create this row.
+        with self.assertRaises(RuntimeError):
+            READER.original_resume_candidate_stop_source(self.db, self.home, self.attempt, raw)
+
     def test_single_source_drift_fails_closed(self):
         changes = [
             ("INSERT INTO gogoke_v37_h_operation VALUES('projectA','originalResume','sessionA',"

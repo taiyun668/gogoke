@@ -78,7 +78,7 @@ function fixture(name) {
   const record = (operation, id, generation, status = 'APPLIED', result = {}) => {
     const request = { schema: 'gogoke.37.operations.v1', family: 'K-SESSION', operation, requestId: id,
       domainId: 'projectA', targetId: session.id, expectedRevision: '3',
-      payload: { seatId: 'seatA', generation } };
+      payload: operation === 'resume' ? { generation } : { seatId: 'seatA', generation } };
     return { request, rawFrame: JSON.stringify(request), receipt: { schema: request.schema,
       family: request.family, operation, requestId: id, targetId: session.id,
       previousRevision: '3', revision: '4', status, result } };
@@ -109,6 +109,9 @@ function candidateFixture(name, options = {}) {
   oldStop.receipt.previousRevision = '2'; oldStop.receipt.revision = '3';
   f.journal.operations.push(oldStop);
   const resume = f.record('resume', 'originalUnknownResume', '1', 'UNKNOWN');
+  delete resume.request.payload.seatId;
+  options.mutateOriginal?.(resume.request);
+  resume.rawFrame = JSON.stringify(resume.request);
   f.create(resume);
   const normalOperation = f.product.operation.bind(f.product);
   f.product.operation = async (family, operation, targetId, payload, expectedRevision, allowed) => {
@@ -215,6 +218,97 @@ test('changed original UNKNOWN resume raw cannot authorize candidate stop', asyn
   assert.deepEqual(f.calls, []);
   assert.deepEqual(f.oldStop, oldStop);
   assert.equal(f.lifecycle.manifest.attempts[0].candidateStopDispatchState, 'NOT_DISPATCHED');
+});
+
+test('candidate stop refuses an original resume shape never written by Native', async () => {
+  const f = candidateFixture('candidate-original-extra-payload', {
+    mutateOriginal: request => { request.payload.seatId = 'seatA'; },
+  });
+  assert.equal((await f.lifecycle.finishCase('candidate-original-extra-payload')).complete, false);
+  assert.deepEqual(f.calls, []);
+});
+
+test('successful resume ancestors close after their settled descendants without releasing obsolete claims', async () => {
+  for (const [depth, unknown, missingRelease] of [[1, false, false], [2, false, false],
+    [1, true, false], [1, false, true]]) {
+    const name = `promoted-${depth}-${unknown}-${missingRelease}`;
+    const f = fixture(name);
+    const parent = f.record('admission-reserve', 'rootCreate', '1');
+    parent.request.expectedRevision = '0'; parent.receipt.previousRevision = '0'; parent.receipt.revision = '1';
+    parent.rawFrame = JSON.stringify(parent.request); f.create(parent);
+    let generation = '1', revision = '4';
+    const stopped = (gen, rev, id) => {
+      const row = f.record('stop', id, gen, 'APPLIED', { stopFact:`sha256:${gen.repeat(64)}` });
+      row.request.expectedRevision = String(BigInt(rev) - 1n);
+      row.receipt.previousRevision = row.request.expectedRevision; row.receipt.revision = rev;
+      row.rawFrame = JSON.stringify(row.request); f.journal.operations.push(row);
+    };
+    stopped(generation, revision, 'rootStop'); f.lifecycle.beforeCheckpointClose(name);
+    for (let n = 0; n < depth; n++) {
+      const next = String(BigInt(generation) + 1n);
+      const row = f.record('resume', `resume-${n}`, generation, 'APPLIED', { newGeneration:next });
+      delete row.request.payload.seatId; row.request.expectedRevision = revision;
+      row.receipt.previousRevision = revision; row.receipt.revision = String(BigInt(revision) + 1n);
+      row.rawFrame = JSON.stringify(row.request); f.create(row);
+      generation = next; revision = String(BigInt(row.receipt.revision) + 1n);
+      stopped(generation, revision, `stop-${n}`);
+    }
+    let unknownId = null;
+    if (unknown) {
+      unknownId = 'finalUnknown';
+      const row = f.record('resume', unknownId, generation, 'UNKNOWN');
+      delete row.request.payload.seatId; row.request.expectedRevision = revision;
+      row.receipt.previousRevision = revision; row.receipt.revision = String(BigInt(revision) + 1n);
+      row.rawFrame = JSON.stringify(row.request); f.create(row); revision = row.receipt.revision;
+    }
+    f.session.generation = generation; f.session.revision = revision;
+    const originals = structuredClone(f.journal.operations);
+    let released = false;
+    const ordinary = f.product.operation.bind(f.product);
+    f.product.operation = async (family, operation, targetId, payload, expectedRevision, allowed) => {
+      if (operation === 'admission-release') {
+        assert.equal(payload.generation, generation, 'only the actual current claim may be released');
+        assert.equal(expectedRevision, revision);
+        const receipt = await ordinary(family, operation, targetId, payload, expectedRevision, allowed);
+        released = true;
+        return receipt;
+      }
+      if (operation !== 'stop') return ordinary(family, operation, targetId, payload, expectedRevision, allowed);
+      assert.equal(released, false); assert.equal(payload.resumeRequestId, unknownId);
+      f.calls.push({ family, operation, targetId, payload, expectedRevision });
+      const request = { schema:'gogoke.37.operations.v1', family, operation, requestId:'lastCandidateStop',
+        domainId:'projectA', targetId, expectedRevision, payload };
+      const row = { request, rawFrame:JSON.stringify(request), receipt:null };
+      f.lifecycle.beforeDispatch(row); f.journal.operations.push(row);
+      row.receipt = { schema:request.schema, family, operation, requestId:request.requestId, targetId,
+        previousRevision:revision, revision, status:'APPLIED', result:{ stopScope:'ORIGINAL_RESUME_CANDIDATE',
+          originalResumeRequestId:unknownId, stoppedGeneration:String(BigInt(generation) + 1n),
+          stopFact:`sha256:${'f'.repeat(64)}` } };
+      f.lifecycle.afterReceipt(row); return row.receipt;
+    };
+    // Remove only the retained release source after the child's F close, to
+    // ensure a parent cannot infer it merely from the child's CLOSED receipt.
+    if (missingRelease) {
+      const normalClose = f.product.operation;
+      f.product.operation = async (...args) => {
+        const result = await normalClose(...args);
+        if (args[1] === 'temporary-home-close') {
+          delete f.lifecycle.manifest.attempts.find(row => row.generation === generation).hReleaseSource;
+        }
+        return result;
+      };
+    }
+    const first = await f.lifecycle.finishCase(name);
+    assert.equal(first.complete, !missingRelease, first.errors.join('; '));
+    const calls = f.calls.length;
+    assert.equal((await f.lifecycle.finishCase(name)).complete, !missingRelease);
+    assert.equal(f.calls.length, calls);
+    assert.deepEqual(f.journal.operations.slice(0, originals.length), originals);
+    assert.equal(f.calls.filter(row => row.operation === 'admission-release').length, 1);
+    if (!missingRelease) assert.equal(f.lifecycle.manifest.attempts.every(row =>
+      row.closeDispatchState === 'RECEIPT_RECORDED'), true);
+    else assert.equal(f.lifecycle.manifest.attempts[0].closeDispatchState, 'NOT_DISPATCHED');
+  }
 });
 
 test('checkpoint parent and UNKNOWN child finish in dependency order from their original revisions', async () => {

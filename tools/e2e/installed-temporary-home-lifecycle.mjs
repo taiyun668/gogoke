@@ -66,7 +66,8 @@ function candidateStopProof(record, attempt, producer, original) {
       !isDeepStrictEqual(failed, attempt.receipt) ||
       resume.domainId !== attempt.domainId || resume.targetId !== attempt.sessionId ||
       resume.requestId !== attempt.originalCreateRequestId ||
-      String(resume.payload?.generation) !== attempt.producerGeneration ||
+      Object.keys(resume.payload ?? {}).join('|') !== 'generation' ||
+      resume.payload.generation !== attempt.producerGeneration ||
       failed.previousRevision !== resume.expectedRevision ||
       !/^(0|[1-9][0-9]*)$/.test(failed.revision ?? '') ||
       request?.schema !== 'gogoke.37.operations.v1' || request.family !== 'K-SESSION' ||
@@ -298,10 +299,12 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
     (generation === undefined || String(row.request.payload?.generation ?? '') === String(generation)));
   const ordinaryStops = (sessionId, generation) => hEntries(sessionId, 'stop', generation)
     .filter(row => Object.keys(row.request.payload ?? {}).sort().join('|') === 'generation|seatId');
-  const releaseRevisionFor = (attempt, producer, stopped) => {
+  const releaseSourceFor = (attempt, producer, stopped, visited = new Set()) => {
+    if (visited.has(attempt.originalCreateRequestId)) return null;
+    visited.add(attempt.originalCreateRequestId);
     const revision = stopped.receipt.revision;
     const resumes = hEntries(attempt.sessionId, 'resume', attempt.generation);
-    if (resumes.length === 0) return revision;
+    if (resumes.length === 0) return { revision, promoted: false };
     if (resumes.length !== 1) return null;
     const original = resumes[0];
     const children = manifest.attempts.filter(row => row.caseId === attempt.caseId &&
@@ -315,10 +318,37 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
         original.receipt?.previousRevision !== revision ||
         original.receipt.revision !== String(BigInt(revision) + 1n)) return null;
     const child = children[0];
+    if (!matchesRequestReply(original, 'K-SESSION', 'resume', ['UNKNOWN', 'APPLIED', 'REPLAYED']) ||
+        original.rawFrame !== child.originalCreateRawFrame ||
+        digest(original.rawFrame) !== child.originalCreateRawSha256 ||
+        !isDeepStrictEqual(original.receipt, child.receipt) ||
+        Object.keys(original.request.payload ?? {}).join('|') !== 'generation' ||
+        original.request.payload.generation !== attempt.generation) return null;
+    if (['APPLIED', 'REPLAYED'].includes(original.receipt.status)) {
+      const generation = original.receipt.result?.newGeneration;
+      if (typeof generation !== 'string' || !/^[1-9][0-9]*$/.test(generation) ||
+          generation === attempt.generation || child.generation !== generation) return null;
+      const stops = ordinaryStops(child.sessionId, generation);
+      if (stops.length !== 1 || !stopProof(stops[0]) ||
+          !isDeepStrictEqual(child.hStopSource, { requestId: stops[0].request.requestId,
+            rawFrame: stops[0].rawFrame, rawSha256: digest(stops[0].rawFrame), stopFact: stopProof(stops[0]) })) return null;
+      const successor = releaseSourceFor(child, producer, stops[0], visited);
+      if (!successor) return null;
+      if (!successor.promoted) {
+        const releases = journal.operations.filter(row => row.request?.requestId === child.releaseRequestId);
+        if (releases.length !== 1 || !releaseReceipt(releases[0], child, producer, successor.revision) ||
+            !isDeepStrictEqual(child.hReleaseSource, { requestId: releases[0].request.requestId,
+              rawFrame: releases[0].rawFrame, rawSha256: digest(releases[0].rawFrame),
+              receipt: releases[0].receipt })) return null;
+      }
+      // The current claim belongs to the settled descendant. Native closes
+      // this old HOME from its original stop and mapped promotion ancestry.
+      return { revision: null, promoted: true };
+    }
     const candidates = journal.operations.filter(row => row.request?.requestId === child.candidateStopRequestId);
     const source = candidates.length === 1 && candidateStopProof(candidates[0], child, producer, original);
     return source && isDeepStrictEqual(source, child.candidateStopSource)
-      ? original.receipt.revision : null;
+      ? { revision: original.receipt.revision, promoted: false } : null;
   };
   const originalClosed = attempt => {
     const records = journal.operations.filter(row => row.request?.requestId === attempt.closeRequestId);
@@ -539,6 +569,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
             !isDeepStrictEqual(original.receipt, attempt.receipt) ||
             original.request.domainId !== attempt.domainId ||
             original.request.targetId !== attempt.sessionId ||
+            Object.keys(original.request.payload ?? {}).join('|') !== 'generation' ||
             original.request.payload?.generation !== attempt.producerGeneration ||
             original.receipt.previousRevision !== original.request.expectedRevision ||
             !/^(0|[1-9][0-9]*)$/.test(original.receipt.revision ?? '') ||
@@ -683,11 +714,10 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
     async settleAttempts(attempts) {
       const errors = [];
       const previousCaseId = activeCaseId;
-      // The first candidate stop requires the old claim still STOPPED. Settle
-      // unpromoted children before releasing their original parent claim.
-      const candidate = row => row.operation === 'resume' && !nonempty(row.generation) &&
-        row.receipt?.status === 'UNKNOWN';
-      for (const attempt of [...attempts.filter(candidate), ...attempts.filter(row => !candidate(row))]) {
+      // Descendants settle before the HOME from which they resumed. UNKNOWN
+      // candidates also require the old current claim to remain STOPPED.
+      for (const attempt of [...attempts.filter(row => row.operation === 'resume').reverse(),
+        ...attempts.filter(row => row.operation !== 'resume')]) {
         activeCaseId = attempt.caseId;
         if (originalClosed(attempt)) continue;
         if (attempt.closeDispatchState !== 'NOT_DISPATCHED') {
@@ -712,6 +742,7 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
               !isDeepStrictEqual(original.receipt, attempt.receipt) ||
               original.request.domainId !== attempt.domainId ||
               original.request.targetId !== attempt.sessionId ||
+              Object.keys(original.request.payload ?? {}).join('|') !== 'generation' ||
               original.request.payload?.generation !== attempt.producerGeneration ||
               original.receipt.previousRevision !== original.request.expectedRevision ||
               !/^(0|[1-9][0-9]*)$/.test(original.receipt.revision ?? '')) {
@@ -843,102 +874,105 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
           rawSha256: digest(stops[0].rawFrame),
           stopFact: stopProof(stops[0]),
         };
-        const releaseRevision = releaseRevisionFor(attempt, producer, stops[0]);
-        if (releaseRevision === null) {
+        const releaseSource = releaseSourceFor(attempt, producer, stops[0]);
+        if (releaseSource === null) {
           attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_CURRENT_RELEASE_SOURCE_UNPROVEN';
           errors.push(`${attempt.originalCreateRequestId}: current release revision lacks its own settled resume source`);
           save();
           continue;
         }
-        attempt.releaseDispatchState ??= 'NOT_DISPATCHED';
-        const releases = journal.operations.filter(row =>
-          row.request?.family === 'K-SESSION' && row.request.operation === 'admission-release' &&
-          row.request.domainId === attempt.domainId && row.request.targetId === attempt.sessionId &&
-          String(row.request.payload?.generation ?? '') === String(attempt.generation) &&
-          row.request.payload?.seatId === producer.seatId);
-        if (attempt.releaseDispatchState !== 'NOT_DISPATCHED' && releases.length === 0) {
-          attempt.releaseDispatchState = attempt.releaseDispatchState === 'RECEIPT_RECORDED'
-            ? 'RECEIPT_MISSING_OR_AMBIGUOUS' : attempt.releaseDispatchState;
-          attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_RELEASE_PROVENANCE_MISSING';
-          errors.push(`${attempt.originalCreateRequestId}: release history is incomplete; no replay`);
-          save();
-          continue;
-        }
-        if (releases.length > 1) {
-          attempt.releaseDispatchState = 'DUPLICATE_OR_AMBIGUOUS';
-          attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_RELEASE_DUPLICATE';
-          errors.push(`${attempt.originalCreateRequestId}: more than one matching H release; no replay`);
-          save();
-          continue;
-        }
-        const existingRelease = releases[0];
-        if (existingRelease) {
-          attempt.releaseRequestId = existingRelease.request?.requestId ?? null;
-          attempt.releaseRawFrame = existingRelease.rawFrame ?? null;
-          attempt.releaseRawSha256 = typeof existingRelease.rawFrame === 'string'
-            ? digest(existingRelease.rawFrame) : null;
-          attempt.releaseReceipt = existingRelease.receipt ?? null;
-          if (!releaseReceipt(existingRelease, attempt, producer, releaseRevision)) {
-            attempt.releaseDispatchState = existingRelease.receipt ? 'RECEIPT_RECORDED' : 'DISPATCH_RESULT_UNKNOWN';
-            attempt.releaseError = existingRelease.originalError ??
-              `Existing H release status=${existingRelease.receipt?.status ?? 'UNKNOWN'}`;
-            attempt.teardownState = `CASE_TEARDOWN_INCOMPLETE_RELEASE_${existingRelease.receipt?.status ?? 'UNKNOWN'}`;
-            errors.push(`${attempt.originalCreateRequestId}: existing H release is not an applied exact receipt; no replay`);
+        if (!releaseSource.promoted) {
+          const releaseRevision = releaseSource.revision;
+          attempt.releaseDispatchState ??= 'NOT_DISPATCHED';
+          const releases = journal.operations.filter(row =>
+            row.request?.family === 'K-SESSION' && row.request.operation === 'admission-release' &&
+            row.request.domainId === attempt.domainId && row.request.targetId === attempt.sessionId &&
+            String(row.request.payload?.generation ?? '') === String(attempt.generation) &&
+            row.request.payload?.seatId === producer.seatId);
+          if (attempt.releaseDispatchState !== 'NOT_DISPATCHED' && releases.length === 0) {
+            attempt.releaseDispatchState = attempt.releaseDispatchState === 'RECEIPT_RECORDED'
+              ? 'RECEIPT_MISSING_OR_AMBIGUOUS' : attempt.releaseDispatchState;
+            attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_RELEASE_PROVENANCE_MISSING';
+            errors.push(`${attempt.originalCreateRequestId}: release history is incomplete; no replay`);
             save();
             continue;
           }
-          attempt.releaseDispatchState = 'RECEIPT_RECORDED';
-          attempt.hReleaseSource = {
-            requestId: existingRelease.request.requestId,
-            rawFrame: existingRelease.rawFrame,
-            rawSha256: digest(existingRelease.rawFrame),
-            receipt: existingRelease.receipt,
-          };
-          save();
-        } else {
-          try {
-            const released = await product.operation('K-SESSION', 'admission-release', attempt.sessionId,
-              { generation: String(attempt.generation), seatId: producer.seatId },
-              releaseRevision, ['APPLIED', 'REPLAYED']);
-            const release = journal.operations.at(-1);
-            if (!releaseReceipt(release, attempt, producer, releaseRevision) || release.receipt !== released) {
-              throw Error('New H release receipt did not prove the exact stopped claim was released');
+          if (releases.length > 1) {
+            attempt.releaseDispatchState = 'DUPLICATE_OR_AMBIGUOUS';
+            attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_RELEASE_DUPLICATE';
+            errors.push(`${attempt.originalCreateRequestId}: more than one matching H release; no replay`);
+            save();
+            continue;
+          }
+          const existingRelease = releases[0];
+          if (existingRelease) {
+            attempt.releaseRequestId = existingRelease.request?.requestId ?? null;
+            attempt.releaseRawFrame = existingRelease.rawFrame ?? null;
+            attempt.releaseRawSha256 = typeof existingRelease.rawFrame === 'string'
+              ? digest(existingRelease.rawFrame) : null;
+            attempt.releaseReceipt = existingRelease.receipt ?? null;
+            if (!releaseReceipt(existingRelease, attempt, producer, releaseRevision)) {
+              attempt.releaseDispatchState = existingRelease.receipt ? 'RECEIPT_RECORDED' : 'DISPATCH_RESULT_UNKNOWN';
+              attempt.releaseError = existingRelease.originalError ??
+                `Existing H release status=${existingRelease.receipt?.status ?? 'UNKNOWN'}`;
+              attempt.teardownState = `CASE_TEARDOWN_INCOMPLETE_RELEASE_${existingRelease.receipt?.status ?? 'UNKNOWN'}`;
+              errors.push(`${attempt.originalCreateRequestId}: existing H release is not an applied exact receipt; no replay`);
+              save();
+              continue;
             }
             attempt.releaseDispatchState = 'RECEIPT_RECORDED';
-            attempt.releaseRequestId = release.request.requestId;
-            attempt.releaseRawFrame = release.rawFrame;
-            attempt.releaseRawSha256 = digest(release.rawFrame);
-            attempt.releaseReceipt = release.receipt;
             attempt.hReleaseSource = {
-              requestId: release.request.requestId,
-              rawFrame: release.rawFrame,
-              rawSha256: digest(release.rawFrame),
-              receipt: release.receipt,
+              requestId: existingRelease.request.requestId,
+              rawFrame: existingRelease.rawFrame,
+              rawSha256: digest(existingRelease.rawFrame),
+              receipt: existingRelease.receipt,
             };
             save();
-          } catch (error) {
-            const release = journal.operations.at(-1);
-            const sameRelease = release?.request?.family === 'K-SESSION' &&
-              release.request.operation === 'admission-release' &&
-              release.request.domainId === attempt.domainId &&
-              release.request.targetId === attempt.sessionId &&
-              String(release.request.payload?.generation ?? '') === String(attempt.generation) &&
-              release.request.payload?.seatId === producer.seatId;
-            if (sameRelease) {
-              attempt.releaseDispatchState = release.receipt ? 'RECEIPT_RECORDED' : 'DISPATCH_RESULT_UNKNOWN';
+          } else {
+            try {
+              const released = await product.operation('K-SESSION', 'admission-release', attempt.sessionId,
+                { generation: String(attempt.generation), seatId: producer.seatId },
+                releaseRevision, ['APPLIED', 'REPLAYED']);
+              const release = journal.operations.at(-1);
+              if (!releaseReceipt(release, attempt, producer, releaseRevision) || release.receipt !== released) {
+                throw Error('New H release receipt did not prove the exact stopped claim was released');
+              }
+              attempt.releaseDispatchState = 'RECEIPT_RECORDED';
               attempt.releaseRequestId = release.request.requestId;
               attempt.releaseRawFrame = release.rawFrame;
               attempt.releaseRawSha256 = digest(release.rawFrame);
-              attempt.releaseReceipt = release.receipt ?? null;
-              attempt.releaseError = String(error?.stack ?? error);
-            } else {
-              attempt.releaseDispatchState = 'DISPATCH_RESULT_UNKNOWN';
-              attempt.releaseError = String(error?.stack ?? error);
+              attempt.releaseReceipt = release.receipt;
+              attempt.hReleaseSource = {
+                requestId: release.request.requestId,
+                rawFrame: release.rawFrame,
+                rawSha256: digest(release.rawFrame),
+                receipt: release.receipt,
+              };
+              save();
+            } catch (error) {
+              const release = journal.operations.at(-1);
+              const sameRelease = release?.request?.family === 'K-SESSION' &&
+                release.request.operation === 'admission-release' &&
+                release.request.domainId === attempt.domainId &&
+                release.request.targetId === attempt.sessionId &&
+                String(release.request.payload?.generation ?? '') === String(attempt.generation) &&
+                release.request.payload?.seatId === producer.seatId;
+              if (sameRelease) {
+                attempt.releaseDispatchState = release.receipt ? 'RECEIPT_RECORDED' : 'DISPATCH_RESULT_UNKNOWN';
+                attempt.releaseRequestId = release.request.requestId;
+                attempt.releaseRawFrame = release.rawFrame;
+                attempt.releaseRawSha256 = digest(release.rawFrame);
+                attempt.releaseReceipt = release.receipt ?? null;
+                attempt.releaseError = String(error?.stack ?? error);
+              } else {
+                attempt.releaseDispatchState = 'DISPATCH_RESULT_UNKNOWN';
+                attempt.releaseError = String(error?.stack ?? error);
+              }
+              attempt.teardownState = `CASE_TEARDOWN_INCOMPLETE_RELEASE_${release?.receipt?.status ?? 'UNKNOWN'}`;
+              errors.push(`${attempt.originalCreateRequestId}: H release failed or unknown; no F close`);
+              save();
+              continue;
             }
-            attempt.teardownState = `CASE_TEARDOWN_INCOMPLETE_RELEASE_${release?.receipt?.status ?? 'UNKNOWN'}`;
-            errors.push(`${attempt.originalCreateRequestId}: H release failed or unknown; no F close`);
-            save();
-            continue;
           }
         }
         save();

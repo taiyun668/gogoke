@@ -294,6 +294,7 @@ def original_resume_candidate_stop_source(db, home, attempt, original_raw):
          (home["domain_id"], original["requestId"]))) and
          len(resumes) == 1 and resumes[0]["raw_hex"] == original_raw.hex() and
          resumes[0]["status"] == "UNKNOWN" and
+         set(original.get("payload", {})) == {"generation"} and
          original["payload"]["generation"] == attempt["producerGeneration"] and
          unknown["schema"] == original["schema"] and unknown["family"] == "K-SESSION" and
          unknown["operation"] == "resume" and unknown["requestId"] == original["requestId"] and
