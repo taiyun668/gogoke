@@ -1859,6 +1859,7 @@ type NativeVisibleIntent = {
 type NativeVisibleJournal = {
   version: 1;
   pending: NativeVisibleIntent | null;
+  dependentAnswer: NativeVisibleIntent | null;
   acceptedRequestIds: string[];
   lastAccepted: (NativeVisibleIntent & { response: unknown }) | null;
   rejectedRequestIds: string[];
@@ -1870,7 +1871,7 @@ type NativeVisibleJournal = {
 const nativeVisibleKey = (workspaceId: string) =>
   `gogoke.native-visible-original.${encodeURIComponent(workspaceId)}`;
 const emptyNativeVisibleJournal = (): NativeVisibleJournal =>
-  ({ version: 1, pending: null, acceptedRequestIds: [], lastAccepted: null,
+  ({ version: 1, pending: null, dependentAnswer: null, acceptedRequestIds: [], lastAccepted: null,
     rejectedRequestIds: [], lastRejected: null,
     notDispatchedRequestIds: [], lastNotDispatched: null });
 
@@ -1904,7 +1905,9 @@ function nativeVisibleJournal(workspaceId: string): NativeVisibleJournal {
       (parsed.lastAccepted !== null && !record(parsed.lastAccepted)) ||
       (parsed.lastRejected !== null && !record(parsed.lastRejected)) ||
       (parsed.lastNotDispatched !== null && !record(parsed.lastNotDispatched)) ||
-      (parsed.pending !== null && !record(parsed.pending))) {
+      (parsed.pending !== null && !record(parsed.pending)) ||
+      (parsed.dependentAnswer !== undefined && parsed.dependentAnswer !== null &&
+        !record(parsed.dependentAnswer))) {
     throw new Error("The original native visible request journal is invalid.");
   }
   if (parsed.pending) {
@@ -1915,6 +1918,38 @@ function nativeVisibleJournal(workspaceId: string): NativeVisibleJournal {
     }
     exactNativeAssociation(pending.expectedAssociation);
   }
+  if (parsed.dependentAnswer) {
+    const answer = parsed.dependentAnswer;
+    if (answer.workspaceId !== workspaceId || answer.command !== "respond_to_server_request" ||
+        !nonempty(answer.nativeRequestId) || !record(answer.payload)) {
+      throw new Error("The dependent host answer intent identity is invalid.");
+    }
+    const answerId = answer.nativeRequestId as string;
+    const terminalChild = (parsed.rejectedRequestIds as string[]).includes(answerId) ||
+      (parsed.notDispatchedRequestIds as string[]).includes(answerId) ||
+      (!parsed.pending && (parsed.acceptedRequestIds as string[]).includes(answerId));
+    // Older persisted terminal slots have a durable disposition and no longer
+    // reserve the one C answer attempt. Never normalize an uncertain child.
+    if (terminalChild) {
+      parsed.dependentAnswer = null;
+    }
+    const parent = parsed.pending ??
+      (!terminalChild && record(parsed.lastAccepted) &&
+        parsed.lastAccepted.command === "send_user_message" ? parsed.lastAccepted : null) ??
+      (!terminalChild && record(parsed.lastRejected) &&
+        parsed.lastRejected.command === "send_user_message" ? parsed.lastRejected : null) ??
+      (!terminalChild && record(parsed.lastNotDispatched) &&
+        parsed.lastNotDispatched.command === "send_user_message" ? parsed.lastNotDispatched : null);
+    if (!terminalChild && (!parent || answerId === parent.nativeRequestId)) {
+      throw new Error("The dependent host answer intent identity is invalid.");
+    }
+    if (!terminalChild && parent && !sameNativeAssociation(
+      exactNativeAssociation(answer.expectedAssociation),
+      exactNativeAssociation(parent.expectedAssociation))) {
+      throw new Error("The dependent host answer association changed.");
+    }
+  }
+  parsed.dependentAnswer ??= null;
   return parsed as NativeVisibleJournal;
 }
 
@@ -1946,6 +1981,12 @@ function settleNativeVisibleRejection(
   journal.rejectedRequestIds.push(intent.nativeRequestId);
   journal.lastRejected = { ...intent, error: reason, reason };
   journal.pending = null;
+  if (journal.dependentAnswer && (
+    journal.acceptedRequestIds.includes(journal.dependentAnswer.nativeRequestId) ||
+    journal.rejectedRequestIds.includes(journal.dependentAnswer.nativeRequestId) ||
+    journal.notDispatchedRequestIds.includes(journal.dependentAnswer.nativeRequestId))) {
+    journal.dependentAnswer = null;
+  }
   saveNativeVisibleJournal(workspaceId, journal);
 }
 
@@ -1957,6 +1998,16 @@ async function withNativeVisibleLock<T>(workspaceId: string, work: () => Promise
 }
 
 export function pendingNativeVisibleIntent(workspaceId: string): NativeVisibleIntent | null {
+  const journal = nativeVisibleJournal(workspaceId);
+  const answer = journal.dependentAnswer;
+  if (answer && !journal.acceptedRequestIds.includes(answer.nativeRequestId) &&
+      !journal.rejectedRequestIds.includes(answer.nativeRequestId) &&
+      !journal.notDispatchedRequestIds.includes(answer.nativeRequestId)) return answer;
+  return journal.pending;
+}
+
+/** The first host prompt keeps its own ID even while a C answer is recovering. */
+export function originalPendingNativeVisibleIntent(workspaceId: string): NativeVisibleIntent | null {
   return nativeVisibleJournal(workspaceId).pending;
 }
 
@@ -2033,6 +2084,8 @@ export async function nativeConversationAssociation(
 
 async function invokeVisibleWrite<T>(
   command: string, payload: Record<string, unknown>, nativeRequestId?: string,
+  hostAnswer?: { requestRef: string; hostPromptRequestId: string; threadId: string;
+    cardId: string; cardState: string; cardOrigin: string },
 ): Promise<T> {
   const workspaceId = payload.workspaceId;
   if (typeof workspaceId !== "string" || !workspaceId) {
@@ -2064,18 +2117,39 @@ async function invokeVisibleWrite<T>(
     }
     const association = await confirmedNativeVisibleAssociation(workspaceId, transport.association);
     const journal = nativeVisibleJournal(workspaceId);
-    if (journal.pending) {
-      throw new Error(`Original native visible request ${journal.pending.nativeRequestId} is unresolved: ${journal.pending.error ?? "read its original host result before another write"}`);
+    const parent = journal.pending;
+    const dependent = Boolean(parent && command === "respond_to_server_request" &&
+      parent.command === "send_user_message" && !journal.dependentAnswer &&
+      sameNativeAssociation(parent.expectedAssociation, association) &&
+      hostAnswer?.cardOrigin === "host-mcp" && hostAnswer.cardState === "OPEN" &&
+      hostAnswer.hostPromptRequestId === parent.nativeRequestId &&
+      hostAnswer.threadId === parent.payload.threadId &&
+      typeof payload.requestId === "string" && payload.requestId === hostAnswer.requestRef &&
+      payload.requestId.startsWith("gmpc_") && hostAnswer.cardId.startsWith("card") &&
+      record(payload.result) && record(payload.result.answers) &&
+      Object.keys(payload.result.answers).length === 1 &&
+      record(payload.result.answers.host0) &&
+      Array.isArray(payload.result.answers.host0.answers) &&
+      payload.result.answers.host0.answers.length === 1 &&
+      typeof payload.result.answers.host0.answers[0] === "string");
+    if (!parent && journal.dependentAnswer) {
+      throw new Error(`Original native visible request ${journal.dependentAnswer.nativeRequestId} is unresolved: ${journal.dependentAnswer.error ?? "read its original host result before another write"}`);
+    }
+    if (parent && !dependent) {
+      throw new Error(`Original native visible request ${parent.nativeRequestId} is unresolved: ${parent.error ?? "read its original host result before another write"}`);
     }
     const id = nativeRequestId ?? `visible_${crypto.randomUUID()}`;
     if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(id) ||
+        (parent !== null && id === parent.nativeRequestId) ||
         journal.acceptedRequestIds.includes(id) || journal.rejectedRequestIds.includes(id) ||
-        journal.notDispatchedRequestIds.includes(id)) {
+        journal.notDispatchedRequestIds.includes(id) ||
+        journal.dependentAnswer?.nativeRequestId === id) {
       throw new Error("Native visible request ID is invalid or already used.");
     }
     const intent: NativeVisibleIntent = { nativeRequestId: id, workspaceId,
       expectedAssociation: association, command, payload: structuredClone(payload), error: null };
-    journal.pending = intent;
+    if (dependent) journal.dependentAnswer = intent;
+    else journal.pending = intent;
     saveNativeVisibleJournal(workspaceId, journal);
     let response: T;
     try {
@@ -2087,22 +2161,37 @@ async function invokeVisibleWrite<T>(
       if (notDispatched) {
         journal.notDispatchedRequestIds.push(id);
         journal.lastNotDispatched = { ...intent, reason: notDispatched };
-        journal.pending = null;
+        if (dependent) journal.dependentAnswer = null;
+        else journal.pending = null;
         saveNativeVisibleJournal(workspaceId, journal);
         throw cause;
       }
       const rejection = hostTerminalVisibleRejection(cause, id);
       if (rejection) {
-        settleNativeVisibleRejection(workspaceId, journal, intent, rejection);
+        if (dependent) {
+          journal.rejectedRequestIds.push(id);
+          journal.lastRejected = { ...intent, error: rejection, reason: rejection };
+          journal.dependentAnswer = null;
+          saveNativeVisibleJournal(workspaceId, journal);
+        } else settleNativeVisibleRejection(workspaceId, journal, intent, rejection);
         throw cause;
       }
-      journal.pending = intent;
+      if (dependent) journal.dependentAnswer = intent;
+      else journal.pending = intent;
       saveNativeVisibleJournal(workspaceId, journal);
       throw cause;
     }
     journal.acceptedRequestIds.push(id);
     journal.lastAccepted = { ...intent, response };
-    journal.pending = null;
+    if (!dependent) {
+      journal.pending = null;
+      if (journal.dependentAnswer && (
+        journal.acceptedRequestIds.includes(journal.dependentAnswer.nativeRequestId) ||
+        journal.rejectedRequestIds.includes(journal.dependentAnswer.nativeRequestId) ||
+        journal.notDispatchedRequestIds.includes(journal.dependentAnswer.nativeRequestId))) {
+        journal.dependentAnswer = null;
+      }
+    }
     saveNativeVisibleJournal(workspaceId, journal);
     return response;
   });
@@ -2115,8 +2204,12 @@ export async function recoverNativeVisibleRequest(
 ) {
   return withNativeVisibleLock(workspaceId, async () => {
     const journal = nativeVisibleJournal(workspaceId);
-    const pending = journal.pending;
+    const dependent = journal.dependentAnswer?.nativeRequestId === nativeRequestId;
+    const pending = dependent ? journal.dependentAnswer : journal.pending;
     if (!pending || pending.nativeRequestId !== nativeRequestId ||
+        (dependent && (journal.acceptedRequestIds.includes(nativeRequestId) ||
+          journal.rejectedRequestIds.includes(nativeRequestId) ||
+          journal.notDispatchedRequestIds.includes(nativeRequestId))) ||
         !sameNativeAssociation(pending.expectedAssociation, exactNativeAssociation(expectedAssociation))) {
       throw new Error("No matching original native visible request is retained for recovery.");
     }
@@ -2129,7 +2222,12 @@ export async function recoverNativeVisibleRequest(
       pending.error = cause instanceof Error ? cause.message : String(cause);
       const rejection = hostTerminalVisibleRejection(cause, nativeRequestId);
       if (rejection) {
-        settleNativeVisibleRejection(workspaceId, journal, pending, rejection);
+        if (dependent) {
+          journal.rejectedRequestIds.push(nativeRequestId);
+          journal.lastRejected = { ...pending, error: rejection, reason: rejection };
+          journal.dependentAnswer = null;
+          saveNativeVisibleJournal(workspaceId, journal);
+        } else settleNativeVisibleRejection(workspaceId, journal, pending, rejection);
         throw cause;
       }
       saveNativeVisibleJournal(workspaceId, journal);
@@ -2137,7 +2235,15 @@ export async function recoverNativeVisibleRequest(
     }
     journal.acceptedRequestIds.push(nativeRequestId);
     journal.lastAccepted = { ...pending, response };
-    journal.pending = null;
+    if (!dependent) {
+      journal.pending = null;
+      if (journal.dependentAnswer && (
+        journal.acceptedRequestIds.includes(journal.dependentAnswer.nativeRequestId) ||
+        journal.rejectedRequestIds.includes(journal.dependentAnswer.nativeRequestId) ||
+        journal.notDispatchedRequestIds.includes(journal.dependentAnswer.nativeRequestId))) {
+        journal.dependentAnswer = null;
+      }
+    }
     saveNativeVisibleJournal(workspaceId, journal);
     return response;
   });
@@ -2311,12 +2417,14 @@ export async function respondToUserInputRequest(
   requestId: number | string,
   answers: Record<string, { answers: string[] }>,
   nativeRequestId?: string,
+  hostAnswer?: { requestRef: string; hostPromptRequestId: string; threadId: string;
+    cardId: string; cardState: string; cardOrigin: string },
 ) {
   return invokeVisibleWrite("respond_to_server_request", {
     workspaceId,
     requestId,
     result: { answers },
-  }, nativeRequestId);
+  }, nativeRequestId, hostAnswer);
 }
 
 export async function rememberApprovalRule(

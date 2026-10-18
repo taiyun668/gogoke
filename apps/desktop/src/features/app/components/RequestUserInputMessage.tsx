@@ -67,6 +67,9 @@ export function RequestUserInputMessage({
   }
 
   const { questions } = activeRequest.params;
+  const hostQuestion = activeRequest.params.card_origin === "host-mcp";
+  const hostAnswerOpen = !hostQuestion || activeRequest.params.card_state === "OPEN";
+  const hostAnswerUnknown = hostQuestion && activeRequest.params.card_state === "ANSWER_UNKNOWN";
   const totalRequests = activeRequests.length;
 
   const buildAnswers = () => {
@@ -82,13 +85,20 @@ export function RequestUserInputMessage({
       const hasOptions = options.length > 0;
       if (hasOptions && selectedIndex !== null) {
         const selected = options[selectedIndex];
-        const selectedValue =
-          selected?.label?.trim() || selected?.description?.trim() || "";
+        const selectedValue = hostQuestion
+          ? selected?.label ?? ""
+          : selected?.label?.trim() || selected?.description?.trim() || "";
         if (selectedValue) {
           answerList.push(selectedValue);
         }
       }
       const note = (notes[key] ?? "").trim();
+      if (hostQuestion) {
+        // This C card accepts exactly one host0 value. A free answer and an
+        // option are alternatives; Codex's multi-answer shape remains below.
+        answers[question.id] = { answers: note ? [note] : answerList.slice(0, 1) };
+        return;
+      }
       if (note) {
         if (hasOptions) {
           answerList.push(`user_note: ${note}`);
@@ -103,15 +113,22 @@ export function RequestUserInputMessage({
 
   const handleSelect = (questionId: string, optionIndex: number) => {
     setSelections((current) => ({ ...current, [questionId]: optionIndex }));
+    if (hostQuestion) setNotes((current) => ({ ...current, [questionId]: "" }));
   };
 
   const handleNotesChange = (questionId: string, value: string) => {
     setNotes((current) => ({ ...current, [questionId]: value }));
+    if (hostQuestion && value.trim()) {
+      setSelections((current) => ({ ...current, [questionId]: null }));
+    }
   };
 
   const handleSubmit = () => {
     onSubmit(activeRequest, { answers: buildAnswers() });
   };
+  const hostAnswer = hostQuestion ? buildAnswers().host0?.answers[0] : undefined;
+  const hostAnswerValid = hostAnswerOpen && (!hostQuestion || (Boolean(hostAnswer) &&
+    new TextEncoder().encode(hostAnswer).length <= 4096));
 
   return (
     <div className="message request-user-input-message">
@@ -121,7 +138,7 @@ export function RequestUserInputMessage({
         aria-label={tx("User input requested")}
       >
         <div className="request-user-input-header">
-          <div className="request-user-input-title">{tx("Input requested")}</div>
+          <div className="request-user-input-title">{tx(hostQuestion ? "Host question" : "Input requested")}</div>
           {totalRequests > 1 ? (
             <div className="request-user-input-queue">
               {tx("Request 1 of {count}", { count: totalRequests })}
@@ -129,6 +146,11 @@ export function RequestUserInputMessage({
           ) : null}
         </div>
         <div className="request-user-input-body">
+          {hostAnswerUnknown ? (
+            <div className="request-user-input-status" role="status">
+              {tx("Answer outcome unknown. Do not submit another answer.")}
+            </div>
+          ) : null}
           {questions.length ? (
             questions.map((question, index) => {
               const questionId = question.id || `question-${index}`;
@@ -136,6 +158,8 @@ export function RequestUserInputMessage({
               const options = question.options ?? [];
               const notePlaceholder = question.isOther
                 ? tx("Type your answer (optional)")
+                : hostQuestion
+                  ? tx("Or type your answer")
                 : options.length
                   ? tx("Add notes (optional)")
                   : tx("Type your answer (optional)");
@@ -158,10 +182,15 @@ export function RequestUserInputMessage({
                           className={`request-user-input-option${
                             selectedIndex === optionIndex ? " is-selected" : ""
                           }`}
+                          aria-pressed={selectedIndex === optionIndex}
+                          disabled={!hostAnswerOpen}
                           onClick={() => handleSelect(questionId, optionIndex)}
                         >
                           <div className="request-user-input-option-label">
                             {option.label}
+                            {hostQuestion && question.recommendedIndex === optionIndex ? (
+                              <span className="request-user-input-recommended"> · {tx("Recommended")}</span>
+                            ) : null}
                           </div>
                           {option.description ? (
                             <div className="request-user-input-option-description">
@@ -172,10 +201,18 @@ export function RequestUserInputMessage({
                       ))}
                     </div>
                   ) : null}
+                  {hostQuestion ? (
+                    <label className="request-user-input-free-label" htmlFor={`host-answer-${questionId}`}>
+                      {tx("Or enter a free answer")}
+                    </label>
+                  ) : null}
                   <textarea
+                    id={hostQuestion ? `host-answer-${questionId}` : undefined}
                     className="request-user-input-notes"
                     placeholder={notePlaceholder}
                     value={notes[questionId] ?? ""}
+                    maxLength={hostQuestion ? 4096 : undefined}
+                    disabled={!hostAnswerOpen}
                     onChange={(event) =>
                       handleNotesChange(questionId, event.target.value)
                     }
@@ -191,7 +228,7 @@ export function RequestUserInputMessage({
           )}
         </div>
         <div className="request-user-input-actions">
-          <button className="primary" onClick={handleSubmit}>
+          <button className="primary" onClick={handleSubmit} disabled={!hostAnswerValid}>
             {tx("Submit")}
           </button>
         </div>

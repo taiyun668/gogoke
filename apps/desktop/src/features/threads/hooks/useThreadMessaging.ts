@@ -15,6 +15,7 @@ import {
   compactThread as compactThreadService,
   sendUserMessage as sendUserMessageService,
   nativeConversationAssociation,
+  originalPendingNativeVisibleIntent,
   resumeThread as resumeThreadService,
   steerTurn as steerTurnService,
   startReview as startReviewService,
@@ -22,6 +23,7 @@ import {
   getAppsList as getAppsListService,
   listMcpServerStatus as listMcpServerStatusService,
 } from "@services/tauri";
+import type { NativeConversationAssociation } from "@services/tauri";
 import { expandCustomPromptText } from "@utils/customPrompts";
 import {
   asString,
@@ -70,6 +72,8 @@ type UseThreadMessagingOptions = {
   dispatch: Dispatch<ThreadAction>;
   getCustomName: (workspaceId: string, threadId: string) => string | undefined;
   markProcessing: (threadId: string, isProcessing: boolean) => void;
+  hostPromptTerminalObserved?: (workspaceId: string, threadId: string,
+    requestId: string, association: NativeConversationAssociation) => boolean;
   markReviewing: (threadId: string, isReviewing: boolean) => void;
   setActiveTurnId: (threadId: string, turnId: string | null) => void;
   recordThreadActivity: (
@@ -118,6 +122,7 @@ export function useThreadMessaging({
   dispatch,
   getCustomName,
   markProcessing,
+  hostPromptTerminalObserved,
   markReviewing,
   setActiveTurnId,
   recordThreadActivity,
@@ -155,9 +160,11 @@ export function useThreadMessaging({
         finalText = promptExpansion?.expanded ?? messageText;
       }
       let native = false;
+      let nativeAssociation: NativeConversationAssociation | null = null;
       try {
-        native = "__TAURI_INTERNALS__" in window &&
-          Boolean(await nativeConversationAssociation(workspace.id));
+        nativeAssociation = "__TAURI_INTERNALS__" in window
+          ? await nativeConversationAssociation(workspace.id) : null;
+        native = nativeAssociation !== null;
       } catch (error) {
         pushThreadErrorMessage(threadId, error instanceof Error ? error.message : String(error));
         return { status: "blocked" };
@@ -316,6 +323,24 @@ export function useThreadMessaging({
         return { status: "sent" };
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
+        if (native && requestMode !== "steer" &&
+            errorMessage.startsWith("GOGOKE_VISIBLE_UNKNOWN:") &&
+            errorMessage.includes(":GOGOKE_HOST_PROMPT_PENDING:")) {
+          // The original H send and visible intent remain UNKNOWN until the
+          // typed ACP result. This is a host pending state, not a native turn.
+          onDebug?.({ id: `${Date.now()}-host-prompt-pending`, timestamp: Date.now(),
+            source: "server", label: "Original Grok host prompt pending",
+            payload: errorMessage });
+          const pendingId = /^GOGOKE_VISIBLE_UNKNOWN:([A-Za-z][A-Za-z0-9_-]{0,63}):GOGOKE_HOST_PROMPT_PENDING:/.exec(errorMessage)?.[1];
+          const retained = originalPendingNativeVisibleIntent(workspace.id);
+          if (pendingId && nativeAssociation && retained?.nativeRequestId === pendingId &&
+              retained.payload.threadId === threadId &&
+              !hostPromptTerminalObserved?.(workspace.id,threadId,pendingId,nativeAssociation)) {
+            markProcessing(threadId, true);
+          }
+          safeMessageActivity();
+          return { status: "pending" };
+        }
         if (!native && requestMode !== "steer") {
           markProcessing(threadId, false);
           setActiveTurnId(threadId, null);
@@ -352,6 +377,7 @@ export function useThreadMessaging({
       activeTurnIdByThread,
       getCustomName,
       markProcessing,
+      hostPromptTerminalObserved,
       model,
       onDebug,
       pushThreadErrorMessage,

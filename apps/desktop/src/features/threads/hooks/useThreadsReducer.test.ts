@@ -530,6 +530,36 @@ describe("threadReducer", () => {
     expect(removed.userInputRequests).toEqual([requestB]);
   });
 
+  it("updates only the same host C request and closes terminal cards", () => {
+    const host = { workspace_id: "ws", request_id: "gmpc_ref", params: {
+      thread_id: "nativeS", turn_id: "sendA", item_id: "cardA", questions: [],
+      card_origin: "host-mcp" as const, card_state: "OPEN" as const, card_revision: "1",
+    } };
+    const added = threadReducer(initialState, { type: "addUserInputRequest", request: host });
+    const unknown = { ...host, params: { ...host.params,
+      card_state: "ANSWER_UNKNOWN" as const, card_revision: "2" } };
+    const uncertain = threadReducer(added, { type: "addUserInputRequest", request: unknown });
+    expect(uncertain.userInputRequests).toEqual([unknown]);
+    expect(threadReducer(uncertain, { type: "addUserInputRequest", request: host }))
+      .toBe(uncertain);
+    const foreign = { ...unknown, params: { ...unknown.params, item_id: "differentCard" } };
+    expect(threadReducer(uncertain, { type: "addUserInputRequest", request: foreign }))
+      .toBe(uncertain);
+    const answered = { ...unknown, params: { ...unknown.params,
+      card_state: "ANSWERED" as const, card_revision: "3" } };
+    const removed = threadReducer(uncertain, { type: "addUserInputRequest", request: answered });
+    expect(removed.userInputRequests).toEqual([]);
+    const expired = { ...host, params: { ...host.params,
+      card_state: "EXPIRED" as const, card_revision: "2" } };
+    expect(threadReducer(added, { type: "addUserInputRequest", request: expired })
+      .userInputRequests).toEqual([]);
+    const codex = { ...host, params: { ...host.params, card_origin: undefined,
+      card_state: undefined, card_revision: undefined } };
+    const codexState = threadReducer(initialState, { type: "addUserInputRequest", request: codex });
+    expect(threadReducer(codexState, { type: "addUserInputRequest", request: expired }))
+      .toBe(codexState);
+  });
+
   it("stores turn diff updates by thread id", () => {
     const next = threadReducer(initialState, {
       type: "setThreadTurnDiff",

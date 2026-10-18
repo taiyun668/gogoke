@@ -11,7 +11,8 @@ use crate::store::inbox::{self, CardEnvelope, InboxError, NativeAnswer,
 use crate::store::ledger::{self, RawSourceKey, RawSourceRecord};
 use crate::store::seat::NativeOrigin;
 use crate::store::session_transport::{codex_rpc::{self, Command, QuestionCard, Reply, RpcId}, runtime};
-use crate::store::session_transport::{self, provider_evidence::claude_question,
+use crate::store::session_transport::{self, provider_evidence::{claude_question,grok_mcp,
+    acp,commands as vendor_commands},
     rpc_journal as rpc};
 use crate::store::digest::sha256_hex;
 use std::collections::{BTreeMap, BTreeSet};
@@ -99,6 +100,143 @@ pub(super) fn card_identity(domain:&str,session:&str,source:&RawSourceKey)->(Str
 struct CurrentCardBinding {
     domain:String,session:String,seat:String,generation:String,operation:String,
     ticket:String,nonce:String,thread:String,turn:String,
+}
+struct GrokLiveBinding {
+    current:CurrentCardBinding,
+    registration:rpc::GrokHostRegistration,
+    prompt:rpc::GrokInitialPrompt,
+    open_id:String,
+    open_bytes:Vec<u8>,
+}
+fn grok_id_json(id:&acp::RpcId)->Json {
+    match id {acp::RpcId::Number(value)=>Json::Number(value.to_string()),
+        acp::RpcId::String(value)=>Json::String(JsonString::from_str(value))}
+}
+fn grok_vendor_ref(request:&grok_mcp::Request)->String {
+    let composite=Json::Array(vec![Json::String(JsonString::from_str(&request.server_id)),
+        grok_id_json(&request.outer_id),grok_id_json(&request.inner_id)]).canonical();
+    format!("gmpc_{}",sha256_hex(composite.as_bytes()))
+}
+fn grok_card_payload(request:&grok_mcp::Request,binding:&CurrentCardBinding,
+    registration:&rpc::GrokHostRegistration,prompt:&rpc::GrokInitialPrompt,
+    source:&RawSourceRecord,open_id:&str)->Result<String> {
+    let grok_mcp::Kind::AskUser(input)=&request.kind else {
+        return Err(OrchestrationError::OperationConflict);
+    };
+    let string=|value:&str|Json::String(JsonString::from_str(value));
+    let object=|fields:Vec<(&str,Json)>|Json::Object(fields.into_iter().map(|(name,value)|
+        (JsonString::from_str(name),value)).collect());
+    let options=input.options.iter().map(|option|object(vec![
+        ("label",string(&option.label)),("description",string(&option.description))]))
+        .collect();
+    let binding_json=object(vec![
+        ("serverId",string(&registration.server_id)),
+        ("registrationStepId",string(&registration.step_id)),
+        ("registrationCommandSha256",string(&registration.command_sha256)),
+        ("hostSessionId",string(&binding.session)),
+        ("openRequestId",string(open_id)),
+        ("generation",string(&binding.generation)),
+        ("processOperationId",string(&binding.operation)),
+        ("hostPromptRequestId",string(&prompt.request_id)),
+        ("hostPromptRequestSha256",string(&sha256_hex(&prompt.request_bytes))),
+        ("promptStepId",string(&prompt.step_id)),
+        ("promptRpcId",grok_id_json(&prompt.rpc_id)),
+        ("outerRpcId",grok_id_json(&request.outer_id)),
+        ("innerRpcId",grok_id_json(&request.inner_id)),
+        ("sourceOperationId",string(&source.key.operation_id)),
+        ("sourceEpoch",string(&source.key.source_epoch)),
+        ("sourceCursor",string(&source.key.source_cursor)),
+        ("sourceFrameSha256",string(&sha256_hex(&source.raw_bytes))),
+        ("bindingScope",string("INITIAL_H_PROMPT")),
+    ]);
+    Ok(object(vec![
+        ("provider",string("grok")),("cardOrigin",string("host-mcp")),
+        ("bindingVersion",Json::Number("1".into())),
+        ("recommendedIndex",Json::Number(input.recommended_index.to_string())),
+        ("allowFreeAnswer",Json::Bool(true)),
+        ("questions",Json::Array(vec![object(vec![
+            ("id",string("host0")),("header",string(&input.header)),
+            ("question",string(&input.question)),("options",Json::Array(options)),
+        ])])),
+        ("binding",binding_json),
+    ]).canonical())
+}
+fn grok_source_unique(db:&VerifiedDatabaseConnection<'_>,binding:&CurrentCardBinding,
+    request:&grok_mcp::Request,source:&RawSourceKey)->Result<bool> {
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT source_cursor FROM main.v37_ledger_raw_source WHERE operation_id=?1
+           AND source_epoch=?2 AND source_cursor<>?3")?;
+    q.bind_text(1,&binding.operation)?;q.bind_text(2,&binding.nonce)?;
+    q.bind_text(3,&source.source_cursor)?;
+    while q.step_row()? {
+        let other=ledger::read_captured_raw_source(db,&binding.operation,&binding.nonce,
+            &q.column_text(0)?)?.ok_or(OrchestrationError::OperationConflict)?;
+        if let Ok(Some(other))=acp::decode_grok_mcp(&other.raw_bytes,&request.server_id) {
+            if other.outer_id==request.outer_id || other.inner_id==request.inner_id {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+fn stored_grok_mcp_source(db:&VerifiedDatabaseConnection<'_>,binding:&CurrentCardBinding,
+    card:&NativeQuestionCard)->Result<RawSourceRecord> {
+    let (source_key,digest)=read_source_descriptor(db,&binding.domain,&card.card_id)?;
+    if card_identity(&binding.domain,&binding.session,&source_key).0!=card.card_id {
+        return Err(OrchestrationError::OperationConflict);
+    }
+    let source=ledger::read_captured_raw_source(db,&source_key.operation_id,
+        &source_key.source_epoch,&source_key.source_cursor)?
+        .ok_or(OrchestrationError::OperationConflict)?;
+    if !source_matches(&source,binding) || sha256_hex(&source.raw_bytes)!=digest {
+        return Err(OrchestrationError::OperationConflict);
+    }
+    let open=Statement::prepare(db.as_ptr(),
+        "SELECT request_id,raw_hex FROM main.gogoke_v37_h_process_episode
+           WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3
+             AND generation=?4 AND old_generation IS NULL")?;
+    for (index,value) in [binding.domain.as_str(),binding.session.as_str(),
+        binding.operation.as_str(),binding.generation.as_str()].iter().enumerate() {
+        open.bind_text((index+1) as i32,value)?;
+    }
+    if !open.step_row()? {return Err(OrchestrationError::OperationConflict);}
+    let open_id=open.column_text(0)?;let open_bytes=unhex(&open.column_text(1)?)?;
+    if open.step_row()? {return Err(OrchestrationError::OperationConflict);}drop(open);
+    let registration=rpc::observed_grok_host_registration(db,&binding.domain,
+        &binding.session,&binding.operation,&binding.generation,&open_id,
+        &open_bytes,&binding.ticket,&binding.nonce,true)
+        .map_err(|error|store_error("Grok stored registration",error))?
+        .ok_or(OrchestrationError::OperationConflict)?;
+    if registration.native_session_id.as_deref()!=Some(binding.thread.as_str()) {
+        return Err(OrchestrationError::OperationConflict);
+    }
+    let prompt=rpc::grok_initial_prompt(db,&binding.domain,&binding.session,
+        &binding.operation,&binding.generation,&binding.ticket,&binding.nonce,
+        &binding.thread,Some(&card.turn_id))
+        .map_err(|error|store_error("Grok stored prompt",error))?;
+    let request=acp::decode_grok_mcp(&source.raw_bytes,&registration.server_id)
+        .map_err(|error|store_error("Grok stored sdk_call",error))?
+        .ok_or(OrchestrationError::OperationConflict)?;
+    let grok_mcp::Kind::AskUser(input)=&request.kind else {
+        return Err(OrchestrationError::OperationConflict);
+    };
+    let payload=grok_card_payload(&request,binding,&registration,&prompt,&source,&open_id)?;
+    let vendor_ref=grok_vendor_ref(&request);
+    if card.question_payload!=payload
+        || card.vendor_request_id!=Json::String(JsonString::from_str(&vendor_ref)).canonical()
+        || card.vendor_item_id!=vendor_ref || card.vendor_thread_id!=binding.thread
+        || card.turn_id!=prompt.request_id || card.question_id!="host0"
+        || card.header!=input.header || card.question!=input.question
+        || card.seat_id!=binding.seat || card.generation!=binding.generation
+        || !card.auto_resolution_ms.is_empty()
+        || card.options.len()!=input.options.len()
+        || card.options.iter().enumerate().any(|(index,option)|
+            option.id!=format!("option{index}")
+                || option.label!=input.options[index].label
+                || option.description!=input.options[index].description) {
+        return Err(OrchestrationError::OperationConflict);
+    }
+    Ok(source)
 }
 fn native_binding_present(db:&VerifiedDatabaseConnection<'_>,binding:&CurrentCardBinding,captured_only:bool)
     -> std::result::Result<bool,InboxError> {
@@ -261,6 +399,47 @@ fn recovered_card_present(db:&VerifiedDatabaseConnection<'_>,key:&(String,String
     let (source_key,digest)=read_source_descriptor(db,&key.0,card_id)
         .map_err(|error|InboxError::InvalidEvidence(format!("C source descriptor: {error:?}")))?;
     if card_identity(&key.0,&key.1,&source_key).0!=card_id {return Ok(false);}
+    let parsed_payload=Parser::parse(&payload)
+        .map_err(|error|InboxError::InvalidEvidence(format!("C question payload: {error:?}")))?;
+    if matches!(parsed_payload,Json::Object(ref fields)
+        if matches!(fields.get(&JsonString::from_str("provider")),
+            Some(Json::String(provider)) if provider.to_well_formed_string().as_deref()==Some("grok"))
+        && matches!(fields.get(&JsonString::from_str("cardOrigin")),
+            Some(Json::String(origin)) if origin.to_well_formed_string().as_deref()==Some("host-mcp"))) {
+        let historical=Statement::prepare(db.as_ptr(),
+            "SELECT e.process_operation_id,c.ticket,c.custodian_nonce FROM
+               main.gogoke_v37_h_process_episode e
+               JOIN main.gogoke_coordination_process_custody c
+                 ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
+                 AND c.generation=e.generation
+              WHERE e.domain_id=?1 AND e.session_id=?2 AND e.seat_id=?3
+                AND e.generation=?4 AND e.process_operation_id=?5
+                AND e.old_generation IS NULL
+                AND ((e.phase IN ('PREPARED','ACTIVE','UNKNOWN')
+                        AND c.state IN ('ACTIVE','UNKNOWN'))
+                  OR (e.phase='STOPPED' AND c.state='STOPPED'
+                      AND e.stop_fact_id=c.stop_proof_hash
+                      AND length(c.stop_proof_hash)>0))")?;
+        for (index,value) in [key.0.as_str(),key.1.as_str(),seat.as_str(),
+            generation.as_str(),source_key.operation_id.as_str()].iter().enumerate() {
+            historical.bind_text((index+1) as i32,value)?;
+        }
+        if !historical.step_row()? {return Ok(false);}
+        let binding=CurrentCardBinding {domain:key.0.clone(),session:key.1.clone(),
+            seat,generation,operation:historical.column_text(0)?,
+            ticket:historical.column_text(1)?,nonce:historical.column_text(2)?,
+            thread,turn};
+        if historical.step_row()? {return Err(InboxError::Conflict);}
+        drop(historical);
+        if source_key.source_epoch!=binding.nonce {return Ok(false);}
+        let card=inbox::read_native_card(db,&key.0,card_id)?
+            .ok_or(InboxError::Conflict)?;
+        return match stored_grok_mcp_source(db,&binding,&card) {
+            Ok(_)=>Ok(true),
+            Err(OrchestrationError::AccessDenied|OrchestrationError::OperationConflict)=>Ok(false),
+            Err(error)=>Err(InboxError::InvalidEvidence(format!("Grok recovered C/A/H source: {error:?}"))),
+        };
+    }
     let h=Statement::prepare(db.as_ptr(),
         "SELECT h.process_operation_id,c.ticket,c.custodian_nonce
          FROM main.gogoke_v37_h_process_episode h
@@ -395,10 +574,518 @@ pub(super) struct ClaudeAnswerWrite {
     /// Only a newly created C intent can be passed to the sole H writer.
     pub(super) write_permitted:bool,
 }
+pub(super) struct GrokAnswerWrite {
+    pub(super) card_id:String,
+    pub(super) request_id:String,
+    pub(super) step_id:String,
+    pub(super) wire:Vec<u8>,
+    pub(super) source_key:RawSourceKey,
+    pub(super) operation:NativeCardOperation,
+    pub(super) write_permitted:bool,
+}
 
 impl<'root> ProductDatabase<'root> {
-    /// Read a completed original USER answer after H generation or E instance
-    /// changes. This cannot create a card, settle UNKNOWN or acquire a writer.
+    pub(super) fn grok_card_available(&mut self,key:&(String,String),
+        card:&NativeQuestionCard)->Result<bool> {
+        match self.observed_grok_mcp_card_binding(key) {
+            Ok(live)=>Ok(live.current.turn==card.turn_id
+                && live.current.thread==card.vendor_thread_id
+                && live.current.generation==card.generation
+                && live.current.seat==card.seat_id),
+            Err(OrchestrationError::AccessDenied|OrchestrationError::OperationConflict)=>Ok(false),
+            Err(error)=>Err(error),
+        }
+    }
+    fn observed_grok_mcp_card_binding(&mut self,key:&(String,String))
+        ->Result<GrokLiveBinding> {
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        if run.evidence.driver_id()!="grok" || !run.allows_input() {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let (pending_bytes,pending_identity)=run.pending_acp.as_ref()
+            .ok_or(OrchestrationError::AccessDenied)?;
+        let registration=rpc::observed_grok_host_registration(&self.connection,&key.0,&key.1,
+            &run.operation_id,&run.custody.binding.generation,&run.open_request_id,
+            &run.open_request_bytes,run.custody.ticket.opaque(),
+            &run.custody.custodian_nonce,true).map_err(|error|
+                store_error("Grok H registration",error))?
+            .ok_or(OrchestrationError::AccessDenied)?;
+        let native_session=registration.native_session_id.as_deref()
+            .ok_or(OrchestrationError::AccessDenied)?;
+        if run.thread_id.as_deref()!=Some(native_session) {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let prompt=rpc::grok_initial_prompt(&self.connection,&key.0,&key.1,
+            &run.operation_id,&run.custody.binding.generation,
+            run.custody.ticket.opaque(),&run.custody.custodian_nonce,
+            native_session,None).map_err(|error|store_error("Grok initial H prompt",error))?;
+        if prompt.request_bytes!=*pending_bytes || prompt.step_id!=pending_identity.step_id
+            || prompt.rpc_id!=pending_identity.rpc_id {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let seat=run.evidence.seat_id().to_owned();
+        let claim=runtime::observe_claim(&self.connection,&NativeOrigin::user(&self.owner),
+            &key.0,&seat,&key.1).map_err(|error|store_error("Grok H claim",error))?
+            .ok_or(OrchestrationError::AccessDenied)?;
+        run.evidence.verify_live(&mut self.connection,self.root,&self.owner,
+            &run.operation_id,claim.revision).map_err(OrchestrationError::V37StoreFailure)?;
+        if self.process_custodian.active(&run.custody.ticket).is_none() {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        Ok(GrokLiveBinding {current:CurrentCardBinding {
+            domain:key.0.clone(),session:key.1.clone(),seat,
+            generation:run.custody.binding.generation.clone(),
+            operation:run.operation_id.clone(),ticket:run.custody.ticket.opaque().to_owned(),
+            nonce:run.custody.custodian_nonce.clone(),thread:native_session.into(),
+            turn:prompt.request_id.clone()},registration,prompt,
+            open_id:run.open_request_id.clone(),open_bytes:run.open_request_bytes.clone()})
+    }
+
+    pub(super) fn raise_grok_mcp_card(&mut self,key:&(String,String),
+        source_key:&RawSourceKey)->Result<RaisedCodexCard> {
+        let live=self.observed_grok_mcp_card_binding(key)?;
+        let binding=&live.current;
+        let source=ledger::read_pending_raw_source(&self.connection,
+            &source_key.operation_id,&source_key.source_epoch,&source_key.source_cursor)?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        if !source_matches(&source,binding) {return Err(OrchestrationError::OperationConflict);}
+        let request=acp::decode_grok_mcp(&source.raw_bytes,&live.registration.server_id)
+            .map_err(|error|store_error("Grok original sdk_call",error))?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        let grok_mcp::Kind::AskUser(input)=&request.kind else {
+            return Err(OrchestrationError::OperationConflict);
+        };
+        if !grok_source_unique(&self.connection,binding,&request,&source.key)? {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let payload=grok_card_payload(&request,binding,&live.registration,&live.prompt,
+            &source,&live.open_id)?;
+        let vendor_ref=grok_vendor_ref(&request);
+        let vendor_id=Json::String(JsonString::from_str(&vendor_ref)).canonical();
+        let option_ids=(0..input.options.len()).map(|index|format!("option{index}"))
+            .collect::<Vec<_>>();
+        let options=input.options.iter().zip(&option_ids).map(|(choice,id)|
+            NativeQuestionOption {id,label:&choice.label,description:&choice.description})
+            .collect::<Vec<_>>();
+        let (card_id,raise_id)=card_identity(&binding.domain,&binding.session,&source.key);
+        let descriptor=source_descriptor(&source);
+        let envelope=CardEnvelope {domain_id:&binding.domain,card_id:&card_id,
+            request_id:&raise_id,request_bytes:descriptor.as_bytes(),expected_revision:0};
+        let question=NativeQuestion {vendor_request_id:&vendor_id,
+            vendor_thread_id:&binding.thread,vendor_item_id:&vendor_ref,
+            auto_resolution_ms:"",question_payload:&payload,question_id:"host0",
+            header:&input.header,question:&input.question,
+            answer_shape:NativeAnswerShape::OptionsOrFree,options:&options,
+            seat_id:&binding.seat,turn_id:&binding.turn,generation:&binding.generation};
+        let mut owner_error=None;
+        let result=inbox::raise_native_card(&mut self.connection,&envelope,&question,|db| {
+            if let Err(error)=authority::check_owner_in_current_transaction(db,&self.owner) {
+                owner_error=Some(error);return Err(InboxError::Denied);
+            }
+            if !native_binding_present(db,binding,true)? {return Ok(false);}
+            let registration=rpc::observed_grok_host_registration(db,&binding.domain,
+                &binding.session,&binding.operation,&binding.generation,&live.open_id,
+                &live.open_bytes,&binding.ticket,&binding.nonce,true)
+                .map_err(|error|InboxError::InvalidEvidence(format!(
+                    "Grok registration: {error:?}")))?;
+            if registration.as_ref()!=Some(&live.registration) {return Ok(false);}
+            let prompt=rpc::grok_initial_prompt(db,&binding.domain,&binding.session,
+                &binding.operation,&binding.generation,&binding.ticket,&binding.nonce,
+                &binding.thread,None).map_err(|error|InboxError::InvalidEvidence(format!(
+                    "Grok initial prompt: {error:?}")))?;
+            if prompt!=live.prompt {return Ok(false);}
+            let current=ledger::read_pending_raw_source(db,&source.key.operation_id,
+                &source.key.source_epoch,&source.key.source_cursor)?;
+            if current.as_ref()!=Some(&source) {return Ok(false);}
+            grok_source_unique(db,binding,&request,&source.key)
+                .map_err(|error|InboxError::InvalidEvidence(format!(
+                    "Grok source uniqueness: {error:?}")))
+        });
+        if matches!(&result,Err(InboxError::Denied)) {
+            if let Some(error)=owner_error {return Err(error);}
+        }
+        let operation=result.map_err(|error|store_error("Grok raise",error))?;
+        Ok(RaisedCodexCard {card_id,operation})
+    }
+
+    pub(super) fn begin_grok_mcp_card_answer(&mut self,key:&(String,String),
+        envelope:&CardEnvelope<'_>,answers:BTreeMap<String,Vec<String>>)
+        ->Result<GrokAnswerWrite> {
+        if envelope.domain_id!=key.0 || answers.len()!=1 {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let answer=answers.get("host0").filter(|values|values.len()==1)
+            .and_then(|values|values.first())
+            .ok_or(OrchestrationError::OperationConflict)?;
+        if answer.is_empty() || answer.len()>4096 || answer.contains('\0') {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let prior=Statement::prepare(self.connection.as_ptr(),
+            "SELECT request_hex FROM main.gogoke_v37_qcard_native_operations
+             WHERE domain_id=?1 AND request_id=?2")?;
+        prior.bind_text(1,envelope.domain_id)?;prior.bind_text(2,envelope.request_id)?;
+        let existing=if prior.step_row()? {
+            let bytes=unhex(&prior.column_text(0)?)?;
+            if prior.step_row()? || bytes!=envelope.request_bytes {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            true
+        } else {false};drop(prior);
+        let live=if existing {None} else {Some(self.observed_grok_mcp_card_binding(key)?)};
+        let card=self.query_codex_card_recovered(key,envelope.card_id)?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        if card.answer_shape!="OPTIONS_OR_FREE" || card.question_id!="host0" {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let (source_key,_)=read_source_descriptor(&self.connection,&key.0,&card.card_id)?;
+        let source=ledger::read_captured_raw_source(&self.connection,
+            &source_key.operation_id,&source_key.source_epoch,&source_key.source_cursor)?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        let Json::Object(payload)=Parser::parse(&card.question_payload)? else {
+            return Err(OrchestrationError::OperationConflict);
+        };
+        let server=json_text(json_object(json_field(&payload,"binding")?)?,"serverId")?;
+        let request=acp::decode_grok_mcp(&source.raw_bytes,&server)
+            .map_err(|error|store_error("Grok answer original",error))?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        if !matches!(request.kind,grok_mcp::Kind::AskUser(_)) {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let wire=vendor_commands::encode_grok_mcp_reply(&request,
+            vendor_commands::GrokMcpReply::Answer(answer))
+            .map_err(|error|store_error("Grok answer encoding",error))?;
+        if wire.len()>65_536 {return Err(OrchestrationError::OperationConflict);}
+        let wire_text=std::str::from_utf8(wire.strip_suffix(b"\n")
+            .ok_or(OrchestrationError::OperationConflict)?)
+            .map_err(|error|store_error("Grok answer UTF-8",error))?;
+        let step_id=format!("qanswer{}",sha256_hex(format!("{}\n{}\n{}",key.0,
+            key.1,envelope.request_id).as_bytes()));
+        let mut owner_error=None;
+        let intent=inbox::begin_native_answer_intent(&mut self.connection,envelope,
+            &card.vendor_request_id,&card.seat_id,&card.turn_id,&card.generation,
+            NativeAnswer::Wire(wire_text),|db| {
+                if let Err(error)=authority::check_owner_in_current_transaction(db,&self.owner) {
+                    owner_error=Some(error);return Err(InboxError::Denied);
+                }
+                if let Some(ref live)=live {
+                    let binding=&live.current;
+                    if !native_binding_present(db,binding,false)?
+                        || binding.turn!=card.turn_id {return Ok(false);}
+                    let registration=rpc::observed_grok_host_registration(db,&binding.domain,
+                        &binding.session,&binding.operation,&binding.generation,&live.open_id,
+                        &live.open_bytes,&binding.ticket,&binding.nonce,true)
+                        .map_err(|error|InboxError::InvalidEvidence(format!(
+                            "Grok answer registration: {error:?}")))?;
+                    if registration.as_ref()!=Some(&live.registration) {return Ok(false);}
+                    let prompt=rpc::grok_initial_prompt(db,&binding.domain,&binding.session,
+                        &binding.operation,&binding.generation,&binding.ticket,&binding.nonce,
+                        &binding.thread,None).map_err(|error|InboxError::InvalidEvidence(format!(
+                            "Grok answer prompt: {error:?}")))?;
+                    if prompt!=live.prompt {return Ok(false);}
+                    let current=ledger::read_captured_raw_source(db,&source.key.operation_id,
+                        &source.key.source_epoch,&source.key.source_cursor)?;
+                    if current.as_ref()!=Some(&source) {return Ok(false);}
+                    match stored_grok_mcp_source(db,binding,&card) {
+                        Ok(_)=>Ok(true),
+                        Err(OrchestrationError::AccessDenied|OrchestrationError::OperationConflict)=>Ok(false),
+                        Err(error)=>Err(InboxError::InvalidEvidence(format!("Grok answer C/A/H source: {error:?}"))),
+                    }
+                } else {recovered_card_present(db,key,envelope.card_id)}
+            });
+        if matches!(&intent,Err(InboxError::Denied)) {
+            if let Some(error)=owner_error {return Err(error);}
+        }
+        let NativeAnswerIntent {operation,disposition}=intent.map_err(|error|
+            store_error("Grok answer intent",error))?;
+        if operation.answer_kind!="WIRE" || operation.answer!=wire_text {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        Ok(GrokAnswerWrite {card_id:card.card_id,request_id:envelope.request_id.into(),
+            step_id,wire,source_key,operation,
+            write_permitted:disposition==NativeAnswerDisposition::New})
+    }
+
+    pub(super) fn answer_grok_mcp_card(&mut self,key:&(String,String),
+        envelope:&CardEnvelope<'_>,answers:BTreeMap<String,Vec<String>>)
+        ->Result<CodexAnswerWrite> {
+        let plan=self.begin_grok_mcp_card_answer(key,envelope,answers)?;
+        if !plan.write_permitted {
+            let operation=if plan.operation.phase=="UNKNOWN" {
+                match inbox::settle_native_answer_written(&mut self.connection,&self.owner,
+                    envelope,&key.1,&plan.step_id) {
+                    Ok(settled)=>settled,
+                    Err(InboxError::Denied)=>plan.operation,
+                    Err(error)=>return Err(store_error("Grok answer readback",error)),
+                }
+            } else {plan.operation};
+            return Ok(CodexAnswerWrite {card_id:plan.card_id,
+                request_id:plan.request_id,step_id:plan.step_id,
+                operation,newly_written:false});
+        }
+        let live=self.observed_grok_mcp_card_binding(key)?;
+        if plan.source_key.operation_id!=live.current.operation
+            || plan.source_key.source_epoch!=live.current.nonce {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        let custody=run.custody.clone();
+        let step=rpc::GrokMcpQuestionStep {domain_id:&key.0,session_id:&key.1,
+            open_request_id:&live.open_id,open_request_bytes:&live.open_bytes,
+            step_id:&plan.step_id,custody:&custody,card_id:&plan.card_id,
+            answer_request_id:&plan.request_id,source:&plan.source_key,
+            prompt_request_bytes:&live.prompt.request_bytes,wire:&plan.wire};
+        let prepared=rpc::prepare_grok_mcp_question(&mut self.connection,&self.owner,&step)
+            .map_err(|error|store_error("Grok H answer intent",error))?;
+        if prepared.disposition!=rpc::Disposition::NewWrite {
+            return Ok(CodexAnswerWrite {card_id:plan.card_id,
+                request_id:plan.request_id,step_id:plan.step_id,
+                operation:plan.operation,newly_written:false});
+        }
+        let process=self.process_custodian.active(&custody.ticket)
+            .ok_or(OrchestrationError::AccessDenied)?;
+        if let Err(error)=process.write_persistent_frame(&prepared.bytes) {
+            let original=self.process_custodian.protocol_error_with_stderr(&custody.ticket,
+                crate::process::ProcessCustodyError::ProtocolPipe(error));
+            let marked=rpc::mark_grok_mcp_question_unknown(&mut self.connection,&self.owner,
+                &step,&original.to_string());
+            return Err(OrchestrationError::NativeRecipientFailure(format!(
+                "Grok MCP answer stdin: {original}; UNKNOWN: {marked:?}")));
+        }
+        rpc::mark_grok_mcp_question_written(&mut self.connection,&self.owner,&step)
+            .map_err(|error|store_error("Grok H answer written",error))?;
+        let operation=inbox::settle_native_answer_written(&mut self.connection,&self.owner,
+            envelope,&key.1,&plan.step_id)
+            .map_err(|error|store_error("Grok exactwrite settlement",error))?;
+        Ok(CodexAnswerWrite {card_id:plan.card_id,request_id:plan.request_id,
+            step_id:plan.step_id,operation,newly_written:true})
+    }
+
+    /// At this exact A cursor, close only OPEN host-MCP cards from the still
+    /// original pending Grok prompt. ANSWER_UNKNOWN is never reopened.
+    pub(super) fn expire_grok_terminal_cards(&mut self,key:&(String,String),
+        source_key:&RawSourceKey)->Result<()> {
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        let Some((send_bytes,identity))=run.pending_acp.as_ref() else {return Ok(());};
+        let pending=acp::Pending {id:&identity.rpc_id,
+            method:acp::PendingMethod::SessionPrompt,requested_session_id:None};
+        let source=ledger::read_pending_raw_source(&self.connection,
+            &source_key.operation_id,&source_key.source_epoch,&source_key.source_cursor)?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        if source.key.operation_id!=run.operation_id
+            || source.key.source_epoch!=run.custody.custodian_nonce
+            || source.process_ticket!=run.custody.ticket.opaque()
+            || source.generation!=run.custody.binding.generation {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let observed=match acp::decode(&source.raw_bytes,Some(&pending)) {
+            Ok(observed)=>observed,
+            Err(_)=>return Ok(()),
+        };
+        if !matches!(observed,acp::Observation::Prompt {..}|acp::Observation::RemoteError {..}) {
+            return Ok(());
+        }
+        let turn=session_transport::decode_request(send_bytes)
+            .map_err(|error|store_error("Grok terminal H send",error))?.request_id;
+        let generation=run.custody.binding.generation.clone();
+        let ticket=run.custody.ticket.opaque().to_owned();
+        let nonce=run.custody.custodian_nonce.clone();
+        let thread=run.thread_id.clone().ok_or(OrchestrationError::OperationConflict)?;
+        let cards=Statement::prepare(self.connection.as_ptr(),
+            "SELECT card_id FROM main.gogoke_v37_qcard_native WHERE domain_id=?1
+               AND vendor_thread_id=?2 AND turn_id=?3 AND generation=?4
+               AND state='OPEN' AND instr(question_payload,'\"cardOrigin\":\"host-mcp\"')>0")?;
+        for (index,value) in [key.0.as_str(),thread.as_str(),turn.as_str(),
+            generation.as_str()].iter().enumerate() {cards.bind_text((index+1) as i32,value)?;}
+        let mut open=Vec::new();while cards.step_row()? {open.push(cards.column_text(0)?);}
+        drop(cards);
+        let descriptor=source_descriptor(&source);
+        let terminal_cursor=source_key.source_cursor.parse::<u64>()
+            .map_err(|error|store_error("Grok terminal cursor",error))?;
+        for card_id in open {
+            let card=inbox::read_native_card(&self.connection,&key.0,&card_id)
+                .map_err(|error|store_error("Grok terminal C card",error))?
+                .ok_or(OrchestrationError::OperationConflict)?;
+            let binding=CurrentCardBinding {domain:key.0.clone(),session:key.1.clone(),
+                seat:card.seat_id.clone(),generation:generation.clone(),
+                operation:source_key.operation_id.clone(),ticket:ticket.clone(),
+                nonce:nonce.clone(),thread:thread.clone(),turn:turn.clone()};
+            let question_source=stored_grok_mcp_source(&self.connection,&binding,&card)?;
+            let question_cursor=question_source.key.source_cursor.parse::<u64>()
+                .map_err(|error|store_error("Grok question cursor",error))?;
+            if question_cursor>=terminal_cursor {return Err(OrchestrationError::OperationConflict);}
+            let expiry=format!("expire{}",sha256_hex(format!("{}\n{}",card_id,descriptor).as_bytes()));
+            let envelope=CardEnvelope {domain_id:&key.0,card_id:&card_id,
+                request_id:&expiry,request_bytes:descriptor.as_bytes(),
+                expected_revision:card.revision};
+            inbox::expire_native_card(&mut self.connection,&envelope,&card.vendor_request_id,
+                &card.seat_id,&turn,&generation,|db| {
+                    authority::check_owner_in_current_transaction(db,&self.owner)
+                        .map_err(InboxError::Authority)?;
+                    let current=ledger::read_captured_raw_source(db,&source.key.operation_id,
+                        &source.key.source_epoch,&source.key.source_cursor)?;
+                    let question=ledger::read_captured_raw_source(db,&question_source.key.operation_id,
+                        &question_source.key.source_epoch,&question_source.key.source_cursor)?;
+                    Ok(current.as_ref()==Some(&source)
+                        && question.as_ref()==Some(&question_source))
+                }).map_err(|error|store_error("Grok terminal C expiry",error))?;
+        }
+        Ok(())
+    }
+
+    /// Rejoin an original H terminal receipt after a crash between H and C
+    /// commits. This reads durable rows only and never grants another write.
+    pub(super) fn reconcile_durable_grok_open_cards(&mut self)->Result<()> {
+        let cards=Statement::prepare(self.connection.as_ptr(),
+            "SELECT domain_id,card_id,seat_id,generation,vendor_thread_id,turn_id
+               FROM main.gogoke_v37_qcard_native WHERE state='OPEN'
+               AND instr(question_payload,'\"cardOrigin\":\"host-mcp\"')>0")?;
+        let mut open=Vec::new();
+        while cards.step_row()? {
+            open.push((cards.column_text(0)?,cards.column_text(1)?,
+                cards.column_text(2)?,cards.column_text(3)?,
+                cards.column_text(4)?,cards.column_text(5)?));
+        }
+        drop(cards);
+        for (domain,card_id,seat,generation,thread,turn) in open {
+            let card=inbox::read_native_card(&self.connection,&domain,&card_id)
+                .map_err(|error|store_error("Grok recovery C card",error))?
+                .ok_or(OrchestrationError::OperationConflict)?;
+            if card.state!="OPEN" {continue;}
+            let (question_key,_)=read_source_descriptor(&self.connection,&domain,&card_id)?;
+            let episode=Statement::prepare(self.connection.as_ptr(),
+                "SELECT e.session_id,c.ticket,c.custodian_nonce,e.request_id,e.raw_hex,
+                        e.phase,COALESCE(e.stop_fact_id,''),c.state,
+                        COALESCE(c.stop_proof_hash,'')
+                   FROM main.gogoke_v37_h_process_episode e
+                   JOIN main.gogoke_coordination_process_custody c
+                     ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id
+                     AND c.generation=e.generation
+                  WHERE e.domain_id=?1 AND e.generation=?2
+                    AND e.process_operation_id=?3 AND e.seat_id=?4
+                    AND e.old_generation IS NULL")?;
+            for (index,value) in [domain.as_str(),generation.as_str(),
+                question_key.operation_id.as_str(),seat.as_str()].iter().enumerate() {
+                episode.bind_text((index+1) as i32,value)?;
+            }
+            if !episode.step_row()? {return Err(OrchestrationError::OperationConflict);}
+            let session=episode.column_text(0)?;let ticket=episode.column_text(1)?;
+            let nonce=episode.column_text(2)?;let open_id=episode.column_text(3)?;
+            let open_bytes=unhex(&episode.column_text(4)?)?;
+            let episode_phase=episode.column_text(5)?;
+            let stop_fact=episode.column_text(6)?;
+            let custody_state=episode.column_text(7)?;
+            let stop_hash=episode.column_text(8)?;
+            if episode.step_row()? {return Err(OrchestrationError::OperationConflict);}
+            drop(episode);
+            let binding=CurrentCardBinding {domain:domain.clone(),session:session.clone(),
+                seat:seat.clone(),generation:generation.clone(),
+                operation:question_key.operation_id.clone(),ticket:ticket.clone(),
+                nonce:nonce.clone(),thread:thread.clone(),turn:turn.clone()};
+            let question=stored_grok_mcp_source(&self.connection,&binding,&card)?;
+            let registration=rpc::observed_grok_host_registration(&self.connection,&domain,
+                &session,&binding.operation,&generation,&open_id,&open_bytes,&ticket,
+                &nonce,true).map_err(|error|store_error("Grok recovery registration",error))?
+                .ok_or(OrchestrationError::OperationConflict)?;
+            if registration.native_session_id.as_deref()!=Some(thread.as_str()) {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            let prompt=rpc::grok_initial_prompt(&self.connection,&domain,&session,
+                &binding.operation,&generation,&ticket,&nonce,&thread,Some(&turn))
+                .map_err(|error|store_error("Grok recovery prompt",error))?;
+            let response=Statement::prepare(self.connection.as_ptr(),
+                "SELECT source_epoch,source_cursor FROM main.gogoke_v37_rpc_steps
+                   WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3
+                     AND generation=?4 AND ticket=?5 AND custodian_nonce=?6
+                     AND step_id=?7 AND phase='OBSERVED' AND requires_response=1")?;
+            for (index,value) in [domain.as_str(),session.as_str(),binding.operation.as_str(),
+                generation.as_str(),ticket.as_str(),nonce.as_str(),prompt.step_id.as_str()]
+                .iter().enumerate(){response.bind_text((index+1) as i32,value)?;}
+            if !response.step_row()? {
+                drop(response);
+                if episode_phase=="STOPPED" && custody_state=="STOPPED"
+                    && !stop_fact.is_empty() && stop_fact==stop_hash {
+                    let descriptor=Json::Object(BTreeMap::from([
+                        (JsonString::from_str("stopFactId"),Json::String(JsonString::from_str(&stop_fact))),
+                        (JsonString::from_str("operationId"),Json::String(JsonString::from_str(&binding.operation))),
+                        (JsonString::from_str("generation"),Json::String(JsonString::from_str(&generation))),
+                    ])).canonical();
+                    let expiry=format!("expire{}",sha256_hex(format!("{}\n{}",card_id,descriptor).as_bytes()));
+                    let envelope=CardEnvelope {domain_id:&domain,card_id:&card_id,
+                        request_id:&expiry,request_bytes:descriptor.as_bytes(),
+                        expected_revision:card.revision};
+                    inbox::expire_native_card(&mut self.connection,&envelope,
+                        &card.vendor_request_id,&seat,&turn,&generation,|db| {
+                            authority::check_owner_in_current_transaction(db,&self.owner)
+                                .map_err(InboxError::Authority)?;
+                            let proof=Statement::prepare(db.as_ptr(),
+                                "SELECT 1 FROM main.gogoke_v37_h_process_episode e
+                                   JOIN main.gogoke_coordination_process_custody c
+                                     ON c.operation_id=e.process_operation_id
+                                     AND c.domain_id=e.domain_id AND c.generation=e.generation
+                                  WHERE e.domain_id=?1 AND e.session_id=?2
+                                    AND e.generation=?3 AND e.process_operation_id=?4
+                                    AND e.phase='STOPPED' AND c.state='STOPPED'
+                                    AND e.stop_fact_id=?5 AND c.stop_proof_hash=?5")?;
+                            for (index,value) in [domain.as_str(),session.as_str(),
+                                generation.as_str(),binding.operation.as_str(),
+                                stop_fact.as_str()].iter().enumerate() {
+                                proof.bind_text((index+1) as i32,value)?;
+                            }
+                            let original=ledger::read_captured_raw_source(db,
+                                &question.key.operation_id,&question.key.source_epoch,
+                                &question.key.source_cursor)?;
+                            Ok(proof.step_row()? && !proof.step_row()?
+                                && original.as_ref()==Some(&question))
+                        }).map_err(|error|store_error("Grok stopped OPEN expiry",error))?;
+                }
+                continue;
+            }
+            let response_key=RawSourceKey {operation_id:binding.operation.clone(),
+                source_epoch:response.column_text(0)?,source_cursor:response.column_text(1)?};
+            if response.step_row()? {return Err(OrchestrationError::OperationConflict);}
+            drop(response);
+            let terminal=ledger::read_captured_raw_source(&self.connection,
+                &response_key.operation_id,&response_key.source_epoch,
+                &response_key.source_cursor)?.ok_or(OrchestrationError::OperationConflict)?;
+            let pending=acp::Pending {id:&prompt.rpc_id,
+                method:acp::PendingMethod::SessionPrompt,requested_session_id:None};
+            if !matches!(acp::decode(&terminal.raw_bytes,Some(&pending)),
+                Ok(acp::Observation::Prompt {..}|acp::Observation::RemoteError {..})) {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            let input=session_transport::StdinRequest {domain_id:&domain,
+                session_id:&session,ticket:&ticket,generation:&generation,
+                request_bytes:&prompt.request_bytes};
+            if session_transport::read_acp_send_completed(&self.connection,&input,
+                &response_key).map_err(|error|store_error("Grok original H terminal",error))?
+                .is_none() {continue;}
+            let question_cursor=question.key.source_cursor.parse::<u64>()
+                .map_err(|error|store_error("Grok recovery question cursor",error))?;
+            let result_cursor=response_key.source_cursor.parse::<u64>()
+                .map_err(|error|store_error("Grok recovery terminal cursor",error))?;
+            if question_cursor>=result_cursor || terminal.process_ticket!=ticket
+                || terminal.custodian_nonce!=nonce {return Err(OrchestrationError::OperationConflict);}
+            let descriptor=source_descriptor(&terminal);
+            let expiry=format!("expire{}",sha256_hex(format!("{}\n{}",card_id,descriptor).as_bytes()));
+            let envelope=CardEnvelope {domain_id:&domain,card_id:&card_id,
+                request_id:&expiry,request_bytes:descriptor.as_bytes(),
+                expected_revision:card.revision};
+            inbox::expire_native_card(&mut self.connection,&envelope,&card.vendor_request_id,
+                &seat,&turn,&generation,|db| {
+                    authority::check_owner_in_current_transaction(db,&self.owner)
+                        .map_err(InboxError::Authority)?;
+                    let result=ledger::read_captured_raw_source(db,&response_key.operation_id,
+                        &response_key.source_epoch,&response_key.source_cursor)?;
+                    let original=ledger::read_captured_raw_source(db,&question.key.operation_id,
+                        &question.key.source_epoch,&question.key.source_cursor)?;
+                    Ok(result.as_ref()==Some(&terminal) && original.as_ref()==Some(&question))
+                }).map_err(|error|store_error("Grok durable OPEN expiry",error))?;
+        }
+        Ok(())
+    }
+    /// Read a completed original USER answer after H generation changes, while
+    /// the current E instance and authorization still match the association.
+    /// This cannot create a card, settle UNKNOWN or acquire a writer.
     pub(super) fn visible_original_answer_receipt(&self,
         association:&super::v37_visible_conversation::Association,request:&V37Request,
         thread:&str)->Result<Option<Json>> {
@@ -422,21 +1109,62 @@ impl<'root> ProductDatabase<'root> {
             ||sha256_hex(&source.raw_bytes)!=digest||card_identity(&association.domain,&association.session,&source.key).0!=request.target_id {
             return Err(OrchestrationError::AccessDenied);
         }
-        let Reply::Question(question)=codex_rpc::decode(&source.raw_bytes,None).map_err(|error|store_error("original visible question",error))?
-            else {return Err(OrchestrationError::AccessDenied);};
-        if request_id_wire(&question.request_id)!=vendor||question.thread_id!=thread||question.turn_id!=turn {
-            return Err(OrchestrationError::AccessDenied);
-        }
-        let mut answers=BTreeMap::new();
-        let values=object(request.payload.get(&k("answers")).ok_or(OrchestrationError::OperationConflict)?)?;
-        for (id,value) in values {
-            let Json::Array(values)=value else {return Err(OrchestrationError::OperationConflict);};
-            let values=values.iter().map(|value|match value {Json::String(value)=>value.to_well_formed_string()
-                .ok_or(OrchestrationError::OperationConflict),_=>Err(OrchestrationError::OperationConflict)}).collect::<Result<Vec<_>>>()?;
-            answers.insert(id.to_well_formed_string().ok_or(OrchestrationError::OperationConflict)?,values);
-        }
-        let command=question.answer(answers).map_err(|error|store_error("original visible answer",error))?;
-        let wire=command.encode(None).map_err(|error|store_error("original visible answer wire",error))?;
+        let card=inbox::read_native_card(&self.connection,&association.domain,&request.target_id)
+            .map_err(|error|store_error("original visible C card",error))?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        let wire=if super::v37_qcard_user::grok_host_card(&card)? {
+            let binding=CurrentCardBinding {domain:association.domain.clone(),
+                session:association.session.clone(),seat:association.seat.clone(),
+                generation:association.generation.clone(),operation:source.key.operation_id.clone(),
+                ticket:source.process_ticket.clone(),nonce:source.custodian_nonce.clone(),
+                thread:thread.to_owned(),turn:turn.clone()};
+            if stored_grok_mcp_source(&self.connection,&binding,&card)?!=source {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let Json::Object(payload)=Parser::parse(&card.question_payload)? else {
+                return Err(OrchestrationError::OperationConflict);
+            };
+            let server=json_text(json_object(json_field(&payload,"binding")?)?,"serverId")?;
+            let original=acp::decode_grok_mcp(&source.raw_bytes,&server)
+                .map_err(|error|store_error("original visible Grok sdk_call",error))?
+                .ok_or(OrchestrationError::OperationConflict)?;
+            if !matches!(original.kind,grok_mcp::Kind::AskUser(_))
+                || card.vendor_request_id!=vendor || card.turn_id!=turn {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let values=object(request.payload.get(&k("answers"))
+                .ok_or(OrchestrationError::OperationConflict)?)?;
+            if values.len()!=1 {return Err(OrchestrationError::OperationConflict);}
+            let Some(Json::Array(values))=values.get(&k("host0")) else {
+                return Err(OrchestrationError::OperationConflict);
+            };
+            let [Json::String(value)]=values.as_slice() else {
+                return Err(OrchestrationError::OperationConflict);
+            };
+            let value=value.to_well_formed_string().ok_or(OrchestrationError::OperationConflict)?;
+            if value.is_empty() || value.len()>4096 || value.contains('\0') {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            vendor_commands::encode_grok_mcp_reply(&original,vendor_commands::GrokMcpReply::Answer(&value))
+                .map_err(|error|store_error("original visible Grok answer wire",error))?
+        } else {
+            let Reply::Question(question)=codex_rpc::decode(&source.raw_bytes,None)
+                .map_err(|error|store_error("original visible question",error))?
+                else {return Err(OrchestrationError::AccessDenied);};
+            if request_id_wire(&question.request_id)!=vendor||question.thread_id!=thread||question.turn_id!=turn {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let mut answers=BTreeMap::new();
+            let values=object(request.payload.get(&k("answers")).ok_or(OrchestrationError::OperationConflict)?)?;
+            for (id,value) in values {
+                let Json::Array(values)=value else {return Err(OrchestrationError::OperationConflict);};
+                let values=values.iter().map(|value|match value {Json::String(value)=>value.to_well_formed_string()
+                    .ok_or(OrchestrationError::OperationConflict),_=>Err(OrchestrationError::OperationConflict)}).collect::<Result<Vec<_>>>()?;
+                answers.insert(id.to_well_formed_string().ok_or(OrchestrationError::OperationConflict)?,values);
+            }
+            let command=question.answer(answers).map_err(|error|store_error("original visible answer",error))?;
+            command.encode(None).map_err(|error|store_error("original visible answer wire",error))?
+        };
         if std::str::from_utf8(wire.strip_suffix(b"\n").ok_or(OrchestrationError::OperationConflict)?)
             .map_err(|error|store_error("original visible answer UTF-8",error))?!=answer {return Err(OrchestrationError::AccessDenied);}
         let step=format!("qanswer{}",sha256_hex(format!("{}\n{}\n{}",association.domain,association.session,request.request_id).as_bytes()));

@@ -87,11 +87,22 @@ function buildUserInputConversationItem(
 export function useThreadUserInput({ dispatch }: UseThreadUserInputOptions) {
   const handleUserInputSubmit = useCallback(
     async (request: RequestUserInputRequest, response: RequestUserInputResponse) => {
-      await respondToUserInputRequest(
-        request.workspace_id,
-        request.request_id,
-        response.answers,
-      );
+      const hostAnswer = request.params.card_origin === "host-mcp" &&
+          request.params.card_state === "OPEN" &&
+          typeof request.request_id === "string"
+          ? { requestRef: request.request_id,
+            hostPromptRequestId: request.params.turn_id,
+            threadId: request.params.thread_id,
+            cardId: request.params.item_id,
+            cardState: request.params.card_state,
+            cardOrigin: request.params.card_origin }
+          : undefined;
+      if (hostAnswer) {
+        await respondToUserInputRequest(request.workspace_id, request.request_id,
+          response.answers, undefined, hostAnswer);
+      } else {
+        await respondToUserInputRequest(request.workspace_id, request.request_id, response.answers);
+      }
       const item = buildUserInputConversationItem(request, response);
       dispatch({
         type: "upsertItem",

@@ -4,6 +4,43 @@ use crate::store::seat::{CreateSeat, Kind, StoreTemplate};
 use crate::store::same_open::route_b_test_guard;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[test]
+fn grok_committed_no_event_with_in_memory_pending_is_recoverable_without_io() {
+    let _guard=route_b_test_guard();
+    let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path=std::env::temp_dir().join(format!("gogoke-grok-no-event-{}-{stamp}",std::process::id()));
+    std::fs::create_dir(&path).unwrap();
+    let root=RootLock::acquire(&path).unwrap();
+    let mut db=crate::store::same_open::create_new(&root,&path.join("state.sqlite")).unwrap();
+    db.execute("CREATE TABLE orchestration_events(sequence INTEGER PRIMARY KEY,
+        event_id TEXT UNIQUE,stream_id TEXT,occurred_at TEXT,event_type TEXT,payload_json TEXT)").unwrap();
+    ledger::initialize_schema(&mut db).unwrap();
+    let original=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"send"}
+"#.to_vec();
+    let pending:Option<(Vec<u8>,h::AcpSendIdentity)>=Some((original,
+        h::AcpSendIdentity {step_id:"acp-send-original".into(),
+            rpc_id:acp::RpcId::String("prompt-id".into())}));
+    let terminal=br#"{"jsonrpc":"2.0","id":"prompt-id","result":{"stopReason":"end_turn"}}
+"#;
+    let row=Statement::prepare(db.as_ptr(),
+        "INSERT INTO main.v37_ledger_raw_source(operation_id,process_ticket,custodian_nonce,
+         domain_id,session_id,generation,source_epoch,source_cursor,raw_bytes,state,
+         no_event_reason) VALUES('operation','ticket','nonce','domain','session','1',
+         'nonce','4',?1,'NO_EVENT','ACP_RPC_RESPONSE')").unwrap();
+    row.bind_blob(1,terminal).unwrap();row.step_done().unwrap();drop(row);
+    let unresolved=Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM v37_ledger_raw_source WHERE operation_id='operation' AND state='PENDING'").unwrap();
+    assert!(!unresolved.step_row().unwrap());
+    drop(unresolved);
+    assert!(pending.is_some(),"the original H request remains in this holder's memory");
+    assert_eq!(grok_completed_pending_acp_terminal_cursor(&db,"domain","session",
+        "operation","ticket","nonce","1",&pending.as_ref().unwrap().1.rpc_id).unwrap(),
+        Some("4".into()));
+    assert_eq!(grok_completed_pending_acp_terminal_cursor(&db,"domain","session",
+        "operation","ticket","nonce","1",&acp::RpcId::Number(1)).unwrap(),None);
+    db.close_checked().unwrap();drop(root);std::fs::remove_dir_all(path).unwrap();
+}
+
 #[path = "v37_stalled_health_tests.rs"]
 mod stalled_health;
 

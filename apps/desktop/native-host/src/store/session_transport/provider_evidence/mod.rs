@@ -4,5 +4,6 @@ pub(crate) mod acp;
 pub(crate) mod stream_json;
 pub(crate) mod claude_question;
 pub(crate) mod commands;
+pub(crate) mod grok_mcp;
 pub(crate) mod normalize;
 pub(crate) mod permission;

@@ -9,6 +9,32 @@ use crate::store::session_transport::provider_evidence::{commands as provider_co
 use crate::store::session_transport::rpc_journal as rpc;
 use crate::process::{OriginBoundFrame, PreparedCustody, ProcessCustodian};
 
+fn grok_sdk_call_method(raw:&[u8])->Result<bool> {
+    // ACP's decoder performs the original 1 MiB and 128-level preflight
+    // before its recursive JSON parser. Its semantic result is irrelevant to
+    // this method classifier, but a malformed frame must retain that error.
+    crate::store::session_transport::provider_evidence::acp::decode(raw,None)
+        .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+            "Grok ACP method frame: {}; raw: {}",error.reason,
+            String::from_utf8_lossy(&error.raw_frame))))?;
+    let text=std::str::from_utf8(raw).map_err(|error|
+        OrchestrationError::V37StoreFailure(format!("Grok ACP method UTF-8: {error}")))?;
+    let Json::Object(fields)=Parser::parse(text.trim_end_matches('\n'))? else {
+        return Err(OrchestrationError::OperationConflict);
+    };
+    Ok(matches!(fields.get(&JsonString::from_str("method")),
+        Some(Json::String(value)) if value.to_well_formed_string().as_deref()==Some("x.ai/mcp/sdk_call")))
+}
+
+fn grok_registered_mcp_request(raw:&[u8],server_id:&str)
+    ->Result<Option<crate::store::session_transport::provider_evidence::grok_mcp::Request>> {
+    if !grok_sdk_call_method(raw)? {return Ok(None);}
+    crate::store::session_transport::provider_evidence::acp::decode_grok_mcp(raw,server_id)
+        .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+            "Grok MCP original source: {}; raw: {}",error.reason,
+            String::from_utf8_lossy(&error.raw_frame))))
+}
+
 #[derive(Default)]
 pub(super) struct NativeRawCapture {
     cursor: u64,
@@ -25,6 +51,28 @@ mod tests {
     use crate::root::RootLock;
     use crate::store::same_open::{create_new,route_b_test_guard};
     use std::time::{Duration,SystemTime,UNIX_EPOCH};
+
+    #[test]
+    fn grok_mcp_filter_leaves_large_unrelated_acp_update_on_original_path() {
+        let ordinary=format!("{{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{{\"sessionId\":\"native-session\",\"update\":{{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{{\"type\":\"text\",\"text\":\"{}\"}}}}}}}}\n",
+            "x".repeat(70_000));
+        assert!(!grok_sdk_call_method(ordinary.as_bytes()).unwrap());
+        assert!(grok_registered_mcp_request(ordinary.as_bytes(),"gq_test").unwrap().is_none(),
+            "the production question decoder cannot apply its 64 KiB limit to this ACP update");
+        assert!(matches!(crate::store::session_transport::provider_evidence::acp::decode(
+            ordinary.as_bytes(),None).unwrap(),
+            crate::store::session_transport::provider_evidence::acp::Observation::SessionUpdate {..}));
+        assert!(grok_sdk_call_method(br#"{"jsonrpc":"2.0","id":1,"method":"x.ai/mcp/sdk_call","params":{}}
+"#).unwrap());
+    }
+
+    #[test]
+    fn grok_method_preflight_rejects_deep_metadata_before_recursive_parse() {
+        let deep=format!("{{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{{\"sessionId\":\"x\",\"update\":{{\"value\":{}}}}}}}\n",
+            format!("{}0{}","[".repeat(129),"]".repeat(129)));
+        let error=grok_sdk_call_method(deep.as_bytes()).unwrap_err();
+        assert!(format!("{error:?}").contains("ACP JSON depth or string framing invalid"));
+    }
 
     #[test]
     fn stop_requires_clean_original_eof_not_a_generic_source_error() {
@@ -164,6 +212,87 @@ impl NativeRawCapture {
 }
 
 impl<'root> ProductDatabase<'root> {
+    /// Answer only the two registration requests on the original Grok pipe.
+    /// A already captured `raw`; no C card or H send is created here.
+    pub(super) fn reply_to_grok_mcp_bootstrap(&mut self,key:&(String,String),
+        raw:&ledger::RawSourceRecord)->Result<bool> {
+        use crate::store::session_transport::provider_evidence::{acp,grok_mcp,commands};
+        let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+        if run.evidence.driver_id()!="grok" {return Ok(false);}
+        if !grok_sdk_call_method(&raw.raw_bytes)? {return Ok(false);}
+        let registration=rpc::observed_grok_host_registration(&self.connection,&key.0,&key.1,
+            &run.operation_id,&run.custody.binding.generation,&run.open_request_id,
+            &run.open_request_bytes,run.custody.ticket.opaque(),
+            &run.custody.custodian_nonce,false).map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("Grok MCP registration: {error:?}")))?;
+        let Some(registration)=registration else {return Ok(false);};
+        let request=acp::decode_grok_mcp(&raw.raw_bytes,&registration.server_id)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                "Grok MCP bootstrap source: {}; raw: {}",error.reason,
+                String::from_utf8_lossy(&error.raw_frame))))?;
+        let Some(request)=request else {return Ok(false);};
+        if !matches!(request.kind,grok_mcp::Kind::Initialize {..}|grok_mcp::Kind::ToolsList) {
+            if matches!(request.kind,grok_mcp::Kind::AskUser(_)) {
+                let eligible=if let (Some(native_session),Some((bytes,identity)))=(
+                    registration.native_session_id.as_deref(),run.pending_acp.as_ref()) {
+                    if !run.allows_input() {false} else {
+                        match rpc::grok_initial_prompt(&self.connection,&key.0,&key.1,
+                            &run.operation_id,&run.custody.binding.generation,
+                            run.custody.ticket.opaque(),&run.custody.custodian_nonce,
+                            native_session,None) {
+                            Ok(prompt)=>prompt.request_bytes==*bytes
+                                && prompt.step_id==identity.step_id
+                                && prompt.rpc_id==identity.rpc_id,
+                            Err(rpc::RpcJournalError::Denied|rpc::RpcJournalError::Unknown)=>false,
+                            Err(error)=>return Err(OrchestrationError::V37StoreFailure(
+                                format!("Grok MCP initial prompt proof: {error:?}"))),
+                        }
+                    }
+                } else {false};
+                if !eligible {
+                    ledger::resolve_raw_source_no_event(&mut self.connection,
+                        &raw.key.operation_id,&raw.key.source_epoch,
+                        &raw.key.source_cursor,"HOST_GROK_MCP_UNBOUND_ASK_USER")?;
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
+        }
+        let wire=commands::encode_grok_mcp_reply(&request,commands::GrokMcpReply::Bootstrap)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                "Grok MCP bootstrap encode: {error:?}")))?;
+        let step_id=rpc::grok_mcp_bootstrap_step_id(&raw.key,&raw.raw_bytes,&wire)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                "Grok MCP bootstrap identity: {error:?}")))?;
+        let custody=run.custody.clone();let open_id=run.open_request_id.clone();
+        let open_bytes=run.open_request_bytes.clone();
+        let step=rpc::GrokMcpBootstrapStep {domain_id:&key.0,session_id:&key.1,
+            open_request_id:&open_id,open_request_bytes:&open_bytes,step_id:&step_id,
+            custody:&custody,source:&raw.key,wire:&wire};
+        let prepared=rpc::prepare_grok_mcp_bootstrap(&mut self.connection,&self.owner,&step)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                "Grok MCP bootstrap intent: {error:?}")))?;
+        if prepared.disposition!=rpc::Disposition::NewWrite {
+            return match prepared.disposition {
+                rpc::Disposition::Existing(rpc::Phase::Written)=>Ok(true),
+                _=>Err(OrchestrationError::OperationConflict),
+            };
+        }
+        let process=self.process_custodian.active(&custody.ticket)
+            .ok_or(OrchestrationError::AccessDenied)?;
+        if let Err(error)=process.write_persistent_frame(&prepared.bytes) {
+            let original=self.process_custodian.protocol_error_with_stderr(&custody.ticket,
+                crate::process::ProcessCustodyError::ProtocolPipe(error));
+            let marked=rpc::mark_grok_mcp_bootstrap_unknown(&mut self.connection,&self.owner,
+                &step,&original.to_string());
+            return Err(OrchestrationError::V37StoreFailure(format!(
+                "Grok MCP bootstrap stdin: {original}; UNKNOWN: {marked:?}")));
+        }
+        rpc::mark_grok_mcp_bootstrap_written(&mut self.connection,&self.owner,&step)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                "Grok MCP bootstrap written: {error:?}")))?;
+        Ok(true)
+    }
     /// Reply on the held H pipe only to the original captured Grok request.
     /// A prior INTENT/UNKNOWN is never a retry permission.
     fn reply_to_grok_permission(&mut self,key:&(String,String),
@@ -296,6 +425,7 @@ impl<'root> ProductDatabase<'root> {
         // distinct durable transactions. This no-I/O readback also runs when
         // an app restart left no in-memory native session to poll.
         self.reconcile_durable_claude_open_cards()?;
+        self.reconcile_durable_grok_open_cards()?;
         self.pump_host_health()?;
         self.pump_host_rules()?;
         Ok(())
@@ -561,7 +691,7 @@ impl<'root> ProductDatabase<'root> {
                 &mut self.connection,&self.owner,&key.0,&key.1,&step).map_err(|error|
                     OrchestrationError::V37StoreFailure(format!("native observed response recovery: {error:?}")))?;
         }
-        if matches!(driver.as_str(),"opencode"|"grok") {
+        if driver=="opencode" {
             self.complete_pending_native_acp_send(key)?;
         }
         if driver!="claude" && thread_id.is_none() {return Ok(());}
@@ -594,15 +724,49 @@ impl<'root> ProductDatabase<'root> {
             // A captured response without an OBSERVED association remains
             // an unresolved original outcome. It is not a notification and
             // must not block later, independently captured notifications.
+            if driver=="grok" {
+                crate::store::session_transport::provider_evidence::acp::decode(&raw.raw_bytes,None)
+                    .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                        "Grok A ingress preflight: {}; raw: {}",error.reason,
+                        String::from_utf8_lossy(&error.raw_frame))))?;
+            }
             if let Json::Object(fields)=Parser::parse(std::str::from_utf8(&raw.raw_bytes).map_err(|error|
                 OrchestrationError::V37StoreFailure(format!("native raw UTF-8: {error}")))?)? {
                 if fields.contains_key(&JsonString::from_str("id"))
                     && !fields.contains_key(&JsonString::from_str("method"))
                     && (fields.contains_key(&JsonString::from_str("result")) || fields.contains_key(&JsonString::from_str("error"))) {
+                    if driver=="grok" {
+                        self.expire_grok_terminal_cards(key,&raw.key)?;
+                        self.complete_pending_native_acp_send_through(key,&raw_cursor)?;
+                    }
                     continue;
                 }
             }
+            let grok_sdk_call=driver=="grok" && grok_sdk_call_method(&raw.raw_bytes)?;
+            if grok_sdk_call {
+                self.complete_pending_native_acp_send_through(key,&raw_cursor)?;
+            }
+            if driver=="grok" && self.reply_to_grok_mcp_bootstrap(key,&raw)? {continue;}
             if driver=="grok" && self.reply_to_grok_permission(key,&raw)? {continue;}
+            if driver=="grok" {
+                let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
+                let registration=rpc::observed_grok_host_registration(&self.connection,
+                    &key.0,&key.1,&run.operation_id,&run.custody.binding.generation,
+                    &run.open_request_id,&run.open_request_bytes,
+                    run.custody.ticket.opaque(),&run.custody.custodian_nonce,true)
+                    .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                        "Grok MCP dispatch registration: {error:?}")))?;
+                if let Some(registration)=registration {
+                    let parsed=grok_registered_mcp_request(&raw.raw_bytes,&registration.server_id)?;
+                    if matches!(parsed.as_ref().map(|request|&request.kind),
+                        Some(crate::store::session_transport::provider_evidence::grok_mcp::Kind::AskUser(_))) {
+                        self.raise_grok_mcp_card(key,&raw.key)?;
+                        ledger::resolve_raw_source_no_event(&mut self.connection,&operation,
+                            &nonce,&raw_cursor,"HOST_GROK_MCP_QUESTION_CARD")?;
+                        continue;
+                    }
+                }
+            }
             if driver=="codex" && self.dispatch_captured_model_tool(key,&raw)? {continue;}
             if driver=="claude" {
                 use crate::store::session_transport::provider_evidence::{claude_question, stream_json};
@@ -725,6 +889,19 @@ impl<'root> ProductDatabase<'root> {
             }
             if let Some(turn_id)=started_turn {
                 self.native_sessions.get_mut(key).ok_or(OrchestrationError::AccessDenied)?.turn_id=Some(turn_id);
+            }
+        }
+        if driver=="grok" {
+            // Ordered PENDING dispatch is complete. A previous COMMIT can have
+            // terminalized this exact response while the holder still has its
+            // in-memory pending request; read back that committed result only.
+            let pending_id=self.native_sessions.get(key).and_then(|run|
+                run.pending_acp.as_ref().map(|(_,identity)|identity.rpc_id.clone()));
+            if let Some(id)=pending_id {
+                if let Some(cursor)=super::v37_runtime::grok_completed_pending_acp_terminal_cursor(
+                    &self.connection,&key.0,&key.1,&operation,&ticket,&nonce,&generation,&id)? {
+                    self.complete_pending_native_acp_send_through(key,&cursor)?;
+                }
             }
         }
         if driver=="claude" {self.reconcile_completed_native_claude_send(key)?;}

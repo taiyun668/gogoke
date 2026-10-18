@@ -30,6 +30,7 @@ pub(crate) use f2::{cleanup_stop_gate, cleanup_worktree, graph_query, merge_work
     merge_worktree_request, readback_create_receipt, readback_merge_receipt_request,
     register_created_worktree,
     register_created_worktree_request, repository_for_worktree,
+    cleaned_worktree_absent_for_stop_fact,
     resolve_group_for_launch, CleanupReceipt, CreateHistory, ExactStopFact, GraphMember,
     MergeReceipt, RegisterReceipt, WorktreeGraph};
 

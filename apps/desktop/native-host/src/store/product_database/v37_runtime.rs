@@ -1,6 +1,11 @@
 //! Actual native provider sessions. The User channel selects logical identities;
 //! E/F/H supply all paths, pins, permissions and custody on the same store.
 use super::*;
+
+// Fixed 1.0.41 reverse-MCP handshake is not qualified. Root may explicitly
+// enable this one fresh-session route for bounded qualification after review.
+// Isolated fixed-1.0.41 host-MCP qualification candidate; not a release claim.
+const GROK_HOST_MCP_QUALIFICATION:bool=true;
 use crate::process::{PreparedCustody, DurableStopConfirmation, StopBudgets, NativeStopProof, OriginBoundFrame};
 use crate::store::ledger::{self, SessionPurpose, SessionRegistration};
 use crate::store::seat::{self, NativeOrigin};
@@ -76,6 +81,44 @@ fn observed_unix_ns() -> String {
         Ok(time) => time.as_nanos().to_string(),
         Err(error) => format!("unknown({error})"),
     }
+}
+
+/// Find only an already terminalized original ACP response for this in-memory
+/// pending ID. The caller runs this after ordered PENDING output dispatch; it
+/// cannot complete a future captured response ahead of an earlier question.
+pub(super) fn grok_completed_pending_acp_terminal_cursor(db:&VerifiedDatabaseConnection<'_>,
+    domain:&str,session:&str,operation:&str,ticket:&str,nonce:&str,
+    generation:&str,id:&acp::RpcId)->Result<Option<String>> {
+    let query=Statement::prepare(db.as_ptr(),
+        "SELECT source_cursor,hex(raw_bytes) FROM main.v37_ledger_raw_source
+          WHERE domain_id=?1 AND session_id=?2 AND operation_id=?3
+            AND process_ticket=?4 AND custodian_nonce=?5 AND source_epoch=?5
+            AND generation=?6 AND state='NO_EVENT'
+            AND no_event_reason='ACP_RPC_RESPONSE'
+          ORDER BY CAST(source_cursor AS INTEGER)")?;
+    for (index,value) in [domain,session,operation,ticket,nonce,generation].iter().enumerate() {
+        query.bind_text((index+1) as i32,value)?;
+    }
+    let expected=match id {acp::RpcId::Number(value)=>Json::Number(value.to_string()),
+        acp::RpcId::String(value)=>text(value)}.canonical();
+    let mut found=None;
+    while query.step_row()? {
+        let cursor=query.column_text(0)?;
+        let raw=unhex(&query.column_text(1)?)?;
+        acp::decode(&raw,None).map_err(|error|OrchestrationError::V37StoreFailure(format!(
+            "Grok committed ACP terminal: {}; raw: {}",error.reason,
+            String::from_utf8_lossy(&error.raw_frame))))?;
+        let Json::Object(fields)=Parser::parse(std::str::from_utf8(&raw).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("Grok committed ACP UTF-8: {error}")))?)?
+            else {return Err(OrchestrationError::OperationConflict);};
+        if !fields.contains_key(&JsonString::from_str("method"))
+            && fields.get(&JsonString::from_str("id")).map(Json::canonical)==Some(expected.clone())
+            && (fields.contains_key(&JsonString::from_str("result"))
+                || fields.contains_key(&JsonString::from_str("error"))) {
+            if found.replace(cursor).is_some() {return Err(OrchestrationError::OperationConflict);}
+        }
+    }
+    Ok(found)
 }
 
 fn bounded_original_error(source: &str, max_bytes: usize) -> String {
@@ -2615,8 +2658,18 @@ impl<'root> ProductDatabase<'root> {
                 "opencode" | "grok" => {
                     self.native_acp_rpc(&key,"initialize",Some(1),
                         &vendor_commands::AcpCommand::Initialize {client_version:"0.1.0"})?;
+                    let server_id=if driver=="grok" && GROK_HOST_MCP_QUALIFICATION {
+                        let run=self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?;
+                        Some(rpc::grok_host_server_id(&key.0,&key.1,
+                            &run.custody.binding.generation,&run.open_request_id,
+                            &run.open_request_bytes,run.custody.ticket.opaque(),
+                            &run.custody.custodian_nonce))
+                    } else {None};
+                    let new=if let Some(server_id)=server_id.as_deref() {
+                        vendor_commands::AcpCommand::SessionNewHostMcp {cwd:&cwd,server_id}
+                    } else {vendor_commands::AcpCommand::SessionNew {cwd:&cwd}};
                     let Some(acp::Observation::SessionNew {session_id,..})=self.native_acp_rpc(
-                        &key,"thread-start",Some(3),&vendor_commands::AcpCommand::SessionNew {cwd:&cwd})? else {
+                        &key,"thread-start",Some(3),&new)? else {
                         return Err(OrchestrationError::Invalid("native ACP session/new response"));
                     };
                     if driver=="opencode" {
@@ -3461,11 +3514,34 @@ impl<'root> ProductDatabase<'root> {
         association:&super::v37_visible_conversation::Association,thread:&str,turn:Option<&str>,idle:bool)->Result<()> {
         let key=(association.domain.clone(),association.session.clone());
         let run=self.native_sessions.get(&key).ok_or(OrchestrationError::Invalid("selected native runtime has no live custody"))?;
-        if run.evidence.driver_id()!="codex"||!run.allows_input()
+        let grok=run.evidence.driver_id()=="grok";
+        if !matches!(run.evidence.driver_id(),"codex"|"grok")||!run.allows_input()
             ||run.evidence.seat_id()!=association.seat||run.evidence.seat_incarnation()!=association.incarnation
             ||run.custody.binding.generation!=association.generation||run.thread_id.as_deref()!=Some(thread)
             ||(idle&&run.turn_id.is_some())||(!idle&&run.turn_id.as_deref()!=turn) {
             return Err(OrchestrationError::AccessDenied);
+        }
+        if grok {
+            if !GROK_HOST_MCP_QUALIFICATION || !idle || turn.is_some() || run.pending_acp.is_some() {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let registration=rpc::observed_grok_host_registration(&self.connection,
+                &association.domain,&association.session,&run.operation_id,
+                &association.generation,&run.open_request_id,&run.open_request_bytes,
+                run.custody.ticket.opaque(),&run.custody.custodian_nonce,true)
+                .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                    "visible Grok fresh registration: {error:?}")))?
+                .ok_or(OrchestrationError::AccessDenied)?;
+            if registration.native_session_id.as_deref()!=Some(thread) {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let sends=Statement::prepare(self.connection.as_ptr(),
+                "SELECT 1 FROM main.gogoke_v37_h_stdin_journal WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3 AND generation=?4 AND operation='send'")?;
+            for (index,value) in [association.domain.as_str(),association.session.as_str(),
+                run.operation_id.as_str(),association.generation.as_str()].iter().enumerate() {
+                sends.bind_text((index+1) as i32,value)?;
+            }
+            if sends.step_row()? {return Err(OrchestrationError::AccessDenied);}
         }
         let process=self.process_custodian.active(&run.custody.ticket).ok_or(OrchestrationError::AccessDenied)?;
         if process.identity()!=&run.custody.identity||process.exit_code().map_err(|error|
@@ -3923,10 +3999,27 @@ impl<'root> ProductDatabase<'root> {
     }
 
     pub(super) fn complete_pending_native_acp_send(&mut self,key:&(String,String)) -> Result<()> {
+        self.complete_pending_native_acp_send_before(key,None)
+    }
+
+    pub(super) fn complete_pending_native_acp_send_through(&mut self,key:&(String,String),
+        through_cursor:&str)->Result<()> {
+        let number=through_cursor.parse::<u64>().map_err(|error|
+            OrchestrationError::V37StoreFailure(format!(
+                "Grok ACP source cursor {through_cursor}: {error}")))?;
+        if number==0 || number>i64::MAX as u64 || number.to_string()!=through_cursor {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        self.complete_pending_native_acp_send_before(key,Some(through_cursor))
+    }
+
+    fn complete_pending_native_acp_send_before(&mut self,key:&(String,String),
+        through_cursor:Option<&str>)->Result<()> {
         let run=self.native_sessions.get(key).ok_or(OrchestrationError::AccessDenied)?;
         let Some((request_bytes,identity))=run.pending_acp.clone() else {return Ok(());};
         let custody=run.custody.clone();let operation=run.operation_id.clone();
         let open_id=run.open_request_id.clone();let open_bytes=run.open_request_bytes.clone();
+        let grok=run.evidence.driver_id()=="grok";
         let expected=match &identity.rpc_id {
             acp::RpcId::Number(value)=>Json::Number(value.to_string()),
             acp::RpcId::String(value)=>text(value),
@@ -3935,13 +4028,21 @@ impl<'root> ProductDatabase<'root> {
             "SELECT source_cursor FROM main.v37_ledger_raw_source
               WHERE operation_id=?1 AND source_epoch=?2
                 AND (state='PENDING' OR (state='NO_EVENT' AND no_event_reason='ACP_RPC_RESPONSE'))
+                AND (?3='' OR CAST(source_cursor AS INTEGER)<=CAST(?3 AS INTEGER))
               ORDER BY CAST(source_cursor AS INTEGER)")?;
         query.bind_text(1,&operation)?;query.bind_text(2,&custody.custodian_nonce)?;
+        query.bind_text(3,through_cursor.unwrap_or(""))?;
         let mut cursors=Vec::new();while query.step_row()? {cursors.push(query.column_text(0)?);}drop(query);
         let mut matching=None;
         for cursor in cursors {
             let raw=ledger::read_captured_raw_source(&self.connection,&operation,&custody.custodian_nonce,&cursor)?
                 .ok_or(OrchestrationError::OperationConflict)?;
+            if grok {
+                acp::decode(&raw.raw_bytes,None).map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!(
+                        "Grok pending ACP ingress preflight: {}; raw: {}",error.reason,
+                        String::from_utf8_lossy(&error.raw_frame))))?;
+            }
             let value=std::str::from_utf8(&raw.raw_bytes).map_err(|error|
                 OrchestrationError::V37StoreFailure(format!("native ACP original source UTF-8: {error}")))?;
             let Json::Object(fields)=Parser::parse(value)? else {continue;};
@@ -4181,6 +4282,7 @@ impl<'root> ProductDatabase<'root> {
         let (method,requested)=match command {
             vendor_commands::AcpCommand::Initialize {..}=>(acp::PendingMethod::Initialize,None),
             vendor_commands::AcpCommand::SessionNew {..}=>(acp::PendingMethod::SessionNew,None),
+            vendor_commands::AcpCommand::SessionNewHostMcp {..}=>(acp::PendingMethod::SessionNew,None),
             vendor_commands::AcpCommand::SessionLoad {session_id,..}=>(acp::PendingMethod::SessionLoad,Some(*session_id)),
             vendor_commands::AcpCommand::SessionResume {session_id,..}=>(acp::PendingMethod::SessionResume,Some(*session_id)),
             vendor_commands::AcpCommand::SetConfigOption {session_id,..}=>(acp::PendingMethod::SessionSetConfigOption,Some(*session_id)),
@@ -4209,6 +4311,7 @@ impl<'root> ProductDatabase<'root> {
             run.raw_capture.retain(frame)?;
             let (frame,raw)=run.raw_capture.capture(&mut self.connection,&operation,&custody.custodian_nonce)?
                 .ok_or(OrchestrationError::Invalid("native ACP source absent"))?;
+            if self.reply_to_grok_mcp_bootstrap(key,&raw)? {continue;}
             let observed=acp::decode(frame.bytes(),Some(&pending)).map_err(|error|
                 OrchestrationError::V37StoreFailure(format!("native ACP metadata reply: {}; raw: {}",
                     error.reason,String::from_utf8_lossy(&error.raw_frame))))?;

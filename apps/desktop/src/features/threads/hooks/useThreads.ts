@@ -30,8 +30,10 @@ import {
   archiveThread as archiveThreadService,
   readThread as readThreadService,
   nativeConversationAssociation,
+  originalPendingNativeVisibleIntent,
   setThreadName as setThreadNameService,
 } from "@services/tauri";
+import type { NativeConversationAssociation } from "@services/tauri";
 import {
   makeCustomNameKey,
   saveCustomName,
@@ -117,8 +119,21 @@ export function useThreads({
     workspaceId: string;
     threadId: string;
     source: NativeProjectionSource | null;
+    method: string;
+    turnId: string | null;
+    association: Record<string, unknown> | null;
     hasSecondCallback: boolean;
   } | null>(null);
+  const hostTerminalByOriginalRef = useRef(new Map<string, {
+    threadId: string; turnId: string; association: NativeConversationAssociation;
+  }>());
+  const sameHostAssociation = (left: NativeConversationAssociation,
+    right: Record<string, unknown> | NativeConversationAssociation) => {
+    const keys = ["domainId", "sessionId", "seatId", "incarnation",
+      "authorizationGeneration", "bindingGeneration", "instanceId"] as const;
+    return Object.keys(right).length === keys.length &&
+      keys.every((key) => left[key] === right[key]);
+  };
   const activeEventRef = useRef<typeof pendingEventRef.current>(null);
   const lifecycleShadowRef = useRef({
     status: state.threadStatusById,
@@ -664,7 +679,26 @@ export function useThreads({
           const previous = activeEventRef.current;
           const event = pendingEventRef.current;
           activeEventRef.current = event;
-          try { return (callback as (...values: unknown[]) => unknown)(...args); }
+          try {
+            if ((name === "onTurnCompleted" || name === "onTurnError") &&
+                event?.method === "gogoke/hostPromptState" && event.source &&
+                event.association && typeof event.turnId === "string" &&
+                event.turnId === args[2] &&
+                event.threadId === args[1] && event.workspaceId === args[0]) {
+              try {
+                const parent = originalPendingNativeVisibleIntent(event.workspaceId);
+                if (parent?.command === "send_user_message" &&
+                    parent.payload.threadId === event.threadId &&
+                    sameHostAssociation(parent.expectedAssociation,event.association)) {
+                  hostTerminalByOriginalRef.current.set(
+                    `${event.workspaceId}\n${parent.nativeRequestId}`,
+                    { threadId:event.threadId,turnId:event.turnId,
+                      association:parent.expectedAssociation });
+                }
+              } catch { /* A malformed local journal cannot certify the original host prompt. */ }
+            }
+            return (callback as (...values: unknown[]) => unknown)(...args);
+          }
           finally {
             activeEventRef.current = previous;
             if (pendingEventRef.current === event &&
@@ -679,7 +713,8 @@ export function useThreads({
         // With no router end callback, neither event can borrow its source.
         const routeOverlap = pendingEventRef.current !== null;
         const method = getAppServerRawMethod(event);
-        if (!method || !METHODS_ROUTED_IN_USE_APP_SERVER_EVENTS.some((routedMethod) => routedMethod === method)) {
+        if (!method || (method !== "gogoke/hostText" && method !== "gogoke/hostPromptState" &&
+            !METHODS_ROUTED_IN_USE_APP_SERVER_EVENTS.some((routedMethod) => routedMethod === method))) {
           pendingEventRef.current = null;
           routed.onAppServerEvent?.(event);
           return;
@@ -698,6 +733,10 @@ export function useThreads({
         const item = params.item as Record<string, unknown> | undefined;
         pendingEventRef.current = { workspaceId: event.workspace_id,
           threadId: typeof threadId === "string" ? threadId : "", source,
+          method,turnId:typeof params.turnId === "string" ? params.turnId : null,
+          association:raw.nativeAssociation && typeof raw.nativeAssociation === "object" &&
+            !Array.isArray(raw.nativeAssociation)
+            ? raw.nativeAssociation as Record<string, unknown> : null,
           hasSecondCallback: method === "item/completed" &&
             item?.type === "agentMessage" && Boolean(item.id) };
         routed.onAppServerEvent?.(event);
@@ -954,6 +993,12 @@ export function useThreads({
     dispatch,
     getCustomName,
     markProcessing,
+    hostPromptTerminalObserved: (workspaceId,threadId,requestId,association) => {
+      const terminal=hostTerminalByOriginalRef.current.get(`${workspaceId}\n${requestId}`);
+      return Boolean(terminal && terminal.threadId===threadId &&
+        /^hostprompt[0-9a-f]{64}$/.test(terminal.turnId) &&
+        sameHostAssociation(association,terminal.association));
+    },
     markReviewing,
     setActiveTurnId,
     recordThreadActivity,

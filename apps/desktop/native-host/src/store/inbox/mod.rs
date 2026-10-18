@@ -1132,7 +1132,7 @@ fn native_binding_matches(card: &NativeQuestionCard, vendor_request_id: &str,
         card.turn_id == turn_id && card.generation == generation
 }
 
-fn read_native_card(connection: &VerifiedDatabaseConnection<'_>, domain_id: &str,
+pub(crate) fn read_native_card(connection: &VerifiedDatabaseConnection<'_>, domain_id: &str,
     card_id: &str) -> Result<Option<NativeQuestionCard>, InboxError> {
     let statement = Statement::prepare(connection.as_ptr(), "SELECT revision,state,vendor_request_id,vendor_thread_id,vendor_item_id,auto_resolution_ms,question_payload,question_id,question_header,question_text,answer_shape,seat_id,turn_id,generation,answer_kind,answer FROM main.gogoke_v37_qcard_native WHERE domain_id=? AND card_id=?")?;
     statement.bind_text(1,domain_id)?;
@@ -1443,6 +1443,135 @@ fn settle_native_answer_in_transaction(connection: &VerifiedDatabaseConnection<'
 /// frame was written by H and its WRITTEN fact committed. It never means the
 /// vendor consumed the answer. Only native Owner authority can build this
 /// proof; caller strings, resolved notifications and uncertain writes cannot.
+fn verify_grok_mcp_written_settlement(db:&VerifiedDatabaseConnection<'_>,
+    card:&NativeQuestionCard,domain:&str,session:&str,operation:&str,
+    nonce:&str,ticket:&str,open_id:&str,raw:&[u8],source_cursor:&str)->Result<(),InboxError> {
+    use crate::store::session_transport::provider_evidence::{acp,commands,grok_mcp};
+    use crate::store::session_transport::rpc_journal as rpc;
+    let source=ledger::read_captured_raw_source(db,operation,nonce,source_cursor)?
+        .ok_or(InboxError::Denied)?;
+    if source.raw_bytes!=raw
+        || source.state!=ledger::RawSourceState::NoEvent
+        || source.no_event_reason.as_deref()!=Some("HOST_GROK_MCP_QUESTION_CARD")
+        || source.domain_id!=domain || source.session_id!=session
+        || source.generation!=card.generation || source.process_ticket!=ticket
+        || source.custodian_nonce!=nonce {return Err(InboxError::Denied);}
+    let episode=Statement::prepare(db.as_ptr(),
+        "SELECT raw_hex FROM main.gogoke_v37_h_process_episode WHERE domain_id=?1
+           AND session_id=?2 AND process_operation_id=?3 AND generation=?4
+           AND request_id=?5 AND old_generation IS NULL")?;
+    for (index,value) in [domain,session,operation,card.generation.as_str(),open_id]
+        .iter().enumerate(){episode.bind_text((index+1) as i32,value)?;}
+    if !episode.step_row()? {return Err(InboxError::Denied);}
+    let open_bytes=unhex_native(&episode.column_text(0)?)?;
+    if episode.step_row()? {return Err(InboxError::Conflict);}drop(episode);
+    let registration=rpc::observed_grok_host_registration(db,domain,session,operation,
+        &card.generation,open_id,&open_bytes,ticket,nonce,true)
+        .map_err(|error|InboxError::InvalidEvidence(format!(
+            "Grok historical registration: {error:?}")))?
+        .ok_or(InboxError::Denied)?;
+    let vendor_session=registration.native_session_id.as_deref().ok_or(InboxError::Denied)?;
+    let prompt=rpc::grok_initial_prompt(db,domain,session,operation,&card.generation,
+        ticket,nonce,vendor_session,Some(&card.turn_id))
+        .map_err(|error|InboxError::InvalidEvidence(format!(
+            "Grok historical prompt: {error:?}")))?;
+    let request=acp::decode_grok_mcp(raw,&registration.server_id)
+        .map_err(|error|InboxError::InvalidEvidence(format!(
+            "Grok historical sdk_call: {}; raw: {}",error.reason,
+            String::from_utf8_lossy(&error.raw_frame))))?
+        .ok_or(InboxError::Denied)?;
+    let grok_mcp::Kind::AskUser(input)=&request.kind else {return Err(InboxError::Denied);};
+    let typed=|id:&acp::RpcId|match id {acp::RpcId::Number(value)=>Json::Number(value.to_string()),
+        acp::RpcId::String(value)=>Json::String(JsonString::from_str(value))};
+    let composite=Json::Array(vec![Json::String(JsonString::from_str(&registration.server_id)),
+        typed(&request.outer_id),typed(&request.inner_id)]).canonical();
+    let reference=format!("gmpc_{}",crate::store::digest::sha256_hex(composite.as_bytes()));
+    if card.vendor_request_id!=Json::String(JsonString::from_str(&reference)).canonical()
+        || card.vendor_item_id!=reference || card.vendor_thread_id!=vendor_session
+        || card.turn_id!=prompt.request_id || card.question_id!="host0"
+        || card.header!=input.header || card.question!=input.question
+        || card.options.len()!=input.options.len() || !card.auto_resolution_ms.is_empty()
+        || card.options.iter().enumerate().any(|(index,option)|
+            option.id!=format!("option{index}")
+            || option.label!=input.options[index].label
+            || option.description!=input.options[index].description) {
+        return Err(InboxError::Denied);
+    }
+    let parsed_payload=Parser::parse(&card.question_payload)?;
+    if parsed_payload.canonical()!=card.question_payload {return Err(InboxError::Denied);}
+    let Json::Object(payload)=parsed_payload else {
+        return Err(InboxError::Denied);
+    };
+    let field=|name:&str|payload.get(&JsonString::from_str(name));
+    if !rpc::grok_mcp_display_matches(&payload,input)
+        || !matches!(field("provider"),Some(Json::String(value))
+            if value.to_well_formed_string().as_deref()==Some("grok"))
+        || !matches!(field("cardOrigin"),Some(Json::String(value))
+            if value.to_well_formed_string().as_deref()==Some("host-mcp"))
+        || !matches!(field("bindingVersion"),Some(Json::Number(value)) if value=="1")
+        || !matches!(field("recommendedIndex"),Some(Json::Number(value))
+            if value==&input.recommended_index.to_string()) {
+        return Err(InboxError::Denied);
+    }
+    let Some(Json::Object(binding))=field("binding") else {return Err(InboxError::Denied);};
+    if binding.len()!=18 {return Err(InboxError::Denied);}
+    let expected=[("serverId",registration.server_id.as_str()),
+        ("registrationStepId",registration.step_id.as_str()),
+        ("registrationCommandSha256",registration.command_sha256.as_str()),
+        ("hostSessionId",session),("openRequestId",open_id),
+        ("generation",card.generation.as_str()),("processOperationId",operation),
+        ("hostPromptRequestId",prompt.request_id.as_str()),
+        ("promptStepId",prompt.step_id.as_str()),("sourceOperationId",operation),
+        ("sourceEpoch",nonce),("sourceCursor",source_cursor),
+        ("bindingScope","INITIAL_H_PROMPT")];
+    for (name,wanted) in expected {
+        if !matches!(binding.get(&JsonString::from_str(name)),Some(Json::String(value))
+            if value.to_well_formed_string().as_deref()==Some(wanted)) {
+            return Err(InboxError::Denied);
+        }
+    }
+    for (name,wanted) in [("hostPromptRequestSha256",crate::store::digest::sha256_hex(&prompt.request_bytes)),
+        ("sourceFrameSha256",crate::store::digest::sha256_hex(raw))] {
+        if !matches!(binding.get(&JsonString::from_str(name)),Some(Json::String(value))
+            if value.to_well_formed_string().as_deref()==Some(wanted.as_str())) {
+            return Err(InboxError::Denied);
+        }
+    }
+    for (name,id) in [("promptRpcId",&prompt.rpc_id),("outerRpcId",&request.outer_id),
+        ("innerRpcId",&request.inner_id)] {
+        if binding.get(&JsonString::from_str(name)).map(Json::canonical)
+            !=Some(typed(id).canonical()) {return Err(InboxError::Denied);}
+    }
+    let Json::Object(outer)=Parser::parse(&card.answer)? else {return Err(InboxError::Denied);};
+    let Some(Json::Object(wrapper))=outer.get(&JsonString::from_str("result")) else {
+        return Err(InboxError::Denied);
+    };
+    let Some(Json::Object(result))=wrapper.get(&JsonString::from_str("result")) else {
+        return Err(InboxError::Denied);
+    };
+    let Some(Json::Array(content))=result.get(&JsonString::from_str("content")) else {
+        return Err(InboxError::Denied);
+    };
+    let [Json::Object(item)]=content.as_slice() else {return Err(InboxError::Denied);};
+    let Some(Json::String(answer_json))=item.get(&JsonString::from_str("text")) else {
+        return Err(InboxError::Denied);
+    };
+    let answer_json=answer_json.to_well_formed_string().ok_or(InboxError::Denied)?;
+    let Json::Object(answer)=Parser::parse(&answer_json)? else {return Err(InboxError::Denied);};
+    if answer.len()!=1 {return Err(InboxError::Denied);}
+    let Some(Json::String(answer_text))=answer.get(&JsonString::from_str("answer")) else {
+        return Err(InboxError::Denied);
+    };
+    let answer_text=answer_text.to_well_formed_string().ok_or(InboxError::Denied)?;
+    let expected_wire=commands::encode_grok_mcp_reply(&request,
+        commands::GrokMcpReply::Answer(&answer_text))
+        .map_err(|error|InboxError::InvalidEvidence(format!(
+            "Grok historical reply codec: {error:?}")))?;
+    let mut actual=card.answer.as_bytes().to_vec();actual.push(b'\n');
+    if expected_wire!=actual {return Err(InboxError::Denied);}
+    Ok(())
+}
+
 pub(crate) fn settle_native_answer_written(connection: &mut VerifiedDatabaseConnection<'_>,
     owner: &crate::store::authority::OwnerIssuer, envelope: &CardEnvelope<'_>,
     session_id: &str, step_id: &str) -> Result<NativeCardOperation, InboxError> {
@@ -1589,6 +1718,9 @@ pub(crate) fn settle_native_answer_written(connection: &mut VerifiedDatabaseConn
                 }
             }
             if !saw_session {return Err(InboxError::Denied);}
+        } else if driver=="grok" {
+            verify_grok_mcp_written_settlement(connection,&card,envelope.domain_id,
+                session_id,&operation,&nonce,&ticket,&open_id,&raw,&source_cursor)?;
         } else if driver=="codex" {
             let Reply::Question(question)=codex_rpc::decode(&raw,None).map_err(InboxError::Codec)? else {return Err(InboxError::Denied);};
             if question.thread_id!=card.vendor_thread_id || question.turn_id!=card.turn_id || question.item_id!=card.vendor_item_id {return Err(InboxError::Denied);}

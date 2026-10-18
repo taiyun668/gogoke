@@ -96,6 +96,10 @@ struct VisibleLiveReply {
     state: String,
     #[serde(default)]
     pending_questions: Vec<Value>,
+    #[serde(default)]
+    host_question_states: Vec<Value>,
+    #[serde(default)]
+    host_prompt_states: Vec<Value>,
 }
 
 async fn visible_user_frame(app: &AppHandle, frame: Value) -> Result<String, String> {
@@ -388,15 +392,181 @@ fn native_event_page(reply: &VisibleReadReply, association: &NativeAssociation,
     Ok((next_position, original))
 }
 
+/// Project only a C-validated host question from the existing native live
+/// read. This is a host event, never a fabricated Codex server request.
+fn native_host_question_projection(item: &Value, association: &NativeAssociation)
+    -> Result<Option<Value>, String> {
+    if item.get("cardOrigin").and_then(Value::as_str) != Some("host-mcp") {
+        return Ok(None);
+    }
+    let value = |field: &str| item.get(field).and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("GOGOKE_HOST_QUESTION_FIELD_INVALID:{field}"));
+    let card = value("cardId")?;
+    let request = value("requestRef")?;
+    let thread = value("threadId")?;
+    let turn = value("turnId")?;
+    let card_state=value("cardState")?;
+    if !matches!(card_state,"OPEN"|"EXPIRED"|"ANSWER_UNKNOWN"|"ANSWERED") {
+        return Err("GOGOKE_HOST_QUESTION_STATE_INVALID".into());
+    }
+    let revision=value("revision")?;
+    if canonical_binding_generation(revision)?==0 {
+        return Err("GOGOKE_HOST_QUESTION_REVISION_INVALID".into());
+    }
+    if !request.starts_with("gmpc_") || !card.starts_with("card") {
+        return Err("GOGOKE_HOST_QUESTION_ID_INVALID".into());
+    }
+    let source = item.get("source").and_then(Value::as_object)
+        .filter(|fields| fields.len() == 3)
+        .ok_or("GOGOKE_HOST_QUESTION_SOURCE_INVALID")?;
+    let question = item.get("nativeQuestion").and_then(Value::as_object)
+        .ok_or("GOGOKE_HOST_QUESTION_PAYLOAD_INVALID")?;
+    let binding = question.get("binding").and_then(Value::as_object)
+        .ok_or("GOGOKE_HOST_QUESTION_BINDING_INVALID")?;
+    let bound = |field: &str| binding.get(field).and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("GOGOKE_HOST_QUESTION_BINDING_INVALID:{field}"));
+    if question.get("provider").and_then(Value::as_str) != Some("grok")
+        || question.get("cardOrigin").and_then(Value::as_str) != Some("host-mcp")
+        || question.get("bindingVersion").and_then(Value::as_u64) != Some(1)
+        || question.get("allowFreeAnswer").and_then(Value::as_bool) != Some(true)
+        || bound("hostSessionId")? != association.session_id
+        || bound("generation")? != association.binding_generation
+        || bound("hostPromptRequestId")? != turn
+        || bound("processOperationId")? != source.get("operationId").and_then(Value::as_str).unwrap_or("")
+        || bound("sourceEpoch")? != source.get("sourceEpoch").and_then(Value::as_str).unwrap_or("")
+        || bound("sourceCursor")? != source.get("sourceCursor").and_then(Value::as_str).unwrap_or("")
+        || question.get("questions").and_then(Value::as_array)
+            .is_none_or(|questions| questions.len() != 1 || questions[0]["id"] != "host0")
+    {
+        return Err("GOGOKE_HOST_QUESTION_SOURCE_MISMATCH".into());
+    }
+    let method=if card_state=="OPEN" {"gogoke/hostQuestion"} else {"gogoke/hostQuestionState"};
+    Ok(Some(json!({"method":method,"params":{
+        "threadId":thread,"turnId":turn,"cardId":card,"requestRef":request,
+        "nativeQuestion":item["nativeQuestion"],"source":item["source"],
+        "cardState":card_state,"cardRevision":revision
+    }})))
+}
+
+fn native_host_projection_mode(reply:&VisibleReadReply)->Result<bool,String> {
+    let marker=reply.response.as_ref().and_then(|value|value.get("result"))
+        .and_then(|value|value.get("nativeEvents"))
+        .ok_or("GOGOKE_NATIVE_EVENT_MARKER_MISSING")?;
+    match marker.get("hostProjection") {
+        None=>Ok(false),
+        Some(Value::String(value)) if value=="grok-initial-prompt-card"=>Ok(true),
+        _=>Err("GOGOKE_NATIVE_HOST_PROJECTION_INVALID".into()),
+    }
+}
+
+fn native_host_prompt_projection(item:&Value,association:&NativeAssociation)->Result<Value,String> {
+    let fields=item.as_object().filter(|fields|fields.len()==4)
+        .ok_or("GOGOKE_HOST_PROMPT_STATE_INVALID")?;
+    let value=|name:&str|fields.get(name).and_then(Value::as_str)
+        .filter(|value|!value.is_empty())
+        .ok_or_else(||format!("GOGOKE_HOST_PROMPT_FIELD_INVALID:{name}"));
+    let thread=value("threadId")?;let turn=value("turnId")?;
+    let status=value("status")?;
+    if !matches!(status,"completed"|"failed") || !turn.starts_with("hostprompt")
+        || turn.len()!="hostprompt".len()+64
+        || !turn["hostprompt".len()..].bytes().all(|byte|byte.is_ascii_hexdigit()
+            && !byte.is_ascii_uppercase()) {
+        return Err("GOGOKE_HOST_PROMPT_STATE_INVALID".into());
+    }
+    let source=fields.get("source").and_then(Value::as_object)
+        .filter(|source|source.len()==5)
+        .ok_or("GOGOKE_HOST_PROMPT_SOURCE_INVALID")?;
+    if source.get("generation").and_then(Value::as_str)!=Some(association.binding_generation.as_str())
+        || ["rawSourceId","operationId","sourceEpoch","sourceCursor"].iter()
+            .any(|name|source.get(*name).and_then(Value::as_str)
+                .is_none_or(str::is_empty)) {
+        return Err("GOGOKE_HOST_PROMPT_SOURCE_INVALID".into());
+    }
+    canonical_binding_generation(source["rawSourceId"].as_str().unwrap())?;
+    canonical_binding_generation(source["sourceCursor"].as_str().unwrap())?;
+    Ok(json!({"method":"gogoke/hostPromptState","params":{
+        "threadId":thread,"turnId":turn,"status":status}}))
+}
+
+async fn emit_pending_native_host_questions(app: &AppHandle, session: &Arc<WorkspaceSession>,
+    association: &NativeAssociation, reader_id: u64, seen: &mut HashSet<String>)
+    -> Result<(), String> {
+    let reply=visible_read(app,&session.owner_workspace_id,association,"live-state",None).await?;
+    if reply.state!="APPLIED" {return Err(visible_failure(&reply.state,reply.reason.as_deref(),None));}
+    let live=reply.live.ok_or("GOGOKE_NATIVE_HOST_LIVE_MISSING")?;
+    let state=app.state::<AppState>();
+    let sessions=state.sessions.lock().await;
+    if !sessions.get(&session.owner_workspace_id).is_some_and(|current|Arc::ptr_eq(current,session))
+        || !session.native_event_reader_current(reader_id,association)? {
+        return Err("GOGOKE_NATIVE_HOST_ATTACHMENT_CHANGED".into());
+    }
+    for item in &live.host_prompt_states {
+        let message=native_host_prompt_projection(item,association)?;
+        let turn=message["params"]["turnId"].as_str()
+            .ok_or("GOGOKE_HOST_PROMPT_TURN_MISSING")?;
+        let status=message["params"]["status"].as_str()
+            .ok_or("GOGOKE_HOST_PROMPT_STATUS_MISSING")?;
+        let source=&item["source"];
+        let source_id=source["rawSourceId"].as_str()
+            .ok_or("GOGOKE_HOST_PROMPT_SOURCE_ID_MISSING")?;
+        let key=format!("prompt:{turn}:{status}:{source_id}");
+        if seen.contains(&key) {continue;}
+        app.emit("app-server-event",json!({"workspace_id":session.owner_workspace_id,
+            "message":message,"nativeAssociation":association,"nativeSourceRef":source}))
+            .map_err(|error|format!("GOGOKE_NATIVE_HOST_EVENT_DELIVERY_FAILED:{error}"))?;
+        seen.insert(key);
+    }
+    for item in &live.host_question_states {
+        let Some(message)=native_host_question_projection(item,association)? else {continue;};
+        if message["method"]!="gogoke/hostQuestionState" {
+            return Err("GOGOKE_NATIVE_HOST_TERMINAL_STATE_INVALID".into());
+        }
+        let card=message["params"]["cardId"].as_str()
+            .ok_or("GOGOKE_NATIVE_HOST_CARD_ID_MISSING")?;
+        let card_state=message["params"]["cardState"].as_str()
+            .ok_or("GOGOKE_NATIVE_HOST_CARD_STATE_MISSING")?;
+        let revision=message["params"]["cardRevision"].as_str()
+            .ok_or("GOGOKE_NATIVE_HOST_CARD_REVISION_MISSING")?;
+        let key=format!("state:{card}:{card_state}:{revision}");
+        if seen.contains(&key) {continue;}
+        app.emit("app-server-event",json!({"workspace_id":session.owner_workspace_id,
+            "message":message,"nativeAssociation":association,
+            "nativeSourceRef":item["source"]}))
+            .map_err(|error|format!("GOGOKE_NATIVE_HOST_EVENT_DELIVERY_FAILED:{error}"))?;
+        seen.insert(key);
+        seen.insert(format!("closed:{card}"));
+    }
+    if live.state!="LIVE" {return Ok(());}
+    for item in &live.pending_questions {
+        let Some(message)=native_host_question_projection(item,association)? else {continue;};
+        if message["method"]!="gogoke/hostQuestion" {
+            return Err("GOGOKE_NATIVE_HOST_OPEN_STATE_INVALID".into());
+        }
+        let card=message["params"]["cardId"].as_str()
+            .ok_or("GOGOKE_NATIVE_HOST_CARD_ID_MISSING")?;
+        let key=format!("open:{card}:{}",message["params"]["cardRevision"]);
+        if seen.contains(&key) || seen.contains(&format!("closed:{card}")) {continue;}
+        app.emit("app-server-event",json!({"workspace_id":session.owner_workspace_id,
+            "message":message,"nativeAssociation":association,
+            "nativeSourceRef":item["source"]}))
+            .map_err(|error|format!("GOGOKE_NATIVE_HOST_EVENT_DELIVERY_FAILED:{error}"))?;
+        seen.insert(key);
+    }
+    Ok(())
+}
+
 pub(crate) async fn start_native_visible_events(session: &Arc<WorkspaceSession>) -> Result<(), String> {
     let Some((app, reader_id, retained_position)) = session.begin_native_events()? else { return Ok(()); };
     // Establish the attachment watermark before the observing call resolves. Existing
     // content is restored by the full original thread/read path, never by
     // replaying historical text deltas into an already rendered conversation.
-    let seeded: Result<(NativeAssociation, NativeEventPosition), String> = async {
+    let seeded: Result<(NativeAssociation, NativeEventPosition, bool), String> = async {
         let association = session.native_association()?.ok_or("GOGOKE_NATIVE_EVENT_ASSOCIATION_MISSING")?;
         let restoring = retained_position.is_some();
         let mut position = retained_position.unwrap_or_default();
+        let mut host_mode=None;
         loop {
             let params = if position.params.is_null() { json!({}) } else { position.params.clone() };
             let reply = visible_read(&app, &session.owner_workspace_id, &association,
@@ -408,6 +578,11 @@ pub(crate) async fn start_native_visible_events(session: &Arc<WorkspaceSession>)
                 return Err("GOGOKE_NATIVE_EVENT_ATTACHMENT_CHANGED_DURING_READ".into());
             }
             let (next_position, notifications) = native_event_page(&reply, &association, &position)?;
+            let page_host_mode=native_host_projection_mode(&reply)?;
+            if host_mode.is_some_and(|prior|prior!=page_host_mode) {
+                return Err("GOGOKE_NATIVE_HOST_PROJECTION_CHANGED".into());
+            }
+            host_mode=Some(page_host_mode);
             if restoring {
                 if !session.commit_native_events(reader_id, &association, next_position.clone(), || {
                     for item in &notifications {
@@ -425,11 +600,11 @@ pub(crate) async fn start_native_visible_events(session: &Arc<WorkspaceSession>)
                 if !session.commit_native_events(reader_id, &association, position.clone(), || Ok(()))? {
                     return Err("GOGOKE_NATIVE_EVENT_ATTACHMENT_CHANGED_BEFORE_COMMIT".into());
                 }
-                return Ok((association, position));
+                return Ok((association, position, page_host_mode));
             }
         }
     }.await;
-    let (seed_association, seed_position) = match seeded {
+    let (seed_association, seed_position, host_mode) = match seeded {
         Ok(seed) => seed,
         Err(error) => {
             if let Err(finish) = session.finish_native_events(reader_id, Some(error.clone())) {
@@ -438,6 +613,16 @@ pub(crate) async fn start_native_visible_events(session: &Arc<WorkspaceSession>)
             return Err(error);
         }
     };
+    let mut host_questions_seen=HashSet::new();
+    if host_mode {
+        if let Err(error)=emit_pending_native_host_questions(&app,session,&seed_association,
+            reader_id,&mut host_questions_seen).await {
+            if let Err(finish)=session.finish_native_events(reader_id,Some(error.clone())) {
+                return Err(format!("{error}; reader state: {finish}"));
+            }
+            return Err(error);
+        }
+    }
     let weak = Arc::downgrade(session);
     tauri::async_runtime::spawn(async move {
         let association = seed_association;
@@ -458,6 +643,9 @@ pub(crate) async fn start_native_visible_events(session: &Arc<WorkspaceSession>)
                 if !session.native_event_reader_current(reader_id, current)? { return Ok(()); }
                 let reply = reply?;
                 let (next_position, notifications) = native_event_page(&reply, &current, &position)?;
+                if native_host_projection_mode(&reply)?!=host_mode {
+                    return Err("GOGOKE_NATIVE_HOST_PROJECTION_CHANGED".into());
+                }
                 let delivered = session.commit_native_events(reader_id, current, next_position.clone(), || {
                     for item in &notifications {
                         app.emit("app-server-event", json!({
@@ -470,6 +658,10 @@ pub(crate) async fn start_native_visible_events(session: &Arc<WorkspaceSession>)
                 drop(sessions);
                 if !delivered { return Ok(()); }
                 position = next_position;
+                if host_mode {
+                    emit_pending_native_host_questions(&app,&session,&association,reader_id,
+                        &mut host_questions_seen).await?;
+                }
                 if reply.state == "APPLIED" {
                     // Observation cadence only; never a timeout, stop proof,
                     // retry policy or source-completeness inference.
@@ -2494,6 +2686,54 @@ mod native_visible_boundary_tests {
         }
     }
 
+    #[test]
+    fn grok_host_question_projection_requires_original_c_source_and_h_generation() {
+        let mut card=json!({"cardId":"cardabc","cardOrigin":"host-mcp",
+            "cardState":"OPEN","revision":"1",
+            "requestRef":"gmpc_abc","threadId":"nativeS","turnId":"sendA",
+            "source":{"operationId":"opA","sourceEpoch":"nonceA","sourceCursor":"4"},
+            "nativeQuestion":{"provider":"grok","cardOrigin":"host-mcp",
+                "bindingVersion":1,"allowFreeAnswer":true,"recommendedIndex":0,
+                "questions":[{"id":"host0","header":"Confirm","question":"Proceed?",
+                    "options":[{"label":"Yes","description":"Continue"}]}],
+                "binding":{"hostSessionId":"sessionA","generation":"2",
+                    "hostPromptRequestId":"sendA","processOperationId":"opA",
+                    "sourceEpoch":"nonceA","sourceCursor":"4"}}});
+        let projected=native_host_question_projection(&card,&association("2")).unwrap().unwrap();
+        assert_eq!(projected["method"],"gogoke/hostQuestion");
+        assert_eq!(projected["params"]["requestRef"],"gmpc_abc");
+        assert!(projected.get("id").is_none(),"host card is not a fabricated Codex RPC");
+        card["cardState"]=json!("ANSWER_UNKNOWN");card["revision"]=json!("2");
+        let unknown=native_host_question_projection(&card,&association("2")).unwrap().unwrap();
+        assert_eq!(unknown["method"],"gogoke/hostQuestionState");
+        assert_eq!(unknown["params"]["cardState"],"ANSWER_UNKNOWN");
+        card["cardState"]=json!("OPEN");card["revision"]=json!("1");
+        card["source"]["sourceCursor"]=json!("5");
+        assert!(native_host_question_projection(&card,&association("2")).is_err());
+        card["source"]["sourceCursor"]=json!("4");
+        assert!(native_host_question_projection(&card,&association("3")).is_err());
+        let mut page=event_reply();
+        assert!(!native_host_projection_mode(&page).unwrap());
+        page.response.as_mut().unwrap()["result"]["nativeEvents"]["hostProjection"]=
+            json!("grok-initial-prompt-card");
+        assert!(native_host_projection_mode(&page).unwrap());
+        page.response.as_mut().unwrap()["result"]["nativeEvents"]["hostProjection"]=
+            json!("unknown");
+        assert!(native_host_projection_mode(&page).is_err());
+        let mut terminal=json!({"threadId":"nativeS",
+            "turnId":format!("hostprompt{}","a".repeat(64)),"status":"completed",
+            "source":{"rawSourceId":"9","operationId":"opA","generation":"2",
+                "sourceEpoch":"nonceA","sourceCursor":"5"}});
+        let projected=native_host_prompt_projection(&terminal,&association("2")).unwrap();
+        assert_eq!(projected["method"],"gogoke/hostPromptState");
+        assert!(projected.get("id").is_none());
+        terminal["source"]["generation"]=json!("3");
+        assert!(native_host_prompt_projection(&terminal,&association("2")).is_err());
+        terminal["source"]["generation"]=json!("2");
+        terminal["status"]=json!("inProgress");
+        assert!(native_host_prompt_projection(&terminal,&association("2")).is_err());
+    }
+
     fn event_reply() -> VisibleReadReply {
         let source = json!({"rawSourceId":"5","operationId":"opA","generation":"2",
             "sourceEpoch":"nonceA","sourceCursor":"3"});
@@ -2629,7 +2869,9 @@ mod native_visible_boundary_tests {
 
     #[test]
     fn unknown_live_read_keeps_original_reason_without_alive_or_stop_claim() {
-        let mut live = VisibleLiveReply { state: "UNKNOWN".into(), pending_questions: vec![] };
+        let mut live = VisibleLiveReply { state: "UNKNOWN".into(),
+            pending_questions: vec![], host_question_states: vec![],
+            host_prompt_states: vec![] };
         let error = visible_live_observation(&live, Some("original H handle absent")).unwrap_err();
         assert!(error.contains("original H handle absent"));
         live.state = "LIVE".into();
