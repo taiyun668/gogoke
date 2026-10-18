@@ -213,7 +213,7 @@ export type PersonalityPreference = "friendly" | "pragmatic";
 export type FollowUpMessageBehavior = "queue" | "steer";
 export type ComposerSendIntent = "default" | "queue" | "steer";
 export type SendMessageResult = {
-  status: "sent" | "blocked" | "steer_failed";
+  status: "sent" | "pending" | "blocked" | "steer_failed";
 };
 
 export type ComposerEditorPreset = "default" | "helpful" | "smart";

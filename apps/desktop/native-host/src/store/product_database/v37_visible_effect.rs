@@ -326,6 +326,14 @@ impl<'root> ProductDatabase<'root> {
         if receipt.family!=request.family||receipt.operation!=request.operation||receipt.request_id!=request.request_id
             ||receipt.target_id!=request.target_id {return Err(OrchestrationError::OperationConflict);}
         if !matches!(receipt.status,V37Status::Applied|V37Status::Replayed) {
+            if action.method=="turn/start" && receipt.status==V37Status::Unknown
+                && matches!(h::decode_receipt(bytes).map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!(
+                        "original pending send receipt: {error:?}")))?.into_result().get(&k("deliveryBasis")),
+                    Some(Json::String(value)) if value.to_well_formed_string().as_deref()
+                        ==Some("ACP_PROMPT_RESPONSE_PENDING")) {
+                return self.visible_send_result(action);
+            }
             let status=match receipt.status {V37Status::Denied|V37Status::Stale|V37Status::Conflict=>"DENIED",
                 V37Status::Unsupported=>"UNSUPPORTED",_=>"UNKNOWN"};
             return Ok(self.action_reply(action,status,Some(&format!("Original native receipt: {}",
@@ -423,6 +431,78 @@ impl<'root> ProductDatabase<'root> {
         result.insert(k("nativeSource"),source_ref(&observed.source.operation_id,&observed.source.source_epoch,&observed.source.source_cursor));
         Ok(self.action_reply(action,"APPLIED",None,Some(response)))
     }
+    fn visible_grok_send_result(&self,action:&Action,request:&[u8],
+        existing:&h::StdinJournalRecord)->Result<Json> {
+        use crate::store::session_transport::provider_evidence::acp;
+        let open=Statement::prepare(self.connection.as_ptr(),
+            "SELECT e.request_id,e.raw_hex FROM main.gogoke_v37_h_process_episode e JOIN main.gogoke_v37_h_generation g ON g.domain_id=e.domain_id AND g.session_id=e.session_id AND g.generation=e.generation AND g.request_id=e.request_id AND g.process_operation_id=e.process_operation_id WHERE e.domain_id=?1 AND e.session_id=?2 AND e.generation=?3 AND e.process_operation_id=?4 AND e.instance_id=?5 AND e.seat_id=?6 AND e.seat_incarnation=?7")?;
+        for (index,value) in [action.association.domain.as_str(),action.association.session.as_str(),
+            action.association.generation.as_str(),action.operation.as_str(),action.association.instance.as_str(),
+            action.association.seat.as_str(),action.association.incarnation.as_str()].iter().enumerate() {
+            open.bind_text((index+1) as i32,value)?;
+        }
+        if !open.step_row()? {return Err(OrchestrationError::AccessDenied);}
+        let open_id=open.column_text(0)?;let open_bytes=decode_hex(&open.column_text(1)?)?;
+        if open.step_row()? {return Err(OrchestrationError::OperationConflict);}drop(open);
+        let registration=rpc_journal::observed_grok_host_registration(&self.connection,
+            &action.association.domain,&action.association.session,&action.operation,
+            &action.association.generation,&open_id,&open_bytes,&action.ticket,&action.nonce,true)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                "original visible Grok registration: {error:?}")))?
+            .ok_or(OrchestrationError::AccessDenied)?;
+        if registration.native_session_id.as_deref()!=Some(action.thread.as_str()) {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let prompt=rpc_journal::grok_initial_prompt(&self.connection,
+            &action.association.domain,&action.association.session,&action.operation,
+            &action.association.generation,&action.ticket,&action.nonce,&action.thread,
+            existing.receipt_bytes.as_ref().map(|_|action.id.as_str()))
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                "original visible Grok H prompt: {error:?}")))?;
+        if prompt.request_id!=action.id || prompt.request_bytes!=request {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let Some(receipt_bytes)=existing.receipt_bytes.as_ref() else {
+            return Ok(self.action_reply(action,"UNKNOWN",Some(
+                "GOGOKE_HOST_PROMPT_PENDING: Original sole Grok H prompt is WRITTEN; typed ACP result is pending and stdin cannot be replayed."),None));
+        };
+        self.verify_acp_input_receipt(existing)?;
+        let receipt=h::decode_receipt(receipt_bytes).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("original Grok H receipt: {error:?}")))?;
+        if receipt.family!="K-SESSION" || receipt.operation!="send" || receipt.request_id!=action.id
+            || receipt.target_id!=action.association.session {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        if !matches!(receipt.status,V37Status::Applied|V37Status::Replayed) {
+            return Ok(self.action_reply(action,"UNKNOWN",Some(&format!(
+                "Original Grok ACP terminal is not APPLIED: {}",
+                std::str::from_utf8(receipt_bytes).map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!("Grok H receipt UTF-8: {error}")))?)),None));
+        }
+        let result=receipt.into_result();
+        let field=|name:&str|->Result<String> {
+            match result.get(&k(name)) {Some(Json::String(value))=>value.to_well_formed_string()
+                .filter(|value|!value.is_empty()).ok_or(OrchestrationError::OperationConflict),
+                _=>Err(OrchestrationError::OperationConflict)}
+        };
+        let epoch=field("sourceEpoch")?;let cursor=field("sourceCursor")?;
+        let source=crate::store::ledger::read_captured_raw_source(&self.connection,&action.operation,&epoch,&cursor)?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        let pending=acp::Pending {id:&prompt.rpc_id,method:acp::PendingMethod::SessionPrompt,
+            requested_session_id:None};
+        if !matches!(acp::decode(&source.raw_bytes,Some(&pending)).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!(
+                "original visible Grok ACP result: {}; raw: {}",error.reason,
+                String::from_utf8_lossy(&error.raw_frame))))?,
+            acp::Observation::Prompt {stop_reason:acp::StopReason::EndTurn,..}) {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let mut response=source_json(&encode_hex(&source.raw_bytes))?;
+        let Json::Object(ref mut fields)=response else {return Err(OrchestrationError::OperationConflict);};
+        let Some(Json::Object(result))=fields.get_mut(&k("result")) else {return Err(OrchestrationError::OperationConflict);};
+        result.insert(k("nativeSource"),source_ref(&action.operation,&epoch,&cursor));
+        Ok(self.action_reply(action,"APPLIED",None,Some(response)))
+    }
     fn visible_send_result(&mut self,action:&Action)->Result<Json> {
         let request=action.translations.first().ok_or(OrchestrationError::OperationConflict)?;
         let input=h::StdinRequest {domain_id:&action.association.domain,session_id:&action.association.session,
@@ -434,6 +514,17 @@ impl<'root> ProductDatabase<'root> {
         if existing.request_bytes!=*request||existing.process_operation_id!=action.operation||existing.custodian_nonce!=action.nonce {
             return Err(OrchestrationError::AccessDenied);
         }
+        let instance=Statement::prepare(self.connection.as_ptr(),
+            "SELECT driver_id,version FROM main.gogoke_v37_instances WHERE instance_id=?1")?;
+        instance.bind_text(1,&action.association.instance)?;
+        if !instance.step_row()? {return Err(OrchestrationError::AccessDenied);}
+        let driver=instance.column_text(0)?;let version=instance.column_text(1)?;
+        if instance.step_row()? {return Err(OrchestrationError::OperationConflict);}drop(instance);
+        if driver=="grok" {
+            if version!="1.0.41" {return Err(OrchestrationError::AccessDenied);}
+            return self.visible_grok_send_result(action,request,&existing);
+        }
+        if driver!="codex" {return Err(OrchestrationError::AccessDenied);}
         if existing.state!=h::JournalState::Receipted {
             if let Some(recovered)=h::recover_codex_turn_request(&mut self.connection,&input).map_err(|error|
                 OrchestrationError::V37StoreFailure(format!("original visible H send recovery: {error:?}")))? {existing=recovered.record;}

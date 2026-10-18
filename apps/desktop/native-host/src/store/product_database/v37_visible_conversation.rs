@@ -24,6 +24,67 @@ pub(super) fn copy_json(value: &Json) -> Json {
 }
 pub(super) fn copy_array(values: &[Json]) -> Vec<Json> {values.iter().map(copy_json).collect()}
 
+fn host_text_source(raw:&[u8],session:&str)->Result<Option<String>> {
+    use crate::store::session_transport::provider_evidence::acp::{self,Observation};
+    let observation=acp::decode(raw,None).map_err(|error|
+        OrchestrationError::V37StoreFailure(format!(
+            "Original Grok host text preflight: {}; raw: {}",error.reason,
+            String::from_utf8_lossy(&error.raw_frame))))?;
+    let Observation::SessionUpdate {session_id,update}=observation else {return Ok(None);};
+    if session_id!=session {return Err(OrchestrationError::AccessDenied);}
+    let fields=object(&update)?;
+    if !is_text(fields.get(&k("sessionUpdate")),"agent_message_chunk") {return Ok(None);}
+    let content=object(fields.get(&k("content")).ok_or(OrchestrationError::OperationConflict)?)?;
+    if !is_text(content.get(&k("type")),"text") {return Ok(None);}
+    let Some(Json::String(text))=content.get(&k("text")) else {
+        return Err(OrchestrationError::OperationConflict);
+    };
+    let text=text.to_well_formed_string().ok_or(OrchestrationError::OperationConflict)?;
+    if text.contains('\0') {return Err(OrchestrationError::OperationConflict);}
+    Ok(if text.is_empty() {None} else {Some(text)})
+}
+fn host_source_item_id(operation:&str,epoch:&str,cursor:&str)->String {
+    format!("hostsource{}",crate::store::digest::sha256_hex(format!(
+        "{operation}\n{epoch}\n{cursor}").as_bytes()))
+}
+
+// A typed prompt terminal proves the prompt ended. If this prompt raised a
+// host question, its successful UI completion additionally needs the original
+// C answer and its exact historical H WRITTEN receipt.
+fn host_prompt_answers_written(product:&ProductDatabase<'_>,association:&Association,
+    thread:&str,prompt_id:&str,operation:&str,epoch:&str,terminal_cursor:&str)->Result<bool> {
+    use crate::store::session_transport as h;
+    let cards=Statement::prepare(product.connection.as_ptr(),
+        "SELECT card_id,state FROM main.gogoke_v37_qcard_native WHERE domain_id=?1 AND vendor_thread_id=?2 AND turn_id=?3 AND generation=?4 AND seat_id=?5 AND instr(question_payload,'\"cardOrigin\":\"host-mcp\"')>0 ORDER BY card_id")?;
+    for (index,value) in [association.domain.as_str(),thread,prompt_id,
+        association.generation.as_str(),association.seat.as_str()].iter().enumerate() {
+        cards.bind_text((index+1) as i32,value)?;
+    }
+    while cards.step_row()? {
+        let card_id=cards.column_text(0)?;
+        let (source,_)=super::v37_qcard::read_source_descriptor(
+            &product.connection,&association.domain,&card_id)?;
+        if source.operation_id!=operation || source.source_epoch!=epoch ||
+            decimal(&source.source_cursor)?>=decimal(terminal_cursor)? {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        if cards.column_text(1)?!="ANSWERED" {return Ok(false);}
+        let operations=Statement::prepare(product.connection.as_ptr(),
+            "SELECT request_hex FROM main.gogoke_v37_qcard_native_operations WHERE domain_id=?1 AND card_id=?2 AND state='ANSWERED'")?;
+        operations.bind_text(1,&association.domain)?;operations.bind_text(2,&card_id)?;
+        if !operations.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        let raw=decode_hex(&operations.column_text(0)?)?;
+        if operations.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        let request=h::decode_request(&raw).map_err(|error|
+            OrchestrationError::V37StoreFailure(format!("original host answer request: {error:?}")))?;
+        if request.target_id!=card_id || product.visible_original_answer_receipt(
+            association,&request,thread)?.is_none() {
+            return Err(OrchestrationError::OperationConflict);
+        }
+    }
+    Ok(true)
+}
+
 type PartialStream = (String,String,String);
 type PartialCoverage = BTreeMap<PartialStream,std::collections::BTreeSet<i64>>;
 
@@ -625,6 +686,8 @@ impl<'root> ProductDatabase<'root> {
                         if selected.started==selected.ack {
                             live.insert(k("hostQuestionStates"),
                                 self.visible_host_question_states(&association,&selected.thread)?);
+                            live.insert(k("hostPromptStates"),
+                                self.visible_host_prompt_terminal(workspace,&selected)?);
                         }
                         reply.insert(k("live"),Json::Object(live));
                     },
@@ -754,15 +817,21 @@ impl<'root> ProductDatabase<'root> {
             }
             let source=std::str::from_utf8(&raw.raw_bytes).map_err(|error|
                 OrchestrationError::V37StoreFailure(format!("Original native source {id} UTF-8: {error}")))?;
-            if selected.started==selected.ack {
-                crate::store::session_transport::provider_evidence::acp::decode(&raw.raw_bytes,None)
+            let notification=if selected.started==selected.ack {
+                let Some(delta)=host_text_source(&raw.raw_bytes,&selected.thread)? else {
+                    last=id;continue;
+                };
+                Json::Object(BTreeMap::from([(k("method"),s("gogoke/hostText")),
+                    (k("params"),Json::Object(BTreeMap::from([
+                        (k("threadId"),s(&selected.thread)),
+                        (k("itemId"),s(&host_source_item_id(&row_operation,&epoch,&cursor))),
+                        (k("delta"),s(&delta)),
+                    ])))]))
+            } else {
+                Parser::parse(source.trim_end_matches(['\r','\n']))
                     .map_err(|error|OrchestrationError::V37StoreFailure(format!(
-                        "Original Grok native event preflight: {}; raw: {}",error.reason,
-                        String::from_utf8_lossy(&error.raw_frame))))?;
-            }
-            let notification=Parser::parse(source.trim_end_matches(['\r','\n']))
-                .map_err(|error|OrchestrationError::V37StoreFailure(format!(
-                    "Original native source {id} JSON: {error:?}")))?;
+                        "Original native source {id} JSON: {error:?}")))?
+            };
             let envelope=object(&notification)?;
             // A JSON-RPC method with an ID is a server request, not a
             // notification for app-server-event. Its separate USER question
@@ -775,7 +844,7 @@ impl<'root> ProductDatabase<'root> {
                 _=>return Err(OrchestrationError::V37StoreFailure(format!(
                     "Original native source {id} has a non-text method."))),
             };
-            let relevant=method.starts_with("item/") || method.starts_with("turn/")
+            let relevant=method=="gogoke/hostText" || method.starts_with("item/") || method.starts_with("turn/")
                 || method.starts_with("thread/") || method=="error";
             let params=match envelope.get(&k("params")) {
                 Some(Json::Object(fields))=>fields,
@@ -856,6 +925,247 @@ impl<'root> ProductDatabase<'root> {
             (k("operationId"),s(&query.column_text(0)?)),(k("generation"),s(&query.column_text(1)?)),
             (k("sourceEpoch"),s(&query.column_text(2)?)),(k("sourceCursor"),s(&query.column_text(3)?))])))
     }
+    fn visible_grok_thread_page(&self,workspace:&str,selected:&Selection,
+        high:i64,after:i64,scope:&str,reply:&mut BTreeMap<JsonString,Json>)->Result<()> {
+        use crate::store::session_transport::{self as h,rpc_journal};
+        let association=selected.association.as_ref().ok_or(OrchestrationError::AccessDenied)?;
+        if selected.open_generation!=association.generation || selected.open_operation.is_empty() {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let episode=Statement::prepare(self.connection.as_ptr(),
+            "SELECT e.process_operation_id,c.ticket,c.custodian_nonce,e.raw_hex FROM main.gogoke_v37_h_generation g JOIN main.gogoke_v37_h_process_episode e ON e.domain_id=g.domain_id AND e.session_id=g.session_id AND e.generation=g.generation AND e.request_id=g.request_id AND e.process_operation_id=g.process_operation_id JOIN main.gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id AND c.domain_id=e.domain_id AND c.generation=e.generation WHERE g.domain_id=?1 AND g.session_id=?2 AND g.generation=?3 AND e.request_id=?4 AND e.process_operation_id=?5 AND e.instance_id=?6 AND e.seat_id=?7 AND e.seat_incarnation=?8")?;
+        for (index,value) in [association.domain.as_str(),association.session.as_str(),
+            association.generation.as_str(),selected.open_request.as_str(),selected.open_operation.as_str(),
+            association.instance.as_str(),association.seat.as_str(),association.incarnation.as_str()].iter().enumerate() {
+            episode.bind_text((index+1) as i32,value)?;
+        }
+        if !episode.step_row()? {return Err(OrchestrationError::AccessDenied);}
+        let operation=episode.column_text(0)?;let ticket=episode.column_text(1)?;
+        let nonce=episode.column_text(2)?;let open_bytes=decode_hex(&episode.column_text(3)?)?;
+        if episode.step_row()? {return Err(OrchestrationError::OperationConflict);}drop(episode);
+        let mut turns=Vec::new();let mut turn_refs:Vec<Vec<Json>>=Vec::new();
+        let sends=Statement::prepare(self.connection.as_ptr(),
+            "SELECT request_id,request_hex,phase FROM main.gogoke_v37_h_stdin_journal WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3 AND generation=?4 AND operation='send'")?;
+        for (index,value) in [association.domain.as_str(),association.session.as_str(),
+            operation.as_str(),association.generation.as_str()].iter().enumerate() {
+            sends.bind_text((index+1) as i32,value)?;
+        }
+        let send=if sends.step_row()? {
+            Some((sends.column_text(0)?,decode_hex(&sends.column_text(1)?)?,sends.column_text(2)?))
+        } else {None};
+        if sends.step_row()? {return Err(OrchestrationError::OperationConflict);}drop(sends);
+        if let Some((request_id,request_bytes,phase))=send {
+            if phase=="UNKNOWN" {return Err(OrchestrationError::OperationConflict);}
+            let prompt=rpc_journal::grok_initial_prompt(&self.connection,
+                &association.domain,&association.session,&operation,&association.generation,
+                &ticket,&nonce,&selected.thread,
+                if phase=="RECEIPTED" {Some(request_id.as_str())} else {None})
+                .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                    "visible host original prompt: {error:?}")))?;
+            if prompt.request_id!=request_id || prompt.request_bytes!=request_bytes {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            let visible=Statement::prepare(self.connection.as_ptr(),
+                "SELECT translation_json FROM main.gogoke_v37_visible_effect WHERE workspace_id=?1 AND request_id=?2 AND domain_id=?3 AND selection_row=?4 AND association_json=?5 AND method='turn/start'")?;
+            visible.bind_text(1,workspace)?;visible.bind_text(2,&request_id)?;
+            visible.bind_text(3,&association.domain)?;visible.bind_i64(4,selected.row)?;
+            visible.bind_text(5,&association.json().canonical())?;
+            let original_visible=if visible.step_row()? {
+                let translations=Parser::parse(&visible.column_text(0)?)?;
+                if visible.step_row()? {return Err(OrchestrationError::OperationConflict);}
+                matches!(translations,Json::Array(ref values) if values.len()==1 &&
+                    is_text(values.first(),&encode_hex(&request_bytes)))
+            } else {false};drop(visible);
+            if original_visible {
+                let request=h::decode_request(&request_bytes).map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!("visible original Grok USER prompt: {error:?}")))?;
+                let body=string_field(&request.payload,"body")?;
+                let digest=crate::store::digest::sha256_hex(&request_bytes);
+                let mut status="inProgress";
+                let mut refs=Vec::new();
+                if phase=="RECEIPTED" {
+                    let record=h::read_stdin_journal(&self.connection,&h::StdinJournalKey {
+                        domain_id:&association.domain,request_id:&request_id,session_id:&association.session,
+                        ticket:&ticket,generation:&association.generation})
+                        .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                            "visible host original H receipt: {error:?}")))?
+                        .ok_or(OrchestrationError::OperationConflict)?;
+                    self.verify_acp_input_receipt(&record)?;
+                    let receipt=h::decode_receipt(record.receipt_bytes.as_ref()
+                        .ok_or(OrchestrationError::OperationConflict)?)
+                        .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                            "visible host ACP terminal receipt: {error:?}")))?;
+                    if receipt.request_id!=request_id || receipt.family!="K-SESSION" ||
+                        receipt.operation!="send" {return Err(OrchestrationError::OperationConflict);}
+                    status=match receipt.status {h::V37Status::Applied=>"completed",
+                        h::V37Status::Failed=>"failed",_=>return Err(OrchestrationError::OperationConflict)};
+                    let result=receipt.into_result();
+                    let epoch=string_field(&result,"sourceEpoch")?;
+                    let cursor=string_field(&result,"sourceCursor")?;
+                    if status=="completed" && !host_prompt_answers_written(self,
+                        association,&selected.thread,&request_id,&operation,&epoch,&cursor)? {
+                        status="inProgress";
+                    }
+                    let terminal=Statement::prepare(self.connection.as_ptr(),
+                        "SELECT rowid FROM main.v37_ledger_raw_source WHERE operation_id=?1 AND source_epoch=?2 AND source_cursor=?3 AND domain_id=?4 AND session_id=?5 AND generation=?6 AND process_ticket=?7 AND custodian_nonce=?8")?;
+                    for (index,value) in [operation.as_str(),epoch.as_str(),cursor.as_str(),
+                        association.domain.as_str(),association.session.as_str(),association.generation.as_str(),
+                        ticket.as_str(),nonce.as_str()].iter().enumerate(){
+                        terminal.bind_text((index+1) as i32,value)?;
+                    }
+                    if !terminal.step_row()? {return Err(OrchestrationError::OperationConflict);}
+                    let row=decimal(&terminal.column_text(0)?)?;
+                    if terminal.step_row()? {return Err(OrchestrationError::OperationConflict);}
+                    if row>high {return Err(OrchestrationError::OperationConflict);}
+                    refs.push(self.visible_source_ref(row,selected)?);
+                }
+                turns.push(Json::Object(BTreeMap::from([
+                    (k("id"),s(&format!("hostprompt{digest}"))),(k("status"),s(status)),
+                    (k("items"),Json::Array(vec![Json::Object(BTreeMap::from([
+                        (k("id"),s(&format!("hostuser{digest}"))),(k("type"),s("userMessage")),
+                        (k("content"),Json::Array(vec![Json::Object(BTreeMap::from([
+                            (k("type"),s("text")),(k("text"),s(&body))]))])),
+                    ]))])),
+                ])));
+                turn_refs.push(refs);
+            }
+        }
+        let rows=Statement::prepare(self.connection.as_ptr(),
+            "SELECT rowid,source_epoch,source_cursor FROM main.v37_ledger_raw_source WHERE domain_id=?1 AND session_id=?2 AND generation=?3 AND operation_id=?4 AND process_ticket=?5 AND custodian_nonce=?6 AND rowid>?7 AND rowid<=?8 ORDER BY rowid")?;
+        for (index,value) in [association.domain.as_str(),association.session.as_str(),
+            association.generation.as_str(),operation.as_str(),ticket.as_str(),nonce.as_str()].iter().enumerate() {
+            rows.bind_text((index+1) as i32,value)?;
+        }
+        rows.bind_i64(7,selected.ack)?;rows.bind_i64(8,high)?;
+        while rows.step_row()? {
+            let row=decimal(&rows.column_text(0)?)?;
+            let epoch=rows.column_text(1)?;let cursor=rows.column_text(2)?;
+            if epoch!=nonce {return Err(OrchestrationError::AccessDenied);}
+            let raw=crate::store::ledger::read_captured_raw_source(&self.connection,&operation,&epoch,&cursor)?
+                .ok_or(OrchestrationError::OperationConflict)?;
+            if raw.domain_id!=association.domain || raw.session_id!=association.session ||
+                raw.generation!=association.generation || raw.process_ticket!=ticket ||
+                raw.custodian_nonce!=nonce {return Err(OrchestrationError::AccessDenied);}
+            let Some(delta)=host_text_source(&raw.raw_bytes,&selected.thread)? else {continue;};
+            let item=host_source_item_id(&operation,&epoch,&cursor);
+            let suffix=&item["hostsource".len()..];
+            turns.push(Json::Object(BTreeMap::from([
+                (k("id"),s(&format!("hostevent{suffix}"))),
+                (k("items"),Json::Array(vec![Json::Object(BTreeMap::from([
+                    (k("id"),s(&item)),(k("type"),s("agentMessage")),
+                    (k("text"),s(&delta)),
+                ]))])),
+            ])));
+            turn_refs.push(vec![self.visible_source_ref(row,selected)?]);
+        }
+        if after<0 || after as usize>turns.len() {return Err(OrchestrationError::Invalid("visible host page position"));}
+        let mut page=Vec::new();let mut refs=if after==0 {vec![self.visible_source_ref(selected.ack,selected)?]}
+            else {Vec::new()};
+        let mut index=after as usize;
+        while index<turns.len() {
+            let mut trial=copy_array(&page);trial.push(copy_json(&turns[index]));
+            let mut trial_refs=copy_array(&refs);extend_source_pool(&mut trial_refs,&turn_refs[index])?;
+            let mut thread=copy_fields(object(&self.visible_original_thread(selected)?)?);
+            thread.insert(k("turns"),Json::Array(copy_array(&trial)));
+            let shell=visible_read_envelope(Json::Object(thread),high,Some("reserved-continuation-token"),
+                copy_array(&trial_refs),"PARTIAL");
+            let mut trial_reply=copy_fields(reply);trial_reply.insert(k("response"),shell);
+            if Json::Object(trial_reply).canonical().len()+512>crate::ipc::MAX_FRAME_BYTES {
+                if page.is_empty() {reply.insert(k("state"),s("UNKNOWN"));reply.insert(k("reason"),s(
+                    "An original host source exceeds the USER history response frame."));return Ok(());}
+                break;
+            }
+            page=trial;refs=trial_refs;index+=1;
+        }
+        let more=index<turns.len();let next=if more {Some(visible_page_token(high,index as i64,scope))} else {None};
+        let mut thread=copy_fields(object(&self.visible_original_thread(selected)?)?);
+        thread.insert(k("turns"),Json::Array(page));
+        reply.insert(k("state"),s(if more {"PARTIAL"} else {"APPLIED"}));
+        reply.insert(k("response"),visible_read_envelope(Json::Object(thread),high,next.as_deref(),
+            refs,if more {"PARTIAL"} else {"COMPLETE"}));
+        Ok(())
+    }
+    fn visible_host_prompt_terminal(&self,workspace:&str,selected:&Selection)->Result<Json> {
+        use crate::store::session_transport::{self as h,rpc_journal};
+        let association=selected.association.as_ref().ok_or(OrchestrationError::AccessDenied)?;
+        if selected.started!=selected.ack || selected.open_generation!=association.generation {
+            return Ok(Json::Array(Vec::new()));
+        }
+        let row=Statement::prepare(self.connection.as_ptr(),
+            "SELECT j.request_id,j.request_hex,j.ticket,j.custodian_nonce,j.phase,e.raw_hex,v.translation_json FROM main.gogoke_v37_h_stdin_journal j JOIN main.gogoke_v37_h_process_episode e ON e.domain_id=j.domain_id AND e.session_id=j.session_id AND e.generation=j.generation AND e.process_operation_id=j.process_operation_id JOIN main.gogoke_v37_visible_effect v ON v.domain_id=j.domain_id AND v.request_id=j.request_id AND v.workspace_id=?1 AND v.selection_row=?2 AND v.association_json=?3 AND v.method='turn/start' WHERE j.domain_id=?4 AND j.session_id=?5 AND j.generation=?6 AND j.process_operation_id=?7 AND j.operation='send' AND e.request_id=?8")?;
+        row.bind_text(1,workspace)?;row.bind_i64(2,selected.row)?;
+        row.bind_text(3,&association.json().canonical())?;
+        for (index,value) in [association.domain.as_str(),association.session.as_str(),
+            association.generation.as_str(),selected.open_operation.as_str(),selected.open_request.as_str()].iter().enumerate() {
+            row.bind_text((index+4) as i32,value)?;
+        }
+        if !row.step_row()? {return Ok(Json::Array(Vec::new()));}
+        let request_id=row.column_text(0)?;let request_bytes=decode_hex(&row.column_text(1)?)?;
+        let ticket=row.column_text(2)?;let nonce=row.column_text(3)?;
+        let phase=row.column_text(4)?;let open_bytes=decode_hex(&row.column_text(5)?)?;
+        let translations=Parser::parse(&row.column_text(6)?)?;
+        if row.step_row()? {return Err(OrchestrationError::OperationConflict);}drop(row);
+        if phase!="RECEIPTED" {return Ok(Json::Array(Vec::new()));}
+        if !matches!(translations,Json::Array(ref values) if values.len()==1 &&
+            is_text(values.first(),&encode_hex(&request_bytes))) {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let registration=rpc_journal::observed_grok_host_registration(&self.connection,
+            &association.domain,&association.session,&selected.open_operation,&association.generation,
+            &selected.open_request,&open_bytes,&ticket,&nonce,true)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                "visible host terminal registration: {error:?}")))?
+            .ok_or(OrchestrationError::AccessDenied)?;
+        if registration.native_session_id.as_deref()!=Some(selected.thread.as_str()) {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let prompt=rpc_journal::grok_initial_prompt(&self.connection,&association.domain,
+            &association.session,&selected.open_operation,&association.generation,
+            &ticket,&nonce,&selected.thread,Some(&request_id))
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                "visible host terminal original prompt: {error:?}")))?;
+        if prompt.request_bytes!=request_bytes {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let record=h::read_stdin_journal(&self.connection,&h::StdinJournalKey {
+            domain_id:&association.domain,request_id:&request_id,session_id:&association.session,
+            ticket:&ticket,generation:&association.generation})
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                "visible host terminal H journal: {error:?}")))?
+            .ok_or(OrchestrationError::OperationConflict)?;
+        self.verify_acp_input_receipt(&record)?;
+        let receipt=h::decode_receipt(record.receipt_bytes.as_ref()
+            .ok_or(OrchestrationError::OperationConflict)?)
+            .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                "visible host terminal receipt: {error:?}")))?;
+        if receipt.request_id!=request_id || receipt.family!="K-SESSION" || receipt.operation!="send" {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        let status=match receipt.status {h::V37Status::Applied=>"completed",
+            h::V37Status::Failed=>"failed",_=>return Err(OrchestrationError::OperationConflict)};
+        let result=receipt.into_result();let epoch=string_field(&result,"sourceEpoch")?;
+        let cursor=string_field(&result,"sourceCursor")?;
+        if status=="completed" && !host_prompt_answers_written(self,
+            association,&selected.thread,&request_id,&selected.open_operation,&epoch,&cursor)? {
+            return Ok(Json::Array(Vec::new()));
+        }
+        let terminal=Statement::prepare(self.connection.as_ptr(),
+            "SELECT rowid FROM main.v37_ledger_raw_source WHERE operation_id=?1 AND source_epoch=?2 AND source_cursor=?3 AND domain_id=?4 AND session_id=?5 AND generation=?6 AND process_ticket=?7 AND custodian_nonce=?8")?;
+        for (index,value) in [selected.open_operation.as_str(),epoch.as_str(),cursor.as_str(),
+            association.domain.as_str(),association.session.as_str(),association.generation.as_str(),
+            ticket.as_str(),nonce.as_str()].iter().enumerate() {
+            terminal.bind_text((index+1) as i32,value)?;
+        }
+        if !terminal.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        let id=decimal(&terminal.column_text(0)?)?;
+        if terminal.step_row()? {return Err(OrchestrationError::OperationConflict);}
+        let source=self.visible_source_ref(id,selected)?;
+        let turn=format!("hostprompt{}",crate::store::digest::sha256_hex(&request_bytes));
+        Ok(Json::Array(vec![Json::Object(BTreeMap::from([
+            (k("threadId"),s(&selected.thread)),(k("turnId"),s(&turn)),
+            (k("status"),s(status)),(k("source"),source),
+        ]))]))
+    }
     /// Input membership comes from the exact ACK already selected by the
     /// snapshot raw-source query, never from current H receipt totals/phases.
     fn visible_snapshot_input(&self,selected:&Selection,source:&Statement,step_id:&str,
@@ -903,13 +1213,7 @@ impl<'root> ProductDatabase<'root> {
         let (high,after)=visible_page_position(params,maximum,&scope)?;
         if high<selected.ack.max(selected.started) {return Err(OrchestrationError::AccessDenied);}
         if selected.started==selected.ack {
-            // The original ACP SessionNew carries no Codex Turn collection.
-            // The separate C host question is presented from live-state.
-            let thread=self.visible_original_thread(selected)?;
-            let refs=vec![self.visible_source_ref(selected.ack,selected)?];
-            reply.insert(k("state"),s("APPLIED"));
-            reply.insert(k("response"),visible_read_envelope(thread,high,None,refs,"COMPLETE"));
-            return Ok(());
+            return self.visible_grok_thread_page(workspace,selected,high,after,&scope,reply);
         }
         let mut thread=self.visible_original_thread(selected)?;
         let thread_fields=object(&thread)?;

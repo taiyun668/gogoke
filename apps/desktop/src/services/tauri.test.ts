@@ -27,6 +27,8 @@ import {
   stageGitAll,
   respondToServerRequest,
   respondToUserInputRequest,
+  pendingNativeVisibleIntent,
+  recoverPendingNativeVisibleIntent,
   sendUserMessage,
   steerTurn,
   sendNotification,
@@ -975,6 +977,61 @@ describe("tauri invoke wrappers", () => {
         },
       },
     });
+  });
+
+  it("retains a pending original host prompt while only its C answer uses a second stable intent", async () => {
+    const storage = new Map<string, string>();
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {}, localStorage: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => { storage.set(key, value); },
+    } });
+    vi.stubGlobal("navigator", { locks: { request: async (
+      _name: string, _options: unknown, work: () => Promise<unknown>,
+    ) => work() } });
+    const association = { domainId: "projectA", sessionId: "sessionA", seatId: "seatA",
+      incarnation: "incA", authorizationGeneration: "1", bindingGeneration: "1",
+      instanceId: "instanceA" };
+    const invokeMock = vi.mocked(invoke);
+    let answerCalls = 0;
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "native_visible_transport") return { schema: "gogoke.37.visible-conversation.v1",
+        workspaceId: "ws-host", state: "NATIVE", association };
+      if (command === "gogoke_design37_user_operation") return JSON.stringify({
+        schema: "gogoke.37.visible-conversation.v1", workspaceId: "ws-host",
+        state: "NATIVE", association });
+      if (command === "send_user_message") throw new Error(
+        "GOGOKE_VISIBLE_UNKNOWN:visible_parent:GOGOKE_HOST_PROMPT_PENDING: original H WRITTEN");
+      if (command === "respond_to_server_request") {
+        answerCalls += 1;
+        throw new Error("GOGOKE_VISIBLE_UNKNOWN:visible_answer:original C answer uncertain");
+      }
+      if (command === "recover_native_visible_request") return { result: { state: "ANSWERED" } };
+      return undefined;
+    });
+    try {
+      await expect(sendUserMessage("ws-host", "nativeS", "Ask", {
+        nativeRequestId: "visible_parent" })).rejects.toThrow("GOGOKE_HOST_PROMPT_PENDING");
+      expect(pendingNativeVisibleIntent("ws-host")?.nativeRequestId).toBe("visible_parent");
+      await expect(sendUserMessage("ws-host", "nativeS", "Second", {
+        nativeRequestId: "visible_second" })).rejects.toThrow("unresolved");
+      const bound = { requestRef: "gmpc_ref", hostPromptRequestId: "visible_parent",
+        threadId: "nativeS", cardId: "cardRef", cardState: "OPEN", cardOrigin: "host-mcp" };
+      const answers = { host0: { answers: ["Yes"] } };
+      await expect(respondToUserInputRequest("ws-host", "gmpc_ref", answers,
+        "visible_answer", { ...bound, hostPromptRequestId: "foreign" }))
+        .rejects.toThrow("unresolved");
+      await expect(respondToUserInputRequest("ws-host", "gmpc_ref", answers,
+        "visible_answer", bound)).rejects.toThrow("original C answer uncertain");
+      expect(answerCalls).toBe(1);
+      expect(pendingNativeVisibleIntent("ws-host")?.nativeRequestId).toBe("visible_answer");
+      await expect(respondToUserInputRequest("ws-host", "gmpc_ref", answers,
+        "another_answer", bound)).rejects.toThrow("unresolved");
+      await recoverPendingNativeVisibleIntent("ws-host");
+      expect(pendingNativeVisibleIntent("ws-host")?.nativeRequestId).toBe("visible_parent");
+      expect(answerCalls).toBe(1);
+      expect(invokeMock).toHaveBeenCalledWith("recover_native_visible_request",
+        { workspaceId: "ws-host", nativeRequestId: "visible_answer", expectedAssociation: association });
+    } finally { vi.unstubAllGlobals(); }
   });
 
   it("passes through multiple user input answers", async () => {

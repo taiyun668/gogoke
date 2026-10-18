@@ -407,6 +407,23 @@ export function useThreadActions({
         if (native && (!thread || thread.id !== threadId || !Array.isArray(thread.turns))) {
           throw new Error("Original native thread/read did not return the selected thread and full turns.");
         }
+        if (native && thread?.hostProjection === "grok-initial-prompt-card") {
+          const turns = thread.turns as Array<Record<string, unknown>>;
+          const prompts = turns.filter((turn) =>
+            typeof turn.id === "string" && /^hostprompt[0-9a-f]{64}$/.test(turn.id));
+          if (prompts.length > 1 || turns.some((turn) =>
+            typeof turn.id !== "string" ||
+            !/^host(?:prompt|event)[0-9a-f]{64}$/.test(turn.id))) {
+            throw new Error("Original host session history contains an unbound display group.");
+          }
+          const prompt = prompts[0];
+          if (prompt && !["inProgress", "completed", "failed"].includes(String(prompt.status))) {
+            throw new Error("Original host prompt has no H/ACP-derived status.");
+          }
+          // Source text groups have no vendor turn status. Only the exact H
+          // prompt grouping controls the UI's pending/terminal state.
+          thread.activeTurnId = prompt?.status === "inProgress" ? prompt.id : null;
+        }
         if (native) {
           const current = await nativeConversationAssociation(workspaceId);
           if (JSON.stringify(current) !== JSON.stringify(native)) {

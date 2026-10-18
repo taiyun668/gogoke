@@ -138,6 +138,39 @@ describe("useAppServerEvents", () => {
     await act(async () => { root.unmount(); });
   });
 
+  it("routes host source text and typed prompt terminal without a Codex turn notification", async () => {
+    const handlers: Handlers = { onAgentMessageCompleted: vi.fn(),
+      onTurnCompleted: vi.fn(), onTurnError: vi.fn() };
+    const { root } = await mount(handlers);
+    const source = { rawSourceId: "9", operationId: "processA", generation: "2",
+      sourceEpoch: "nonceA", sourceCursor: "5" };
+    const event: AppServerEvent = { workspace_id: "ws",
+      nativeAssociation: { sessionId: "sessionA", bindingGeneration: "2" },
+      nativeSourceRef: source,
+      message: { method: "gogoke/hostText", params: { threadId: "nativeS",
+        itemId: `hostsource${"a".repeat(64)}`, delta: "same-session source text" } } };
+    act(() => { listener?.(event); });
+    expect(handlers.onAgentMessageCompleted).toHaveBeenCalledWith({workspaceId: "ws",
+      threadId: "nativeS", itemId: `hostsource${"a".repeat(64)}`,
+      text: "same-session source text"});
+    const foreign = structuredClone(event);
+    foreign.nativeSourceRef!.generation = "3";
+    act(() => { listener?.(foreign); });
+    expect(handlers.onAgentMessageCompleted).toHaveBeenCalledTimes(1);
+    const terminal: AppServerEvent = { ...event,
+      message: { method: "gogoke/hostPromptState", params: {
+        threadId: "nativeS", turnId: `hostprompt${"b".repeat(64)}`,
+        status: "completed" } } };
+    act(() => { listener?.(terminal); });
+    expect(handlers.onTurnCompleted).toHaveBeenCalledWith("ws","nativeS",`hostprompt${"b".repeat(64)}`);
+    const failed = structuredClone(terminal);
+    (failed.message.params as Record<string, unknown>).status = "failed";
+    act(() => { listener?.(failed); });
+    expect(handlers.onTurnError).toHaveBeenCalledWith("ws","nativeS",`hostprompt${"b".repeat(64)}`,
+      {message:"Original ACP prompt failed.",willRetry:false});
+    await act(async () => { root.unmount(); });
+  });
+
   it("routes app-server events to handlers", async () => {
     const handlers: Handlers = {
       onAppServerEvent: vi.fn(),

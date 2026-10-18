@@ -247,6 +247,50 @@ export function useAppServerEvents(handlers: AppServerEventHandlers) {
         return;
       }
 
+      if (method === "gogoke/hostText") {
+        const association = payload.nativeAssociation;
+        const source = payload.nativeSourceRef;
+        const threadId = params.threadId;
+        const itemId = params.itemId;
+        const delta = params.delta;
+        if (!association || !source || Object.keys(source).length !== 5 ||
+            typeof association.bindingGeneration !== "string" ||
+            source.generation !== association.bindingGeneration ||
+            typeof source.operationId !== "string" || !source.operationId ||
+            typeof source.sourceEpoch !== "string" || !source.sourceEpoch ||
+            typeof source.sourceCursor !== "string" || !/^[1-9][0-9]*$/.test(source.sourceCursor) ||
+            typeof source.rawSourceId !== "string" || !/^[1-9][0-9]*$/.test(source.rawSourceId) ||
+            typeof threadId !== "string" || !threadId ||
+            typeof itemId !== "string" || !/^hostsource[0-9a-f]{64}$/.test(itemId) ||
+            typeof delta !== "string" || !delta || delta.length > 1048576) return;
+        // One A source is one host-session item. Text does not start, finish,
+        // or resurrect an ACP prompt; only its typed H terminal does that.
+        currentHandlers.onAgentMessageCompleted?.({workspaceId: workspace_id,
+          threadId, itemId, text: delta});
+        return;
+      }
+
+      if (method === "gogoke/hostPromptState") {
+        const association = payload.nativeAssociation;
+        const source = payload.nativeSourceRef;
+        const threadId = params.threadId;
+        const turnId = params.turnId;
+        const status = params.status;
+        if (!association || !source || Object.keys(source).length !== 5 ||
+            source.generation !== association.bindingGeneration ||
+            typeof source.operationId !== "string" || !source.operationId ||
+            typeof source.sourceEpoch !== "string" || !source.sourceEpoch ||
+            typeof source.sourceCursor !== "string" || !/^[1-9][0-9]*$/.test(source.sourceCursor) ||
+            typeof source.rawSourceId !== "string" || !/^[1-9][0-9]*$/.test(source.rawSourceId) ||
+            typeof threadId !== "string" || !threadId ||
+            typeof turnId !== "string" || !/^hostprompt[0-9a-f]{64}$/.test(turnId) ||
+            (status !== "completed" && status !== "failed")) return;
+        if (status === "completed") currentHandlers.onTurnCompleted?.(workspace_id,threadId,turnId);
+        else currentHandlers.onTurnError?.(workspace_id,threadId,turnId,
+          {message:"Original ACP prompt failed.",willRetry:false});
+        return;
+      }
+
       if (method === "codex/connected") {
         currentHandlers.onWorkspaceConnected?.(workspace_id);
         return;

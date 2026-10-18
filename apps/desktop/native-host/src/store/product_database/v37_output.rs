@@ -724,6 +724,12 @@ impl<'root> ProductDatabase<'root> {
             // A captured response without an OBSERVED association remains
             // an unresolved original outcome. It is not a notification and
             // must not block later, independently captured notifications.
+            if driver=="grok" {
+                crate::store::session_transport::provider_evidence::acp::decode(&raw.raw_bytes,None)
+                    .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                        "Grok A ingress preflight: {}; raw: {}",error.reason,
+                        String::from_utf8_lossy(&error.raw_frame))))?;
+            }
             if let Json::Object(fields)=Parser::parse(std::str::from_utf8(&raw.raw_bytes).map_err(|error|
                 OrchestrationError::V37StoreFailure(format!("native raw UTF-8: {error}")))?)? {
                 if fields.contains_key(&JsonString::from_str("id"))

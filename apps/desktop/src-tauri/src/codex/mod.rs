@@ -98,6 +98,8 @@ struct VisibleLiveReply {
     pending_questions: Vec<Value>,
     #[serde(default)]
     host_question_states: Vec<Value>,
+    #[serde(default)]
+    host_prompt_states: Vec<Value>,
 }
 
 async fn visible_user_frame(app: &AppHandle, frame: Value) -> Result<String, String> {
@@ -459,6 +461,35 @@ fn native_host_projection_mode(reply:&VisibleReadReply)->Result<bool,String> {
     }
 }
 
+fn native_host_prompt_projection(item:&Value,association:&NativeAssociation)->Result<Value,String> {
+    let fields=item.as_object().filter(|fields|fields.len()==4)
+        .ok_or("GOGOKE_HOST_PROMPT_STATE_INVALID")?;
+    let value=|name:&str|fields.get(name).and_then(Value::as_str)
+        .filter(|value|!value.is_empty())
+        .ok_or_else(||format!("GOGOKE_HOST_PROMPT_FIELD_INVALID:{name}"));
+    let thread=value("threadId")?;let turn=value("turnId")?;
+    let status=value("status")?;
+    if !matches!(status,"completed"|"failed") || !turn.starts_with("hostprompt")
+        || turn.len()!="hostprompt".len()+64
+        || !turn["hostprompt".len()..].bytes().all(|byte|byte.is_ascii_hexdigit()
+            && !byte.is_ascii_uppercase()) {
+        return Err("GOGOKE_HOST_PROMPT_STATE_INVALID".into());
+    }
+    let source=fields.get("source").and_then(Value::as_object)
+        .filter(|source|source.len()==5)
+        .ok_or("GOGOKE_HOST_PROMPT_SOURCE_INVALID")?;
+    if source.get("generation").and_then(Value::as_str)!=Some(association.binding_generation.as_str())
+        || ["rawSourceId","operationId","sourceEpoch","sourceCursor"].iter()
+            .any(|name|source.get(*name).and_then(Value::as_str)
+                .is_none_or(str::is_empty)) {
+        return Err("GOGOKE_HOST_PROMPT_SOURCE_INVALID".into());
+    }
+    canonical_binding_generation(source["rawSourceId"].as_str().unwrap())?;
+    canonical_binding_generation(source["sourceCursor"].as_str().unwrap())?;
+    Ok(json!({"method":"gogoke/hostPromptState","params":{
+        "threadId":thread,"turnId":turn,"status":status}}))
+}
+
 async fn emit_pending_native_host_questions(app: &AppHandle, session: &Arc<WorkspaceSession>,
     association: &NativeAssociation, reader_id: u64, seen: &mut HashSet<String>)
     -> Result<(), String> {
@@ -470,6 +501,22 @@ async fn emit_pending_native_host_questions(app: &AppHandle, session: &Arc<Works
     if !sessions.get(&session.owner_workspace_id).is_some_and(|current|Arc::ptr_eq(current,session))
         || !session.native_event_reader_current(reader_id,association)? {
         return Err("GOGOKE_NATIVE_HOST_ATTACHMENT_CHANGED".into());
+    }
+    for item in &live.host_prompt_states {
+        let message=native_host_prompt_projection(item,association)?;
+        let turn=message["params"]["turnId"].as_str()
+            .ok_or("GOGOKE_HOST_PROMPT_TURN_MISSING")?;
+        let status=message["params"]["status"].as_str()
+            .ok_or("GOGOKE_HOST_PROMPT_STATUS_MISSING")?;
+        let source=&item["source"];
+        let source_id=source["rawSourceId"].as_str()
+            .ok_or("GOGOKE_HOST_PROMPT_SOURCE_ID_MISSING")?;
+        let key=format!("prompt:{turn}:{status}:{source_id}");
+        if seen.contains(&key) {continue;}
+        app.emit("app-server-event",json!({"workspace_id":session.owner_workspace_id,
+            "message":message,"nativeAssociation":association,"nativeSourceRef":source}))
+            .map_err(|error|format!("GOGOKE_NATIVE_HOST_EVENT_DELIVERY_FAILED:{error}"))?;
+        seen.insert(key);
     }
     for item in &live.host_question_states {
         let Some(message)=native_host_question_projection(item,association)? else {continue;};
@@ -2673,6 +2720,18 @@ mod native_visible_boundary_tests {
         page.response.as_mut().unwrap()["result"]["nativeEvents"]["hostProjection"]=
             json!("unknown");
         assert!(native_host_projection_mode(&page).is_err());
+        let mut terminal=json!({"threadId":"nativeS",
+            "turnId":format!("hostprompt{}","a".repeat(64)),"status":"completed",
+            "source":{"rawSourceId":"9","operationId":"opA","generation":"2",
+                "sourceEpoch":"nonceA","sourceCursor":"5"}});
+        let projected=native_host_prompt_projection(&terminal,&association("2")).unwrap();
+        assert_eq!(projected["method"],"gogoke/hostPromptState");
+        assert!(projected.get("id").is_none());
+        terminal["source"]["generation"]=json!("3");
+        assert!(native_host_prompt_projection(&terminal,&association("2")).is_err());
+        terminal["source"]["generation"]=json!("2");
+        terminal["status"]=json!("inProgress");
+        assert!(native_host_prompt_projection(&terminal,&association("2")).is_err());
     }
 
     fn event_reply() -> VisibleReadReply {
@@ -2811,7 +2870,8 @@ mod native_visible_boundary_tests {
     #[test]
     fn unknown_live_read_keeps_original_reason_without_alive_or_stop_claim() {
         let mut live = VisibleLiveReply { state: "UNKNOWN".into(),
-            pending_questions: vec![], host_question_states: vec![] };
+            pending_questions: vec![], host_question_states: vec![],
+            host_prompt_states: vec![] };
         let error = visible_live_observation(&live, Some("original H handle absent")).unwrap_err();
         assert!(error.contains("original H handle absent"));
         live.state = "LIVE".into();

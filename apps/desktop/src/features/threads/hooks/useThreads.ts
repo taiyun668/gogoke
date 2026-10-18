@@ -679,7 +679,8 @@ export function useThreads({
         // With no router end callback, neither event can borrow its source.
         const routeOverlap = pendingEventRef.current !== null;
         const method = getAppServerRawMethod(event);
-        if (!method || !METHODS_ROUTED_IN_USE_APP_SERVER_EVENTS.some((routedMethod) => routedMethod === method)) {
+        if (!method || (method !== "gogoke/hostText" && method !== "gogoke/hostPromptState" &&
+            !METHODS_ROUTED_IN_USE_APP_SERVER_EVENTS.some((routedMethod) => routedMethod === method))) {
           pendingEventRef.current = null;
           routed.onAppServerEvent?.(event);
           return;

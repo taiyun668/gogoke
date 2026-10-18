@@ -4,7 +4,8 @@ use super::*;
 
 // Fixed 1.0.41 reverse-MCP handshake is not qualified. Root may explicitly
 // enable this one fresh-session route for bounded qualification after review.
-const GROK_HOST_MCP_QUALIFICATION:bool=false;
+// Isolated fixed-1.0.41 host-MCP qualification candidate; not a release claim.
+const GROK_HOST_MCP_QUALIFICATION:bool=true;
 use crate::process::{PreparedCustody, DurableStopConfirmation, StopBudgets, NativeStopProof, OriginBoundFrame};
 use crate::store::ledger::{self, SessionPurpose, SessionRegistration};
 use crate::store::seat::{self, NativeOrigin};
@@ -3513,11 +3514,34 @@ impl<'root> ProductDatabase<'root> {
         association:&super::v37_visible_conversation::Association,thread:&str,turn:Option<&str>,idle:bool)->Result<()> {
         let key=(association.domain.clone(),association.session.clone());
         let run=self.native_sessions.get(&key).ok_or(OrchestrationError::Invalid("selected native runtime has no live custody"))?;
-        if run.evidence.driver_id()!="codex"||!run.allows_input()
+        let grok=run.evidence.driver_id()=="grok";
+        if !matches!(run.evidence.driver_id(),"codex"|"grok")||!run.allows_input()
             ||run.evidence.seat_id()!=association.seat||run.evidence.seat_incarnation()!=association.incarnation
             ||run.custody.binding.generation!=association.generation||run.thread_id.as_deref()!=Some(thread)
             ||(idle&&run.turn_id.is_some())||(!idle&&run.turn_id.as_deref()!=turn) {
             return Err(OrchestrationError::AccessDenied);
+        }
+        if grok {
+            if !GROK_HOST_MCP_QUALIFICATION || !idle || turn.is_some() || run.pending_acp.is_some() {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let registration=rpc::observed_grok_host_registration(&self.connection,
+                &association.domain,&association.session,&run.operation_id,
+                &association.generation,&run.open_request_id,&run.open_request_bytes,
+                run.custody.ticket.opaque(),&run.custody.custodian_nonce,true)
+                .map_err(|error|OrchestrationError::V37StoreFailure(format!(
+                    "visible Grok fresh registration: {error:?}")))?
+                .ok_or(OrchestrationError::AccessDenied)?;
+            if registration.native_session_id.as_deref()!=Some(thread) {
+                return Err(OrchestrationError::AccessDenied);
+            }
+            let sends=Statement::prepare(self.connection.as_ptr(),
+                "SELECT 1 FROM main.gogoke_v37_h_stdin_journal WHERE domain_id=?1 AND session_id=?2 AND process_operation_id=?3 AND generation=?4 AND operation='send'")?;
+            for (index,value) in [association.domain.as_str(),association.session.as_str(),
+                run.operation_id.as_str(),association.generation.as_str()].iter().enumerate() {
+                sends.bind_text((index+1) as i32,value)?;
+            }
+            if sends.step_row()? {return Err(OrchestrationError::AccessDenied);}
         }
         let process=self.process_custodian.active(&run.custody.ticket).ok_or(OrchestrationError::AccessDenied)?;
         if process.identity()!=&run.custody.identity||process.exit_code().map_err(|error|
@@ -3995,6 +4019,7 @@ impl<'root> ProductDatabase<'root> {
         let Some((request_bytes,identity))=run.pending_acp.clone() else {return Ok(());};
         let custody=run.custody.clone();let operation=run.operation_id.clone();
         let open_id=run.open_request_id.clone();let open_bytes=run.open_request_bytes.clone();
+        let grok=run.evidence.driver_id()=="grok";
         let expected=match &identity.rpc_id {
             acp::RpcId::Number(value)=>Json::Number(value.to_string()),
             acp::RpcId::String(value)=>text(value),
@@ -4012,6 +4037,12 @@ impl<'root> ProductDatabase<'root> {
         for cursor in cursors {
             let raw=ledger::read_captured_raw_source(&self.connection,&operation,&custody.custodian_nonce,&cursor)?
                 .ok_or(OrchestrationError::OperationConflict)?;
+            if grok {
+                acp::decode(&raw.raw_bytes,None).map_err(|error|
+                    OrchestrationError::V37StoreFailure(format!(
+                        "Grok pending ACP ingress preflight: {}; raw: {}",error.reason,
+                        String::from_utf8_lossy(&error.raw_frame))))?;
+            }
             let value=std::str::from_utf8(&raw.raw_bytes).map_err(|error|
                 OrchestrationError::V37StoreFailure(format!("native ACP original source UTF-8: {error}")))?;
             let Json::Object(fields)=Parser::parse(value)? else {continue;};

@@ -316,6 +316,18 @@ export function useThreadMessaging({
         return { status: "sent" };
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
+        if (native && requestMode !== "steer" &&
+            errorMessage.startsWith("GOGOKE_VISIBLE_UNKNOWN:") &&
+            errorMessage.includes(":GOGOKE_HOST_PROMPT_PENDING:")) {
+          // The original H send and visible intent remain UNKNOWN until the
+          // typed ACP result. This is a host pending state, not a native turn.
+          onDebug?.({ id: `${Date.now()}-host-prompt-pending`, timestamp: Date.now(),
+            source: "server", label: "Original Grok host prompt pending",
+            payload: errorMessage });
+          markProcessing(threadId, true);
+          safeMessageActivity();
+          return { status: "pending" };
+        }
         if (!native && requestMode !== "steer") {
           markProcessing(threadId, false);
           setActiveTurnId(threadId, null);
