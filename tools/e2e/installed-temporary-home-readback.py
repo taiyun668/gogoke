@@ -15,6 +15,7 @@ sys.dont_write_bytecode = True
 CORE_SHA = "80ff35a0cadcf4e3bcf9cc6b2838fe941d34ee131a58684c300402153b5ef174"
 INPUT_SCHEMA = "gogoke.37.temporary-home-readback-input.v1"
 REPORT_SCHEMA = "gogoke.37.temporary-home-readback.v1"
+SOURCE_GUARD_FAILURE = 'Original Secretary bootstrap failed: Invalid("failed resume typed OBSERVED response absent")'
 HOME_SQL = """SELECT home_id,instance_id,domain_id,kind,owner_id,generation,
  COALESCE(directory_ref,'') AS directory_ref,
  COALESCE(directory_identity,'') AS directory_identity,state,
@@ -626,17 +627,19 @@ def verify_no_startup_home(db, attempt, launch, current_start, current_home):
          conversation.get("runtimeAvailable") is False and
          conversation.get("stoppedFact") is True,
          "No-create original USER conversation is not the stopped predecessor")
-    prefix = "Original Secretary resume result: "
     reason = reply.get("startupReason")
-    need(isinstance(reason, str) and reason.startswith(prefix),
-         "No-create USER startupReason is not the original resume receipt")
-    refusal = json.loads(reason[len(prefix):])
-    need(refusal == {"schema": "gogoke.37.operations.v1", "family": "K-SESSION",
-            "operation": "resume", "requestId": source_start["expectedCreateRequestId"],
-            "targetId": source_start["sessionId"], "status": "CONFLICT",
-            "previousRevision": source_start["oldRevision"],
-            "revision": source_start["oldRevision"], "result": {}},
-         "No-create native resume conflict receipt is not exact")
+    source_guard = reason == SOURCE_GUARD_FAILURE
+    if not source_guard:
+        prefix = "Original Secretary resume result: "
+        need(isinstance(reason, str) and reason.startswith(prefix),
+             "No-create USER startupReason is not the original resume receipt")
+        refusal = json.loads(reason[len(prefix):])
+        need(refusal == {"schema": "gogoke.37.operations.v1", "family": "K-SESSION",
+                "operation": "resume", "requestId": source_start["expectedCreateRequestId"],
+                "targetId": source_start["sessionId"], "status": "CONFLICT",
+                "previousRevision": source_start["oldRevision"],
+                "revision": source_start["oldRevision"], "result": {}},
+             "No-create native resume conflict receipt is not exact")
     request_id = source_start["expectedCreateRequestId"]
     create_id = "homeprep-" + sha(("global\n" + request_id).encode())[:40]
     for query, args in (
@@ -646,12 +649,16 @@ def verify_no_startup_home(db, attempt, launch, current_start, current_home):
     ):
         need(not list(db.execute(query, args)),
              "No-create resume has an unexpected original F/H journal entry")
-    return {"caseId": attempt["caseId"], "domainId": "global",
+    fact = {"caseId": attempt["caseId"], "domainId": "global",
         "sessionId": source_start["sessionId"], "instanceId": source_start["instanceId"],
         "homeId": source_start["baselineHomeId"],
         "originalCreateRequestId": request_id, "state": "NOT_CREATED",
-        "generation": source_start["oldGeneration"], "revision": source_start["oldRevision"],
-        "status": "CONFLICT"}
+        "generation": source_start["oldGeneration"], "revision": source_start["oldRevision"]}
+    if source_guard:
+        fact.update(outcome="SOURCE_GUARD_DIAGNOSTIC", rawStartupReason=reason)
+    else:
+        fact["status"] = "CONFLICT"
+    return fact
 
 
 def run(input_path, output_path):

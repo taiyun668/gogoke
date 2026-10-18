@@ -238,6 +238,44 @@ class NoStartupHome(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.verify()
 
+    def test_exact_source_guard_diagnostic_has_own_raw_outcome_and_no_new_f_h_episode(self):
+        reason = READER.SOURCE_GUARD_FAILURE
+        attempt = copy.deepcopy(self.attempt)
+        attempt["bootstrap"]["reply"]["startupReason"] = reason
+        attempt["bootstrap"]["rawReply"] = json.dumps(
+            attempt["bootstrap"]["reply"], separators=(",", ":"))
+        expected = {"caseId": "startup-no-create-0", "domainId": "global",
+            "sessionId": "resident-session", "instanceId": "inst", "homeId": "home-25",
+            "originalCreateRequestId": "resident-resume-original", "state": "NOT_CREATED",
+            "generation": "25", "revision": "12",
+            "outcome": "SOURCE_GUARD_DIAGNOSTIC", "rawStartupReason": reason}
+        self.assertEqual(self.verify(attempt=attempt), expected)
+        for changed in (dict(self.home, state="ACTIVE", revision="1"),
+                        dict(self.home, directory_identity="volume:other/file:other")):
+            with self.subTest(home=changed), self.assertRaises(RuntimeError):
+                self.verify(attempt=attempt, home=changed)
+        for table, values in (("gogoke_v37_instance_operations", ("homeprep-" +
+                hashlib.sha256(b"global\nresident-resume-original").hexdigest()[:40],)),
+                ("gogoke_v37_h_operation", ("global", "resident-resume-original")),
+                ("gogoke_v37_h_process_episode", ("global", "resident-resume-original"))):
+            with self.subTest(table=table):
+                self.db.execute("INSERT INTO " + table + " VALUES(" +
+                                ",".join("?" for _ in values) + ")", values)
+                with self.assertRaises(RuntimeError):
+                    self.verify(attempt=attempt)
+                self.db.execute("DELETE FROM " + table)
+        altered = copy.deepcopy(attempt)
+        altered["bootstrap"]["reply"]["startupReason"] = reason.replace("OBSERVED", "unobserved")
+        altered["bootstrap"]["rawReply"] = json.dumps(
+            altered["bootstrap"]["reply"], separators=(",", ":"))
+        with self.assertRaises(RuntimeError):
+            self.verify(attempt=altered)
+        self.assertEqual(READER.home_inventory_differences(
+            {"home-25": self.home}, {"home-25": self.home}, [], set()), ([], [], []))
+        self.assertEqual(READER.home_inventory_differences(
+            {"home-25": self.home}, {"home-25": self.home, "other": self.home}, [], set())[2],
+            ["other"])
+
     def test_changed_or_missing_source_and_fake_refusal_fail_closed(self):
         for changed_home in (dict(self.home, state="ACTIVE", revision="1"),
                              dict(self.home, directory_identity="volume:other/file:other")):

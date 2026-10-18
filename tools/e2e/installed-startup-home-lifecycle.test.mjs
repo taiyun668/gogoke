@@ -42,7 +42,7 @@ function decodeInvocation(expression) {
 function fixture(name, { startup = plan, repair = false, stopStatus = 'APPLIED',
     startupCloseStatus = 'APPLIED', repairCloseStatus = 'APPLIED', closedResumeStatus = 'CONFLICT',
     closedSeatState = 'BUSY', closedExtraReceiptField = false,
-    closedRequestId = null, closedGeneration = null } = {}) {
+    closedRequestId = null, closedGeneration = null, closedStartupReason = null } = {}) {
   const dir = path.join(fixtureRoot, name); fs.mkdirSync(dir);
   const journal = { caseId: name, operations: [] };
   const manifest = { schema: 'gogoke.37.temporary-home-attempts.v1', caseId: name,
@@ -59,7 +59,7 @@ function fixture(name, { startup = plan, repair = false, stopStatus = 'APPLIED',
           incarnation:startup.seatIncarnation,instanceId:startup.instanceId,
           conversation:{state:'FOUND',sessionId:startup.sessionId,generation:closedGeneration ?? startup.oldGeneration,
             revision:startup.oldRevision,claimState:'STOPPED',runtimeAvailable:false,stoppedFact:true},
-          startupReason:'Original Secretary resume result: '+JSON.stringify({schema:'gogoke.37.operations.v1',
+          startupReason:closedStartupReason ?? 'Original Secretary resume result: '+JSON.stringify({schema:'gogoke.37.operations.v1',
             family:'K-SESSION',operation:'resume',requestId:closedRequestId ?? startup.expectedCreateRequestId,targetId:startup.sessionId,
             status:closedResumeStatus,previousRevision:startup.oldRevision,revision:startup.oldRevision,result:{},
             ...(closedExtraReceiptField?{contradictory:'unqualified'}:{})})});
@@ -152,6 +152,36 @@ test('a closed predecessor is an observed native no-create, never a CLOSED new H
       generation:row.oldGeneration,revision:row.oldRevision,status:'CONFLICT'}]};
   assert.equal(f.lifecycle.applyFacts(facts),true);
   facts.noStartupHomes[0].state='CLOSED';assert.equal(f.lifecycle.applyFacts(facts),false);
+});
+
+test('exact source-guard startup diagnostic is a separate raw no-create fact', async()=>{
+  const rawStartupReason = 'Original Secretary bootstrap failed: Invalid("failed resume typed OBSERVED response absent")';
+  const source={...plan,state:'CLOSED_PREDECESSOR',baselineHomeId:'closedHome',oldGeneration:'25',
+    oldRevision:'12',expectedGeneration:'26',expectedCreateRequestId:'resident-resume-original'};
+  const f=fixture('closedSourceGuard',{startup:source,closedStartupReason:rawStartupReason});
+  await f.lifecycle.beforeLaunch(); await f.lifecycle.afterLaunch();
+  assert.equal((await f.lifecycle.settle()).complete,true);
+  assert.equal(f.calls.filter(row=>row.kind==='operation').length,0);
+  const row=f.manifest.noStartupHomes[0];
+  assert.equal(row.bootstrap.reply.startupReason,rawStartupReason);
+  const observed={caseId:row.caseId,domainId:row.domainId,sessionId:row.sessionId,
+    instanceId:row.instanceId,homeId:row.baselineHomeId,
+    originalCreateRequestId:row.expectedCreateRequestId,state:'NOT_CREATED',
+    generation:row.oldGeneration,revision:row.oldRevision,
+    outcome:'SOURCE_GUARD_DIAGNOSTIC',rawStartupReason};
+  const facts={startupHomes:[],authorizedRepairs:[],authorizedRepairRefusals:[],
+    noStartupHomes:[observed]};
+  assert.equal(f.lifecycle.applyFacts(facts),true);
+  assert.equal(f.lifecycle.applyFacts({...facts,noStartupHomes:[{...observed,status:'CONFLICT'}]}),false);
+  assert.equal(f.lifecycle.applyFacts({...facts,noStartupHomes:[{...observed,
+    rawStartupReason:rawStartupReason+' changed'}]}),false);
+  assert.equal(f.lifecycle.applyFacts({...facts,noStartupHomes:[{...observed,
+    outcome:undefined,status:'CONFLICT'}]}),false);
+  const near=fixture('closedSourceGuardNear',{startup:source,
+    closedStartupReason:rawStartupReason.replace('OBSERVED','unobserved')});
+  await near.lifecycle.beforeLaunch();
+  await assert.rejects(()=>near.lifecycle.afterLaunch(),/identity\/refusal differs/);
+  assert.equal((await near.lifecycle.settle()).complete,false);
 });
 
 async function retainedNoCreate(name, options = {}) {

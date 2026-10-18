@@ -14,6 +14,7 @@ export function startupLifecycleSource() {
   return { path: loadedPath, sha256: loadedHash };
 }
 const nonempty = value => typeof value === 'string' && value.length > 0;
+const sourceGuardFailure = 'Original Secretary bootstrap failed: Invalid("failed resume typed OBSERVED response absent")';
 const exactReply = row => row?.request?.schema === 'gogoke.37.operations.v1' &&
   row.receipt?.schema === row.request.schema && row.rawFrame === JSON.stringify(row.request) &&
   row.receipt?.requestId === row.request.requestId &&
@@ -109,8 +110,12 @@ export function createStartupHomeLifecycle(product, manifest, save, runReadback,
       conversation?.state === 'FOUND' && conversation.sessionId === row.sessionId &&
       String(conversation.generation) === row.oldGeneration &&
       String(conversation.revision) === row.oldRevision && conversation.claimState === 'STOPPED' &&
-      conversation.runtimeAvailable === false && conversation.stoppedFact === true &&
-      value.startupReason?.startsWith(prefix), 'Closed predecessor startup identity/refusal differs');
+      conversation.runtimeAvailable === false && conversation.stoppedFact === true,
+    'Closed predecessor startup identity/refusal differs');
+    if (!restored && value.startupReason === sourceGuardFailure) {
+      return { outcome: 'SOURCE_GUARD_DIAGNOSTIC', rawStartupReason: value.startupReason };
+    }
+    check(value.startupReason?.startsWith(prefix), 'Closed predecessor startup identity/refusal differs');
     const receipt = JSON.parse(value.startupReason.slice(prefix.length));
     check(Object.keys(receipt).sort().join('|') ===
       'family|operation|previousRevision|requestId|result|revision|schema|status|targetId' &&
@@ -429,13 +434,19 @@ export function createStartupHomeLifecycle(product, manifest, save, runReadback,
         matches(manifest.authorizedRepairs.filter(closed), facts?.authorizedRepairs ?? []) &&
         Array.isArray(noCreates) && noCreates.length === manifest.noStartupHomes.length &&
         manifest.noStartupHomes.every(attempt => {
-          try { noStartupCreated(attempt,attempt.bootstrap); } catch { return false; }
+          let observed;
+          try { observed = noStartupCreated(attempt,attempt.bootstrap); } catch { return false; }
           return noCreates.filter(row => row.caseId === attempt.caseId &&
             row.domainId === attempt.domainId && row.sessionId === attempt.sessionId &&
             row.instanceId === attempt.instanceId && row.homeId === attempt.baselineHomeId &&
             row.originalCreateRequestId === attempt.expectedCreateRequestId &&
             row.state === 'NOT_CREATED' && row.generation === attempt.oldGeneration &&
-            row.revision === attempt.oldRevision && row.status === 'CONFLICT').length === 1;
+            row.revision === attempt.oldRevision &&
+            (observed.outcome === 'SOURCE_GUARD_DIAGNOSTIC'
+              ? row.outcome === observed.outcome && row.rawStartupReason === observed.rawStartupReason &&
+                !Object.hasOwn(row, 'status')
+              : row.status === 'CONFLICT' && !Object.hasOwn(row, 'outcome') &&
+                !Object.hasOwn(row, 'rawStartupReason'))).length === 1;
         }) && Array.isArray(refusedFacts) && refusedFacts.length === refusals.length &&
         manifest.authorizedRepairs.every(row => closed(row) || refused(row)) &&
         refusals.every(attempt => refusedFacts.filter(row =>
