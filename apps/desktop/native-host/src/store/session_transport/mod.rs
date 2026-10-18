@@ -59,4 +59,8 @@ pub(crate) use admission::{initialize_admission_schema, bind_owner_in_transactio
 pub(crate) use temporary_home_close::{observe_exact_home_gone, ExactHomeGoneError};
 pub(crate) use episodes::{record_initial, mark_active, begin_resume,
     attach_resume_process, mark_resume_unknown, promote_resume,
-    mark_stopped as mark_episode_stopped};
+    mark_stopped as mark_episode_stopped, RESUME_CANDIDATE_STOP,
+    original_resume_candidate_stop_source, recorded_resume_candidate_stop_source,
+    recorded_resume_candidate_stop_for_custody,
+    begin_original_resume_candidate_stop,
+    complete_original_resume_candidate_stop};

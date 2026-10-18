@@ -499,6 +499,286 @@ fn observed_codex_metadata_resume_cannot_promote_without_original_physical_rollo
 }
 
 #[test]
+fn original_unknown_resume_candidate_has_its_own_user_stop_and_c_proof() {
+    health_control_product("codex",|product| {
+        let key=("projectA".to_owned(),"sessionA".to_owned());
+        let old=runtime::observe_claim_bound(&product.connection,"projectA","seatA","sessionA")
+            .unwrap().unwrap();
+        let ordinary=operation("K-SESSION","stop","candidate-old-stop","sessionA",
+            old.revision as u64,&format!(
+                r#"{{"seatId":"seatA","generation":"{}"}}"#,old.generation));
+        let stopped=h::decode_receipt(&product.dispatch_user_request(&ordinary).unwrap()).unwrap();
+        assert_eq!(stopped.status,V37Status::Applied);
+        let old_rows=health_control_rows(product,
+            "SELECT generation||':'||state||':'||revision,COALESCE(stop_fact_id,'') FROM main.gogoke_v37_h_claim WHERE domain_id='projectA' AND session_id='sessionA'");
+        let old_proof=old_rows[0][1].clone();
+        assert!(!old_proof.is_empty());
+        let resume=operation("K-SESSION","resume","candidate-original-resume","sessionA",
+            stopped.revision,&format!(r#"{{"generation":"{}"}}"#,old.generation));
+        FAIL_ORIGINAL_RESUME_PROTOCOL_READ.with(|flag|assert!(!flag.replace(true)));
+        let failed=h::decode_receipt(&product.dispatch_user_request(&resume).unwrap()).unwrap();
+        assert_eq!(failed.status,V37Status::Unknown,
+            "the real original native producer must preserve its failed resume");
+        let post_unknown_rows=health_control_rows(product,
+            "SELECT generation||':'||state||':'||revision,COALESCE(stop_fact_id,'') FROM main.gogoke_v37_h_claim WHERE domain_id='projectA' AND session_id='sessionA'");
+        assert_eq!(post_unknown_rows[0][0],format!("{}:STOPPED:{}",old.generation,failed.revision));
+        assert_eq!(post_unknown_rows[0][1],old_proof,
+            "the UNKNOWN revision retains the old generation's original StopFact");
+        let original_episode=health_control_rows(product,
+            "SELECT raw_hex,phase||':'||result_revision FROM main.gogoke_v37_h_process_episode WHERE request_id='candidate-original-resume'");
+        assert_eq!(original_episode[0][1],format!("UNKNOWN:{}",failed.revision));
+        let original_rpc=health_control_rows(product,
+            "SELECT command_hex,phase||':'||COALESCE(original_error,'') FROM main.gogoke_v37_rpc_steps WHERE step_id LIKE '%-thread-resume' ORDER BY step_id");
+        assert_eq!(original_rpc.len(),1);
+        assert!(original_rpc[0][1].starts_with("UNKNOWN:"));
+        let custody=product.native_sessions.get(&key).unwrap().custody.clone();
+        let candidate_operation=product.native_sessions.get(&key).unwrap().operation_id.clone();
+        assert!(product.process_custodian.active(&custody.ticket).unwrap()
+            .active_job_processes().unwrap()>0,"original next-generation Job is real and retained");
+        let ordinary_old=operation("K-SESSION","stop","candidate-ordinary-refusal","sessionA",
+            failed.revision,&format!(r#"{{"seatId":"seatA","generation":"{}"}}"#,old.generation));
+        assert_eq!(h::decode_receipt(&product.dispatch_user_request(&ordinary_old).unwrap()).unwrap().status,
+            V37Status::Conflict,"ordinary two-field stop cannot take a different generation");
+        let candidate=operation("K-SESSION","stop","candidate-new-stop","sessionA",
+            failed.revision,&format!(
+                r#"{{"seatId":"seatA","generation":"{}","resumeRequestId":"{}"}}"#,
+                old.generation,resume.request_id));
+        let wrong=operation("K-SESSION","stop","candidate-wrong-original","sessionA",
+            failed.revision,&format!(
+                r#"{{"seatId":"seatA","generation":"{}","resumeRequestId":"otherResume"}}"#,
+                old.generation));
+        assert!(product.dispatch_user_request(&wrong).is_err());
+        assert!(product.process_custodian.active(&custody.ticket).is_some());
+        let stale=operation("K-SESSION","stop","candidate-stale-stop","sessionA",
+            stopped.revision,&format!(
+                r#"{{"seatId":"seatA","generation":"{}","resumeRequestId":"{}"}}"#,
+                old.generation,resume.request_id));
+        assert_eq!(h::decode_receipt(&product.dispatch_user_request(&stale).unwrap()).unwrap().status,
+            V37Status::Stale);
+        product.connection.execute(
+            "UPDATE main.gogoke_v37_h_process_episode SET raw_hex='00' WHERE request_id='candidate-original-resume'").unwrap();
+        assert!(product.dispatch_user_request(&candidate).is_err(),
+            "a changed original resume frame cannot authorize a physical stop");
+        let restore=Statement::prepare(product.connection.as_ptr(),
+            "UPDATE main.gogoke_v37_h_process_episode SET raw_hex=?1 WHERE request_id='candidate-original-resume'").unwrap();
+        restore.bind_text(1,&original_episode[0][0]).unwrap();restore.step_done().unwrap();
+        let home=health_control_rows(product,
+            "SELECT home_id,request_id FROM main.gogoke_v37_h_process_episode WHERE request_id='candidate-original-resume'");
+        let f_source=health_control_rows(product,&format!(
+            "SELECT COALESCE(native_receipt_id,''),request_id FROM main.gogoke_v37_instance_operations WHERE target_id='{}' AND request_id LIKE 'homeprep-%'",home[0][0]));
+        assert_eq!(f_source.len(),1);
+        let corrupt=Statement::prepare(product.connection.as_ptr(),
+            "UPDATE main.gogoke_v37_instance_operations SET native_receipt_id='wrong-original-F-receipt' WHERE request_id=?1").unwrap();
+        corrupt.bind_text(1,&f_source[0][1]).unwrap();corrupt.step_done().unwrap();
+        assert!(product.dispatch_user_request(&candidate).is_err(),
+            "a changed original F HOME identity cannot authorize a physical stop");
+        let restore=Statement::prepare(product.connection.as_ptr(),
+            "UPDATE main.gogoke_v37_instance_operations SET native_receipt_id=?1 WHERE request_id=?2").unwrap();
+        restore.bind_text(1,&f_source[0][0]).unwrap();
+        restore.bind_text(2,&f_source[0][1]).unwrap();restore.step_done().unwrap();
+        product.connection.execute(
+            "UPDATE main.gogoke_coordination_process_custody SET creation_time_100ns='1' WHERE operation_id IN (SELECT process_operation_id FROM main.gogoke_v37_h_process_episode WHERE request_id='candidate-original-resume')").unwrap();
+        assert!(product.dispatch_user_request(&candidate).is_err(),
+            "a changed original C process identity cannot authorize a physical stop");
+        let restore=Statement::prepare(product.connection.as_ptr(),
+            "UPDATE main.gogoke_coordination_process_custody SET creation_time_100ns=?1 WHERE operation_id=?2").unwrap();
+        restore.bind_text(1,&custody.identity.creation_time_100ns.to_string()).unwrap();
+        restore.bind_text(2,&candidate_operation).unwrap();restore.step_done().unwrap();
+        let login=health_control_rows(product,
+            "SELECT CAST(revision AS TEXT),login_state FROM main.gogoke_v37_instances WHERE instance_id='instanceA'");
+        assert_eq!(login[0][1],"LOGGED_IN");
+        let login_revision=login[0][0].parse::<i64>().unwrap();
+        assert_eq!(instance::record_observation(&mut product.connection,product.root,
+            &instance::ObservationRequest {request_id:"candidate-live-logout",
+                request_bytes:b"candidate live logout observation",instance_id:"instanceA",
+                expected_revision:login_revision,
+                observation:instance::InstanceObservation::LoggedOut}).unwrap(),
+            instance::RegistrationDisposition::Applied);
+        assert!(product.dispatch_user_request(&candidate).is_err(),
+            "a fresh physical stop still requires current authenticated Codex");
+        assert_eq!(instance::record_observation(&mut product.connection,product.root,
+            &instance::ObservationRequest {request_id:"candidate-live-relogin",
+                request_bytes:b"candidate live relogin observation",instance_id:"instanceA",
+                expected_revision:login_revision+1,
+                observation:instance::InstanceObservation::LoggedIn}).unwrap(),
+            instance::RegistrationDisposition::Applied);
+        assert!(product.process_custodian.active(&custody.ticket).unwrap()
+            .active_job_processes().unwrap()>0);
+        assert!(health_control_rows(product,
+            "SELECT operation,status FROM main.gogoke_v37_h_operation WHERE operation='stop-resume-candidate'").is_empty());
+        product.connection.execute("CREATE TEMP TRIGGER candidate_stop_intent_cut BEFORE INSERT ON main.gogoke_v37_h_operation WHEN NEW.operation='stop-resume-candidate' BEGIN SELECT RAISE(ABORT,'candidate intent cut'); END").unwrap();
+        assert!(format!("{:?}",product.dispatch_user_request(&candidate)
+            .expect_err("first H intent COMMIT cut must precede the Job effect"))
+            .contains("candidate intent cut"));
+        product.connection.execute("DROP TRIGGER candidate_stop_intent_cut").unwrap();
+        assert!(product.process_custodian.active(&custody.ticket).unwrap()
+            .active_job_processes().unwrap()>0);
+        assert!(health_control_rows(product,
+            "SELECT operation,status FROM main.gogoke_v37_h_operation WHERE operation='stop-resume-candidate'").is_empty());
+        product.native_sessions.get_mut(&key).unwrap().raw_capture
+            .model_fixture_source_error(Some("test original A source unreadable".to_owned()));
+        assert!(format!("{:?}",product.dispatch_user_request(&candidate)
+            .expect_err("physical stop without original A EOF must refuse C/H success"))
+            .contains("resume candidate stopped stdout has no original EOF"));
+        let retained=product.native_sessions.get(&key).unwrap();
+        assert_eq!(retained.stop_proof.as_ref().unwrap().active_job_processes,Some(0));
+        assert!(!retained.raw_capture.source_exhausted());
+        assert_eq!(health_control_rows(product,&format!(
+            "SELECT state,COALESCE(stop_proof_hash,'') FROM main.gogoke_coordination_process_custody WHERE operation_id='{candidate_operation}'")),
+            vec![vec!["UNKNOWN".to_owned(),String::new()]]);
+        product.native_sessions.get_mut(&key).unwrap().raw_capture.model_fixture_source_error(None);
+        product.connection.execute("CREATE TEMP TRIGGER candidate_c_commit_cut BEFORE UPDATE OF state ON main.gogoke_coordination_process_custody WHEN NEW.state='STOPPED' BEGIN SELECT RAISE(ABORT,'candidate C commit cut'); END").unwrap();
+        assert!(format!("{:?}",product.dispatch_user_request(&candidate)
+            .expect_err("C StopProof commit cut must retain the H intent"))
+            .contains("candidate C commit cut"));
+        product.connection.execute("DROP TRIGGER candidate_c_commit_cut").unwrap();
+        assert!(product.native_sessions.get(&key).unwrap().raw_capture.source_exhausted(),
+            "the retry read the real stopped child pipe to EOF");
+        assert_eq!(health_control_rows(product,&format!(
+            "SELECT state,COALESCE(stop_proof_hash,'') FROM main.gogoke_coordination_process_custody WHERE operation_id='{candidate_operation}'")),
+            vec![vec!["UNKNOWN".to_owned(),String::new()]]);
+        FAIL_AFTER_CANDIDATE_C_STOP_BEFORE_H_RESULT.with(|flag|assert!(!flag.replace(true)));
+        assert!(format!("{:?}",product.dispatch_user_request(&candidate)
+            .expect_err("cut after exact C proof"))
+            .contains("test cut after candidate C proof before H result"));
+        let retained=product.native_sessions.get(&key).unwrap();
+        assert_eq!(retained.stop_proof.as_ref().unwrap().active_job_processes,Some(0));
+        assert!(retained.raw_capture.source_exhausted(),
+            "the original candidate stdout reader observed actual EOF");
+        assert_eq!(health_control_rows(product,
+            "SELECT operation,status FROM main.gogoke_v37_h_operation WHERE request_id='candidate-new-stop'"),
+            vec![vec!["stop-resume-candidate".to_owned(),"UNKNOWN".to_owned()]]);
+        assert_eq!(health_control_rows(product,
+            "SELECT raw_hex,phase||':'||result_revision FROM main.gogoke_v37_h_process_episode WHERE request_id='candidate-original-resume'"),original_episode);
+        product.connection.execute("CREATE TEMP TRIGGER candidate_h_applied_cut BEFORE UPDATE OF status ON main.gogoke_v37_h_operation WHEN NEW.operation='stop-resume-candidate' AND NEW.status='APPLIED' BEGIN SELECT RAISE(ABORT,'candidate H APPLIED commit cut'); END").unwrap();
+        assert!(format!("{:?}",product.dispatch_user_request(&candidate)
+            .expect_err("H APPLIED commit cut must retain the completed C proof"))
+            .contains("candidate H APPLIED commit cut"));
+        product.connection.execute("DROP TRIGGER candidate_h_applied_cut").unwrap();
+        assert_eq!(health_control_rows(product,
+            "SELECT operation,status FROM main.gogoke_v37_h_operation WHERE request_id='candidate-new-stop'"),
+            vec![vec!["stop-resume-candidate".to_owned(),"UNKNOWN".to_owned()]]);
+        let result=h::decode_receipt(&product.dispatch_user_request(&candidate).unwrap()).unwrap();
+        assert_eq!(result.status,V37Status::Applied);
+        assert_eq!(result.revision,failed.revision,"old claim revision is unchanged");
+        let result_fields=result.into_result();
+        let field=|name:&str|result_fields.get(&JsonString::from_str(name))
+            .map(Json::canonical);
+        assert_eq!(field("stopScope"),Some(text("ORIGINAL_RESUME_CANDIDATE").canonical()));
+        assert_eq!(field("originalResumeRequestId"),Some(text(&resume.request_id).canonical()));
+        assert_eq!(field("stoppedGeneration"),Some(text(&custody.binding.generation).canonical()));
+        assert!(product.process_custodian.active(&custody.ticket).is_none());
+        let child=health_control_rows(product,&format!(
+            "SELECT state,COALESCE(stop_proof_hash,'') FROM main.gogoke_coordination_process_custody WHERE operation_id='{candidate_operation}'"));
+        assert_eq!(child.len(),1);
+        assert_eq!(child[0][0],"STOPPED");
+        assert!(!child[0][1].is_empty());
+        assert_ne!(child[0][1],old_proof,"the child has its own C StopProof");
+        assert_eq!(health_control_rows(product,
+            "SELECT generation||':'||state||':'||revision,COALESCE(stop_fact_id,'') FROM main.gogoke_v37_h_claim WHERE domain_id='projectA' AND session_id='sessionA'"),post_unknown_rows);
+        assert_eq!(health_control_rows(product,
+            "SELECT raw_hex,phase||':'||result_revision FROM main.gogoke_v37_h_process_episode WHERE request_id='candidate-original-resume'"),original_episode);
+        assert_eq!(health_control_rows(product,
+            "SELECT command_hex,phase||':'||COALESCE(original_error,'') FROM main.gogoke_v37_rpc_steps WHERE step_id LIKE '%-thread-resume' ORDER BY step_id"),original_rpc);
+        let intent=health_control_rows(product,
+            "SELECT operation||':'||status,CAST(previous_revision AS TEXT)||':'||CAST(revision AS TEXT) FROM main.gogoke_v37_h_operation WHERE request_id='candidate-new-stop'");
+        assert_eq!(intent,vec![vec!["stop-resume-candidate:APPLIED".to_owned(),
+            format!("{}:{}",failed.revision,failed.revision)]]);
+        let replay=h::decode_receipt(&product.dispatch_user_request(&candidate).unwrap()).unwrap();
+        assert_eq!(replay.status,V37Status::Replayed);
+        let post_stop_login=health_control_rows(product,
+            "SELECT CAST(revision AS TEXT),login_state FROM main.gogoke_v37_instances WHERE instance_id='instanceA'");
+        assert_eq!(post_stop_login[0][1],"LOGGED_IN");
+        assert_eq!(instance::record_observation(&mut product.connection,product.root,
+            &instance::ObservationRequest {request_id:"candidate-applied-logout",
+                request_bytes:b"candidate applied logout observation",instance_id:"instanceA",
+                expected_revision:post_stop_login[0][0].parse::<i64>().unwrap(),
+                observation:instance::InstanceObservation::LoggedOut}).unwrap(),
+            instance::RegistrationDisposition::Applied);
+        let historical=h::decode_receipt(&product.dispatch_user_request(&candidate).unwrap()).unwrap();
+        assert_eq!(historical.status,V37Status::Replayed,
+            "APPLIED H replay and stopped credential restart reconcile read the original C proof after login drift");
+        let changed=operation("K-SESSION","stop","candidate-new-stop","sessionA",
+            failed.revision,&format!(
+                r#"{{"seatId":"seatA","generation":"{}","resumeRequestId":"otherResume"}}"#,
+                old.generation));
+        assert_eq!(h::decode_receipt(&product.dispatch_user_request(&changed).unwrap()).unwrap().status,
+            V37Status::Conflict,"same ID with changed raw cannot borrow the proof");
+        let duplicate=operation("K-SESSION","stop","candidate-second-stop","sessionA",
+            failed.revision,&format!(
+                r#"{{"seatId":"seatA","generation":"{}","resumeRequestId":"{}"}}"#,
+                old.generation,resume.request_id));
+        assert!(product.dispatch_user_request(&duplicate).is_err(),
+            "another ID cannot repeat the original physical stop");
+        assert_eq!(health_control_rows(product,&format!(
+            "SELECT state,COALESCE(stop_proof_hash,'') FROM main.gogoke_coordination_process_custody WHERE operation_id='{candidate_operation}'")),child);
+        let close=operation_in_domain("projectA","K-INSTANCE","temporary-home-close",
+            "candidate-own-home-close","instanceA",1,
+            r#"{"sessionId":"sessionA","originalCreateRequestId":"candidate-original-resume"}"#);
+        let closed=h::decode_receipt(&product.dispatch_user_request(&close).unwrap()).unwrap();
+        assert_eq!(closed.status,V37Status::Applied,
+            "F closes only the candidate's own tracked HOME from its own C proof");
+        assert_eq!(health_control_rows(product,
+            "SELECT raw_hex,phase||':'||result_revision FROM main.gogoke_v37_h_process_episode WHERE request_id='candidate-original-resume'"),original_episode);
+        let cold=instance::test_collect_cold_version_scope(&product.connection,product.root,"codex");
+        let cold_error=cold.as_ref().err();
+        assert_eq!(health_control_rows(product,
+            "SELECT operation_id,state FROM main.gogoke_coordination_process_custody WHERE operation_id='two-scope-synthetic-cli-file-login' AND domain_id='global'"),
+            vec![vec!["two-scope-synthetic-cli-file-login".to_owned(),"STOPPED".to_owned()]],
+            "the health fixture retains its synthetic login writer, not an original product login producer");
+        assert!(matches!(cold_error,Some(instance::ManagedCliError::Observation(raw))
+            if raw=="global C lacks a recognized original login producer"),
+            "candidate H/F collection passes before the independent synthetic login source refuses; this is not whole-family qualification: {cold_error:?}");
+    });
+}
+
+#[test]
+fn original_unknown_resume_candidate_stop_refuses_missing_retained_job() {
+    health_control_product("codex",|product| {
+        let key=("projectA".to_owned(),"sessionA".to_owned());
+        let old=runtime::observe_claim_bound(&product.connection,"projectA","seatA","sessionA")
+            .unwrap().unwrap();
+        let stop=operation("K-SESSION","stop","missing-job-old-stop","sessionA",
+            old.revision as u64,&format!(
+                r#"{{"seatId":"seatA","generation":"{}"}}"#,old.generation));
+        let stopped=h::decode_receipt(&product.dispatch_user_request(&stop).unwrap()).unwrap();
+        assert_eq!(stopped.status,V37Status::Applied);
+        let resume=operation("K-SESSION","resume","missing-job-original-resume","sessionA",
+            stopped.revision,&format!(r#"{{"generation":"{}"}}"#,old.generation));
+        FAIL_ORIGINAL_RESUME_PROTOCOL_READ.with(|flag|assert!(!flag.replace(true)));
+        let unknown=h::decode_receipt(&product.dispatch_user_request(&resume).unwrap()).unwrap();
+        assert_eq!(unknown.status,V37Status::Unknown);
+        let old_claim=health_control_rows(product,
+            "SELECT generation||':'||state||':'||revision,COALESCE(stop_fact_id,'') FROM main.gogoke_v37_h_claim WHERE domain_id='projectA' AND session_id='sessionA'");
+        let custody=product.native_sessions.get(&key).unwrap().custody.clone();
+        let operation_id=product.native_sessions.get(&key).unwrap().operation_id.clone();
+        assert!(product.process_custodian.active(&custody.ticket).unwrap()
+            .active_job_processes().unwrap()>0);
+        let closed=product.process_custodian.close_child_input(&custody.ticket)
+            .map_err(|error|format!("missing Job fixture stdin close: {error}"));
+        let proof=product.process_custodian.stop(&custody.ticket,
+            StopBudgets::production(),move||closed).unwrap();
+        assert_eq!(proof.active_job_processes,Some(0));
+        assert_eq!(product.process_custodian.active(&custody.ticket).unwrap()
+            .active_job_processes().unwrap(),0);
+        let candidate=operation("K-SESSION","stop","missing-job-candidate-stop","sessionA",
+            unknown.revision,&format!(
+                r#"{{"seatId":"seatA","generation":"{}","resumeRequestId":"{}"}}"#,
+                old.generation,resume.request_id));
+        assert!(product.dispatch_user_request(&candidate).is_err(),
+            "a new H stop intent requires the original next-generation Job still held live");
+        assert!(health_control_rows(product,
+            "SELECT operation,status FROM main.gogoke_v37_h_operation WHERE operation='stop-resume-candidate'").is_empty());
+        assert_eq!(health_control_rows(product,&format!(
+            "SELECT state,COALESCE(stop_proof_hash,'') FROM main.gogoke_coordination_process_custody WHERE operation_id='{operation_id}'")),
+            vec![vec!["UNKNOWN".to_owned(),String::new()]],
+            "a proof held only by the fixture cannot manufacture durable C/H success");
+        assert_eq!(health_control_rows(product,
+            "SELECT generation||':'||state||':'||revision,COALESCE(stop_fact_id,'') FROM main.gogoke_v37_h_claim WHERE domain_id='projectA' AND session_id='sessionA'"),old_claim);
+    });
+}
+
+#[test]
 fn visible_runtime_uses_current_h_revision_and_refuses_changed_claim() {
     let mut observations=None;
     health_control_product("codex",|product| {

@@ -90,6 +90,20 @@ struct Original {
     worktree: String,
 }
 
+struct StoppedPeer {
+    sid: String,
+    profile_name: String,
+    tree: String,
+    repository: String,
+    domain: String,
+    seat: String,
+    session: String,
+    generation: String,
+    incarnation: String,
+    home: String,
+    binding: String,
+}
+
 impl<'root> ProductDatabase<'root> {
     // A normally stopped H leaves its own ACE on the reusable instance HOME.
     // It is a preserved peer, not a holder to release again. Admit its SID only
@@ -99,7 +113,7 @@ impl<'root> ProductDatabase<'root> {
         &self,
         instance: &str,
         captured: Option<&[String]>,
-    ) -> Result<(Vec<String>, String, Vec<(String,String,String,String,String)>)> {
+    ) -> Result<(Vec<String>, String, Vec<StoppedPeer>)> {
         let stopped = rows(
             &self.connection,
             "SELECT a.domain_id,a.session_id,a.generation,e.seat_incarnation,
@@ -174,7 +188,17 @@ impl<'root> ProductDatabase<'root> {
             if sids.contains(&sid) {
                 return Err(denied("Claude stopped peer SID reused"));
             }
-            scopes.push((sid.clone(),tree,repository,r[0].clone(),r[6].clone()));
+            if r[13].is_empty() || r[14].is_empty() || r[17].is_empty() ||
+                r[18].is_empty() || r[15].parse::<u32>().ok().filter(|pid|*pid>0)
+                    .is_none_or(|pid|pid.to_string()!=r[15]) ||
+                r[16].parse::<u64>().ok().filter(|creation|*creation>0)
+                    .is_none_or(|creation|creation.to_string()!=r[16]) {
+                return Err(denied("Claude stopped peer original C identity changed"));
+            }
+            scopes.push(StoppedPeer{sid:sid.clone(),profile_name:name,tree,repository,
+                domain:r[0].clone(),seat:r[6].clone(),session:r[1].clone(),
+                generation:r[2].clone(),incarnation:r[3].clone(),home:r[10].clone(),
+                binding:r[9].clone()});
             sids.push(sid);
             for value in r {
                 provenance.extend_from_slice(&(value.len() as u64).to_be_bytes());
@@ -627,10 +651,12 @@ impl<'root> ProductDatabase<'root> {
         if fact(saved, "worktreeWritable")? != if roots[2].2 { "1" } else { "0" } {
             return Err(denied("Claude F permission changed"));
         }
-        evidence(ClaudeAclRetirement::verify_inventory(
-            &roots,
-            &record.capture.objects,
-        ))?;
+        if !released {
+            evidence(ClaudeAclRetirement::verify_inventory(
+                &roots,
+                &record.capture.objects,
+            ))?;
+        }
         Ok(roots)
     }
 
@@ -841,14 +867,132 @@ impl<'root> ProductDatabase<'root> {
         self.completed_claude_holder_release_reader(instance, domain, session, operation, false)
     }
 
+    fn completed_later_profile_directories(
+        &self, instance:&str,peer:&StoppedPeer,
+        instance_root:&(PathBuf,RootIdentity,bool),
+    )->Result<Vec<PathBuf>> {
+        let profile=evidence(AppContainerProfile::derive_for_revocation(&peer.profile_name))?;
+        if evidence(profile.sid_identity())?!=peer.sid {
+            return Err(denied("Claude later stopped profile SID changed"));
+        }
+        let homes=evidence(instance::resolve_historical_session_homes(
+            &self.connection,self.root,&profile,instance,&peer.home,&peer.domain,
+            &peer.session,&peer.generation,&peer.binding,"claude"))?;
+        if homes.instance.path!=instance_root.0 ||
+            homes.instance.identity!=instance_root.1 {
+            return Err(denied("Claude later stopped instance HOME changed"));
+        }
+        let graph=evidence(worktree::graph_query(&self.connection,&peer.tree))?
+            .ok_or_else(||denied("Claude later stopped F graph absent"))?;
+        if graph.state!="REGISTERED" || graph.classification!="SINGLE" ||
+            graph.members.len()!=1 || graph.members[0].worktree_id!=peer.tree ||
+            graph.members[0].repository_id!=peer.repository ||
+            graph.members[0].instance_id!=instance ||
+            graph.members[0].domain_id!=peer.domain ||
+            graph.members[0].seat_id!=peer.seat {
+            return Err(denied("Claude later stopped F graph scope changed"));
+        }
+        let binding=evidence(worktree::resolve_id(&self.connection,self.root,&peer.tree))?;
+        if binding.instance_id!=instance || binding.seat_incarnation!=peer.incarnation ||
+            binding.baseline_commit!=graph.members[0].baseline_commit {
+            return Err(denied("Claude later stopped physical F binding changed"));
+        }
+        let create=rows(&self.connection,
+            "SELECT o.request_id,o.request_hash,o.repository_id,o.domain_id,o.seat_id,
+                    o.seat_incarnation,CAST(o.seat_generation AS TEXT),
+                    CAST(o.seat_revision AS TEXT),o.instance_id,o.permission_tier,
+                    o.path_id,o.phase,o.cause,w.repository_id,w.domain_id,w.seat_id,
+                    w.seat_incarnation,CAST(w.seat_generation AS TEXT),
+                    CAST(w.seat_revision AS TEXT),w.instance_id,w.permission_tier,w.path_id
+               FROM main.gogoke_v37_worktree_operations o
+               JOIN main.gogoke_v37_worktrees w ON w.worktree_id=o.worktree_id
+              WHERE o.worktree_id=?1", &[&peer.tree],22)?;
+        let [row]=create.as_slice() else {
+            return Err(denied("Claude later stopped original F create absent"));
+        };
+        if row[0].is_empty() || row[1].len()!=64 || !row[1].bytes().all(|b|
+            b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) ||
+            row[2]!=peer.repository || row[2]!=row[13] ||
+            row[3]!=peer.domain || row[3]!=row[14] ||
+            row[4]!=peer.seat || row[4]!=row[15] ||
+            row[5]!=peer.incarnation || row[5]!=row[16] ||
+            row[6]!=row[17] || row[7]!=row[18] ||
+            row[8]!=instance || row[8]!=row[19] ||
+            row[9]!=binding.permission_tier || row[9]!=row[20] ||
+            row[10]!=row[21] || row[11]!="REGISTERED" || !row[12].is_empty() ||
+            row[6]!=binding.seat_generation.to_string() {
+            return Err(denied("Claude later stopped original F create changed"));
+        }
+        let pending=rows(&self.connection,
+            "SELECT 1 FROM main.gogoke_v37_worktree_lifecycle_ops
+              WHERE worktree_id=?1 AND phase IN ('INTENT','UNKNOWN') LIMIT 1",
+            &[&peer.tree],1)?;
+        if !pending.is_empty() {return Err(denied("Claude later stopped F lifecycle pending"));}
+        let folder=peer.profile_name.to_ascii_lowercase();
+        if !folder.starts_with("gogoke37.session.") ||
+            !folder.bytes().all(|b|b.is_ascii_lowercase() || b.is_ascii_digit() || b==b'.') {
+            return Err(denied("Claude later stopped native profile name"));
+        }
+        let base=PathBuf::from("AppData").join("Local").join("Packages").join(folder);
+        Ok(vec![base.clone(),base.join("AC"),base.join("AC").join("Temp"),
+            base.join("AC").join("Temp").join("claude")])
+    }
+
+    fn verified_official_pid_source(&self, old:&Original)->Result<()> {
+        let pin=instance::read_fixed_official_cli("claude")
+            .ok_or_else(||denied("Claude fixed PID registration producer absent"))?;
+        if pin.version!="2.1.196" ||
+            pin.image_sha256!="180d7b279455e8b89d4353a5146447be2f80b80fb0db14bdc6dd9cb98c0aef09" ||
+            fact(&old.facts,"binary")?!=format!("sha256:{}",pin.image_sha256) ||
+            old.profile_name!=original_session_profile_name(
+                &self.root.canonical_root().identity.opaque(),
+                &fact(&old.facts,"domain")?,&fact(&old.facts,"session")?,
+                &fact(&old.facts,"incarnation")?,&fact(&old.facts,"generation")?) {
+            return Err(denied("Claude PID registration original producer changed"));
+        }
+        let image=fact(&old.facts,"image")?;
+        let observed=evidence(instance::ProgramObservation::observe(
+            std::path::Path::new(&image),pin.version))?;
+        if !observed.matches_pin(&fact(&old.facts,"binary")?,pin.version) {
+            return Err(denied("Claude PID registration official image changed"));
+        }
+        Ok(())
+    }
+
     fn completed_claude_holder_release_reader(
         &self, instance: &str, domain: &str, session: &str, operation: &str,
         require_current_pin: bool,
     ) -> Result<bool> {
+        let originals=self.claude_originals_with_current_pin(instance,require_current_pin)?;
         let mut verified=Vec::new();
-        for original in self.claude_originals_with_current_pin(instance,require_current_pin)? {
-            if original.claim_state!="RELEASED" {continue;}
+        let mut pending=Vec::new();
+        let mut unsealed=Vec::new();
+        for original in originals.iter().cloned() {
             let old_operation=fact(&original.facts,"operation")?;
+            if original.claim_state!="RELEASED" {
+                let Some(record)=journal::read(&self.connection,&old_operation)? else {
+                    if original.claim_state=="COMMITTED" {unsealed.push(original);}
+                    continue
+                };
+                if record.phase!="PREPARED" || record.revision!=1 ||
+                    !record.original_error.is_empty() || record.instance!=instance ||
+                    record.domain!=fact(&original.facts,"domain")? ||
+                    record.session!=fact(&original.facts,"session")? ||
+                    record.operation!=old_operation || record.capture.objects.is_empty() {
+                    return Err(denied("Claude competing holder intent is not exact PREPARED"));
+                }
+                let known=fact(&record.capture.facts,"knownSids")?
+                    .split(',').map(str::to_owned).collect::<Vec<_>>();
+                let roots=self.claude_validate_capture(&original,&record,&known,false)?;
+                let proof=evidence(NativeProcessHoldersGone::observe(&[original.pair]))?;
+                evidence(proof.validate(&[original.pair]))?;
+                let profile=evidence(AppContainerProfile::derive_for_revocation(
+                    &original.profile_name))?;
+                let after=evidence(ClaudeAclRetirement::verified_progress_images(
+                    &profile,&roots,&record.capture.objects,&known))?;
+                pending.push((original,record,roots,known,after,proof));
+                continue;
+            }
             let Some(record)=journal::read(&self.connection,&old_operation)? else {return Ok(false)};
             if record.phase!="APPLIED" || record.instance!=instance ||
                 record.domain!=fact(&original.facts,"domain")? ||
@@ -876,32 +1020,172 @@ impl<'root> ProductDatabase<'root> {
         let captured=if captured.is_empty(){Vec::new()}else{
             captured.split(',').map(str::to_owned).collect::<Vec<_>>()};
         let mut later=Vec::new();
-        for (sid,tree,repository,peer_domain,peer_seat) in stopped.iter()
-            .filter(|(sid,_,_,_,_)|!captured.contains(sid)) {
-            let same_worktree=tree==&original.worktree;
-            if same_worktree {
-                let graph=evidence(worktree::graph_query(&self.connection,tree))?
-                    .ok_or_else(||denied("Claude later stopped peer F graph absent"))?;
-                if graph.classification!="SINGLE" || graph.members.len()!=1 ||
-                    graph.members[0].worktree_id.as_str()!=tree.as_str() ||
-                    graph.members[0].repository_id.as_str()!=repository.as_str() ||
-                    graph.members[0].instance_id!=instance ||
-                    graph.members[0].domain_id.as_str()!=peer_domain.as_str() ||
-                    graph.members[0].seat_id.as_str()!=peer_seat.as_str() {
-                    return Err(denied("Claude later stopped peer F scope changed"));
-                }
+        let mut later_profile_directories=Vec::new();
+        for peer in stopped.iter().filter(|peer|!captured.contains(&peer.sid)) {
+            later_profile_directories.extend(self.completed_later_profile_directories(
+                instance,peer,&roots[0])?);
+            later.push((peer.sid.as_str(),peer.tree==original.worktree));
+        }
+        let mut all_known=originals.iter().map(|old|old.sid.clone()).collect::<Vec<_>>();
+        all_known.extend(stopped.iter().map(|peer|peer.sid.clone()));
+        all_known.sort();
+        if all_known.windows(2).any(|pair|pair[0]==pair[1]) {
+            return Err(denied("Claude current peer SID reused"));
+        }
+        let mut active=Vec::new();
+        let mut later_pid=Vec::new();
+        for old in &unsealed {
+            if old.sid==original.sid {return Err(denied("Claude current peer target SID reused"));}
+            self.verified_official_pid_source(old)?;
+            let peer_roots=self.claude_roots(old)?;
+            if peer_roots[0].0!=roots[0].0 || peer_roots[0].1!=roots[0].1 {
+                return Err(denied("Claude current peer instance HOME changed"));
             }
-            later.push((sid.as_str(),same_worktree));
+            let proof=evidence(NativeProcessHoldersGone::observe(&[old.pair]))?;
+            evidence(proof.validate(&[old.pair]))?;
+            let capture=self.claude_capture(old,&all_known)?;
+            if capture.facts.get("operation")!=old.facts.get("operation") ||
+                capture.objects.is_empty() {
+                return Err(denied("Claude current peer preview source changed"));
+            }
+            let peer=StoppedPeer{sid:old.sid.clone(),profile_name:old.profile_name.clone(),
+                tree:old.worktree.clone(),repository:old.repository.clone(),
+                domain:fact(&old.facts,"domain")?,seat:fact(&old.facts,"seat")?,
+                session:fact(&old.facts,"session")?,generation:fact(&old.facts,"generation")?,
+                incarnation:fact(&old.facts,"incarnation")?,home:fact(&old.facts,"home")?,
+                binding:fact(&old.facts,"binding")?};
+            later_profile_directories.extend(self.completed_later_profile_directories(
+                instance,&peer,&roots[0])?);
+            let relative=PathBuf::from("sessions").join(format!("{}.json",old.pair.0));
+            use std::os::windows::ffi::OsStrExt;
+            let relative_hex=relative.as_os_str().encode_wide()
+                .flat_map(u16::to_le_bytes).map(|byte|format!("{byte:02x}"))
+                .collect::<String>();
+            let source=capture.objects.iter().filter(|object|
+                object.root_index==0 && object.relative_utf16_hex==relative_hex)
+                .collect::<Vec<_>>();
+            if let [source]=source.as_slice() {
+                if source.directory || source.before_hex==source.after_hex {
+                    return Err(denied("Claude current PID registration source changed"));
+                }
+                later_pid.push((relative,source.identity.clone(),source.control));
+            } else if !source.is_empty() {
+                return Err(denied("Claude current PID registration ambiguous"));
+            }
+            later.push((old.sid.as_str(),old.worktree==original.worktree));
+            active.push((old.clone(),peer_roots,capture,proof));
+        }
+        for (old,_,old_roots,_) in &verified {
+            if old.sid==original.sid {continue;}
+            if old_roots[0].0!=roots[0].0 || old_roots[0].1!=roots[0].1 {
+                return Err(denied("Claude completed peer instance HOME changed"));
+            }
+            let gone=evidence(NativeProcessHoldersGone::observe(&[old.pair]))?;
+            evidence(gone.validate(&[old.pair]))?;
+            let peer=StoppedPeer{
+                sid:old.sid.clone(),profile_name:old.profile_name.clone(),
+                tree:old.worktree.clone(),repository:old.repository.clone(),
+                domain:fact(&old.facts,"domain")?,seat:fact(&old.facts,"seat")?,
+                session:fact(&old.facts,"session")?,
+                generation:fact(&old.facts,"generation")?,
+                incarnation:fact(&old.facts,"incarnation")?,
+                home:fact(&old.facts,"home")?,binding:fact(&old.facts,"binding")?,
+            };
+            later_profile_directories.extend(self.completed_later_profile_directories(
+                instance,&peer,&roots[0])?);
+        }
+        let mut missing_pid=Vec::new();
+        for (old,old_record,old_roots,_) in &verified {
+            let relative=PathBuf::from("sessions").join(format!("{}.json",old.pair.0));
+            use std::os::windows::ffi::OsStrExt;
+            let relative_hex=relative.as_os_str().encode_wide()
+                .flat_map(u16::to_le_bytes).map(|byte|format!("{byte:02x}"))
+                .collect::<String>();
+            let target=record.capture.objects.iter().filter(|object|
+                object.root_index==0 && object.relative_utf16_hex==relative_hex)
+                .collect::<Vec<_>>();
+            if target.is_empty() {continue;}
+            let [target]=target.as_slice() else {
+                return Err(denied("Claude missing PID registration capture ambiguous"));
+            };
+            match std::fs::symlink_metadata(roots[0].0.join(&relative)) {
+                Ok(_)=>continue,
+                Err(error) if error.kind()==std::io::ErrorKind::NotFound=>(),
+                Err(error)=>return Err(evidence::<(),_>(Err(error)).unwrap_err()),
+            }
+            if verified.iter().filter(|(peer,_,_,_)|peer.pair.0==old.pair.0).count()!=1 ||
+                old_roots[0].1!=roots[0].1 || old_roots[0].0!=roots[0].0 {
+                return Err(denied("Claude missing PID registration owner ambiguous"));
+            }
+            self.verified_official_pid_source(old)?;
+            let gone=evidence(NativeProcessHoldersGone::observe(&[old.pair]))?;
+            evidence(gone.validate(&[old.pair]))?;
+            let owner=old_record.capture.objects.iter().filter(|object|
+                object.root_index==0 && object.relative_utf16_hex==relative_hex)
+                .collect::<Vec<_>>();
+            let [owner]=owner.as_slice() else {
+                return Err(denied("Claude missing PID registration capture source absent"));
+            };
+            if target.directory || owner.directory || target.identity!=owner.identity ||
+                target.control!=owner.control || target.before_hex==target.after_hex ||
+                owner.before_hex==owner.after_hex {
+                return Err(denied("Claude missing PID registration capture changed"));
+            }
+            missing_pid.push((relative,target.identity.clone(),target.control));
+        }
+        for (old,old_record,_,_) in &verified {
+            if old.sid==original.sid {continue;}
+            let relative=PathBuf::from("sessions").join(format!("{}.json",old.pair.0));
+            use std::os::windows::ffi::OsStrExt;
+            let relative_hex=relative.as_os_str().encode_wide()
+                .flat_map(u16::to_le_bytes).map(|byte|format!("{byte:02x}"))
+                .collect::<String>();
+            if record.capture.objects.iter().any(|object|
+                object.root_index==0 && object.relative_utf16_hex==relative_hex) {continue;}
+            let source=old_record.capture.objects.iter().filter(|object|
+                object.root_index==0 && object.relative_utf16_hex==relative_hex)
+                .collect::<Vec<_>>();
+            let [source]=source.as_slice() else {
+                if source.is_empty(){continue;}
+                return Err(denied("Claude later completed PID registration ambiguous"));
+            };
+            if source.directory || source.before_hex==source.after_hex {
+                return Err(denied("Claude later completed PID registration source changed"));
+            }
+            self.verified_official_pid_source(old)?;
+            let gone=evidence(NativeProcessHoldersGone::observe(&[old.pair]))?;
+            evidence(gone.validate(&[old.pair]))?;
+            later_pid.push((relative,source.identity.clone(),source.control));
         }
         let completed=verified.iter().map(|(old,record,roots,_)|
             (old.sid.as_str(),roots.as_slice(),record.capture.objects.as_slice()))
             .collect::<Vec<_>>();
+        let prepared=pending.iter().map(|(old,record,roots,_,after,_)|
+            (old.sid.as_str(),roots.as_slice(),record.capture.objects.as_slice(),after.as_slice()))
+            .collect::<Vec<_>>();
         let profile=evidence(AppContainerProfile::derive_for_revocation(&original.profile_name))?;
         let proof=evidence(NativeProcessHoldersGone::observe(&[original.pair]))?;
         evidence(ClaudeAclRetirement::readback_completed_target(
-            &profile,roots,&record.capture.objects,known,&completed,&later,
+            &profile,roots,&record.capture.objects,known,&completed,&prepared,&later,
+            &missing_pid,&later_profile_directories,&later_pid,
             &proof,&[original.pair],
         ))?;
+        for (old,_,_,_,_,gone) in &pending {evidence(gone.validate(&[old.pair]))?;}
+        for (old,peer_roots,capture,proof) in &active {
+            evidence(proof.validate(&[old.pair]))?;
+            let current=self.claude_originals_with_current_pin(instance,require_current_pin)?
+                .into_iter().find(|peer|peer.facts.get("operation")==old.facts.get("operation"))
+                .ok_or_else(||denied("Claude current peer original vanished"))?;
+            if current.facts!=old.facts || current.pair!=old.pair ||
+                current.claim_state!="COMMITTED" ||
+                journal::read(&self.connection,&fact(&old.facts,"operation")?)?.is_some() ||
+                self.claude_roots(&current)?!=*peer_roots ||
+                self.claude_capture(&current,&all_known)?!=*capture {
+                return Err(denied("Claude current peer preview changed"));
+            }
+            let fresh=evidence(NativeProcessHoldersGone::observe(&[old.pair]))?;
+            evidence(fresh.validate(&[old.pair]))?;
+        }
         Ok(true)
     }
 

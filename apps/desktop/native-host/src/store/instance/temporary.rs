@@ -1036,12 +1036,19 @@ fn original_create_source(connection: &VerifiedDatabaseConnection<'_>, home_id: 
     let h_episode = Statement::prepare(connection.as_ptr(),
         "SELECT e.raw_hex,COALESCE(e.old_generation,''),e.process_operation_id
            FROM main.gogoke_v37_h_process_episode e
-           JOIN main.gogoke_v37_h_generation g ON g.domain_id=e.domain_id
+           LEFT JOIN main.gogoke_v37_h_generation g ON g.domain_id=e.domain_id
              AND g.session_id=e.session_id AND g.generation=e.generation
              AND g.request_id=e.request_id AND g.process_operation_id=e.process_operation_id
           WHERE e.domain_id=?1 AND e.request_id=?2 AND e.session_id=?3
             AND e.home_id=?4 AND e.instance_id=?5 AND e.generation=?6
-            AND e.binding_id=?7")?;
+            AND e.binding_id=?7 AND (g.process_operation_id IS NOT NULL OR
+              (e.old_generation IS NOT NULL AND e.phase='UNKNOWN'
+               AND e.stop_request_id IS NULL AND e.stop_fact_id IS NULL
+               AND EXISTS(SELECT 1 FROM main.gogoke_coordination_process_custody c
+                 WHERE c.operation_id=e.process_operation_id AND c.profile_id=e.instance_id
+                   AND c.domain_id=e.domain_id AND c.generation=e.generation
+                   AND (c.state IN ('ACTIVE','UNKNOWN') AND c.stop_proof_hash IS NULL
+                     OR c.state='STOPPED' AND c.stop_proof_hash IS NOT NULL))))")?;
     let expected_binding = format!("binding-{}", home_id.strip_prefix("home-")
         .ok_or(TemporaryHomeError::HomeConflict)?);
     for (index, value) in [row.1.as_str(), request.request_id.as_str(), row.3.as_str(),
@@ -1276,11 +1283,65 @@ fn original_stop_request(connection: &VerifiedDatabaseConnection<'_>, home: &str
     Ok(sha256_hex(&raw))
 }
 
+/// Read-only F consumer of the independent H candidate-stop record. A plain
+/// resume child was never promoted into H's current generation, so its own C
+/// StopProof must not be mistaken for the old claim's StopFact.
+fn original_resume_candidate_stop_request(connection:&VerifiedDatabaseConnection<'_>,
+    home:&str,row:&HomeRow,original_resume:&str)->Result<(String,String),TemporaryHomeError>{
+    let q=Statement::prepare(connection.as_ptr(),
+        "SELECT e.old_generation,e.seat_id,o.request_id,o.raw_hex,
+                CAST(o.previous_revision AS TEXT),CAST(o.revision AS TEXT)
+           FROM main.gogoke_v37_h_process_episode e
+           JOIN main.gogoke_coordination_process_custody c
+             ON c.operation_id=e.process_operation_id AND c.profile_id=e.instance_id
+             AND c.domain_id=e.domain_id AND c.generation=e.generation
+           JOIN main.gogoke_v37_h_operation o ON o.domain_id=e.domain_id
+             AND o.session_id=e.session_id AND o.operation='stop-resume-candidate'
+             AND o.status='APPLIED'
+          WHERE e.home_id=?1 AND e.instance_id=?2 AND e.domain_id=?3
+            AND e.session_id=?4 AND e.generation=?5 AND e.request_id=?6
+            AND e.phase='UNKNOWN' AND e.old_generation IS NOT NULL
+            AND e.stop_request_id IS NULL AND e.stop_fact_id IS NULL
+            AND c.state='STOPPED' AND c.stop_proof_hash IS NOT NULL")?;
+    for (n,value) in [home,&row.0,&row.1,&row.3,&row.4,original_resume]
+        .iter().enumerate(){q.bind_text((n+1) as i32,value)?;}
+    if !q.step_row()? {return Err(TemporaryHomeError::StopFactUnavailable);}
+    let fields=(0..6).map(|n|q.column_text(n)).collect::<Result<Vec<_>,_>>()?;
+    if q.step_row()? {return Err(TemporaryHomeError::StopFactUnavailable);}
+    drop(q);
+    let old=&fields[0];let seat=&fields[1];let request_id=&fields[2];
+    let raw_hex=&fields[3];
+    let revision=fields[4].parse::<u64>().map_err(|_|TemporaryHomeError::StopFactUnavailable)?;
+    if fields[5]!=fields[4] {return Err(TemporaryHomeError::StopFactUnavailable);}
+    let raw=decode_lower_hex(raw_hex)?;
+    let request=crate::store::session_transport::decode_request(&raw)
+        .map_err(|_|TemporaryHomeError::StopFactUnavailable)?;
+    let field=|name:&str|match request.payload.get(&JsonString::from_str(name)){
+        Some(Json::String(value))=>value.to_well_formed_string(),_=>None,
+    };
+    if hex(&raw)!=*raw_hex || request.family!="K-SESSION" || request.operation!="stop"
+        || request.request_id!=*request_id || request.domain_id!=row.1
+        || request.target_id!=row.3 || request.expected_revision!=revision
+        || request.payload.len()!=3 || field("seatId").as_deref()!=Some(seat)
+        || field("generation").as_deref()!=Some(old)
+        || field("resumeRequestId").as_deref()!=Some(original_resume) {
+        return Err(TemporaryHomeError::StopFactUnavailable);
+    }
+    let source=crate::store::session_transport::recorded_resume_candidate_stop_source(
+        connection,&row.1,&row.3,seat,old,original_resume,
+        i64::try_from(revision).map_err(|_|TemporaryHomeError::StopFactUnavailable)?)
+        .map_err(|_|TemporaryHomeError::StopFactUnavailable)?;
+    if source.instance_id!=row.0 || source.home_id!=home
+        || source.generation!=row.4 || source.custody_state!="STOPPED"
+        || source.stop_proof.is_empty(){return Err(TemporaryHomeError::StopFactUnavailable);}
+    Ok((source.stop_proof,sha256_hex(&raw)))
+}
+
 /// Read-only bridge for callers that must authenticate the original F HOME
 /// creation without running the close/cleanup state machine. The SID is always
 /// derived from the original HOME id; no caller-supplied SID can weaken the F
 /// fingerprint comparison performed by `original_create_source`.
-pub(super) fn validate_original_execution_home_source(
+pub(crate) fn validate_original_execution_home_source(
     connection: &VerifiedDatabaseConnection<'_>,
     home: &str,
     instance: &str,
@@ -1446,12 +1507,29 @@ fn user_close_source(connection:&VerifiedDatabaseConnection<'_>,root:&RootLock,
         Err(TemporaryHomeError::StopFactUnavailable)
         |Err(TemporaryHomeError::Admission(AdmissionError::Denied
             |AdmissionError::Unknown|AdmissionError::Conflict|AdmissionError::Stale))=>{
+            if episode_operation=="resume" {
+                if let Ok((stop,request_sha))=original_resume_candidate_stop_request(
+                    connection,home_id,row,episode_request_id) {
+                    let proof=sha256_hex(format!(
+                        "home-stop-v1\n{home_id}\n{create_id}\n{create_raw_sha256}\n{request_sha}\n{stop}"
+                    ).as_bytes());
+                    ("ORIGINAL_STOP",proof,None)
+                } else {
+                    if prior_stop_marker(connection,home_id,row)? {
+                        return Err(TemporaryHomeError::StopFactUnavailable);
+                    }
+                    let (fact,source,pairs)=crate::store::session_transport::observe_exact_home_gone(
+                        connection,home_id,&row.0,&row.1,&row.3,&row.4,binding)?;
+                    ("KERNEL_BOOT_CUTOFF",String::new(),Some((fact,source,pairs)))
+                }
+            } else {
             if prior_stop_marker(connection,home_id,row)? {
                 return Err(TemporaryHomeError::StopFactUnavailable);
             }
             let (fact,source,pairs)=crate::store::session_transport::observe_exact_home_gone(
                 connection,home_id,&row.0,&row.1,&row.3,&row.4,binding)?;
             ("KERNEL_BOOT_CUTOFF",String::new(),Some((fact,source,pairs)))
+            }
         },
         Err(error)=>return Err(error),
     };
@@ -1636,11 +1714,18 @@ pub(crate) fn close_user_temporary_home(connection: &mut VerifiedDatabaseConnect
             "SELECT e.seat_incarnation,COALESCE(e.seat_id,''),e.request_id,
                     e.raw_hex,e.process_operation_id,COALESCE(e.old_generation,'')
                FROM main.gogoke_v37_h_process_episode e
-               JOIN main.gogoke_v37_h_generation g ON g.domain_id=e.domain_id
+               LEFT JOIN main.gogoke_v37_h_generation g ON g.domain_id=e.domain_id
                  AND g.session_id=e.session_id AND g.generation=e.generation
                  AND g.request_id=e.request_id AND g.process_operation_id=e.process_operation_id
               WHERE e.home_id=?1 AND e.instance_id=?2 AND e.domain_id=?3
-                AND e.session_id=?4 AND e.generation=?5 AND e.binding_id=?6")?;
+                AND e.session_id=?4 AND e.generation=?5 AND e.binding_id=?6
+                AND (g.process_operation_id IS NOT NULL OR
+                  (e.old_generation IS NOT NULL AND e.phase='UNKNOWN'
+                   AND e.stop_request_id IS NULL AND e.stop_fact_id IS NULL
+                   AND EXISTS(SELECT 1 FROM main.gogoke_coordination_process_custody c
+                     WHERE c.operation_id=e.process_operation_id AND c.profile_id=e.instance_id
+                       AND c.domain_id=e.domain_id AND c.generation=e.generation
+                       AND c.state='STOPPED' AND c.stop_proof_hash IS NOT NULL)))")?;
         for (index, value) in [&home_id, &row.0, &row.1, &row.3, &row.4, &binding]
             .iter().enumerate() { original_seat.bind_text(index as i32 + 1, value)?; }
         if !original_seat.step_row()? {

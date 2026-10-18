@@ -343,13 +343,30 @@ pub(crate) fn reconcile_stopped_credential(db: &mut VerifiedDatabaseConnection<'
     for (index, value) in [operation, domain, session, generation].iter().enumerate() {
         evidence(query.bind_text((index + 1) as i32, value))?;
     }
-    if !evidence(query.step_row())? { return Err(denied("restart has no exact original STOPPED custody")); }
-    let binding_id = evidence(query.column_text(0))?;
-    let instance_id = evidence(query.column_text(1))?;
-    let ticket = evidence(query.column_text(2))?;
-    let nonce = evidence(query.column_text(3))?;
-    if evidence(query.step_row())? { return Err(denied("ambiguous original STOPPED custody")); }
+    let ordinary=if evidence(query.step_row())? {
+        let result=(evidence(query.column_text(0))?,evidence(query.column_text(1))?,
+            evidence(query.column_text(2))?,evidence(query.column_text(3))?);
+        if evidence(query.step_row())? {return Err(denied("ambiguous original STOPPED custody"));}
+        Some(result)
+    } else {None};
     drop(query);
+    let (binding_id,instance_id,ticket,nonce)=if let Some(source)=ordinary {source}else{
+        let c=evidence(Statement::prepare(db.as_ptr(),
+            "SELECT ticket,custodian_nonce FROM main.gogoke_coordination_process_custody
+              WHERE operation_id=?1 AND domain_id=?2 AND generation=?3
+                AND state='STOPPED' AND stop_proof_hash IS NOT NULL"))?;
+        evidence(c.bind_text(1,operation))?;evidence(c.bind_text(2,domain))?;
+        evidence(c.bind_text(3,generation))?;
+        if !evidence(c.step_row())? {return Err(denied("restart has no exact original stopped custody"));}
+        let ticket=evidence(c.column_text(0))?;
+        let nonce=evidence(c.column_text(1))?;
+        if evidence(c.step_row())? {return Err(denied("ambiguous candidate stopped custody"));}
+        drop(c);
+        let source=evidence(super::recorded_resume_candidate_stop_for_custody(
+            db,operation,domain,session,generation,&ticket,&nonce))?
+            .ok_or_else(||denied("restart has no exact original candidate-stop source"))?;
+        (source.binding_id,source.instance_id,ticket,nonce)
+    };
     let profiles = evidence(instance::read_credential_profiles(db, &instance_id))?;
     let Some(profile_record) = profiles.into_iter().find(|row| row.binding_id == binding_id) else {
         // Providers or unauthenticated launches with no credential grant have
@@ -598,8 +615,25 @@ impl CredentialLaunch {
             self.history.session_id.as_str(), custody.binding.binary_digest_sha256.as_str(), pid.as_str(), created.as_str(), image.as_ref()].iter().enumerate() {
             evidence(query.bind_text((index + 1) as i32, value))?;
         }
-        if !evidence(query.step_row())? || evidence(query.step_row())? { return Err(denied("exact original STOPPED custody absent")); }
+        let ordinary=evidence(query.step_row())?;
+        if ordinary {
+            if evidence(query.step_row())? {return Err(denied("ambiguous original STOPPED custody"));}
+        }
         drop(query);
+        if !ordinary {
+            let source=evidence(super::recorded_resume_candidate_stop_for_custody(db,
+                operation,&self.history.domain_id,&self.history.session_id,
+                &self.history.generation,ticket,&custody.custodian_nonce))?
+                .ok_or_else(||denied("exact original candidate-stop source absent"))?;
+            if source.instance_id!=self.object.instance_id
+                || source.binding_id!=self.history.binding_id
+                || source.ticket!=ticket || source.nonce!=custody.custodian_nonce
+                || source.pid!=pid || source.creation!=created
+                || source.image.as_str()!=image.as_ref()
+                || source.digest!=custody.binding.binary_digest_sha256 {
+                return Err(denied("original candidate-stop custody changed"));
+            }
+        }
         self.finish_original_revoke(db, root, profile, operation)
     }
 

@@ -90,11 +90,123 @@ function fixture(name) {
 test('UNKNOWN resume never borrows the old-generation stop', async () => {
   const f = fixture('unknownResume');
   f.journal.operations.push(f.record('stop', 'oldStop', '1', 'APPLIED', { stopFact: `sha256:${'a'.repeat(64)}` }));
+  const originalOldStop = structuredClone(f.journal.operations.at(-1));
   f.create(f.record('resume', 'newResume', '1', 'UNKNOWN'));
   const result = await f.lifecycle.finishCase('unknownResume');
-  assert.equal(result.complete, false); assert.equal(f.calls.length, 0);
+  assert.equal(result.complete, false);
+  assert.deepEqual(f.calls.map(row => row.operation), ['stop']);
+  assert.equal(f.calls[0].payload.resumeRequestId, 'newResume');
+  assert.deepEqual(f.journal.operations.find(row => row.request?.requestId === 'oldStop'), originalOldStop);
   assert.equal(f.lifecycle.manifest.attempts[0].generation, null);
   assert.equal(f.lifecycle.manifest.attempts[0].hStopSource, undefined);
+});
+
+function candidateFixture(name, options = {}) {
+  const f = fixture(name);
+  const oldStop = f.record('stop', 'oldStop', '1', 'APPLIED',
+    { stopFact: `sha256:${'a'.repeat(64)}` });
+  oldStop.request.expectedRevision = '2'; oldStop.rawFrame = JSON.stringify(oldStop.request);
+  oldStop.receipt.previousRevision = '2'; oldStop.receipt.revision = '3';
+  f.journal.operations.push(oldStop);
+  const resume = f.record('resume', 'originalUnknownResume', '1', 'UNKNOWN');
+  f.create(resume);
+  const normalOperation = f.product.operation.bind(f.product);
+  f.product.operation = async (family, operation, targetId, payload, expectedRevision, allowed) => {
+    if (operation !== 'stop') return normalOperation(family, operation, targetId, payload, expectedRevision, allowed);
+    f.calls.push({ family, operation, targetId, payload, expectedRevision });
+    const request = { schema:'gogoke.37.operations.v1', family, operation,
+      requestId:'candidateStop', domainId:'projectA', targetId, expectedRevision, payload:{ ...payload } };
+    options.mutateRequest?.(request);
+    const record = { request, rawFrame:JSON.stringify(request), receipt:null };
+    f.lifecycle.beforeDispatch(record); f.journal.operations.push(record);
+    if (options.transportUnknown) {
+      f.lifecycle.afterDispatchError(record, Error('original candidate stop transport unknown'));
+      throw Error('original candidate stop transport unknown');
+    }
+    record.receipt = { schema:request.schema, family, operation, requestId:request.requestId,
+      targetId, previousRevision:String(expectedRevision), revision:String(expectedRevision),
+      status:'APPLIED', result:{ stopScope:'ORIGINAL_RESUME_CANDIDATE',
+        originalResumeRequestId:'originalUnknownResume', stoppedGeneration:'2',
+        stopFact:`sha256:${'b'.repeat(64)}` } };
+    options.mutateReceipt?.(record.receipt);
+    if (allowed.includes(record.receipt.status)) f.lifecycle.afterReceipt(record);
+    else {
+      f.lifecycle.afterRejectedReceipt(record);
+      throw Error(`Original candidate stop result=${record.receipt.status}; no replay`);
+    }
+    return record.receipt;
+  };
+  return { ...f, oldStop, resume };
+}
+
+test('UNKNOWN resume stops only its retained candidate and closes its own F HOME once', async () => {
+  const f = candidateFixture('candidateOwnClose');
+  const originalResume = structuredClone(f.resume);
+  const originalOldStop = structuredClone(f.oldStop);
+  const settled = await f.lifecycle.finishCase('candidateOwnClose');
+  assert.equal(settled.complete, true, settled.errors.join('; '));
+  assert.deepEqual(f.calls.map(row => row.operation), ['stop', 'temporary-home-close']);
+  assert.deepEqual(f.calls[0].payload, { seatId:'seatA', generation:'1',
+    resumeRequestId:'originalUnknownResume' });
+  assert.equal(f.calls[0].expectedRevision, '4');
+  assert.equal(f.lifecycle.manifest.attempts[0].candidateStoppedGeneration, '2');
+  assert.equal(f.lifecycle.manifest.attempts[0].generation, null);
+  assert.equal(f.lifecycle.manifest.attempts[0].hStopSource, undefined);
+  assert.equal(f.session.generation, '1'); assert.equal(f.session.revision, '4');
+  assert.deepEqual(f.resume, originalResume); assert.deepEqual(f.oldStop, originalOldStop);
+  assert.equal((await f.lifecycle.finishCase('candidateOwnClose')).complete, true);
+  assert.deepEqual(f.calls.map(row => row.operation), ['stop', 'temporary-home-close']);
+  const attempt = f.lifecycle.manifest.attempts[0], close = attempt.closeReceipt.result;
+  assert.equal(f.lifecycle.applySharedClosedReadback({ temporaryHomes:[{
+    originalCreateRequestId:attempt.originalCreateRequestId, caseId:attempt.caseId,
+    domainId:attempt.domainId, sessionId:attempt.sessionId, instanceId:attempt.instanceId,
+    state:'CLOSED', revision:'2', closeRequestId:attempt.closeRequestId,
+    nativeReceiptId:close.nativeReceiptId, homeId:close.homeId,
+    proofKind:close.proofKind, sourceFingerprint:close.sourceFingerprint,
+  }], startupHomes:[], authorizedRepairs:[], noStartupHomes:[],
+  homeInventoryMatchesDeclaredScope:true, homeInventoryUnchangedExceptOwnClosed:true }), true);
+});
+
+test('candidate stop UNKNOWN or lost transport stays durable and cannot be resent', async () => {
+  for (const [name, options] of [
+    ['unknown', { mutateReceipt: receipt => { receipt.status = 'UNKNOWN'; receipt.result = {}; } }],
+    ['transport', { transportUnknown:true }],
+  ]) {
+    const f = candidateFixture(`candidate-${name}`, options);
+    assert.equal((await f.lifecycle.finishCase(`candidate-${name}`)).complete, false);
+    assert.equal((await f.lifecycle.finishCase(`candidate-${name}`)).complete, false);
+    assert.deepEqual(f.calls.map(row => row.operation), ['stop']);
+    assert.equal(f.lifecycle.manifest.attempts[0].closeDispatchState, 'NOT_DISPATCHED');
+    assert.equal(f.resume.receipt.status, 'UNKNOWN');
+  }
+});
+
+test('candidate selector and exact four-field proof refuse drift before F close', async () => {
+  for (const [name, options] of [
+    ['other-resume', { mutateRequest: request => { request.payload.resumeRequestId = 'other'; } }],
+    ['extra-payload', { mutateRequest: request => { request.payload.pid = '12'; } }],
+    ['wrong-old-generation', { mutateRequest: request => { request.payload.generation = '2'; } }],
+    ['wrong-revision', { mutateRequest: request => { request.expectedRevision = '3'; } }],
+    ['wrong-scope', { mutateReceipt: receipt => { receipt.result.stopScope = 'ORDINARY'; } }],
+    ['wrong-generation', { mutateReceipt: receipt => { receipt.result.stoppedGeneration = '1'; } }],
+    ['extra-result', { mutateReceipt: receipt => { receipt.result.pid = '12'; } }],
+  ]) {
+    const f = candidateFixture(`candidate-${name}`, options);
+    assert.equal((await f.lifecycle.finishCase(`candidate-${name}`)).complete, false, name);
+    assert.equal(f.calls.some(row => row.operation === 'temporary-home-close'), false, name);
+    assert.equal(f.resume.receipt.status, 'UNKNOWN', name);
+    assert.equal(f.lifecycle.manifest.attempts[0].hStopSource, undefined, name);
+  }
+});
+
+test('changed original UNKNOWN resume raw cannot authorize candidate stop', async () => {
+  const f = candidateFixture('candidate-original-drift');
+  const oldStop = structuredClone(f.oldStop);
+  f.resume.rawFrame = '{}';
+  assert.equal((await f.lifecycle.finishCase('candidate-original-drift')).complete, false);
+  assert.deepEqual(f.calls, []);
+  assert.deepEqual(f.oldStop, oldStop);
+  assert.equal(f.lifecycle.manifest.attempts[0].candidateStopDispatchState, 'NOT_DISPATCHED');
 });
 
 test('UNKNOWN stop is retained with zero stop or close resends', async () => {

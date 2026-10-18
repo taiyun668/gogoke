@@ -29,6 +29,19 @@ STOP_SQL = """SELECT e.seat_id,e.seat_incarnation,e.binding_id,e.generation,e.ph
  JOIN gogoke_v37_h_operation o ON o.domain_id=e.domain_id
   AND o.request_id=e.stop_request_id AND o.session_id=e.session_id AND o.operation='stop'
  WHERE e.home_id=? AND e.instance_id=? AND e.domain_id=? AND e.session_id=? AND e.generation=?"""
+CANDIDATE_SQL = """SELECT e.request_id,e.raw_hex AS resume_hex,e.phase,e.result_revision,
+ e.old_generation,e.generation,e.process_operation_id,e.seat_id,e.seat_incarnation,
+ e.stop_request_id AS episode_stop_request_id,e.stop_fact_id,e.home_id,e.instance_id,e.binding_id,
+ c.state AS c_state,c.stop_proof_hash,c.generation AS c_generation,
+ c.domain_id AS c_domain,c.profile_id,
+ o.request_id AS stop_request_id,o.raw_hex AS stop_hex,o.status AS stop_status,
+ o.previous_revision AS stop_previous_revision,o.revision AS stop_revision
+ FROM gogoke_v37_h_process_episode e
+ JOIN gogoke_coordination_process_custody c ON c.operation_id=e.process_operation_id
+ JOIN gogoke_v37_h_operation o ON o.domain_id=e.domain_id AND o.session_id=e.session_id
+  AND o.operation='stop-resume-candidate' AND o.request_id=?
+ WHERE e.home_id=? AND e.instance_id=? AND e.domain_id=? AND e.session_id=?
+  AND e.generation=? AND e.request_id=?"""
 DESIGNATION_SQL = """SELECT d.seat_id,d.incarnation,s.instance_id,s.state,s.layer,s.kind,
  CAST(s.generation AS TEXT) AS seat_generation
  FROM gogoke_v37_seat_secretary d LEFT JOIN gogoke_v37_seats s
@@ -258,6 +271,100 @@ def original_stop_source(db, core, home, attempt):
     return stop["stopFact"], sha(raw)
 
 
+def original_resume_candidate_stop_source(db, home, attempt, original_raw):
+    source = attempt.get("candidateStopSource")
+    need(attempt.get("operation") == "resume" and attempt.get("generation") is None and
+         isinstance(source, dict) and attempt.get("candidateStopDispatchState") == "RECEIPT_RECORDED" and
+         source.get("requestId") == attempt.get("candidateStopRequestId") and
+         source.get("rawFrame") == attempt.get("candidateStopRawFrame") and
+         source.get("rawSha256") == attempt.get("candidateStopRawSha256") and
+         source.get("receipt") == attempt.get("candidateStopReceipt") and
+         source.get("stoppedGeneration") == attempt.get("candidateStoppedGeneration") and
+         source.get("stoppedGeneration") == home["generation"],
+         "Original candidate stop caller source differs")
+    original = json.loads(original_raw)
+    unknown = attempt.get("receipt")
+    resumes = [dict(row) for row in db.execute(
+        """SELECT raw_hex,status,previous_revision,revision FROM gogoke_v37_h_operation
+           WHERE domain_id=? AND request_id=? AND session_id=? AND operation='resume'""",
+        (home["domain_id"], original["requestId"], home["owner_id"]))]
+    need(len(resumes) == 1 and resumes[0]["raw_hex"] == original_raw.hex() and
+         resumes[0]["status"] == "UNKNOWN" and
+         original["payload"]["generation"] == attempt["producerGeneration"] and
+         unknown["schema"] == original["schema"] and unknown["family"] == "K-SESSION" and
+         unknown["operation"] == "resume" and unknown["requestId"] == original["requestId"] and
+         unknown["targetId"] == home["owner_id"] and unknown["status"] == "UNKNOWN" and
+         unknown["previousRevision"] == original["expectedRevision"] ==
+            str(resumes[0]["previous_revision"]) and
+         unknown["revision"] == str(resumes[0]["revision"]) and
+         isinstance(unknown.get("result"), dict) and
+         "newGeneration" not in unknown.get("result", {}),
+         "Original UNKNOWN resume request/receipt differs")
+    selected = []
+    for item in db.execute(
+        """SELECT request_id,raw_hex FROM gogoke_v37_h_operation
+           WHERE domain_id=? AND session_id=? AND operation='stop-resume-candidate'""",
+        (home["domain_id"], home["owner_id"])):
+        candidate = json.loads(bytes.fromhex(item["raw_hex"]))
+        if candidate.get("payload", {}).get("resumeRequestId") == original["requestId"]:
+            selected.append(item["request_id"])
+    need(selected == [source["requestId"]],
+         "Original candidate stop request is duplicated or changed")
+    rows = [dict(row) for row in db.execute(CANDIDATE_SQL,
+        (source["requestId"], home["home_id"], home["instance_id"], home["domain_id"],
+         home["owner_id"], home["generation"], original["requestId"]))]
+    need(len(rows) == 1, "Original candidate H/C source missing or ambiguous")
+    row = rows[0]
+    stop_raw = source["rawFrame"].encode("utf-8")
+    stop = json.loads(stop_raw)
+    result = source["receipt"]["result"]
+    need(row["resume_hex"] == original_raw.hex() and row["phase"] == "UNKNOWN" and
+         row["result_revision"] == resumes[0]["revision"] and
+         row["old_generation"] == attempt["producerGeneration"] and
+         row["generation"] == row["c_generation"] == home["generation"] and
+         row["home_id"] == home["home_id"] and row["instance_id"] == row["profile_id"] ==
+            home["instance_id"] and row["c_domain"] == home["domain_id"] and
+         row["episode_stop_request_id"] is None and row["stop_fact_id"] is None and
+         row["c_state"] == "STOPPED" and
+         re.fullmatch(r"sha256:[a-f0-9]{64}", row["stop_proof_hash"] or "") and
+         row["stop_hex"] == stop_raw.hex() and row["stop_status"] == "APPLIED" and
+         row["stop_previous_revision"] == row["stop_revision"] == resumes[0]["revision"] and
+         sha(stop_raw) == source["rawSha256"] and
+         stop == {"schema": "gogoke.37.operations.v1", "family": "K-SESSION",
+            "operation": "stop", "requestId": row["stop_request_id"],
+            "domainId": home["domain_id"], "targetId": home["owner_id"],
+            "expectedRevision": unknown["revision"],
+            "payload": {"seatId": row["seat_id"], "generation": row["old_generation"],
+                "resumeRequestId": original["requestId"]}} and
+         source["receipt"].get("status") in ("APPLIED", "REPLAYED") and
+         source["receipt"] == {"schema": stop["schema"], "family": "K-SESSION",
+            "operation": "stop", "requestId": stop["requestId"],
+            "targetId": home["owner_id"], "previousRevision": unknown["revision"],
+            "revision": unknown["revision"], "status": source["receipt"]["status"],
+            "result": {"stopScope": "ORIGINAL_RESUME_CANDIDATE",
+                "originalResumeRequestId": original["requestId"],
+                "stoppedGeneration": home["generation"],
+                "stopFact": row["stop_proof_hash"]}},
+         "Original candidate stop H/C/raw/receipt differs")
+    old = [dict(item) for item in db.execute(
+        """SELECT a.state,a.revision,a.stop_fact_id,e.phase AS e_phase,e.stop_fact_id AS e_stop,
+                  c.state AS c_state,c.stop_proof_hash AS c_stop
+           FROM gogoke_v37_h_claim a
+           JOIN gogoke_v37_h_process_episode e ON e.process_operation_id=a.process_operation_id
+             AND e.domain_id=a.domain_id AND e.session_id=a.session_id AND e.generation=a.generation
+           JOIN gogoke_coordination_process_custody c ON c.operation_id=a.process_operation_id
+             AND c.domain_id=a.domain_id AND c.generation=a.generation
+           WHERE a.domain_id=? AND a.session_id=? AND a.generation=?""",
+        (home["domain_id"], home["owner_id"], row["old_generation"]))]
+    need(len(old) == 1 and old[0]["state"] == old[0]["e_phase"] == old[0]["c_state"] == "STOPPED" and
+         old[0]["revision"] == resumes[0]["revision"] and
+         old[0]["stop_fact_id"] == old[0]["e_stop"] == old[0]["c_stop"] and
+         re.fullmatch(r"sha256:[a-f0-9]{64}", old[0]["stop_fact_id"] or "") and
+         old[0]["stop_fact_id"] != row["stop_proof_hash"],
+         "Original stopped claim/StopFact differs from candidate C proof")
+    return row["stop_proof_hash"], sha(stop_raw), source
+
+
 def verify_attempt(db, core, root, attempt, home_by_id, historical=False):
     create_raw = attempt["originalCreateRawFrame"].encode("utf-8")
     original = json.loads(create_raw)
@@ -323,7 +430,11 @@ def verify_attempt(db, core, root, attempt, home_by_id, historical=False):
          re.fullmatch(r"f-home-close-v2-[a-f0-9]{64}", close["native_receipt_id"] or "") and
          result["directoryRef"] == home["directory_ref"] and result["state"] == "CLOSED",
          "USER receipt differs from the actual independent native F journal")
-    stop_fact, stop_raw_sha = original_stop_source(db, core, home, attempt)
+    if attempt.get("candidateStopSource") is not None:
+        stop_fact, stop_raw_sha, _ = original_resume_candidate_stop_source(
+            db, home, attempt, create_raw)
+    else:
+        stop_fact, stop_raw_sha = original_stop_source(db, core, home, attempt)
     proof_fingerprint = sha(("home-stop-v1\n" + "\n".join([home_id, create_id,
         sha(create_raw), stop_raw_sha, stop_fact])).encode())
     source_fingerprint = sha(("temporary-home-close-v2\n" + "\n".join([
@@ -374,11 +485,12 @@ def source_attempt(db, home, close_fields, historical=False):
     episodes = [dict(row) for row in db.execute(EPISODE_SQL,
         (home["home_id"], home["instance_id"], home["domain_id"], home["owner_id"],
          home["generation"])) if row["request_id"] == original["requestId"]]
+    candidate = close_fields.get("candidateStopSource") is not None
     if original["operation"] in ("open", "resume"):
         need(len(episodes) == 1 and episodes[0]["request_id"] == original["requestId"] and
              episodes[0]["raw_hex"] == raw.hex() and
              episodes[0]["binding_id"] == "binding-" + home["home_id"][5:] and
-             episodes[0]["phase"] == "STOPPED" and
+             episodes[0]["phase"] == ("UNKNOWN" if candidate else "STOPPED") and
              episodes[0]["process_operation_id"] == "h-" + original["operation"] + "-" + sha(raw)[:40],
              "Original H process producer does not bind F HOME")
     else:
@@ -388,18 +500,23 @@ def source_attempt(db, home, close_fields, historical=False):
             (home["domain_id"], original["requestId"], home["owner_id"]))]
         need(len(rows) == 1 and rows[0] == {"raw_hex": raw.hex(), "status": "APPLIED"},
              "Original H admission source differs")
-    stop_rows = [dict(row) for row in db.execute(STOP_SQL,
-        (home["home_id"], home["instance_id"], home["domain_id"], home["owner_id"],
-         home["generation"]))]
-    need(len(stop_rows) == 1 and stop_rows[0]["raw_hex"] is not None,
-         "Original H stop source missing or ambiguous")
-    stop = stop_rows[0]
-    stop_raw = bytes.fromhex(stop["raw_hex"])
     generated = dict(close_fields, originalCreateRequestId=original["requestId"],
-        originalCreateRawFrame=raw.decode("utf-8"), originalCreateRawSha256=sha(raw),
-        hStopSource={"requestId": stop["stop_request_id"],
+        originalCreateRawFrame=raw.decode("utf-8"), originalCreateRawSha256=sha(raw))
+    if candidate:
+        need(original["operation"] == "resume", "Only original resume may select a candidate stop")
+        _, _, source = original_resume_candidate_stop_source(db, home, close_fields, raw)
+        generated["candidateStopSource"] = source
+    else:
+        stop_rows = [dict(row) for row in db.execute(STOP_SQL,
+            (home["home_id"], home["instance_id"], home["domain_id"], home["owner_id"],
+             home["generation"]))]
+        need(len(stop_rows) == 1 and stop_rows[0]["raw_hex"] is not None,
+             "Original H stop source missing or ambiguous")
+        stop = stop_rows[0]
+        stop_raw = bytes.fromhex(stop["raw_hex"])
+        generated["hStopSource"] = {"requestId": stop["stop_request_id"],
             "rawFrame": stop_raw.decode("utf-8"), "rawSha256": sha(stop_raw),
-            "stopFact": stop["stop_fact_id"]})
+            "stopFact": stop["stop_fact_id"]}
     if historical:
         generated["homeId"] = home["home_id"]
     return generated, (episodes[0] if episodes else None)
@@ -555,7 +672,11 @@ def run(input_path, output_path):
                     original, _ = source_attempt(db, home_by_id[observed["homeId"]], attempt)
                     need(all(original[key] == attempt[key] for key in (
                         "originalCreateRequestId", "originalCreateRawFrame",
-                        "originalCreateRawSha256", "hStopSource")),
+                        "originalCreateRawSha256")) and
+                         ((original.get("candidateStopSource") == attempt.get("candidateStopSource") and
+                           "hStopSource" not in original and not attempt.get("hStopSource"))
+                          if attempt.get("candidateStopSource") is not None else
+                          original.get("hStopSource") == attempt.get("hStopSource")),
                         "Normal HOME original H/F producer differs from caller source")
                     own.append(observed)
                 except Exception as error:

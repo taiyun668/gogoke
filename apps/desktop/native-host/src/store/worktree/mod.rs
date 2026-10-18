@@ -2205,7 +2205,7 @@ pub(crate) fn resolve_for_launch(
     resolve_id(db, root, worktree_id)
 }
 
-fn resolve_id(
+pub(crate) fn resolve_id(
     db: &VerifiedDatabaseConnection<'_>,
     root: &RootLock,
     id: &str,

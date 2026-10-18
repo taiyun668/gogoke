@@ -17,6 +17,8 @@ thread_local! {
     static FAIL_AFTER_DURABLE_STOP_BEFORE_CREDENTIAL_REVOKE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static HISTORICAL_UNMATERIALIZED_CODEX_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_ORIGINAL_PREPARED_ALIAS_BIND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_ORIGINAL_RESUME_PROTOCOL_READ: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_AFTER_CANDIDATE_C_STOP_BEFORE_H_RESULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Reconstructs the old empty-thread source for existing recovery safety tests.
@@ -159,6 +161,16 @@ impl<'root> ProductDatabase<'root> {
 
 fn failure<T, E: std::fmt::Debug>(result: std::result::Result<T, E>) -> Result<T> {
     result.map_err(|error| OrchestrationError::V37StoreFailure(format!("native session: {error:?}")))
+}
+
+fn original_resume_candidate_stop_result(original:&str,generation:&str,proof:&str)
+    -> BTreeMap<JsonString,Json> {
+    BTreeMap::from([
+        (JsonString::from_str("stopScope"),text("ORIGINAL_RESUME_CANDIDATE")),
+        (JsonString::from_str("originalResumeRequestId"),text(original)),
+        (JsonString::from_str("stoppedGeneration"),text(generation)),
+        (JsonString::from_str("stopFact"),text(proof)),
+    ])
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -2716,6 +2728,187 @@ impl<'root> ProductDatabase<'root> {
         self.native_sessions.get(key).is_some_and(|run| run.stop_proof.is_some())
     }
 
+    /// USER explicitly stops one retained child of an original failed plain
+    /// resume. The current claim is the old STOPPED generation; this does not
+    /// turn the original resume into a successful or stopped H episode.
+    fn dispatch_original_resume_candidate_stop(&mut self,request:&V37Request)->Result<Vec<u8>> {
+        if request.family!="K-SESSION" || request.operation!="stop"
+            || request.payload.len()!=3 {
+            return Err(OrchestrationError::AccessDenied);
+        }
+        let seat=user_payload_string(request,"seatId")?;
+        let old_generation=user_payload_string(request,"generation")?;
+        let original_resume=user_payload_string(request,"resumeRequestId")?;
+        let expected=i64::try_from(request.expected_revision)
+            .map_err(|_|OrchestrationError::OperationConflict)?;
+        let key=(request.domain_id.clone(),request.target_id.clone());
+        let prior=Statement::prepare(self.connection.as_ptr(),
+            "SELECT raw_hex,operation,session_id,status,previous_revision,revision
+               FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND request_id=?2")?;
+        prior.bind_text(1,&key.0)?;prior.bind_text(2,&request.request_id)?;
+        let previous=if prior.step_row()? {
+            let row=(0..6).map(|n|prior.column_text(n)).collect::<std::result::Result<Vec<_>,_>>()?;
+            if prior.step_row()? {return Err(OrchestrationError::OperationConflict);}
+            if row[0]!=hex(&request.raw_bytes) || row[1]!=h::RESUME_CANDIDATE_STOP
+                || row[2]!=key.1 || row[4]!=expected.to_string()
+                || row[5]!=expected.to_string() {
+                return Ok(encode_receipt(request,V37Status::Conflict,request.expected_revision,
+                    request.expected_revision,Default::default()));
+            }
+            Some(row[3].clone())
+        } else {None};
+        drop(prior);
+        if previous.as_deref()!=Some("APPLIED") {
+            let claim=failure(runtime::observe_claim(&self.connection,
+                &NativeOrigin::user(&self.owner),&key.0,&seat,&key.1))?
+                .ok_or(OrchestrationError::AccessDenied)?;
+            if claim.generation!=old_generation || claim.phase!=runtime::SessionPhase::Stopped {
+                return Ok(encode_receipt(request,V37Status::Conflict,
+                    request.expected_revision,request.expected_revision,Default::default()));
+            }
+            if claim.revision!=expected {
+                return Ok(encode_receipt(request,V37Status::Stale,
+                    request.expected_revision,
+                    u64::try_from(claim.revision).map_err(|_|OrchestrationError::OperationConflict)?,
+                    Default::default()));
+            }
+        }
+        let source=if previous.as_deref()==Some("APPLIED") {
+            failure(h::recorded_resume_candidate_stop_source(&self.connection,
+                &key.0,&key.1,&seat,&old_generation,&original_resume,expected))?
+        } else {
+            failure(h::original_resume_candidate_stop_source(&self.connection,
+                &key.0,&key.1,&seat,&old_generation,&original_resume,expected))?
+        };
+        if previous.as_deref()==Some("APPLIED") {
+            if source.custody_state!="STOPPED" || source.stop_proof.is_empty() {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            failure(instance::validate_original_execution_home_source(&self.connection,
+                &source.home_id,&source.instance_id,&key.0,&key.1,
+                &source.generation,&original_resume,"resume"))?;
+            if self.native_sessions.get(&key).is_some_and(|run|
+                run.operation_id==source.operation_id) {
+                self.confirm_native_stop(&key)?;
+            } else {
+                failure(h::credential_launch::reconcile_stopped_credential(&mut self.connection,
+                    self.root,&source.operation_id,&key.0,&key.1,&source.generation))?;
+            }
+            return Ok(encode_receipt(request,V37Status::Replayed,
+                request.expected_revision,request.expected_revision,
+                original_resume_candidate_stop_result(&original_resume,&source.generation,
+                    &source.stop_proof)));
+        }
+        if previous.as_deref().is_some_and(|status|status!="UNKNOWN") {
+            return Err(OrchestrationError::OperationConflict);
+        }
+        if previous.is_none() && source.custody_state=="STOPPED" {
+            return Ok(encode_receipt(request,V37Status::Conflict,request.expected_revision,
+                request.expected_revision,Default::default()));
+        }
+        let run=self.native_sessions.get(&key);
+        if previous.is_none() {
+            let run=run.ok_or(OrchestrationError::Invalid(
+                "resume candidate stop has no retained native custody"))?;
+            if run.evidence.driver_id()!="codex" || run.operation_id!=source.operation_id
+                || run.evidence.seat_id()!=seat || run.evidence.seat_incarnation()!=source.seat_incarnation
+                || run.custody.binding.generation!=source.generation
+                || run.custody.binding.profile_id!=source.instance_id
+                || run.custody.binding.domain_id!=key.0
+                || run.custody.binding.binary_digest_sha256!=source.digest
+                || run.custody.ticket.opaque()!=source.ticket
+                || run.custody.custodian_nonce!=source.nonce
+                || run.custody.identity.pid.to_string()!=source.pid
+                || run.custody.identity.creation_time_100ns.to_string()!=source.creation
+                || run.custody.identity.image_path.to_string_lossy().as_ref()!=source.image.as_str()
+                || run.raw_capture.has_pending() || run.pending_acp.is_some()
+                || run.pending_claude.is_some() || run.stop_proof.is_some() {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            // F authenticates the original HOME creation and its physical
+            // identity. The fingerprint is read evidence, never a new writer.
+            failure(instance::validate_original_execution_home_source(&self.connection,
+                &source.home_id,&source.instance_id,&key.0,&key.1,
+                &source.generation,&original_resume,"resume"))?;
+            let held=self.process_custodian.active(&run.custody.ticket)
+                .ok_or(OrchestrationError::AccessDenied)?;
+            if held.identity()!=&run.custody.identity || held.active_job_processes().map_err(|error|
+                OrchestrationError::V37StoreFailure(format!("resume candidate Job: {error}")))?==0 {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            let pending=Statement::prepare(self.connection.as_ptr(),
+                "SELECT 1 FROM main.gogoke_v37_h_stdin_journal
+                  WHERE domain_id=?1 AND session_id=?2 AND generation=?3 LIMIT 1")?;
+            pending.bind_text(1,&key.0)?;pending.bind_text(2,&key.1)?;
+            pending.bind_text(3,&source.generation)?;
+            if pending.step_row()? {return Err(OrchestrationError::OperationConflict);}
+            failure(self.connection.execute("BEGIN IMMEDIATE"))?;
+            let intended=(||->Result<()> {
+                authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
+                failure(h::begin_original_resume_candidate_stop(&self.connection,&key.0,&key.1,
+                    &seat,&old_generation,&original_resume,expected,
+                    &request.request_id,&request.raw_bytes))?;
+                Ok(())
+            })();
+            self.finish_native_transaction(intended)?;
+        } else if source.custody_state!="STOPPED"
+            && self.native_sessions.get(&key).is_none_or(|run|
+                run.operation_id!=source.operation_id || run.stop_proof.is_none()) {
+            // An UNKNOWN intent is never permission for a second physical stop.
+            return Ok(encode_receipt(request,V37Status::Unknown,request.expected_revision,
+                request.expected_revision,Default::default()));
+        }
+        if source.custody_state!="STOPPED" {
+            let run=self.native_sessions.get(&key)
+                .ok_or(OrchestrationError::AccessDenied)?;
+            if run.operation_id!=source.operation_id || run.custody.ticket.opaque()!=source.ticket
+                || run.custody.custodian_nonce!=source.nonce {
+                return Err(OrchestrationError::OperationConflict);
+            }
+            let custody=run.custody.clone();
+            let proof=if let Some(proof)=run.stop_proof.as_ref(){proof.clone()}else{
+                let close=self.process_custodian.close_child_input(&custody.ticket)
+                    .map_err(|error|format!("resume candidate stdin close: {error}"));
+                let proof=self.process_custodian.stop(&custody.ticket,
+                    StopBudgets::production(),move||close)?;
+                self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?
+                    .stop_proof=Some(proof.clone());
+                proof
+            };
+            self.native_sessions.get_mut(&key).ok_or(OrchestrationError::AccessDenied)?
+                .raw_capture.capture(&mut self.connection,&source.operation_id,&source.nonce)?;
+            self.drain_native_output(&key)?;
+            if !self.native_sessions.get(&key).ok_or(OrchestrationError::AccessDenied)?
+                .raw_capture.source_exhausted() {
+                return Err(OrchestrationError::Invalid(
+                    "resume candidate stopped stdout has no original EOF"));
+            }
+            authority::mark_process_stopped(&mut self.connection,&source.operation_id,&proof)?;
+        }
+        #[cfg(test)]
+        if FAIL_AFTER_CANDIDATE_C_STOP_BEFORE_H_RESULT.with(|flag|flag.replace(false)) {
+            return Err(OrchestrationError::Invalid(
+                "test cut after candidate C proof before H result"));
+        }
+        failure(self.connection.execute("BEGIN IMMEDIATE"))?;
+        let completed=(||->Result<_> {
+            authority::check_owner_in_current_transaction(&self.connection,&self.owner)?;
+            failure(h::complete_original_resume_candidate_stop(&self.connection,&key.0,&key.1,
+                &seat,&old_generation,&original_resume,expected,
+                &request.request_id,&request.raw_bytes))
+        })();
+        let finished=match completed {
+            Ok(source)=>{self.finish_native_transaction(Ok(()))?;source},
+            Err(error)=>{self.finish_native_transaction(Err(error))?;unreachable!()},
+        };
+        if self.native_sessions.get(&key).is_some_and(|run|run.operation_id==finished.operation_id){
+            self.confirm_native_stop(&key)?;
+        }
+        Ok(encode_receipt(request,V37Status::Applied,request.expected_revision,
+            request.expected_revision,original_resume_candidate_stop_result(
+                &original_resume,&finished.generation,&finished.stop_proof)))
+    }
+
     pub(super) fn dispatch_native_stop(&mut self, request: &V37Request) -> Result<Vec<u8>> {
         self.dispatch_native_stop_with_caller(request,None)
     }
@@ -2730,6 +2923,10 @@ impl<'root> ProductDatabase<'root> {
     fn dispatch_native_stop_with_caller(&mut self,request:&V37Request,
         caller:Option<&seat::NativeSeatCall>)->Result<Vec<u8>> {
         authority::read_product_identity(&mut self.connection, &self.owner)?;
+        if caller.is_none() && request.payload.len()==3
+            && request.payload.contains_key(&JsonString::from_str("resumeRequestId")) {
+            return self.dispatch_original_resume_candidate_stop(request);
+        }
         if request.payload.len() != 2 {
             return Ok(encode_receipt(request, V37Status::Denied,
                 request.expected_revision, request.expected_revision, Default::default()));
@@ -4110,7 +4307,19 @@ impl<'root> ProductDatabase<'root> {
                 }
                 return Err(OrchestrationError::NativeRecipientFailure(original.into()));
             }
-            let frame = match self.process_custodian.read_persistent_child_frame(&custody.ticket, remaining) {
+            #[cfg(test)]
+            let injected=step_id.ends_with("-thread-resume")
+                && FAIL_ORIGINAL_RESUME_PROTOCOL_READ.with(|flag|flag.replace(false));
+            #[cfg(not(test))]
+            let injected=false;
+            let read=if injected {
+                Err(crate::process::ProcessCustodyError::ProtocolPipe(
+                    std::io::Error::new(std::io::ErrorKind::TimedOut,
+                        "test original resume protocol read boundary")))
+            } else {
+                self.process_custodian.read_persistent_child_frame(&custody.ticket,remaining)
+            };
+            let frame = match read {
                 Ok(frame) => frame,
                 Err(error) => {
                     let diagnostic = self.native_original_read_evidence(key,

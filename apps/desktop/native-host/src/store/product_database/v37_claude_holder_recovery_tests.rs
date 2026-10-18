@@ -387,7 +387,8 @@ fn claude_holder_unknown_open_keeps_originals_and_rejects_captured_status_drift(
         let drift = product.recover_disappeared_claude_resources(INSTANCE, None).unwrap_err();
         assert!(product.qualified_managed_source_resources(INSTANCE,"claude").is_err(),
             "changed captured open status also fences source migration");
-        assert!(format!("{drift:?}").contains("Claude prior disappeared holder release unverified"), "{drift:?}");
+        assert!(format!("{drift:?}").contains("Claude original H tuple changed"),
+            "the completed reader must preserve the original changed OPEN source: {drift:?}");
         assert_eq!(claims(&product), expected);
         assert_eq!(journal(&product), completed);
         assert_eq!(custody(&product), custody_before);
@@ -1281,9 +1282,9 @@ fn claude_holder_rejects_stopped_peer_stop_bytes_changed_after_capture() {
         assert_eq!(changed[0][0], format!("{}00", stop_row[0][0]));
         let refused = product.recover_disappeared_claude_resources(INSTANCE, None)
             .unwrap_err();
-        let reason = format!("{refused:?}");
-        assert!(reason.contains("unverified") || reason.contains("changed")
-            || reason.contains("peer") || reason.contains("provenance"), "{refused:?}");
+        assert!(matches!(&refused, OrchestrationError::V37StoreFailure(reason)
+            if reason == "Claude disappeared holder: Json(NonCanonicalJson(\"trailing content\"))"),
+            "the altered original stop request must preserve its canonical JSON error: {refused:?}");
         assert_eq!(journal(&product), sealed, "sealed ACL intent cannot be refreshed");
         assert_eq!(claims(&product), claims_before_drift,
             "historical StopFact and pending later H claim remain exact");
@@ -1406,6 +1407,72 @@ fn claude_holder_completed_receipts_survive_later_real_stopped_peer() {
             INSTANCE,"projectA","sessionA",&operation);
         assert!(wrong_tree.is_err() || wrong_tree.as_ref().is_ok_and(|value|!*value),
             "a later stopped peer has no grant provenance in the old session HOME");
+        product.close_checked().unwrap();
+    });
+}
+
+#[test]
+fn claude_holder_completed_receipt_survives_later_real_applied_retirement() {
+    cold_two_claude(|mut product, root, cold| {
+        product.recover_disappeared_claude_resources(INSTANCE, None).unwrap();
+        let first=journal(&product);
+        assert_eq!(first.len(),2);
+        assert!(first.iter().all(|row|row[7]=="APPLIED"));
+        let old=first.iter().find(|row|row[3]=="sessionA").unwrap().clone();
+        assert!(product.completed_claude_holder_release(
+            INSTANCE,&old[2],&old[3],&old[0]).unwrap());
+
+        let domain="projectA";
+        let session="laterAppliedA";
+        let seat_id="seatA";
+        let seat_now=seat::get(&product.connection,domain,seat_id).unwrap().unwrap();
+        assert_eq!(seat_now.state,seat::State::Idle);
+        let generation=seat_now.generation+1;
+        for (verb,revision) in [("admission-reserve",0),("admission-commit",1)] {
+            applied(&mut product,&operation(domain,"K-SESSION",verb,
+                &format!("claude-after-applied-{verb}"),session,revision,
+                &format!(r#"{{"seatId":"{seat_id}","generation":"{generation}"}}"#)));
+        }
+        applied(&mut product,&operation(domain,"K-SESSION","open",
+            "claude-after-applied-open",session,2,
+            &format!(r#"{{"seatId":"{seat_id}","generation":"{generation}",
+                "repositoryId":"fixtureRepo","worktreeId":"treeA"}}"#)));
+        let run=product.native_sessions.get(&(domain.into(),session.into())).unwrap();
+        let pair=(run.custody.identity.pid,run.custody.identity.creation_time_100ns);
+        let held=held_parent(pair);
+        assert!(NativeProcessHoldersGone::observe(&[pair]).is_err());
+        product.close_checked().unwrap();
+        wait_gone(&held,pair);
+        let mut product=ProductDatabase::open(root,&cold.database).unwrap();
+        NativeProcessHoldersGone::observe(&[pair]).unwrap().validate(&[pair]).unwrap();
+        product.recover_disappeared_claude_resources(INSTANCE,None)
+            .expect("later real gone C must complete its own retirement");
+        let completed=journal(&product);
+        assert_eq!(completed.len(),3);
+        assert!(completed.iter().all(|row|row[7]=="APPLIED"));
+        assert!(completed.iter().any(|row|row[3]==session));
+        assert!(product.completed_claude_holder_release(
+            INSTANCE,&old[2],&old[3],&old[0]).unwrap(),
+            "old A receipt remains readable after later real C retirement");
+        let (roots,_)=product.test_claude_original_acl_source(INSTANCE,&old[0]).unwrap();
+        let unrelated_profile=roots[0].0.join("AppData").join("Local")
+            .join("Packages").join("unregistered-profile");
+        std::fs::create_dir(&unrelated_profile).unwrap();
+        let directory_error=product.completed_claude_holder_release(
+            INSTANCE,&old[2],&old[3],&old[0]).unwrap_err();
+        assert!(format!("{directory_error:?}").contains("AclWitnessMismatch"),
+            "an unregistered physical profile directory cannot borrow C's completed source: {directory_error:?}");
+        std::fs::remove_dir(&unrelated_profile).unwrap();
+        let unrelated_pid=roots[0].0.join("sessions").join("4294967295.json");
+        std::fs::write(&unrelated_pid,b"unregistered physical session").unwrap();
+        let pid_error=product.completed_claude_holder_release(
+            INSTANCE,&old[2],&old[3],&old[0]).unwrap_err();
+        assert!(format!("{pid_error:?}").contains("AclWitnessMismatch"),
+            "an unregistered physical PID file cannot borrow C's completed source: {pid_error:?}");
+        std::fs::remove_file(&unrelated_pid).unwrap();
+        assert!(product.completed_claude_holder_release(
+            INSTANCE,&old[2],&old[3],&old[0]).unwrap());
+        assert_eq!(completed.iter().filter(|row|row[0]==old[0]).count(),1);
         product.close_checked().unwrap();
     });
 }

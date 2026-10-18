@@ -2,6 +2,7 @@
 import hashlib
 import importlib.util
 import json
+import copy
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -260,6 +261,221 @@ class NoStartupHome(unittest.TestCase):
         self.db.execute("INSERT INTO gogoke_v37_h_process_episode VALUES('global','resident-resume-original')")
         with self.assertRaises(RuntimeError):
             self.verify()
+
+
+class OriginalResumeCandidateStop(unittest.TestCase):
+    def setUp(self):
+        self.db = sqlite3.connect(":memory:")
+        self.db.row_factory = sqlite3.Row
+        self.db.executescript("""
+            CREATE TABLE gogoke_v37_h_operation(domain_id TEXT,request_id TEXT,session_id TEXT,
+                operation TEXT,raw_hex TEXT,status TEXT,previous_revision INTEGER,revision INTEGER);
+            CREATE TABLE gogoke_v37_h_process_episode(domain_id TEXT,request_id TEXT,session_id TEXT,
+                generation TEXT,old_generation TEXT,raw_hex TEXT,previous_revision INTEGER,
+                result_revision INTEGER,process_operation_id TEXT,instance_id TEXT,home_id TEXT,
+                binding_id TEXT,seat_id TEXT,seat_incarnation TEXT,phase TEXT,stop_fact_id TEXT,
+                stop_request_id TEXT);
+            CREATE TABLE gogoke_coordination_process_custody(operation_id TEXT,domain_id TEXT,
+                profile_id TEXT,generation TEXT,state TEXT,stop_proof_hash TEXT);
+            CREATE TABLE gogoke_v37_h_claim(domain_id TEXT,session_id TEXT,generation TEXT,
+                state TEXT,revision INTEGER,stop_fact_id TEXT,process_operation_id TEXT);
+            CREATE TABLE gogoke_v37_instance_operations(request_id TEXT,target_id TEXT,
+                request_hex TEXT,phase TEXT,receipt_json TEXT,native_receipt_id TEXT);
+        """)
+        self.home = {"home_id": "home-" + "a" * 40, "instance_id": "instanceA",
+            "domain_id": "projectA", "owner_id": "sessionA", "generation": "2",
+            "kind": "SESSION", "state": "CLOSED", "revision": "2",
+            "directory_identity": "dir-fid",
+            "directory_ref": "temp-home-" + hashlib.sha256(("home-" + "a" * 40).encode()).hexdigest()}
+        self.old_fact = "sha256:" + "a" * 64
+        self.candidate_fact = "sha256:" + "b" * 64
+        self.resume = {"schema": "gogoke.37.operations.v1", "family": "K-SESSION",
+            "operation": "resume", "requestId": "originalResume", "domainId": "projectA",
+            "targetId": "sessionA", "expectedRevision": "3", "payload": {"generation": "1"}}
+        self.resume_raw = json.dumps(self.resume, separators=(",", ":")).encode()
+        self.resume_receipt = {"schema": self.resume["schema"], "family": "K-SESSION",
+            "operation": "resume", "requestId": "originalResume", "targetId": "sessionA",
+            "previousRevision": "3", "revision": "4", "status": "UNKNOWN", "result": {}}
+        self.stop = {"schema": self.resume["schema"], "family": "K-SESSION",
+            "operation": "stop", "requestId": "candidateStop", "domainId": "projectA",
+            "targetId": "sessionA", "expectedRevision": "4",
+            "payload": {"seatId": "seatA", "generation": "1",
+                "resumeRequestId": "originalResume"}}
+        self.stop_raw = json.dumps(self.stop, separators=(",", ":")).encode()
+        self.stop_receipt = {"schema": self.stop["schema"], "family": "K-SESSION",
+            "operation": "stop", "requestId": "candidateStop", "targetId": "sessionA",
+            "previousRevision": "4", "revision": "4", "status": "APPLIED",
+            "result": {"stopScope": "ORIGINAL_RESUME_CANDIDATE",
+                "originalResumeRequestId": "originalResume", "stoppedGeneration": "2",
+                "stopFact": self.candidate_fact}}
+        self.attempt = {"operation": "resume", "generation": None,
+            "producerGeneration": "1", "originalCreateRequestId": "originalResume",
+            "originalCreateRawFrame": self.resume_raw.decode(),
+            "originalCreateRawSha256": hashlib.sha256(self.resume_raw).hexdigest(),
+            "receipt": self.resume_receipt, "candidateStopDispatchState": "RECEIPT_RECORDED",
+            "candidateStopRequestId": "candidateStop",
+            "candidateStopRawFrame": self.stop_raw.decode(),
+            "candidateStopRawSha256": hashlib.sha256(self.stop_raw).hexdigest(),
+            "candidateStopReceipt": self.stop_receipt, "candidateStoppedGeneration": "2",
+            "candidateStopSource": {"requestId": "candidateStop",
+                "rawFrame": self.stop_raw.decode(),
+                "rawSha256": hashlib.sha256(self.stop_raw).hexdigest(),
+                "receipt": self.stop_receipt, "stoppedGeneration": "2"}}
+        self.db.execute("INSERT INTO gogoke_v37_h_operation VALUES(?,?,?,?,?,?,?,?)",
+            ("projectA", "originalResume", "sessionA", "resume", self.resume_raw.hex(),
+             "UNKNOWN", 3, 4))
+        self.db.execute("INSERT INTO gogoke_v37_h_operation VALUES(?,?,?,?,?,?,?,?)",
+            ("projectA", "candidateStop", "sessionA", "stop-resume-candidate",
+             self.stop_raw.hex(), "APPLIED", 4, 4))
+        candidate_op = "h-resume-" + hashlib.sha256(self.resume_raw).hexdigest()[:40]
+        self.db.execute("INSERT INTO gogoke_v37_h_process_episode VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("projectA", "originalResume", "sessionA", "2", "1", self.resume_raw.hex(),
+             3, 4, candidate_op, "instanceA", self.home["home_id"],
+             "binding-" + "a" * 40, "seatA", "incA", "UNKNOWN", None, None))
+        self.db.execute("INSERT INTO gogoke_v37_h_process_episode VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("projectA", "oldOpen", "sessionA", "1", None, "00", 0, 1, "oldOp",
+             "instanceA", "oldHome", "oldBinding", "seatA", "incA", "STOPPED",
+             self.old_fact, "oldStop"))
+        self.db.execute("INSERT INTO gogoke_coordination_process_custody VALUES(?,?,?,?,?,?)",
+            (candidate_op, "projectA", "instanceA", "2", "STOPPED", self.candidate_fact))
+        self.db.execute("INSERT INTO gogoke_coordination_process_custody VALUES(?,?,?,?,?,?)",
+            ("oldOp", "projectA", "instanceA", "1", "STOPPED", self.old_fact))
+        self.db.execute("INSERT INTO gogoke_v37_h_claim VALUES(?,?,?,?,?,?,?)",
+            ("projectA", "sessionA", "1", "STOPPED", 4, self.old_fact, "oldOp"))
+        self.create_id = "homeprep-" + hashlib.sha256(
+            b"projectA\noriginalResume").hexdigest()[:40]
+        self.sid = "S-1-15-2-123456789"
+        framed = b"".join(len(field).to_bytes(8, "big") + field for field in
+            (b"temporary-create-detached", self.resume_raw, self.home["home_id"].encode(),
+             b"instanceA", b"projectA", b"SESSION", b"sessionA", b"2",
+             self.sid.encode()))
+        self.create_hex = framed.hex()
+        self.db.execute("INSERT INTO gogoke_v37_instance_operations VALUES(?,?,?,?,?,?)",
+            (self.create_id, self.home["home_id"], self.create_hex, "APPLIED", "", "dir-fid"))
+
+    def tearDown(self):
+        self.db.close()
+
+    def source(self, attempt=None):
+        return READER.original_resume_candidate_stop_source(self.db, self.home,
+            attempt or self.attempt, self.resume_raw)
+
+    def test_original_unknown_and_independent_h_c_proof_are_exact(self):
+        fact, raw_sha, source = self.source()
+        self.assertEqual((fact, raw_sha),
+            (self.candidate_fact, hashlib.sha256(self.stop_raw).hexdigest()))
+        self.assertEqual(source, self.attempt["candidateStopSource"])
+        generated, episode = READER.source_attempt(self.db, self.home, self.attempt)
+        self.assertEqual(episode["phase"], "UNKNOWN")
+        self.assertEqual(generated["candidateStopSource"], source)
+        self.assertNotIn("hStopSource", generated)
+        self.assertEqual(self.db.execute("SELECT stop_fact_id FROM gogoke_v37_h_claim").fetchone()[0],
+            self.old_fact)
+
+    def test_single_source_drift_fails_closed(self):
+        changes = [
+            ("UPDATE gogoke_v37_h_process_episode SET raw_hex='00' WHERE request_id='originalResume'", None, RuntimeError),
+            ("UPDATE gogoke_v37_h_operation SET status='UNKNOWN' WHERE request_id='candidateStop'", None, RuntimeError),
+            ("UPDATE gogoke_coordination_process_custody SET stop_proof_hash=NULL WHERE generation='2'", None, RuntimeError),
+            ("UPDATE gogoke_v37_h_claim SET stop_fact_id=?", self.candidate_fact, RuntimeError),
+            ("UPDATE gogoke_v37_h_operation SET raw_hex='00' WHERE request_id='candidateStop'", None, ValueError),
+            ("INSERT INTO gogoke_v37_h_operation VALUES('projectA','duplicateCandidate','sessionA',"
+             "'stop-resume-candidate',?,'UNKNOWN',4,4)", self.stop_raw.hex(), RuntimeError),
+        ]
+        for statement, value, error_type in changes:
+            with self.subTest(statement=statement):
+                self.db.execute("SAVEPOINT candidate_negative")
+                try:
+                    self.db.execute(statement, (value,) if value else ())
+                    with self.assertRaises(error_type):
+                        self.source()
+                finally:
+                    self.db.execute("ROLLBACK TO candidate_negative")
+                    self.db.execute("RELEASE candidate_negative")
+        for mutate in [
+            lambda a: a["candidateStopSource"]["receipt"]["result"].update(stopScope="ORDINARY"),
+            lambda a: a["candidateStopSource"]["receipt"]["result"].update(stoppedGeneration="1"),
+            lambda a: a["candidateStopSource"].update(rawSha256="0" * 64),
+        ]:
+            changed = copy.deepcopy(self.attempt)
+            mutate(changed)
+            with self.assertRaises(RuntimeError):
+                self.source(changed)
+
+    def test_candidate_proof_binds_the_original_f_close_fingerprint(self):
+        def sha(value):
+            return hashlib.sha256(value).hexdigest()
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            directory = root / "v37-temporary-homes" / "instanceA" / self.home["directory_ref"]
+            directory.mkdir(parents=True)
+            (root / "state.sqlite").write_bytes(b"synthetic closed fixture")
+            marker = ("gogoke-v37-temporary-home-detached-v1\nroot-fid\n" + "\n".join([
+                "instanceA", self.home["home_id"], "projectA", "SESSION", "sessionA", "2",
+                self.create_id, sha(self.create_hex.encode()), "dir-fid", self.sid]) + "\n")
+            (directory / "gogoke-temporary-home.marker").write_bytes(marker.encode())
+
+            class Physical:
+                def windows_file_identity(self, value):
+                    value = Path(value)
+                    if value == root:
+                        return "root-fid"
+                    if value == root / "state.sqlite":
+                        return "db-fid"
+                    if value == directory:
+                        return "dir-fid"
+                    raise AssertionError(f"unexpected physical source: {value}")
+
+                def contained_physical(self, _parent, value):
+                    assert Path(value).is_relative_to(root)
+                    return Path(value)
+
+            close_request = {"schema": "gogoke.37.operations.v1", "family": "K-INSTANCE",
+                "operation": "temporary-home-close", "requestId": "closeCandidate",
+                "domainId": "projectA", "targetId": "instanceA", "expectedRevision": "1",
+                "payload": {"sessionId": "sessionA", "originalCreateRequestId": "originalResume"}}
+            close_raw = json.dumps(close_request, separators=(",", ":")).encode()
+            close_hex = b"".join(len(field).to_bytes(8, "big") + field for field in (
+                b"temporary-home-close-v2", close_raw, self.home["home_id"].encode(),
+                b"1", self.sid.encode())).hex()
+            proof_fingerprint = sha(("home-stop-v1\n" + "\n".join([
+                self.home["home_id"], self.create_id, sha(self.resume_raw),
+                sha(self.stop_raw), self.candidate_fact])).encode())
+            source_fingerprint = sha(("temporary-home-close-v2\n" + "\n".join([
+                "root-fid", "db-fid", self.home["home_id"], "instanceA", "projectA",
+                "sessionA", "2", "dir-fid", self.sid, self.create_hex,
+                sha(self.resume_raw), "ORIGINAL_STOP", proof_fingerprint])).encode())
+            receipt_id = "f-home-close-v2-" + sha(("f-home-close-receipt-v2\n" + "\n".join([
+                "closeCandidate", sha(close_raw), source_fingerprint, self.home["home_id"],
+                "instanceA", "projectA", "sessionA", "1", "2"])).encode())
+            native = {"schema": "gogoke.37.temporary-home-close.v2", "receiptId": receipt_id,
+                "proofKind": "ORIGINAL_STOP", "sourceFingerprint": source_fingerprint,
+                "homeId": self.home["home_id"], "originalCreateRequestId": "originalResume",
+                "fCreateOperationId": self.create_id, "beforeRevision": 1, "afterRevision": 2}
+            self.db.execute("INSERT INTO gogoke_v37_instance_operations VALUES(?,?,?,?,?,?)",
+                ("closeCandidate", self.home["home_id"], close_hex, "APPLIED",
+                 json.dumps(native, separators=(",", ":")), receipt_id))
+            attempt = dict(self.attempt, caseId="candidateCase", domainId="projectA",
+                sessionId="sessionA", instanceId="instanceA", closeRequestId="closeCandidate",
+                closeRawFrame=close_raw.decode(), closeRawSha256=sha(close_raw),
+                closeReceipt={"schema": "gogoke.37.operations.v1", "family": "K-INSTANCE",
+                    "operation": "temporary-home-close", "requestId": "closeCandidate",
+                    "targetId": "instanceA", "status": "APPLIED", "previousRevision": "1",
+                    "revision": "2", "result": {"homeId": self.home["home_id"],
+                        "nativeReceiptId": receipt_id, "proofKind": "ORIGINAL_STOP",
+                        "sourceFingerprint": source_fingerprint,
+                        "directoryRef": self.home["directory_ref"], "state": "CLOSED"}})
+            observed = READER.verify_attempt(self.db, Physical(), root, attempt,
+                {self.home["home_id"]: self.home})
+            self.assertEqual((observed["state"], observed["proofKind"]),
+                ("CLOSED", "ORIGINAL_STOP"))
+            native["sourceFingerprint"] = "0" * 64
+            self.db.execute("UPDATE gogoke_v37_instance_operations SET receipt_json=? WHERE request_id='closeCandidate'",
+                (json.dumps(native, separators=(",", ":")),))
+            with self.assertRaises(RuntimeError):
+                READER.verify_attempt(self.db, Physical(), root, attempt,
+                    {self.home["home_id"]: self.home})
 
 
 if __name__ == "__main__":

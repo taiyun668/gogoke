@@ -444,6 +444,38 @@ fn valid_family_codec(driver:&str,source_hex:&str,pairs_hex:&str)->Result<()> {
                      source[46]==source[6] && source[47]==source[14])))) =>
                 ((&source[1],&source[2],&source[3],&source[4],&source[6]),
                     &source[23],&source[24]),
+            Some("H_SESSION_RESUME_CANDIDATE_STOP-v1") if source.len()==55 &&
+                driver=="codex" && proof[0]=="ORIGINAL_STOP" &&
+                source[13]=="UNKNOWN" && source[16]=="1" && source[17]=="1" &&
+                source[24]=="STOPPED" && source[25]=="0" &&
+                !source[10].is_empty() && bytes(&source[10]).is_ok() &&
+                !source[14].is_empty() && !source[15].is_empty() &&
+                !source[18].is_empty() && !source[19].is_empty() &&
+                !source[22].is_empty() && !source[26].is_empty() &&
+                source[23].strip_prefix("sha256:").is_some_and(digest) &&
+                source[27]==source[5] && matches!(source[28].as_str(),"STOPPED"|"RELEASED") &&
+                source[30]!=source[8] && source[31]!=source[9] && source[32]!=source[7] &&
+                source[33].strip_prefix("sha256:").is_some_and(digest) &&
+                matches!(source[34].as_str(),"ACTIVE"|"CLOSED") &&
+                source[35]==format!("temp-home-{}",sha256_hex(source[8].as_bytes())) &&
+                !source[36].is_empty() && source[37].parse::<u64>().is_ok() &&
+                source[38]=="ACTIVE" && source[39..42].iter().all(|value|value=="0") &&
+                source[42]==source[2] && !source[43].is_empty() &&
+                !source[44].is_empty() && bytes(&source[44]).is_ok() && source[45]=="stop-resume-candidate" &&
+                source[46]==source[3] && source[47]=="APPLIED" &&
+                source[48]==source[12] && source[49]==source[12] &&
+                source[50].strip_prefix("sha256:").is_some_and(digest) &&
+                source[51..55].iter().all(|value|digest(value)) &&
+                source[4].parse::<u64>().ok().zip(source[5].parse::<u64>().ok())
+                    .is_some_and(|(new,old)|old.checked_add(1)==Some(new) &&
+                        source[4]==new.to_string() && source[5]==old.to_string()) &&
+                source[11].parse::<u64>().ok().zip(source[12].parse::<u64>().ok())
+                    .zip(source[29].parse::<u64>().ok()).is_some_and(|((before,after),current)|
+                        before.checked_add(1)==Some(after) && current>=after &&
+                        source[11]==before.to_string() && source[12]==after.to_string() &&
+                        source[29]==current.to_string()) =>
+                ((&source[1],&source[2],&source[3],&source[4],&source[7]),
+                    &source[20],&source[21]),
             Some("H_SESSION_RESUME_PENDING-v1"|"H_SESSION_RESUME-v1") if
                 source.len()==44 && proof[0]=="KERNEL_REBOOT" &&
                 source[16]=="1" && source[17]=="1" && source[25]=="1" &&
@@ -1211,6 +1243,58 @@ mod tests {
         assert!(valid_strict_source_codec("codex",&outer(vec![hex_bytes(&frame_strings(&historical))])).is_ok());
         historical[3]="'old-source-body'".into();
         assert!(valid_strict_source_codec("codex",&outer(vec![hex_bytes(&frame_strings(&historical))])).is_err());
+    }
+
+    #[test]
+    fn original_resume_candidate_stop_codec_keeps_unknown_and_requires_its_own_stop() {
+        let resume=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"resume","requestId":"resumeA","domainId":"projectA","targetId":"sessionA","expectedRevision":"4","payload":{"generation":"2"}}"#;
+        let stop=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"stop","requestId":"stopCandidate","domainId":"projectA","targetId":"sessionA","expectedRevision":"5","payload":{"seatId":"seatA","generation":"2","resumeRequestId":"resumeA"}}"#;
+        let mut source=vec![String::new();55];
+        for (index,value) in [(0,"H_SESSION_RESUME_CANDIDATE_STOP-v1"),(1,"instanceA"),
+            (2,"projectA"),(3,"sessionA"),(4,"3"),(5,"2"),(6,"resumeA"),
+            (8,"home-candidate"),(9,"binding-candidate"),(11,"4"),(12,"5"),
+            (13,"UNKNOWN"),(14,"seatA"),(15,"incA"),(16,"1"),(17,"1"),
+            (18,"ticket"),(19,"nonce"),(20,"123"),(21,"456"),(22,"official-image"),
+            (24,"STOPPED"),(25,"0"),(26,"instance-home-identity"),(27,"2"),
+            (28,"STOPPED"),(29,"5"),(30,"home-parent"),(31,"binding-parent"),
+            (32,"parent-operation"),(34,"CLOSED"),(36,"candidate-home-identity"),
+            (37,"2"),(38,"ACTIVE"),(39,"0"),(40,"0"),(41,"0"),
+            (42,"projectA"),(43,"stopCandidate"),(45,"stop-resume-candidate"),
+            (46,"sessionA"),(47,"APPLIED"),(48,"5"),(49,"5")] {
+            source[index]=value.into();
+        }
+        source[7]=format!("h-resume-{}",&sha256_hex(resume)[..40]);
+        source[10]=hex_bytes(resume);source[44]=hex_bytes(stop);
+        source[35]=format!("temp-home-{}",sha256_hex(source[8].as_bytes()));
+        for index in [23,33,50] {source[index]=format!("sha256:{}","a".repeat(64));}
+        for index in 51..55 {source[index]="b".repeat(64);}
+        let proof=vec!["ORIGINAL_STOP".to_owned(),source[1].clone(),source[2].clone(),
+            source[3].clone(),source[4].clone(),source[7].clone(),
+            source[20].clone(),source[21].clone()];
+        let family=|member:&[String],proof:&[String]| {
+            let source=hex_bytes(&frame_strings(&member.iter().cloned()
+                .chain(std::iter::once("c".repeat(64))).collect::<Vec<_>>()));
+            valid_family_codec("codex",&hex_bytes(&frame_strings(&[
+                "managed-cli-family-source-v1".to_owned(),"codex".to_owned(),source])),
+                &hex_bytes(&frame_strings(&["managed-cli-family-proof-v1".to_owned(),
+                    "codex".to_owned(),hex_bytes(&frame_strings(proof))])))
+        };
+        assert!(family(&source,&proof).is_ok());
+        for (index,value) in [(0,"H_SESSION_RESUME_STOP-v1"),(4,"03"),(5,"1"),
+            (11,"04"),(12,"6"),(13,"STOPPED"),(16,"0"),(17,"0"),(24,"UNKNOWN"),
+            (25,"1"),(27,"3"),(28,"UNKNOWN"),(29,"4"),(34,"UNKNOWN"),
+            (38,"REVOKED"),(39,"1"),(42,"otherProject"),(43,""),(44,""),
+            (45,"stop"),(46,"otherSession"),(47,"UNKNOWN"),(48,"4"),
+            (49,"6"),(50,""),(51,""),(52,""),(53,""),(54,"")] {
+            let mut changed=source.clone();changed[index]=value.into();
+            assert!(family(&changed,&proof).is_err(),"changed candidate source field {index}");
+        }
+        let mut changed=source.clone();changed.push(String::new());
+        assert!(family(&changed,&proof).is_err());
+        for kind in ["KERNEL_REBOOT","EXACT_PROCESS_SET","ORIGINAL_STDIN_OCCUPANCY"] {
+            let mut changed=proof.clone();changed[0]=kind.into();
+            assert!(family(&source,&changed).is_err());
+        }
     }
 
     #[test]

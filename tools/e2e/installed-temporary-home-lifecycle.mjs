@@ -55,6 +55,43 @@ function stopProof(record) {
     ? receipt.result.stopFact : null;
 }
 
+function candidateStopProof(record, attempt, producer, original) {
+  const request = record?.request, receipt = record?.receipt, result = receipt?.result;
+  const resume = original?.request, failed = original?.receipt;
+  if (attempt.operation !== 'resume' || nonempty(attempt.generation) ||
+      !matchesRequestReply(original, 'K-SESSION', 'resume', ['UNKNOWN']) ||
+      original.rawFrame !== attempt.originalCreateRawFrame ||
+      digest(original.rawFrame) !== attempt.originalCreateRawSha256 ||
+      !isDeepStrictEqual(failed, attempt.receipt) ||
+      resume.domainId !== attempt.domainId || resume.targetId !== attempt.sessionId ||
+      resume.requestId !== attempt.originalCreateRequestId ||
+      String(resume.payload?.generation) !== attempt.producerGeneration ||
+      failed.previousRevision !== resume.expectedRevision ||
+      !/^(0|[1-9][0-9]*)$/.test(failed.revision ?? '') ||
+      request?.schema !== 'gogoke.37.operations.v1' || request.family !== 'K-SESSION' ||
+      request.operation !== 'stop' || request.domainId !== attempt.domainId ||
+      request.targetId !== attempt.sessionId || request.expectedRevision !== failed.revision ||
+      request.payload?.seatId !== producer.seatId ||
+      request.payload?.generation !== attempt.producerGeneration ||
+      request.payload?.resumeRequestId !== resume.requestId ||
+      Object.keys(request.payload ?? {}).sort().join('|') !== 'generation|resumeRequestId|seatId' ||
+      record.rawFrame !== JSON.stringify(request) ||
+      receipt?.schema !== request.schema || receipt.family !== request.family ||
+      receipt.operation !== request.operation || receipt.requestId !== request.requestId ||
+      receipt.targetId !== request.targetId || !['APPLIED', 'REPLAYED'].includes(receipt.status) ||
+      receipt.previousRevision !== request.expectedRevision ||
+      receipt.revision !== request.expectedRevision ||
+      result?.stopScope !== 'ORIGINAL_RESUME_CANDIDATE' ||
+      result.originalResumeRequestId !== resume.requestId ||
+      !/^[1-9][0-9]*$/.test(result.stoppedGeneration ?? '') ||
+      result.stoppedGeneration === attempt.producerGeneration ||
+      !/^sha256:[a-f0-9]{64}$/.test(result.stopFact ?? '') ||
+      Object.keys(result).sort().join('|') !==
+        'originalResumeRequestId|stopFact|stopScope|stoppedGeneration') return null;
+  return { requestId: request.requestId, rawFrame: record.rawFrame,
+    rawSha256: digest(record.rawFrame), receipt, stoppedGeneration: result.stoppedGeneration };
+}
+
 function matchesRequestReply(record, family, operation, allowed) {
   const request = record?.request;
   const receipt = record?.receipt;
@@ -185,6 +222,9 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
   const producerFor = request => manifest.producers.find(row =>
     row.domainId === request.domainId && row.sessionId === request.targetId);
   const attemptFor = requestId => manifest.attempts.find(row => row.originalCreateRequestId === requestId);
+  const candidateAttemptFor = request => request?.family === 'K-SESSION' &&
+    request.operation === 'stop' && request.payload?.resumeRequestId
+    ? attemptFor(request.payload.resumeRequestId) : null;
   const requireReadbackPins = () => {
     if (!path.isAbsolute(config.python ?? '') || !path.isAbsolute(config.stateRoot ?? '') ||
         !path.isAbsolute(config.evidenceDirectory ?? '') || !readbackConfig ||
@@ -444,11 +484,56 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
           releaseRawSha256: null,
           releaseReceipt: null,
           releaseError: null,
+          candidateStopDispatchState: 'NOT_DISPATCHED',
+          candidateStopRequestId: null,
+          candidateStopRawFrame: null,
+          candidateStopRawSha256: null,
+          candidateStopReceipt: null,
+          candidateStoppedGeneration: null,
           teardownState: 'PENDING',
         };
         manifest.attempts.push(attempt);
         manifest.cases.find(row => row.caseId === producer.caseId).attempts.push(request.requestId);
         record.temporaryHomeAttemptRequestId = request.requestId;
+        save();
+      } else if (request?.family === 'K-SESSION' && request.operation === 'stop' &&
+          Object.hasOwn(request.payload ?? {}, 'resumeRequestId')) {
+        const attempt = candidateAttemptFor(request);
+        const producer = producerFor(request);
+        const originals = journal.operations.filter(row =>
+          row.request?.requestId === request.payload.resumeRequestId);
+        const original = originals[0];
+        if (!attempt || restored || attempt.caseId !== activeCaseId || producer?.caseId !== activeCaseId ||
+            producer.instanceId !== attempt.instanceId ||
+            request.domainId !== attempt.domainId || request.targetId !== attempt.sessionId ||
+            !nonempty(request.requestId) || !nonempty(attempt.producerGeneration) ||
+            nonempty(attempt.generation) || attempt.candidateStopDispatchState !== 'NOT_DISPATCHED' ||
+            originals.length !== 1 || !matchesRequestReply(original, 'K-SESSION', 'resume', ['UNKNOWN']) ||
+            original.rawFrame !== attempt.originalCreateRawFrame ||
+            digest(original.rawFrame) !== attempt.originalCreateRawSha256 ||
+            !isDeepStrictEqual(original.receipt, attempt.receipt) ||
+            original.request.domainId !== attempt.domainId ||
+            original.request.targetId !== attempt.sessionId ||
+            original.request.payload?.generation !== attempt.producerGeneration ||
+            original.receipt.previousRevision !== original.request.expectedRevision ||
+            !/^(0|[1-9][0-9]*)$/.test(original.receipt.revision ?? '') ||
+            request.expectedRevision !== original.receipt.revision ||
+            request.payload?.seatId !== producer.seatId ||
+            request.payload?.generation !== attempt.producerGeneration ||
+            request.payload?.resumeRequestId !== attempt.originalCreateRequestId ||
+            Object.keys(request.payload ?? {}).sort().join('|') !== 'generation|resumeRequestId|seatId' ||
+            record.rawFrame !== JSON.stringify(request) ||
+            journal.operations.some(row => row.request?.family === 'K-SESSION' &&
+              row.request.operation === 'stop' && row.request.domainId === attempt.domainId &&
+              row.request.targetId === attempt.sessionId &&
+              row.request.payload?.resumeRequestId === attempt.originalCreateRequestId)) {
+          throw Error('Candidate stop requires the active case exact original UNKNOWN resume; no resend');
+        }
+        attempt.candidateStopDispatchState = 'PERSISTED_BEFORE_DISPATCH';
+        attempt.candidateStopRequestId = request.requestId;
+        attempt.candidateStopRawFrame = record.rawFrame;
+        attempt.candidateStopRawSha256 = digest(record.rawFrame);
+        record.temporaryHomeCandidateStopRequestId = request.requestId;
         save();
       } else if (request?.family === 'K-INSTANCE' && request.operation === 'temporary-home-close') {
         if (startup.beforeDispatch(record)) return;
@@ -476,9 +561,13 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
       if (startup.afterReceipt(record)) return;
       const request = record.request;
       const attempt = request?.family === 'K-INSTANCE' && request.operation === 'temporary-home-close'
-        ? attemptFor(request.payload?.originalCreateRequestId) : attemptFor(request?.requestId);
+        ? attemptFor(request.payload?.originalCreateRequestId) :
+        candidateAttemptFor(request) ?? attemptFor(request?.requestId);
       if (!attempt) return;
-      if (request.operation === 'temporary-home-close') {
+      if (candidateAttemptFor(request)) {
+        attempt.candidateStopReceipt = record.receipt;
+        attempt.candidateStopDispatchState = 'RECEIPT_RECORDED';
+      } else if (request.operation === 'temporary-home-close') {
         attempt.closeReceipt = record.receipt;
         attempt.closeDispatchState = 'RECEIPT_RECORDED';
         attempt.teardownState = closeReceipt(record, request.requestId, request.targetId)
@@ -496,9 +585,13 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
       if (startup.afterReceipt(record)) return;
       const request = record.request;
       const attempt = request?.family === 'K-INSTANCE' && request.operation === 'temporary-home-close'
-        ? attemptFor(request.payload?.originalCreateRequestId) : attemptFor(request?.requestId);
+        ? attemptFor(request.payload?.originalCreateRequestId) :
+        candidateAttemptFor(request) ?? attemptFor(request?.requestId);
       if (!attempt) return;
-      if (request.operation === 'temporary-home-close') {
+      if (candidateAttemptFor(request)) {
+        attempt.candidateStopReceipt = record.receipt;
+        attempt.candidateStopDispatchState = 'RECEIPT_RECORDED';
+      } else if (request.operation === 'temporary-home-close') {
         attempt.closeReceipt = record.receipt;
         attempt.closeDispatchState = 'RECEIPT_RECORDED';
         attempt.teardownState = `CASE_TEARDOWN_INCOMPLETE_CLOSE_${record.receipt?.status ?? 'REJECTED'}`;
@@ -518,6 +611,13 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
           closeAttempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_CLOSE_FAILED_OR_UNKNOWN';
           save();
         }
+        return;
+      }
+      const candidateAttempt = candidateAttemptFor(record.request);
+      if (candidateAttempt) {
+        candidateAttempt.candidateStopDispatchState = 'DISPATCH_RESULT_UNKNOWN';
+        candidateAttempt.candidateStopError = String(error?.stack ?? error);
+        save();
         return;
       }
       const attempt = attemptFor(record.request?.requestId);
@@ -564,6 +664,92 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
         if (attempt.closeDispatchState !== 'NOT_DISPATCHED') {
           attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_CLOSE_ALREADY_DISPATCHED';
           errors.push(`${attempt.originalCreateRequestId}: original close unresolved or mismatched; no replay`);
+          save();
+          continue;
+        }
+        if (attempt.operation === 'resume' && !nonempty(attempt.generation) &&
+            attempt.receipt?.status === 'UNKNOWN') {
+          const session = journal.sessions.find(row => row.id === attempt.sessionId);
+          const producer = manifest.producers.find(row => row.sessionId === attempt.sessionId &&
+            row.caseId === attempt.caseId && row.domainId === attempt.domainId &&
+            row.instanceId === attempt.instanceId);
+          const originals = journal.operations.filter(row =>
+            row.request?.requestId === attempt.originalCreateRequestId);
+          const original = originals[0];
+          if (!session || !producer || originals.length !== 1 ||
+              !matchesRequestReply(original, 'K-SESSION', 'resume', ['UNKNOWN']) ||
+              original.rawFrame !== attempt.originalCreateRawFrame ||
+              digest(original.rawFrame) !== attempt.originalCreateRawSha256 ||
+              !isDeepStrictEqual(original.receipt, attempt.receipt) ||
+              original.request.domainId !== attempt.domainId ||
+              original.request.targetId !== attempt.sessionId ||
+              original.request.payload?.generation !== attempt.producerGeneration ||
+              original.receipt.previousRevision !== original.request.expectedRevision ||
+              !/^(0|[1-9][0-9]*)$/.test(original.receipt.revision ?? '')) {
+            attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_ORIGINAL_RESUME_SOURCE_CHANGED';
+            errors.push(`${attempt.originalCreateRequestId}: original UNKNOWN resume source changed`);
+            save();
+            continue;
+          }
+          let candidates = journal.operations.filter(row => row.request?.family === 'K-SESSION' &&
+            row.request.operation === 'stop' && row.request.domainId === attempt.domainId &&
+            row.request.targetId === attempt.sessionId &&
+            row.request.payload?.resumeRequestId === attempt.originalCreateRequestId);
+          if (candidates.length === 0) {
+            if (attempt.candidateStopDispatchState !== 'NOT_DISPATCHED' ||
+                product.socket?.readyState !== WebSocket.OPEN) {
+              attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_CANDIDATE_STOP_UNRESOLVED';
+              errors.push(`${attempt.originalCreateRequestId}: candidate stop intent or host unresolved; no replay`);
+              save();
+              continue;
+            }
+            try {
+              await product.operation('K-SESSION', 'stop', attempt.sessionId,
+                { seatId: producer.seatId, generation: attempt.producerGeneration,
+                  resumeRequestId: attempt.originalCreateRequestId },
+                original.receipt.revision, ['APPLIED', 'REPLAYED']);
+            } catch (error) {
+              attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_CANDIDATE_STOP_FAILED_OR_UNKNOWN';
+              attempt.candidateStopError = String(error?.stack ?? error);
+              errors.push(`${attempt.originalCreateRequestId}: candidate stop failed or unknown; no replay`);
+              save();
+              continue;
+            }
+            candidates = journal.operations.filter(row => row.request?.family === 'K-SESSION' &&
+              row.request.operation === 'stop' && row.request.domainId === attempt.domainId &&
+              row.request.targetId === attempt.sessionId &&
+              row.request.payload?.resumeRequestId === attempt.originalCreateRequestId);
+          }
+          const candidate = candidates[0];
+          const source = candidates.length === 1 && candidateStopProof(candidate, attempt, producer, original);
+          if (!source || attempt.candidateStopDispatchState !== 'RECEIPT_RECORDED' ||
+              attempt.candidateStopRequestId !== source.requestId ||
+              attempt.candidateStopRawFrame !== source.rawFrame ||
+              attempt.candidateStopRawSha256 !== source.rawSha256 ||
+              !isDeepStrictEqual(attempt.candidateStopReceipt, source.receipt)) {
+            attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_CANDIDATE_STOP_NOT_PROVEN';
+            errors.push(`${attempt.originalCreateRequestId}: independent candidate stop is not proven; no replay`);
+            save();
+            continue;
+          }
+          attempt.candidateStopSource = source;
+          attempt.candidateStoppedGeneration = source.stoppedGeneration;
+          save();
+          try {
+            await product.operation('K-INSTANCE', 'temporary-home-close', attempt.instanceId,
+              { sessionId: attempt.sessionId, originalCreateRequestId: attempt.originalCreateRequestId },
+              '1', ['APPLIED', 'REPLAYED']);
+            if (!originalClosed(attempt)) {
+              attempt.teardownState = 'CASE_TEARDOWN_INCOMPLETE_CLOSE_RECEIPT_INVALID';
+              errors.push(`${attempt.originalCreateRequestId}: candidate close receipt did not prove CLOSED(2)`);
+            }
+          } catch (error) {
+            attempt.teardownState = attempt.closeReceipt?.status
+              ? `CASE_TEARDOWN_INCOMPLETE_CLOSE_${attempt.closeReceipt.status}`
+              : 'CASE_TEARDOWN_INCOMPLETE_CLOSE_FAILED_OR_UNKNOWN';
+            attempt.teardownError = String(error?.stack ?? error);
+            errors.push(`${attempt.originalCreateRequestId}: candidate close failed or unknown`);
+          }
           save();
           continue;
         }
@@ -828,7 +1014,8 @@ export function createTemporaryHomeLifecycle(product, manifestPath, restore = nu
           row.closeRequestId === attempt.closeRequestId && row.nativeReceiptId === receipt?.nativeReceiptId &&
           row.homeId === receipt?.homeId && row.proofKind === receipt?.proofKind &&
           row.sourceFingerprint === receipt?.sourceFingerprint);
-        return attempt.hStopSource && rows.length === 1 && closeReceipt({ receipt: attempt.closeReceipt },
+        return (attempt.hStopSource || attempt.candidateStopSource) && rows.length === 1 &&
+          closeReceipt({ receipt: attempt.closeReceipt },
           attempt.closeRequestId, attempt.instanceId);
       }) && homes.length === manifest.attempts.length &&
         (facts.homeInventoryMatchesDeclaredScope === true ||

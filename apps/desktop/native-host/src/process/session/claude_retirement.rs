@@ -161,6 +161,23 @@ fn read_image(handle: Handle, profile: &AppContainerProfile) -> Result<Image, Is
     if acl.is_null() || descriptor.is_null() {
         return Err(mismatch());
     }
+    image_from_acl(identity,acl,descriptor,profile)
+}
+
+fn image_from_descriptor(identity: RootIdentity, descriptor: Handle,
+    profile: &AppContainerProfile) -> Result<Image, IsolationError> {
+    let mut present=0;
+    let mut defaulted=0;
+    let mut acl=ptr::null_mut();
+    if unsafe { GetSecurityDescriptorDacl(descriptor,&mut present,&mut acl,&mut defaulted) }==0 {
+        return Err(IsolationError::Acl(io::Error::last_os_error()));
+    }
+    if present==0 || acl.is_null() {return Err(mismatch())}
+    image_from_acl(identity,acl,descriptor,profile)
+}
+
+fn image_from_acl(identity: RootIdentity, acl: Handle, descriptor: Handle,
+    profile: &AppContainerProfile) -> Result<Image, IsolationError> {
     let mut count = AclSizeInformation {
         ace_count: 0,
         acl_bytes_in_use: 0,
@@ -270,6 +287,30 @@ fn read_image(handle: Handle, profile: &AppContainerProfile) -> Result<Image, Is
     })
 }
 
+/// Reuse the native Windows inheritance calculation already used for bound
+/// children, but never provide the observed child's descriptor as creator.
+/// The caller first proves the complete parent image from sealed ACL sources.
+fn derived_pid_file_image(parent: Handle, parent_image:&Image,
+    child_identity:RootIdentity, profile:&AppContainerProfile) -> Result<Image,IsolationError> {
+    let descriptor=full_descriptor(parent)?;
+    let checked=image_from_descriptor(parent_image.identity.clone(),descriptor.0,profile)?;
+    if checked.identity!=parent_image.identity || checked.control!=parent_image.control ||
+        checked.ordered!=parent_image.ordered {return Err(mismatch())}
+    let mapping=GenericMapping {read:FILE_GENERIC_READ,write:FILE_GENERIC_WRITE,
+        execute:FILE_GENERIC_EXECUTE,all:FILE_ALL_ACCESS};
+    let mut projected=ptr::null_mut();
+    let flags=SEF_DACL_AUTO_INHERIT | SEF_AVOID_PRIVILEGE_CHECK |
+        SEF_AVOID_OWNER_CHECK | 0x20 /* owner from parent */ |
+        0x40 /* group from parent */;
+    if unsafe { CreatePrivateObjectSecurityEx(descriptor.0,ptr::null_mut(),
+        &mut projected,ptr::null_mut(),0,flags,ptr::null_mut(),&mapping) }==0 {
+        return Err(IsolationError::Acl(io::Error::last_os_error()));
+    }
+    if projected.is_null() {return Err(mismatch())}
+    let projected=PrivateDescriptor(projected);
+    image_from_descriptor(child_identity,projected.0,profile)
+}
+
 fn acl_frames(encoded: &str) -> Result<Vec<Vec<u8>>, IsolationError> {
     let bytes=unhex(encoded)?;
     let mut frames=Vec::new();
@@ -323,7 +364,19 @@ impl ClaudeAclRetirement {
         objects: &[ClaudeAclObject],
         known_sids: &[String],
     ) -> Result<(), IsolationError> {
+        Self::verified_progress_images(profile,roots,objects,known_sids).map(|_|())
+    }
+
+    /// Report only which sealed PREPARED effects are physically at their
+    /// exact after image. The original recovery guard above stays strict.
+    pub(crate) fn verified_progress_images(
+        profile: &AppContainerProfile,
+        roots: &[(PathBuf, RootIdentity, bool)],
+        objects: &[ClaudeAclObject],
+        known_sids: &[String],
+    ) -> Result<Vec<bool>, IsolationError> {
         Self::verify_inventory(roots, objects)?;
+        let mut after_images=Vec::with_capacity(objects.len());
         for object in objects {
             let (root, identity, _) = roots.get(object.root_index).ok_or_else(mismatch)?;
             require_bound_path(root, identity, true)?;
@@ -338,12 +391,14 @@ impl ClaudeAclRetirement {
                     .package_sids
                     .iter()
                     .any(|sid| !known_sids.contains(sid))
-                || !(current.ordered == before || current.ordered == after)
             {
                 return Err(mismatch());
             }
+            if current.ordered==after {after_images.push(true)}
+            else if current.ordered==before {after_images.push(false)}
+            else {return Err(mismatch())}
         }
-        Ok(())
+        Ok(after_images)
     }
     pub(crate) fn readback_target(
         profile: &AppContainerProfile,
@@ -383,18 +438,29 @@ impl ClaudeAclRetirement {
         objects: &[ClaudeAclObject],
         known_sids: &[String],
         completed: &[(&str, &[(PathBuf, RootIdentity, bool)], &[ClaudeAclObject])],
+        pending: &[(&str, &[(PathBuf, RootIdentity, bool)], &[ClaudeAclObject], &[bool])],
         later_stopped: &[(&str, bool)],
+        missing_pid: &[(PathBuf,String,u16)],
+        later_profile_directories: &[PathBuf],
+        active_pid: &[(PathBuf,String,u16)],
         proof: &NativeProcessHoldersGone,
         pairs: &[(u32, u64)],
     ) -> Result<(), IsolationError> {
         proof.validate(pairs).map_err(|error| IsolationError::ProcessObservation {
             operation: "before completed ACL readback", error })?;
-        Self::verify_inventory(roots, objects)?;
+        let (missing,extra)=Self::verify_completed_inventory(
+            roots,objects,missing_pid,later_profile_directories,active_pid)?;
         let target=profile.package_sid_string()?;
-        if !known_sids.contains(&target) || later_stopped.iter().any(|peer|peer.0==target.as_str()) {
+        if !known_sids.contains(&target) || later_stopped.iter().any(|peer|peer.0==target.as_str()) ||
+            pending.iter().any(|peer|peer.0==target.as_str() || peer.2.len()!=peer.3.len()) {
             return Err(mismatch());
         }
+        let mut packages_image=None;
+        let mut sessions_image=None;
         for object in objects {
+            if missing.contains(&(object.root_index,object.relative_utf16_hex.clone())) {
+                continue;
+            }
             let (root,identity,writable)=roots.get(object.root_index).ok_or_else(mismatch)?;
             require_bound_path(root,identity,true)?;
             let relative=decoded_relative(&object.relative_utf16_hex)?;
@@ -424,6 +490,27 @@ impl ClaudeAclRetirement {
                     }
                 }
             }
+            for (sid,other_roots,other_objects,after_images) in pending {
+                if *sid==target.as_str() {return Err(mismatch())}
+                let mut matched=None;
+                for (other,after) in other_objects.iter().zip(after_images.iter()) {
+                    let (other_root,_,_)=other_roots.get(other.root_index).ok_or_else(mismatch)?;
+                    if other_root.join(decoded_relative(&other.relative_utf16_hex)?)==path {
+                        if matched.replace((other,*after)).is_some(){return Err(mismatch());}
+                    }
+                }
+                if let Some((other,after))=matched {
+                    if other.identity!=object.identity || other.directory!=object.directory ||
+                        other.control!=object.control {return Err(mismatch());}
+                    if after {
+                        if let Some(removed)=removed_acl_frame(&other.before_hex,&other.after_hex)? {
+                            if let Some(index)=expected.iter().position(|ace|ace==&removed) {
+                                expected.remove(index);
+                            }
+                        }
+                    }
+                }
+            }
             let mut observed=Vec::new();
             let mut new_stopped=std::collections::BTreeSet::new();
             for ace in &current.aces {
@@ -445,10 +532,146 @@ impl ClaudeAclRetirement {
                 !known_sids.contains(sid) && !later_stopped.iter().any(|peer|peer.0==sid.as_str())) {
                 return Err(mismatch());
             }
+            if object.root_index==0 && relative==PathBuf::from("AppData").join("Local").join("Packages") {
+                packages_image=Some(current);
+            } else if object.root_index==0 && relative==PathBuf::from("sessions") {
+                sessions_image=Some(current);
+            }
             require_bound_path(root,identity,true)?;
         }
+        if !extra.is_empty() {
+            let parent=packages_image.ok_or_else(mismatch)?;
+            for (path,identity,directory) in &extra {
+                if !directory {continue;}
+                require_bound_path(path,identity,true)?;
+                let held=open_physical_object(path,true,READ_CONTROL)?;
+                let current=read_image(held.0,profile)?;
+                if current.identity!=*identity || current.control!=parent.control ||
+                    current.ordered!=parent.ordered || current.target_count!=0 ||
+                    current.package_sids.iter().any(|sid|
+                        !known_sids.contains(sid) &&
+                        !later_stopped.iter().any(|peer|peer.0==sid.as_str())) {
+                    return Err(mismatch());
+                }
+                require_bound_path(path,identity,true)?;
+            }
+        }
+        if extra.iter().any(|(_,_,directory)|!*directory) {
+            let parent=sessions_image.ok_or_else(mismatch)?;
+            let (root,root_identity,_)=&roots[0];
+            let parent_path=root.join("sessions");
+            require_bound_path(root,root_identity,true)?;
+            let parent_handle=open_physical_object(&parent_path,true,READ_CONTROL)?;
+            let before=read_image(parent_handle.0,profile)?;
+            if before.identity!=parent.identity || before.control!=parent.control ||
+                before.ordered!=parent.ordered {return Err(mismatch())}
+            for (path,identity,directory) in &extra {
+                if *directory {continue;}
+                require_bound_path(path,identity,false)?;
+                let projected=derived_pid_file_image(parent_handle.0,&parent,
+                    identity.clone(),profile)?;
+                let child=open_physical_object(path,false,READ_CONTROL)?;
+                let current=read_image(child.0,profile)?;
+                let relative=path.strip_prefix(root).map_err(|_|mismatch())?;
+                let [(_,source_identity,source_control)]=active_pid.iter().filter(|entry|
+                    entry.0==relative).collect::<Vec<_>>().as_slice() else {return Err(mismatch())};
+                if current.identity!=*identity || current.control!=projected.control ||
+                    current.identity.opaque()!=*source_identity || current.control!=*source_control ||
+                    current.ordered!=projected.ordered || current.target_count!=0 ||
+                    current.aces.iter().any(|ace|ace.flags!=INHERITED_ACE as u8) ||
+                    current.package_sids.iter().any(|sid|
+                        completed.iter().any(|peer|peer.0==sid.as_str()) ||
+                        !later_stopped.iter().any(|peer|peer.0==sid.as_str())) {
+                    return Err(mismatch());
+                }
+                require_bound_path(path,identity,false)?;
+            }
+            let after=read_image(parent_handle.0,profile)?;
+            if after.identity!=parent.identity || after.control!=parent.control ||
+                after.ordered!=parent.ordered {return Err(mismatch())}
+            require_bound_path(root,root_identity,true)?;
+        }
+        let final_inventory=Self::verify_completed_inventory(
+            roots,objects,missing_pid,later_profile_directories,active_pid)?;
+        if final_inventory!=(missing,extra) {return Err(mismatch())}
         proof.validate(pairs).map_err(|error| IsolationError::ProcessObservation {
             operation: "after completed ACL readback", error })
+    }
+
+    /// Enumerate every current object. A completed receipt may explain only
+    /// named later native-profile directories and an exact old PID file that
+    /// has actually disappeared; neither class changes its sealed capture.
+    fn verify_completed_inventory(
+        roots: &[(PathBuf, RootIdentity, bool)],
+        objects: &[ClaudeAclObject],
+        missing_pid: &[(PathBuf,String,u16)],
+        later_profile_directories: &[PathBuf],
+        active_pid: &[(PathBuf,String,u16)],
+    ) -> Result<(std::collections::BTreeSet<(usize,String)>,Vec<(PathBuf,RootIdentity,bool)>),IsolationError> {
+        if roots.len()!=3 || objects.is_empty() || roots.iter().enumerate().any(|(i,(path,identity,_))|
+            roots.iter().enumerate().any(|(j,(other,other_identity,_))|
+                i!=j && (identity==other_identity || path.starts_with(other)))) {
+            return Err(mismatch());
+        }
+        let mut observed=Vec::new();
+        for (index,(root,identity,_)) in roots.iter().enumerate() {
+            require_bound_path(root,identity,true)?;
+            let mut tree=vec![(root.clone(),identity.clone(),true)];
+            tree.extend(collect_tree(root)?);
+            for (path,physical,directory) in tree {
+                observed.push((index,
+                    relative_hex(path.strip_prefix(root).map_err(|_|mismatch())?)?,
+                    path,physical,directory));
+            }
+            require_bound_path(root,identity,true)?;
+        }
+        let mut expected_paths=std::collections::BTreeSet::new();
+        let mut missing=std::collections::BTreeSet::new();
+        for object in objects {
+            let key=(object.root_index,object.relative_utf16_hex.clone());
+            if object.root_index>=roots.len() || !expected_paths.insert(key.clone()) {
+                return Err(mismatch());
+            }
+            let current=observed.iter().find(|(index,relative,_,_,_)|
+                *index==key.0 && relative==&key.1);
+            if let Some((_,_,_,physical,directory))=current {
+                if physical.opaque()!=object.identity || *directory!=object.directory {
+                    return Err(mismatch());
+                }
+                continue;
+            }
+            let allowed=missing_pid.iter().filter(|item|
+                object.root_index==0 && !object.directory &&
+                relative_hex(&item.0).ok().as_deref()==Some(key.1.as_str()) &&
+                item.1==object.identity && item.2==object.control).count()==1;
+            if !allowed || observed.iter().any(|(_,_,_,physical,_)|
+                physical.opaque()==object.identity) {return Err(mismatch())}
+            missing.insert(key);
+        }
+        let mut allowed_extra=std::collections::BTreeSet::new();
+        for relative in later_profile_directories {
+            if !allowed_extra.insert(relative_hex(relative)?) {return Err(mismatch())}
+        }
+        let mut allowed_files=std::collections::BTreeMap::new();
+        for (relative,identity,control) in active_pid {
+            if allowed_files.insert(relative_hex(relative)?,(identity,control)).is_some() {
+                return Err(mismatch());
+            }
+        }
+        let mut extra=Vec::new();
+        for (index,relative,path,identity,directory) in &observed {
+            if expected_paths.contains(&(*index,relative.clone())) {continue;}
+            let permitted=if *directory {allowed_extra.contains(relative)} else {
+                allowed_files.get(relative).is_some_and(|(expected,_)|*expected==&identity.opaque())
+            };
+            if *index!=0 || !permitted ||
+                objects.iter().any(|object|object.identity==identity.opaque()) ||
+                observed.iter().filter(|(_,_,_,other,_)|other==identity).count()!=1 {
+                return Err(mismatch());
+            }
+            extra.push((path.clone(),identity.clone(),*directory));
+        }
+        Ok((missing,extra))
     }
     pub(crate) fn verify_inventory(
         roots: &[(PathBuf, RootIdentity, bool)],
@@ -807,7 +1030,7 @@ mod tests {
         // their native cause before any ACL inventory is read.
         let proof = NativeProcessHoldersGone::for_test(&[(42, 1)]);
         let error = ClaudeAclRetirement::readback_completed_target(
-            &profile, &[], &[], &[], &[], &[], &proof, &[(43, 1)]).unwrap_err();
+            &profile, &[], &[], &[], &[], &[], &[], &[], &[], &[], &proof, &[(43, 1)]).unwrap_err();
         assert!(matches!(error, IsolationError::ProcessObservation {
             operation: "before completed ACL readback",
             error: crate::process::NativeLegacyHoldersGoneError::OriginalPairsChanged,

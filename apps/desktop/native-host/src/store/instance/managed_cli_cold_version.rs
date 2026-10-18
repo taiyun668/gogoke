@@ -32,6 +32,9 @@ pub(crate) struct QualifiedVersionAction {
     pairs_hex: String,
     pairs_digest: String,
     units: Vec<QualifiedUnit>,
+    // Original H/C stop receipts, reauthenticated by cold() at each step.
+    // These are not reconstructed native absence observations.
+    candidate_stops: Vec<Unit>,
     stdin: Vec<StdinMember>,
     global_operations: Vec<String>,
     global_native: Vec<(Vec<(u32,u64)>,NativeLegacyHoldersGone)>,
@@ -72,7 +75,8 @@ impl QualifiedVersionAction {
             u.process == process })
     }
     pub(crate) fn allows_episode(&self, domain: &str, request: &str, process: &str) -> bool {
-        self.units.iter().any(|member| { let u=&member.source; u.domain == domain &&
+        self.units.iter().map(|member|&member.source).chain(self.candidate_stops.iter())
+            .any(|u| { u.domain == domain &&
             u.open_request == request && u.process == process })
     }
     pub(crate) fn allows_operation(&self, domain:&str, session:&str, request:&str)->bool {
@@ -1058,7 +1062,7 @@ fn original_units(db: &VerifiedDatabaseConnection<'_>, root: &RootLock,
         request.target_id!=raw[3] || raw[38].is_empty() || raw[39].is_empty() {
         return Err(ManagedCliError::Busy)
     }
-    let worktree_source=verified_original_worktree(db,&request,&raw[0],&raw[2],&raw[4],
+    let worktree_source=verified_original_worktree(db,root,&request,&raw[0],&raw[2],&raw[4],
         &raw[38],&raw[39])?;
     let pid = raw[15].parse::<u32>().map_err(|_|ManagedCliError::Busy)?;
     let creation = raw[16].parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
@@ -1277,10 +1281,10 @@ fn original_stopped_sources(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,dr
         verified_source_images(db,root,driver,&row[0],&row[26],&row[27],&row[28],
             &row[24],&row[25])?;
         let worktree_source=if resume {
-            verified_stopped_resume_worktree(db,&row[0],&row[1],&row[2],
+            verified_stopped_resume_worktree(db,root,&row[0],&row[1],&row[2],
                 &row[3],&row[11],&row[29],&row[30])?
         } else {
-            verified_original_worktree(db,&request,&row[0],&row[1],&row[3],
+            verified_original_worktree(db,root,&request,&row[0],&row[1],&row[3],
                 &row[29],&row[30])?
         };
         let home=Statement::prepare(db.as_ptr(),
@@ -1472,7 +1476,7 @@ fn original_open_equations(request:&crate::store::session_transport::V37Request,
         field("worktreeId").is_some_and(|value|!value.is_empty())
 }
 
-fn verified_original_worktree(db:&VerifiedDatabaseConnection<'_>,
+fn verified_original_worktree(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
     request:&crate::store::session_transport::V37Request,
     instance:&str,domain:&str,generation:&str,seat:&str,incarnation:&str)
     ->Result<String,ManagedCliError>{
@@ -1523,9 +1527,9 @@ fn verified_original_worktree(db:&VerifiedDatabaseConnection<'_>,
     let q=Statement::prepare(db.as_ptr(),
         "SELECT w.instance_id,w.domain_id,w.repository_id,w.seat_id,
          w.seat_incarnation,w.worktree_path,w.worktree_identity,w.state,
-         l.state,s.source_path,s.source_identity
+         COALESCE(l.state,''),s.source_path,s.source_identity
          FROM main.gogoke_v37_worktrees w
-         JOIN main.gogoke_v37_worktree_lifecycle l ON l.worktree_id=w.worktree_id
+         LEFT JOIN main.gogoke_v37_worktree_lifecycle l ON l.worktree_id=w.worktree_id
          JOIN main.gogoke_v37_worktree_sources s ON s.repository_id=w.repository_id
          WHERE w.worktree_id=?1")?;
     q.bind_text(1,&worktree)?;
@@ -1534,8 +1538,112 @@ fn verified_original_worktree(db:&VerifiedDatabaseConnection<'_>,
         .collect::<std::result::Result<Vec<_>,_>>()?;
     if q.step_row()? || values[0]!=instance || values[1]!=domain ||
         values[2]!=repository || values[3]!=seat || values[4]!=incarnation ||
-        values[7]!="REGISTERED" || values[8]!="REGISTERED" {
+        values[7]!="REGISTERED" || !matches!(values[8].as_str(),""|"REGISTERED") {
         return Err(ManagedCliError::Busy)
+    }
+    let mut source=values.clone();
+    if values[8].is_empty() {
+        // Original M1 create is immediately REGISTERED and deliberately has
+        // no M2 lifecycle row. Its typed create journal is the retained F
+        // producer; the raw USER frame was never persisted by that producer.
+        let q=Statement::prepare(db.as_ptr(),
+            "SELECT o.request_id,o.request_hash,o.worktree_id,o.path_id,o.repository_id,
+                    o.domain_id,o.seat_id,o.seat_incarnation,
+                    CAST(o.seat_generation AS TEXT),CAST(o.seat_revision AS TEXT),
+                    o.instance_id,o.permission_tier,o.phase,o.cause,
+                    w.path_id,w.repository_id,w.domain_id,w.seat_id,w.seat_incarnation,
+                    CAST(w.seat_generation AS TEXT),CAST(w.seat_revision AS TEXT),
+                    w.instance_id,w.permission_tier,CAST(w.source_revision AS TEXT),
+                    CAST(w.revision AS TEXT),w.state,w.common_identity,w.baseline_commit,
+                    s.common_path,s.common_identity,s.remote_kind,s.baseline_commit,
+                    s.git_digest,s.git_version,CAST(s.revision AS TEXT)
+               FROM main.gogoke_v37_worktree_operations o
+               JOIN main.gogoke_v37_worktrees w ON w.worktree_id=o.worktree_id
+               JOIN main.gogoke_v37_worktree_sources s ON s.repository_id=w.repository_id
+              WHERE o.worktree_id=?1")?;
+        q.bind_text(1,&worktree)?;
+        if !q.step_row()? {return Err(ManagedCliError::Busy)}
+        let typed=(0..35).map(|n|q.column_text(n))
+            .collect::<std::result::Result<Vec<_>,_>>()?;
+        if q.step_row()? || !registry::valid_id(&typed[0]) ||
+            typed[1].len()!=64 || !typed[1].bytes().all(|b|
+                b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) ||
+            typed[2]!=worktree || typed[3]!=typed[14] ||
+            typed[4]!=repository || typed[4]!=typed[15] ||
+            typed[5]!=domain || typed[5]!=typed[16] ||
+            typed[6]!=seat || typed[6]!=typed[17] ||
+            typed[7]!=incarnation || typed[7]!=typed[18] ||
+            typed[8]!=typed[19] || typed[9]!=typed[20] ||
+            typed[10]!=instance || typed[10]!=typed[21] ||
+            typed[11]!=typed[22] || typed[12]!="REGISTERED" || !typed[13].is_empty() ||
+            typed[23]!="1" || typed[24]!="1" || typed[25]!="REGISTERED" ||
+            typed[26]!=typed[29] || typed[27]!=typed[31] || typed[34]!="1" ||
+            typed[8].parse::<i64>().ok().filter(|n|*n>=1).is_none() ||
+            typed[9].parse::<i64>().ok().filter(|n|*n>=1).is_none() {
+            return Err(ManagedCliError::Busy)
+        }
+        let m2=Statement::prepare(db.as_ptr(),
+            "SELECT 1 FROM main.gogoke_v37_worktree_lifecycle_ops WHERE worktree_id=?1
+             UNION ALL SELECT 1 FROM main.gogoke_v37_worktree_members WHERE worktree_id=?1
+             UNION ALL SELECT 1 FROM main.gogoke_v37_worktree_spaces WHERE space_id=?1
+             LIMIT 1")?;
+        m2.bind_text(1,&worktree)?;
+        if m2.step_row()? {return Err(ManagedCliError::Busy)}
+        let graph=crate::store::worktree::graph_query(db,&worktree)
+            .map_err(|error|ManagedCliError::Observation(format!(
+                "original M1 F graph: {error:?}")))?.ok_or(ManagedCliError::Busy)?;
+        if graph.classification!="SINGLE" || graph.state!="REGISTERED" ||
+            graph.members.len()!=1 || graph.members[0].worktree_id!=worktree ||
+            graph.members[0].repository_id!=repository ||
+            graph.members[0].domain_id!=domain || graph.members[0].seat_id!=seat ||
+            graph.members[0].instance_id!=instance ||
+            graph.members[0].baseline_commit!=typed[27] {return Err(ManagedCliError::Busy)}
+        let binding=crate::store::worktree::resolve_id(db,root,&worktree)
+            .map_err(|error|ManagedCliError::Observation(format!(
+                "original M1 F physical Git/source: {error:?}")))?;
+        if binding.worktree_id!=worktree || binding.instance_id!=instance ||
+            binding.seat_incarnation!=incarnation ||
+            binding.seat_generation.to_string()!=typed[8] ||
+            binding.permission_tier!=typed[11] || binding.baseline_commit!=typed[27] ||
+            binding.path.to_string_lossy().as_ref()!=values[5].as_str() ||
+            binding.identity.opaque()!=values[6] ||
+            binding.common_identity.opaque()!=typed[26] {
+            return Err(ManagedCliError::IdentityChanged)
+        }
+        source.push("F_M1_TYPED_CREATE-v1".into());
+        source.extend(typed);
+        source.extend([binding.pointer_hash,binding.pointer_len.to_string(),
+            binding.pointer_identity.opaque()]);
+    } else {
+        let lifecycle=Statement::prepare(db.as_ptr(),
+            "SELECT CAST(revision AS TEXT),merge_reason IS NULL,
+                    merge_target_commit IS NULL,stop_fact_id IS NULL
+               FROM main.gogoke_v37_worktree_lifecycle WHERE worktree_id=?1")?;
+        lifecycle.bind_text(1,&worktree)?;
+        if !lifecycle.step_row()? {return Err(ManagedCliError::Busy)}
+        let state=(0..4).map(|n|lifecycle.column_text(n))
+            .collect::<std::result::Result<Vec<_>,_>>()?;
+        if lifecycle.step_row()? || !state.iter().map(String::as_str)
+            .eq(["2","1","1","1"]) {
+            return Err(ManagedCliError::Busy)
+        }
+        let register=Statement::prepare(db.as_ptr(),
+            "SELECT request_id,request_hash,operation,phase,cause,result_commit IS NULL
+               FROM main.gogoke_v37_worktree_lifecycle_ops WHERE worktree_id=?1")?;
+        register.bind_text(1,&worktree)?;
+        if !register.step_row()? {return Err(ManagedCliError::Busy)}
+        let registered=(0..6).map(|n|register.column_text(n))
+            .collect::<std::result::Result<Vec<_>,_>>()?;
+        if register.step_row()? || !registry::valid_id(&registered[0]) ||
+            registered[1].len()!=64 || !registered[1].bytes().all(|b|
+                b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) ||
+            registered[2]!="REGISTER" || registered[3]!="APPLIED" ||
+            !registered[4].is_empty() || registered[5]!="1" {
+            return Err(ManagedCliError::Busy)
+        }
+        source.push("F_M2_REGISTERED-v1".into());
+        source.extend(state);
+        source.extend(registered);
     }
     for (path,identity) in [(&values[5],&values[6]),(&values[9],&values[10])] {
         let observed=inspect_root(std::path::Path::new(path))
@@ -1543,12 +1651,12 @@ fn verified_original_worktree(db:&VerifiedDatabaseConnection<'_>,
                 "original F worktree/source root: {error:?}")))?;
         if observed.identity.opaque()!=*identity {return Err(ManagedCliError::IdentityChanged)}
     }
-    Ok(sha256_hex(&frame(&values)))
+    Ok(sha256_hex(&frame(&source)))
 }
 
 /// A plain resume carries only its predecessor generation. Its project
 /// worktree remains the one named by the authenticated original OPEN.
-fn verified_stopped_resume_worktree(db:&VerifiedDatabaseConnection<'_>,
+fn verified_stopped_resume_worktree(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
     instance:&str,domain:&str,session:&str,generation:&str,old_generation:&str,
     seat:&str,incarnation:&str)->Result<String,ManagedCliError>{
     let mut child=generation.to_owned();
@@ -1599,7 +1707,7 @@ fn verified_stopped_resume_worktree(db:&VerifiedDatabaseConnection<'_>,
             operation.column_text(1)?!="APPLIED" || operation.step_row()? {
             return Err(ManagedCliError::Busy)
         }
-        return verified_original_worktree(db,&request,instance,domain,
+        return verified_original_worktree(db,root,&request,instance,domain,
             &predecessor,seat,incarnation)
     }
 }
@@ -1652,9 +1760,90 @@ fn prepromotion_resume_home(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
 /// is UNKNOWN and the stopped parent remains the current claim; after it,
 /// h_generation and the child claim are present. The parent is independently
 /// authenticated as an original STOP member before either shape is admitted.
+/// A stopped unpromoted child keeps its original UNKNOWN episode. Its separate
+/// APPLIED H stop and original C proof authenticate only that child's occupancy.
+fn original_resume_candidate_stop(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,
+    driver:&str,r:&[String],parent:&(Vec<String>,Vec<String>))
+    ->Result<(Unit,Vec<String>,Vec<String>),ManagedCliError>{
+    let witnessed=crate::store::session_transport::recorded_resume_candidate_stop_for_custody(
+        db,&r[6],&r[1],&r[2],&r[3],&r[17],&r[18])
+        .map_err(|error|ManagedCliError::Observation(format!(
+            "original resume candidate USER STOP: {error:?}")))?
+        .ok_or(ManagedCliError::Busy)?;
+    if driver!="codex" || r[12]!="UNKNOWN" || r[15]!="1" || r[16]!="1" ||
+        r[23]!="STOPPED" || r[24]!="0" || r[40]!="0" || r[41]!="0" || r[42]!="0" ||
+        r[13].is_empty() || r[14].is_empty() || parent.0[28]!=r[13] ||
+        parent.0[29]!=r[14] || r[28]!=r[4] ||
+        !matches!(r[29].as_str(),"STOPPED"|"RELEASED") ||
+        r[31]!=parent.0[7] || r[32]!=parent.0[8] ||
+        r[33]!=parent.0[6] || r[34]!=parent.0[14] || r[22]!=parent.0[26] ||
+        !matches!(r[35].as_str(),"ACTIVE"|"CLOSED") || r[39]!="ACTIVE" ||
+        r[36]!=format!("temp-home-{}",sha256_hex(r[7].as_bytes())) ||
+        r[37].is_empty() || r[38].parse::<u64>().is_err() ||
+        witnessed.instance_id!=r[0] || witnessed.generation!=r[3] ||
+        witnessed.operation_id!=r[6] || witnessed.home_id!=r[7] ||
+        witnessed.binding_id!=r[8] || witnessed.seat_incarnation!=r[14] ||
+        witnessed.ticket!=r[17] || witnessed.nonce!=r[18] ||
+        witnessed.pid!=r[19] || witnessed.creation!=r[20] ||
+        witnessed.image!=r[21] || witnessed.digest!=r[22] ||
+        witnessed.custody_state!="STOPPED" || witnessed.stop_proof.is_empty() ||
+        witnessed.revision.to_string()!=r[11] {
+        return Err(ManagedCliError::Busy)
+    }
+    let pid=r[19].parse::<u32>().map_err(|_|ManagedCliError::Busy)?;
+    let created=r[20].parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
+    let previous=r[10].parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
+    let result_revision=r[11].parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
+    let current_revision=r[30].parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
+    if pid==0 || created==0 || r[19]!=pid.to_string() || r[20]!=created.to_string() {
+        return Err(ManagedCliError::Busy)
+    }
+    if previous.checked_add(1)!=Some(result_revision) ||
+        current_revision<result_revision || r[10]!=previous.to_string() ||
+        r[11]!=result_revision.to_string() || r[30]!=current_revision.to_string() {
+        return Err(ManagedCliError::Busy)
+    }
+    let unit=Unit{instance:r[0].clone(),domain:r[1].clone(),session:r[2].clone(),
+        generation:r[3].clone(),open_request:r[5].clone(),process:r[6].clone(),
+        home:r[7].clone(),binding:r[8].clone(),pairs:vec![(pid,created)]};
+    let home_identity=registry::observed_home(root,&r[0])
+        .map_err(|error|ManagedCliError::Observation(format!(
+            "original stopped candidate instance HOME: {error:?}")))?
+        .ok_or(ManagedCliError::Busy)?;
+    if home_identity.opaque()!=r[25] {return Err(ManagedCliError::IdentityChanged)}
+    verified_source_images(db,root,driver,&r[0],&r[25],&r[26],&r[27],&r[21],&r[22])?;
+    let (home_source,physical_source)=family_execution_source(db,root,&unit,"resume",&r[37])?;
+    let worktree=verified_stopped_resume_worktree(db,root,&r[0],&r[1],&r[2],
+        &r[3],&r[4],&r[13],&r[14])?;
+    let stop=Statement::prepare(db.as_ptr(),
+        "SELECT domain_id,request_id,raw_hex,operation,session_id,status,
+         CAST(previous_revision AS TEXT),CAST(revision AS TEXT)
+         FROM main.gogoke_v37_h_operation WHERE domain_id=?1 AND session_id=?2
+         AND operation='stop-resume-candidate'")?;
+    stop.bind_text(1,&r[1])?;stop.bind_text(2,&r[2])?;
+    if !stop.step_row()? {return Err(ManagedCliError::Busy)}
+    let stop_row=(0..8).map(|n|stop.column_text(n))
+        .collect::<std::result::Result<Vec<_>,_>>()?;
+    if stop.step_row()? || stop_row[5]!="APPLIED" || stop_row[6]!=r[11] ||
+        stop_row[7]!=r[11] {return Err(ManagedCliError::Busy)}
+    let mut source=vec!["H_SESSION_RESUME_CANDIDATE_STOP-v1".to_owned()];
+    // Current registered version/digest remain independently verified above;
+    // they are not the immutable historical child's image identity.
+    source.extend(r[..26].iter().cloned());
+    source.extend(r[28..].iter().cloned());
+    source.extend(stop_row);
+    source.extend([witnessed.stop_proof,sha256_hex(&frame(&parent.0)),
+        home_source,physical_source,worktree]);
+    let proof=vec!["ORIGINAL_STOP".to_owned(),unit.instance.clone(),unit.domain.clone(),
+        unit.session.clone(),unit.generation.clone(),unit.process.clone(),
+        pid.to_string(),created.to_string()];
+    Ok((unit,source,proof))
+}
+
 fn original_resume_units(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     stopped:&[(Vec<String>,Vec<String>)])
-    ->Result<(Vec<(Unit,Vec<String>)>,std::collections::BTreeMap<String,String>),ManagedCliError>{
+    ->Result<(Vec<(Unit,Vec<String>)>,std::collections::BTreeMap<String,String>,
+        Vec<(Unit,Vec<String>,Vec<String>)>),ManagedCliError>{
     let sql="SELECT e.instance_id,e.domain_id,e.session_id,e.generation,
         COALESCE(e.old_generation,''),e.request_id,e.process_operation_id,e.home_id,
         e.binding_id,e.raw_hex,CAST(e.previous_revision AS TEXT),
@@ -1690,6 +1879,7 @@ fn original_resume_units(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,drive
           AND e.phase IN ('PREPARED','ACTIVE','UNKNOWN')";
     let mut result=Vec::new();
     let mut before_promotion=std::collections::BTreeMap::new();
+    let mut candidate_stops=Vec::new();
     for r in rows(db,sql,driver,43)? {
         let old=r[4].parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
         let generation=r[3].parse::<u64>().map_err(|_|ManagedCliError::Busy)?;
@@ -1698,6 +1888,10 @@ fn original_resume_units(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,drive
         let parent=stopped.iter().find(|(source,_)|source[1]==r[0] &&
             source[2]==r[1] && source[3]==r[2] && source[4]==r[4])
             .ok_or(ManagedCliError::Busy)?;
+        if r[12]=="UNKNOWN" && r[23]=="STOPPED" {
+            candidate_stops.push(original_resume_candidate_stop(db,root,driver,&r,parent)?);
+            continue
+        }
         if parent.0[28]!=r[13] || parent.0[29]!=r[14] ||
             r[13].is_empty() || r[14].is_empty() ||
             r[15]!="1" || r[16]!="1" || r[24]!="1" ||
@@ -1786,7 +1980,7 @@ fn original_resume_units(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,drive
     if result.windows(2).any(|p|p[0].0.process==p[1].0.process) {
         return Err(ManagedCliError::Busy)
     }
-    Ok((result,before_promotion))
+    Ok((result,before_promotion,candidate_stops))
 }
 
 /// The existing H single-HOME source rejects a second unsettled family
@@ -2621,7 +2815,7 @@ fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     let credentials=credential_source(db,root,driver)?;
     let stopped=original_stopped_sources(db,root,driver)?;
     let mut original=original_units(db,root,driver,releases)?;
-    let (resumes,before_promotion)=original_resume_units(db,root,driver,&stopped)?;
+    let (resumes,before_promotion,stopped_candidates)=original_resume_units(db,root,driver,&stopped)?;
     original.extend(resumes);
     original.sort_by(|a,b|(&a.0.instance,&a.0.domain,&a.0.session,&a.0.generation,&a.0.process)
         .cmp(&(&b.0.instance,&b.0.domain,&b.0.session,&b.0.generation,&b.0.process)));
@@ -2630,13 +2824,16 @@ fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
         p[0].0.generation==p[1].0.generation && p[0].0.process==p[1].0.process){
         return Err(ManagedCliError::Busy)
     }
-    let stopped_units=stopped.iter().map(|(source,_)|Ok(Unit{
+    let mut stopped_units=stopped.iter().map(|(source,_)|Ok(Unit{
         instance:source[1].clone(),domain:source[2].clone(),session:source[3].clone(),
         generation:source[4].clone(),open_request:source[5].clone(),
         process:source[6].clone(),home:source[7].clone(),binding:source[8].clone(),
         pairs:vec![(source[23].parse::<u32>().map_err(|_|ManagedCliError::Busy)?,
             source[24].parse::<u64>().map_err(|_|ManagedCliError::Busy)?)],
     })).collect::<Result<Vec<_>,ManagedCliError>>()?;
+    let candidate_stops=stopped_candidates.iter().map(|(unit,_,_)|unit.clone())
+        .collect::<Vec<_>>();
+    stopped_units.extend(candidate_stops.iter().cloned());
     let all_stdin=original_stdin_sources(db,driver,&original,&stopped_units)?;
     let rpc=original_rpc_sources(db,driver,&original,&stopped_units)?;
     let (mut global,mut global_operations,mut global_native)=original_global_sources(
@@ -2712,6 +2909,11 @@ fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
             proof[4].clone(),proof[5].clone(),String::new());
         members.push((key,source,proof));
     }
+    for (unit,source,proof) in stopped_candidates {
+        let key=(unit.instance,unit.domain,unit.session,unit.generation,
+            unit.process,String::new());
+        members.push((key,source,proof));
+    }
     for (source,proof) in global {
         let key=(proof[1].clone(),proof[2].clone(),proof[3].clone(),
             proof[4].clone(),proof[5].clone(),String::new());
@@ -2737,7 +2939,8 @@ fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     if members.is_empty() {
         no_unsettled_managed_version_change(db,driver)?;
         return Ok(QualifiedVersionAction{cold:true,source_hex:String::new(),source_digest:String::new(),
-            pairs_hex:String::new(),pairs_digest:String::new(),units:Vec::new(),stdin:Vec::new(),
+            pairs_hex:String::new(),pairs_digest:String::new(),units:Vec::new(),
+            candidate_stops:Vec::new(),stdin:Vec::new(),
             global_operations:Vec::new(),global_native:Vec::new(),
             legacy_probe_native:Vec::new(),
             credential_bindings:credentials.bindings});
@@ -2755,7 +2958,7 @@ fn cold(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     let pair_bytes=frame(&pair_parts);
     Ok(QualifiedVersionAction{cold:true,source_hex:hex(&source_bytes),source_digest:content_hash(&source_bytes),
         pairs_hex:hex(&pair_bytes),pairs_digest:content_hash(&pair_bytes),
-        units,stdin,global_operations,global_native,
+        units,candidate_stops,stdin,global_operations,global_native,
         legacy_probe_native,
         credential_bindings:credentials.bindings})
 }
@@ -2939,7 +3142,8 @@ fn strict_scope(db:&VerifiedDatabaseConnection<'_>,root:&RootLock,driver:&str,
     let credentials=credential_source(db,root,driver)?;
     let (source_hex,source_digest)=strict_history_source(db,root,driver,action,&credentials)?;
     Ok(QualifiedVersionAction{cold:false,source_hex,source_digest,
-        pairs_hex:String::new(),pairs_digest:String::new(),units:Vec::new(),stdin:Vec::new(),
+        pairs_hex:String::new(),pairs_digest:String::new(),units:Vec::new(),
+        candidate_stops:Vec::new(),stdin:Vec::new(),
         global_operations:Vec::new(),global_native:Vec::new(),
         legacy_probe_native:Vec::new(),
         credential_bindings:credentials.bindings})
@@ -3213,14 +3417,18 @@ mod source_image_selection_tests {
             &[source.to_str().unwrap(),&source_identity]);
         insert(&db,"INSERT INTO main.gogoke_v37_worktrees(worktree_id,path_id,repository_id,domain_id,seat_id,seat_incarnation,seat_generation,seat_revision,permission_tier,instance_id,source_revision,worktree_path,worktree_identity,git_pointer_hash,git_pointer_len,git_pointer_identity,common_identity,baseline_commit,state,revision) VALUES('treeA','tree-path','repoA','projectA','seatA','incA',1,1,'component','instanceA',1,?1,?2,'component-pointer',1,'component-pointer-identity',?3,'source-component-commit','REGISTERED',1)",
             &[tree.to_str().unwrap(),&tree_identity,&source_identity]);
-        db.execute("INSERT INTO main.gogoke_v37_worktree_lifecycle(worktree_id,state,revision) VALUES('treeA','REGISTERED',1)").unwrap();
+        insert(&db,"INSERT INTO main.gogoke_v37_worktree_operations(request_id,request_hash,repository_id,domain_id,seat_id,worktree_id,path_id,seat_incarnation,seat_generation,seat_revision,instance_id,permission_tier,phase,cause) VALUES('tree-create',?1,'repoA','projectA','seatA','treeA','tree-path','incA',1,1,'instanceA','component','REGISTERED','')",
+            &[&"a".repeat(64)]);
+        db.execute("INSERT INTO main.gogoke_v37_worktree_lifecycle(worktree_id,state,revision) VALUES('treeA','REGISTERED',2)").unwrap();
+        insert(&db,"INSERT INTO main.gogoke_v37_worktree_lifecycle_ops(request_id,request_hash,worktree_id,operation,phase) VALUES('tree-register',?1,'treeA','REGISTER','APPLIED')",
+            &[&"b".repeat(64)]);
         let open=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"open","requestId":"openA","targetId":"sessionA","domainId":"projectA","expectedRevision":"1","payload":{"seatId":"seatA","generation":"1","repositoryId":"repoA","worktreeId":"treeA"}}"#;
         let open_hex=hex(open);
         let open_process=format!("h-open-{}",&sha256_hex(open)[..40]);
         insert(&db,"INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,operation,session_id,status,previous_revision,revision) VALUES('projectA','openA',?1,'open','sessionA','APPLIED',1,2)",&[&open_hex]);
         insert(&db,"INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,raw_hex,previous_revision,result_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase,stop_fact_id) VALUES('projectA','openA','sessionA','1',?1,1,2,?2,'instanceA','homeA','bindingA','seatA','incA','STOPPED','component-stop')",&[&open_hex,&open_process]);
         let request=crate::store::session_transport::decode_request(open).unwrap();
-        let original=verified_original_worktree(&db,&request,"instanceA","projectA","1","seatA","incA").unwrap();
+        let original=verified_original_worktree(&db,&root,&request,"instanceA","projectA","1","seatA","incA").unwrap();
         let resume=br#"{"schema":"gogoke.37.operations.v1","family":"K-SESSION","operation":"resume","requestId":"resumeA","targetId":"sessionA","domainId":"projectA","expectedRevision":"3","payload":{"generation":"1"}}"#;
         let resume_hex=hex(resume);
         let resume_process=format!("h-resume-{}",&sha256_hex(resume)[..40]);
@@ -3228,21 +3436,22 @@ mod source_image_selection_tests {
         insert(&db,"INSERT INTO main.gogoke_v37_h_process_episode(domain_id,request_id,session_id,generation,old_generation,raw_hex,previous_revision,result_revision,process_operation_id,instance_id,home_id,binding_id,seat_id,seat_incarnation,phase,stop_fact_id) VALUES('projectA','resumeA','sessionA','2','1',?1,3,4,?2,'instanceA','homeB','bindingB','seatA','incA','STOPPED','component-stop-B')",&[&resume_hex,&resume_process]);
         let request=crate::store::session_transport::decode_request(resume).unwrap();
         assert_eq!(request.payload.len(),1,"resume must not grow OPEN payload fields");
-        assert!(verified_original_worktree(&db,&request,"instanceA","projectA","2","seatA","incA").is_err(),
+        assert!(verified_original_worktree(&db,&root,&request,"instanceA","projectA","2","seatA","incA").is_err(),
             "passing the resume frame to the OPEN worktree reader reproduces the old wrong-input failure");
-        assert_eq!(verified_stopped_resume_worktree(&db,"instanceA","projectA","sessionA","2","1","seatA","incA").unwrap(),original);
+        assert_eq!(verified_stopped_resume_worktree(&db,&root,"instanceA","projectA","sessionA","2","1","seatA","incA").unwrap(),original);
         for sql in [
             "DELETE FROM main.gogoke_v37_h_process_episode WHERE request_id='openA'",
             "UPDATE main.gogoke_v37_h_process_episode SET raw_hex='00' WHERE request_id='openA'",
             "UPDATE main.gogoke_v37_h_operation SET raw_hex='00' WHERE request_id='openA'",
             "DELETE FROM main.gogoke_v37_worktree_lifecycle WHERE worktree_id='treeA'",
+            "DELETE FROM main.gogoke_v37_worktree_lifecycle_ops WHERE worktree_id='treeA'",
             "UPDATE main.gogoke_v37_worktree_sources SET source_identity='changed-physical-source' WHERE repository_id='repoA'",
         ] {
             db.execute("SAVEPOINT project_resume_source").unwrap();db.execute(sql).unwrap();
-            assert!(verified_stopped_resume_worktree(&db,"instanceA","projectA","sessionA","2","1","seatA","incA").is_err(),
+            assert!(verified_stopped_resume_worktree(&db,&root,"instanceA","projectA","sessionA","2","1","seatA","incA").is_err(),
                 "the original project source must refuse independently after {sql}");
             db.execute("ROLLBACK TO project_resume_source").unwrap();db.execute("RELEASE project_resume_source").unwrap();
-            assert_eq!(verified_stopped_resume_worktree(&db,"instanceA","projectA","sessionA","2","1","seatA","incA").unwrap(),original);
+            assert_eq!(verified_stopped_resume_worktree(&db,&root,"instanceA","projectA","sessionA","2","1","seatA","incA").unwrap(),original);
         }
         db.close_checked().unwrap();drop(root);std::fs::remove_dir_all(path).unwrap();
     }

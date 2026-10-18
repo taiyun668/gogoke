@@ -11,6 +11,293 @@ fn hex(bytes: &[u8]) -> String {
 pub(super) const PROCESS_SCHEMA: &str = "CREATE TABLE gogoke_v37_h_process_episode(domain_id TEXT NOT NULL,request_id TEXT NOT NULL,session_id TEXT NOT NULL,generation TEXT NOT NULL,old_generation TEXT,raw_hex TEXT NOT NULL,previous_revision INTEGER NOT NULL,result_revision INTEGER,process_operation_id TEXT UNIQUE,instance_id TEXT NOT NULL,home_id TEXT NOT NULL,binding_id TEXT NOT NULL,seat_id TEXT,seat_incarnation TEXT,stop_request_id TEXT,phase TEXT NOT NULL CHECK(phase IN ('INTENT','PREPARED','ACTIVE','UNKNOWN','STOPPED','FAILED')),stop_fact_id TEXT,PRIMARY KEY(domain_id,request_id)) STRICT";
 pub(super) const GENERATION_SCHEMA: &str = "CREATE TABLE gogoke_v37_h_generation(domain_id TEXT NOT NULL,session_id TEXT NOT NULL,generation TEXT NOT NULL,request_id TEXT NOT NULL,process_operation_id TEXT NOT NULL UNIQUE,PRIMARY KEY(domain_id,session_id,generation),UNIQUE(domain_id,request_id)) STRICT";
 
+/// A physical stop of an unpromoted plain-resume child has its own H journal.
+/// The original resume episode and the old claim remain the historical source.
+pub(crate) const RESUME_CANDIDATE_STOP: &str = "stop-resume-candidate";
+
+pub(crate) struct ResumeCandidateStopSource {
+    pub(crate) generation: String,
+    pub(crate) operation_id: String,
+    pub(crate) instance_id: String,
+    pub(crate) home_id: String,
+    pub(crate) binding_id: String,
+    pub(crate) seat_incarnation: String,
+    pub(crate) ticket: String,
+    pub(crate) nonce: String,
+    pub(crate) pid: String,
+    pub(crate) creation: String,
+    pub(crate) image: String,
+    pub(crate) digest: String,
+    pub(crate) custody_state: String,
+    pub(crate) stop_proof: String,
+    pub(crate) revision: i64,
+}
+
+fn original_resume_raw(raw_hex:&str,domain:&str,session:&str,request_id:&str,
+    old_generation:&str,previous_revision:i64)->Result<(),AtomicError>{
+    if raw_hex.len()%2!=0 || !raw_hex.bytes().all(|byte|
+        byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) {
+        return Err(AtomicError::OperationConflict);
+    }
+    let bytes=raw_hex.as_bytes().chunks_exact(2).map(|pair|{
+        let digit=|byte:u8|if byte.is_ascii_digit(){byte-b'0'}else{byte-b'a'+10};
+        (digit(pair[0])<<4)|digit(pair[1])
+    }).collect::<Vec<_>>();
+    let request=super::decode_request(&bytes).map_err(|_|AtomicError::OperationConflict)?;
+    let original=match request.payload.get(&crate::store::atomic::JsonString::from_str("generation")){
+        Some(crate::store::atomic::Json::String(value))=>value.to_well_formed_string(),
+        _=>None,
+    };
+    if request.family!="K-SESSION" || request.operation!="resume"
+        || request.request_id!=request_id || request.domain_id!=domain
+        || request.target_id!=session || request.payload.len()!=1
+        || original.as_deref()!=Some(old_generation)
+        || i64::try_from(request.expected_revision).ok()!=Some(previous_revision)
+        || hex(&bytes)!=raw_hex {return Err(AtomicError::OperationConflict);}
+    Ok(())
+}
+
+pub(crate) fn original_resume_candidate_stop_source(
+    db:&VerifiedDatabaseConnection<'_>,domain:&str,session:&str,seat:&str,
+    old_generation:&str,resume_request:&str,revision:i64,
+) -> Result<ResumeCandidateStopSource,AtomicError> {
+    resume_candidate_stop_source(db,domain,session,seat,old_generation,
+        resume_request,revision,true)
+}
+
+pub(crate) fn recorded_resume_candidate_stop_source(
+    db:&VerifiedDatabaseConnection<'_>,domain:&str,session:&str,seat:&str,
+    old_generation:&str,resume_request:&str,revision:i64,
+) -> Result<ResumeCandidateStopSource,AtomicError> {
+    resume_candidate_stop_source(db,domain,session,seat,old_generation,
+        resume_request,revision,false)
+}
+
+/// A read-only F witness for credential cleanup. The H operation's wire frame
+/// selects the original UNKNOWN resume; the actual stopped C row supplies the
+/// only proof. A missing or ambiguous operation grants no credential effect.
+pub(crate) fn recorded_resume_candidate_stop_for_custody(
+    db:&VerifiedDatabaseConnection<'_>,operation:&str,domain:&str,session:&str,
+    generation:&str,ticket:&str,nonce:&str,
+) -> Result<Option<ResumeCandidateStopSource>,AtomicError> {
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT e.request_id,e.old_generation,e.seat_id,o.request_id,o.raw_hex,
+                o.previous_revision,o.revision
+           FROM main.gogoke_v37_h_process_episode e
+           JOIN main.gogoke_coordination_process_custody c
+             ON c.operation_id=e.process_operation_id AND c.profile_id=e.instance_id
+             AND c.domain_id=e.domain_id AND c.generation=e.generation
+           JOIN main.gogoke_v37_h_operation o ON o.domain_id=e.domain_id
+             AND o.session_id=e.session_id AND o.operation=?7
+          WHERE e.process_operation_id=?1 AND e.domain_id=?2 AND e.session_id=?3
+            AND e.generation=?4 AND c.ticket=?5 AND c.custodian_nonce=?6")?;
+    for (n,value) in [operation,domain,session,generation,ticket,nonce,
+        RESUME_CANDIDATE_STOP].iter().enumerate(){q.bind_text((n+1) as i32,value)?;}
+    if !q.step_row()? {return Ok(None);}
+    let row=(0..7).map(|n|q.column_text(n)).collect::<Result<Vec<_>,_>>()?;
+    if q.step_row()? {return Err(AtomicError::OperationConflict);}
+    drop(q);
+    let raw_hex=&row[4];
+    if raw_hex.len()%2!=0 || !raw_hex.bytes().all(|b|
+        b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        return Err(AtomicError::OperationConflict);
+    }
+    let raw=raw_hex.as_bytes().chunks_exact(2).map(|pair|{
+        let digit=|b:u8|if b.is_ascii_digit(){b-b'0'}else{b-b'a'+10};
+        (digit(pair[0])<<4)|digit(pair[1])
+    }).collect::<Vec<_>>();
+    let request=super::decode_request(&raw).map_err(|_|AtomicError::OperationConflict)?;
+    let field=|name:&str|match request.payload.get(
+        &crate::store::atomic::JsonString::from_str(name)){
+        Some(crate::store::atomic::Json::String(value))=>value.to_well_formed_string(),
+        _=>None,
+    };
+    let revision=row[5].parse::<i64>().map_err(|_|AtomicError::OperationConflict)?;
+    if row[6]!=row[5] || request.family!="K-SESSION" || request.operation!="stop"
+        || request.request_id!=row[3] || request.domain_id!=domain
+        || request.target_id!=session || request.payload.len()!=3
+        || i64::try_from(request.expected_revision).ok()!=Some(revision)
+        || field("seatId").as_deref()!=Some(row[2].as_str())
+        || field("generation").as_deref()!=Some(row[1].as_str())
+        || field("resumeRequestId").as_deref()!=Some(row[0].as_str())
+        || hex(&raw)!=*raw_hex {
+        return Err(AtomicError::OperationConflict);
+    }
+    let status=Statement::prepare(db.as_ptr(),
+        "SELECT status FROM main.gogoke_v37_h_operation
+          WHERE domain_id=?1 AND request_id=?2 AND operation=?3")?;
+    status.bind_text(1,domain)?;status.bind_text(2,&row[3])?;
+    status.bind_text(3,RESUME_CANDIDATE_STOP)?;
+    if !status.step_row()? || status.column_text(0)?!="APPLIED" || status.step_row()? {
+        return Err(AtomicError::OperationConflict);
+    }
+    let source=recorded_resume_candidate_stop_source(db,domain,session,&row[2],&row[1],
+        &row[0],revision)?;
+    if source.operation_id!=operation || source.generation!=generation
+        || source.ticket!=ticket || source.nonce!=nonce
+        || source.custody_state!="STOPPED" || source.stop_proof.is_empty() {
+        return Err(AtomicError::OperationConflict);
+    }
+    Ok(Some(source))
+}
+
+fn resume_candidate_stop_source(
+    db:&VerifiedDatabaseConnection<'_>,domain:&str,session:&str,seat:&str,
+    old_generation:&str,resume_request:&str,revision:i64,require_current:bool,
+) -> Result<ResumeCandidateStopSource,AtomicError> {
+    let q=Statement::prepare(db.as_ptr(),
+        "SELECT e.generation,e.process_operation_id,e.instance_id,e.home_id,e.binding_id,
+                e.seat_incarnation,c.ticket,c.custodian_nonce,c.pid,c.creation_time_100ns,
+                c.image_path,c.binary_digest_sha256,c.state,COALESCE(c.stop_proof_hash,''),
+                a.revision,e.raw_hex,e.previous_revision
+           FROM main.gogoke_v37_h_process_episode e
+           JOIN main.gogoke_v37_h_claim a ON a.domain_id=e.domain_id
+             AND a.session_id=e.session_id AND a.generation=e.old_generation
+             AND a.instance_id=e.instance_id AND a.state IN ('STOPPED','RELEASED')
+             AND a.revision>=?6 AND a.stop_fact_id IS NOT NULL
+           JOIN main.gogoke_coordination_process_custody oldc
+             ON oldc.operation_id=a.process_operation_id AND oldc.profile_id=a.instance_id
+             AND oldc.domain_id=a.domain_id AND oldc.generation=a.generation
+             AND oldc.state='STOPPED' AND oldc.stop_proof_hash=a.stop_fact_id
+           JOIN main.gogoke_v37_h_process_episode olde
+             ON olde.process_operation_id=a.process_operation_id
+             AND olde.domain_id=a.domain_id AND olde.session_id=a.session_id
+             AND olde.generation=a.generation AND olde.phase='STOPPED'
+             AND olde.stop_fact_id=a.stop_fact_id
+           JOIN main.gogoke_v37_h_generation oldg
+             ON oldg.domain_id=olde.domain_id AND oldg.session_id=olde.session_id
+             AND oldg.generation=olde.generation AND oldg.request_id=olde.request_id
+             AND oldg.process_operation_id=olde.process_operation_id
+           JOIN main.gogoke_v37_h_operation oldstop
+             ON oldstop.domain_id=olde.domain_id AND oldstop.session_id=olde.session_id
+             AND oldstop.request_id=olde.stop_request_id
+             AND oldstop.operation='stop' AND oldstop.status='APPLIED'
+           JOIN main.gogoke_coordination_process_custody c
+             ON c.operation_id=e.process_operation_id AND c.profile_id=e.instance_id
+             AND c.domain_id=e.domain_id AND c.generation=e.generation
+             AND c.state IN ('ACTIVE','UNKNOWN','STOPPED')
+             AND c.binary_digest_sha256=oldc.binary_digest_sha256
+           JOIN main.gogoke_v37_instances i ON i.instance_id=e.instance_id
+             AND i.driver_id='codex'
+           JOIN main.gogoke_v37_h_owner_binding b ON b.binding_id=e.binding_id
+             AND b.instance_id=e.instance_id AND b.domain_id=e.domain_id
+             AND b.owner_id=e.session_id AND b.generation=e.generation
+             AND b.kind='SESSION' AND b.state IN ('ACTIVE','REVOKED')
+           JOIN main.gogoke_v37_instance_homes h ON h.home_id=e.home_id
+             AND h.instance_id=e.instance_id AND h.domain_id=e.domain_id
+             AND h.owner_id=e.session_id AND h.generation=e.generation
+             AND h.kind='SESSION' AND h.state IN ('ACTIVE','CLOSED')
+           JOIN main.gogoke_v37_seats s ON s.domain_id=e.domain_id
+             AND s.seat_id=e.seat_id AND s.incarnation=e.seat_incarnation
+             AND s.instance_id=e.instance_id
+          WHERE e.domain_id=?1 AND e.session_id=?2 AND e.seat_id=?3
+            AND e.old_generation=?4 AND e.request_id=?5
+            AND e.phase='UNKNOWN' AND e.result_revision=?6
+            AND e.stop_request_id IS NULL AND e.stop_fact_id IS NULL
+            AND e.process_operation_id IS NOT NULL
+            AND (?7=0 OR (a.state='STOPPED' AND a.revision=?6
+                 AND b.state='ACTIVE' AND h.state='ACTIVE' AND s.state='BUSY'
+                 AND i.version='0.160.0' AND i.login_state='LOGGED_IN'
+                 AND i.program_digest=c.binary_digest_sha256))
+            AND a.home_id<>e.home_id AND a.binding_id<>e.binding_id
+            AND NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_generation g
+              WHERE g.domain_id=e.domain_id AND g.session_id=e.session_id
+                AND g.generation=e.generation)
+            AND NOT EXISTS(SELECT 1 FROM main.gogoke_v37_h_generation_change x
+              WHERE x.domain_id=e.domain_id AND x.request_id=e.request_id)")?;
+    for (n,value) in [domain,session,seat,old_generation,resume_request].iter().enumerate(){
+        q.bind_text((n+1) as i32,value)?;
+    }
+    q.bind_i64(6,revision)?;
+    q.bind_i64(7,if require_current{1}else{0})?;
+    if !q.step_row()? {return Err(AtomicError::OperationConflict);}
+    let fields=(0..17).map(|n|q.column_text(n)).collect::<Result<Vec<_>,_>>()?;
+    if q.step_row()? {return Err(AtomicError::OperationConflict);}
+    drop(q);
+    original_resume_raw(&fields[15],domain,session,resume_request,old_generation,
+        fields[16].parse::<i64>().map_err(|_|AtomicError::OperationConflict)?)?;
+    let count=Statement::prepare(db.as_ptr(),
+        "SELECT COUNT(*) FROM main.gogoke_v37_h_process_episode
+          WHERE domain_id=?1 AND session_id=?2 AND old_generation IS NOT NULL
+            AND phase IN ('INTENT','PREPARED','ACTIVE','UNKNOWN')")?;
+    count.bind_text(1,domain)?;count.bind_text(2,session)?;
+    if !count.step_row()? || count.column_text(0)?!="1" {return Err(AtomicError::OperationConflict);}
+    let source=ResumeCandidateStopSource {
+        generation:fields[0].clone(),operation_id:fields[1].clone(),
+        instance_id:fields[2].clone(),home_id:fields[3].clone(),
+        binding_id:fields[4].clone(),seat_incarnation:fields[5].clone(),
+        ticket:fields[6].clone(),nonce:fields[7].clone(),pid:fields[8].clone(),
+        creation:fields[9].clone(),image:fields[10].clone(),digest:fields[11].clone(),
+        custody_state:fields[12].clone(),stop_proof:fields[13].clone(),revision,
+    };
+    let original_pin=crate::store::instance::read_official_cli_version("codex","0.160.0")
+        .ok_or(AtomicError::OperationConflict)?;
+    if source.digest!=format!("sha256:{}",original_pin.image_sha256) {
+        return Err(AtomicError::OperationConflict);
+    }
+    if source.generation.is_empty() || source.operation_id.is_empty()
+        || source.ticket.is_empty() || source.nonce.is_empty() || source.pid.is_empty()
+        || source.creation.is_empty() || source.image.is_empty()
+        || source.digest.is_empty() || source.seat_incarnation.is_empty()
+        || (source.custody_state=="STOPPED" && source.stop_proof.is_empty())
+        || (source.custody_state!="STOPPED" && !source.stop_proof.is_empty()) {
+        return Err(AtomicError::OperationConflict);
+    }
+    Ok(source)
+}
+
+pub(crate) fn begin_original_resume_candidate_stop(
+    db:&VerifiedDatabaseConnection<'_>,domain:&str,session:&str,seat:&str,
+    old_generation:&str,resume_request:&str,revision:i64,
+    stop_request:&str,raw:&[u8],
+) -> Result<ResumeCandidateStopSource,AtomicError> {
+    let source=original_resume_candidate_stop_source(db,domain,session,seat,
+        old_generation,resume_request,revision)?;
+    if source.custody_state=="STOPPED" {return Err(AtomicError::OperationConflict);}
+    let conflict=Statement::prepare(db.as_ptr(),
+        "SELECT 1 FROM main.gogoke_v37_h_operation
+          WHERE domain_id=?1 AND session_id=?2
+            AND (operation=?3 OR (operation='stop' AND status='UNKNOWN')) LIMIT 1")?;
+    conflict.bind_text(1,domain)?;conflict.bind_text(2,session)?;
+    conflict.bind_text(3,RESUME_CANDIDATE_STOP)?;
+    if conflict.step_row()? {return Err(AtomicError::OperationConflict);}
+    let q=Statement::prepare(db.as_ptr(),
+        "INSERT INTO main.gogoke_v37_h_operation(domain_id,request_id,raw_hex,
+            operation,session_id,status,previous_revision,revision)
+         VALUES(?1,?2,?3,?4,?5,'UNKNOWN',?6,?6)")?;
+    let raw_hex=hex(raw);
+    for (n,value) in [domain,stop_request,raw_hex.as_str(),RESUME_CANDIDATE_STOP,
+        session].iter().enumerate(){q.bind_text((n+1) as i32,value)?;}
+    q.bind_i64(6,revision)?;q.step_done()?;
+    Ok(source)
+}
+
+pub(crate) fn complete_original_resume_candidate_stop(
+    db:&VerifiedDatabaseConnection<'_>,domain:&str,session:&str,seat:&str,
+    old_generation:&str,resume_request:&str,revision:i64,
+    stop_request:&str,raw:&[u8],
+) -> Result<ResumeCandidateStopSource,AtomicError> {
+    let source=original_resume_candidate_stop_source(db,domain,session,seat,
+        old_generation,resume_request,revision)?;
+    if source.custody_state!="STOPPED" || source.stop_proof.is_empty() {
+        return Err(AtomicError::OperationConflict);
+    }
+    let q=Statement::prepare(db.as_ptr(),
+        "UPDATE main.gogoke_v37_h_operation SET status='APPLIED'
+          WHERE domain_id=?1 AND request_id=?2 AND raw_hex=?3
+            AND operation=?4 AND session_id=?5 AND status='UNKNOWN'
+            AND previous_revision=?6 AND revision=?6")?;
+    let raw_hex=hex(raw);
+    for (n,value) in [domain,stop_request,raw_hex.as_str(),RESUME_CANDIDATE_STOP,
+        session].iter().enumerate(){q.bind_text((n+1) as i32,value)?;}
+    q.bind_i64(6,revision)?;q.step_done()?;
+    let changed=Statement::prepare(db.as_ptr(),"SELECT changes()")?;
+    if !changed.step_row()? || changed.column_text(0)?!="1" {
+        return Err(AtomicError::OperationConflict);
+    }
+    Ok(source)
+}
+
 pub(crate) fn record_initial(connection: &VerifiedDatabaseConnection<'_>, domain: &str,
     session: &str, request_id: &str, operation_id: &str) -> Result<(), AtomicError> {
     let process = Statement::prepare(connection.as_ptr(),
