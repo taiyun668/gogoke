@@ -9,6 +9,38 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const atom = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
 const check = (value, why) => { if (!value) throw Error(why); };
 const decimal = value => typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value);
+export const CONTROLLED_CLAUDE_PROMPT = "What is the project instruction tag already supplied by this project's startup instructions?\n" +
+  'Reply with only that tag. If no tag was supplied, reply MISSING.\n' +
+  'Do not use tools or agents, and do not read or write files to discover it.';
+
+export function validateControlledInstructions(row, projectOnly) {
+  const controlled = row.controlledInstructions;
+  if (!controlled) return null;
+  check(projectOnly && row.driverId === 'claude' && row.version === '2.1.196' &&
+    controlled.kind === 'CLAUDE_MD_AB' && controlled.prompt === CONTROLLED_CLAUDE_PROMPT &&
+    !/TAG_[A-F0-9]{20,}/.test(controlled.prompt),
+  'Controlled instructions require the fixed project-only Claude 2.1.196 case and the shared tag-free prompt');
+  const fixtures = controlled.fixtures;
+  check(fixtures && Object.keys(fixtures).sort().join(',') === 'A,B',
+    'Controlled instructions require exactly A and B fixture pins');
+  const tags = [];
+  for (const [label, project] of [['A', row.projectA], ['B', row.projectB]]) {
+    const fixture = fixtures[label];
+    const source = fixture?.originalFSource;
+    check(fixture?.relativePath === 'CLAUDE.md' && typeof fixture.path === 'string' &&
+      typeof fixture.worktreePath === 'string' && typeof fixture.worktreePhysicalIdentity === 'string' &&
+      typeof fixture.filePhysicalIdentity === 'string' && /^[a-f0-9]{64}$/.test(fixture.fileSha256) &&
+      typeof fixture.expectedTag === 'string' && /^TAG_[A-F0-9]{20,}$/.test(fixture.expectedTag) &&
+      source && ['domainId', 'repositoryId', 'seatId', 'worktreeId'].every(key => source[key] === project[key]) &&
+      source.worktreePath === fixture.worktreePath &&
+      source.worktreePhysicalIdentity === fixture.worktreePhysicalIdentity &&
+      fixture.path.toLowerCase() === `${fixture.worktreePath}\\CLAUDE.md`.toLowerCase(),
+    `Controlled ${label} fixture must bind the exact raw F identity and CLAUDE.md path`);
+    tags.push(fixture.expectedTag);
+  }
+  check(tags[0] !== tags[1], 'Controlled A/B instruction tags must be independent');
+  return controlled;
+}
 
 export async function closeProjectOnlyAfterOwnedHome(home, product, close) {
   const domains = home.manifest.ownedDomains;
@@ -90,6 +122,7 @@ export async function runHistoryBoundaryCases(product, config, journal) {
       (!projectOnly || JSON.stringify(product.temporaryHomeLifecycle.manifest.ownedDomains) ===
         JSON.stringify([row.projectA.domainId, row.projectB.domainId])),
     'Two actual owned project domains are required; full flow additionally needs its side seat');
+    validateControlledInstructions(row, projectOnly);
   }
   const record = { schema: 'gogoke.37.m2-history-boundaries.v1', state: 'RUNNING', acceptance: false,
     driverSha256: sha256(path.join(here, 'm2-history-boundaries.mjs')),
@@ -220,8 +253,8 @@ export async function runHistoryBoundaryCases(product, config, journal) {
     }
     input.state = 'ORIGINAL_NATIVE_TURN_COMPLETE'; product.save();
   };
-  const send = async (s, row, marker, label) => {
-    const body = (projectOnly
+  const send = async (s, row, marker, label, controlledPrompt) => {
+    const body = controlledPrompt ?? (projectOnly
       ? `For this project's release checklist, the release label is ${marker}. What is this project's release label? State the label in one short sentence. `
       : `Private non-secret ${label}. Reply with this exact marker: ${marker}. `) +
       'Use no tools or agents. Do not read or write files, inspect credentials, contact anyone, or open a browser.';
@@ -246,6 +279,7 @@ export async function runHistoryBoundaryCases(product, config, journal) {
       const item = { caseId: id('history'), driverId: row.driverId, instanceId: row.instanceId,
         version: row.version, sha256: row.sha256, state: 'RUNNING', acceptance: false,
         projectA: row.projectA, projectB: row.projectB,
+        ...(row.controlledInstructions ? { controlledInstructions: row.controlledInstructions } : {}),
         ...(projectOnly ? {} : { sideBinding: row.sideBinding, sideId: id('historySide') }) };
       record.cases.push(item); product.save();
       if (targetedClaude) {
@@ -283,8 +317,11 @@ export async function runHistoryBoundaryCases(product, config, journal) {
       const b = await open(row.projectB, row, 'WORK', item.caseId);
       item.projectSessions = [a.id, b.id]; product.save();
       // Both original native sessions are live before either marker is sent.
-      const first = await send(a, row, id(projectOnly ? 'RELEASE_A' : 'PROJECT_A_PRIVATE'), 'V04b project A history');
-      const second = await send(b, row, id(projectOnly ? 'RELEASE_B' : 'PROJECT_B_PRIVATE'), 'V04b project B history');
+      const controlled = validateControlledInstructions(row, projectOnly);
+      const first = await send(a, row, controlled?.fixtures.A.expectedTag ??
+        id(projectOnly ? 'RELEASE_A' : 'PROJECT_A_PRIVATE'), 'V04b project A history', controlled?.prompt);
+      const second = await send(b, row, controlled?.fixtures.B.expectedTag ??
+        id(projectOnly ? 'RELEASE_B' : 'PROJECT_B_PRIVATE'), 'V04b project B history', controlled?.prompt);
       await finishInput(a, first.input, row, first.sent);
       await finishInput(b, second.input, row, second.sent);
       if (projectOnly) {

@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createTemporaryHomeLifecycle } from '../installed-temporary-home-lifecycle.mjs';
-import { closeProjectOnlyAfterOwnedHome } from '../m2-history-boundaries.mjs';
+import { closeProjectOnlyAfterOwnedHome, validateControlledInstructions, CONTROLLED_CLAUDE_PROMPT } from '../m2-history-boundaries.mjs';
 import { ActualProduct } from '../product-cdp.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -254,6 +254,81 @@ test('the shared history reader preserves only the four observed unresolved Clau
     ` {'type':'assistant','session_id':sid,'request_id':None,'message':{'role':'assistant','content':[{'type':'thinking','thinking':'...'}]}},\n` +
     `]: reject(frame)\n` +
     `assert r.pending_unhandled_codex_frame({'method':'warning','params':{}},'thread-1')==( 'warning',None)\n`;
+  const run = spawnSync(python, ['-c', source, reader], { encoding: 'utf8', windowsHide: true });
+  assert.equal(run.status, 0, run.stderr || run.error?.message);
+});
+
+test('controlled Claude project instructions bind two distinct tags to their original F fixtures', () => {
+  const project = (domainId, seatId, worktreeId, worktreePath, worktreePhysicalIdentity) => ({
+    domainId, repositoryId: 'gogokeSeatTestbed', seatId, worktreeId });
+  const projectA = project('A', 'seatA', 'treeA', 'D:\\F-A', 'volume:1/file:a');
+  const projectB = project('B', 'seatB', 'treeB', 'D:\\F-B', 'volume:1/file:b');
+  const fixture = (value, tag) => ({ relativePath: 'CLAUDE.md', path: `${value.path}\\CLAUDE.md`,
+    worktreePath: value.path, worktreePhysicalIdentity: value.identity,
+    filePhysicalIdentity: `volume:1/file:${tag.toLowerCase()}`, fileSha256: 'a'.repeat(64), expectedTag: tag,
+    originalFSource: { domainId: value.domain, repositoryId: 'gogokeSeatTestbed',
+      seatId: value.seat, worktreeId: value.tree, worktreePath: value.path,
+      worktreePhysicalIdentity: value.identity } });
+  const sources = {
+    A: fixture({ domain: 'A', seat: 'seatA', tree: 'treeA', path: 'D:\\F-A', identity: 'volume:1/file:a' }, 'TAG_AAAAAAAAAAAAAAAAAAAA'),
+    B: fixture({ domain: 'B', seat: 'seatB', tree: 'treeB', path: 'D:\\F-B', identity: 'volume:1/file:b' }, 'TAG_BBBBBBBBBBBBBBBBBBBB') };
+  const row = { driverId: 'claude', version: '2.1.196', projectA, projectB,
+    controlledInstructions: { kind: 'CLAUDE_MD_AB', prompt: CONTROLLED_CLAUDE_PROMPT, fixtures: sources } };
+  assert.equal(validateControlledInstructions(row, true), row.controlledInstructions);
+  assert.throws(() => validateControlledInstructions({ ...row, controlledInstructions: {
+    ...row.controlledInstructions, fixtures: { ...sources, B: { ...sources.B, expectedTag: sources.A.expectedTag } } } }, true),
+  /independent/);
+  assert.throws(() => validateControlledInstructions({ ...row, controlledInstructions: {
+    ...row.controlledInstructions, prompt: `${CONTROLLED_CLAUDE_PROMPT} ${sources.A.expectedTag}` } }, true), /shared tag-free/);
+  assert.throws(() => validateControlledInstructions({ ...row, controlledInstructions: {
+    ...row.controlledInstructions, fixtures: { ...sources, A: { ...sources.A,
+      originalFSource: { ...sources.A.originalFSource, worktreeId: 'treeB' } } } } }, true), /exact raw F/);
+  assert.throws(() => validateControlledInstructions(row, false), /project-only/);
+});
+
+test('controlled Claude readback binds assistant and exact H-receipted result while rejecting substitutions', () => {
+  const python = process.env.GOGOKE_TEST_PYTHON ?? 'python';
+  const reader = path.resolve(here, '..', 'm2-history-boundaries-readback.py');
+  const source = `import copy,importlib.util,json,sys\n` +
+    `spec=importlib.util.spec_from_file_location('history_reader',sys.argv[1]); r=importlib.util.module_from_spec(spec); spec.loader.exec_module(r)\n` +
+    `tag='TAG_AAAAAAAAAAAAAAAAAAAA'; peer='TAG_BBBBBBBBBBBBBBBBBBBB'; prompt="What is the project instruction tag already supplied by this project's startup instructions?\\nReply with only that tag. If no tag was supplied, reply MISSING.\\nDo not use tools or agents, and do not read or write files to discover it."\n` +
+    `tree={'worktree_path':r'D:\\\\F-A'}\n` +
+    `fixture={'expectedTag':tag}\n` +
+    `def frame(value):\n return {'raw_bytes':json.dumps(value).encode()},value\n` +
+    `def valid(answer=tag,cwd=tree['worktree_path'],include_init=True):\n` +
+    ` frames=[]\n if include_init: frames.append(frame({'type':'system','subtype':'init','session_id':'native','claude_code_version':'2.1.196','cwd':cwd}))\n` +
+    ` frames.append(frame({'type':'assistant','session_id':'native','message':{'content':[{'type':'text','text':answer}]}}))\n` +
+    ` result={'type':'result','subtype':'success','is_error':False,'session_id':'native','result':answer}\n` +
+    ` terminal_row={'source_epoch':'epoch1','source_cursor':'6','raw_bytes':json.dumps(result).encode()}\n` +
+    ` frames.append((terminal_row,result)); sent={'result':{'sourceEpoch':'epoch1','sourceCursor':'6','rawResultSha256':__import__('hashlib').sha256(terminal_row['raw_bytes']).hexdigest(),'resultSubtype':'success','vendorSessionId':'native'}}\n` +
+    ` commands=[({'command_hex':json.dumps({'input':prompt}).encode().hex()}, {'input':prompt})]\n` +
+    ` return frames,commands,(terminal_row,result),sent\n` +
+    `def accepts(frames,commands,terminal,sent,body=prompt): return r.verify_controlled_instruction_frames(frames,commands,body,'native',tree,fixture,peer,prompt,terminal,sent)\n` +
+    `assert accepts(*valid())['state']=='CONTROLLED_PROJECT_INSTRUCTION_CONTENT_OBSERVED'\n` +
+    `def reject(frames,commands,terminal,sent,body=prompt):\n` +
+    ` try: accepts(frames,commands,terminal,sent,body)\n except RuntimeError: return\n raise AssertionError('invalid controlled input evidence passed')\n` +
+    `frames,commands,terminal,sent=valid(); commands[0]=({'command_hex':(prompt+tag).encode().hex()},{}); reject(frames,commands,terminal,sent)\n` +
+    `reject(*valid(answer=peer))\n` +
+    `reject(*valid(include_init=False))\n` +
+    `reject(*valid(cwd=r'D:\\\\F-B'))\n` +
+    `reject(*valid(),body=prompt+tag)\n` +
+    `frames,commands,terminal,sent=valid(); terminal[0]['source_cursor']='7'; reject(frames,commands,terminal,sent)\n` +
+    `frames,commands,terminal,sent=valid(); sent['result']['rawResultSha256']='0'*64; reject(frames,commands,terminal,sent)\n` +
+    `frames,commands,terminal,sent=valid(); terminal[1]['session_id']='other'; reject(frames,commands,terminal,sent)\n` +
+    `frames,commands,terminal,sent=valid(); terminal[1]['result']=peer; terminal[0]['raw_bytes']=json.dumps(terminal[1]).encode(); sent['result']['rawResultSha256']=__import__('hashlib').sha256(terminal[0]['raw_bytes']).hexdigest(); reject(frames,commands,terminal,sent)\n` +
+    `case={'driverId':'claude','version':'2.1.196'}; controlled={'kind':'CLAUDE_MD_AB','prompt':prompt,'fixtures':{'A':{'expectedTag':tag},'B':{'expectedTag':peer}}}\n` +
+    `assert r.verify_controlled_operation_tag_absence(controlled,case,[{'rawFrame':'{"operation":"stop"}'}])==controlled['fixtures']\n` +
+    `for bad in [dict(controlled,prompt=prompt+' extra'),dict(controlled,fixtures={'A':{'expectedTag':''},'B':{'expectedTag':peer}})]:\n` +
+    ` try: r.validate_controlled_instructions(bad,case)\n except RuntimeError: pass\n else: raise AssertionError('invalid controlled manifest passed')\n` +
+    `try: r.verify_controlled_operation_tag_absence(controlled,case,[{'rawFrame':'{"body":"'+tag+'"}'}])\n` +
+    `except RuntimeError: pass\nelse: raise AssertionError('tag in User operation rawFrame passed')\n` +
+    `tree_source={'domain_id':'A','repository_id':'repo','seat_id':'seatA','worktree_id':'treeA',` +
+    `'worktree_path':r'D:\\\\F-A','worktree_identity':'tree-physical'}\n` +
+    `wrong_fixture={'originalFSource':{'domainId':'A','repositoryId':'repo','seatId':'seatA','worktreeId':'treeB',` +
+    `'worktreePath':r'D:\\\\F-A','worktreePhysicalIdentity':'tree-physical'},'worktreePath':r'D:\\\\F-A',` +
+    `'worktreePhysicalIdentity':'tree-physical','relativePath':'CLAUDE.md','path':r'D:\\\\F-A\\CLAUDE.md'}\n` +
+    `try: r.verify_controlled_instruction_fixture(tree_source,wrong_fixture)\n` +
+    `except RuntimeError: pass\nelse: raise AssertionError('wrong raw F fixture passed')\n`;
   const run = spawnSync(python, ['-c', source, reader], { encoding: 'utf8', windowsHide: true });
   assert.equal(run.status, 0, run.stderr || run.error?.message);
 });

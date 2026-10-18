@@ -4,8 +4,11 @@ signed Python m2-history-boundaries-readback.py STATE_ROOT NEW_OUTPUT JOURNAL be
 Only candidate state.sqlite and explicitly named private evidence artifacts are read.
 Independently of peerRead, opens only exact original test thread/start JSONL paths
 after registered-home and H/A/F checks. No credentials or active WAL. No DB writes.
+For controlled project-only Claude A/B, also opens only the two CLAUDE.md paths
+pinned by this journal and each exact original registered F row.
 """
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -83,6 +86,10 @@ PENDING_UNMAPPED_CODEX_METHODS = frozenset((
 ))
 PENDING_UNMAPPED_CODEX_ITEMS = frozenset(("userMessage", "agentMessage", "reasoning"))
 PENDING_CLASSIFICATION = "PRESERVED_UNRESOLVED_RAW_SOURCE_NO_SUCCESS_CREDIT"
+CONTROLLED_CLAUDE_PROMPT = ("What is the project instruction tag already supplied by this project's startup instructions?\n"
+    "Reply with only that tag. If no tag was supplied, reply MISSING.\n"
+    "Do not use tools or agents, and do not read or write files to discover it.")
+CONTROLLED_TAG_PATTERN = re.compile(r"TAG_[A-F0-9]{20,}\Z")
 PENDING_CLAUDE_FORBIDDEN_FIELDS = frozenset((
     "id", "method", "result", "error", "control_request",
 ))
@@ -186,6 +193,113 @@ def path_spelling(value):
     return (value[4:] if value.startswith("\\\\?\\") else value).lower()
 
 
+def validate_controlled_instructions(controlled, case):
+    fixtures = controlled.get("fixtures") if isinstance(controlled, dict) else None
+    check(isinstance(controlled, dict) and case.get("driverId") == "claude" and case.get("version") == "2.1.196" and
+          controlled.get("kind") == "CLAUDE_MD_AB" and
+          controlled.get("prompt") == CONTROLLED_CLAUDE_PROMPT and
+          isinstance(fixtures, dict) and set(fixtures) == {"A", "B"} and
+          all(isinstance(fixtures[label], dict) and isinstance(fixtures[label].get("expectedTag"), str) and
+              CONTROLLED_TAG_PATTERN.fullmatch(fixtures[label]["expectedTag"]) for label in ("A", "B")) and
+          fixtures["A"]["expectedTag"] != fixtures["B"]["expectedTag"],
+          "Controlled instruction manifest differs from the fixed Claude A/B contract")
+    return fixtures
+
+
+def verify_controlled_operation_tag_absence(controlled, case, operations):
+    fixtures = validate_controlled_instructions(controlled, case)
+    raw_frames = [entry.get("rawFrame") for entry in operations]
+    check(raw_frames and all(isinstance(raw, str) for raw in raw_frames) and
+          all(tag not in raw for tag in (fixtures["A"]["expectedTag"], fixtures["B"]["expectedTag"])
+              for raw in raw_frames),
+          "Controlled project tag entered an original User operation input")
+    return fixtures
+
+
+def verify_controlled_instruction_fixture(tree, fixture):
+    source = fixture.get("originalFSource")
+    source_keys = {"domainId": "domain_id", "repositoryId": "repository_id", "seatId": "seat_id",
+                   "worktreeId": "worktree_id", "worktreePath": "worktree_path",
+                   "worktreePhysicalIdentity": "worktree_identity"}
+    check(isinstance(source, dict) and all(source.get(key) == tree[column]
+          for key, column in source_keys.items()) and
+          fixture.get("worktreePath") == tree["worktree_path"] and
+          fixture.get("worktreePhysicalIdentity") == tree["worktree_identity"] and
+          fixture.get("relativePath") == "CLAUDE.md" and
+          path_spelling(fixture.get("path", "")) == path_spelling(tree["worktree_path"] + "\\CLAUDE.md"),
+          "Controlled instruction fixture does not name the exact original registered F and CLAUDE.md")
+    helper_path = Path(__file__).with_name("installed_native_readback.py")
+    spec = importlib.util.spec_from_file_location("m2_controlled_native_readback", helper_path)
+    check(spec is not None and spec.loader is not None, "Original physical path helper is unavailable")
+    native = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(native)
+    physical_tree = native.canonical_local_path(tree["worktree_path"])
+    fixture_path = native.contained_physical(physical_tree, fixture["path"])
+    fixture_bytes = fixture_path.read_bytes()
+    expected_bytes = ("# Test project instruction\n"
+        f"When asked for the project instruction tag, reply with exactly {fixture['expectedTag']}.\n"
+        "Do not use tools, agents, or additional file reads for that answer.\n").encode("utf-8")
+    check(native.windows_file_identity(physical_tree) == tree["worktree_identity"] ==
+          fixture["worktreePhysicalIdentity"] and
+          native.windows_file_identity(fixture_path) == fixture["filePhysicalIdentity"] and
+          fixture_bytes == expected_bytes and digest(fixture_bytes) == fixture["fileSha256"],
+          "Controlled CLAUDE.md physical identity or exact pinned instruction bytes changed")
+    return {"path": str(fixture_path), "filePhysicalIdentity": fixture["filePhysicalIdentity"],
+            "fileSha256": fixture["fileSha256"], "worktreePhysicalIdentity": tree["worktree_identity"],
+            "sourceF": source}
+
+
+def verify_controlled_instruction_frames(decoded, commands, original_body, native_id,
+                                         tree, fixture, peer_tag, prompt, terminal_source, sent):
+    tag = fixture["expectedTag"]
+    check(original_body == prompt and tag not in original_body and peer_tag not in original_body,
+          "Controlled project tags entered the original User body")
+    command_bytes = [bytes.fromhex(row["command_hex"]) for row, _ in commands]
+    check(all(tag.encode() not in raw and peer_tag.encode() not in raw for raw in command_bytes),
+          "Controlled project tag entered an original outbound H/A input")
+    init_sources = [(row, frame) for row, frame in decoded if frame.get("type") == "system" and
+                    frame.get("subtype") == "init" and frame.get("session_id") == native_id]
+    check(len(init_sources) == 1 and init_sources[0][1].get("claude_code_version") == "2.1.196" and
+          path_spelling(init_sources[0][1].get("cwd", "")) == path_spelling(tree["worktree_path"]),
+          "Original Claude system/init lacks the fixed version and exact registered F cwd")
+    terminal_row, terminal_frame = terminal_source
+    sent_result = sent.get("result", {})
+    check(any(row is terminal_row and frame is terminal_frame for row, frame in decoded) and
+          terminal_row["source_epoch"] == sent_result.get("sourceEpoch") and
+          terminal_row["source_cursor"] == sent_result.get("sourceCursor") and
+          digest(terminal_row["raw_bytes"]) == sent_result.get("rawResultSha256") and
+          terminal_frame.get("type") == "result" and terminal_frame.get("subtype") == "success" and
+          sent_result.get("resultSubtype") == terminal_frame.get("subtype") and
+          terminal_frame.get("is_error") is False and terminal_frame.get("session_id") == native_id ==
+          sent_result.get("vendorSessionId") and terminal_frame.get("result") == tag,
+          "Controlled tag result lacks the exact original H-receipted success source/session/text")
+    own_text = []
+    for row, frame in decoded:
+        raw = row["raw_bytes"]
+        if peer_tag.encode() in raw:
+            check(False, "Other project's controlled tag crossed into this original A stream")
+        if tag.encode() in raw:
+            is_original_assistant = frame.get("type") == "assistant" and frame.get("session_id") == native_id
+            is_receipted_result = row is terminal_row and frame is terminal_frame
+            check(is_original_assistant or is_receipted_result,
+                  "Controlled tag appeared outside its original assistant or receipted terminal result")
+        if frame.get("type") == "assistant" and frame.get("session_id") == native_id:
+            content = frame.get("message", {}).get("content", [])
+            check(not any(block.get("type") in ("tool_use", "server_tool_use") for block in content
+                          if isinstance(block, dict)),
+                  "Controlled instruction answer used a tool")
+            own_text.extend(block.get("text", "") for block in content
+                            if isinstance(block, dict) and block.get("type") == "text")
+    check("".join(own_text).strip() == tag,
+          "Original assistant A text is not exactly its own controlled project tag")
+    check("".join(own_text).strip() == terminal_frame["result"],
+          "Original assistant A and H-receipted terminal result text differ")
+    return {"state": "CONTROLLED_PROJECT_INSTRUCTION_CONTENT_OBSERVED", "initSource": init_sources[0][0],
+            "terminalSource": terminal_row,
+            "expectedTag": tag, "promptSha256": digest(prompt.encode("utf-8")),
+            "outboundTagsAbsent": True, "peerTagAbsentFromRawA": True, "noTool": True}
+
+
 def snapshot(db, sessions, cases):
     # Compare scoped production rows, never synthesize fixture/golden records.
     result = {}
@@ -224,7 +338,8 @@ def serializable(value):
     return value
 
 
-def session_evidence(db, session, case, operations, source_commit, peer=None):
+def session_evidence(db, session, case, operations, source_commit, peer=None,
+                     controlled_fixture=None, peer_tag=None, controlled_prompt=None):
     domain = session["domainId"]
     sid = session["id"]
     registration = one(db, "SELECT * FROM v37_ledger_session WHERE domain_id=? AND session_id=?", (domain, sid))
@@ -240,6 +355,8 @@ def session_evidence(db, session, case, operations, source_commit, peer=None):
     check(tree["repository_id"] == session["repositoryId"] and tree["seat_id"] == session["seatId"] and
           tree["instance_id"] == case["instanceId"] and tree["state"] == "REGISTERED",
           "Original F repository/seat/instance binding differs")
+    fixture_evidence = (verify_controlled_instruction_fixture(tree, controlled_fixture)
+                        if controlled_fixture is not None else None)
     custody = one(db, "SELECT * FROM gogoke_coordination_process_custody WHERE operation_id=?", (episode["process_operation_id"],))
     pin = one(db, "SELECT * FROM gogoke_v37_instances WHERE instance_id=?", (case["instanceId"],))
     check(pin["driver_id"] == case["driverId"] and pin["version"] == case["version"] and
@@ -398,11 +515,13 @@ def session_evidence(db, session, case, operations, source_commit, peer=None):
         unknown_frames.append({"sourceEpoch": row["source_epoch"],
             "sourceCursor": row["source_cursor"], **observed,
             "state": "PENDING", "classification": PENDING_CLASSIFICATION})
+    terminal_source = None
     if case["driverId"] != "codex":
         terminal = [(row, frame) for row, frame in decoded if row["source_epoch"] == sent["result"]["sourceEpoch"] and
                     row["source_cursor"] == sent["result"]["sourceCursor"]]
         check(len(terminal) == 1, "Original provider terminal source missing")
         source, frame = terminal[0]
+        terminal_source = (source, frame)
         if case["driverId"] == "claude":
             check(digest(source["raw_bytes"]) == sent["result"]["rawResultSha256"] and
                   frame.get("type") == "result" and frame.get("subtype") == "success" and
@@ -424,12 +543,17 @@ def session_evidence(db, session, case, operations, source_commit, peer=None):
                              if update.get("sessionUpdate") == "agent_message_chunk")
     check(peer is not None or input_row["marker"] in assistant_text,
               "Non-secret marker is absent from actual assistant A events; no empty history control")
+    controlled_evidence = (verify_controlled_instruction_frames(decoded, commands, original_body, native_id,
+        tree, controlled_fixture, peer_tag, controlled_prompt, terminal_source, sent)
+        if controlled_fixture is not None else None)
     return {"domainId": domain, "sessionId": sid, "nativeSessionId": native_id, "originalCodexThreadPath": native_path,
             "episode": episode, "custody": custody, "registration": registration, "worktree": tree,
             "stdin": stdin, "rawSource": incoming, "rpcSteps": outgoing, "normalized": normalized,
             "unknownFrameCount": len(unknown_frames), "unknownFrames": unknown_frames,
             "effectiveMemoryConfiguration": effective_memory_configuration, "instance": pin,
-            "originalBody": original_body, "marker": input_row.get("marker")}
+            "originalBody": original_body, "marker": input_row.get("marker"),
+            "controlledInstructionFixture": fixture_evidence,
+            "controlledInstructionEvidence": controlled_evidence}
 
 
 def vendor_objects(root, cases):
@@ -823,7 +947,10 @@ def verify_project_only(db, journal, boundary, result):
                   for entry in journal["operations"]),
           "Project-only flow must not hide owner-side composition or V10 refusal operations")
     observed = []
-    for session, binding in zip(selected, (case["projectA"], case["projectB"])):
+    controlled = case.get("controlledInstructions")
+    if controlled is not None:
+        fixtures = validate_controlled_instructions(controlled, case)
+    for index, (session, binding) in enumerate(zip(selected, (case["projectA"], case["projectB"]))):
         check(all(session[key] == binding[key] for key in
                   ("domainId", "repositoryId", "seatId", "worktreeId")) and
               session["instanceId"] == case["instanceId"] and session.get("stopFact"),
@@ -852,16 +979,27 @@ def verify_project_only(db, journal, boundary, result):
               str(native_release["previous_revision"]) == release["request"]["expectedRevision"] and
               str(native_release["revision"]) == release["receipt"]["revision"],
               "Project-only original Native H release row differs from the retained raw receipt")
-        observed.append(session_evidence(db, session, case, operations, journal["sourceCommit"]))
+        fixture = controlled["fixtures"]["A" if index == 0 else "B"] if controlled else None
+        peer_tag = controlled["fixtures"]["B" if index == 0 else "A"]["expectedTag"] if controlled else None
+        observed.append(session_evidence(db, session, case, operations, journal["sourceCommit"],
+            controlled_fixture=fixture, peer_tag=peer_tag,
+            controlled_prompt=controlled["prompt"] if controlled else None))
     a, b = observed
     check(a["domainId"] != b["domainId"] and a["nativeSessionId"] != b["nativeSessionId"] and
           b["marker"] not in a["originalBody"] and a["marker"] not in b["originalBody"] and
           a["worktree"]["repository_id"] == b["worktree"]["repository_id"] == journal["repositoryId"] and
           a["episode"]["instance_id"] == b["episode"]["instance_id"] == case["instanceId"],
           "Original A/B markers, physical native identities, or registered F bindings overlap")
+    if controlled:
+        check(a["originalBody"] == b["originalBody"] == controlled["prompt"] and
+              verify_controlled_operation_tag_absence(controlled, case, journal["operations"]) == fixtures,
+              "Controlled A/B prompt or another original User operation contains a private tag")
     result["cases"].append({"caseId": case["caseId"], "driverId": case["driverId"],
         "projectDomains": [a["domainId"], b["domainId"]], "actualHInputIsolation": True,
-        "sessions": observed, "V04b": "NOT_RUN_EFFECTIVE_VENDOR_MEMORY_AND_INSTRUCTION_PROVENANCE_MISSING",
+        "sessions": observed,
+        "controlledInstructionContent": ("CONTROLLED_PROJECT_INSTRUCTION_CONTENT_OBSERVED" if controlled
+            else "NOT_CONFIGURED"),
+        "V04b": "NOT_RUN_EFFECTIVE_VENDOR_MEMORY_AND_INSTRUCTION_PROVENANCE_MISSING",
         "V10": "NOT_RUN_PROJECT_ONLY_SELECTION"})
     result["scopedSnapshot"] = serializable(snapshot(db, selected, [case]))
     result["unknownFrameCount"] = sum(source["unknownFrameCount"] for source in observed)
